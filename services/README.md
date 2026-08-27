@@ -1,1 +1,1 @@
-Samostatné procesy (semprecord-api, semprecord-agents, semprecord-mailsync, semprecord-transcribe, semprecord-ai-gateway) — vznikají podle fronty GitHub Issues, zatím prázdné.
+Samostatné procesy (semprec-api, semprec-agents, semprec-mailsync, semprec-transcribe, semprec-ai-gateway) — vznikají podle fronty GitHub Issues, zatím prázdné.

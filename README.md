@@ -1,6 +1,6 @@
-# Semprecord
+# Semprec
 
-Implementace backendu Semprecordu — pnpm workspace monorepo (`packages/` jádro,
+Implementace backendu Semprecu — pnpm workspace monorepo (`packages/` jádro,
 `modules/` vertikální řezy, `services/` procesy), podle rozhodnutí zapsaných v
 plánovací specifikaci (`backend.html`, repo `LifeOS/vize/`, lokální, bez remote).
 
@@ -15,10 +15,10 @@ bez nutnosti sahat do plánovacího repozitáře. Issues se berou v pořadí pod
 
 - `packages/` — sdílené jádro: `data`, `module-registry`, `agent-runtime`, `queue`,
   `realtime`, `credentials`, `shared`.
-- `modules/` — vertikální řezy (Emails, Semprecord, později Books/Films) — vznikají
+- `modules/` — vertikální řezy (Emails, Semprec, později Books/Films) — vznikají
   postupně podle fronty issues.
-- `services/` — samostatné procesy (`semprecord-api`, `semprecord-agents`,
-  `semprecord-mailsync`, `semprecord-transcribe`, `semprecord-ai-gateway`) — vznikají
+- `services/` — samostatné procesy (`semprec-api`, `semprec-agents`,
+  `semprec-mailsync`, `semprec-transcribe`, `semprec-ai-gateway`) — vznikají
   postupně podle fronty issues.
 
 ## Stack
