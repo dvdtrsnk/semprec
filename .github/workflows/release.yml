@@ -23,7 +23,7 @@ jobs:
 
       - name: Determine version
         id: version
-        run: echo "version=$(jq -r '.version' package.json)" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(jq -r '.version' backend/package.json)" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         env:
