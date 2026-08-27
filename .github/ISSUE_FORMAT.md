@@ -85,8 +85,10 @@ implementing agent's self-check and tests are written against these.
 Title: [<batch-slug>] <Batch name> — epic
 ```
 
-Body: the user-approved behavior specification, followed by a checklist of the
-batch's issues (`- [ ] #NN — title`). The epic:
+Body: the user-approved behavior specification, a `## Decisions` section
+recording the load-bearing Q&A from the specification interview (question →
+adopted answer → reason), and a checklist of the batch's issues
+(`- [ ] #NN — title`). The epic:
 
 - is **never** labeled `review:approved` (it is not implementable work and the
   dispatcher must never pick it up),

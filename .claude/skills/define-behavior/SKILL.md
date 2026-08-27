@@ -75,16 +75,27 @@ in the spec, go back to the user — do not fill it silently.
    its blockers). Inline everything it needs — copy context in, do not point
    elsewhere. Size guide: one issue = one coherent PR an agent finishes in a
    single run.
-3. Write every issue per `.github/ISSUE_FORMAT.md`: title `[slug NN/MM] …`,
-   mandatory `**Blocked by:**` first line (first issue: `none`; every later
-   issue: at least its predecessor), Context / Task / Scope (In+Out) /
-   Acceptance criteria.
-4. Write the epic per the same document: approved spec + checklist.
-5. **dry-run:** write epic + issues as separate files into the scratchpad
-   directory and stop after Phase 5's audit of those files (no gh calls, no
-   labels). Otherwise: create the epic first, then the issues in order
-   (`gh issue create -R dvdtrsnk/semprec`), then edit the epic to fill in the
-   real issue numbers in its checklist.
+3. Write every issue per `.github/ISSUE_FORMAT.md` — that document is the
+   authority on the Blocked-by rules (in short: `none` only for a batch with no
+   dependencies at all; a dependent batch's first issue lists its real
+   cross-batch blockers; every later issue lists at least its in-batch
+   predecessor). When citing a cross-batch blocker, verify (recon findings or a
+   quick look at the issue) that the cited issue actually *delivers* the needed
+   capability — if unsure, block on the latest issue known to already use it.
+4. Avoid forward references: an issue's Context may point to its predecessors
+   freely, but reference a *later* sibling only when genuinely needed.
+5. Write the epic per the same document: approved spec, a `## Decisions` section
+   preserving the grilling Q&A (question → adopted answer → reason — the
+   decision log would otherwise die with this conversation), and the checklist.
+6. **Real mode:** create the epic first, then the issues **in batch order**
+   (`gh issue create -R dvdtrsnk/semprec`) — creating sequentially means every
+   backward in-batch reference already has its real `#N` at write time. Then do
+   one substitution pass: edit the epic checklist and any issue that used a
+   forward reference, replacing placeholders with real numbers. No `#TBD` may
+   survive — the dispatcher only parses `#N`.
+   **dry-run:** write epic + issues as separate files into the scratchpad
+   directory, using `#TBD-NN` for in-batch references (real cross-batch
+   blockers keep their real `#N`). No gh calls, no labels.
 
 ## Phase 5 — Independent audit, then arm the pipeline
 
@@ -103,13 +114,18 @@ instruction to read `.github/ISSUE_FORMAT.md` plus the issue bodies from GitHub
 - **Format compliance** — title format, section order, acceptance criteria
   present, English canonical keys.
 
+In dry-run the auditors read the draft files instead and must treat `#TBD-NN`
+in-batch placeholders as valid references (they still check the chain's shape).
+
 Compare the two reports:
 
-- **Both clean** → label every implementation issue (NEVER the epic)
+- **Findings** → fix them (`gh issue edit` in real mode, edit the draft files in
+  dry-run), then re-audit with fresh subagents. Repeat until clean — the
+  fix-and-re-audit loop applies in both modes.
+- **Both clean, real mode** → label every implementation issue (NEVER the epic)
   `review:approved`, then tell the user: batch summary, issue numbers, and that
   the VPS dispatcher will pick up the first issue within ~10 minutes.
-- **Findings** → fix the issues via `gh issue edit`, then re-audit with fresh
-  subagents. Repeat until clean.
+- **Both clean, dry-run** → report the summary and file paths; no labeling.
 - **Unresolvable disagreement or a spec gap** → leave everything unlabeled and
   hand the decision to the user. An unarmed batch is a safe state; a wrongly
   armed one is not.
