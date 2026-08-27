@@ -17,10 +17,13 @@ from.
 
 ## Scope
 
-Today this repo is backend-only: a pnpm workspace monorepo for the API,
-agent runtime, sync services, and shared packages described below. It is
-planned to grow into the monorepo for the whole product — including the iOS
-app, macOS app, and web client — not just the backend.
+This repo is a monorepo for the whole product, not just the backend:
+
+- `backend/` — a pnpm workspace for the API, agent runtime, sync services,
+  and shared packages. This is where all current implementation work lives.
+- `apple/` — a single shared Swift codebase for the iOS and macOS app (one
+  app, both platforms — not two separate projects). Scaffold only for now.
+- `web/` — the web frontend. Scaffold only for now.
 
 ## Where work comes from
 
@@ -32,17 +35,20 @@ one at a time.
 
 ## Structure
 
-- `packages/` — shared core: `data`, `module-registry`, `agent-runtime`,
-  `queue`, `realtime`, `credentials`, `shared`.
-- `modules/` — vertical slices (Emails, Semprec, later Books/Films) — created
-  incrementally as the issue queue progresses.
-- `services/` — standalone processes (`semprec-api`, `semprec-agents`,
-  `semprec-mailsync`, `semprec-transcribe`, `semprec-ai-gateway`) — created
-  incrementally as the issue queue progresses.
+- `backend/packages/` — shared core: `data`, `module-registry`,
+  `agent-runtime`, `queue`, `realtime`, `credentials`, `shared`.
+- `backend/modules/` — vertical slices (Emails, Semprec, later Books/Films) —
+  created incrementally as the issue queue progresses.
+- `backend/services/` — standalone processes (`semprec-api`,
+  `semprec-agents`, `semprec-mailsync`, `semprec-transcribe`,
+  `semprec-ai-gateway`) — created incrementally as the issue queue progresses.
+- `apple/`, `web/` — empty until the issue queue reaches them.
 
 ## Stack
 
-Node LTS, TypeScript, pnpm workspace, Postgres (+ Prisma), `graphile-worker`.
+Backend: Node LTS, TypeScript, pnpm workspace, Postgres (+ Prisma),
+`graphile-worker`. Apple app and web frontend: stack to be decided when
+their first issues land.
 
 ## Branching and releases
 
@@ -50,4 +56,4 @@ Node LTS, TypeScript, pnpm workspace, Postgres (+ Prisma), `graphile-worker`.
 PR, gated by an automated code review. `main` holds released versions only:
 it advances exclusively through a `develop -> main` promotion PR, which on
 merge triggers a release pipeline that tags and publishes a GitHub Release
-from the version in `package.json`.
+from the version in `backend/package.json`.
