@@ -1,7 +1,10 @@
 # Include
-packages/**/*.ts
-modules/**/*.ts
-services/**/*.ts
+backend/packages/**/*.ts
+backend/modules/**/*.ts
+backend/services/**/*.ts
+apple/**/*.swift
+web/**/*.ts
+web/**/*.tsx
 **/*.sql
 **/*.json
 **/*.yml
@@ -12,4 +15,6 @@ services/**/*.ts
 **/dist/**
 **/build/**
 **/*.d.ts
-pnpm-lock.yaml
+**/pnpm-lock.yaml
+**/*.xcodeproj/**
+**/*.xcworkspace/**
