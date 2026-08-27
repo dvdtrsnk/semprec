@@ -6,6 +6,10 @@ Check for correctness bugs and gaps:
    logging or surfacing it — high.
 3. New choke-point behavior (a new endpoint, a new item type, a new automation
    transition) added with no accompanying test — medium.
-4. An edge case the linked issue's Zadani explicitly calls out (e.g. a stated
+4. An edge case the linked issue's Task section explicitly calls out (e.g. a stated
    fallback, a named error condition) that the diff does not actually handle — high.
-5. Dead code, an unused import, or a variable/parameter that is never read — low.
+5. A Czech canonical key introduced in code, a migration, or a seed (`databases.key`,
+   property key, select-option value, settings key) — high; canonical keys are
+   English camelCase (view types kebab-case). A hardcoded user-facing label string
+   instead of an i18n key resolved via `users.locale` — medium.
+6. Dead code, an unused import, or a variable/parameter that is never read — low.
