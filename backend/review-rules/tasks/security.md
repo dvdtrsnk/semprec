@@ -12,3 +12,6 @@ Check for security vulnerabilities:
    one (session/token check, ownership check on the resource being mutated) — critical.
 6. A new external HTTP call (IMAP, AI gateway, webhook) with no timeout, no size cap
    on the response, or no error handling that could hang the owning process — medium.
+7. An AI-provider credential (API key, token) configured or read anywhere outside
+   `semprec-ai-gateway`'s own environment — high: only the gateway process may hold
+   provider credentials, so a leak or misuse is containable to one process.
