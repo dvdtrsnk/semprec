@@ -17,6 +17,7 @@ concurrency:
 jobs:
   review:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout semprec
         uses: actions/checkout@v4
@@ -37,4 +38,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.ANTHROPIC_API_KEY }}
+          # develop -> main is a release promotion, not a feature review: switch
+          # to the bot's release-readiness rules (migrations/config/rollback/
+          # security) instead of re-running the standard per-platform review
+          # over the whole accumulated diff.
+          PROMOTION_SOURCE: develop
+          PROMOTION_TARGET: main
         run: bash "${GITHUB_WORKSPACE}/.code-review-bot/scripts/run-review-github.sh"
