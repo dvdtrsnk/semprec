@@ -1,5 +1,7 @@
 # Semprec
 
+![Semprec — a second brain that acts on its own](assets/brand/semprec-cover-dark.png)
+
 Semprec is a personal life-organization system: a Postgres-backed data layer
 with a generic API choke-point, Yjs CRDT blocks/canvas, an IMAP-driven inbox
 pipeline, and an AI agent runtime (`pi-agent-core`) that acts through defined,
