@@ -18,7 +18,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout semprecord
+      - name: Checkout semprec
         uses: actions/checkout@v4
 
       - name: Checkout code-review-bot (private)

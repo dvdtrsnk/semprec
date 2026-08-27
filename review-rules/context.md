@@ -1,4 +1,4 @@
-Semprecord is a TypeScript/Node pnpm monorepo (`packages/*`, `modules/*`, `services/*`)
+Semprec is a TypeScript/Node pnpm monorepo (`packages/*`, `modules/*`, `services/*`)
 implementing a personal life-organization backend: a Postgres schema engine with a
 generic choke-point CRUD API, Yjs CRDT blocks/canvas, ten hardcoded core databases,
 IMAP email sync, an inbox processing pipeline, a module contract/registry, an AI agent
