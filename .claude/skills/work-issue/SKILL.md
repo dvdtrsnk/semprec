@@ -36,6 +36,12 @@ Two modes, detected by the `SEMPREC_HARNESS` environment variable:
 
 ## Workflow
 
+0. **Resume check** — a previous run may have died between merging and
+   reporting: `gh pr list -R dvdtrsnk/semprec --head feat/issue-N --state merged --json number`.
+   If a merged PR already exists, do NOT re-implement anything: verify the merge
+   is on develop, then jump straight to steps 7–8 (report the SHA, close the
+   issue). Duplicate implementation on top of an existing merge is the failure
+   mode this step exists to prevent.
 1. **Read the issue**: `gh issue view N -R dvdtrsnk/semprec --json title,body,comments`.
    Comments from dvdtrsnk/dvdtrsnk-agent on this issue and on the issues named in
    its `Blocked by:` line contain merge SHAs and implementation notes from
