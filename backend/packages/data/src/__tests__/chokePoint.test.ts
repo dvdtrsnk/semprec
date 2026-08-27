@@ -61,6 +61,37 @@ describe("choke-point", () => {
     expect(rows[0].n).toBe(1);
   });
 
+  it("reusing an Idempotency-Key across a different database is a conflict, not a silent cross-lookup", async () => {
+    const dbA = await makeMoviesDb();
+    const dbB = await makeMoviesDb();
+    await chokePoint.createItem({ databaseId: dbA.id, properties: { title: "Dune" }, idempotencyKey: "shared" });
+
+    await expect(
+      chokePoint.createItem({ databaseId: dbB.id, properties: { title: "Other" }, idempotencyKey: "shared" }),
+    ).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  it("a rollup-typed property key is rejected with computed_readonly (403), not a generic validation error", async () => {
+    const db = await chokePoint.createDatabase({ name: "P" });
+    const target = await chokePoint.createDatabase({ name: "T" });
+    const { property: relation } = await chokePoint.createRelationProperty({ databaseId: db.id, key: "tasks", name: "Tasks", targetDatabaseId: target.id });
+    const rollup = await chokePoint.createProperty({
+      databaseId: db.id,
+      key: "count",
+      name: "Count",
+      type: "rollup",
+      config: { relationPropertyKey: relation.key, aggregation: "count" },
+    });
+
+    try {
+      await chokePoint.createItem({ databaseId: db.id, properties: { [rollup.key]: 5 } });
+      expect.unreachable("expected a ForbiddenError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ForbiddenError);
+      expect((err as ForbiddenError).code).toBe("computed_readonly");
+    }
+  });
+
   it("updateItem: a matching ifVersion succeeds, a mismatch is a 409 with current state", async () => {
     const db = await makeMoviesDb();
     const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });

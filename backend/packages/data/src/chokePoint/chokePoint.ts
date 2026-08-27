@@ -15,8 +15,6 @@ import { triggerOnItemEventHeartbeats, recomputeAllForTimezoneChange } from "../
 import { getSystemSettingsItemId } from "../systemSettings.js";
 
 /** Keys the generic write path never accepts: relation values live only in item_relations, and computed is internal-only. */
-const NON_PROPERTY_TYPES: ReadonlySet<PropertyType> = new Set(["relation", "rollup"]);
-
 function assertWritableProperties(properties: PropertyRow[], patchKeys: string[]): void {
   const byKey = new Map(properties.map((p) => [p.key, p]));
   for (const key of patchKeys) {
@@ -24,8 +22,13 @@ function assertWritableProperties(properties: PropertyRow[], patchKeys: string[]
     if (!property) {
       throw new ValidationError(`Unknown property key '${key}'`, { field: key });
     }
-    if (NON_PROPERTY_TYPES.has(property.type)) {
-      throw new ValidationError(`Property '${key}' is type '${property.type}' and cannot be written via item properties`, {
+    if (property.type === "rollup") {
+      // Rollup values live in items.computed, written only by the recompute worker —
+      // matches the issue's "the generic update path refuses this field — computed_readonly, 403".
+      throw new ForbiddenError(`Property '${key}' is a rollup; its value lives in computed and is read-only here`, { field: key }, "computed_readonly");
+    }
+    if (property.type === "relation") {
+      throw new ValidationError(`Property '${key}' is a relation; write it via createRelation/deleteRelation, not item properties`, {
         field: key,
       });
     }

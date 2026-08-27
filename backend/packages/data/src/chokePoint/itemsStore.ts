@@ -64,11 +64,18 @@ export async function insertItem(client: Queryable, input: InsertItemInput): Pro
       [input.idempotencyKey, input.databaseId, generatedId],
     );
     if (reserve.rowCount === 0) {
-      const { rows } = await client.query<{ item_id: string }>(
-        `SELECT item_id FROM idempotency_keys WHERE key = $1`,
+      const { rows } = await client.query<{ item_id: string; database_id: string }>(
+        `SELECT item_id, database_id FROM idempotency_keys WHERE key = $1`,
         [input.idempotencyKey],
       );
-      itemId = rows[0].item_id;
+      const reserved = rows[0];
+      if (reserved.database_id !== input.databaseId) {
+        throw new ConflictError(`Idempotency key '${input.idempotencyKey}' was already used for a different database`, {
+          key: input.idempotencyKey,
+          reservedDatabaseId: reserved.database_id,
+        });
+      }
+      itemId = reserved.item_id;
       const existing = await getItemById(client, input.databaseId, itemId);
       if (existing) return existing;
       // The winning transaction committed the idempotency_keys row but, being the

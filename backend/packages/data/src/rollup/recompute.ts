@@ -5,6 +5,7 @@ import { getProperty } from "../chokePoint/propertiesStore.js";
 import { writeComputed } from "../chokePoint/itemsStore.js";
 import { getRollupDependency } from "./dependencies.js";
 import { parseRollupConfig, type RollupAggregation } from "./config.js";
+import { notifyInvalidation } from "../realtimeHook.js";
 
 export function rollupRecomputeJobKey(rollupPropertyId: string, itemId: string): string {
   return `rollup-recompute:${rollupPropertyId}:${itemId}`;
@@ -98,6 +99,7 @@ export async function recomputeRollupCell(pool: Pool, rollupPropertyId: string, 
 
     const value = rows[0]?.value ?? (config.aggregation === "count" ? 0 : null);
     await writeComputed(client, rollupProperty.databaseId, itemId, rollupProperty.key, value);
+    notifyInvalidation({ databaseId: rollupProperty.databaseId, itemId, key: rollupProperty.key });
   } finally {
     client.release();
   }

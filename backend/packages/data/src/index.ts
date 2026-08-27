@@ -39,4 +39,5 @@ export * from "./manifest/driftCheck.js";
 export * from "./agentRuns/agentRunsStore.js";
 export { seedSystem, PROJECTS_MODULE_ID } from "./seed/seedSystem.js";
 export * from "./systemSettings.js";
-export { createCoreTaskList } from "./worker.js";
+export { createCoreTaskList, CORE_CRONTAB } from "./worker.js";
+export * from "./realtimeHook.js";

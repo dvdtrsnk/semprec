@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
-import { NotFoundError, ValidationError } from "../errors.js";
+import { NotFoundError } from "../errors.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { computeNextFireAt } from "./nextFireAt.js";
 import { heartbeatRuleSchema, isOnItemEventRule, type HeartbeatRule } from "./rule.js";
@@ -194,10 +194,4 @@ export async function sweepDueHeartbeats(client: PoolClient): Promise<SweptHeart
     fired.push({ id: row.id });
   }
   return fired;
-}
-
-export function assertKnownActionId(actionId: string, registry: ReadonlyMap<string, unknown>): void {
-  if (!registry.has(actionId)) {
-    throw new ValidationError(`Unknown heartbeat action '${actionId}'`, { field: "actionId" });
-  }
 }

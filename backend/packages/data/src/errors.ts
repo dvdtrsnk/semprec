@@ -21,8 +21,8 @@ export class ValidationError extends ChokePointError {
 }
 
 export class ForbiddenError extends ChokePointError {
-  constructor(message: string, details?: unknown) {
-    super(403, "forbidden", message, details);
+  constructor(message: string, details?: unknown, code = "forbidden") {
+    super(403, code, message, details);
     this.name = "ForbiddenError";
   }
 }

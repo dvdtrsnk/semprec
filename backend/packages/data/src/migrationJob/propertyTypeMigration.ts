@@ -85,15 +85,16 @@ export async function runPropertyTypeMigrationJob(pool: Pool, propertyId: string
         const oldValue = row.properties[property.key];
         const converted = converter ? converter(oldValue) : { ok: true as const, value: oldValue };
         if (converted.ok) {
-          await client.query(`UPDATE items SET properties = jsonb_set(properties, ARRAY[$3]::text[], $4::jsonb) WHERE database_id = $1 AND id = $2`, [
-            property.databaseId,
-            row.id,
-            property.key,
-            JSON.stringify(converted.value),
-          ]);
+          // updated_at DOES advance here, unlike a `computed` write — this changes the
+          // value a client sees under `properties`, so a stale ifVersion must conflict.
+          await client.query(
+            `UPDATE items SET properties = jsonb_set(properties, ARRAY[$3]::text[], $4::jsonb), updated_at = now()
+             WHERE database_id = $1 AND id = $2`,
+            [property.databaseId, row.id, property.key, JSON.stringify(converted.value)],
+          );
         } else {
           anyFailures = true;
-          await client.query(`UPDATE items SET properties = properties - $3 WHERE database_id = $1 AND id = $2`, [
+          await client.query(`UPDATE items SET properties = properties - $3, updated_at = now() WHERE database_id = $1 AND id = $2`, [
             property.databaseId,
             row.id,
             property.key,

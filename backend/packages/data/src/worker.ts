@@ -19,6 +19,15 @@ function requirePropertyType(payload: unknown, field: string): PropertyType {
   return value as PropertyType;
 }
 
+/**
+ * "A static entry in the job queue's cron table (no in-process setInterval) triggers a
+ * sweep every minute" — graphile-worker `crontab` format (standard 5-field cron +
+ * task identifier). Actually running a worker process against this (`run({ crontab:
+ * CORE_CRONTAB, taskList: createCoreTaskList(...), ... })`) is for the services/
+ * process a later issue stands up; this constant is the ready-to-use entry for it.
+ */
+export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}\n`;
+
 /** Composes every core task handler this issue implements into one graphile-worker TaskList. */
 export function createCoreTaskList(pool: Pool, actionRegistry: ActionRegistry): TaskList {
   return {
