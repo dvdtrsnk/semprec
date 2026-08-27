@@ -96,8 +96,9 @@ export function createChokePoint(pool: Pool) {
     async createProperty(input: propertiesStore.CreatePropertyInput): Promise<PropertyRow> {
       if (input.type === "rollup") {
         return withTransaction(pool, async (client) => {
-          const property = await propertiesStore.createProperty(client, { ...input, config: {} });
+          const property = await propertiesStore.createProperty(client, input);
           await applyRollupConfig(client, property);
+          await enqueueRollupBackfill(client, property.id);
           return propertiesStore.getProperty(client, property.id) as Promise<PropertyRow>;
         });
       }

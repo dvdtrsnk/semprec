@@ -34,25 +34,23 @@ export async function enqueueRollupBackfill(client: Queryable, rollupPropertyId:
   );
 }
 
-function aggregationSql(aggregation: RollupAggregation): { select: string; needsTarget: boolean } {
+function aggregationSql(aggregation: RollupAggregation): { select: string } {
   switch (aggregation) {
     case "count":
-      return { select: "count(*)::int", needsTarget: false };
+      return { select: "count(*)::int" };
     case "count_filled":
-      return { select: "count(*) FILTER (WHERE t.properties ? $3 AND t.properties -> $3 IS DISTINCT FROM 'null'::jsonb)::int", needsTarget: true };
+      return { select: "count(*) FILTER (WHERE t.properties ? $3 AND t.properties -> $3 IS DISTINCT FROM 'null'::jsonb)::int" };
     case "count_empty":
-      return { select: "count(*) FILTER (WHERE NOT (t.properties ? $3) OR t.properties -> $3 IS NOT DISTINCT FROM 'null'::jsonb)::int", needsTarget: true };
+      return { select: "count(*) FILTER (WHERE NOT (t.properties ? $3) OR t.properties -> $3 IS NOT DISTINCT FROM 'null'::jsonb)::int" };
     case "percent_filled":
       return {
         select:
           "CASE WHEN count(*) = 0 THEN 0 ELSE count(*) FILTER (WHERE t.properties ? $3 AND t.properties -> $3 IS DISTINCT FROM 'null'::jsonb)::float8 / count(*) END",
-        needsTarget: true,
       };
     case "percent_empty":
       return {
         select:
           "CASE WHEN count(*) = 0 THEN 0 ELSE count(*) FILTER (WHERE NOT (t.properties ? $3) OR t.properties -> $3 IS NOT DISTINCT FROM 'null'::jsonb)::float8 / count(*) END",
-        needsTarget: true,
       };
     case "sum":
     case "avg":
@@ -61,12 +59,14 @@ function aggregationSql(aggregation: RollupAggregation): { select: string; needs
       // Defensive: skip values that aren't well-formed numbers instead of failing the whole job on bad data.
       const numeric = `NULLIF(t.properties ->> $3, '') `;
       const filtered = `(CASE WHEN ${numeric}~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (${numeric})::numeric END)`;
-      return { select: `${aggregation}(${filtered})`, needsTarget: true };
+      // ::float8, not the bare numeric sum/avg/min/max — node-pg returns `numeric` as a
+      // string (to avoid silent precision loss), but a number-typed property needs a JS number.
+      return { select: `${aggregation}(${filtered})::float8` };
     }
     case "earliest":
-      return { select: "min((t.properties ->> $3)::timestamptz)", needsTarget: true };
+      return { select: "min((t.properties ->> $3)::timestamptz)" };
     case "latest":
-      return { select: "max((t.properties ->> $3)::timestamptz)", needsTarget: true };
+      return { select: "max((t.properties ->> $3)::timestamptz)" };
   }
 }
 
@@ -80,17 +80,20 @@ export async function recomputeRollupCell(pool: Pool, rollupPropertyId: string, 
     const rollupProperty = await getProperty(client, rollupPropertyId);
     if (!rollupProperty) return;
     const config = parseRollupConfig(rollupProperty.config);
-    const { select, needsTarget } = aggregationSql(config.aggregation);
+    const { select } = aggregationSql(config.aggregation);
 
-    const params: unknown[] = [dependency.relationDefinitionId, itemId];
-    if (needsTarget) params.push(config.targetPropertyKey);
-
+    // $3 (targetPropertyKey) is always bound, even when `select` doesn't use it (e.g.
+    // 'count') — Postgres infers a placeholder's type from where it's referenced in the
+    // query text, and errors ("could not determine data type of parameter $3") if a
+    // later placeholder ($4) is used but $3 never appears at all. The tautological
+    // `$3::text IS NULL OR $3::text IS NOT NULL` gives it an explicit, harmless context.
     const { rows } = await client.query(
       `SELECT ${select} AS value
        FROM item_relations ir
        JOIN items t ON t.database_id = $4 AND t.id = (CASE WHEN ir.item_a = $2 THEN ir.item_b ELSE ir.item_a END)
-       WHERE ir.relation_definition_id = $1 AND (ir.item_a = $2 OR ir.item_b = $2) AND t.deleted_at IS NULL`,
-      [...params, dependency.sourceDatabaseId],
+       WHERE ir.relation_definition_id = $1 AND (ir.item_a = $2 OR ir.item_b = $2) AND t.deleted_at IS NULL
+         AND ($3::text IS NULL OR $3::text IS NOT NULL)`,
+      [dependency.relationDefinitionId, itemId, config.targetPropertyKey ?? null, dependency.sourceDatabaseId],
     );
 
     const value = rows[0]?.value ?? (config.aggregation === "count" ? 0 : null);
