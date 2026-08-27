@@ -1,0 +1,23 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .: {}
+
+  packages/agent-runtime: {}
+
+  packages/credentials: {}
+
+  packages/data: {}
+
+  packages/module-registry: {}
+
+  packages/queue: {}
+
+  packages/realtime: {}
+
+  packages/shared: {}
