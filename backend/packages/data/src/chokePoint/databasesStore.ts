@@ -57,15 +57,21 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
   const database = mapDatabaseRow(rows[0]);
 
   if (!UUID_RE.test(database.id)) {
-    // Defensive only: database.id always comes straight from gen_random_uuid() above,
-    // never from external input. DDL identifiers cannot be parameterized, so this
-    // check is what makes the string-built statement below safe.
+    // Sanity invariant only: database.id always comes straight from gen_random_uuid()
+    // above, never from external input. The DDL below no longer depends on this check
+    // for safety (both the identifier and the literal are escaped server-side by
+    // format() below) — this just fails loudly if that invariant were ever violated.
     throw new Error(`Generated database id is not a UUID: ${database.id}`);
   }
   const partitionName = `items_p_${database.id.replace(/-/g, "")}`;
-  await client.query(
-    `CREATE TABLE ${partitionName} PARTITION OF items FOR VALUES IN ('${database.id}')`,
+  // DDL statements cannot bind $-placeholders directly, so the identifier and the
+  // partition-bound literal are both escaped server-side via format() (%I / %L)
+  // instead of interpolated into the query string by the application.
+  const { rows: ddlRows } = await client.query<{ ddl: string }>(
+    `SELECT format('CREATE TABLE %I PARTITION OF items FOR VALUES IN (%L)', $1::text, $2::text) AS ddl`,
+    [partitionName, database.id],
   );
+  await client.query(ddlRows[0].ddl);
 
   return database;
 }

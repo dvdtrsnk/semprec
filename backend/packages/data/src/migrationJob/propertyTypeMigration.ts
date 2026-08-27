@@ -34,6 +34,28 @@ export function isConversionSupported(from: PropertyType, to: PropertyType): boo
   return from === to || Boolean(CONVERTERS[from]?.[to]);
 }
 
+/**
+ * True when `value` is already in the JS shape a converter targeting `type` would
+ * produce. Used to make the migration idempotent under graphile-worker retries: a
+ * retry replays the whole job from the start (cursor null), so rows already
+ * converted by an earlier, partially-failed attempt must be recognized and left
+ * alone — re-running the converter on an already-converted value fails its input
+ * check and silently deletes the property instead. Only covers the target types
+ * CONVERTERS can actually produce (number, text, date); anything else returns
+ * false so it falls through to the normal conversion path.
+ */
+function isAlreadyTargetType(type: PropertyType, value: unknown): boolean {
+  switch (type) {
+    case "number":
+      return typeof value === "number";
+    case "text":
+    case "date":
+      return typeof value === "string";
+    default:
+      return false;
+  }
+}
+
 export function propertyTypeMigrationJobKey(propertyId: string): string {
   return `property-type-migration:${propertyId}`;
 }
@@ -71,7 +93,7 @@ export async function runPropertyTypeMigrationJob(pool: Pool, propertyId: string
 
   for (;;) {
     const client: PoolClient = await pool.connect();
-    let rows: Array<{ id: string; properties: Record<string, unknown> }>;
+    let rows: Array<{ id: string; properties: Record<string, unknown> }> = [];
     try {
       const result = await client.query(
         `SELECT id, properties FROM items WHERE database_id = $1 ${cursor ? "AND id > $3" : ""}
@@ -83,6 +105,11 @@ export async function runPropertyTypeMigrationJob(pool: Pool, propertyId: string
       for (const row of rows) {
         if (!(property.key in row.properties)) continue;
         const oldValue = row.properties[property.key];
+        if (converter && isAlreadyTargetType(property.type, oldValue)) {
+          // Already converted by an earlier attempt at this same migration (see
+          // isAlreadyTargetType) — leave it exactly as-is instead of re-converting.
+          continue;
+        }
         const converted = converter ? converter(oldValue) : { ok: true as const, value: oldValue };
         if (converted.ok) {
           // updated_at DOES advance here, unlike a `computed` write — this changes the
