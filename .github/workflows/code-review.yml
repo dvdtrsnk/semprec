@@ -1,0 +1,40 @@
+name: Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  checks: write
+
+concurrency:
+  group: code-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout semprec
+        uses: actions/checkout@v4
+
+      - name: Checkout code-review-bot (private)
+        uses: actions/checkout@v4
+        with:
+          repository: dvdtrsnk/code-review-bot
+          token: ${{ secrets.CODE_REVIEW_BOT_TOKEN }}
+          path: .code-review-bot
+
+      - name: Install Claude Code CLI
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: bash "${GITHUB_WORKSPACE}/.code-review-bot/scripts/run-review-github.sh"
