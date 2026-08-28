@@ -7,6 +7,15 @@ export { createChokePoint, type ChokePoint } from "./chokePoint/chokePoint.js";
 export type { CreateDatabaseInput } from "./chokePoint/databasesStore.js";
 export type { CreatePropertyInput } from "./chokePoint/propertiesStore.js";
 export type { ListItemsOptions } from "./chokePoint/itemsStore.js";
+export type { CreateViewInput, PatchViewInput } from "./chokePoint/viewsStore.js";
+export * from "./chokePoint/viewTypeRegistry.js";
+
+export * from "./views/filterTree.js";
+export { compileFilterNode } from "./views/filterCompiler.js";
+export * from "./views/sortSpec.js";
+export { compileSort } from "./views/sortCompiler.js";
+export * from "./views/viewConfig.js";
+export type { QueryViewOptions, QueryViewResult } from "./views/viewQuery.js";
 
 export * from "./scheduler/rule.js";
 export { computeNextFireAt } from "./scheduler/nextFireAt.js";

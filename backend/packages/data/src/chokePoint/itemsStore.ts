@@ -141,6 +141,16 @@ export interface ListItemsOptions {
   limit?: number;
   cursor?: string;
   includeDeleted?: boolean;
+  /**
+   * Views-layer pushdown hooks (issue #22): each is called with the same `params` array
+   * this function is already building, so a compiled filter/sort predicate's bind
+   * parameters land at the correct offset alongside `database_id`/`cursor`/`limit`.
+   * Combining `buildOrderBySql` with `cursor` is unsupported — keyset pagination via
+   * `id > cursor` only resumes correctly under the default `id ASC` order, so callers
+   * that need a custom sort must page with `limit` alone.
+   */
+  buildFilterSql?: (params: unknown[]) => string | undefined;
+  buildOrderBySql?: (params: unknown[]) => string | undefined;
 }
 
 export async function listItems(
@@ -152,6 +162,13 @@ export async function listItems(
   const conditions = ["database_id = $1"];
   const params: unknown[] = [databaseId];
   if (!options.includeDeleted) conditions.push("deleted_at IS NULL");
+  const filterSql = options.buildFilterSql?.(params);
+  if (filterSql) conditions.push(filterSql);
+
+  let orderBySql = "id ASC";
+  const customOrderBySql = options.buildOrderBySql?.(params);
+  if (customOrderBySql) orderBySql = `${customOrderBySql}, id ASC`;
+
   if (options.cursor) {
     params.push(options.cursor);
     conditions.push(`id > $${params.length}`);
@@ -160,7 +177,7 @@ export async function listItems(
 
   const { rows } = await client.query(
     `SELECT id, database_id, properties, computed, updated_at, deleted_at
-     FROM items WHERE ${conditions.join(" AND ")} ORDER BY id ASC LIMIT $${params.length}`,
+     FROM items WHERE ${conditions.join(" AND ")} ORDER BY ${orderBySql} LIMIT $${params.length}`,
     params,
   );
   const hasMore = rows.length > limit;
@@ -169,6 +186,24 @@ export async function listItems(
     items: page.map(mapItemRow),
     nextCursor: hasMore ? (page[page.length - 1] as { id: string }).id : null,
   };
+}
+
+/**
+ * Looks up items by id alone, with no `database_id` predicate — needed for curated
+ * views (`view_items`), which can mix items from multiple databases and therefore
+ * cannot supply the partition key. Scans every partition of `items` (see the
+ * `view_items` migration's header note on why `item_id` carries no Postgres FK to
+ * pin down a single partition); acceptable for the small, explicitly-curated
+ * membership lists this serves.
+ */
+export async function getItemsByIds(client: Queryable, itemIds: string[]): Promise<ItemRow[]> {
+  if (itemIds.length === 0) return [];
+  const { rows } = await client.query(
+    `SELECT id, database_id, properties, computed, updated_at, deleted_at
+     FROM items WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL`,
+    [itemIds],
+  );
+  return rows.map(mapItemRow);
 }
 
 /**

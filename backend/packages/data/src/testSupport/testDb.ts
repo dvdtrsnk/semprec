@@ -7,6 +7,8 @@ const TABLES = [
   "resource_grants",
   "agent_runs",
   "project_heartbeats",
+  "view_items",
+  "views",
   "item_relations",
   "items",
   "relation_definitions",
