@@ -2,12 +2,14 @@ import type { Pool } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { withTransaction } from "../db/pool.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
+import { updateItemWithClient } from "../chokePoint/chokePoint.js";
 import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import { getMailAccountSyncState, listAccountsDueForSync, recordSyncError } from "./mailAccountSyncStateStore.js";
 import { reconcileImapAccount, type ImapMailClient } from "./imapReconcile.js";
 import { reconcileGmailAccount, type GmailMailClient } from "./gmailReconcile.js";
 import { reconcileGraphAccount, type GraphMailClient } from "./graphReconcile.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
+import { MailReauthorizationRequiredError } from "./providerTypes.js";
 
 /**
  * Real transport connections (imapflow / Gmail REST / Graph REST) are out of `@semprec/data`
@@ -28,7 +30,11 @@ export interface MailModuleIds {
   emailsDatabaseId: string;
   filesDatabaseId: string;
   foldersDatabaseId: string;
+  mailboxesDatabaseId: string;
 }
+
+/** The only key this job is allowed to write on a Mailbox item — `syncStatus` is `owner: 'system'`, and the sync worker is its declared owning process (seedEmailModule.ts). */
+const MAILBOX_SYNC_STATUS_ALLOWED_KEYS = ["syncStatus"] as const;
 
 export function mailAccountSyncJobKey(mailboxItemId: string): string {
   return `mail-account-sync:${mailboxItemId}`;
@@ -110,13 +116,33 @@ export async function handleSyncMailAccountTask(
         const graph = adapters.createGraphClient(payload.mailboxItemId, credential);
         await reconcileGraphAccount(client, graph, shared);
       }
+
+      // A completed pass (even one that ingested nothing new) is the user-visible signal that
+      // this Mailbox is healthy again — clears a prior 'error'/'needsReauthorization' the same
+      // way the internal `mail_account_sync_state.last_error` columns above already do.
+      await updateItemWithClient(
+        client,
+        { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "ok" } },
+        { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
+      );
     });
   } catch (err) {
     // The reconcile pass above ran inside one transaction that this error just aborted —
     // recording that failure needs its own, separate transaction, or the UPDATE recording
     // it would itself be rolled back along with everything else `withTransaction` undoes.
     const message = err instanceof Error ? err.message : String(err);
-    await withTransaction(pool, (client) => recordSyncError(client, payload.mailboxItemId, message));
+    // A revoked credential (issue #26: "a normal state, not a system error") gets its own
+    // visible status so the worker's continued (bounded, backed-off) retries read as "waiting
+    // on the user," not as a persistent failure indistinguishable from a flaky connection.
+    const syncStatus = err instanceof MailReauthorizationRequiredError ? "needsReauthorization" : "error";
+    await withTransaction(pool, async (client) => {
+      await recordSyncError(client, payload.mailboxItemId, message);
+      await updateItemWithClient(
+        client,
+        { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus } },
+        { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
+      );
+    });
     throw err;
   }
 }

@@ -1,44 +1,72 @@
-import { ImapFlow, type FetchMessageObject } from "imapflow";
-import { simpleParser, type AddressObject } from "mailparser";
-import { classifyAttachments } from "./attachments.js";
+import type { ImapFlow, FetchMessageObject, MessageAddressObject, MessageStructureObject } from "imapflow";
 import type { ImapFetchedMessage, ImapFolderRef, ImapFolderSelection, ImapMailClient } from "./imapReconcile.js";
 import type { FetchedMessage } from "./providerTypes.js";
+import type { ClassifiedAttachment } from "./attachments.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 
-function flattenAddresses(value: AddressObject | AddressObject[] | undefined): MailEnvelopeAddress[] {
-  const objects = Array.isArray(value) ? value : value ? [value] : [];
-  return objects.flatMap((obj) => obj.value).filter((addr): addr is { name: string; address: string } => Boolean(addr.address)).map((addr) => ({ name: addr.name || undefined, address: addr.address }));
+/**
+ * Generous upper bound on a single attachment part's *decoded* size (issue #26's provider
+ * limits table tops out at iCloud's 20MB baseline / Gmail's 25MB) — passed to `download()`'s
+ * own `maxBytes`, which is enforced by the streaming decoder pipeline itself (not a
+ * post-hoc buffer check), so a pathological or malicious part can never grow the process's
+ * memory past this regardless of what the server claims its size is.
+ */
+const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+
+function toEnvelopeAddress(value: MessageAddressObject | undefined): MailEnvelopeAddress | undefined {
+  return value?.address ? { name: value.name || undefined, address: value.address } : undefined;
+}
+
+function toEnvelopeAddressList(list: MessageAddressObject[] | undefined): MailEnvelopeAddress[] {
+  return (list ?? []).map(toEnvelopeAddress).filter((a): a is MailEnvelopeAddress => Boolean(a));
+}
+
+/** Every `<...>` token in the raw (possibly folded) `References:` header line(s) — the ancestor chain, order preserved, same as mailparser's own splitting rule. */
+function parseReferencesHeader(headerBuffer: Buffer | undefined): string[] {
+  if (!headerBuffer) return [];
+  return headerBuffer.toString("utf8").match(/<[^<>]+>/g) ?? [];
+}
+
+export interface MimeTree {
+  textPlainPart?: MessageStructureObject;
+  textHtmlPart?: MessageStructureObject;
+  attachmentParts: MessageStructureObject[];
 }
 
 /**
- * `keepCidLinks: true` is required, not cosmetic: mailparser's default behavior rewrites
- * every `cid:` reference in the HTML body into a `data:` URI, which would make
- * `classifyAttachments`'s "is this inline part actually referenced via `cid:`" check (see
- * attachments.ts) never match, misclassifying every inline image as a real Files attachment.
+ * Walks BODYSTRUCTURE to find the message's body parts and candidate attachment parts —
+ * without ever fetching a part's actual bytes. This is the load-bearing reason
+ * `fetchMessagesSince` below never does a `source: true`/whole-message fetch: imapflow types
+ * that field as a fully-materialized `Buffer` (attachments included), which is exactly the
+ * OOM risk the issue names ("a large attachment entirely into memory before writing it to
+ * disk"). BODYSTRUCTURE + ENVELOPE + a small headers fetch are all bounded by header/structure
+ * size, never by attachment size — only the two text-body leaves and the surviving attachment
+ * leaves are ever downloaded, each through its own streamed `download()` call.
+ * multipart/alternative and multipart/related both fall out of plain recursion (no special
+ * case needed): a related part's inline image leaves are simply non-text leaves like any
+ * other, and an alternative's text/plain + text/html leaves are captured by type as they're
+ * visited, wherever they are nested.
  */
-async function parseFetchedMessage(raw: FetchMessageObject): Promise<FetchedMessage> {
-  if (!raw.source) throw new Error(`IMAP FETCH for UID ${raw.uid} did not include a message source`);
-  const parsed = await simpleParser(raw.source, { keepCidLinks: true });
-
-  const fromValue = parsed.from?.value[0];
-  const references = Array.isArray(parsed.references) ? parsed.references : parsed.references ? [parsed.references] : [];
-
-  return {
-    messageId: parsed.messageId ?? `<no-message-id-uid-${raw.uid}@generated>`,
-    inReplyTo: parsed.inReplyTo ?? null,
-    references,
-    subject: parsed.subject,
-    envelope: {
-      from: fromValue?.address ? { name: fromValue.name || undefined, address: fromValue.address } : undefined,
-      to: flattenAddresses(parsed.to),
-      cc: flattenAddresses(parsed.cc),
-      bcc: flattenAddresses(parsed.bcc),
-    },
-    bodyText: parsed.text,
-    bodyHtml: typeof parsed.html === "string" ? parsed.html : undefined,
-    date: parsed.date,
-    attachments: classifyAttachments(parsed),
+export function walkBodyStructure(root: MessageStructureObject): MimeTree {
+  const tree: MimeTree = { attachmentParts: [] };
+  const visit = (node: MessageStructureObject): void => {
+    if (node.childNodes && node.childNodes.length > 0) {
+      for (const child of node.childNodes) visit(child);
+      return;
+    }
+    const type = (node.type || "").toLowerCase();
+    if (!tree.textPlainPart && type === "text/plain" && node.disposition !== "attachment") {
+      tree.textPlainPart = node;
+      return;
+    }
+    if (!tree.textHtmlPart && type === "text/html" && node.disposition !== "attachment") {
+      tree.textHtmlPart = node;
+      return;
+    }
+    tree.attachmentParts.push(node);
   };
+  visit(root);
+  return tree;
 }
 
 /**
@@ -69,12 +97,81 @@ export class ImapFlowMailClient implements ImapMailClient {
     };
   }
 
+  /** Decoded (transfer-encoding + charset, per `download()`'s own pipeline) text content of one bounded body part — never the attachment path, so never subject to `MAX_ATTACHMENT_BYTES`. */
+  private async downloadText(uid: number, part: string): Promise<string> {
+    const { content } = await this.client.download(String(uid), part, { uid: true });
+    const chunks: Buffer[] = [];
+    for await (const chunk of content) chunks.push(chunk as Buffer);
+    return Buffer.concat(chunks).toString("utf8");
+  }
+
+  private classifyAttachmentParts(uid: number, parts: MessageStructureObject[], html: string | undefined): ClassifiedAttachment[] {
+    const candidates = parts.map((node): ClassifiedAttachment => {
+      const contentId = node.id ? node.id.replace(/^<|>$/g, "") : null;
+      const disposition: "attachment" | "inline" = node.disposition === "inline" ? "inline" : "attachment";
+      const partId = node.part ?? "1";
+      return {
+        filename: node.dispositionParameters?.filename ?? node.parameters?.name ?? "attachment",
+        contentType: node.type,
+        contentId,
+        disposition,
+        // Lazy: bytes only flow once `ingestAttachments` (mail/attachments.ts) actually calls
+        // this, streamed straight from the socket through `download()`'s decoder pipeline into
+        // `blobStorage.ts`'s `pipeline()` — never buffered whole in between.
+        openStream: async () => {
+          const { content } = await this.client.download(String(uid), partId, { uid: true, maxBytes: MAX_ATTACHMENT_BYTES });
+          return content;
+        },
+      };
+    });
+    // An inline part actually referenced via `cid:` inside the HTML body is a rendering asset
+    // (a signature logo), not a document — excluded here, same rule as the mailparser-based
+    // classifyAttachments (attachments.ts) applies for the other two adapters.
+    return candidates.filter((a) => !(a.disposition === "inline" && a.contentId !== null && Boolean(html?.includes(`cid:${a.contentId}`))));
+  }
+
+  private async parseFetchedMessage(raw: FetchMessageObject): Promise<FetchedMessage> {
+    const envelope = raw.envelope;
+    const tree = raw.bodyStructure ? walkBodyStructure(raw.bodyStructure) : { attachmentParts: [] as MessageStructureObject[] };
+
+    // A single-part message's root BODYSTRUCTURE node sometimes carries no `.part` of its
+    // own — `download()` special-cases part id "1" (checking bodyStructure.childNodes itself
+    // to pick TEXT vs part 1), so "1" is always a safe fallback for a body leaf we found.
+    const bodyText = tree.textPlainPart ? await this.downloadText(raw.uid, tree.textPlainPart.part ?? "1") : undefined;
+    const bodyHtml = tree.textHtmlPart ? await this.downloadText(raw.uid, tree.textHtmlPart.part ?? "1") : undefined;
+
+    return {
+      messageId: envelope?.messageId ?? `<no-message-id-uid-${raw.uid}@generated>`,
+      inReplyTo: envelope?.inReplyTo ?? null,
+      references: parseReferencesHeader(raw.headers),
+      subject: envelope?.subject,
+      envelope: {
+        from: toEnvelopeAddress(envelope?.from?.[0]),
+        to: toEnvelopeAddressList(envelope?.to),
+        cc: toEnvelopeAddressList(envelope?.cc),
+        bcc: toEnvelopeAddressList(envelope?.bcc),
+      },
+      bodyText,
+      bodyHtml,
+      date: envelope?.date,
+      attachments: this.classifyAttachmentParts(raw.uid, tree.attachmentParts, bodyHtml),
+    };
+  }
+
   async fetchMessagesSince(path: string, sinceUid: number): Promise<ImapFetchedMessage[]> {
     await this.client.mailboxOpen(path);
     const results: ImapFetchedMessage[] = [];
-    for await (const raw of this.client.fetch(`${sinceUid}:*`, { uid: true, source: true, flags: true }, { uid: true })) {
+    // Deliberately no `source: true`: that field is a fully-materialized `Buffer` of the whole
+    // raw message, attachments included — see walkBodyStructure's header note. BODYSTRUCTURE +
+    // ENVELOPE + the References header are all cheap, bounded fetches; the actual body/
+    // attachment bytes are fetched separately, lazily, per part.
+    for await (const raw of this.client.fetch(
+      `${sinceUid}:*`,
+      { uid: true, envelope: true, bodyStructure: true, flags: true, headers: ["references"] },
+      { uid: true },
+    )) {
       if (raw.uid < sinceUid) continue; // "*" in a range can include one message below sinceUid on an empty-range edge case
-      results.push({ uid: raw.uid, message: await parseFetchedMessage(raw) });
+      results.push({ uid: raw.uid, message: await this.parseFetchedMessage(raw) });
     }
     return results;
   }

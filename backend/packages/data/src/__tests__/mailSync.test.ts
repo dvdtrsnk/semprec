@@ -24,6 +24,9 @@ import { reconcileImapAccount, type ImapFetchedMessage, type ImapMailClient } fr
 import { handleSyncMailAccountTask, type MailSyncAdapterFactory } from "../mail/mailSyncJob.js";
 import { ensureMailAccountSyncState, getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
+import { MailReauthorizationRequiredError } from "../mail/providerTypes.js";
+import { walkBodyStructure } from "../mail/imapFlowClient.js";
+import type { MessageStructureObject } from "imapflow";
 import { simpleParser } from "mailparser";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -309,6 +312,49 @@ describe("attachment classification (issue #26)", () => {
   });
 });
 
+describe("IMAP BODYSTRUCTURE walking (issue #26)", () => {
+  it("finds the text/html body leaf and both non-text leaves as attachment candidates, through nested multipart/related > multipart/mixed", () => {
+    const tree: MessageStructureObject = {
+      type: "multipart/related",
+      childNodes: [
+        {
+          type: "multipart/mixed",
+          childNodes: [
+            { part: "1.1", type: "text/html" },
+            { part: "1.2", type: "application/pdf", disposition: "attachment", dispositionParameters: { filename: "invoice.pdf" } },
+          ],
+        },
+        { part: "2", type: "image/png", disposition: "inline", id: "<logo123>", dispositionParameters: { filename: "logo.png" } },
+      ],
+    };
+
+    const result = walkBodyStructure(tree);
+    expect(result.textHtmlPart?.part).toBe("1.1");
+    expect(result.textPlainPart).toBeUndefined();
+    expect(result.attachmentParts.map((p) => p.dispositionParameters?.filename)).toEqual(["invoice.pdf", "logo.png"]);
+  });
+
+  it("treats a single-part (no childNodes) text message as its own body leaf, never as an attachment candidate", () => {
+    const tree: MessageStructureObject = { part: "1", type: "text/plain" };
+    const result = walkBodyStructure(tree);
+    expect(result.textPlainPart?.type).toBe("text/plain");
+    expect(result.attachmentParts).toHaveLength(0);
+  });
+
+  it("picks both alternative text/plain and text/html leaves, wherever nested", () => {
+    const tree: MessageStructureObject = {
+      type: "multipart/alternative",
+      childNodes: [
+        { part: "1", type: "text/plain" },
+        { part: "2", type: "text/html" },
+      ],
+    };
+    const result = walkBodyStructure(tree);
+    expect(result.textPlainPart?.part).toBe("1");
+    expect(result.textHtmlPart?.part).toBe("2");
+  });
+});
+
 describe("HTML sanitization (issue #26)", () => {
   it("strips script tags and event handlers", () => {
     const sanitized = sanitizeMailHtml('<p onclick="steal()">hi</p><script>evil()</script>');
@@ -326,6 +372,19 @@ describe("HTML sanitization (issue #26)", () => {
   it("allows remote images when explicitly requested", () => {
     const sanitized = sanitizeMailHtml('<img src="https://example.com/photo.jpg">', { allowRemoteImages: true });
     expect(sanitized).toContain("https://example.com/photo.jpg");
+  });
+
+  it("strips a CSS background-image url from an inline style attribute (a tracking pixel by another door)", () => {
+    const sanitized = sanitizeMailHtml('<div style="background-image:url(https://tracker.example/pixel.gif); color: red">hi</div>');
+    expect(sanitized).not.toContain("tracker.example");
+    expect(sanitized).not.toContain("url(");
+    expect(sanitized).toContain("color:red");
+  });
+
+  it("strips a <style> block wholesale, including any url() it carries", () => {
+    const sanitized = sanitizeMailHtml("<style>body { background: url(https://tracker.example/pixel.gif); }</style><p>hi</p>");
+    expect(sanitized).not.toContain("tracker.example");
+    expect(sanitized).toContain("hi");
   });
 });
 
@@ -561,7 +620,13 @@ describe("mail sync job error handling (issue #26)", () => {
     const adapters: MailSyncAdapterFactory = { createImapClient: async () => failingImap };
 
     await expect(
-      handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, adapters, { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId }, noopStorage),
+      handleSyncMailAccountTask(
+        pool,
+        { mailboxItemId: mailbox.id },
+        adapters,
+        { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+        noopStorage,
+      ),
     ).rejects.toThrow("connection refused");
 
     const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
@@ -573,6 +638,73 @@ describe("mail sync job error handling (issue #26)", () => {
     const { rows } = await pool.query(`SELECT purpose FROM credential_access_log WHERE item_id = $1`, [mailbox.id]);
     expect(rows).toHaveLength(1);
     expect(rows[0].purpose).toBe("imap_sync");
+
+    // The user-visible Mailbox.syncStatus (distinct from the internal mail_account_sync_state
+    // bookkeeping above) also reflects the failure — this is what the mailbox UI would show.
+    const item = await withTransaction(pool, (client) => client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]));
+    expect(item.rows[0].properties.syncStatus).toBe("error");
+  });
+
+  it("sets Mailbox.syncStatus to 'ok' after a completed sync pass", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+
+    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
+    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
+    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+
+    const emptyImap: ImapMailClient = {
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+      fetchMessagesSince: async () => [],
+      fetchVanishedSince: async () => [],
+      fetchAllUids: async () => [],
+    };
+    const adapters: MailSyncAdapterFactory = { createImapClient: async () => emptyImap };
+
+    await handleSyncMailAccountTask(
+      pool,
+      { mailboxItemId: mailbox.id },
+      adapters,
+      { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+      noopStorage,
+    );
+
+    const item = await withTransaction(pool, (client) => client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]));
+    expect(item.rows[0].properties.syncStatus).toBe("ok");
+  });
+
+  it("sets Mailbox.syncStatus to 'needsReauthorization' when the adapter reports a revoked credential", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+
+    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
+    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
+    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+
+    const adapters: MailSyncAdapterFactory = {
+      createImapClient: async () => {
+        throw new MailReauthorizationRequiredError("refresh token revoked");
+      },
+    };
+
+    await expect(
+      handleSyncMailAccountTask(
+        pool,
+        { mailboxItemId: mailbox.id },
+        adapters,
+        { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+        noopStorage,
+      ),
+    ).rejects.toThrow("refresh token revoked");
+
+    const item = await withTransaction(pool, (client) => client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]));
+    expect(item.rows[0].properties.syncStatus).toBe("needsReauthorization");
   });
 });
 

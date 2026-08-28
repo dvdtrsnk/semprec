@@ -11,16 +11,28 @@ export interface ClassifiedAttachment {
   contentType: string;
   contentId: string | null;
   disposition: "attachment" | "inline";
-  content: Buffer;
+  /**
+   * Lazily opens the attachment's decoded byte stream. Deliberately not a `Buffer`: a provider
+   * adapter that already has the whole part in memory (mailparser's parsed output, below) can
+   * still wrap it in one, but the IMAP adapter (imapFlowClient.ts) streams straight from the
+   * socket via imapflow's `download()` and never buffers the part whole — the issue's
+   * "memory-safe attachment processing" requirement. `ingestAttachments` below is the only
+   * caller, and calls this exactly once per attachment, immediately before streaming it to
+   * storage.
+   */
+  openStream(): Promise<Readable> | Readable;
 }
 
 /**
- * MIME classification (issue #26): "belongs in Files" is the combination of
- * `Content-Disposition: attachment` (has a filename, meant to be downloaded) vs. `inline`,
- * *together with* whether the part is actually referenced via `cid:` inside the HTML body —
- * an inline part with a matching `cid:` reference is a rendering asset (a signature logo),
- * not a document, and is excluded here. `mailparser`'s own `attachments` array already
- * includes both kinds undifferentiated; this is the extra filter the issue calls for.
+ * MIME classification (issue #26) for a provider that already handed us the fully-parsed
+ * message (Gmail's REST client only — see gmailRestClient.ts's own note on why the Gmail API
+ * doesn't allow the IMAP adapter's part-by-part streaming approach): "belongs in Files" is the
+ * combination of `Content-Disposition: attachment` (has a filename, meant to be downloaded)
+ * vs. `inline`, *together with* whether the part is actually referenced via `cid:` inside the
+ * HTML body — an inline part with a matching `cid:` reference is a rendering asset (a
+ * signature logo), not a document, and is excluded here. `mailparser`'s own `attachments`
+ * array already includes both kinds undifferentiated; this is the extra filter the issue
+ * calls for.
  */
 export function classifyAttachments(parsed: ParsedMail): ClassifiedAttachment[] {
   const html = typeof parsed.html === "string" ? parsed.html : "";
@@ -35,7 +47,10 @@ export function classifyAttachments(parsed: ParsedMail): ClassifiedAttachment[] 
       contentType: part.contentType,
       contentId,
       disposition,
-      content: part.content,
+      // mailparser already fully materialized this part's bytes while parsing the message
+      // (see gmailRestClient.ts) — Readable.from wraps the existing buffer, it does not
+      // re-buffer anything.
+      openStream: () => Readable.from(part.content),
     });
   }
   return result;
@@ -76,7 +91,7 @@ function safeStorageFilename(filename: string): string {
 export async function ingestAttachments(client: PoolClient, input: IngestAttachmentsInput): Promise<void> {
   for (const attachment of input.attachments) {
     const storageKey = `${input.storageKeyPrefix}/${randomUUID()}-${safeStorageFilename(attachment.filename)}`;
-    const { byteSize, contentHash } = await input.storage.writeStream(storageKey, Readable.from(attachment.content));
+    const { byteSize, contentHash } = await input.storage.writeStream(storageKey, await attachment.openStream());
 
     const blob = await findOrCreateBlob(client, {
       mimeType: attachment.contentType,

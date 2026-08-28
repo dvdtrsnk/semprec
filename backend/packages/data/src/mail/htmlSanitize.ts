@@ -21,6 +21,24 @@ const ALLOWED_TAGS = [
   "table", "thead", "tbody", "tr", "th", "td", "img", "font",
 ];
 
+/**
+ * Explicit property allowlist for the `style` attribute — every value pattern below is a
+ * bounded keyword/unit, none can carry a `url(...)` reference. Without this, `allowedStyles`
+ * being unset leaves `style` completely unfiltered (verified against sanitize-html's own
+ * `filterCss`), which would let `style="background:url(http://tracker.example/pixel.gif)"`
+ * on any allowed tag load a remote image exactly like the `img[src]` case below already
+ * blocks — the same tracking-pixel vector through a second door.
+ */
+const ALLOWED_STYLES = {
+  "*": {
+    color: [/^#[0-9a-f]{3,6}$/i, /^rgb\(.*\)$/i, /^[a-z]+$/i],
+    "text-align": [/^(left|right|center|justify)$/],
+    "font-weight": [/^(normal|bold|bolder|lighter|[1-9]00)$/],
+    "font-style": [/^(normal|italic|oblique)$/],
+    "text-decoration": [/^(none|underline|overline|line-through)$/],
+  },
+};
+
 export function sanitizeMailHtml(html: string, options: SanitizeMailHtmlOptions = {}): string {
   return sanitizeHtml(html, {
     allowedTags: ALLOWED_TAGS,
@@ -30,6 +48,7 @@ export function sanitizeMailHtml(html: string, options: SanitizeMailHtmlOptions 
       font: ["color", "size", "face"],
       "*": ["style"],
     },
+    allowedStyles: ALLOWED_STYLES,
     // Inline data:/cid: images (a rendering asset attached to the message itself) are never
     // "remote" — only a bare http(s) src is a tracking-pixel candidate.
     allowedSchemesByTag: { img: options.allowRemoteImages ? ["http", "https", "data", "cid"] : ["data", "cid"] },

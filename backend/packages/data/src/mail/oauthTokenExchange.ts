@@ -1,3 +1,5 @@
+import { MailReauthorizationRequiredError } from "./providerTypes.js";
+
 /**
  * Generic OAuth2 refresh-token -> access-token exchange (issue #26: "the access token is
  * computed at runtime and never persisted"). Used by both the Gmail and Graph REST clients
@@ -36,6 +38,12 @@ export async function refreshAccessToken(input: RefreshAccessTokenInput): Promis
   });
   if (!response.ok) {
     // Never includes `body`/the refresh token itself in the thrown message — only the status.
+    // 400/401 is both Google's and Microsoft's documented status for a revoked/expired refresh
+    // token (`invalid_grant`) — a credential problem the user must fix, not a transient/network
+    // failure worth silently retrying (issue #26: `sync_status = 'needsReauthorization'`).
+    if (response.status === 400 || response.status === 401) {
+      throw new MailReauthorizationRequiredError(`OAuth token refresh rejected the stored refresh token (status ${response.status})`);
+    }
     throw new Error(`OAuth token refresh failed with status ${response.status}`);
   }
   const json = (await response.json()) as { access_token: string; expires_in: number };
