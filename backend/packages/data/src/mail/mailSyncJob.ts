@@ -1,3 +1,4 @@
+import type { Readable } from "node:stream";
 import type { Pool } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { withTransaction } from "../db/pool.js";
@@ -57,6 +58,32 @@ export interface SyncMailAccountPayload {
 }
 
 /**
+ * Wraps `storage` for the duration of one account's reconcile pass so a failure partway
+ * through can clean up after itself: `ingestAttachments` (mail/attachments.ts) writes each
+ * attachment's bytes to disk *before* the surrounding DB transaction commits (it needs the
+ * resulting byte size/content hash to write the `mail_attachments` row in the same
+ * transaction) — if a later message in the same pass then throws, the whole transaction rolls
+ * back, but those already-written files are not part of that rollback and would otherwise
+ * leak on disk, re-leaking under fresh random keys on every retry. `delete()` is idempotent
+ * (`LocalFsBlobStorageWriter` uses `rm(..., { force: true })`), so re-deleting a key
+ * `ingestAttachments` itself already cleaned up as a dedup loser is harmless.
+ */
+function trackWrittenKeys(storage: BlobStorageWriter): { storage: BlobStorageWriter; writtenKeys: string[] } {
+  const writtenKeys: string[] = [];
+  return {
+    writtenKeys,
+    storage: {
+      async writeStream(storageKey: string, source: Readable) {
+        const result = await storage.writeStream(storageKey, source);
+        writtenKeys.push(storageKey);
+        return result;
+      },
+      delete: (storageKey: string) => storage.delete(storageKey),
+    },
+  };
+}
+
+/**
  * Dispatches to the account's configured adapter (`mail_account_sync_state.sync_mode`) and
  * runs one full reconcile pass. Each account's reconcile runs inside one DB transaction —
  * acceptable for a single-user mailbox in the thousands-of-messages range this issue targets
@@ -70,17 +97,22 @@ export async function handleSyncMailAccountTask(
   moduleIds: MailModuleIds,
   storage: BlobStorageWriter,
 ): Promise<void> {
-  const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, payload.mailboxItemId));
-  if (!state) throw new Error(`Mailbox ${payload.mailboxItemId} has no mail_account_sync_state row — never connected`);
-
-  // Passed `pool` directly, not wrapped in `withTransaction`: each statement
-  // (the access-log insert, then the decrypt) commits independently, so a decrypt failure
-  // (wrong key_version, corrupted ciphertext) still leaves the access-attempt logged instead
-  // of rolling it back along with the failed decryption — see externalCredentialsStore.ts.
-  const credential = await getDecryptedCredential(pool, { itemId: payload.mailboxItemId, actorType: "sync_worker", purpose: `${state.syncMode}_sync` });
-  if (!credential) throw new Error(`Mailbox ${payload.mailboxItemId} has no stored credential`);
-
+  const { storage: trackedStorage, writtenKeys } = trackWrittenKeys(storage);
   try {
+    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, payload.mailboxItemId));
+    if (!state) throw new Error(`Mailbox ${payload.mailboxItemId} has no mail_account_sync_state row — never connected`);
+
+    // Passed `pool` directly, not wrapped in `withTransaction`: each statement
+    // (the access-log insert, then the decrypt) commits independently, so a decrypt failure
+    // (wrong key_version, corrupted ciphertext) still leaves the access-attempt logged instead
+    // of rolling it back along with the failed decryption — see externalCredentialsStore.ts.
+    // Deliberately inside this `try`, not before it: a credential fetch/decrypt failure is
+    // just as much a sync failure as anything the reconcile pass itself could throw, and must
+    // reach the same `syncStatus`/`last_error` recording below — a mailbox whose credential
+    // silently stopped decrypting must not keep showing `syncStatus: 'ok'` forever.
+    const credential = await getDecryptedCredential(pool, { itemId: payload.mailboxItemId, actorType: "sync_worker", purpose: `${state.syncMode}_sync` });
+    if (!credential) throw new Error(`Mailbox ${payload.mailboxItemId} has no stored credential`);
+
     await withTransaction(pool, async (client) => {
       const [folderProperty, attachmentsProperty, mailboxFolderProperty] = await Promise.all([
         getPropertyByKey(client, moduleIds.emailsDatabaseId, "folder"),
@@ -99,7 +131,7 @@ export async function handleSyncMailAccountTask(
         folderRelationPropertyId: folderProperty.id,
         mailboxFolderRelationPropertyId: mailboxFolderProperty.id,
         attachmentsRelationPropertyId: attachmentsProperty.id,
-        storage,
+        storage: trackedStorage,
         storageKeyPrefix: payload.mailboxItemId,
       };
 
@@ -127,9 +159,17 @@ export async function handleSyncMailAccountTask(
       );
     });
   } catch (err) {
-    // The reconcile pass above ran inside one transaction that this error just aborted —
-    // recording that failure needs its own, separate transaction, or the UPDATE recording
-    // it would itself be rolled back along with everything else `withTransaction` undoes.
+    // Any attachment bytes already written to disk this pass (mail/attachments.ts writes
+    // before the DB transaction that references them commits, see trackWrittenKeys above) are
+    // not covered by the transaction rollback the error below just triggered — clean them up
+    // rather than leaking them, best-effort: a cleanup failure must not mask the original
+    // error, which is why it's swallowed here and not awaited into the outer catch.
+    await Promise.all(writtenKeys.map((key) => trackedStorage.delete(key).catch(() => {})));
+
+    // Whatever failed above (state fetch, credential decrypt, or the reconcile pass itself)
+    // either ran outside a transaction or inside one this error just aborted — recording the
+    // failure needs its own, separate transaction, or an UPDATE inside the aborted one would
+    // itself be rolled back along with everything else `withTransaction` undoes.
     const message = err instanceof Error ? err.message : String(err);
     // A revoked credential (issue #26: "a normal state, not a system error") gets its own
     // visible status so the worker's continued (bounded, backed-off) retries read as "waiting

@@ -31,7 +31,11 @@ const ALLOWED_TAGS = [
  */
 const ALLOWED_STYLES = {
   "*": {
-    color: [/^#[0-9a-f]{3,6}$/i, /^rgb\(.*\)$/i, /^[a-z]+$/i],
+    // The rgb()/rgba() pattern is fully anchored down to digits/percent/dot inside the
+    // parens — an unbounded `.*` here would (and, in an earlier version of this file, did)
+    // let a second `url(...)` function ride along inside a value that still matches
+    // start-to-end (e.g. `rgb(0,0,0) url(...)`), since `.` also matches `)` and `(`.
+    color: [/^#[0-9a-f]{3,6}$/i, /^rgba?\(\s*\d{1,3}%?(\s*,\s*\d{1,3}%?){2}(\s*,\s*(0|1|0?\.\d+))?\s*\)$/i, /^[a-z]+$/i],
     "text-align": [/^(left|right|center|justify)$/],
     "font-weight": [/^(normal|bold|bolder|lighter|[1-9]00)$/],
     "font-style": [/^(normal|italic|oblique)$/],

@@ -407,6 +407,17 @@ describe("HTML sanitization (issue #26)", () => {
     expect(sanitized).toContain("color:red");
   });
 
+  it("rejects a url() smuggled inside an otherwise-allowed color: rgb(...) value", () => {
+    const sanitized = sanitizeMailHtml('<div style="color: rgb(0,0,0) url(https://tracker.example/pixel.gif)">hi</div>');
+    expect(sanitized).not.toContain("tracker.example");
+    expect(sanitized).not.toContain("url(");
+  });
+
+  it("still allows a plain rgb() color value", () => {
+    const sanitized = sanitizeMailHtml('<div style="color: rgb(12, 34, 56)">hi</div>');
+    expect(sanitized).toContain("rgb(12, 34, 56)");
+  });
+
   it("strips a <style> block wholesale, including any url() it carries", () => {
     const sanitized = sanitizeMailHtml("<style>body { background: url(https://tracker.example/pixel.gif); }</style><p>hi</p>");
     expect(sanitized).not.toContain("tracker.example");
@@ -848,6 +859,95 @@ describe("mail sync job error handling (issue #26)", () => {
     expect(item.rows[0].properties.syncStatus).toBe("error");
   });
 
+  it("cleans up an attachment already written to disk when a later step in the same pass aborts the transaction", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+
+    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
+    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
+    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+
+    const writtenKeys: string[] = [];
+    const deletedKeys: string[] = [];
+    const trackingStorage: BlobStorageWriter = {
+      async writeStream(storageKey, source) {
+        writtenKeys.push(storageKey);
+        let byteSize = 0;
+        const hash = createHash("sha256");
+        for await (const chunk of source) {
+          hash.update(chunk as Buffer);
+          byteSize += (chunk as Buffer).length;
+        }
+        return { byteSize, contentHash: hash.digest("hex") };
+      },
+      async delete(storageKey) {
+        deletedKeys.push(storageKey);
+      },
+    };
+
+    const moduleIds = { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId };
+
+    // A brand-new folder's very first reconcile pass never even looks at
+    // fetchVanishedSince/fetchAllUids (imapReconcile.ts: nothing to diff against yet) — a
+    // first, uneventful pass establishes real uidvalidity/uidnext state so the second pass
+    // below actually reaches (and can fail inside) the vanished-UID check.
+    const passOneImap: ImapMailClient = {
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+      fetchMessagesSince: async () => [],
+      fetchVanishedSince: async () => null,
+      fetchAllUids: async () => [],
+    };
+    await handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, { createImapClient: async () => passOneImap }, moduleIds, trackingStorage);
+
+    const failingAfterAttachmentImap: ImapMailClient = {
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
+      fetchMessagesSince: async () => [
+        {
+          uid: 1,
+          message: {
+            messageId: "<orphan@x>",
+            envelope: { from: { address: "a@x.com" } },
+            subject: "Has attachment",
+            attachments: [
+              {
+                filename: "f.txt",
+                contentType: "text/plain",
+                contentId: null,
+                disposition: "attachment",
+                openStream: () => Readable.from(Buffer.from("orphan-bytes")),
+              },
+            ],
+          },
+        },
+      ],
+      // No QRESYNC (getCapabilities returns an empty set) and uidvalidity is already known
+      // (set by passOneImap above) -> imapReconcile.ts's non-CONDSTORE fallback path, which
+      // diffs via fetchAllUids.
+      fetchVanishedSince: async () => null,
+      fetchAllUids: async () => {
+        throw new Error("boom after the attachment was already written");
+      },
+    };
+
+    const adapters: MailSyncAdapterFactory = { createImapClient: async () => failingAfterAttachmentImap };
+
+    await expect(handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, adapters, moduleIds, trackingStorage)).rejects.toThrow(
+      "boom after the attachment was already written",
+    );
+
+    expect(writtenKeys).toHaveLength(1);
+    expect(deletedKeys).toEqual(writtenKeys);
+    // The transaction rolled back, so no Files item or Email item exists for it either.
+    const { rows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [emailsId]);
+    expect(rows[0].count).toBe("0");
+  });
+
   it("sets Mailbox.syncStatus to 'ok' after a completed sync pass", async () => {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");
@@ -908,6 +1008,32 @@ describe("mail sync job error handling (issue #26)", () => {
 
     const item = await withTransaction(pool, (client) => client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]));
     expect(item.rows[0].properties.syncStatus).toBe("needsReauthorization");
+  });
+
+  it("sets Mailbox.syncStatus to 'error' when the credential itself can't be decrypted (a failure before any adapter/transaction runs)", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+
+    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
+    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
+    // Deliberately no storeCredential call: handleSyncMailAccountTask's own "no stored
+    // credential" throw fires before the reconcile transaction ever opens, exercising the same
+    // code path a real decrypt failure would.
+
+    await expect(
+      handleSyncMailAccountTask(
+        pool,
+        { mailboxItemId: mailbox.id },
+        {},
+        { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+        noopStorage,
+      ),
+    ).rejects.toThrow("has no stored credential");
+
+    const item = await withTransaction(pool, (client) => client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]));
+    expect(item.rows[0].properties.syncStatus).toBe("error");
   });
 });
 
