@@ -4,5 +4,20 @@
   "private": true,
   "type": "module",
   "main": "src/index.ts",
-  "types": "src/index.ts"
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@semprec/queue": "workspace:*",
+    "luxon": "^3.7.2",
+    "pg": "^8.23.0",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@types/luxon": "^3.7.5",
+    "@types/pg": "^8.23.1",
+    "embedded-postgres": "^18.4.0-beta.17",
+    "vitest": "^4.1.11"
+  }
 }
