@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import type { ActionContext, ActionHandler } from "../scheduler/actions.js";
-import { generatePermissionManifest, type PermissionManifest } from "./permissionManifest.js";
+import { generatePermissionManifest } from "./permissionManifest.js";
 
 export interface OrphanedOwnerProcessProperty {
   propertyId: string;
@@ -22,39 +22,30 @@ export async function findOrphanedOwnerProcessProperties(
     .map((row) => ({ propertyId: row.id, databaseId: row.database_id, key: row.key, ownerProcess: row.owner_process }));
 }
 
-/**
- * The manifest <-> `agents` text comparison is a semantic-judgment task that genuinely
- * needs an LLM call through the AI gateway — out of scope here (running an AI agent is
- * a later issue). This hook is where that comparator plugs in later; the default is a
- * safe no-op so the mechanically-checkable half of the drift check (owner_process
- * orphans) works standalone today.
- */
-export type TextManifestComparator = (agentsText: string, manifest: PermissionManifest) => Promise<{ mismatches: string[] }>;
-export const noopTextManifestComparator: TextManifestComparator = async () => ({ mismatches: [] });
-
 export interface CreateDriftCheckActionOptions {
   activeProcessIds?: ReadonlySet<string>;
-  compareTextToManifest?: TextManifestComparator;
-  /** looks up the project's `agents.purpose`-style free text; defaults to empty (no manifest/text comparison performed). */
-  getAgentsText?: (client: PoolClient, projectItemId: string) => Promise<string>;
 }
 
-/** Registers as a heartbeat action; reports via `notifications`, never stays silent about a mismatch. */
+/**
+ * Registers as a heartbeat action; reports via `notifications`, never stays silent
+ * about a mismatch. Only the mechanically-checkable half (owner_process orphans) runs
+ * here — the manifest <-> `agents` text comparison is a semantic-judgment task that
+ * genuinely needs an LLM call through the AI gateway, out of scope for this issue
+ * (running an AI agent is a later issue). That comparator plugs in as a later
+ * extension to this action, once the agent-orchestration issue exists to supply it.
+ */
 export function createDriftCheckAction(pool: Pool, options: CreateDriftCheckActionOptions = {}): ActionHandler {
-  const compareTextToManifest = options.compareTextToManifest ?? noopTextManifestComparator;
-
   return async (_actionConfig: Record<string, unknown>, context: ActionContext) => {
     const client = await pool.connect();
     try {
-      const manifest = await generatePermissionManifest(client, context.projectItemId);
+      // Confirms the schema this drift check reports against is actually resolvable;
+      // the manifest's content is only consumed once the text comparator (above) exists.
+      await generatePermissionManifest(client, context.projectItemId);
       const orphaned = await findOrphanedOwnerProcessProperties(client, options.activeProcessIds);
 
-      const agentsText = options.getAgentsText ? await options.getAgentsText(client, context.projectItemId) : "";
-      const { mismatches } = agentsText ? await compareTextToManifest(agentsText, manifest) : { mismatches: [] };
-
-      if (orphaned.length > 0 || mismatches.length > 0) {
+      if (orphaned.length > 0) {
         await client.query(`INSERT INTO notifications (kind, payload) VALUES ('agent_manifest_drift', $1::jsonb)`, [
-          JSON.stringify({ projectItemId: context.projectItemId, orphanedOwnerProcess: orphaned, textMismatches: mismatches }),
+          JSON.stringify({ projectItemId: context.projectItemId, orphanedOwnerProcess: orphaned }),
         ]);
       }
     } finally {

@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
-import { ForbiddenError, ValidationError } from "../errors.js";
+import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import type { DatabaseRow, ItemRow, PropertyRow, PropertyType } from "../types.js";
 import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
@@ -13,6 +13,7 @@ import { assertRelationDeletable, assertSourceRetypeAllowed } from "../rollup/mi
 import { enqueuePropertyTypeMigration, isConversionSupported } from "../migrationJob/propertyTypeMigration.js";
 import { triggerOnItemEventHeartbeats, recomputeAllForTimezoneChange } from "../scheduler/schedulerStore.js";
 import { getSystemSettingsItemId } from "../systemSettings.js";
+import { createComputedKeyRegistry, type ComputedKeyRegistry } from "./computedKeyRegistry.js";
 
 /** Keys the generic write path never accepts: relation values live only in item_relations, and computed is internal-only. */
 function assertWritableProperties(properties: PropertyRow[], patchKeys: string[]): void {
@@ -72,7 +73,14 @@ async function enqueueRollupRecomputeForEdge(
   }
 }
 
-export function createChokePoint(pool: Pool) {
+/** `items.computed` is a shared namespace between rollup values and declared module cache keys — see computedKeyRegistry.ts. */
+function assertNoComputedKeyCollision(registry: ComputedKeyRegistry, key: string): void {
+  if (registry.has(key)) {
+    throw new ValidationError(`Property key '${key}' collides with a declared module cache key`, { field: key });
+  }
+}
+
+export function createChokePoint(pool: Pool, computedKeyRegistry: ComputedKeyRegistry = createComputedKeyRegistry()) {
   return {
     // ---- databases ----
     async createDatabase(input: databasesStore.CreateDatabaseInput): Promise<DatabaseRow> {
@@ -97,6 +105,7 @@ export function createChokePoint(pool: Pool) {
     },
 
     async createProperty(input: propertiesStore.CreatePropertyInput): Promise<PropertyRow> {
+      assertNoComputedKeyCollision(computedKeyRegistry, input.key);
       if (input.type === "rollup") {
         return withTransaction(pool, async (client) => {
           const property = await propertiesStore.createProperty(client, input);
@@ -182,6 +191,8 @@ export function createChokePoint(pool: Pool) {
       locked?: boolean;
       owner?: "user" | "system";
     }): Promise<{ property: PropertyRow; inverseProperty: PropertyRow | null }> {
+      assertNoComputedKeyCollision(computedKeyRegistry, input.key);
+      if (input.inverse) assertNoComputedKeyCollision(computedKeyRegistry, input.inverse.key);
       return withTransaction(pool, async (client) => {
         const property = await propertiesStore.createProperty(client, {
           databaseId: input.databaseId,
@@ -305,7 +316,10 @@ export function createChokePoint(pool: Pool) {
           }
         }
 
-        const settingsItemId = await getSystemSettingsItemId(client).catch(() => null);
+        const settingsItemId = await getSystemSettingsItemId(client).catch((err) => {
+          if (err instanceof NotFoundError) return null; // system not seeded yet
+          throw err;
+        });
         if (settingsItemId === item.id && typeof input.propertiesPatch.timezone === "string") {
           await recomputeAllForTimezoneChange(client, input.propertiesPatch.timezone);
         }

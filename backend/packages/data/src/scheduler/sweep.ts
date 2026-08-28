@@ -19,7 +19,16 @@ export async function handleHeartbeatSweepTask(pool: Pool): Promise<void> {
  */
 export function createHeartbeatFireTask(pool: Pool, registry: ActionRegistry): Task {
   return async (rawPayload, helpers) => {
-    const payload = rawPayload as { heartbeatId: string; itemId?: string };
+    const record = rawPayload as Record<string, unknown> | null;
+    const heartbeatId = record?.heartbeatId;
+    if (typeof heartbeatId !== "string") {
+      throw new Error("heartbeatFire job payload missing string field 'heartbeatId'");
+    }
+    const rawItemId = record?.itemId;
+    if (rawItemId !== undefined && typeof rawItemId !== "string") {
+      throw new Error("heartbeatFire job payload field 'itemId' must be a string when present");
+    }
+    const payload = { heartbeatId, itemId: rawItemId };
 
     const readClient = await pool.connect();
     let heartbeat;

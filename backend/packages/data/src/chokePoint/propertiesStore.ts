@@ -3,6 +3,16 @@ import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { PROPERTY_TYPES, type PropertyOwner, type PropertyRow, type PropertyType } from "../types.js";
 import { getDatabase } from "./databasesStore.js";
 
+const PROPERTY_OWNERS: readonly PropertyOwner[] = ["user", "system"];
+const MIGRATION_STATUSES: readonly PropertyRow["migrationStatus"][] = ["stable", "pending", "running", "done", "partial"];
+
+function assertKnownValue<T extends string>(allowed: readonly T[], value: string, label: string): T {
+  if (!(allowed as readonly string[]).includes(value)) {
+    throw new Error(`Unknown ${label} in database row: '${value}'`);
+  }
+  return value as T;
+}
+
 function mapPropertyRow(row: {
   id: string;
   database_id: string;
@@ -20,12 +30,12 @@ function mapPropertyRow(row: {
     databaseId: row.database_id,
     key: row.key,
     name: row.name,
-    type: row.type as PropertyType,
+    type: assertKnownValue(PROPERTY_TYPES, row.type, "property type"),
     config: row.config,
     locked: row.locked,
-    owner: row.owner as PropertyOwner,
+    owner: assertKnownValue(PROPERTY_OWNERS, row.owner, "property owner"),
     ownerProcess: row.owner_process,
-    migrationStatus: row.migration_status as PropertyRow["migrationStatus"],
+    migrationStatus: assertKnownValue(MIGRATION_STATUSES, row.migration_status, "migration status"),
   };
 }
 

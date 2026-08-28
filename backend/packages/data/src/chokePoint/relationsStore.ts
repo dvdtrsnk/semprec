@@ -2,12 +2,17 @@ import type { PoolClient } from "pg";
 import { NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRelationRow, RelationDefinitionRow } from "../types.js";
 
+const CARDINALITIES: readonly RelationDefinitionRow["cardinality"][] = ["one_to_one", "one_to_many", "many_to_many"];
+
 function mapRelationDefinitionRow(row: {
   id: string;
   property_id_a: string;
   property_id_b: string | null;
   cardinality: string;
 }): RelationDefinitionRow {
+  if (!(CARDINALITIES as readonly string[]).includes(row.cardinality)) {
+    throw new Error(`Unknown cardinality in database row: '${row.cardinality}'`);
+  }
   return {
     id: row.id,
     propertyIdA: row.property_id_a,

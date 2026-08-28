@@ -3,6 +3,8 @@ import { withTransaction } from "../db/pool.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
+import { createHeartbeat } from "../scheduler/schedulerStore.js";
+import { DRIFT_CHECK_ACTION_ID } from "../manifest/driftCheck.js";
 import { DEFAULT_TIMEZONE, SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 
 export const PROJECTS_MODULE_ID = "projects";
@@ -44,6 +46,10 @@ export async function seedSystem(pool: Pool): Promise<void> {
       locked: true,
       owner: "user",
     });
+
+    // Locked immediately after its (fixed, code-defined) schema is seeded — same rule
+    // as settingsDb below: a system DB's schema changes only via a code-level migration.
+    await client.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [projectsDb.id]);
 
     const semprecProject = await itemsStore.insertItem(client, {
       databaseId: projectsDb.id,
@@ -90,5 +96,17 @@ export async function seedSystem(pool: Pool): Promise<void> {
     });
 
     await client.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [settingsDb.id]);
+
+    // The drift heartbeat this issue's spec requires ("watched by a separate drift
+    // heartbeat check") — reports manifest<->text/owner_process drift for the
+    // supervisor's own project. Daily is frequent enough to catch drift without
+    // competing with the minute-granularity onItemEvent heartbeats. Must come after
+    // settingsDb exists: computing next_fire_at reads the system timezone.
+    await createHeartbeat(client, {
+      projectItemId: semprecProject.id,
+      name: "Manifest drift check",
+      rule: { kind: "dailyTime", at: "03:00" },
+      actionId: DRIFT_CHECK_ACTION_ID,
+    });
   });
 }

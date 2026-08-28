@@ -20,7 +20,7 @@ describe("smoke: choke-point end to end", () => {
     await seedSystem(pool);
     const { rows } = await pool.query("SELECT name, system, schema_locked FROM databases ORDER BY name");
     expect(rows).toEqual([
-      { name: "Projects", system: true, schema_locked: false },
+      { name: "Projects", system: true, schema_locked: true },
       { name: "System settings", system: true, schema_locked: true },
     ]);
   });
