@@ -60,5 +60,10 @@ export async function getOrCreateDoc(client: Queryable, itemId: string, kind: Do
 
   const created = await getDocByItemId(client, itemId);
   if (!created) throw new Error(`docs row for item ${itemId} disappeared immediately after a concurrent insert`);
+  // Same check as the `existing` branch above: the race winner may have created a doc of
+  // a different kind than this caller asked for.
+  if (created.kind !== kind) {
+    throw new ConflictError(`Item ${itemId} already has a '${created.kind}' doc; cannot also create a '${kind}' doc`, { itemId, kind });
+  }
   return created;
 }

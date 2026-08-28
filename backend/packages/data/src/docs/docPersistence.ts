@@ -7,6 +7,9 @@ import { notifyDocUpdate } from "../realtimeHook.js";
 /** y-leveldb uses 500, y-postgresql uses 200 — the issue asks for "the same shape", 200-500. */
 export const DEFAULT_COMPACTION_THRESHOLD = 200;
 
+/** Not a metered tier, just the version-history mechanism's default retention window (issue #23, point 6). */
+export const DEFAULT_HISTORY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
 interface PendingUpdateRow {
   id: string;
   update: Buffer;
@@ -32,6 +35,14 @@ async function loadPendingUpdatesForUpdate(client: PoolClient, docId: string): P
  * `mergedUpdateIds`, so a concurrent update landing mid-compaction is simply not among
  * the rows locked/read/deleted here — commutativity of CRDT merging means it converges
  * correctly regardless of ordering.
+ *
+ * Also drops a `doc_snapshot_history` checkpoint of the same merged state, in the same
+ * transaction: compaction is the one moment `doc_updates` loses the granularity
+ * `openDocVersionAt` (docHistory.ts) depends on, so without this a doc compacted
+ * between two periodic squash runs would silently reconstruct the wrong state for any
+ * timestamp in that gap. This makes the periodic squash job (docHistory.ts,
+ * runHistorySquashSweep) a backstop for docs that are never written to compaction, not
+ * the sole source of checkpoints.
  */
 async function compact(client: PoolClient, docId: string, doc: Y.Doc, mergedUpdateIds: string[]): Promise<void> {
   const state = Buffer.from(Y.encodeStateAsUpdate(doc));
@@ -41,6 +52,11 @@ async function compact(client: PoolClient, docId: string, doc: Y.Doc, mergedUpda
      ON CONFLICT (doc_id) DO UPDATE SET state = EXCLUDED.state, state_vector = EXCLUDED.state_vector, updated_at = now()`,
     [docId, state, stateVector],
   );
+  await client.query(`INSERT INTO doc_snapshot_history (doc_id, state, expires_at, created_by) VALUES ($1, $2, now() + $3::interval, 'system')`, [
+    docId,
+    state,
+    `${DEFAULT_HISTORY_RETENTION_MS} milliseconds`,
+  ]);
   if (mergedUpdateIds.length > 0) {
     await client.query(`DELETE FROM doc_updates WHERE doc_id = $1 AND id = ANY($2::bigint[])`, [docId, mergedUpdateIds]);
   }

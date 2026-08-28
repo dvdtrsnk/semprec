@@ -2,10 +2,9 @@ import * as Y from "yjs";
 import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
 import type { CreatedBy } from "../types.js";
-import { loadDoc } from "./docPersistence.js";
+import { loadDoc, DEFAULT_HISTORY_RETENTION_MS } from "./docPersistence.js";
 
-/** Not a metered tier, just the mechanism's default window (issue #23, point 6). */
-export const DEFAULT_HISTORY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+export { DEFAULT_HISTORY_RETENTION_MS };
 
 /** Written by a periodic squash job, not synchronously with every edit (issue #23, point 6). */
 export async function squashDocHistory(pool: Pool, docId: string, createdBy: CreatedBy, retentionMs = DEFAULT_HISTORY_RETENTION_MS): Promise<void> {

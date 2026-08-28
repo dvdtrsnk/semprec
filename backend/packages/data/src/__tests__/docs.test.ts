@@ -205,6 +205,35 @@ describe("docs (CRDT layer)", () => {
       const { rows: afterSweep } = await pool.query(`SELECT count(*)::int AS n FROM doc_updates WHERE doc_id = $1`, [doc.id]);
       expect(afterSweep[0].n).toBe(0);
     });
+
+    it("compaction leaves behind a doc_snapshot_history checkpoint, so version reconstruction never loses granularity it merged away", async () => {
+      const item = await makeItem();
+      const threshold = 3;
+      await docStore.putBlock(item.id, { id: "seed", flavour: "paragraph" }, "user");
+      const doc = await docStore.getDoc(item.id);
+      if (!doc) throw new Error("doc not created");
+
+      const { rows: beforeCompaction } = await pool.query(`SELECT count(*)::int AS n FROM doc_snapshot_history WHERE doc_id = $1`, [doc.id]);
+      expect(beforeCompaction[0].n).toBe(0); // no periodic squash has run yet
+
+      const scratch = new Y.Doc();
+      scratch.gc = false;
+      for (let i = 0; i < threshold; i++) {
+        const update = captureUpdate(scratch, () => {
+          scratch.getMap("blocks").set(`b${i}`, new Y.Map());
+        });
+        await pool.query(`INSERT INTO doc_updates (doc_id, update, created_by) VALUES ($1, $2, 'user')`, [doc.id, Buffer.from(update)]);
+      }
+
+      await loadDoc(pool, doc.id, threshold); // crosses the threshold, triggers compact()
+
+      const { rows: afterCompaction } = await pool.query(
+        `SELECT created_by FROM doc_snapshot_history WHERE doc_id = $1`,
+        [doc.id],
+      );
+      expect(afterCompaction).toHaveLength(1);
+      expect(afterCompaction[0].created_by).toBe("system");
+    });
   });
 
   describe("version history", () => {

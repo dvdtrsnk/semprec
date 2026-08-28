@@ -1,8 +1,7 @@
 import { createServer, type Server } from "node:http";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import { afterAll, beforeEach, describe, expect, it, afterEach } from "vitest";
+import { Pool } from "pg";
 import { WebSocket, WebSocketServer } from "ws";
-import { getTestPool, resetDatabase } from "@semprec/data/src/testSupport/testDb.js";
 import { setDocUpdateHook, setInvalidationHook, notifyDocUpdate } from "@semprec/data";
 import { publishRealtimeMessage } from "../pgNotifyPublisher.js";
 import { wireRealtimeHooks } from "../wireHooks.js";
@@ -11,9 +10,12 @@ import { startRealtimeServer, type RealtimeServer } from "../wsServer.js";
 let pool: Pool;
 
 describe("realtime", () => {
-  beforeEach(async () => {
-    pool ??= getTestPool();
-    await resetDatabase(pool);
+  beforeEach(() => {
+    // The shared embedded-Postgres instance (vitest globalSetup, packages/data) already
+    // has migrations applied; these tests only exercise LISTEN/NOTIFY, not any of the
+    // data package's own tables, so a plain Pool is enough — no need to reach into
+    // @semprec/data's internal testSupport helpers for a table-truncating reset.
+    pool ??= new Pool({ connectionString: process.env.TEST_DATABASE_URL });
   });
 
   afterAll(async () => {
