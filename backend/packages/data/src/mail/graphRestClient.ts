@@ -168,7 +168,14 @@ export class GraphRestClient implements GraphMailClient {
         callback(null, chunk);
       },
     });
-    return Readable.fromWeb(response.body as unknown as NodeWebReadableStream<Uint8Array>).pipe(limiter);
+    const source = Readable.fromWeb(response.body as unknown as NodeWebReadableStream<Uint8Array>);
+    // Plain `.pipe()` does not forward the source's own 'error' event to the destination — a
+    // dropped connection mid-transfer would otherwise leave `limiter` (and whatever later
+    // consumes it, e.g. blobStorage.ts's `pipeline()`) waiting forever instead of erroring out,
+    // the same class of bug this codebase already documents for imapflow's own download() path.
+    source.on("error", (err) => limiter.destroy(err));
+    source.pipe(limiter);
+    return limiter;
   }
 
   /**

@@ -163,6 +163,10 @@ export class ImapFlowMailClient implements ImapMailClient {
       bodyHtml,
       date: envelope?.date,
       attachments: this.classifyAttachmentParts(raw.uid, tree.attachmentParts, bodyHtml),
+      // Both undefined on any server that doesn't advertise X-GM-EXT-1 (every non-Gmail
+      // server) — imapReconcile.ts only acts on `gmailLabels` when it's actually present.
+      providerMessageId: raw.emailId ?? null,
+      gmailLabels: raw.labels ? [...raw.labels] : undefined,
     };
   }
 
@@ -172,10 +176,12 @@ export class ImapFlowMailClient implements ImapMailClient {
     // Deliberately no `source: true`: that field is a fully-materialized `Buffer` of the whole
     // raw message, attachments included — see walkBodyStructure's header note. BODYSTRUCTURE +
     // ENVELOPE + the References header are all cheap, bounded fetches; the actual body/
-    // attachment bytes are fetched separately, lazily, per part.
+    // attachment bytes are fetched separately, lazily, per part. `labels: true` is a no-op on
+    // a non-Gmail server (imapReconcile.ts's "Gmail in IMAP fallback mode" support) and costs
+    // nothing extra on one that doesn't support X-GM-EXT-1.
     for await (const raw of this.client.fetch(
       `${sinceUid}:*`,
-      { uid: true, envelope: true, bodyStructure: true, flags: true, headers: ["references"] },
+      { uid: true, envelope: true, bodyStructure: true, flags: true, headers: ["references"], labels: true },
       { uid: true },
     )) {
       if (raw.uid < sinceUid) continue; // "*" in a range can include one message below sinceUid on an empty-range edge case

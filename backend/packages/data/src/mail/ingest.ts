@@ -107,7 +107,7 @@ export async function ingestEmailMessage(client: PoolClient, input: IngestEmailM
       envelope: input.envelope,
     });
 
-    await ingestAttachments(client, {
+    const { extractedTexts } = await ingestAttachments(client, {
       messageItemId: itemId,
       filesDatabaseId: input.filesDatabaseId,
       attachmentsRelationPropertyId: input.attachmentsRelationPropertyId,
@@ -116,11 +116,15 @@ export async function ingestEmailMessage(client: PoolClient, input: IngestEmailM
       storageKeyPrefix: input.storageKeyPrefix,
     });
 
+    // PDF/DOCX attachment text (issue #26: "the output goes into the same index table") is
+    // folded into the owning message's own search text rather than indexed as a separate
+    // item — there is no per-attachment search surface in this issue's scope, only "search my
+    // mail," which a PDF invoice's contents should still match.
     const bodyForSearch = input.bodyText ?? (input.bodyHtml ? htmlToSearchText(input.bodyHtml) : "");
     await reindexItemSearch(client, {
       itemId,
       databaseId: input.emailsDatabaseId,
-      text: [input.subject ?? "", bodyForSearch].join("\n\n"),
+      text: [input.subject ?? "", bodyForSearch, ...extractedTexts].join("\n\n"),
     });
   }
 

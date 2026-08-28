@@ -117,12 +117,6 @@ export async function createMailThread(client: Queryable, subjectHint?: string):
   return { id: rows[0].id, subjectHint: rows[0].subject_hint };
 }
 
-/** Every message currently in the given thread, ordered by insertion — used when merging two threads together (see threading.ts). */
-export async function listMessageIdsInThread(client: Queryable, threadId: string): Promise<string[]> {
-  const { rows } = await client.query<{ item_id: string }>(`SELECT item_id FROM mail_message_meta WHERE thread_id = $1`, [threadId]);
-  return rows.map((r) => r.item_id);
-}
-
 /** Moves every message out of `fromThreadId` into `toThreadId`, then deletes the now-empty `mail_threads` row — nothing else references `mail_threads` except this table's own `thread_id`, so once this UPDATE runs, `fromThreadId` is guaranteed to have zero remaining referencers. Leaving it would accumulate an orphaned row on every dummy-container merge (threading.ts's self-heal path). */
 export async function reassignThread(client: Queryable, fromThreadId: string, toThreadId: string): Promise<void> {
   await client.query(`UPDATE mail_message_meta SET thread_id = $2 WHERE thread_id = $1`, [fromThreadId, toThreadId]);

@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
-import { deleteRelationWithClient } from "../chokePoint/chokePoint.js";
-import { getRelationDefinitionByPropertyId } from "../chokePoint/relationsStore.js";
+import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/chokePoint.js";
+import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
 import { ValidationError } from "../errors.js";
 import { ingestEmailMessage } from "./ingest.js";
 import type { FetchedMessage } from "./providerTypes.js";
@@ -54,6 +54,67 @@ export interface ReconcileImapFolderParams {
   attachmentsRelationPropertyId: string;
   storage: BlobStorageWriter;
   storageKeyPrefix: string;
+  /**
+   * Only needed for Gmail-in-IMAP-fallback-mode's label-derived Folder membership (below) —
+   * every other IMAP target (iCloud, generic, Outlook) leaves a fetched message's
+   * `gmailLabels` undefined, so `syncGmailLabelFolders` is never invoked and these three
+   * fields go unused. `reconcileImapAccount` always passes them through since it already has
+   * them for the account-level Folder discovery it does itself.
+   */
+  foldersDatabaseId: string;
+  mailboxItemId: string;
+  mailboxFolderRelationPropertyId: string;
+}
+
+const GMAIL_LABEL_TO_PURPOSE: Record<string, string> = {
+  "\\Inbox": "inbox",
+  "\\Sent": "sent",
+  "\\Spam": "junk",
+  "\\Trash": "trash",
+  "\\Draft": "drafts",
+  "\\All": "all",
+};
+
+/**
+ * "Gmail in IMAP fallback mode" (issue #26): derives Folder/label membership from `X-GM-LABELS`
+ * instead of the physical folder being synced (`[Gmail]/All Mail`, whose own edge is
+ * maintained separately, by the UID-based reconcile above — this only ever *adds* label
+ * edges alongside it). Only called when `message.gmailLabels` is present, i.e. only when the
+ * IMAP server actually advertised X-GM-EXT-1 (Gmail) — a no-op for iCloud/generic/Outlook.
+ */
+async function syncGmailLabelFolders(
+  dbClient: PoolClient,
+  params: ReconcileImapFolderParams,
+  relationDefinitionId: string,
+  emailItemId: string,
+  labels: string[],
+): Promise<void> {
+  const mappedFolderIds = new Set<string>();
+  for (const label of labels) {
+    const folderItemId = await ensureFolderItem(dbClient, {
+      foldersDatabaseId: params.foldersDatabaseId,
+      mailboxItemId: params.mailboxItemId,
+      mailboxRelationPropertyId: params.mailboxFolderRelationPropertyId,
+      providerId: label,
+      name: label,
+      behavior: "label",
+      specialPurpose: GMAIL_LABEL_TO_PURPOSE[label] ?? "none",
+    });
+    mappedFolderIds.add(folderItemId);
+    await createRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, itemId: emailItemId, targetItemId: folderItemId });
+  }
+
+  // Drop any label-derived edge for a label this message no longer carries — never touches
+  // the physical `params.folderItemId` (All Mail) edge, which isn't label-derived at all;
+  // `folderPaths` restricts this account to syncing only that one physical folder in this
+  // mode, so every *other* edge on this relation is guaranteed to be label-derived.
+  const currentEdges = await listRelationsForItem(dbClient, relationDefinitionId, emailItemId);
+  for (const edge of currentEdges) {
+    const otherFolderId = otherSide(edge, emailItemId);
+    if (otherFolderId !== params.folderItemId && !mappedFolderIds.has(otherFolderId)) {
+      await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, itemId: emailItemId, targetItemId: otherFolderId });
+    }
+  }
 }
 
 /**
@@ -80,7 +141,7 @@ export async function reconcileImapFolder(dbClient: PoolClient, imap: ImapMailCl
   const sinceUid = state.uidnext ? Number(state.uidnext) : 1;
   const fetched = await imap.fetchMessagesSince(params.folderPath, sinceUid);
   for (const item of fetched) {
-    await ingestEmailMessage(dbClient, {
+    const result = await ingestEmailMessage(dbClient, {
       emailsDatabaseId: params.emailsDatabaseId,
       filesDatabaseId: params.filesDatabaseId,
       folderRelationPropertyId: params.folderRelationPropertyId,
@@ -91,6 +152,10 @@ export async function reconcileImapFolder(dbClient: PoolClient, imap: ImapMailCl
       storageKeyPrefix: params.storageKeyPrefix,
       ...item.message,
     });
+
+    if (item.message.gmailLabels) {
+      await syncGmailLabelFolders(dbClient, params, relationDefinition.id, result.itemId, item.message.gmailLabels);
+    }
   }
 
   const supportsQresync = capabilities.has("QRESYNC");
@@ -145,7 +210,7 @@ export interface ReconcileImapAccountParams {
   attachmentsRelationPropertyId: string;
   storage: BlobStorageWriter;
   storageKeyPrefix: string;
-  /** Gmail/Outlook in IMAP fallback mode (issue #26): sync only `[Gmail]/All Mail` (or the equivalent `\All` folder) instead of every folder, deriving label membership from `X-GM-LABELS` — not implemented by this reconcile pass; `folderPaths` lets the composition root pass exactly `["[Gmail]/All Mail"]` for that mode. Defaults to every folder the server lists, correct for iCloud/generic IMAP (this adapter's actual default target). */
+  /** Gmail/Outlook in IMAP fallback mode (issue #26): sync only `[Gmail]/All Mail` (or the equivalent `\All` folder) instead of every folder — `folderPaths` lets the composition root pass exactly `["[Gmail]/All Mail"]` for that mode; label membership is then derived from `X-GM-LABELS` by `syncGmailLabelFolders` below (only when the server actually reports labels — a no-op otherwise). Defaults to every folder the server lists, correct for iCloud/generic IMAP (this adapter's actual default target). */
   folderPaths?: string[];
 }
 
@@ -182,6 +247,9 @@ export async function reconcileImapAccount(dbClient: PoolClient, imap: ImapMailC
       attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
       storage: params.storage,
       storageKeyPrefix: params.storageKeyPrefix,
+      foldersDatabaseId: params.foldersDatabaseId,
+      mailboxItemId: params.mailboxItemId,
+      mailboxFolderRelationPropertyId: params.mailboxFolderRelationPropertyId,
     });
   }
 

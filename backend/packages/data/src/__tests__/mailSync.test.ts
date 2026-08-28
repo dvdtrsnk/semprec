@@ -41,6 +41,29 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
+/** A minimal, structurally valid one-page PDF containing exactly `text`, with a correct xref table (real byte offsets) so pdf-parse/pdfjs-dist parses it via its normal path. */
+function buildMinimalPdf(text: string): Buffer {
+  const objects: string[] = [];
+  objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+  objects[2] = "<< /Type /Pages /Kids [3 0 R] /Count 1 >>";
+  objects[3] = "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /MediaBox [0 0 300 300] /Contents 5 0 R >>";
+  objects[4] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+  const stream = `BT /F1 24 Tf 20 100 Td (${text}) Tj ET`;
+  objects[5] = `<< /Length ${Buffer.byteLength(stream, "latin1")} >>\nstream\n${stream}\nendstream`;
+
+  let body = "%PDF-1.4\n";
+  const offsets: number[] = [0];
+  for (let i = 1; i <= 5; i++) {
+    offsets[i] = Buffer.byteLength(body, "latin1");
+    body += `${i} 0 obj\n${objects[i]}\nendobj\n`;
+  }
+  const xrefStart = Buffer.byteLength(body, "latin1");
+  body += "xref\n0 6\n0000000000 65535 f \n";
+  for (let i = 1; i <= 5; i++) body += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  body += `trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+  return Buffer.from(body, "latin1");
+}
+
 const noopStorage: BlobStorageWriter = {
   async writeStream(_key, source) {
     let byteSize = 0;
@@ -357,6 +380,50 @@ describe("attachment ingest (issue #26)", () => {
     );
     expect(Number(relationRows[0].count)).toBe(2);
   });
+
+  it("extracts PDF attachment text at ingest and folds it into the message's own search index", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+    const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+    const folder = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+    );
+
+    // A minimal but structurally valid one-page PDF, with a correct xref table (real byte
+    // offsets, not placeholders) — pdf-parse (pdfjs-dist under the hood) needs that to parse
+    // via its normal path rather than falling back to a lossy recovery heuristic that
+    // (verified while writing this test) can silently truncate the extracted text.
+    const minimalPdf = buildMinimalPdf("UniqueInvoiceKeyword");
+
+    const result = await withTransaction(pool, (client) =>
+      ingestEmailMessage(client, {
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        folderRelationPropertyId: folderProperty.id,
+        attachmentsRelationPropertyId: attachmentsProperty.id,
+        folderItemId: folder.id,
+        messageId: "<with-pdf@x>",
+        subject: "Has a PDF",
+        envelope: {},
+        attachments: [
+          {
+            filename: "invoice.pdf",
+            contentType: "application/pdf",
+            contentId: null,
+            disposition: "attachment",
+            openStream: () => Readable.from(minimalPdf),
+          },
+        ],
+        storage: noopStorage,
+        storageKeyPrefix: "test",
+      }),
+    );
+
+    const found = await searchItems(pool, { databaseId: emailsId, query: "UniqueInvoiceKeyword" });
+    expect(found.map((f) => f.itemId)).toContain(result.itemId);
+  });
 });
 
 describe("IMAP BODYSTRUCTURE walking (issue #26)", () => {
@@ -652,6 +719,90 @@ describe("IMAP reconcile core (issue #26)", () => {
       [emailProps.find((p) => p.key === "folder")!.id],
     );
     expect(Number(rows[0].count)).toBe(1); // one of the two original edges was removed
+  });
+
+  it("Gmail in IMAP fallback mode: derives label-folder membership from X-GM-LABELS alongside the physical All Mail edge", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const emailProps = await chokePoint.listProperties(emailsId);
+    const folderProps = await chokePoint.listProperties(foldersId);
+
+    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
+    const params = {
+      mailboxItemId: mailbox.id,
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      foldersDatabaseId: foldersId,
+      folderRelationPropertyId: emailProps.find((p) => p.key === "folder")!.id,
+      mailboxFolderRelationPropertyId: folderProps.find((p) => p.key === "mailbox")!.id,
+      attachmentsRelationPropertyId: emailProps.find((p) => p.key === "attachments")!.id,
+      storage: noopStorage,
+      storageKeyPrefix: "test",
+      folderPaths: ["[Gmail]/All Mail"],
+    };
+
+    const gmailImap = fakeImapClient({
+      listFolders: async () => [{ path: "[Gmail]/All Mail", specialUse: "\\All" }],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+      fetchMessagesSince: async (): Promise<ImapFetchedMessage[]> => [
+        {
+          uid: 1,
+          message: {
+            messageId: "<labeled@x>",
+            envelope: { from: { address: "a@x.com" } },
+            subject: "Labeled",
+            attachments: [],
+            gmailLabels: ["\\Inbox", "Work"],
+          },
+        },
+      ],
+    });
+    await withTransaction(pool, (client) => reconcileImapAccount(client, gmailImap, params));
+
+    const { rows: folderRows } = await pool.query(`SELECT properties FROM items WHERE database_id = $1 ORDER BY properties->>'providerId'`, [foldersId]);
+    // All Mail (the physical folder synced) plus the two labels.
+    expect(folderRows.map((r) => r.properties.providerId).sort()).toEqual(["Work", "[Gmail]/All Mail", "\\Inbox"]);
+    expect(folderRows.find((r) => r.properties.providerId === "\\Inbox")).toMatchObject({ properties: { behavior: "label", specialPurpose: "inbox" } });
+    expect(folderRows.find((r) => r.properties.providerId === "Work")).toMatchObject({ properties: { behavior: "label", specialPurpose: "none" } });
+
+    const emailItemId = (await pool.query(`SELECT id FROM items WHERE database_id = $1`, [emailsId])).rows[0].id;
+    const { rows: edgeCount } = await pool.query(
+      `SELECT count(*) FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2)`,
+      [emailProps.find((p) => p.key === "folder")!.id, emailItemId],
+    );
+    expect(Number(edgeCount[0].count)).toBe(3); // All Mail + \Inbox + Work
+
+    // A second pass re-observing the same message with one label dropped removes only that
+    // label's edge, keeping the physical All Mail edge and the other label. The fake client's
+    // fetchMessagesSince ignores the sinceUid it's called with (same as every other fake
+    // client in this file) so it can simply re-report uid 1 with a narrowed label set.
+    const gmailImapRelabeled = fakeImapClient({
+      listFolders: async () => [{ path: "[Gmail]/All Mail", specialUse: "\\All" }],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+      fetchMessagesSince: async (): Promise<ImapFetchedMessage[]> => [
+        {
+          uid: 1,
+          message: {
+            messageId: "<labeled@x>",
+            envelope: { from: { address: "a@x.com" } },
+            subject: "Labeled",
+            attachments: [],
+            gmailLabels: ["Work"],
+          },
+        },
+      ],
+      fetchVanishedSince: async () => [],
+      fetchAllUids: async () => [1],
+    });
+    await withTransaction(pool, (client) => reconcileImapAccount(client, gmailImapRelabeled, params));
+
+    const { rows: edgeCountAfter } = await pool.query(
+      `SELECT count(*) FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2)`,
+      [emailProps.find((p) => p.key === "folder")!.id, emailItemId],
+    );
+    expect(Number(edgeCountAfter[0].count)).toBe(2); // All Mail + Work; \Inbox's edge was dropped
   });
 });
 

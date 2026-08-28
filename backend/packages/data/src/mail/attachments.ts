@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { Readable } from "node:stream";
+import { Readable } from "node:stream";
 import type { PoolClient } from "pg";
 import { findOrCreateBlob } from "../blobs/blobsStore.js";
 import { createItemWithClient, createRelationWithClient } from "../chokePoint/chokePoint.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
+import { extractAttachmentText, isTextExtractableContentType } from "./attachmentTextExtraction.js";
 
 /**
  * The shape every provider adapter (imap/gmail/graph) normalizes an attachment part down to.
@@ -62,10 +63,39 @@ function safeStorageFilename(filename: string): string {
   return safe.length > 0 ? safe : "attachment";
 }
 
-export async function ingestAttachments(client: PoolClient, input: IngestAttachmentsInput): Promise<void> {
+async function bufferStream(source: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of source) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks);
+}
+
+export interface IngestAttachmentsResult {
+  /** One entry per PDF/DOCX attachment that extraction actually produced text for (issue #26: "the output goes into the same index table") — folded into the message's own search text by ingest.ts, not indexed as a separate item. */
+  extractedTexts: string[];
+}
+
+export async function ingestAttachments(client: PoolClient, input: IngestAttachmentsInput): Promise<IngestAttachmentsResult> {
+  const extractedTexts: string[] = [];
   for (const attachment of input.attachments) {
     const storageKey = `${input.storageKeyPrefix}/${randomUUID()}-${safeStorageFilename(attachment.filename)}`;
-    const { byteSize, contentHash } = await input.storage.writeStream(storageKey, await attachment.openStream());
+
+    let source = await attachment.openStream();
+    if (isTextExtractableContentType(attachment.contentType)) {
+      // The one case this issue buffers an attachment's bytes in memory rather than pure-
+      // streaming through to storage — extracting text needs the whole file, and every
+      // attachment reaching here already passed the adapter's own MAX_ATTACHMENT_BYTES cap
+      // (imapFlowClient.ts/gmailRestClient.ts/graphRestClient.ts), so this is bounded by the
+      // same limit, not unbounded. Re-wrapped into a fresh stream afterward so the storage
+      // write below still goes through the same `writeStream` path as every other attachment.
+      const buffered = await bufferStream(source);
+      // Best-effort: a corrupt/password-protected/malformed file must not fail the whole
+      // message ingest over a search-indexing nicety.
+      const extractedText = await extractAttachmentText(attachment.contentType, buffered).catch(() => null);
+      if (extractedText) extractedTexts.push(extractedText);
+      source = Readable.from(buffered);
+    }
+
+    const { byteSize, contentHash } = await input.storage.writeStream(storageKey, source);
 
     const blob = await findOrCreateBlob(client, {
       mimeType: attachment.contentType,
@@ -96,4 +126,5 @@ export async function ingestAttachments(client: PoolClient, input: IngestAttachm
       targetItemId: fileItem.id,
     });
   }
+  return { extractedTexts };
 }

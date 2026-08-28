@@ -52,8 +52,15 @@ export interface FetchedMessage {
   bodyHtml?: string;
   date?: Date;
   attachments: ClassifiedAttachment[];
-  /** Gmail API / Graph API's own message id — absent in plain IMAP mode. */
+  /** Gmail API / Graph API's own message id — absent in plain IMAP mode. Also carries `X-GM-MSGID` (via imapflow's `emailId`) when the IMAP server advertises the X-GM-EXT-1 extension (Gmail in IMAP fallback mode), for the same dedup role. */
   providerMessageId?: string | null;
   /** `X-GM-THRID`, Gmail only — auxiliary cross-check, never the threading key itself. */
   providerThreadId?: string | null;
+  /**
+   * `X-GM-LABELS` (Gmail's IMAP extension) — present only when the IMAP server is Gmail and
+   * reports labels for this message (issue #26's "Gmail in IMAP fallback mode"). `undefined`
+   * on every other server; imapReconcile.ts only runs the label-derived Folder membership
+   * logic when this is present, so a plain IMAP/iCloud sync is entirely unaffected.
+   */
+  gmailLabels?: string[];
 }
