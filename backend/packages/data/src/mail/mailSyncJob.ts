@@ -11,6 +11,7 @@ import { reconcileGmailAccount, type GmailMailClient } from "./gmailReconcile.js
 import { reconcileGraphAccount, type GraphMailClient } from "./graphReconcile.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import { MailReauthorizationRequiredError } from "./providerTypes.js";
+import { findEmailsMissingSearchIndex, reindexItemSearch } from "./search.js";
 
 /**
  * Real transport connections (imapflow / Gmail REST / Graph REST) are out of `@semprec/data`
@@ -51,6 +52,24 @@ export async function handleMailAccountSyncSweepTask(pool: Pool): Promise<void> 
   for (const account of due) {
     await enqueueMailAccountSync(pool, account.itemId);
   }
+}
+
+/**
+ * Periodic safety net (crontab, `CORE_CRONTAB` in worker.ts) for `item_search_index` (issue
+ * #26: "a periodic reindex job as a safety net for writes outside the standard path —
+ * migrations, backfills"). Every ordinary sync-worker write already reindexes itself inside
+ * `ingestEmailMessage`'s own transaction; this only ever catches an Emails item that reached
+ * `items` through some other path and was never indexed at all. Reindexes from the item's
+ * current `name`/`body` properties — a backfilled item has no `mail_attachments` rows to pull
+ * PDF/DOCX text from, so this is a plain-text reindex, not a full re-run of ingest.
+ */
+export async function handleMailSearchReindexSweepTask(pool: Pool, emailsDatabaseId: string): Promise<void> {
+  await withTransaction(pool, async (client) => {
+    const missing = await findEmailsMissingSearchIndex(client, emailsDatabaseId);
+    for (const item of missing) {
+      await reindexItemSearch(client, { itemId: item.itemId, databaseId: emailsDatabaseId, text: [item.name ?? "", item.body ?? ""].join("\n\n") });
+    }
+  });
 }
 
 export interface SyncMailAccountPayload {

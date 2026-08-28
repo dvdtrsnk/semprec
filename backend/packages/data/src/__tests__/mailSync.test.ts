@@ -18,12 +18,12 @@ import { resolveThreadId } from "../mail/threading.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
 import type { ClassifiedAttachment } from "../mail/attachments.js";
 import { sanitizeMailHtml } from "../mail/htmlSanitize.js";
-import { reindexItemSearch, searchItems } from "../mail/search.js";
+import { parseMailSearchQuery, reindexItemSearch, searchItems } from "../mail/search.js";
 import { storeCredential, getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import { reconcileImapAccount, type ImapFetchedMessage, type ImapMailClient } from "../mail/imapReconcile.js";
 import { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
 import { reconcileGraphAccount, type GraphMailClient } from "../mail/graphReconcile.js";
-import { handleSyncMailAccountTask, type MailSyncAdapterFactory } from "../mail/mailSyncJob.js";
+import { handleMailSearchReindexSweepTask, handleSyncMailAccountTask, type MailSyncAdapterFactory } from "../mail/mailSyncJob.js";
 import { ensureMailAccountSyncState, getMailAccountSyncState, defaultSyncModeForProvider } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { MailReauthorizationRequiredError } from "../mail/providerTypes.js";
@@ -516,6 +516,7 @@ describe("HTML sanitization (issue #26)", () => {
 describe("full-text search over Emails (issue #26)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
     await resetDatabase(pool);
     await seedSystem(pool);
   });
@@ -530,6 +531,112 @@ describe("full-text search over Emails (issue #26)", () => {
 
     const noResults = await withTransaction(pool, (client) => searchItems(client, { databaseId: emailsId, query: "nonexistentword" }));
     expect(noResults.map((r) => r.itemId)).not.toContain(itemId);
+  });
+
+  it("ranks a more recently indexed match above an older one with identical text relevance", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const olderId = randomUUID();
+    const newerId = randomUUID();
+    await withTransaction(pool, (client) => reindexItemSearch(client, { itemId: olderId, databaseId: emailsId, text: "quarterly report" }));
+    await withTransaction(pool, (client) => reindexItemSearch(client, { itemId: newerId, databaseId: emailsId, text: "quarterly report" }));
+    // Backdate the older row directly — both reindexItemSearch calls above ran within the same
+    // instant, so without this the recency blend would have nothing to actually distinguish.
+    await pool.query(`UPDATE item_search_index SET updated_at = now() - interval '90 days' WHERE item_id = $1`, [olderId]);
+
+    const results = await withTransaction(pool, (client) => searchItems(client, { databaseId: emailsId, query: "quarterly report" }));
+    const olderIndex = results.findIndex((r) => r.itemId === olderId);
+    const newerIndex = results.findIndex((r) => r.itemId === newerId);
+    expect(newerIndex).toBeGreaterThanOrEqual(0);
+    expect(newerIndex).toBeLessThan(olderIndex);
+  });
+
+  describe("Gmail-style search operators", () => {
+    it("parseMailSearchQuery splits operators from free text", () => {
+      expect(parseMailSearchQuery("invoice from:alice@x.com has:attachment before:2026-01-01 after:2025-01-01")).toEqual({
+        freeText: "invoice",
+        from: "alice@x.com",
+        hasAttachment: true,
+        before: "2026-01-01",
+        after: "2025-01-01",
+      });
+      expect(parseMailSearchQuery("just some words")).toEqual({ freeText: "just some words" });
+    });
+
+    it("from: filters by the sender display text", async () => {
+      const emailsId = await databaseIdFor("emails");
+      const foldersId = await databaseIdFor("folders");
+      const filesId = await databaseIdFor("files");
+      const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+      const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+      const folder = await withTransaction(pool, (client) =>
+        createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+      );
+
+      const fromAlice = await withTransaction(pool, (client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          folderRelationPropertyId: folderProperty.id,
+          attachmentsRelationPropertyId: attachmentsProperty.id,
+          folderItemId: folder.id,
+          messageId: "<alice@x>",
+          subject: "Report",
+          envelope: { from: { address: "alice@x.com" } },
+          attachments: [],
+          storage: noopStorage,
+          storageKeyPrefix: "test",
+        }),
+      );
+      await withTransaction(pool, (client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          folderRelationPropertyId: folderProperty.id,
+          attachmentsRelationPropertyId: attachmentsProperty.id,
+          folderItemId: folder.id,
+          messageId: "<bob@x>",
+          subject: "Report",
+          envelope: { from: { address: "bob@x.com" } },
+          attachments: [],
+          storage: noopStorage,
+          storageKeyPrefix: "test",
+        }),
+      );
+
+      const results = await searchItems(pool, { databaseId: emailsId, query: "report from:alice@x.com" });
+      expect(results.map((r) => r.itemId)).toEqual([fromAlice.itemId]);
+    });
+  });
+});
+
+describe("periodic search reindex sweep (issue #26)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  it("indexes an Emails item that was written outside ingestEmailMessage's own standard path", async () => {
+    const emailsId = await databaseIdFor("emails");
+    // Direct choke-point item creation, bypassing ingestEmailMessage/reindexItemSearch entirely
+    // — the exact "migration/backfill wrote outside the standard path" scenario the sweep
+    // exists for.
+    const item = await withTransaction(pool, (client) =>
+      createItemWithClient(
+        client,
+        { databaseId: emailsId, properties: { name: "Backfilled subject", body: "UnindexedBackfillKeyword" } },
+        { allowedSystemKeys: ["name", "body"] },
+      ),
+    );
+
+    const beforeSweep = await searchItems(pool, { databaseId: emailsId, query: "UnindexedBackfillKeyword" });
+    expect(beforeSweep.map((r) => r.itemId)).not.toContain(item.id);
+
+    await handleMailSearchReindexSweepTask(pool, emailsId);
+
+    const afterSweep = await searchItems(pool, { databaseId: emailsId, query: "UnindexedBackfillKeyword" });
+    expect(afterSweep.map((r) => r.itemId)).toContain(item.id);
   });
 });
 
