@@ -46,3 +46,37 @@ export async function getBlob(client: Queryable, id: string): Promise<BlobRow | 
   const { rows } = await client.query(`SELECT ${BLOB_COLUMNS} FROM blobs WHERE id = $1`, [id]);
   return rows[0] ? mapBlobRow(rows[0]) : null;
 }
+
+export async function getBlobByContentHash(client: Queryable, contentHash: string): Promise<BlobRow | null> {
+  const { rows } = await client.query(`SELECT ${BLOB_COLUMNS} FROM blobs WHERE content_hash = $1`, [contentHash]);
+  return rows[0] ? mapBlobRow(rows[0]) : null;
+}
+
+/**
+ * Content-addressed dedup (issue #26: "the same invoice forwarded three times is stored
+ * once") — `createBlob` itself stays a bare insert (issue #24 left dedup enforcement out of
+ * its scope on purpose), so this is the one caller-facing entry point that actually dedupes,
+ * via the existing partial unique index on `content_hash`. Without `contentHash` there is
+ * nothing to dedupe against, so it falls back to a plain insert.
+ */
+export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput): Promise<BlobRow> {
+  if (!input.contentHash) return createBlob(client, input);
+
+  const inserted = await client.query(
+    // The conflict target must repeat blobs_content_hash_uq's own partial predicate
+    // (0004_ten_databases.sql) — Postgres only infers a partial unique index as an ON
+    // CONFLICT arbiter when the clause's WHERE matches the index's WHERE verbatim; without
+    // it, Postgres reports no matching unique constraint at all (not merely "doesn't apply
+    // here"), so this insert would fail outright, not just skip the dedup fast path.
+    `INSERT INTO blobs (mime_type, byte_size, storage_key, source_url, content_hash)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (content_hash) WHERE content_hash IS NOT NULL DO NOTHING
+     RETURNING ${BLOB_COLUMNS}`,
+    [input.mimeType, String(input.byteSize), input.storageKey, input.sourceUrl ?? null, input.contentHash],
+  );
+  if (inserted.rows[0]) return mapBlobRow(inserted.rows[0]);
+
+  const existing = await getBlobByContentHash(client, input.contentHash);
+  if (!existing) throw new Error(`blob with content_hash '${input.contentHash}' vanished after a no-op conflict`);
+  return existing;
+}

@@ -288,6 +288,29 @@ export async function createRelationWithClient(client: PoolClient, input: Create
   await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: reldef.id, itemA, itemB });
 }
 
+export interface DeleteRelationInput {
+  relationPropertyId: string;
+  itemId: string;
+  targetItemId: string;
+}
+
+/** The relation-unlinking counterpart to `createRelationWithClient` above, factored out for the same reason (issue #26: the IMAP adapter's VANISHED/UID-diff handling removes a folder-membership edge inside its own larger sync transaction). */
+export async function deleteRelationWithClient(client: PoolClient, input: DeleteRelationInput): Promise<void> {
+  const property = await propertiesStore.getProperty(client, input.relationPropertyId);
+  if (!property || property.type !== "relation") {
+    throw new ValidationError(`${input.relationPropertyId} is not a relation property`);
+  }
+  const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, input.relationPropertyId);
+  if (!reldef) throw new ValidationError(`Relation property ${input.relationPropertyId} has no relation definition`);
+
+  const isSideA = reldef.propertyIdA === input.relationPropertyId;
+  const itemA = isSideA ? input.itemId : input.targetItemId;
+  const itemB = isSideA ? input.targetItemId : input.itemId;
+
+  await relationsStore.deleteItemRelation(client, reldef.id, itemA, itemB);
+  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: reldef.id, itemA, itemB });
+}
+
 export function createChokePoint(
   pool: Pool,
   computedKeyRegistry: ComputedKeyRegistry = createComputedKeyRegistry(),

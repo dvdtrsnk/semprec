@@ -12,6 +12,7 @@ import { registerTemporalSwitcherViewType } from "../views/temporalSwitcherViewT
 import { registerLibraryGridViewType } from "../views/libraryGridViewType.js";
 import { seedTenDatabasesInTransaction } from "./seedTenDatabases.js";
 import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
+import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
 
 export { PROJECTS_MODULE_ID } from "./tenDatabaseKeys.js";
 
@@ -120,5 +121,10 @@ export async function seedSystem(
     // generic "library module" contract. Runs last: needs Projects/People (from
     // seedTenDatabasesInTransaction above) and the system timezone (settingsDb, just above).
     await seedLibraryModuleInTransaction(client, projectsDb.id, tenDatabases.people.id, viewTypeRegistry, computedKeyRegistry);
+
+    // Mailboxes/Folders/Emails (issue #26): the IMAP sync core's schema and deterministic
+    // People-linking wiring. Order relative to the library module doesn't matter — both only
+    // depend on the ten databases above.
+    await seedEmailModuleInTransaction(client, projectsDb.id, tenDatabases.people.id, tenDatabases.files.id, computedKeyRegistry);
   });
 }
