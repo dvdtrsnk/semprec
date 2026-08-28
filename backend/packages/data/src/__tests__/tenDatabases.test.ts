@@ -82,6 +82,23 @@ describe("ten hardcoded databases (issue #24)", () => {
     expect(allEdges).toHaveLength(1);
   });
 
+  it("a systemActive project can be deactivated but not deleted", async () => {
+    const projectsId = await databaseIdFor("projects");
+    const systemProject = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Email", systemActive: true } });
+
+    await expect(chokePoint.softDeleteItem(projectsId, systemProject.id)).rejects.toThrow(/system-active/);
+
+    const deactivated = await chokePoint.updateItem({ databaseId: projectsId, itemId: systemProject.id, propertiesPatch: { systemActive: false } });
+    expect(deactivated.properties.systemActive).toBe(false);
+    const nowDeletable = await chokePoint.softDeleteItem(projectsId, systemProject.id);
+    expect(nowDeletable?.deletedAt).not.toBeNull();
+
+    // an ordinary (non-system) project is unaffected
+    const ordinary = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Side project" } });
+    const deleted = await chokePoint.softDeleteItem(projectsId, ordinary.id);
+    expect(deleted?.deletedAt).not.toBeNull();
+  });
+
   it("Health records <-> Areas is bidirectional (fix: was one-directional in the mock)", async () => {
     const healthRecordsId = await databaseIdFor("healthRecords");
     const { rows } = await pool.query(
@@ -131,7 +148,7 @@ describe("ten hardcoded databases (issue #24)", () => {
       createTaskRecurrence(client, { itemId: task.id, mode: "fixed", rule: { kind: "weekdays", days: ["mon", "fri"] } }),
     );
 
-    const next = await advanceTaskRecurrence(pool, chokePoint, { databaseId: tasksId, itemId: task.id, timezone: "Europe/Prague" });
+    const next = await advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: task.id, timezone: "Europe/Prague" });
     expect(next).not.toBeNull();
     expect(next!.properties.name).toBe("Take out trash");
     expect(next!.properties.status).toBe("notDone");
@@ -146,7 +163,7 @@ describe("ten hardcoded databases (issue #24)", () => {
 
     // completing a task with no recurrence is a no-op
     const plain = await chokePoint.createItem({ databaseId: tasksId, properties: { name: "One-off", status: "notDone" } });
-    const noop = await advanceTaskRecurrence(pool, chokePoint, { databaseId: tasksId, itemId: plain.id, timezone: "Europe/Prague" });
+    const noop = await advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: plain.id, timezone: "Europe/Prague" });
     expect(noop).toBeNull();
   });
 

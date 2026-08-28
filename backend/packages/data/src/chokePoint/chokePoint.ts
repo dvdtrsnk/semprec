@@ -388,6 +388,15 @@ export function createChokePoint(
 
     async softDeleteItem(databaseId: string, itemId: string): Promise<ItemRow | null> {
       return withTransaction(pool, async (client) => {
+        // A system-module project (issue #24's Projects.systemActive) "can only be
+        // deactivated, never deleted" — checked generically on `properties.systemActive`
+        // rather than hardcoded to the Projects database, so any future database adopting
+        // the same convention is covered too.
+        const before = await itemsStore.getItemById(client, databaseId, itemId);
+        if (before?.properties.systemActive === true) {
+          throw new ForbiddenError(`Item ${itemId} is a system-active project and cannot be deleted, only deactivated`, { field: "systemActive" });
+        }
+
         const item = await itemsStore.softDeleteItem(client, databaseId, itemId);
         if (!item) return null;
         await triggerOnItemEventHeartbeats(client, databaseId, "delete", itemId);
