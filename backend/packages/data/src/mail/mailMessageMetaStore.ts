@@ -103,10 +103,6 @@ export async function getMailMessageMetaByProviderMessageId(client: Queryable, p
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-export async function setThreadId(client: Queryable, itemId: string, threadId: string): Promise<void> {
-  await client.query(`UPDATE mail_message_meta SET thread_id = $2 WHERE item_id = $1`, [itemId, threadId]);
-}
-
 export interface MailThreadRow {
   id: string;
   subjectHint: string | null;
