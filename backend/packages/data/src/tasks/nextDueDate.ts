@@ -33,8 +33,8 @@ function nextFixedDate(rule: FixedRecurrenceRule, reference: DateTime): DateTime
     }
     case "monthDates": {
       const targetDates = new Set(rule.dates);
-      // A 13-month sweep safely covers every combination of requested dates (e.g. only the
-      // 31st, skipping months without one) without an unbounded loop.
+      // A 366-day (just over a year) sweep safely covers every combination of requested
+      // dates (e.g. only the 31st, skipping months without one) without an unbounded loop.
       for (let offset = 1; offset <= 366; offset++) {
         const candidate = reference.plus({ days: offset }).startOf("day");
         if (targetDates.has(candidate.day)) return candidate;

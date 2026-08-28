@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from "pg";
-import { DateTime } from "luxon";
 import { withTransaction } from "../db/pool.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
+import { assertValidTimezone } from "../timezone.js";
 import type { CreatedBy, DatabaseRow, ItemRow, PropertyRow, PropertyType, ViewItemRow, ViewRow } from "../types.js";
 import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
@@ -241,13 +241,9 @@ export async function updateItemWithClient(client: PoolClient, input: UpdateItem
   });
   if (settingsItemId === item.id && typeof input.propertiesPatch.timezone === "string") {
     const timezone = input.propertiesPatch.timezone;
-    // Luxon accepts any string and silently produces an invalid DateTime for an
-    // unrecognized IANA zone rather than throwing — validate before it reaches
-    // computeNextFireAt, where an invalid zone would surface much later as a
-    // Postgres "Invalid time value" from serializing next_fire_at = NaN.
-    if (!DateTime.local().setZone(timezone).isValid) {
-      throw new ValidationError(`Invalid IANA timezone: '${timezone}'`, { field: "timezone" });
-    }
+    // Validated before it reaches computeNextFireAt, where an invalid zone would surface
+    // much later as a Postgres "Invalid time value" from serializing next_fire_at = NaN.
+    assertValidTimezone(timezone);
     await recomputeAllForTimezoneChange(client, timezone);
   }
 

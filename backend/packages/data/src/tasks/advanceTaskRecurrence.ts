@@ -4,6 +4,7 @@ import { NotFoundError } from "../errors.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { createItemWithClient, createRelationWithClient, updateItemWithClient } from "../chokePoint/chokePoint.js";
+import { assertValidTimezone } from "../timezone.js";
 import type { ItemRow } from "../types.js";
 import { computeNextDueDate } from "./nextDueDate.js";
 import { createTaskRecurrence, getTaskRecurrence, setTaskRecurrenceActive } from "./taskRecurrenceStore.js";
@@ -44,6 +45,7 @@ export async function advanceTaskRecurrence(pool: Pool, input: AdvanceTaskRecurr
     const current = await itemsStore.getItemById(client, input.databaseId, input.itemId);
     if (!current) throw new NotFoundError(`Task ${input.itemId} not found`);
 
+    assertValidTimezone(input.timezone);
     const nextDate = computeNextDueDate(recurrence.mode, recurrence.rule, input.timezone, new Date());
 
     const newItem = await createItemWithClient(client, {
