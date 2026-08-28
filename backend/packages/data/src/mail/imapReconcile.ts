@@ -13,6 +13,17 @@ import { ensureMailAccountSyncState, recordImapActivity } from "./mailAccountSyn
 export interface ImapFetchedMessage {
   uid: number;
   message: FetchedMessage;
+  /**
+   * The message's current IMAP flags at fetch time — captured on every `fetchMessagesSince`
+   * call (initial sync AND every incremental pass' new messages), not only via the separate
+   * `fetchFlagsChangedSince` pass. Without this, a message's flags at the moment it's first
+   * ingested were never recorded at all (only later *changes* would be, via CHANGEDSINCE) —
+   * most visibly after a UIDVALIDITY reset, where the full-resync path re-ingests every
+   * message through here and `highestmodseq` is reset to NULL, so the CHANGEDSINCE pass has
+   * nothing to diff against and pre-existing flags (e.g. `\Seen`) would otherwise be silently
+   * dropped.
+   */
+  flags: string[];
 }
 
 export interface ImapFolderSelection {
@@ -101,6 +112,7 @@ export async function reconcileImapFolder(dbClient: PoolClient, imap: ImapMailCl
       attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
       folderItemId: params.folderItemId,
       folderUid: item.uid,
+      folderFlags: item.flags,
       storage: params.storage,
       storageKeyPrefix: params.storageKeyPrefix,
       ...item.message,

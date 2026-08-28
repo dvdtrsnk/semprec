@@ -72,14 +72,20 @@ export interface SearchItemsResultRow {
  * than overriding a strongly-relevant old message with a weakly-relevant new one.
  */
 export async function searchItems(client: Queryable, input: SearchItemsInput): Promise<SearchItemsResultRow[]> {
+  // The tsquery is parsed once (`q`), not twice (once for the rank expression, once for the
+  // WHERE predicate) — same query object reused in both places instead of two independent
+  // `websearch_to_tsquery(...)` calls that could in principle disagree if Postgres ever
+  // evaluated them at different times.
   const { rows } = await client.query<{ item_id: string; rank: number }>(
-    `SELECT idx.item_id AS item_id,
-            ts_rank_cd(idx.search_vector, websearch_to_tsquery('czech', $2))
+    `WITH q AS (SELECT websearch_to_tsquery('czech', $2) AS query)
+     SELECT idx.item_id AS item_id,
+            ts_rank_cd(idx.search_vector, q.query)
               / (1.0 + EXTRACT(EPOCH FROM (now() - COALESCE((it.properties->>'date')::timestamptz, it.updated_at))) / 86400.0 / 30.0)
               AS rank
      FROM item_search_index idx
      JOIN items it ON it.database_id = idx.database_id AND it.id = idx.item_id
-     WHERE idx.database_id = $1 AND idx.search_vector @@ websearch_to_tsquery('czech', $2)
+     CROSS JOIN q
+     WHERE idx.database_id = $1 AND idx.search_vector @@ q.query
      ORDER BY rank DESC
      LIMIT $3`,
     [input.databaseId, input.query, input.limit ?? 50],

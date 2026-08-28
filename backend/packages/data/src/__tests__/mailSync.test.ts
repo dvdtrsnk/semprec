@@ -482,8 +482,8 @@ describe("IMAP reconcile core (issue #26)", () => {
       selectFolder: async () => ({ uidvalidity: 111, uidnext: 3, highestModSeq: 5 }),
       fetchMessagesSince: (): AsyncIterable<ImapFetchedMessage> =>
         toAsyncIterable([
-          { uid: 1, message: { messageId: "<one@x>", envelope: { from: { address: "a@x.com" } }, subject: "First", attachments: [] } },
-          { uid: 2, message: { messageId: "<two@x>", envelope: { from: { address: "b@x.com" } }, subject: "Second", attachments: [] } },
+          { uid: 1, flags: ["\\Seen"], message: { messageId: "<one@x>", envelope: { from: { address: "a@x.com" } }, subject: "First", attachments: [] } },
+          { uid: 2, flags: [], message: { messageId: "<two@x>", envelope: { from: { address: "b@x.com" } }, subject: "Second", attachments: [] } },
         ]),
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [1, 2],
@@ -524,6 +524,11 @@ describe("IMAP reconcile core (issue #26)", () => {
 
     const { rows: emailRows } = await pool.query(`SELECT properties FROM items WHERE database_id = $1 ORDER BY properties->>'name'`, [emailsId]);
     expect(emailRows.map((r) => r.properties.name)).toEqual(["First", "Second"]);
+
+    // Flags are captured at initial ingest (not only via a later CHANGEDSINCE pass) — uid 1's
+    // fixture flags include \Seen, uid 2's are empty.
+    const { rows: edgeRows } = await pool.query(`SELECT metadata FROM item_relations WHERE metadata ->> 'uid' = '1'`);
+    expect(edgeRows[0].metadata).toMatchObject({ uid: 1, flags: ["\\Seen"] });
   });
 
   it("a UIDVALIDITY change resets folder sync state and forces a full re-fetch", async () => {

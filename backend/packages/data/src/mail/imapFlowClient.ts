@@ -162,7 +162,7 @@ export class ImapFlowMailClient implements ImapMailClient {
       { uid: true },
     )) {
       if (raw.uid < sinceUid) continue; // "*" in a range can include one message below sinceUid on an empty-range edge case
-      yield { uid: raw.uid, message: await this.buildFetchedMessage(raw) };
+      yield { uid: raw.uid, flags: [...(raw.flags ?? [])], message: await this.buildFetchedMessage(raw) };
     }
   }
 

@@ -37,6 +37,8 @@ export interface IngestEmailMessageInput {
   folderItemId: string;
   /** IMAP adapter only — the UID this message has *in this folder*; lives on the relation edge, not the item (see the migration's header note). */
   folderUid?: number;
+  /** IMAP adapter only — the message's flags at fetch time, captured alongside `folderUid` on the same edge (see imapReconcile.ts's `ImapFetchedMessage.flags` for why this is captured here rather than only via the separate CHANGEDSINCE pass). */
+  folderFlags?: string[];
   messageId: string;
   inReplyTo?: string | null;
   references?: string[];
@@ -139,7 +141,10 @@ export async function ingestEmailMessage(client: PoolClient, input: IngestEmailM
     relationPropertyId: input.folderRelationPropertyId,
     itemId,
     targetItemId: input.folderItemId,
-    metadata: input.folderUid !== undefined ? { uid: input.folderUid } : {},
+    metadata: {
+      ...(input.folderUid !== undefined ? { uid: input.folderUid } : {}),
+      ...(input.folderFlags !== undefined ? { flags: input.folderFlags } : {}),
+    },
   });
 
   return { itemId, created };

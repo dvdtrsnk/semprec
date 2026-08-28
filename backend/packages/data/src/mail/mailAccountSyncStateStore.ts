@@ -108,7 +108,8 @@ export async function invalidateGraphDeltaLink(client: Queryable, itemId: string
 
 export interface RecordGraphActivityInput {
   itemId: string;
-  deltaLink: string;
+  /** Absent/empty means the sync produced no new deltaLink to advance to (see graphRestClient.ts's `fetchDelta` — a page can complete without one) — leaves the existing stored value alone rather than overwriting it with an empty string that the next `fetchDelta(deltaLink)` would then try to use as a URL. */
+  deltaLink?: string;
   subscriptionId?: string;
   subscriptionExpiresAt?: Date;
   nextExpectedActivityAt: Date;
@@ -117,12 +118,12 @@ export interface RecordGraphActivityInput {
 export async function recordGraphActivity(client: Queryable, input: RecordGraphActivityInput): Promise<void> {
   await client.query(
     `UPDATE mail_account_sync_state
-     SET graph_delta_link = $2,
+     SET graph_delta_link = COALESCE($2, graph_delta_link),
          graph_subscription_id = COALESCE($3, graph_subscription_id),
          graph_subscription_expires_at = COALESCE($4, graph_subscription_expires_at),
          last_error = NULL, last_activity_at = now(), next_expected_activity_at = $5
      WHERE item_id = $1`,
-    [input.itemId, input.deltaLink, input.subscriptionId ?? null, input.subscriptionExpiresAt ?? null, input.nextExpectedActivityAt],
+    [input.itemId, input.deltaLink || null, input.subscriptionId ?? null, input.subscriptionExpiresAt ?? null, input.nextExpectedActivityAt],
   );
 }
 
