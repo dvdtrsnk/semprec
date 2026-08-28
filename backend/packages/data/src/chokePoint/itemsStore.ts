@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../db/pool.js";
-import { ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
+import { ConflictError, NotFoundError } from "../errors.js";
 import type { ItemRow } from "../types.js";
-import type { ComputedKeyRegistry } from "./computedKeyRegistry.js";
 
 function mapItemRow(row: {
   id: string;
@@ -193,23 +192,3 @@ export async function writeComputed(
   );
 }
 
-/**
- * The entry point a module cache writer (transcription, Inbox summaries, ...) must go
- * through instead of calling `writeComputed` directly: refuses the write if `key` isn't
- * declared in the registry, so an undeclared or colliding key can never reach
- * `items.computed`. The rollup engine does not go through here — its keys are already
- * validated when the rollup property itself is created (see chokePoint.ts).
- */
-export async function writeModuleComputed(
-  client: Queryable,
-  registry: ComputedKeyRegistry,
-  databaseId: string,
-  itemId: string,
-  key: string,
-  value: unknown,
-): Promise<void> {
-  if (!registry.has(key)) {
-    throw new ForbiddenError(`Computed key '${key}' is not declared by any registered module`, { field: key }, "computed_key_undeclared");
-  }
-  await writeComputed(client, databaseId, itemId, key, value);
-}
