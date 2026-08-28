@@ -129,6 +129,12 @@ export async function seedEmailModuleInTransaction(
     // `mail_message_meta.envelope`, not this column.
     { key: "sender", name: "Sender", type: "text", owner: "system" },
     { key: "recipients", name: "Recipients", type: "text", owner: "system" },
+    // Stores the message's raw HTML (or plain text) exactly as the provider sent it —
+    // untrusted, unsanitized. `mail/htmlSanitize.ts`'s `sanitizeMailHtml` is deliberately a
+    // serve-time step, not applied here at ingest (see its own header note on why), so any
+    // future reader of this value (issue #27's reading view, an API endpoint, anything else)
+    // MUST run it through `sanitizeMailHtml` before rendering — this column is not safe to
+    // inject into a page as-is.
     { key: "body", name: "Body", type: "longText", owner: "system" },
     { key: "date", name: "Date", type: "date", owner: "system", config: { includeTime: true } },
   ]);
