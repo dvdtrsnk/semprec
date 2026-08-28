@@ -1,8 +1,13 @@
 import type { Pool, PoolClient } from "pg";
+import { assertKnownValue } from "../dbRowValidation.js";
 
 export type TriggeredBy = "user" | "heartbeat" | "supervisor" | "mcp";
 export type AgentRunUnit = "invocation" | "session";
 export type AgentRunStatus = "running" | "done" | "error";
+
+const TRIGGERED_BY_VALUES: readonly TriggeredBy[] = ["user", "heartbeat", "supervisor", "mcp"];
+const AGENT_RUN_UNITS: readonly AgentRunUnit[] = ["invocation", "session"];
+const AGENT_RUN_STATUSES: readonly AgentRunStatus[] = ["running", "done", "error"];
 
 export interface AgentRunRow {
   id: string;
@@ -36,10 +41,10 @@ function mapRow(row: {
     projectItemId: row.project_item_id,
     parentRunId: row.parent_run_id,
     heartbeatId: row.heartbeat_id,
-    triggeredBy: row.triggered_by as TriggeredBy,
-    unit: row.unit as AgentRunUnit,
+    triggeredBy: assertKnownValue(TRIGGERED_BY_VALUES, row.triggered_by, "triggered_by"),
+    unit: assertKnownValue(AGENT_RUN_UNITS, row.unit, "unit"),
     task: row.task,
-    status: row.status as AgentRunStatus,
+    status: assertKnownValue(AGENT_RUN_STATUSES, row.status, "status"),
     result: row.result,
     startedAt: row.started_at.toISOString(),
     finishedAt: row.finished_at ? row.finished_at.toISOString() : null,

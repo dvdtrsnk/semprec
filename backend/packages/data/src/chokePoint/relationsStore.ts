@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import { NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRelationRow, RelationDefinitionRow } from "../types.js";
+import { assertKnownValue } from "../dbRowValidation.js";
 
 const CARDINALITIES: readonly RelationDefinitionRow["cardinality"][] = ["one_to_one", "one_to_many", "many_to_many"];
 
@@ -10,14 +11,11 @@ function mapRelationDefinitionRow(row: {
   property_id_b: string | null;
   cardinality: string;
 }): RelationDefinitionRow {
-  if (!(CARDINALITIES as readonly string[]).includes(row.cardinality)) {
-    throw new Error(`Unknown cardinality in database row: '${row.cardinality}'`);
-  }
   return {
     id: row.id,
     propertyIdA: row.property_id_a,
     propertyIdB: row.property_id_b,
-    cardinality: row.cardinality as RelationDefinitionRow["cardinality"],
+    cardinality: assertKnownValue(CARDINALITIES, row.cardinality, "cardinality"),
   };
 }
 

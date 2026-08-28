@@ -1,17 +1,11 @@
 import type { PoolClient } from "pg";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { PROPERTY_TYPES, type PropertyOwner, type PropertyRow, type PropertyType } from "../types.js";
+import { assertKnownValue } from "../dbRowValidation.js";
 import { getDatabase } from "./databasesStore.js";
 
 const PROPERTY_OWNERS: readonly PropertyOwner[] = ["user", "system"];
 const MIGRATION_STATUSES: readonly PropertyRow["migrationStatus"][] = ["stable", "pending", "running", "done", "partial"];
-
-function assertKnownValue<T extends string>(allowed: readonly T[], value: string, label: string): T {
-  if (!(allowed as readonly string[]).includes(value)) {
-    throw new Error(`Unknown ${label} in database row: '${value}'`);
-  }
-  return value as T;
-}
 
 function mapPropertyRow(row: {
   id: string;
