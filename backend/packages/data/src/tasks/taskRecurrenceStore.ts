@@ -44,8 +44,16 @@ export async function createTaskRecurrence(client: Queryable, input: CreateTaskR
   return mapRow(rows[0]);
 }
 
-export async function getTaskRecurrence(client: Queryable, itemId: string): Promise<TaskRecurrence | null> {
-  const { rows } = await client.query(`SELECT ${COLUMNS} FROM task_recurrence WHERE item_id = $1`, [itemId]);
+/**
+ * `forUpdate` row-locks the recurrence so two concurrent advances of the same task can't
+ * both read `active: true` and both proceed — the second blocks until the first's
+ * transaction commits (at which point `active` has flipped to `false`, so it correctly
+ * no-ops) or rolls back (at which point it re-reads the original, still-active row). Pass
+ * `true` from any caller that's about to act on `active` within its own transaction, e.g.
+ * `advanceTaskRecurrence`; a plain read (no intent to mutate) should omit it.
+ */
+export async function getTaskRecurrence(client: Queryable, itemId: string, forUpdate = false): Promise<TaskRecurrence | null> {
+  const { rows } = await client.query(`SELECT ${COLUMNS} FROM task_recurrence WHERE item_id = $1${forUpdate ? " FOR UPDATE" : ""}`, [itemId]);
   return rows[0] ? mapRow(rows[0]) : null;
 }
 

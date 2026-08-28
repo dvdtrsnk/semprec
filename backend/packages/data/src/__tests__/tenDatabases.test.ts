@@ -167,6 +167,26 @@ describe("ten hardcoded databases (issue #24)", () => {
     expect(noop).toBeNull();
   });
 
+  it("task recurrence preserves a one-directional edge where the task is the target side (Events -> Tasks actionItems)", async () => {
+    const tasksId = await databaseIdFor("tasks");
+    const eventsId = await databaseIdFor("events");
+    const event = await chokePoint.createItem({ databaseId: eventsId, properties: { name: "Standup" } });
+    const task = await chokePoint.createItem({ databaseId: tasksId, properties: { name: "Follow up", status: "notDone" } });
+
+    const { rows: actionItemsProp } = await pool.query("SELECT id FROM properties WHERE database_id = $1 AND key = 'actionItems'", [eventsId]);
+    await chokePoint.createRelation({ relationPropertyId: actionItemsProp[0].id, itemId: event.id, targetItemId: task.id });
+
+    await withTransaction(pool, (client) => createTaskRecurrence(client, { itemId: task.id, mode: "floating", rule: { unit: "days", n: 1 } }));
+    const next = await advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: task.id, timezone: "Europe/Prague" });
+
+    // the event keeps its original action-item link (the completed instance stays part of
+    // the historical record) and gains a new one to the next instance
+    const edges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, event.id));
+    const linkedItemIds = edges.flatMap((e) => [e.itemA, e.itemB]);
+    expect(linkedItemIds).toContain(task.id);
+    expect(linkedItemIds).toContain(next!.id);
+  });
+
   it("computeNextDueDate: fixed nthWeekday and floating interval rules", () => {
     const secondTuesday = computeNextDueDate("fixed", { kind: "nthWeekday", n: 2, weekday: "tue" }, "UTC", new Date("2026-08-01T00:00:00Z"));
     expect(secondTuesday).toBe("2026-08-11");

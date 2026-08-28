@@ -35,7 +35,10 @@ export interface AdvanceTaskRecurrenceInput {
  */
 export async function advanceTaskRecurrence(pool: Pool, input: AdvanceTaskRecurrenceInput): Promise<ItemRow | null> {
   return withTransaction(pool, async (client) => {
-    const recurrence = await getTaskRecurrence(client, input.itemId);
+    // Row-locked: two concurrent advances of the same task must not both observe
+    // `active: true` and both create a next instance — the second blocks here until the
+    // first commits (active now false, so it correctly no-ops) or rolls back.
+    const recurrence = await getTaskRecurrence(client, input.itemId, true);
     if (!recurrence || !recurrence.active) return null;
 
     const current = await itemsStore.getItemById(client, input.databaseId, input.itemId);
@@ -73,10 +76,14 @@ async function copyRelationEdges(client: PoolClient, fromItemId: string, toItemI
   for (const edge of edges) {
     const reldef = await relationsStore.getRelationDefinition(client, edge.relationDefinitionId);
     if (!reldef) continue;
-    const isFromSideA = edge.itemA === fromItemId;
-    const relationPropertyId = isFromSideA ? reldef.propertyIdA : reldef.propertyIdB;
-    if (!relationPropertyId) continue;
-    const targetItemId = relationsStore.otherSide(edge, fromItemId);
-    await createRelationWithClient(client, { relationPropertyId, itemId: toItemId, targetItemId, metadata: edge.metadata });
+    const newItemA = edge.itemA === fromItemId ? toItemId : edge.itemA;
+    const newItemB = edge.itemB === fromItemId ? toItemId : edge.itemB;
+    // propertyIdA always exists (NOT NULL in the schema); anchoring on it — and passing the
+    // desired itemA/itemB straight through as itemId/targetItemId — works regardless of
+    // which side `fromItemId` was actually on, including a one-directional relation where
+    // only side A has a property (e.g. Events -> Tasks "actionItems", propertyIdB null).
+    // Picking propertyIdA/propertyIdB based on which side fromItemId was on, and skipping
+    // when that side's property is null, would silently drop exactly that case.
+    await createRelationWithClient(client, { relationPropertyId: reldef.propertyIdA, itemId: newItemA, targetItemId: newItemB, metadata: edge.metadata });
   }
 }
