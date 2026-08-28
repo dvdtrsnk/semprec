@@ -5,7 +5,7 @@ import { ValidationError } from "../errors.js";
 import { ensureFolderItem } from "./folderDiscovery.js";
 import { ingestEmailMessage } from "./ingest.js";
 import { getMailMessageMetaByProviderMessageId } from "./mailMessageMetaStore.js";
-import { ensureMailAccountSyncState, invalidateGraphDeltaLink, recordGraphActivity, recordSyncError } from "./mailAccountSyncStateStore.js";
+import { ensureMailAccountSyncState, invalidateGraphDeltaLink, recordGraphActivity } from "./mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import type { FetchedMessage } from "./providerTypes.js";
 
@@ -67,78 +67,78 @@ export interface ReconcileGraphAccountParams {
  * move: this drops the stale folder edge the same way the vanished/label-diff handling does
  * for the other two adapters.
  */
+/**
+ * Deliberately does not catch-and-record its own failures: this whole pass runs inside one
+ * caller-owned transaction (mailSyncJob.ts), so an error-recording write here would itself be
+ * undone by the same rollback that the re-thrown error triggers. See
+ * mailSyncJob.ts's `handleSyncMailAccountTask` for where sync failures actually get recorded.
+ */
 export async function reconcileGraphAccount(dbClient: PoolClient, graph: GraphMailClient, params: ReconcileGraphAccountParams): Promise<void> {
-  try {
-    const relationDefinition = await getRelationDefinitionByPropertyId(dbClient, params.folderRelationPropertyId);
-    if (!relationDefinition) throw new ValidationError(`Folder relation property ${params.folderRelationPropertyId} has no relation definition`);
+  const relationDefinition = await getRelationDefinitionByPropertyId(dbClient, params.folderRelationPropertyId);
+  if (!relationDefinition) throw new ValidationError(`Folder relation property ${params.folderRelationPropertyId} has no relation definition`);
 
-    const state = await ensureMailAccountSyncState(dbClient, { itemId: params.mailboxItemId, syncMode: "graph_api" });
+  const state = await ensureMailAccountSyncState(dbClient, { itemId: params.mailboxItemId, syncMode: "graph_api" });
 
-    const folders = await graph.listFolders();
-    const folderItemIdByGraphId = new Map<string, string>();
-    for (const folder of folders) {
-      const folderItemId = await ensureFolderItem(dbClient, {
-        foldersDatabaseId: params.foldersDatabaseId,
-        mailboxItemId: params.mailboxItemId,
-        mailboxRelationPropertyId: params.mailboxFolderRelationPropertyId,
-        providerId: folder.id,
-        name: folder.displayName,
-        behavior: "folder",
-        specialPurpose: specialPurposeForGraphFolder(folder),
-      });
-      folderItemIdByGraphId.set(folder.id, folderItemId);
-    }
-
-    let delta = await graph.fetchDelta(state.graphDeltaLink);
-    if (delta.invalidated) {
-      await invalidateGraphDeltaLink(dbClient, params.mailboxItemId, "delta 410 Gone / resyncRequired, running full resync");
-      delta = await graph.fetchDelta(null);
-    }
-
-    for (const change of delta.changes) {
-      if (change.removed) {
-        const meta = await getMailMessageMetaByProviderMessageId(dbClient, change.id);
-        if (!meta) continue;
-        const edges = await listRelationsForItem(dbClient, relationDefinition.id, meta.itemId);
-        for (const edge of edges) {
-          const folderItemId = otherSide(edge, meta.itemId);
-          await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, itemId: meta.itemId, targetItemId: folderItemId });
-        }
-        continue;
-      }
-
-      const folderItemId = change.parentFolderId ? folderItemIdByGraphId.get(change.parentFolderId) : undefined;
-      if (!folderItemId || !change.message) continue;
-
-      const result = await ingestEmailMessage(dbClient, {
-        emailsDatabaseId: params.emailsDatabaseId,
-        filesDatabaseId: params.filesDatabaseId,
-        folderRelationPropertyId: params.folderRelationPropertyId,
-        attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
-        folderItemId,
-        providerMessageId: change.id,
-        storage: params.storage,
-        storageKeyPrefix: params.storageKeyPrefix,
-        ...change.message,
-      });
-
-      const edges = await listRelationsForItem(dbClient, relationDefinition.id, result.itemId);
-      for (const edge of edges) {
-        const otherFolderId = otherSide(edge, result.itemId);
-        if (otherFolderId !== folderItemId) {
-          await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, itemId: result.itemId, targetItemId: otherFolderId });
-        }
-      }
-    }
-
-    await recordGraphActivity(dbClient, {
-      itemId: params.mailboxItemId,
-      deltaLink: delta.newDeltaLink,
-      nextExpectedActivityAt: new Date(Date.now() + 15 * 60 * 1000),
+  const folders = await graph.listFolders();
+  const folderItemIdByGraphId = new Map<string, string>();
+  for (const folder of folders) {
+    const folderItemId = await ensureFolderItem(dbClient, {
+      foldersDatabaseId: params.foldersDatabaseId,
+      mailboxItemId: params.mailboxItemId,
+      mailboxRelationPropertyId: params.mailboxFolderRelationPropertyId,
+      providerId: folder.id,
+      name: folder.displayName,
+      behavior: "folder",
+      specialPurpose: specialPurposeForGraphFolder(folder),
     });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    await recordSyncError(dbClient, params.mailboxItemId, message);
-    throw err;
+    folderItemIdByGraphId.set(folder.id, folderItemId);
   }
+
+  let delta = await graph.fetchDelta(state.graphDeltaLink);
+  if (delta.invalidated) {
+    await invalidateGraphDeltaLink(dbClient, params.mailboxItemId, "delta 410 Gone / resyncRequired, running full resync");
+    delta = await graph.fetchDelta(null);
+  }
+
+  for (const change of delta.changes) {
+    if (change.removed) {
+      const meta = await getMailMessageMetaByProviderMessageId(dbClient, change.id);
+      if (!meta) continue;
+      const edges = await listRelationsForItem(dbClient, relationDefinition.id, meta.itemId);
+      for (const edge of edges) {
+        const folderItemId = otherSide(edge, meta.itemId);
+        await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, itemId: meta.itemId, targetItemId: folderItemId });
+      }
+      continue;
+    }
+
+    const folderItemId = change.parentFolderId ? folderItemIdByGraphId.get(change.parentFolderId) : undefined;
+    if (!folderItemId || !change.message) continue;
+
+    const result = await ingestEmailMessage(dbClient, {
+      emailsDatabaseId: params.emailsDatabaseId,
+      filesDatabaseId: params.filesDatabaseId,
+      folderRelationPropertyId: params.folderRelationPropertyId,
+      attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
+      folderItemId,
+      providerMessageId: change.id,
+      storage: params.storage,
+      storageKeyPrefix: params.storageKeyPrefix,
+      ...change.message,
+    });
+
+    const edges = await listRelationsForItem(dbClient, relationDefinition.id, result.itemId);
+    for (const edge of edges) {
+      const otherFolderId = otherSide(edge, result.itemId);
+      if (otherFolderId !== folderItemId) {
+        await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, itemId: result.itemId, targetItemId: otherFolderId });
+      }
+    }
+  }
+
+  await recordGraphActivity(dbClient, {
+    itemId: params.mailboxItemId,
+    deltaLink: delta.newDeltaLink,
+    nextExpectedActivityAt: new Date(Date.now() + 15 * 60 * 1000),
+  });
 }

@@ -131,8 +131,20 @@ export async function recordImapActivity(client: Queryable, input: RecordImapAct
   );
 }
 
+/**
+ * Also pushes `next_expected_activity_at` out by a fixed backoff (not left as-is): the
+ * periodic sweep (mailSyncJob.ts) re-enqueues any account whose `next_expected_activity_at`
+ * is due, so leaving it unchanged on a persistent failure (bad credentials, revoked token)
+ * would make the sweep hammer the same broken account every cycle instead of settling into a
+ * bounded retry cadence.
+ */
 export async function recordSyncError(client: Queryable, itemId: string, error: string): Promise<void> {
-  await client.query(`UPDATE mail_account_sync_state SET last_error = $2, last_activity_at = now() WHERE item_id = $1`, [itemId, error]);
+  await client.query(
+    `UPDATE mail_account_sync_state
+     SET last_error = $2, last_activity_at = now(), next_expected_activity_at = now() + interval '15 minutes'
+     WHERE item_id = $1`,
+    [itemId, error],
+  );
 }
 
 /** Accounts due for another sync pass — consumed by the periodic sweep job, not the observability check (issue #39), which reads the same column but only to alert. */

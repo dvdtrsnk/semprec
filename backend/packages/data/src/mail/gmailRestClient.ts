@@ -10,7 +10,7 @@ function decodeBase64Url(value: string): Buffer {
   return Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 }
 
-async function parseRawMessage(raw: string): Promise<FetchedMessage> {
+async function parseRawMessage(raw: string, gmailMessageId: string): Promise<FetchedMessage> {
   const parsed = await simpleParser(decodeBase64Url(raw), { keepCidLinks: true });
   const references = Array.isArray(parsed.references) ? parsed.references : parsed.references ? [parsed.references] : [];
   const toList = (value: typeof parsed.to): MailEnvelopeAddress[] => {
@@ -18,7 +18,10 @@ async function parseRawMessage(raw: string): Promise<FetchedMessage> {
     return objects.flatMap((o) => o.value).filter((a): a is { name: string; address: string } => Boolean(a.address)).map((a) => ({ name: a.name || undefined, address: a.address }));
   };
   return {
-    messageId: parsed.messageId ?? `<no-message-id@gmail-api>`,
+    // Falls back to Gmail's own (always-unique) message id, not a fixed placeholder — two
+    // different messages both missing a Message-ID header must not collide and get merged
+    // into one Emails item by ingestEmailMessage's dedup-by-messageId.
+    messageId: parsed.messageId ?? `<${gmailMessageId}@gmail-api>`,
     inReplyTo: parsed.inReplyTo ?? null,
     references,
     subject: parsed.subject,
@@ -104,7 +107,7 @@ export class GmailRestClient implements GmailMailClient {
   async fetchMessage(id: string): Promise<GmailFetchedMessage | null> {
     const { status, json } = await this.request<{ id: string; threadId: string; labelIds?: string[]; raw: string }>(`/messages/${id}?format=raw`);
     if (status === 404 || !json) return null;
-    return { id: json.id, threadId: json.threadId, labelIds: json.labelIds ?? [], message: await parseRawMessage(json.raw) };
+    return { id: json.id, threadId: json.threadId, labelIds: json.labelIds ?? [], message: await parseRawMessage(json.raw, json.id) };
   }
 
   async listLabels(): Promise<GmailLabelRef[]> {

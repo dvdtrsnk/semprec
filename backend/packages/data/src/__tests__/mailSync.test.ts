@@ -21,6 +21,8 @@ import { sanitizeMailHtml } from "../mail/htmlSanitize.js";
 import { reindexItemSearch, searchItems } from "../mail/search.js";
 import { storeCredential, getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import { reconcileImapAccount, type ImapFetchedMessage, type ImapMailClient } from "../mail/imapReconcile.js";
+import { handleSyncMailAccountTask, type MailSyncAdapterFactory } from "../mail/mailSyncJob.js";
+import { ensureMailAccountSyncState, getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { simpleParser } from "mailparser";
 import { createHash, randomUUID } from "node:crypto";
@@ -44,6 +46,7 @@ const noopStorage: BlobStorageWriter = {
     }
     return { byteSize, contentHash: hash.digest("hex") };
   },
+  async delete() {},
 };
 
 function mailRegistry() {
@@ -523,6 +526,53 @@ describe("IMAP reconcile core (issue #26)", () => {
       [emailProps.find((p) => p.key === "folder")!.id],
     );
     expect(Number(rows[0].count)).toBe(1); // one of the two original edges was removed
+  });
+});
+
+describe("mail sync job error handling (issue #26)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  it("persists last_error and pushes out next_expected_activity_at when a sync pass throws, surviving the aborted transaction's rollback", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+
+    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
+    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
+    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+
+    const failingImap: ImapMailClient = {
+      getCapabilities: async () => new Set(),
+      listFolders: async () => {
+        throw new Error("connection refused");
+      },
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+      fetchMessagesSince: async () => [],
+      fetchVanishedSince: async () => [],
+      fetchAllUids: async () => [],
+    };
+
+    const adapters: MailSyncAdapterFactory = { createImapClient: async () => failingImap };
+
+    await expect(
+      handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, adapters, { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId }, noopStorage),
+    ).rejects.toThrow("connection refused");
+
+    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
+    expect(state?.lastError).toBe("connection refused");
+    expect(state?.nextExpectedActivityAt).toBeTruthy();
+    expect(new Date(state!.nextExpectedActivityAt!).getTime()).toBeGreaterThan(Date.now());
+
+    // The credential access attempt itself is still logged, even though the sync that used it failed later.
+    const { rows } = await pool.query(`SELECT purpose FROM credential_access_log WHERE item_id = $1`, [mailbox.id]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].purpose).toBe("imap_sync");
   });
 });
 

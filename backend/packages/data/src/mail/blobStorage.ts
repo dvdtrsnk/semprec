@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { Readable } from "node:stream";
@@ -18,6 +18,8 @@ import type { Readable } from "node:stream";
  */
 export interface BlobStorageWriter {
   writeStream(storageKey: string, source: Readable): Promise<{ byteSize: number; contentHash: string }>;
+  /** Removes bytes written under a key that turned out to be an unneeded duplicate — see `mail/attachments.ts`'s content-hash dedup, which writes before it can know whether `findOrCreateBlob` will keep or discard that write. */
+  delete(storageKey: string): Promise<void>;
 }
 
 /**
@@ -41,5 +43,9 @@ export class LocalFsBlobStorageWriter implements BlobStorageWriter {
 
     await pipeline(source, createWriteStream(path));
     return { byteSize, contentHash: hash.digest("hex") };
+  }
+
+  async delete(storageKey: string): Promise<void> {
+    await rm(join(this.baseDir, storageKey), { force: true });
   }
 }

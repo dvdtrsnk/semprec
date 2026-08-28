@@ -84,6 +84,11 @@ export async function ingestAttachments(client: PoolClient, input: IngestAttachm
       storageKey,
       contentHash,
     });
+    // A content-hash dedup hit means `blob` already existed under a different storageKey —
+    // the bytes just streamed above are an unneeded duplicate on disk, not the ones kept.
+    if (blob.storageKey !== storageKey) {
+      await input.storage.delete(storageKey);
+    }
 
     await client.query(
       `INSERT INTO mail_attachments (message_item_id, blob_id, filename, content_type, content_id, disposition, byte_size)

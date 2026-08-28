@@ -61,11 +61,19 @@ async function toFetchedMessage(resource: GraphMessageResource): Promise<Fetched
   };
 }
 
+class GraphApiError extends Error {
+  constructor(public readonly status: number) {
+    super(`Graph API request failed with status ${status}`);
+  }
+}
+
 /**
  * Real `GraphMailClient` (graphReconcile.ts) over the Microsoft Graph REST API — same
  * "not exercised by tests, reconcile logic tested via a fake" relationship as
- * `GmailRestClient`. Requests `internetMessageHeaders` on the delta query specifically to
- * recover `References`/`In-Reply-To` (Graph doesn't surface these as first-class fields).
+ * `GmailRestClient`. `internetMessageHeaders` is requested via `$select` (Graph has no
+ * separate "which headers" query parameter — it must be a selected property, same as any
+ * other field) specifically to recover `References`/`In-Reply-To`, which Graph doesn't
+ * surface as first-class fields.
  */
 export class GraphRestClient implements GraphMailClient {
   constructor(private readonly getAccessToken: () => Promise<string>) {}
@@ -73,8 +81,25 @@ export class GraphRestClient implements GraphMailClient {
   private async request<T>(url: string): Promise<T> {
     const token = await this.getAccessToken();
     const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
-    if (!response.ok) throw new Error(`Graph API request failed with status ${response.status}`);
+    if (!response.ok) throw new GraphApiError(response.status);
     return (await response.json()) as T;
+  }
+
+  /** Graph's `/mailFolders` (and `/childFolders`) only ever return one level — nested folders need an explicit recursive walk, not a single `$expand`. */
+  private async listFoldersUnder(url: string, wellKnownIds: Map<string, string>): Promise<GraphFolderRef[]> {
+    const folders: GraphFolderRef[] = [];
+    let pageUrl = url;
+    while (pageUrl) {
+      const page = await this.request<{ value: { id: string; displayName: string; childFolderCount?: number }[]; ["@odata.nextLink"]?: string }>(pageUrl);
+      for (const f of page.value) {
+        folders.push({ id: f.id, displayName: f.displayName, wellKnownName: wellKnownIds.get(f.id) });
+        if (f.childFolderCount && f.childFolderCount > 0) {
+          folders.push(...(await this.listFoldersUnder(`${BASE_URL}/mailFolders/${f.id}/childFolders?$top=999&$select=id,displayName,childFolderCount`, wellKnownIds)));
+        }
+      }
+      pageUrl = page["@odata.nextLink"] ?? "";
+    }
+    return folders;
   }
 
   async listFolders(): Promise<GraphFolderRef[]> {
@@ -88,20 +113,13 @@ export class GraphRestClient implements GraphMailClient {
       }
     }
 
-    const folders: GraphFolderRef[] = [];
-    let url = `${BASE_URL}/mailFolders?$top=999`;
-    while (url) {
-      const page = await this.request<{ value: { id: string; displayName: string }[]; ["@odata.nextLink"]?: string }>(url);
-      for (const f of page.value) folders.push({ id: f.id, displayName: f.displayName, wellKnownName: wellKnownIds.get(f.id) });
-      url = page["@odata.nextLink"] ?? "";
-    }
-    return folders;
+    return this.listFoldersUnder(`${BASE_URL}/mailFolders?$top=999&$select=id,displayName,childFolderCount`, wellKnownIds);
   }
 
   async fetchDelta(deltaLink: string | null): Promise<GraphDeltaResult> {
     let url =
       deltaLink ??
-      `${BASE_URL}/messages/delta?$select=internetMessageId,subject,from,toRecipients,ccRecipients,bccRecipients,body,bodyPreview,receivedDateTime,parentFolderId&$expand=singleValueExtendedProperties($filter=id eq 'String 0x1042')&$headers=internetMessageHeaders`;
+      `${BASE_URL}/messages/delta?$select=internetMessageId,subject,from,toRecipients,ccRecipients,bccRecipients,body,bodyPreview,receivedDateTime,parentFolderId,internetMessageHeaders`;
     const changes: GraphChangedMessage[] = [];
     let newDeltaLink = "";
 
@@ -119,8 +137,11 @@ export class GraphRestClient implements GraphMailClient {
         url = page["@odata.nextLink"] ?? "";
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (message.includes("410") || message.includes("400")) {
+      // 410 Gone is Graph's documented "deltaLink expired, resync required" response —
+      // matched on the actual HTTP status, not a substring of the error message, so an
+      // unrelated 4xx (a malformed query, throttling) surfaces as a real error instead of
+      // silently discarding the account's sync position.
+      if (err instanceof GraphApiError && err.status === 410) {
         return { invalidated: true, newDeltaLink: "", changes: [] };
       }
       throw err;

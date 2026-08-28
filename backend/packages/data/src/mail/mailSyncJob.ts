@@ -3,7 +3,7 @@ import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { withTransaction } from "../db/pool.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
-import { getMailAccountSyncState, listAccountsDueForSync } from "./mailAccountSyncStateStore.js";
+import { getMailAccountSyncState, listAccountsDueForSync, recordSyncError } from "./mailAccountSyncStateStore.js";
 import { reconcileImapAccount, type ImapMailClient } from "./imapReconcile.js";
 import { reconcileGmailAccount, type GmailMailClient } from "./gmailReconcile.js";
 import { reconcileGraphAccount, type GraphMailClient } from "./graphReconcile.js";
@@ -67,45 +67,56 @@ export async function handleSyncMailAccountTask(
   const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, payload.mailboxItemId));
   if (!state) throw new Error(`Mailbox ${payload.mailboxItemId} has no mail_account_sync_state row — never connected`);
 
-  const credential = await withTransaction(pool, (client) =>
-    getDecryptedCredential(client, { itemId: payload.mailboxItemId, actorType: "sync_worker", purpose: `${state.syncMode}_sync` }),
-  );
+  // Passed `pool` directly, not wrapped in `withTransaction`: each statement
+  // (the access-log insert, then the decrypt) commits independently, so a decrypt failure
+  // (wrong key_version, corrupted ciphertext) still leaves the access-attempt logged instead
+  // of rolling it back along with the failed decryption — see externalCredentialsStore.ts.
+  const credential = await getDecryptedCredential(pool, { itemId: payload.mailboxItemId, actorType: "sync_worker", purpose: `${state.syncMode}_sync` });
   if (!credential) throw new Error(`Mailbox ${payload.mailboxItemId} has no stored credential`);
 
-  await withTransaction(pool, async (client) => {
-    const [folderProperty, attachmentsProperty, mailboxFolderProperty] = await Promise.all([
-      getPropertyByKey(client, moduleIds.emailsDatabaseId, "folder"),
-      getPropertyByKey(client, moduleIds.emailsDatabaseId, "attachments"),
-      getPropertyByKey(client, moduleIds.foldersDatabaseId, "mailbox"),
-    ]);
-    if (!folderProperty || !attachmentsProperty || !mailboxFolderProperty) {
-      throw new Error("Email module schema is missing an expected relation property — was seedEmailModuleInTransaction run?");
-    }
+  try {
+    await withTransaction(pool, async (client) => {
+      const [folderProperty, attachmentsProperty, mailboxFolderProperty] = await Promise.all([
+        getPropertyByKey(client, moduleIds.emailsDatabaseId, "folder"),
+        getPropertyByKey(client, moduleIds.emailsDatabaseId, "attachments"),
+        getPropertyByKey(client, moduleIds.foldersDatabaseId, "mailbox"),
+      ]);
+      if (!folderProperty || !attachmentsProperty || !mailboxFolderProperty) {
+        throw new Error("Email module schema is missing an expected relation property — was seedEmailModuleInTransaction run?");
+      }
 
-    const shared = {
-      mailboxItemId: payload.mailboxItemId,
-      emailsDatabaseId: moduleIds.emailsDatabaseId,
-      filesDatabaseId: moduleIds.filesDatabaseId,
-      foldersDatabaseId: moduleIds.foldersDatabaseId,
-      folderRelationPropertyId: folderProperty.id,
-      mailboxFolderRelationPropertyId: mailboxFolderProperty.id,
-      attachmentsRelationPropertyId: attachmentsProperty.id,
-      storage,
-      storageKeyPrefix: payload.mailboxItemId,
-    };
+      const shared = {
+        mailboxItemId: payload.mailboxItemId,
+        emailsDatabaseId: moduleIds.emailsDatabaseId,
+        filesDatabaseId: moduleIds.filesDatabaseId,
+        foldersDatabaseId: moduleIds.foldersDatabaseId,
+        folderRelationPropertyId: folderProperty.id,
+        mailboxFolderRelationPropertyId: mailboxFolderProperty.id,
+        attachmentsRelationPropertyId: attachmentsProperty.id,
+        storage,
+        storageKeyPrefix: payload.mailboxItemId,
+      };
 
-    if (state.syncMode === "imap") {
-      if (!adapters.createImapClient) throw new Error("No IMAP adapter configured for this composition root");
-      const imap = await adapters.createImapClient(payload.mailboxItemId, credential);
-      await reconcileImapAccount(client, imap, shared);
-    } else if (state.syncMode === "gmail_api") {
-      if (!adapters.createGmailClient) throw new Error("No Gmail adapter configured for this composition root");
-      const gmail = adapters.createGmailClient(payload.mailboxItemId, credential);
-      await reconcileGmailAccount(client, gmail, shared);
-    } else {
-      if (!adapters.createGraphClient) throw new Error("No Graph adapter configured for this composition root");
-      const graph = adapters.createGraphClient(payload.mailboxItemId, credential);
-      await reconcileGraphAccount(client, graph, shared);
-    }
-  });
+      if (state.syncMode === "imap") {
+        if (!adapters.createImapClient) throw new Error("No IMAP adapter configured for this composition root");
+        const imap = await adapters.createImapClient(payload.mailboxItemId, credential);
+        await reconcileImapAccount(client, imap, shared);
+      } else if (state.syncMode === "gmail_api") {
+        if (!adapters.createGmailClient) throw new Error("No Gmail adapter configured for this composition root");
+        const gmail = adapters.createGmailClient(payload.mailboxItemId, credential);
+        await reconcileGmailAccount(client, gmail, shared);
+      } else {
+        if (!adapters.createGraphClient) throw new Error("No Graph adapter configured for this composition root");
+        const graph = adapters.createGraphClient(payload.mailboxItemId, credential);
+        await reconcileGraphAccount(client, graph, shared);
+      }
+    });
+  } catch (err) {
+    // The reconcile pass above ran inside one transaction that this error just aborted —
+    // recording that failure needs its own, separate transaction, or the UPDATE recording
+    // it would itself be rolled back along with everything else `withTransaction` undoes.
+    const message = err instanceof Error ? err.message : String(err);
+    await withTransaction(pool, (client) => recordSyncError(client, payload.mailboxItemId, message));
+    throw err;
+  }
 }

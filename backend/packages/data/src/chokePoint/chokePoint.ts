@@ -296,6 +296,10 @@ export interface DeleteRelationInput {
 
 /** The relation-unlinking counterpart to `createRelationWithClient` above, factored out for the same reason (issue #26: the IMAP adapter's VANISHED/UID-diff handling removes a folder-membership edge inside its own larger sync transaction). */
 export async function deleteRelationWithClient(client: PoolClient, input: DeleteRelationInput): Promise<void> {
+  const property = await propertiesStore.getProperty(client, input.relationPropertyId);
+  if (!property || property.type !== "relation") {
+    throw new ValidationError(`${input.relationPropertyId} is not a relation property`);
+  }
   const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, input.relationPropertyId);
   if (!reldef) throw new ValidationError(`Relation property ${input.relationPropertyId} has no relation definition`);
 

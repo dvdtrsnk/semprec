@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import sanitizeHtml from "sanitize-html";
 import { createItemWithClient, createRelationWithClient } from "../chokePoint/chokePoint.js";
 import { resolveThreadId } from "./threading.js";
 import { getMailMessageMetaByMessageId, upsertMailMessageMeta, type MailEnvelope, type MailEnvelopeAddress } from "./mailMessageMetaStore.js";
@@ -12,6 +13,11 @@ function formatAddress(address: MailEnvelopeAddress): string {
 
 function formatAddressList(list: MailEnvelopeAddress[] | undefined): string {
   return (list ?? []).map(formatAddress).join(", ");
+}
+
+/** Plain-text approximation of an HTML-only body for the search index (search.ts) — an HTML-only message has no `bodyText` at all, so indexing only the subject would silently miss every word that's only in the visible body. */
+function htmlToSearchText(html: string): string {
+  return sanitizeHtml(html, { allowedTags: [], allowedAttributes: {} });
 }
 
 /** Every Emails property this issue defines is `owner: 'system'` (see seedEmailModule.ts) — the sync worker mirrors the real mailbox, so nothing here is user-editable. */
@@ -110,10 +116,11 @@ export async function ingestEmailMessage(client: PoolClient, input: IngestEmailM
       storageKeyPrefix: input.storageKeyPrefix,
     });
 
+    const bodyForSearch = input.bodyText ?? (input.bodyHtml ? htmlToSearchText(input.bodyHtml) : "");
     await reindexItemSearch(client, {
       itemId,
       databaseId: input.emailsDatabaseId,
-      text: [input.subject ?? "", input.bodyText ?? ""].join("\n\n"),
+      text: [input.subject ?? "", bodyForSearch].join("\n\n"),
     });
   }
 
