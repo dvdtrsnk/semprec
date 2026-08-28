@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { z } from "zod";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { withTransaction } from "../db/pool.js";
 import { updateItemWithClient } from "../chokePoint/chokePoint.js";
@@ -10,15 +11,19 @@ import type { ItemRow } from "../types.js";
 /**
  * Config-driven mapping (issue #25): which property keys this run is allowed to write,
  * and which external source to read from — swapping the source never changes the job's
- * contract, only this object's `source`/mapping fields.
+ * contract, only this object's `source`/mapping fields. The single schema both the
+ * enqueue side (libraryMetadataActions.ts, which extends it with `databaseId`) and the
+ * job payload parsing side (worker.ts) validate against, so the two never drift apart.
  */
-export interface LibraryMetadataJobConfig {
+export const libraryMetadataJobConfigSchema = z.object({
   /** Discriminates which fetcher a caller-supplied `LibraryMetadataFetcher` resolves to. */
-  source: string;
-  coverKey: string;
-  secondaryRatingKey?: string;
-  sourceUrlKey?: string;
-}
+  source: z.string(),
+  coverKey: z.string(),
+  secondaryRatingKey: z.string().optional(),
+  sourceUrlKey: z.string().optional(),
+});
+
+export type LibraryMetadataJobConfig = z.infer<typeof libraryMetadataJobConfigSchema>;
 
 export interface LibraryMetadataFetchResult {
   cover?: CreateBlobInput;
@@ -89,7 +94,13 @@ export async function handleProcessLibraryMetadataTask(pool: Pool, payload: Proc
     readClient.release();
   }
   if (automation?.status === "locked") return;
-  if (!item || item.deletedAt) return;
+  if (!item || item.deletedAt) {
+    // Settles the row instead of leaving it exactly as found: a job enqueued right before
+    // the item was soft-deleted would otherwise leave a 'pending'/'error' row that the daily
+    // retry sweep keeps re-enqueuing forever for an item that no longer exists to enrich.
+    await withTransaction(pool, (client) => markItemAutomationDone(client, payload.itemId));
+    return;
+  }
 
   try {
     const result = await fetcher(item, payload.config);

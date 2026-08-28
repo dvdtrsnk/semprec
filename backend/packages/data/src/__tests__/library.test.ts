@@ -16,7 +16,7 @@ import {
   LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID,
 } from "../library/libraryMetadataActions.js";
 import { ensureItemAutomation, getItemAutomation, setItemAutomationLocked } from "../library/itemAutomationStore.js";
-import type { LibraryMetadataFetcher } from "../library/libraryMetadataJob.js";
+import { enqueueLibraryMetadataProcessing, type LibraryMetadataFetcher } from "../library/libraryMetadataJob.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -194,5 +194,57 @@ describe("library module (issue #25)", () => {
 
     // Not a property on either side.
     expect((await chokePoint.getItem(moviesId, movie.id))?.properties.rating).toBeUndefined();
+  });
+
+  it("excludes a soft-deleted item's errored row from the daily retry sweep's re-enqueue", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const registry = libraryRegistry();
+    const item = await chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } });
+
+    await drainQueue(registry, async () => {
+      throw new Error("boom");
+    });
+    expect((await withTransaction(pool, (client) => getItemAutomation(client, item.id)))?.status).toBe("error");
+
+    await chokePoint.softDeleteItem(booksId, item.id);
+
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM project_heartbeats WHERE action_id = $1 AND action_config ->> 'databaseId' = $2`,
+      [LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID, booksId],
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [rows[0].id]);
+    await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+
+    let called = false;
+    await drainQueue(registry, async () => {
+      called = true;
+      return {};
+    });
+    expect(called).toBe(false);
+
+    const settled = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    expect(settled?.status).toBe("error"); // untouched — never re-enqueued in the first place
+  });
+
+  it("settles item_automation to 'done' for a job that runs against an already-deleted item", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const registry = libraryRegistry();
+    const item = await chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } });
+    await chokePoint.softDeleteItem(booksId, item.id);
+
+    // A job enqueued directly (e.g. one already in flight when the delete happened),
+    // bypassing the retry sweep's exclusion filter entirely.
+    let called = false;
+    await withTransaction(pool, (client) =>
+      enqueueLibraryMetadataProcessing(client, { itemId: item.id, databaseId: booksId, config: { source: "none", coverKey: "cover" } }),
+    );
+    await drainQueue(registry, async () => {
+      called = true;
+      return {};
+    });
+    expect(called).toBe(false); // the job returns before ever calling the fetcher
+
+    const settled = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    expect(settled?.status).toBe("done");
   });
 });

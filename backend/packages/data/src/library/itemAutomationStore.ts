@@ -74,7 +74,9 @@ export async function setItemAutomationLocked(client: PoolClient, itemId: string
  * whose whole 3-attempt batch has failed. Joins `items` to scope by database, since
  * `item_automation` itself carries no database_id (it is deliberately generic, not
  * library-specific) — `items.id` is unique across all partitions, so the join needs no
- * `database_id` predicate of its own, same as `itemsStore.getItemsByIds`.
+ * `database_id` predicate of its own, same as `itemsStore.getItemsByIds`. Excludes a
+ * soft-deleted item: retrying metadata for something the user deleted would just fail (or
+ * silently no-op) forever, spending a fresh 3-attempt batch every day for nothing.
  */
 export async function listErroredItemAutomationForDatabases(client: PoolClient, databaseIds: string[]): Promise<ItemAutomationRow[]> {
   if (databaseIds.length === 0) return [];
@@ -82,7 +84,7 @@ export async function listErroredItemAutomationForDatabases(client: PoolClient, 
     `SELECT ia.item_id, ia.status, ia.error, ia.attempts, ia.last_attempt_at
      FROM item_automation ia
      JOIN items i ON i.id = ia.item_id
-     WHERE ia.status = 'error' AND i.database_id = ANY($1::uuid[])`,
+     WHERE ia.status = 'error' AND i.database_id = ANY($1::uuid[]) AND i.deleted_at IS NULL`,
     [databaseIds],
   );
   return rows.map(mapRow);

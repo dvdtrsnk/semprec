@@ -2,19 +2,15 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import { withTransaction } from "../db/pool.js";
 import type { ActionContext, ActionHandler } from "../scheduler/actions.js";
-import { enqueueLibraryMetadataProcessing } from "./libraryMetadataJob.js";
+import { enqueueLibraryMetadataProcessing, libraryMetadataJobConfigSchema } from "./libraryMetadataJob.js";
 import { listErroredItemAutomationForDatabases } from "./itemAutomationStore.js";
 
 export const LIBRARY_METADATA_TRIGGER_ACTION_ID = "core.libraryMetadataTrigger";
 export const LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID = "core.libraryMetadataRetrySweep";
 
 /** The heartbeat's `action_config` for both library-metadata actions: the job config plus the database it's scoped to. */
-const libraryMetadataActionConfigSchema = z.object({
+const libraryMetadataActionConfigSchema = libraryMetadataJobConfigSchema.extend({
   databaseId: z.string().uuid(),
-  source: z.string(),
-  coverKey: z.string(),
-  secondaryRatingKey: z.string().optional(),
-  sourceUrlKey: z.string().optional(),
 });
 
 /**

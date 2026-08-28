@@ -8,7 +8,13 @@ import { handleDocHistorySquashTask, handleDocHistoryCleanupTask } from "./docs/
 import type { ActionRegistry } from "./scheduler/actions.js";
 import type { PropertyType } from "./types.js";
 import { PROPERTY_TYPES } from "./types.js";
-import { handleProcessLibraryMetadataTask, noopLibraryMetadataFetcher, type LibraryMetadataFetcher, type LibraryMetadataJobConfig } from "./library/libraryMetadataJob.js";
+import {
+  handleProcessLibraryMetadataTask,
+  libraryMetadataJobConfigSchema,
+  noopLibraryMetadataFetcher,
+  type LibraryMetadataFetcher,
+  type LibraryMetadataJobConfig,
+} from "./library/libraryMetadataJob.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -22,23 +28,14 @@ function requirePropertyType(payload: unknown, field: string): PropertyType {
   return value as PropertyType;
 }
 
+/** Validates against the same schema the enqueue side (libraryMetadataActions.ts) uses, so the two can't drift apart. */
 function requireLibraryMetadataConfig(payload: unknown): LibraryMetadataJobConfig {
-  const raw = (payload as Record<string, unknown> | null)?.config as Record<string, unknown> | undefined;
-  if (!raw || typeof raw.source !== "string" || typeof raw.coverKey !== "string") {
-    throw new Error("processLibraryMetadata job payload missing a valid 'config' object");
+  const raw = (payload as Record<string, unknown> | null)?.config;
+  const result = libraryMetadataJobConfigSchema.safeParse(raw);
+  if (!result.success) {
+    throw new Error(`processLibraryMetadata job payload has an invalid 'config' object: ${result.error.message}`);
   }
-  if (raw.secondaryRatingKey !== undefined && typeof raw.secondaryRatingKey !== "string") {
-    throw new Error("processLibraryMetadata job payload field 'config.secondaryRatingKey' must be a string when present");
-  }
-  if (raw.sourceUrlKey !== undefined && typeof raw.sourceUrlKey !== "string") {
-    throw new Error("processLibraryMetadata job payload field 'config.sourceUrlKey' must be a string when present");
-  }
-  return {
-    source: raw.source,
-    coverKey: raw.coverKey,
-    secondaryRatingKey: raw.secondaryRatingKey as string | undefined,
-    sourceUrlKey: raw.sourceUrlKey as string | undefined,
-  };
+  return result.data;
 }
 
 /**

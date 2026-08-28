@@ -9,6 +9,7 @@ import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { DRIFT_CHECK_ACTION_ID } from "../manifest/driftCheck.js";
 import { DEFAULT_TIMEZONE, SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { registerTemporalSwitcherViewType } from "../views/temporalSwitcherViewType.js";
+import { registerLibraryGridViewType } from "../views/libraryGridViewType.js";
 import { seedTenDatabasesInTransaction } from "./seedTenDatabases.js";
 import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
 
@@ -45,6 +46,9 @@ export async function seedSystem(
   // gets skipped by the early return. `registerViewType` is idempotent for a non-builtin
   // type (a plain Map.set), so calling this on every startup is safe.
   registerTemporalSwitcherViewType(viewTypeRegistry);
+  // Same reasoning as temporal-switcher just above (issue #25's library-grid view type):
+  // needed in *this process's* registry on every startup, not only the one-time DB seed.
+  registerLibraryGridViewType(viewTypeRegistry);
 
   await withTransaction(pool, async (client) => {
     const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1`, [SYSTEM_SETTINGS_MODULE_ID]);
