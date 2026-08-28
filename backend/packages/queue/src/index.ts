@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { runMigrations, runOnce as graphileRunOnce, run as graphileRun } from "graphile-worker";
-import type { RunnerOptions, Task, TaskList, Runner } from "graphile-worker";
+import type { RunnerOptions, TaskList, Runner } from "graphile-worker";
 
 export type { TaskList, Task, Runner } from "graphile-worker";
 type Queryable = Pool | PoolClient;
@@ -21,11 +21,6 @@ export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES
 /** Creates/updates graphile-worker's own schema. Call once at startup, before enqueueJob/runWorker. */
 export async function ensureQueueSchema(pool: Pool): Promise<void> {
   await runMigrations({ pgPool: pool });
-}
-
-/** Adds a handler to a task list without mutating the one passed in. */
-export function registerTask(taskList: TaskList, name: string, handler: Task): TaskList {
-  return { ...taskList, [name]: handler };
 }
 
 export interface EnqueueJobOptions {

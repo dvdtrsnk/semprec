@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { DateTime } from "luxon";
 import { withTransaction } from "../db/pool.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import type { DatabaseRow, ItemRow, PropertyRow, PropertyType } from "../types.js";
@@ -321,7 +322,15 @@ export function createChokePoint(pool: Pool, computedKeyRegistry: ComputedKeyReg
           throw err;
         });
         if (settingsItemId === item.id && typeof input.propertiesPatch.timezone === "string") {
-          await recomputeAllForTimezoneChange(client, input.propertiesPatch.timezone);
+          const timezone = input.propertiesPatch.timezone;
+          // Luxon accepts any string and silently produces an invalid DateTime for an
+          // unrecognized IANA zone rather than throwing — validate before it reaches
+          // computeNextFireAt, where an invalid zone would surface much later as a
+          // Postgres "Invalid time value" from serializing next_fire_at = NaN.
+          if (!DateTime.local().setZone(timezone).isValid) {
+            throw new ValidationError(`Invalid IANA timezone: '${timezone}'`, { field: "timezone" });
+          }
+          await recomputeAllForTimezoneChange(client, timezone);
         }
 
         return item;
