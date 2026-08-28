@@ -126,7 +126,7 @@ export async function reconcileImapFolder(dbClient: PoolClient, imap: ImapMailCl
   if (capabilities.has("CONDSTORE") && state.highestmodseq) {
     const changedFlags = await imap.fetchFlagsChangedSince(params.folderPath, Number(state.highestmodseq));
     for (const change of changedFlags) {
-      await updateFolderEdgeFlags(dbClient, relationDefinition.id, params.folderItemId, change.uid, change.flags);
+      await updateFolderEdgeFlags(dbClient, relationDefinition.id, params.folderRelationPropertyId, params.folderItemId, change.uid, change.flags);
     }
   }
 

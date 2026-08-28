@@ -1,4 +1,6 @@
+import type { PoolClient } from "pg";
 import type { Queryable } from "../db/pool.js";
+import { createRelationWithClient } from "../chokePoint/chokePoint.js";
 
 export interface KnownProviderMessage {
   itemId: string;
@@ -66,19 +68,25 @@ export async function listKnownFolderUids(client: Queryable, relationDefinitionI
  * (the message isn't known here yet — a race with this same pass's own new-message fetch, or
  * simply not synced yet) is a silent no-op: the next full reconcile picks up its flags along
  * with everything else once the message itself is ingested, there's nothing to merge onto yet.
+ * Writes through `createRelationWithClient` (the choke point), not a raw UPDATE — the edge's
+ * `uid` is already known here (it's the lookup key), so the full desired metadata can be
+ * reconstructed and passed through the same upsert every other edge write already uses,
+ * rather than a second, ad hoc write path direct against `item_relations`.
  */
 export async function updateFolderEdgeFlags(
-  client: Queryable,
+  client: PoolClient,
   relationDefinitionId: string,
+  relationPropertyId: string,
   folderItemId: string,
   uid: number,
   flags: string[],
 ): Promise<void> {
   const emailItemId = await findEmailItemIdByFolderUid(client, relationDefinitionId, folderItemId, uid);
   if (!emailItemId) return;
-  await client.query(
-    `UPDATE item_relations SET metadata = metadata || jsonb_build_object('flags', $3::text[])
-     WHERE relation_definition_id = $1 AND ((item_a = $2 AND item_b = $4) OR (item_a = $4 AND item_b = $2))`,
-    [relationDefinitionId, folderItemId, flags, emailItemId],
-  );
+  await createRelationWithClient(client, {
+    relationPropertyId,
+    itemId: emailItemId,
+    targetItemId: folderItemId,
+    metadata: { uid, flags },
+  });
 }
