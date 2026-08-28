@@ -789,6 +789,51 @@ describe("IMAP reconcile core (issue #26)", () => {
     expect(rows[0].uidvalidity).toBe("999");
   });
 
+  it("re-observing the same message under a new UID after a UIDVALIDITY reset updates its edge in place, never adds a second one", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const emailProps = await chokePoint.listProperties(emailsId);
+    const folderProps = await chokePoint.listProperties(foldersId);
+    const folderRelationPropertyId = emailProps.find((p) => p.key === "folder")!.id;
+
+    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
+    const params = {
+      mailboxItemId: mailbox.id,
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      foldersDatabaseId: foldersId,
+      folderRelationPropertyId,
+      mailboxFolderRelationPropertyId: folderProps.find((p) => p.key === "mailbox")!.id,
+      attachmentsRelationPropertyId: emailProps.find((p) => p.key === "attachments")!.id,
+      storage: noopStorage,
+      storageKeyPrefix: "test",
+    };
+
+    const firstPassImap = fakeImapClient({
+      fetchMessagesSince: async () => [{ uid: 5, message: { messageId: "<survivor@x>", envelope: { from: { address: "a@x.com" } }, subject: "Survivor", attachments: [] } }],
+    });
+    await withTransaction(pool, (client) => reconcileImapAccount(client, firstPassImap, params));
+
+    const secondPassImap = fakeImapClient({
+      selectFolder: async () => ({ uidvalidity: 999, uidnext: 2, highestModSeq: 1 }),
+      // Server rebuilt the folder (UIDVALIDITY changed) — the same message now has UID 1, not 5.
+      fetchMessagesSince: async () => [{ uid: 1, message: { messageId: "<survivor@x>", envelope: { from: { address: "a@x.com" } }, subject: "Survivor", attachments: [] } }],
+    });
+    await withTransaction(pool, (client) => reconcileImapAccount(client, secondPassImap, params));
+
+    const { rows: emailRows } = await pool.query(`SELECT id FROM items WHERE database_id = $1`, [emailsId]);
+    expect(emailRows).toHaveLength(1); // still one Emails item, not a duplicate
+
+    const { rows: edgeRows } = await pool.query(
+      `SELECT metadata FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2)`,
+      [folderRelationPropertyId, emailRows[0].id],
+    );
+    expect(edgeRows).toHaveLength(1); // one edge, updated in place — not a second, stale-generation edge
+    expect(edgeRows[0].metadata).toEqual({ uid: 1 }); // carries the new UID, not the pre-reset one
+  });
+
   it("removes the folder edge for a vanished UID", async () => {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");
