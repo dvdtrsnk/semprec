@@ -175,6 +175,14 @@ describe("ten hardcoded databases (issue #24)", () => {
     expect(inTwoWeeks).toBe("2026-08-15");
   });
 
+  it("computeNextDueDate: fixed monthDates rolls to the next month once the date has passed", () => {
+    const withinMonth = computeNextDueDate("fixed", { kind: "monthDates", dates: [15] }, "UTC", new Date("2026-08-01T00:00:00Z"));
+    expect(withinMonth).toBe("2026-08-15");
+
+    const alreadyPassed = computeNextDueDate("fixed", { kind: "monthDates", dates: [15] }, "UTC", new Date("2026-08-20T00:00:00Z"));
+    expect(alreadyPassed).toBe("2026-09-15");
+  });
+
   it("journal: lazily creates one item per period and is idempotent for the same period", async () => {
     const journalId = await databaseIdFor("journal");
     const first = await withTransaction(pool, (client) =>

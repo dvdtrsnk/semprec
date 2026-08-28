@@ -30,11 +30,12 @@ export function computeJournalPeriodKey(type: JournalPeriodType, reference: Date
  * user or from automated processing. Mirrors docs/docsStore.ts's `getOrCreateDoc`.
  *
  * `name`/`type`/`period` are all `owner: 'system'`, so this calls `createItemWithClient` with
- * `allowSystemOwnedProperties: true` — this function is Journal's declared owning process for
- * those fields, the one narrow, code-defined exception the choke-point grants (see
- * chokePoint.ts's `AssertWritablePropertiesOptions`). The write still goes through the same
- * single write path as every other item creation (idempotency handling, onItemEvent heartbeat
- * triggering), it just has the ownership check relaxed for this one trusted caller.
+ * `allowedSystemKeys: ['name', 'type', 'period']` — this function is Journal's declared owning
+ * process for exactly those fields, the one narrow, per-key, code-defined exception the
+ * choke-point grants (see chokePoint.ts's `AssertWritablePropertiesOptions`). The write still
+ * goes through the same single write path as every other item creation (idempotency handling,
+ * onItemEvent heartbeat triggering), it just has the ownership check relaxed for these three
+ * keys, on this one trusted caller — not a blanket bypass for any system-owned field anywhere.
  *
  * Concurrency-safe via a deterministic per-period idempotency key, not a DB constraint: two
  * concurrent first-writes for the same period both attempt the same key, and `insertItem`'s
@@ -59,6 +60,6 @@ export async function getOrCreateJournalItem(
       properties: { name: `\u{1F4D3} ${period}`, type, period },
       idempotencyKey: `journal:${journalDatabaseId}:${type}:${period}`,
     },
-    { allowSystemOwnedProperties: true },
+    { allowedSystemKeys: ["name", "type", "period"] },
   );
 }

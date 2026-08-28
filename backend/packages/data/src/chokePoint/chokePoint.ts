@@ -22,13 +22,15 @@ import { createViewTypeRegistry, type ViewTypeRegistry } from "./viewTypeRegistr
 
 interface AssertWritablePropertiesOptions {
   /**
-   * Relaxes the owner:'system' rejection below — the one narrow escape hatch for a
-   * trusted, code-defined system writer that is itself the module contract's declared
-   * owning process for those fields (e.g. Journal's lazy item creation, see
-   * journal/journalStore.ts). Never set from a request-handling path: doing so would let
-   * an arbitrary caller write a field the module contract reserves for one named process.
+   * Relaxes the owner:'system' rejection below, but only for the exact keys listed — the one
+   * narrow escape hatch for a trusted, code-defined system writer that is itself the module
+   * contract's declared owning process for those specific fields (e.g. Journal's lazy item
+   * creation is the owning process for exactly `name`/`type`/`period`, see
+   * journal/journalStore.ts). Scoped per-key, not a blanket bypass, so a caller can't
+   * accidentally (or a future caller couldn't deliberately) use it to write a *different*
+   * database's system-owned field it was never granted. Never set from a request-handling path.
    */
-  allowSystemOwnedProperties?: boolean;
+  allowedSystemKeys?: readonly string[];
 }
 
 /** Keys the generic write path never accepts: relation values live only in item_relations, and computed is internal-only. */
@@ -49,7 +51,7 @@ function assertWritableProperties(properties: PropertyRow[], patchKeys: string[]
         field: key,
       });
     }
-    if (property.owner === "system" && !options.allowSystemOwnedProperties) {
+    if (property.owner === "system" && !options.allowedSystemKeys?.includes(key)) {
       throw new ForbiddenError(`Property '${key}' is owned by 'system' and cannot be written by this caller`, { field: key });
     }
   }
@@ -186,8 +188,8 @@ export interface CreateItemInput {
  * `client` — namely `tasks/advanceTaskRecurrence.ts`, whose rolling-model advance must create
  * the next task instance, mark the old one done, and re-link its relations as a single
  * all-or-nothing transaction, and `journal/journalStore.ts`, whose lazy item creation writes
- * owner:'system' properties (`allowSystemOwnedProperties`) as Journal's declared owning
- * process. `createChokePoint(...)`'s `createItem` below is a thin wrapper over this.
+ * owner:'system' properties (`allowedSystemKeys`) as Journal's declared owning process for
+ * exactly those keys. `createChokePoint(...)`'s `createItem` below is a thin wrapper over this.
  */
 export async function createItemWithClient(client: PoolClient, input: CreateItemInput, options: CreateItemWithClientOptions = {}): Promise<ItemRow> {
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);

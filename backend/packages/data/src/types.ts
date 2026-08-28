@@ -118,11 +118,3 @@ export interface BlobRow {
   contentHash: string | null;
   createdAt: string;
 }
-
-/** Kept as a plain literal, not a named export, to avoid colliding with tasks/taskRecurrenceRule.ts's `TaskRecurrenceMode` (derived from `TASK_RECURRENCE_MODES`), which is the canonical source of truth for this union. */
-export interface TaskRecurrenceRow {
-  itemId: string;
-  mode: "fixed" | "floating";
-  rule: Record<string, unknown>;
-  active: boolean;
-}

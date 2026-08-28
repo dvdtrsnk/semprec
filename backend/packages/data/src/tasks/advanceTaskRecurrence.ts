@@ -7,7 +7,6 @@ import { createItemWithClient, createRelationWithClient, updateItemWithClient } 
 import type { ItemRow } from "../types.js";
 import { computeNextDueDate } from "./nextDueDate.js";
 import { createTaskRecurrence, getTaskRecurrence, setTaskRecurrenceActive } from "./taskRecurrenceStore.js";
-import type { TaskRecurrenceRule } from "./taskRecurrenceRule.js";
 
 export interface AdvanceTaskRecurrenceInput {
   databaseId: string;
@@ -42,7 +41,7 @@ export async function advanceTaskRecurrence(pool: Pool, input: AdvanceTaskRecurr
     const current = await itemsStore.getItemById(client, input.databaseId, input.itemId);
     if (!current) throw new NotFoundError(`Task ${input.itemId} not found`);
 
-    const nextDate = computeNextDueDate(recurrence.mode, recurrence.rule as unknown as TaskRecurrenceRule, input.timezone, new Date());
+    const nextDate = computeNextDueDate(recurrence.mode, recurrence.rule, input.timezone, new Date());
 
     const newItem = await createItemWithClient(client, {
       databaseId: input.databaseId,
@@ -57,7 +56,7 @@ export async function advanceTaskRecurrence(pool: Pool, input: AdvanceTaskRecurr
       },
     });
 
-    await createTaskRecurrence(client, { itemId: newItem.id, mode: recurrence.mode, rule: recurrence.rule as unknown as TaskRecurrenceRule });
+    await createTaskRecurrence(client, { itemId: newItem.id, mode: recurrence.mode, rule: recurrence.rule });
     await setTaskRecurrenceActive(client, input.itemId, false);
 
     await copyRelationEdges(client, input.itemId, newItem.id);
