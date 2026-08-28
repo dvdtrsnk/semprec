@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { NotFoundError } from "../errors.js";
+import { NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRow, ViewRow } from "../types.js";
 import { getItemsByIds, listItems } from "../chokePoint/itemsStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
@@ -58,7 +58,17 @@ async function queryFilteredView(client: PoolClient, databaseId: string, config:
 async function queryCuratedView(client: PoolClient, view: ViewRow, options: QueryViewOptions): Promise<QueryViewResult> {
   const limit = Math.min(options.limit ?? 50, 200);
   const all = await viewItemsStore.listViewItems(client, view.id);
-  const afterCursor = options.cursor ? all.filter((m) => m.position > Number(options.cursor)) : all;
+  let cursorPosition: number | undefined;
+  if (options.cursor !== undefined) {
+    cursorPosition = Number(options.cursor);
+    // A non-numeric cursor must fail loudly: `m.position > NaN` is always false, which
+    // would otherwise silently return zero items — indistinguishable from a genuinely
+    // empty page — instead of surfacing the tampered/misrouted cursor as an error.
+    if (Number.isNaN(cursorPosition)) {
+      throw new ValidationError(`Invalid cursor: '${options.cursor}'`, { field: "cursor" });
+    }
+  }
+  const afterCursor = cursorPosition !== undefined ? all.filter((m) => m.position > cursorPosition) : all;
   const hasMore = afterCursor.length > limit;
   const page = afterCursor.slice(0, limit);
 

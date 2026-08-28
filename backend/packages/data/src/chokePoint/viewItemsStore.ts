@@ -19,6 +19,12 @@ export async function listViewItems(client: PoolClient, viewId: string): Promise
  * existing position.
  */
 export async function addViewItem(client: PoolClient, viewId: string, itemId: string, position?: number): Promise<ViewItemRow> {
+  // Serializes concurrent addViewItem calls on the same view: without this, two calls
+  // for different items can both read the same MAX(position) (or both match the same
+  // `position >= $2` shift) and race to the same position, tying it — there is no
+  // UNIQUE (view_id, position) constraint to catch that at the DB level.
+  await client.query(`SELECT id FROM views WHERE id = $1 FOR UPDATE`, [viewId]);
+
   const { rows: existingRows } = await client.query<{ position: number }>(
     `SELECT position FROM view_items WHERE view_id = $1 AND item_id = $2 FOR UPDATE`,
     [viewId, itemId],
