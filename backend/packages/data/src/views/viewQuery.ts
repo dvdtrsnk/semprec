@@ -13,7 +13,12 @@ import { parseViewConfig, projectProperties, type ViewConfig } from "./viewConfi
 
 export interface QueryViewOptions {
   limit?: number;
-  /** Only honored when the view has no sort/groupBy — see the `listItems` cursor/custom-order caveat. */
+  /**
+   * For a filtered view: only honored when the view has no sort/groupBy — keyset paging
+   * via `id > cursor` only resumes correctly under the default `id ASC` order, so a
+   * custom sort must page with `limit` alone. For a curated view: the last `position`
+   * seen (as a string), resuming with items whose position is strictly greater.
+   */
   cursor?: string;
 }
 
@@ -52,10 +57,14 @@ async function queryFilteredView(client: PoolClient, databaseId: string, config:
  */
 async function queryCuratedView(client: PoolClient, view: ViewRow, options: QueryViewOptions): Promise<QueryViewResult> {
   const limit = Math.min(options.limit ?? 50, 200);
-  const memberships = (await viewItemsStore.listViewItems(client, view.id)).slice(0, limit);
-  const itemsById = new Map((await getItemsByIds(client, memberships.map((m) => m.itemId))).map((item) => [item.id, item]));
-  const items = memberships.map((m) => itemsById.get(m.itemId)).filter((item): item is ItemRow => item !== undefined);
-  return { items, nextCursor: null };
+  const all = await viewItemsStore.listViewItems(client, view.id);
+  const afterCursor = options.cursor ? all.filter((m) => m.position > Number(options.cursor)) : all;
+  const hasMore = afterCursor.length > limit;
+  const page = afterCursor.slice(0, limit);
+
+  const itemsById = new Map((await getItemsByIds(client, page.map((m) => m.itemId))).map((item) => [item.id, item]));
+  const items = page.map((m) => itemsById.get(m.itemId)).filter((item): item is ItemRow => item !== undefined);
+  return { items, nextCursor: hasMore ? String(page[page.length - 1].position) : null };
 }
 
 export async function queryView(client: PoolClient, viewId: string, options: QueryViewOptions = {}): Promise<QueryViewResult> {

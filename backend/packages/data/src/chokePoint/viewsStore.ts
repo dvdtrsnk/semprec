@@ -37,6 +37,18 @@ function isUniqueViolation(err: unknown, constraint: string): boolean {
   return pgErr?.code === "23505" && pgErr?.constraint === constraint;
 }
 
+/** Runs a view type's registered `configSchema` (data shape) and `service.validateConfig` (issue #22, point 4) against a config, on both create and patch. */
+function validateViewTypeConfig(type: string, config: ViewConfig, viewTypeRegistry: ViewTypeRegistry): void {
+  const definition = viewTypeRegistry.get(type);
+  if (definition?.configSchema) {
+    const result = definition.configSchema.safeParse(config);
+    if (!result.success) {
+      throw new ValidationError(`Invalid config for view type '${type}': ${result.error.message}`, { field: "config", issues: result.error.issues });
+    }
+  }
+  definition?.service?.validateConfig?.(config);
+}
+
 export interface CreateViewInput {
   /** Set for a linked/filtered view (must reference an existing database); omit/null for a curated view. */
   databaseId?: string | null;
@@ -73,8 +85,7 @@ export async function createView(client: PoolClient, input: CreateViewInput, vie
     if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
   }
 
-  const definition = viewTypeRegistry.get(input.type);
-  definition?.service?.validateConfig?.(config);
+  validateViewTypeConfig(input.type, config, viewTypeRegistry);
 
   try {
     const { rows } = await client.query(
@@ -121,17 +132,20 @@ export interface PatchViewInput {
   createdBy?: CreatedBy;
 }
 
-export async function patchView(client: PoolClient, id: string, patch: PatchViewInput): Promise<ViewRow> {
+export async function patchView(client: PoolClient, id: string, patch: PatchViewInput, viewTypeRegistry: ViewTypeRegistry): Promise<ViewRow> {
   const view = await requireView(client, id);
 
   let nextConfig: ViewConfig | undefined;
   if (patch.config !== undefined) {
-    nextConfig = parseViewConfig(patch.config);
+    // A shallow merge, not a replace: a caller patching e.g. just `sort` must not silently
+    // wipe `filter`/`propertyOrder` — same shape as itemsStore.updateItemProperties's `||` merge.
+    nextConfig = parseViewConfig({ ...view.config, ...patch.config });
     const wasCurated = view.databaseId === null;
     const willBeCurated = nextConfig.membership === "manual";
     if (wasCurated !== willBeCurated) {
       throw new ValidationError("A view cannot switch between curated and filtered/linked via patch", { field: "config.membership" });
     }
+    validateViewTypeConfig(view.type, nextConfig, viewTypeRegistry);
   }
 
   const sets: string[] = [];

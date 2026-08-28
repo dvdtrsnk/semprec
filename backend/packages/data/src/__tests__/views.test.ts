@@ -147,6 +147,34 @@ describe("views", () => {
     });
   });
 
+  describe("patchView: config is merged, not replaced", () => {
+    it("patching one config field preserves the others", async () => {
+      const db = await makeTasksDb();
+      const view = await chokePoint.createView({
+        databaseId: db.id,
+        type: "table",
+        name: "View",
+        config: { propertyOrder: ["title", "status"], sort: [{ property: "title", direction: "asc" }] },
+      });
+
+      const patched = await chokePoint.patchView({
+        id: view.id,
+        actor: "user",
+        config: { sort: [{ property: "status", direction: "desc" }] },
+      });
+      expect(patched.config.propertyOrder).toEqual(["title", "status"]);
+      expect(patched.config.sort).toEqual([{ property: "status", direction: "desc" }]);
+    });
+
+    it("patching a curated view's config without re-stating membership does not reject it as a curated/filtered switch", async () => {
+      const view = await chokePoint.createView({ type: "list", name: "Collection", config: { membership: "manual" } });
+      const patched = await chokePoint.patchView({ id: view.id, actor: "user", config: { widths: { title: 200 } } });
+      expect(patched.config.membership).toBe("manual");
+      expect(patched.config.widths).toEqual({ title: 200 });
+      expect(patched.databaseId).toBeNull();
+    });
+  });
+
   describe("view_items (curated membership)", () => {
     it("add/remove/reorder respects position and only applies to curated views", async () => {
       const db = await makeTasksDb();
@@ -169,6 +197,34 @@ describe("views", () => {
 
       await chokePoint.removeViewItem({ viewId: curated.id, itemId: item1.id, actor: "user" });
       expect((await chokePoint.listViewItems(curated.id)).map((m) => m.itemId)).toEqual([item2.id]);
+    });
+
+    it("inserting at an explicit position shifts existing members instead of tying with them", async () => {
+      const db = await makeTasksDb();
+      const item1 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "One" } });
+      const item2 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Two" } });
+      const item3 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Three" } });
+      const curated = await chokePoint.createView({ type: "list", name: "Collection", config: { membership: "manual" } });
+      await chokePoint.addViewItem({ viewId: curated.id, itemId: item1.id, actor: "user" });
+      await chokePoint.addViewItem({ viewId: curated.id, itemId: item2.id, actor: "user" });
+
+      await chokePoint.addViewItem({ viewId: curated.id, itemId: item3.id, position: 0, actor: "user" });
+      const members = await chokePoint.listViewItems(curated.id);
+      expect(members.map((m) => m.itemId)).toEqual([item3.id, item1.id, item2.id]);
+      expect(new Set(members.map((m) => m.position)).size).toBe(3); // no ties
+    });
+
+    it("re-adding an existing member with a new position moves it instead of duplicating", async () => {
+      const db = await makeTasksDb();
+      const item1 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "One" } });
+      const item2 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Two" } });
+      const curated = await chokePoint.createView({ type: "list", name: "Collection", config: { membership: "manual" } });
+      await chokePoint.addViewItem({ viewId: curated.id, itemId: item1.id, actor: "user" });
+      await chokePoint.addViewItem({ viewId: curated.id, itemId: item2.id, actor: "user" });
+
+      await chokePoint.addViewItem({ viewId: curated.id, itemId: item2.id, position: 0, actor: "user" });
+      const members = await chokePoint.listViewItems(curated.id);
+      expect(members.map((m) => m.itemId)).toEqual([item2.id, item1.id]);
     });
 
     it("an agent can only write view_items on its own curated view", async () => {
@@ -204,6 +260,26 @@ describe("views", () => {
 
       const result = await chokePoint.queryView(collection.id);
       expect(result.items.map((i) => i.id).sort()).toEqual([itemA.id, itemB.id].sort());
+    });
+
+    it("paginates a curated view with a cursor over position", async () => {
+      const db = await makeTasksDb();
+      const items = [];
+      for (let i = 0; i < 3; i++) {
+        items.push(await chokePoint.createItem({ databaseId: db.id, properties: { title: `Item ${i}` } }));
+      }
+      const collection = await chokePoint.createView({ type: "list", name: "Paged", config: { membership: "manual" } });
+      for (const item of items) {
+        await chokePoint.addViewItem({ viewId: collection.id, itemId: item.id, actor: "user" });
+      }
+
+      const firstPage = await chokePoint.queryView(collection.id, { limit: 2 });
+      expect(firstPage.items.map((i) => i.id)).toEqual([items[0].id, items[1].id]);
+      expect(firstPage.nextCursor).not.toBeNull();
+
+      const secondPage = await chokePoint.queryView(collection.id, { limit: 2, cursor: firstPage.nextCursor! });
+      expect(secondPage.items.map((i) => i.id)).toEqual([items[2].id]);
+      expect(secondPage.nextCursor).toBeNull();
     });
   });
 
@@ -242,6 +318,30 @@ describe("views", () => {
       });
       const result = await chokePoint.queryView(view.id);
       expect(result.items.map((i) => i.id).sort()).toEqual([done.id, inProgress.id].sort());
+    });
+
+    it("'is_empty'/'is_not_empty' on a multi_select property check for an empty array, not an empty string", async () => {
+      const db = await makeTasksDb();
+      await seedTasks(db, chokePoint); // none have empty tags
+      const untagged = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Untagged", status: "todo", tags: [] } });
+
+      const emptyView = await chokePoint.createView({
+        databaseId: db.id,
+        type: "table",
+        name: "Untagged",
+        config: { filter: { type: "is_empty", property: "tags" } },
+      });
+      expect((await chokePoint.queryView(emptyView.id)).items.map((i) => i.id)).toEqual([untagged.id]);
+
+      const notEmptyView = await chokePoint.createView({
+        databaseId: db.id,
+        type: "table",
+        name: "Tagged",
+        config: { filter: { type: "is_not_empty", property: "tags" } },
+      });
+      const tagged = (await chokePoint.queryView(notEmptyView.id)).items.map((i) => i.id);
+      expect(tagged).not.toContain(untagged.id);
+      expect(tagged).toHaveLength(3);
     });
 
     it("compiles 'not' + 'or' connectives", async () => {

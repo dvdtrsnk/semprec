@@ -21,6 +21,7 @@ function compileCondition(node: FilterCondition, propertyTypes: Map<string, Prop
   const keyParam = params.length;
   const textField = `properties ->> $${keyParam}`;
   const jsonField = `properties -> $${keyParam}`;
+  const isMultiSelect = propertyTypes.get(node.property) === "multi_select";
 
   switch (node.type) {
     case "equals":
@@ -42,9 +43,15 @@ function compileCondition(node: FilterCondition, propertyTypes: Map<string, Prop
       params.push(`%${escapeLikePattern(node.value)}`);
       return `${textField} ILIKE $${params.length} ESCAPE '\\'`;
     case "is_empty":
-      return `(${textField} IS NULL OR ${textField} = '')`;
+      // A multi_select stores a jsonb array; `properties ->> key` on it never yields NULL
+      // or '' (it renders as the text "[]"), so emptiness must be checked on the jsonb form.
+      return isMultiSelect
+        ? `(${jsonField} IS NULL OR ${jsonField} = 'null'::jsonb OR ${jsonField} = '[]'::jsonb)`
+        : `(${textField} IS NULL OR ${textField} = '')`;
     case "is_not_empty":
-      return `(${textField} IS NOT NULL AND ${textField} != '')`;
+      return isMultiSelect
+        ? `(${jsonField} IS NOT NULL AND ${jsonField} != 'null'::jsonb AND ${jsonField} != '[]'::jsonb)`
+        : `(${textField} IS NOT NULL AND ${textField} != '')`;
     case "before":
       params.push(node.value);
       return `(${textField})::timestamptz < $${params.length}::timestamptz`;
@@ -65,11 +72,10 @@ function compileCondition(node: FilterCondition, propertyTypes: Map<string, Prop
       return `(${textField})::timestamptz BETWEEN $${from}::timestamptz AND $${to}::timestamptz`;
     }
     case "in": {
-      const type = propertyTypes.get(node.property);
       params.push(node.value);
       // multi_select stores a jsonb array; `in` means "overlaps any of the given values".
       // Every other type stores a scalar; `in` means plain membership.
-      return type === "multi_select" ? `${jsonField} ?| $${params.length}::text[]` : `${textField} = ANY($${params.length}::text[])`;
+      return isMultiSelect ? `${jsonField} ?| $${params.length}::text[]` : `${textField} = ANY($${params.length}::text[])`;
     }
   }
 }

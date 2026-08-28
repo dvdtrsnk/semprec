@@ -11,18 +11,35 @@ export async function listViewItems(client: PoolClient, viewId: string): Promise
   return rows.map(mapViewItemRow);
 }
 
+/**
+ * Adding an already-present item is a move, not a duplicate insert: it delegates to
+ * `reorderViewItem`, whose position-shifting logic is what keeps `position` values
+ * unique. A brand-new member inserted at an explicit position likewise shifts every
+ * row at or after it up by one first, so it can never land on (or collide with) an
+ * existing position.
+ */
 export async function addViewItem(client: PoolClient, viewId: string, itemId: string, position?: number): Promise<ViewItemRow> {
+  const { rows: existingRows } = await client.query<{ position: number }>(
+    `SELECT position FROM view_items WHERE view_id = $1 AND item_id = $2 FOR UPDATE`,
+    [viewId, itemId],
+  );
+  if (existingRows[0]) {
+    if (position === undefined) return mapViewItemRow({ view_id: viewId, item_id: itemId, position: existingRows[0].position });
+    return reorderViewItem(client, viewId, itemId, position);
+  }
+
   let pos = position;
   if (pos === undefined) {
     const { rows } = await client.query<{ next: number }>(`SELECT COALESCE(MAX(position), -1) + 1 AS next FROM view_items WHERE view_id = $1`, [
       viewId,
     ]);
     pos = rows[0].next;
+  } else {
+    await client.query(`UPDATE view_items SET position = position + 1 WHERE view_id = $1 AND position >= $2`, [viewId, pos]);
   }
+
   const { rows } = await client.query(
-    `INSERT INTO view_items (view_id, item_id, position) VALUES ($1, $2, $3)
-     ON CONFLICT (view_id, item_id) DO UPDATE SET position = EXCLUDED.position
-     RETURNING view_id, item_id, position`,
+    `INSERT INTO view_items (view_id, item_id, position) VALUES ($1, $2, $3) RETURNING view_id, item_id, position`,
     [viewId, itemId, pos],
   );
   return mapViewItemRow(rows[0]);

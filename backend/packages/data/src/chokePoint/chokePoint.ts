@@ -419,12 +419,17 @@ export function createChokePoint(
         }
         // One-way adoption: a user's write to an agent's view flips it to 'user'; a system view is never flipped by a user write.
         const adopt = input.actor === "user" && view.createdBy === "ai_agent";
-        return viewsStore.patchView(client, input.id, {
-          name: input.name,
-          config: input.config,
-          isDefault: input.isDefault,
-          createdBy: adopt ? "user" : undefined,
-        });
+        return viewsStore.patchView(
+          client,
+          input.id,
+          {
+            name: input.name,
+            config: input.config,
+            isDefault: input.isDefault,
+            createdBy: adopt ? "user" : undefined,
+          },
+          viewTypeRegistry,
+        );
       });
     },
 
