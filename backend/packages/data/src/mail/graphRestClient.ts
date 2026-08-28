@@ -174,8 +174,13 @@ export class GraphRestClient implements GraphMailClient {
         try {
           const folder = await this.request<{ id: string }>(`${BASE_URL}/mailFolders/${name}`);
           return { id: folder.id, name };
-        } catch {
-          return null;
+        } catch (err) {
+          // 404 ("this account has no Archive folder") is expected and skipped; anything else
+          // (401 auth failure, 429 throttling, 5xx) must propagate — swallowing it would leave
+          // every well-known folder silently stuck at specialPurpose:'none' instead of
+          // surfacing the real problem via handleSyncMailAccountTask's error handling.
+          if (err instanceof GraphApiError && err.status === 404) return null;
+          throw err;
         }
       }),
     );
