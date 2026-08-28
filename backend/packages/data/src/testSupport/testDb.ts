@@ -10,6 +10,7 @@ const TABLES = [
   "view_items",
   "views",
   "task_recurrence",
+  "item_automation",
   "item_relations",
   "items",
   "relation_definitions",

@@ -22,11 +22,13 @@ describe("smoke: choke-point end to end", () => {
     expect(rows).toEqual(
       [
         "Areas",
+        "Books",
         "Companies",
         "Events",
         "Files",
         "Health records",
         "Journal",
+        "Movies/TV",
         "People",
         "Projects",
         "System settings",

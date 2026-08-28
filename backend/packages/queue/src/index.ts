@@ -18,6 +18,8 @@ export const CORE_TASK_NAMES = {
   DOC_COMPACTION_SWEEP: "docCompactionSweep",
   DOC_HISTORY_SQUASH: "docHistorySquash",
   DOC_HISTORY_CLEANUP: "docHistoryCleanup",
+  // Issue #25: the library module's per-item cover/metadata processing job.
+  LIBRARY_METADATA_PROCESS: "processLibraryMetadata",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
