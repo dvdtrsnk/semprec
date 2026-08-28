@@ -92,6 +92,68 @@ function assertViewWritable(view: ViewRow, actor: CreatedBy): void {
   }
 }
 
+export interface CreateRelationPropertyInput {
+  databaseId: string;
+  key: string;
+  name: string;
+  targetDatabaseId: string;
+  cardinality?: "one_to_one" | "one_to_many" | "many_to_many";
+  inverse?: { key: string; name: string };
+  locked?: boolean;
+  owner?: "user" | "system";
+}
+
+/**
+ * The relation-property creation logic, factored out so a caller already holding an open
+ * transaction (namely the ten-hardcoded-databases seed, see seed/seedTenDatabases.ts) can
+ * run it against that same `client` instead of going through `createChokePoint(...)`'s
+ * `withTransaction`, which would open a second, separate connection — one that cannot see
+ * this transaction's not-yet-committed `databases`/`properties` rows under read-committed
+ * isolation. `createChokePoint`'s `createRelationProperty` below is a thin wrapper over this
+ * for the normal, already-committed-schema case.
+ */
+export async function createRelationPropertyWithClient(
+  client: PoolClient,
+  input: CreateRelationPropertyInput,
+): Promise<{ property: PropertyRow; inverseProperty: PropertyRow | null }> {
+  const property = await propertiesStore.createProperty(client, {
+    databaseId: input.databaseId,
+    key: input.key,
+    name: input.name,
+    type: "relation",
+    locked: input.locked,
+    owner: input.owner,
+  });
+
+  let inverseProperty: PropertyRow | null = null;
+  if (input.inverse) {
+    inverseProperty = await propertiesStore.createProperty(client, {
+      databaseId: input.targetDatabaseId,
+      key: input.inverse.key,
+      name: input.inverse.name,
+      type: "relation",
+    });
+  }
+
+  const reldef = await relationsStore.createRelationDefinition(client, {
+    propertyIdA: property.id,
+    propertyIdB: inverseProperty?.id,
+    cardinality: input.cardinality,
+  });
+
+  const finalProperty = await propertiesStore.updatePropertyConfig(client, property.id, {
+    relationDefinitionId: reldef.id,
+    targetDatabaseId: input.targetDatabaseId,
+  });
+  if (inverseProperty) {
+    inverseProperty = await propertiesStore.updatePropertyConfig(client, inverseProperty.id, {
+      relationDefinitionId: reldef.id,
+      targetDatabaseId: input.databaseId,
+    });
+  }
+  return { property: finalProperty, inverseProperty };
+}
+
 export function createChokePoint(
   pool: Pool,
   computedKeyRegistry: ComputedKeyRegistry = createComputedKeyRegistry(),
@@ -207,56 +269,10 @@ export function createChokePoint(
     },
 
     // ---- relations (schema side: creating a paired relation property) ----
-    async createRelationProperty(input: {
-      databaseId: string;
-      key: string;
-      name: string;
-      targetDatabaseId: string;
-      cardinality?: "one_to_one" | "one_to_many" | "many_to_many";
-      inverse?: { key: string; name: string };
-      locked?: boolean;
-      owner?: "user" | "system";
-    }): Promise<{ property: PropertyRow; inverseProperty: PropertyRow | null }> {
+    async createRelationProperty(input: CreateRelationPropertyInput): Promise<{ property: PropertyRow; inverseProperty: PropertyRow | null }> {
       assertNoComputedKeyCollision(computedKeyRegistry, input.key);
       if (input.inverse) assertNoComputedKeyCollision(computedKeyRegistry, input.inverse.key);
-      return withTransaction(pool, async (client) => {
-        const property = await propertiesStore.createProperty(client, {
-          databaseId: input.databaseId,
-          key: input.key,
-          name: input.name,
-          type: "relation",
-          locked: input.locked,
-          owner: input.owner,
-        });
-
-        let inverseProperty: PropertyRow | null = null;
-        if (input.inverse) {
-          inverseProperty = await propertiesStore.createProperty(client, {
-            databaseId: input.targetDatabaseId,
-            key: input.inverse.key,
-            name: input.inverse.name,
-            type: "relation",
-          });
-        }
-
-        const reldef = await relationsStore.createRelationDefinition(client, {
-          propertyIdA: property.id,
-          propertyIdB: inverseProperty?.id,
-          cardinality: input.cardinality,
-        });
-
-        const finalProperty = await propertiesStore.updatePropertyConfig(client, property.id, {
-          relationDefinitionId: reldef.id,
-          targetDatabaseId: input.targetDatabaseId,
-        });
-        if (inverseProperty) {
-          inverseProperty = await propertiesStore.updatePropertyConfig(client, inverseProperty.id, {
-            relationDefinitionId: reldef.id,
-            targetDatabaseId: input.databaseId,
-          });
-        }
-        return { property: finalProperty, inverseProperty };
-      });
+      return withTransaction(pool, (client) => createRelationPropertyWithClient(client, input));
     },
 
     // ---- relations (data side: linking two items) ----

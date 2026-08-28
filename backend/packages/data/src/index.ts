@@ -46,7 +46,9 @@ export * from "./manifest/permissionManifest.js";
 export * from "./manifest/driftCheck.js";
 
 export * from "./agentRuns/agentRunsStore.js";
-export { seedSystem, PROJECTS_MODULE_ID } from "./seed/seedSystem.js";
+export { seedSystem } from "./seed/seedSystem.js";
+export * from "./seed/tenDatabaseKeys.js";
+export { seedTenDatabasesInTransaction, type TenDatabases } from "./seed/seedTenDatabases.js";
 export * from "./systemSettings.js";
 export { createCoreTaskList, CORE_CRONTAB } from "./worker.js";
 export * from "./realtimeHook.js";
@@ -70,3 +72,13 @@ export {
   handleDocHistoryCleanupTask,
   openDocVersionAt,
 } from "./docs/docHistory.js";
+
+export * from "./blobs/blobsStore.js";
+
+export * from "./tasks/taskRecurrenceRule.js";
+export { computeNextDueDate } from "./tasks/nextDueDate.js";
+export * from "./tasks/taskRecurrenceStore.js";
+export { advanceTaskRecurrence, type AdvanceTaskRecurrenceInput } from "./tasks/advanceTaskRecurrence.js";
+
+export * from "./journal/journalStore.js";
+export * from "./views/temporalSwitcherViewType.js";

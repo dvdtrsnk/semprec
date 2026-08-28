@@ -9,6 +9,7 @@ const TABLES = [
   "project_heartbeats",
   "view_items",
   "views",
+  "task_recurrence",
   "item_relations",
   "items",
   "relation_definitions",
@@ -17,6 +18,7 @@ const TABLES = [
   "doc_updates",
   "doc_snapshots",
   "docs",
+  "blobs",
   "databases",
   "users",
 ];

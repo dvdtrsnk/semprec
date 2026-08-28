@@ -14,6 +14,16 @@ export const PROPERTY_TYPES = [
   "relation",
   "rollup",
   "files",
+  // Added by issue #24 for the ten hardcoded databases:
+  "title",
+  "checkbox",
+  "time",
+  "longText",
+  "color",
+  // Single blob pointer (`{ blobId }` over the shared `blobs` table) — distinct
+  // from the pre-existing, still-unused `files` (plural) type above.
+  "file",
+  "url",
 ] as const;
 export type PropertyType = (typeof PROPERTY_TYPES)[number];
 
@@ -91,4 +101,28 @@ export interface DocRow {
   itemId: string;
   kind: DocKind;
   createdAt: string;
+}
+
+/**
+ * A blob stored in object storage (MinIO); shared across Files, library cover images
+ * (issue #25), and email attachments (issue #26). `byteSize` is `string`, not `number`:
+ * the pg driver returns `bigint` columns as strings by default to avoid silent precision
+ * loss past 2^53, and this column is `bigint` on purpose (uploads run into gigabytes).
+ */
+export interface BlobRow {
+  id: string;
+  mimeType: string;
+  byteSize: string;
+  storageKey: string;
+  sourceUrl: string | null;
+  contentHash: string | null;
+  createdAt: string;
+}
+
+/** Kept as a plain literal, not a named export, to avoid colliding with tasks/taskRecurrenceRule.ts's `TaskRecurrenceMode` (derived from `TASK_RECURRENCE_MODES`), which is the canonical source of truth for this union. */
+export interface TaskRecurrenceRow {
+  itemId: string;
+  mode: "fixed" | "floating";
+  rule: Record<string, unknown>;
+  active: boolean;
 }

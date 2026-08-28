@@ -19,10 +19,21 @@ describe("smoke: choke-point end to end", () => {
   it("seeds the system records", async () => {
     await seedSystem(pool);
     const { rows } = await pool.query("SELECT name, system, schema_locked FROM databases ORDER BY name");
-    expect(rows).toEqual([
-      { name: "Projects", system: true, schema_locked: true },
-      { name: "System settings", system: true, schema_locked: true },
-    ]);
+    expect(rows).toEqual(
+      [
+        "Areas",
+        "Companies",
+        "Events",
+        "Files",
+        "Health records",
+        "Journal",
+        "People",
+        "Projects",
+        "System settings",
+        "Tasks",
+        "Transcripts",
+      ].map((name) => ({ name, system: true, schema_locked: true })),
+    );
   });
 
   it("creates a database, a property, and an item through the choke-point", async () => {
