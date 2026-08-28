@@ -6,6 +6,7 @@ import { createRelationPropertyWithClient, type CreateRelationPropertyInput } fr
 import type { ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID, MAIL_REINDEX_PERSON_EMAILS_ACTION_ID } from "../mail/personLinkingActions.js";
+import { MAIL_CONNECT_ACCOUNT_ACTION_ID } from "../mail/mailAccountConnectAction.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID } from "./emailModuleKeys.js";
 
@@ -144,8 +145,8 @@ export async function seedEmailModuleInTransaction(
   const attachmentsRelation = await relate({ databaseId: emails.id, key: "attachments", name: "Attachments", targetDatabaseId: filesDatabaseId, cardinality: "one_to_many" });
   // People's schema is likewise already locked — both People-facing relations below are
   // one-directional for the same reason.
-  await relate({ databaseId: emails.id, key: "senderPeople", name: "Sender", targetDatabaseId: peopleDatabaseId, cardinality: "one_to_many" });
-  await relate({ databaseId: emails.id, key: "recipientsPeople", name: "Recipients", targetDatabaseId: peopleDatabaseId, cardinality: "many_to_many" });
+  await relate({ databaseId: emails.id, key: "senderPeople", name: "Sender", targetDatabaseId: peopleDatabaseId, cardinality: "one_to_many", owner: "system" });
+  await relate({ databaseId: emails.id, key: "recipientsPeople", name: "Recipients", targetDatabaseId: peopleDatabaseId, cardinality: "many_to_many", owner: "system" });
 
   await client.query(`UPDATE databases SET schema_locked = true WHERE id = ANY($1::uuid[])`, [[mailboxes.id, folders.id, emails.id]]);
 
@@ -161,6 +162,13 @@ export async function seedEmailModuleInTransaction(
     [peopleDatabaseId],
   );
 
+  await createHeartbeat(client, {
+    projectItemId: emailProject.id,
+    name: "Connect Mailbox (default sync_mode by provider)",
+    rule: { kind: "onItemEvent", databaseId: mailboxes.id, event: "create" },
+    actionId: MAIL_CONNECT_ACCOUNT_ACTION_ID,
+    actionConfig: { mailboxesDatabaseId: mailboxes.id },
+  });
   await createHeartbeat(client, {
     projectItemId: emailProject.id,
     name: "Reindex People.emails",

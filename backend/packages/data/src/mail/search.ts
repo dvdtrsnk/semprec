@@ -22,6 +22,29 @@ export async function reindexItemSearch(client: Queryable, input: ReindexItemSea
   );
 }
 
+/**
+ * Periodic safety net (issue #26: "a periodic reindex job as a safety net for writes outside
+ * the standard path — migrations, backfills"), not the primary indexing path (`ingest.ts`
+ * calls `reindexItemSearch` directly on every ingested message, already sanitized via
+ * `sanitizeHtml`). Catches any Emails item whose index row is missing or older than the item's
+ * own `updated_at` — a plain regexp tag-strip is an adequate approximation for a backfill this
+ * coarse-grained, not a replacement for the properly-sanitized primary path.
+ */
+export async function reindexStaleEmailSearchEntries(client: Queryable, emailsDatabaseId: string): Promise<number> {
+  const { rowCount } = await client.query(
+    `INSERT INTO item_search_index (item_id, database_id, search_vector, updated_at)
+     SELECT it.id, it.database_id,
+            to_tsvector('czech', COALESCE(it.properties->>'name', '') || ' ' || regexp_replace(COALESCE(it.properties->>'body', ''), '<[^>]+>', ' ', 'g')),
+            now()
+     FROM items it
+     LEFT JOIN item_search_index idx ON idx.item_id = it.id
+     WHERE it.database_id = $1 AND it.deleted_at IS NULL AND (idx.item_id IS NULL OR idx.updated_at < it.updated_at)
+     ON CONFLICT (item_id) DO UPDATE SET search_vector = EXCLUDED.search_vector, updated_at = now()`,
+    [emailsDatabaseId],
+  );
+  return rowCount ?? 0;
+}
+
 export interface SearchItemsInput {
   databaseId: string;
   query: string;
@@ -40,12 +63,23 @@ export interface SearchItemsResultRow {
  * raw term frequency. Structured operators (`from:`, `has:attachment`, `before:`/`after:`,
  * `is:unread`) belong in the caller's `WHERE`, not here — this function only ever ranks the
  * free-text remainder.
+ *
+ * Blended with recency (issue #26: "for a personal mailbox 'most relevant' usually means
+ * 'most recent'") — a smooth decay over the message's own `date` property (falling back to
+ * `items.updated_at` for a row with no `date`, e.g. a draft never sent), not `updated_at`
+ * alone, since a message resynced/re-indexed long after it arrived shouldn't read as recent.
+ * A ~30-day half-life-ish divisor keeps this a tie-breaker among close text matches rather
+ * than overriding a strongly-relevant old message with a weakly-relevant new one.
  */
 export async function searchItems(client: Queryable, input: SearchItemsInput): Promise<SearchItemsResultRow[]> {
   const { rows } = await client.query<{ item_id: string; rank: number }>(
-    `SELECT item_id, ts_rank_cd(search_vector, websearch_to_tsquery('czech', $2)) AS rank
-     FROM item_search_index
-     WHERE database_id = $1 AND search_vector @@ websearch_to_tsquery('czech', $2)
+    `SELECT idx.item_id AS item_id,
+            ts_rank_cd(idx.search_vector, websearch_to_tsquery('czech', $2))
+              / (1.0 + EXTRACT(EPOCH FROM (now() - COALESCE((it.properties->>'date')::timestamptz, it.updated_at))) / 86400.0 / 30.0)
+              AS rank
+     FROM item_search_index idx
+     JOIN items it ON it.database_id = idx.database_id AND it.id = idx.item_id
+     WHERE idx.database_id = $1 AND idx.search_vector @@ websearch_to_tsquery('czech', $2)
      ORDER BY rank DESC
      LIMIT $3`,
     [input.databaseId, input.query, input.limit ?? 50],

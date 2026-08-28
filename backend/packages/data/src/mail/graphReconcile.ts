@@ -139,6 +139,12 @@ export async function reconcileGraphAccount(dbClient: PoolClient, graph: GraphMa
   await recordGraphActivity(dbClient, {
     itemId: params.mailboxItemId,
     deltaLink: delta.newDeltaLink,
-    nextExpectedActivityAt: new Date(Date.now() + 15 * 60 * 1000),
+    // Same "derived from its own liveness semantics" reasoning as the Gmail adapter: a
+    // margin below the subscription's own expiry (24h-7d depending on type) rather than a
+    // flat window, so this doesn't wait past a due-for-renewal subscription before noticing
+    // silence; no subscription established yet falls back to this reconcile pass's cadence.
+    nextExpectedActivityAt: state.graphSubscriptionExpiresAt
+      ? new Date(new Date(state.graphSubscriptionExpiresAt).getTime() - 6 * 60 * 60 * 1000)
+      : new Date(Date.now() + 15 * 60 * 1000),
   });
 }

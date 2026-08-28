@@ -172,7 +172,12 @@ export async function reconcileGmailAccount(dbClient: PoolClient, gmail: GmailMa
   await recordGmailActivity(dbClient, {
     itemId: params.mailboxItemId,
     historyId: newHistoryId,
-    // Renewed daily elsewhere (the watch-renewal job); this call only advances liveness bookkeeping.
-    nextExpectedActivityAt: new Date(Date.now() + 15 * 60 * 1000),
+    // "derived from its own liveness semantics" (issue #26): a live watch() renews daily
+    // against a 7-day validity, so a wide margin below its expiry is the deadline by which
+    // that daily renewal should already have happened; no watch established yet (push setup
+    // is a later addition, see PR notes) falls back to this reconcile pass's own cadence.
+    nextExpectedActivityAt: state.gmailWatchExpiresAt
+      ? new Date(new Date(state.gmailWatchExpiresAt).getTime() - 24 * 60 * 60 * 1000)
+      : new Date(Date.now() + 15 * 60 * 1000),
   });
 }

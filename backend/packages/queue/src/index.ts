@@ -23,6 +23,8 @@ export const CORE_TASK_NAMES = {
   // Issue #26: the mail sync core's per-account reconcile job and its periodic due-account sweep.
   MAIL_ACCOUNT_SYNC: "mailAccountSync",
   MAIL_ACCOUNT_SYNC_SWEEP: "mailAccountSyncSweep",
+  // Issue #26: safety net for item_search_index, catching writes outside the standard ingest path (migrations, backfills).
+  MAIL_SEARCH_REINDEX_SWEEP: "mailSearchReindexSweep",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 

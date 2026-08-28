@@ -13,6 +13,9 @@ import {
   MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID,
   MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
 } from "../mail/personLinkingActions.js";
+import { createMailAccountConnectAction, MAIL_CONNECT_ACCOUNT_ACTION_ID } from "../mail/mailAccountConnectAction.js";
+import { reindexStaleEmailSearchEntries } from "../mail/search.js";
+import { OAuthRevokedError } from "../mail/oauthTokenExchange.js";
 import { lookupPersonIdByEmail, reindexPersonEmails } from "../mail/personEmailIndexStore.js";
 import { resolveThreadId } from "../mail/threading.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
@@ -53,6 +56,7 @@ function mailRegistry() {
   const registry = createActionRegistry();
   registry.set(MAIL_REINDEX_PERSON_EMAILS_ACTION_ID, createPersonEmailReindexAction(pool));
   registry.set(MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID, createLinkEmailToPeopleAction(pool));
+  registry.set(MAIL_CONNECT_ACCOUNT_ACTION_ID, createMailAccountConnectAction(pool));
   return registry;
 }
 
@@ -93,6 +97,10 @@ describe("email module seed (issue #26)", () => {
       "senderPeople",
     ]);
     expect(emailProps.find((p) => p.key === "sender")).toMatchObject({ owner: "system" });
+    // Derived deterministically by mail/personLinkingActions.ts, not user-editable — same
+    // reasoning as sender/recipients above.
+    expect(emailProps.find((p) => p.key === "senderPeople")).toMatchObject({ owner: "system" });
+    expect(emailProps.find((p) => p.key === "recipientsPeople")).toMatchObject({ owner: "system" });
   });
 
   it("adds People.emails as a new, user-owned property on the already schema-locked People database", async () => {
@@ -106,6 +114,19 @@ describe("email module seed (issue #26)", () => {
     await expect(chokePoint.createItem({ databaseId: emailsId, properties: { name: "hi", sender: "x@example.com" } })).rejects.toMatchObject({
       name: "ForbiddenError",
     });
+  });
+
+  it.each([
+    ["gmail", "gmail_api"],
+    ["outlook", "graph_api"],
+    ["icloud", "imap"],
+    ["generic", "imap"],
+  ])("defaults sync_mode to %s -> %s from Mailbox.provider on creation", async (provider, expectedSyncMode) => {
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M", provider } }));
+    await drainQueue(); // onItemEvent 'create' on Mailboxes -> connectAccount action
+    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
+    expect(state?.syncMode).toBe(expectedSyncMode);
   });
 });
 
@@ -229,6 +250,22 @@ describe("conversation threading (issue #26)", () => {
     const parentThreadId = await withTransaction(pool, (client) => resolveThreadId(client, { messageId: "<late-parent@x>" }));
     expect(parentThreadId).toBe(replyThreadId);
   });
+
+  it("merges two separate threads when a message bridges them, and deletes the absorbed thread's now-empty row", async () => {
+    const threadA = await withTransaction(pool, (client) => resolveThreadId(client, { messageId: "<a@x>" }));
+    await pool.query(`INSERT INTO mail_message_meta (item_id, message_id, thread_id, envelope) VALUES (gen_random_uuid(), '<a@x>', $1, '{}')`, [threadA]);
+    const threadB = await withTransaction(pool, (client) => resolveThreadId(client, { messageId: "<b@x>" }));
+    await pool.query(`INSERT INTO mail_message_meta (item_id, message_id, thread_id, envelope) VALUES (gen_random_uuid(), '<b@x>', $1, '{}')`, [threadB]);
+    expect(threadA).not.toBe(threadB);
+
+    const bridgeThreadId = await withTransaction(pool, (client) =>
+      resolveThreadId(client, { messageId: "<bridge@x>", references: ["<a@x>", "<b@x>"] }),
+    );
+    expect([threadA, threadB]).toContain(bridgeThreadId);
+
+    const { rows } = await pool.query(`SELECT id FROM mail_threads WHERE id = ANY($1::uuid[])`, [[threadA, threadB]]);
+    expect(rows.map((r) => r.id)).toEqual([bridgeThreadId]); // the absorbed thread's row is gone, not just orphaned
+  });
 });
 
 describe("message ingest dedup (issue #26)", () => {
@@ -323,6 +360,13 @@ describe("HTML sanitization (issue #26)", () => {
     expect(sanitized).toContain("cid:logo");
   });
 
+  it("strips a background-image url() from style — the same tracking-pixel vector as img src, via CSS instead", () => {
+    const sanitized = sanitizeMailHtml('<div style="background-image:url(https://tracker.example/pixel.gif); color: red">hi</div>');
+    expect(sanitized).not.toContain("tracker.example");
+    expect(sanitized).not.toContain("background-image");
+    expect(sanitized).toContain("color");
+  });
+
   it("allows remote images when explicitly requested", () => {
     const sanitized = sanitizeMailHtml('<img src="https://example.com/photo.jpg">', { allowRemoteImages: true });
     expect(sanitized).toContain("https://example.com/photo.jpg");
@@ -338,7 +382,13 @@ describe("full-text search over Emails (issue #26)", () => {
 
   it("indexes and finds a message by content", async () => {
     const emailsId = await databaseIdFor("emails");
-    const itemId = randomUUID();
+    // searchItems joins item_search_index back to items (for recency blending) — a real
+    // Emails item, not a synthetic id, matches how reindexItemSearch is actually called
+    // (mail/ingest.ts, in the same transaction as the item's own creation).
+    const item = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: emailsId, properties: { name: "Invoice" } }, { allowedSystemKeys: ["name"] }),
+    );
+    const itemId = item.id;
     await withTransaction(pool, (client) => reindexItemSearch(client, { itemId, databaseId: emailsId, text: "Invoice for consulting services" }));
 
     const results = await withTransaction(pool, (client) => searchItems(client, { databaseId: emailsId, query: "invoice" }));
@@ -346,6 +396,23 @@ describe("full-text search over Emails (issue #26)", () => {
 
     const noResults = await withTransaction(pool, (client) => searchItems(client, { databaseId: emailsId, query: "nonexistentword" }));
     expect(noResults.map((r) => r.itemId)).not.toContain(itemId);
+  });
+
+  it("reindexStaleEmailSearchEntries backfills an Emails item that was never indexed (a write outside the standard ingest path)", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const item = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: emailsId, properties: { name: "Quarterly Report", body: "<p>Revenue figures attached</p>" } }, { allowedSystemKeys: ["name", "body"] }),
+    );
+
+    const reindexed = await withTransaction(pool, (client) => reindexStaleEmailSearchEntries(client, emailsId));
+    expect(reindexed).toBe(1);
+
+    const results = await withTransaction(pool, (client) => searchItems(client, { databaseId: emailsId, query: "revenue" }));
+    expect(results.map((r) => r.itemId)).toContain(item.id);
+
+    // A second pass over the same (now up-to-date) row is a no-op.
+    const reindexedAgain = await withTransaction(pool, (client) => reindexStaleEmailSearchEntries(client, emailsId));
+    expect(reindexedAgain).toBe(0);
   });
 });
 
@@ -573,6 +640,43 @@ describe("mail sync job error handling (issue #26)", () => {
     const { rows } = await pool.query(`SELECT purpose FROM credential_access_log WHERE item_id = $1`, [mailbox.id]);
     expect(rows).toHaveLength(1);
     expect(rows[0].purpose).toBe("imap_sync");
+  });
+
+  it("a revoked OAuth refresh token sets syncStatus:'needsReauthorization' and stops retrying on the usual 15-minute cadence", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M", provider: "gmail" } }),
+    );
+    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" }));
+    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "oauth2_refresh_token", plaintext: "refresh-token" }));
+
+    const adapters: MailSyncAdapterFactory = {
+      createGmailClient: () => {
+        throw new OAuthRevokedError("https://oauth2.googleapis.com/token");
+      },
+    };
+
+    await expect(
+      handleSyncMailAccountTask(
+        pool,
+        { mailboxItemId: mailbox.id },
+        adapters,
+        { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+        noopStorage,
+      ),
+    ).rejects.toThrow(OAuthRevokedError);
+
+    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
+    // Well past the 15-minute cadence a plain transient failure gets (see the test above) —
+    // there's nothing to retry until the user reconnects the account.
+    expect(new Date(state!.nextExpectedActivityAt!).getTime()).toBeGreaterThan(Date.now() + 24 * 60 * 60 * 1000);
+
+    const { rows } = await pool.query(`SELECT properties->>'syncStatus' AS sync_status FROM items WHERE id = $1`, [mailbox.id]);
+    expect(rows[0].sync_status).toBe("needsReauthorization");
   });
 });
 

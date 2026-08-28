@@ -123,6 +123,8 @@ export async function listMessageIdsInThread(client: Queryable, threadId: string
   return rows.map((r) => r.item_id);
 }
 
+/** Moves every message off `fromThreadId` onto `toThreadId`, then deletes the now-empty `mail_threads` row — otherwise a mailbox with many out-of-order arrivals (each merge creating one more orphan) would accumulate `mail_threads` rows unreachable via any `mail_message_meta.thread_id`. */
 export async function reassignThread(client: Queryable, fromThreadId: string, toThreadId: string): Promise<void> {
   await client.query(`UPDATE mail_message_meta SET thread_id = $2 WHERE thread_id = $1`, [fromThreadId, toThreadId]);
+  await client.query(`DELETE FROM mail_threads WHERE id = $1`, [fromThreadId]);
 }

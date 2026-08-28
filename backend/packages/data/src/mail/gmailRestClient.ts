@@ -3,6 +3,7 @@ import { classifyAttachments } from "./attachments.js";
 import type { GmailFetchedMessage, GmailHistoryResult, GmailLabelRef, GmailMailClient } from "./gmailReconcile.js";
 import type { FetchedMessage } from "./providerTypes.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
+import { readJsonWithLimit } from "./httpJson.js";
 
 const BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -55,7 +56,7 @@ export class GmailRestClient implements GmailMailClient {
     });
     if (response.status === 404) return { status: 404, json: null };
     if (!response.ok) throw new Error(`Gmail API request to ${path} failed with status ${response.status}`);
-    return { status: response.status, json: (await response.json()) as T };
+    return { status: response.status, json: await readJsonWithLimit<T>(response) };
   }
 
   async getCurrentHistoryId(): Promise<string> {

@@ -19,6 +19,20 @@ export interface AccessToken {
   expiresAt: Date;
 }
 
+/**
+ * `invalid_grant` (RFC 6749 §5.2) is the standard signal that a refresh token has been
+ * revoked — the user disconnected the account in Google/Microsoft settings, or the token
+ * simply expired from disuse. A distinct error type lets the caller (mailSyncJob.ts) tell this
+ * apart from a transient network/server failure: "revocation... is a normal state, not a
+ * system error" (issue #26's Credentials section) — the worker should stop retrying and set
+ * `syncStatus: 'needsReauthorization'` instead of treating it like any other sync failure.
+ */
+export class OAuthRevokedError extends Error {
+  constructor(reason: string) {
+    super(`OAuth refresh token revoked: ${reason}`);
+  }
+}
+
 export async function refreshAccessToken(input: RefreshAccessTokenInput): Promise<AccessToken> {
   const body = new URLSearchParams({
     grant_type: "refresh_token",
@@ -35,10 +49,17 @@ export async function refreshAccessToken(input: RefreshAccessTokenInput): Promis
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) {
+    if (response.status === 400) {
+      const errorBody = (await response.json().catch(() => null)) as { error?: string } | null;
+      if (errorBody?.error === "invalid_grant") throw new OAuthRevokedError(input.tokenUrl);
+    }
     // Never includes `body`/the refresh token itself in the thrown message — only the status.
     throw new Error(`OAuth token refresh failed with status ${response.status}`);
   }
-  const json = (await response.json()) as { access_token: string; expires_in: number };
+  const json = (await response.json()) as Record<string, unknown> | null;
+  if (typeof json?.access_token !== "string" || typeof json?.expires_in !== "number") {
+    throw new Error("OAuth token refresh response is missing 'access_token'/'expires_in'");
+  }
   return { accessToken: json.access_token, expiresAt: new Date(Date.now() + json.expires_in * 1000) };
 }
 

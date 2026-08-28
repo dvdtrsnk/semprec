@@ -2,11 +2,13 @@ import type { Pool } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { withTransaction } from "../db/pool.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
+import { updateItemWithClient } from "../chokePoint/chokePoint.js";
 import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
-import { getMailAccountSyncState, listAccountsDueForSync, recordSyncError } from "./mailAccountSyncStateStore.js";
+import { getMailAccountSyncState, listAccountsDueForSync, recordSyncError, recordAuthRevoked } from "./mailAccountSyncStateStore.js";
 import { reconcileImapAccount, type ImapMailClient } from "./imapReconcile.js";
 import { reconcileGmailAccount, type GmailMailClient } from "./gmailReconcile.js";
 import { reconcileGraphAccount, type GraphMailClient } from "./graphReconcile.js";
+import { OAuthRevokedError } from "./oauthTokenExchange.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 
 /**
@@ -28,6 +30,8 @@ export interface MailModuleIds {
   emailsDatabaseId: string;
   filesDatabaseId: string;
   foldersDatabaseId: string;
+  /** Optional: only needed to react to a revoked OAuth refresh token by setting `syncStatus: 'needsReauthorization'` on the Mailbox item (see the `OAuthRevokedError` catch below) — every other reconcile path works without it. */
+  mailboxesDatabaseId?: string;
 }
 
 export function mailAccountSyncJobKey(mailboxItemId: string): string {
@@ -116,7 +120,20 @@ export async function handleSyncMailAccountTask(
     // recording that failure needs its own, separate transaction, or the UPDATE recording
     // it would itself be rolled back along with everything else `withTransaction` undoes.
     const message = err instanceof Error ? err.message : String(err);
-    await withTransaction(pool, (client) => recordSyncError(client, payload.mailboxItemId, message));
+    if (err instanceof OAuthRevokedError) {
+      await withTransaction(pool, async (client) => {
+        await recordAuthRevoked(client, payload.mailboxItemId, message);
+        if (moduleIds.mailboxesDatabaseId) {
+          await updateItemWithClient(
+            client,
+            { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "needsReauthorization" } },
+            { allowedSystemKeys: ["syncStatus"] },
+          );
+        }
+      });
+    } else {
+      await withTransaction(pool, (client) => recordSyncError(client, payload.mailboxItemId, message));
+    }
     throw err;
   }
 }

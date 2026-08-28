@@ -4,6 +4,13 @@ import { assertKnownValue } from "../dbRowValidation.js";
 export const SYNC_MODES = ["imap", "gmail_api", "graph_api"] as const;
 export type SyncMode = (typeof SYNC_MODES)[number];
 
+/** "Defaulted by provider... but manually switchable" (issue #26's Provider strategy decision) — the initial choice made when a Mailbox is first connected, via `mail/mailAccountConnectAction.ts`; `setSyncMode` remains the only way to override it afterward. */
+export function defaultSyncModeForProvider(provider: string): SyncMode {
+  if (provider === "gmail") return "gmail_api";
+  if (provider === "outlook") return "graph_api";
+  return "imap"; // icloud, generic
+}
+
 export interface MailAccountSyncStateRow {
   itemId: string;
   syncMode: SyncMode;
@@ -142,6 +149,23 @@ export async function recordSyncError(client: Queryable, itemId: string, error: 
   await client.query(
     `UPDATE mail_account_sync_state
      SET last_error = $2, last_activity_at = now(), next_expected_activity_at = now() + interval '15 minutes'
+     WHERE item_id = $1`,
+    [itemId, error],
+  );
+}
+
+/**
+ * Reaction to a revoked OAuth refresh token (issue #26: "revocation... is a normal state, not
+ * a system error... the worker stops retrying and just leaves it waiting on the user"). Unlike
+ * `recordSyncError`'s 15-minute backoff (for a transient failure worth retrying soon), this
+ * pushes `next_expected_activity_at` out by a week — there's nothing to retry until the user
+ * reconnects the account, and hammering the token endpoint every 5 minutes with an already-
+ * revoked token accomplishes nothing.
+ */
+export async function recordAuthRevoked(client: Queryable, itemId: string, error: string): Promise<void> {
+  await client.query(
+    `UPDATE mail_account_sync_state
+     SET last_error = $2, last_activity_at = now(), next_expected_activity_at = now() + interval '7 days'
      WHERE item_id = $1`,
     [itemId, error],
   );

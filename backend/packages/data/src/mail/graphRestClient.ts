@@ -2,6 +2,7 @@ import type { ClassifiedAttachment } from "./attachments.js";
 import type { GraphChangedMessage, GraphDeltaResult, GraphFolderRef, GraphMailClient } from "./graphReconcile.js";
 import type { FetchedMessage } from "./providerTypes.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
+import { readJsonWithLimit } from "./httpJson.js";
 
 const BASE_URL = "https://graph.microsoft.com/v1.0/me";
 const WELL_KNOWN_FOLDERS = ["inbox", "sentitems", "drafts", "deleteditems", "junkemail", "archive"];
@@ -115,7 +116,7 @@ export class GraphRestClient implements GraphMailClient {
     const token = await this.getAccessToken();
     const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
     if (!response.ok) throw new GraphApiError(response.status);
-    return (await response.json()) as T;
+    return readJsonWithLimit<T>(response);
   }
 
   private async fetchAttachments(messageId: string): Promise<GraphAttachmentResource[]> {

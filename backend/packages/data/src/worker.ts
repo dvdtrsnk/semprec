@@ -23,6 +23,8 @@ import {
   type MailSyncAdapterFactory,
 } from "./mail/mailSyncJob.js";
 import { LocalFsBlobStorageWriter, type BlobStorageWriter } from "./mail/blobStorage.js";
+import { reindexStaleEmailSearchEntries } from "./mail/search.js";
+import { withTransaction } from "./db/pool.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -58,6 +60,7 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 0 3 * * * ${CORE_TASK_NAMES.DOC_HISTORY_SQUASH}
 15 3 * * * ${CORE_TASK_NAMES.DOC_HISTORY_CLEANUP}
 */5 * * * * ${CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP}
+30 3 * * * ${CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP}
 `;
 
 /**
@@ -114,6 +117,10 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: async (payload) => {
       if (!mailModuleIds) throw new Error("mailAccountSync job requires createCoreTaskList's mailModuleIds argument to be configured");
       await handleSyncMailAccountTask(pool, { mailboxItemId: requireString(payload, "mailboxItemId") }, mailSyncAdapters, mailModuleIds, mailBlobStorage);
+    },
+    [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: async () => {
+      if (!mailModuleIds) return; // Email module not seeded in this deployment — nothing to reindex.
+      await withTransaction(pool, (client) => reindexStaleEmailSearchEntries(client, mailModuleIds.emailsDatabaseId));
     },
   };
 }
