@@ -13,6 +13,18 @@ import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
  */
 const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 
+/**
+ * iCloud Mail Drop (issue #26: "the attachment is then sent as a download link, not a real
+ * MIME part") needs no special-case detection here: Mail Drop is Apple Mail's own client-side
+ * substitution — the message iCloud's IMAP server actually stores and serves to any client
+ * (Mail.app included) already has the large file replaced by a normal, small download-link
+ * body; there is no oversized or placeholder MIME part on the wire for a generic IMAP client
+ * to mistakenly try to fetch. `walkBodyStructure` below only ever downloads a part BODYSTRUCTURE
+ * actually reports, so "try to download a non-existent attachment" cannot happen by
+ * construction. `MAX_ATTACHMENT_BYTES` above is a separate, general safety net (any
+ * oversized/malicious part, not specifically Mail Drop).
+ */
+
 function toEnvelopeAddress(value: MessageAddressObject | undefined): MailEnvelopeAddress | undefined {
   return value?.address ? { name: value.name || undefined, address: value.address } : undefined;
 }
