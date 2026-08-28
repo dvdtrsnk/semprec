@@ -32,11 +32,36 @@ export async function removeViewItem(client: PoolClient, viewId: string, itemId:
   await client.query(`DELETE FROM view_items WHERE view_id = $1 AND item_id = $2`, [viewId, itemId]);
 }
 
+/**
+ * Moves `itemId` to `position`, shifting every row strictly between its old and new
+ * position by one — a bare `UPDATE ... SET position = $N` would leave two rows tied on
+ * the same position, making `ORDER BY position` non-deterministic between them.
+ */
 export async function reorderViewItem(client: PoolClient, viewId: string, itemId: string, position: number): Promise<ViewItemRow> {
+  const { rows: currentRows } = await client.query<{ position: number }>(
+    `SELECT position FROM view_items WHERE view_id = $1 AND item_id = $2 FOR UPDATE`,
+    [viewId, itemId],
+  );
+  const current = currentRows[0];
+  if (!current) throw new ValidationError(`Item ${itemId} is not a member of view ${viewId}`, { field: "itemId" });
+
+  if (position > current.position) {
+    await client.query(`UPDATE view_items SET position = position - 1 WHERE view_id = $1 AND position > $2 AND position <= $3`, [
+      viewId,
+      current.position,
+      position,
+    ]);
+  } else if (position < current.position) {
+    await client.query(`UPDATE view_items SET position = position + 1 WHERE view_id = $1 AND position >= $2 AND position < $3`, [
+      viewId,
+      position,
+      current.position,
+    ]);
+  }
+
   const { rows } = await client.query(
     `UPDATE view_items SET position = $3 WHERE view_id = $1 AND item_id = $2 RETURNING view_id, item_id, position`,
     [viewId, itemId, position],
   );
-  if (!rows[0]) throw new ValidationError(`Item ${itemId} is not a member of view ${viewId}`, { field: "itemId" });
   return mapViewItemRow(rows[0]);
 }
