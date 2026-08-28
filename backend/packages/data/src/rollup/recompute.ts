@@ -105,30 +105,38 @@ export async function recomputeRollupCell(pool: Pool, rollupPropertyId: string, 
   }
 }
 
-/** Backfill: never writes cells itself — walks all non-deleted parent rows and enqueues a per-cell job for each. */
+/**
+ * Backfill: never writes cells itself — walks all non-deleted parent rows and enqueues a
+ * per-cell job for each. Deliberately does NOT hold one connection for the whole walk:
+ * on a large table this can run for minutes and enqueue hundreds of thousands of jobs,
+ * and a held connection for that long starves the pool for concurrent requests. Each
+ * page's SELECT and each enqueue call instead goes through `pool` directly, so node-pg
+ * checks a connection out and back in per call.
+ */
 export async function backfillRollup(pool: Pool, rollupPropertyId: string): Promise<void> {
-  const client = await pool.connect();
+  const bootstrapClient = await pool.connect();
+  let rollupProperty;
   try {
-    const rollupProperty = await getProperty(client, rollupPropertyId);
-    if (!rollupProperty) return;
-
-    let cursor: string | null = null;
-    const pageSize = 500;
-    for (;;) {
-      const { rows }: { rows: Array<{ id: string }> } = await client.query(
-        `SELECT id FROM items WHERE database_id = $1 AND deleted_at IS NULL ${cursor ? "AND id > $3" : ""}
-         ORDER BY id ASC LIMIT $2`,
-        cursor ? [rollupProperty.databaseId, pageSize, cursor] : [rollupProperty.databaseId, pageSize],
-      );
-      if (rows.length === 0) break;
-      for (const row of rows) {
-        await enqueueRollupRecompute(client, rollupPropertyId, row.id);
-      }
-      if (rows.length < pageSize) break;
-      cursor = rows[rows.length - 1].id;
-    }
+    rollupProperty = await getProperty(bootstrapClient, rollupPropertyId);
   } finally {
-    client.release();
+    bootstrapClient.release();
+  }
+  if (!rollupProperty) return;
+
+  let cursor: string | null = null;
+  const pageSize = 500;
+  for (;;) {
+    const { rows }: { rows: Array<{ id: string }> } = await pool.query(
+      `SELECT id FROM items WHERE database_id = $1 AND deleted_at IS NULL ${cursor ? "AND id > $3" : ""}
+       ORDER BY id ASC LIMIT $2`,
+      cursor ? [rollupProperty.databaseId, pageSize, cursor] : [rollupProperty.databaseId, pageSize],
+    );
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      await enqueueRollupRecompute(pool, rollupPropertyId, row.id);
+    }
+    if (rows.length < pageSize) break;
+    cursor = rows[rows.length - 1].id;
   }
 }
 
