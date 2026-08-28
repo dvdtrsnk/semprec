@@ -1,5 +1,37 @@
 import type { Queryable } from "../db/pool.js";
 
+export interface KnownProviderMessage {
+  itemId: string;
+  providerMessageId: string;
+}
+
+/**
+ * Every message currently linked (via any of `folderItemIds`) that has a `provider_message_id`
+ * — used by the Gmail/Graph adapters' full-resync path (issue #26) to find messages that were
+ * deleted from the provider between the last known position and now: `listAllMessageIds()` /
+ * a fresh `fetchDelta(null)` only returns what *currently* exists, so anything already in our
+ * DB but absent from that fresh list must be reconciled as removed, the same as IMAP's
+ * `fetchAllUids`-vs-`listKnownFolderUids` diff on a server without CONDSTORE.
+ */
+export async function listKnownProviderMessagesForFolders(
+  client: Queryable,
+  relationDefinitionId: string,
+  folderItemIds: string[],
+): Promise<KnownProviderMessage[]> {
+  if (folderItemIds.length === 0) return [];
+  const { rows } = await client.query<{ item_id: string; provider_message_id: string }>(
+    `SELECT DISTINCT mm.item_id, mm.provider_message_id
+     FROM item_relations r
+     JOIN mail_message_meta mm
+       ON mm.item_id = CASE WHEN r.item_a = ANY($2::uuid[]) THEN r.item_b ELSE r.item_a END
+     WHERE r.relation_definition_id = $1
+       AND (r.item_a = ANY($2::uuid[]) OR r.item_b = ANY($2::uuid[]))
+       AND mm.provider_message_id IS NOT NULL`,
+    [relationDefinitionId, folderItemIds],
+  );
+  return rows.map((row) => ({ itemId: row.item_id, providerMessageId: row.provider_message_id }));
+}
+
 /**
  * The IMAP UID lives on the Emails<->Folders relation edge's `metadata` (issue #26: "the
  * per-folder UID lives on the relationship edge, not on the message" — reusing

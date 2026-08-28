@@ -5,7 +5,25 @@ import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { readJsonWithLimit } from "./httpJson.js";
 
 const BASE_URL = "https://graph.microsoft.com/v1.0/me";
+const GRAPH_HOST = "graph.microsoft.com";
 const WELL_KNOWN_FOLDERS = ["inbox", "sentitems", "drafts", "deleteditems", "junkemail", "archive"];
+
+/**
+ * `request()` attaches `Authorization: Bearer <token>` to whatever URL it's given, and some
+ * of those URLs come from the response body itself (`@odata.nextLink`/`@odata.deltaLink`) or
+ * from our own DB (a stored `deltaLink`) — never from this client's own hardcoded strings. A
+ * response (or a corrupted stored value) pointing that URL off `graph.microsoft.com` would
+ * otherwise have the access token silently attached and sent to it. Checked once, at the one
+ * place every request actually goes out, rather than trusting every call site to only ever
+ * pass a same-host URL.
+ */
+function assertGraphHost(url: string): string {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:" || parsed.hostname !== GRAPH_HOST) {
+    throw new Error(`Refusing to send a Graph API request to unexpected host '${parsed.hostname}'`);
+  }
+  return url;
+}
 
 interface GraphMessageResource {
   id: string;
@@ -137,7 +155,7 @@ export class GraphRestClient implements GraphMailClient {
 
   private async request<T>(url: string): Promise<T> {
     const token = await this.getAccessToken();
-    const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
+    const response = await fetch(assertGraphHost(url), { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
     if (!response.ok) throw new GraphApiError(response.status);
     return readJsonWithLimit<T>(response);
   }

@@ -16,8 +16,11 @@ import { Transform, type Readable } from "node:stream";
  * #65, truncates the write under backpressure), computing size/content hash incrementally
  * as bytes flow rather than after buffering the whole attachment.
  */
+/** Above any real-world provider attachment limit (Gmail 25MB, Outlook ~20-25MB, iCloud 20MB) with generous headroom — a ceiling against a malicious/misbehaving server, not a normal-case limit. */
+export const MAX_ATTACHMENT_BYTES = 250 * 1024 * 1024;
+
 export interface BlobStorageWriter {
-  writeStream(storageKey: string, source: Readable): Promise<{ byteSize: number; contentHash: string }>;
+  writeStream(storageKey: string, source: Readable, maxBytes?: number): Promise<{ byteSize: number; contentHash: string }>;
   /** Removes bytes written under a key that turned out to be an unneeded duplicate — see `mail/attachments.ts`'s content-hash dedup, which writes before it can know whether `findOrCreateBlob` will keep or discard that write. */
   delete(storageKey: string): Promise<void>;
 }
@@ -30,7 +33,7 @@ export interface BlobStorageWriter {
 export class LocalFsBlobStorageWriter implements BlobStorageWriter {
   constructor(private readonly baseDir: string) {}
 
-  async writeStream(storageKey: string, source: Readable): Promise<{ byteSize: number; contentHash: string }> {
+  async writeStream(storageKey: string, source: Readable, maxBytes: number = MAX_ATTACHMENT_BYTES): Promise<{ byteSize: number; contentHash: string }> {
     const path = join(this.baseDir, storageKey);
     await mkdir(dirname(path), { recursive: true });
 
@@ -40,16 +43,26 @@ export class LocalFsBlobStorageWriter implements BlobStorageWriter {
     // consumption of `source`) ties hash/size accounting to exactly the bytes `pipeline`
     // actually forwarded — if the write side fails partway, `pipeline` rejects before this
     // function returns byteSize/contentHash at all, instead of the two ever silently
-    // disagreeing about how much was written.
+    // disagreeing about how much was written. Exceeding `maxBytes` throws (aborting the
+    // pipeline) rather than silently truncating — imapflow's own `maxBytes` option on
+    // `download()` truncates without error, which for a real attachment (unlike a body-text
+    // preview) would mean handing the user a silently corrupted file instead of a clear
+    // failure.
     const hasher = new Transform({
       transform(chunk: Buffer, _encoding, callback) {
-        hash.update(chunk);
         byteSize += chunk.length;
+        if (byteSize > maxBytes) return callback(new Error(`Attachment exceeded ${maxBytes} bytes`));
+        hash.update(chunk);
         callback(null, chunk);
       },
     });
 
-    await pipeline(source, hasher, createWriteStream(path));
+    try {
+      await pipeline(source, hasher, createWriteStream(path));
+    } catch (err) {
+      await rm(path, { force: true });
+      throw err;
+    }
     return { byteSize, contentHash: hash.digest("hex") };
   }
 

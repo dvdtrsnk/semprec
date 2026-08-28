@@ -109,7 +109,7 @@ export async function ingestEmailMessage(client: PoolClient, input: IngestEmailM
     itemId = item.id;
     created = true;
 
-    await upsertMailMessageMeta(client, {
+    const meta = await upsertMailMessageMeta(client, {
       itemId,
       messageId: input.messageId,
       inReplyTo: input.inReplyTo,
@@ -120,21 +120,33 @@ export async function ingestEmailMessage(client: PoolClient, input: IngestEmailM
       envelope: input.envelope,
     });
 
-    await ingestAttachments(client, {
-      messageItemId: itemId,
-      filesDatabaseId: input.filesDatabaseId,
-      attachmentsRelationPropertyId: input.attachmentsRelationPropertyId,
-      attachments: input.attachments,
-      storage: input.storage,
-      storageKeyPrefix: input.storageKeyPrefix,
-    });
+    // upsertMailMessageMeta's ON CONFLICT (message_id) updates thread/provider fields but
+    // deliberately never item_id (see its own header note) — so if a concurrent write for the
+    // same messageId already committed between this function's initial read above and this
+    // upsert, `meta.itemId` names *that* row's item, not the one just created here. Converging
+    // onto it (rather than the just-created item, which becomes an unlinked orphan with no
+    // mail_message_meta row) is exactly the "first write wins, second is a no-op" behavior the
+    // issue specifies for a concurrent provider_message_id insert.
+    if (meta.itemId !== itemId) {
+      itemId = meta.itemId;
+      created = false;
+    } else {
+      await ingestAttachments(client, {
+        messageItemId: itemId,
+        filesDatabaseId: input.filesDatabaseId,
+        attachmentsRelationPropertyId: input.attachmentsRelationPropertyId,
+        attachments: input.attachments,
+        storage: input.storage,
+        storageKeyPrefix: input.storageKeyPrefix,
+      });
 
-    const bodyForSearch = input.bodyText ?? (input.bodyHtml ? htmlToSearchText(input.bodyHtml) : "");
-    await reindexItemSearch(client, {
-      itemId,
-      databaseId: input.emailsDatabaseId,
-      text: [input.subject ?? "", bodyForSearch].join("\n\n"),
-    });
+      const bodyForSearch = input.bodyText ?? (input.bodyHtml ? htmlToSearchText(input.bodyHtml) : "");
+      await reindexItemSearch(client, {
+        itemId,
+        databaseId: input.emailsDatabaseId,
+        text: [input.subject ?? "", bodyForSearch].join("\n\n"),
+      });
+    }
   }
 
   await createRelationWithClient(client, {

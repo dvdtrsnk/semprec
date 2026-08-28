@@ -5,6 +5,7 @@ import { ValidationError } from "../errors.js";
 import { ensureFolderItem } from "./folderDiscovery.js";
 import { ingestEmailMessage } from "./ingest.js";
 import { getMailMessageMetaByProviderMessageId } from "./mailMessageMetaStore.js";
+import { listKnownProviderMessagesForFolders } from "./folderMembershipStore.js";
 import { ensureMailAccountSyncState, invalidateGmailHistory, recordGmailActivity } from "./mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import type { FetchedMessage } from "./providerTypes.js";
@@ -98,6 +99,7 @@ export async function reconcileGmailAccount(dbClient: PoolClient, gmail: GmailMa
   let changedIds: string[];
   let removedIds: string[] = [];
   let newHistoryId: string;
+  let isFullResync = false;
 
   if (!state.gmailHistoryId) {
     // historyId captured BEFORE listing, not after: a message arriving in the gap between the
@@ -108,17 +110,31 @@ export async function reconcileGmailAccount(dbClient: PoolClient, gmail: GmailMa
     // dedups), never lose one.
     newHistoryId = await gmail.getCurrentHistoryId();
     changedIds = await gmail.listAllMessageIds();
+    isFullResync = true;
   } else {
     const history = await gmail.listHistorySince(state.gmailHistoryId);
     if (history.invalidated) {
       await invalidateGmailHistory(dbClient, params.mailboxItemId, "history.list: historyId too old, running full resync");
       newHistoryId = await gmail.getCurrentHistoryId();
       changedIds = await gmail.listAllMessageIds();
+      isFullResync = true;
     } else {
       changedIds = history.changedMessageIds;
       removedIds = history.removedMessageIds;
       newHistoryId = history.newHistoryId;
     }
+  }
+
+  // A full resync (`listAllMessageIds`) only returns what *currently* exists — a message
+  // permanently deleted from Gmail since the last known position would otherwise never be
+  // visited by the changedIds loop below, leaving its DB item and folder edges dangling
+  // forever (the same gap the IMAP adapter closes via `fetchAllUids` vs `listKnownFolderUids`
+  // on a server without CONDSTORE).
+  if (isFullResync) {
+    const known = await listKnownProviderMessagesForFolders(dbClient, relationDefinition.id, [...folderItemIdByLabel.values()]);
+    const currentSet = new Set(changedIds);
+    const staleIds = known.filter((k) => !currentSet.has(k.providerMessageId)).map((k) => k.providerMessageId);
+    removedIds = [...removedIds, ...staleIds];
   }
 
   for (const id of changedIds) {

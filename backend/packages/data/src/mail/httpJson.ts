@@ -9,7 +9,9 @@
 const DEFAULT_MAX_JSON_BYTES = 32 * 1024 * 1024;
 
 export async function readJsonWithLimit<T>(response: Response, maxBytes: number = DEFAULT_MAX_JSON_BYTES): Promise<T> {
-  if (!response.body) return JSON.parse(await response.text()) as T;
+  // A null body is genuinely empty (not an unread stream) — nothing to bound, so this never
+  // falls back to an uncapped `response.text()` the way the size guard below exists to avoid.
+  if (!response.body) throw new Error("Response has no body to parse as JSON");
 
   const chunks: Uint8Array[] = [];
   let total = 0;
