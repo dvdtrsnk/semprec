@@ -21,6 +21,8 @@ import { sanitizeMailHtml } from "../mail/htmlSanitize.js";
 import { reindexItemSearch, searchItems } from "../mail/search.js";
 import { storeCredential, getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import { reconcileImapAccount, type ImapFetchedMessage, type ImapMailClient } from "../mail/imapReconcile.js";
+import { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
+import { reconcileGraphAccount, type GraphMailClient } from "../mail/graphReconcile.js";
 import { handleSyncMailAccountTask, type MailSyncAdapterFactory } from "../mail/mailSyncJob.js";
 import { ensureMailAccountSyncState, getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
@@ -609,6 +611,183 @@ describe("IMAP reconcile core (issue #26)", () => {
       [emailProps.find((p) => p.key === "folder")!.id],
     );
     expect(Number(rows[0].count)).toBe(1); // one of the two original edges was removed
+  });
+});
+
+describe("Gmail reconcile core (issue #26)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  function fakeGmailClient(overrides: Partial<GmailMailClient> = {}): GmailMailClient {
+    return {
+      getCurrentHistoryId: async () => "100",
+      listHistorySince: async () => ({ invalidated: false, newHistoryId: "101", changedMessageIds: [], removedMessageIds: [] }),
+      listAllMessageIds: async () => ["m1"],
+      fetchMessage: async (id) => ({
+        id,
+        threadId: "t1",
+        labelIds: ["INBOX"],
+        message: { messageId: `<${id}@x>`, envelope: { from: { address: "a@x.com" } }, subject: "Hi", attachments: [] },
+      }),
+      listLabels: async () => [{ id: "INBOX", name: "INBOX", type: "system" }],
+      ...overrides,
+    };
+  }
+
+  async function reconcileParams() {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const emailProps = await chokePoint.listProperties(emailsId);
+    const folderProps = await chokePoint.listProperties(foldersId);
+    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
+    return {
+      mailboxItemId: mailbox.id,
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      foldersDatabaseId: foldersId,
+      folderRelationPropertyId: emailProps.find((p) => p.key === "folder")!.id,
+      mailboxFolderRelationPropertyId: folderProps.find((p) => p.key === "mailbox")!.id,
+      attachmentsRelationPropertyId: emailProps.find((p) => p.key === "attachments")!.id,
+      storage: noopStorage,
+      storageKeyPrefix: "test",
+    };
+  }
+
+  it("initial sync (no stored historyId) does a full listAllMessageIds pass and stores the returned historyId", async () => {
+    const params = await reconcileParams();
+    await withTransaction(pool, (client) => reconcileGmailAccount(client, fakeGmailClient(), params));
+
+    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, params.mailboxItemId));
+    expect(state?.gmailHistoryId).toBe("100");
+    const { rows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [params.emailsDatabaseId]);
+    expect(rows[0].count).toBe("1");
+  });
+
+  it("a history.list 404 (invalidated) clears the stored historyId and forces a full resync instead of resuming", async () => {
+    const params = await reconcileParams();
+    await withTransaction(pool, (client) => reconcileGmailAccount(client, fakeGmailClient(), params));
+
+    let fullResyncCallCount = 0;
+    const secondClient = fakeGmailClient({
+      listHistorySince: async () => ({ invalidated: true, newHistoryId: "100", changedMessageIds: [], removedMessageIds: [] }),
+      listAllMessageIds: async () => {
+        fullResyncCallCount++;
+        return ["m2"];
+      },
+      getCurrentHistoryId: async () => "200",
+      fetchMessage: async (id) => ({
+        id,
+        threadId: "t2",
+        labelIds: ["INBOX"],
+        message: { messageId: `<${id}@x>`, envelope: { from: { address: "b@x.com" } }, subject: "Second", attachments: [] },
+      }),
+    });
+    await withTransaction(pool, (client) => reconcileGmailAccount(client, secondClient, params));
+
+    expect(fullResyncCallCount).toBe(1);
+    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, params.mailboxItemId));
+    expect(state?.gmailHistoryId).toBe("200");
+    const { rows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [params.emailsDatabaseId]);
+    expect(rows[0].count).toBe("2"); // the first sync's message plus the resync's new one
+  });
+});
+
+describe("Graph reconcile core (issue #26)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  function fakeGraphClient(overrides: Partial<GraphMailClient> = {}): GraphMailClient {
+    return {
+      listFolders: async () => [{ id: "f1", displayName: "Inbox", wellKnownName: "inbox" }],
+      fetchDelta: async () => ({
+        invalidated: false,
+        newDeltaLink: "link-1",
+        changes: [
+          {
+            id: "m1",
+            parentFolderId: "f1",
+            removed: false,
+            message: { messageId: "<m1@x>", envelope: { from: { address: "a@x.com" } }, subject: "Hi", attachments: [] },
+          },
+        ],
+      }),
+      ...overrides,
+    };
+  }
+
+  async function reconcileParams() {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const emailProps = await chokePoint.listProperties(emailsId);
+    const folderProps = await chokePoint.listProperties(foldersId);
+    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
+    return {
+      mailboxItemId: mailbox.id,
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      foldersDatabaseId: foldersId,
+      folderRelationPropertyId: emailProps.find((p) => p.key === "folder")!.id,
+      mailboxFolderRelationPropertyId: folderProps.find((p) => p.key === "mailbox")!.id,
+      attachmentsRelationPropertyId: emailProps.find((p) => p.key === "attachments")!.id,
+      storage: noopStorage,
+      storageKeyPrefix: "test",
+    };
+  }
+
+  it("ingests a delta change into its parent folder and stores the returned deltaLink", async () => {
+    const params = await reconcileParams();
+    await withTransaction(pool, (client) => reconcileGraphAccount(client, fakeGraphClient(), params));
+
+    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, params.mailboxItemId));
+    expect(state?.graphDeltaLink).toBe("link-1");
+    const { rows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [params.emailsDatabaseId]);
+    expect(rows[0].count).toBe("1");
+  });
+
+  it("a deltaLink 410 Gone (invalidated) clears the stored deltaLink and runs a full resync (fetchDelta(null)) instead of resuming", async () => {
+    const params = await reconcileParams();
+    await withTransaction(pool, (client) => reconcileGraphAccount(client, fakeGraphClient(), params));
+
+    const deltaLinksSeen: (string | null)[] = [];
+    const secondClient = fakeGraphClient({
+      fetchDelta: async (deltaLink) => {
+        deltaLinksSeen.push(deltaLink);
+        if (deltaLink !== null) {
+          return { invalidated: true, newDeltaLink: "", changes: [] };
+        }
+        return {
+          invalidated: false,
+          newDeltaLink: "link-2",
+          changes: [
+            {
+              id: "m2",
+              parentFolderId: "f1",
+              removed: false,
+              message: { messageId: "<m2@x>", envelope: { from: { address: "b@x.com" } }, subject: "Second", attachments: [] },
+            },
+          ],
+        };
+      },
+    });
+    await withTransaction(pool, (client) => reconcileGraphAccount(client, secondClient, params));
+
+    expect(deltaLinksSeen).toEqual(["link-1", null]); // resumed from the stored link, got invalidated, retried from scratch
+    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, params.mailboxItemId));
+    expect(state?.graphDeltaLink).toBe("link-2");
+    const { rows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [params.emailsDatabaseId]);
+    expect(rows[0].count).toBe("2");
   });
 });
 
