@@ -1,3 +1,4 @@
+import type { PoolClient } from "pg";
 import type { Queryable } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { parseTaskRecurrenceRule, TASK_RECURRENCE_MODES, type TaskRecurrenceMode, type TaskRecurrenceRule } from "./taskRecurrenceRule.js";
@@ -51,7 +52,14 @@ export async function createTaskRecurrence(client: Queryable, input: CreateTaskR
  * no-ops) or rolls back (at which point it re-reads the original, still-active row). Pass
  * `true` from any caller that's about to act on `active` within its own transaction, e.g.
  * `advanceTaskRecurrence`; a plain read (no intent to mutate) should omit it.
+ *
+ * `forUpdate: true` requires a `PoolClient`, not the broader `Queryable` (`Pool | PoolClient`):
+ * `FOR UPDATE` against a bare `Pool` acquires and immediately auto-commit-releases the lock on
+ * that single statement, silently defeating the whole point of locking. These two overloads
+ * make that a compile error instead of a runtime footgun.
  */
+export function getTaskRecurrence(client: PoolClient, itemId: string, forUpdate: true): Promise<TaskRecurrence | null>;
+export function getTaskRecurrence(client: Queryable, itemId: string, forUpdate?: false): Promise<TaskRecurrence | null>;
 export async function getTaskRecurrence(client: Queryable, itemId: string, forUpdate = false): Promise<TaskRecurrence | null> {
   const { rows } = await client.query(`SELECT ${COLUMNS} FROM task_recurrence WHERE item_id = $1${forUpdate ? " FOR UPDATE" : ""}`, [itemId]);
   return rows[0] ? mapRow(rows[0]) : null;

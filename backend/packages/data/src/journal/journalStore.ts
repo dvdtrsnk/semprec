@@ -2,6 +2,7 @@ import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { createItemWithClient } from "../chokePoint/chokePoint.js";
+import { ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 
 export const JOURNAL_PERIOD_TYPES = ["year", "quarter", "month", "week", "day"] as const;
@@ -51,6 +52,14 @@ export async function getOrCreateJournalItem(
   timezone: string,
 ): Promise<ItemRow> {
   const reference = DateTime.fromJSDate(referenceDate, { zone: timezone });
+  // Luxon accepts any string and silently produces an invalid DateTime for an unrecognized
+  // IANA zone rather than throwing — without this check, `computeJournalPeriodKey`'s
+  // `toISODate()` would return null, and `period` would silently become the string "null"
+  // (same class of bug chokePoint.ts's updateItemWithClient already guards against for the
+  // system-settings timezone write).
+  if (!reference.isValid) {
+    throw new ValidationError(`Invalid IANA timezone: '${timezone}'`, { field: "timezone" });
+  }
   const period = computeJournalPeriodKey(type, reference);
 
   return createItemWithClient(
