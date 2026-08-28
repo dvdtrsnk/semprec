@@ -63,9 +63,14 @@ export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput
   if (!input.contentHash) return createBlob(client, input);
 
   const inserted = await client.query(
+    // The conflict target must repeat blobs_content_hash_uq's own partial predicate
+    // (0004_ten_databases.sql) — Postgres only infers a partial unique index as an ON
+    // CONFLICT arbiter when the clause's WHERE matches the index's WHERE verbatim; without
+    // it, Postgres reports no matching unique constraint at all (not merely "doesn't apply
+    // here"), so this insert would fail outright, not just skip the dedup fast path.
     `INSERT INTO blobs (mime_type, byte_size, storage_key, source_url, content_hash)
      VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (content_hash) DO NOTHING
+     ON CONFLICT (content_hash) WHERE content_hash IS NOT NULL DO NOTHING
      RETURNING ${BLOB_COLUMNS}`,
     [input.mimeType, String(input.byteSize), input.storageKey, input.sourceUrl ?? null, input.contentHash],
   );

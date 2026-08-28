@@ -1,59 +1,33 @@
 import { randomUUID } from "node:crypto";
-import { Readable } from "node:stream";
+import type { Readable } from "node:stream";
 import type { PoolClient } from "pg";
-import type { ParsedMail } from "mailparser";
 import { findOrCreateBlob } from "../blobs/blobsStore.js";
 import { createItemWithClient, createRelationWithClient } from "../chokePoint/chokePoint.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 
+/**
+ * The shape every provider adapter (imap/gmail/graph) normalizes an attachment part down to.
+ * "Belongs in Files" (issue #26) is the combination of `Content-Disposition: attachment` (has
+ * a filename, meant to be downloaded) vs. `inline`, *together with* whether the part is
+ * actually referenced via `cid:` inside the HTML body — an inline part with a matching `cid:`
+ * reference is a rendering asset (a signature logo), not a document. Each adapter applies that
+ * same rule itself while walking its own provider-specific MIME/part tree (imapFlowClient.ts's
+ * `classifyAttachmentParts`, gmailRestClient.ts's `classifyGmailAttachmentParts`,
+ * graphRestClient.ts's equivalent) — there is no shared parsed-message representation across
+ * all three providers to classify generically from.
+ */
 export interface ClassifiedAttachment {
   filename: string;
   contentType: string;
   contentId: string | null;
   disposition: "attachment" | "inline";
   /**
-   * Lazily opens the attachment's decoded byte stream. Deliberately not a `Buffer`: a provider
-   * adapter that already has the whole part in memory (mailparser's parsed output, below) can
-   * still wrap it in one, but the IMAP adapter (imapFlowClient.ts) streams straight from the
-   * socket via imapflow's `download()` and never buffers the part whole — the issue's
-   * "memory-safe attachment processing" requirement. `ingestAttachments` below is the only
-   * caller, and calls this exactly once per attachment, immediately before streaming it to
-   * storage.
+   * Lazily opens the attachment's decoded byte stream — never a whole-message or whole-set-of-
+   * attachments buffer already sitting in memory (issue #26: memory-safe attachment
+   * processing). `ingestAttachments` below is the only caller, and calls this exactly once per
+   * attachment, immediately before streaming it to storage.
    */
   openStream(): Promise<Readable> | Readable;
-}
-
-/**
- * MIME classification (issue #26) for a provider that already handed us the fully-parsed
- * message (Gmail's REST client only — see gmailRestClient.ts's own note on why the Gmail API
- * doesn't allow the IMAP adapter's part-by-part streaming approach): "belongs in Files" is the
- * combination of `Content-Disposition: attachment` (has a filename, meant to be downloaded)
- * vs. `inline`, *together with* whether the part is actually referenced via `cid:` inside the
- * HTML body — an inline part with a matching `cid:` reference is a rendering asset (a
- * signature logo), not a document, and is excluded here. `mailparser`'s own `attachments`
- * array already includes both kinds undifferentiated; this is the extra filter the issue
- * calls for.
- */
-export function classifyAttachments(parsed: ParsedMail): ClassifiedAttachment[] {
-  const html = typeof parsed.html === "string" ? parsed.html : "";
-  const result: ClassifiedAttachment[] = [];
-  for (const part of parsed.attachments ?? []) {
-    const disposition: "attachment" | "inline" = part.contentDisposition === "inline" ? "inline" : "attachment";
-    const contentId = part.cid ?? null;
-    const referencedInline = disposition === "inline" && contentId !== null && html.includes(`cid:${contentId}`);
-    if (referencedInline) continue;
-    result.push({
-      filename: part.filename ?? "attachment",
-      contentType: part.contentType,
-      contentId,
-      disposition,
-      // mailparser already fully materialized this part's bytes while parsing the message
-      // (see gmailRestClient.ts) — Readable.from wraps the existing buffer, it does not
-      // re-buffer anything.
-      openStream: () => Readable.from(part.content),
-    });
-  }
-  return result;
 }
 
 export interface IngestAttachmentsInput {

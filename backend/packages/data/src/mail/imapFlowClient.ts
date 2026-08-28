@@ -125,8 +125,8 @@ export class ImapFlowMailClient implements ImapMailClient {
       };
     });
     // An inline part actually referenced via `cid:` inside the HTML body is a rendering asset
-    // (a signature logo), not a document — excluded here, same rule as the mailparser-based
-    // classifyAttachments (attachments.ts) applies for the other two adapters.
+    // (a signature logo), not a document — excluded here, same rule the other two adapters
+    // apply over their own provider-specific part trees (see attachments.ts's header note).
     return candidates.filter((a) => !(a.disposition === "inline" && a.contentId !== null && Boolean(html?.includes(`cid:${a.contentId}`))));
   }
 

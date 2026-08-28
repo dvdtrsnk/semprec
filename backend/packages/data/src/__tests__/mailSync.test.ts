@@ -16,7 +16,7 @@ import {
 import { lookupPersonIdByEmail, reindexPersonEmails } from "../mail/personEmailIndexStore.js";
 import { resolveThreadId } from "../mail/threading.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
-import { classifyAttachments } from "../mail/attachments.js";
+import type { ClassifiedAttachment } from "../mail/attachments.js";
 import { sanitizeMailHtml } from "../mail/htmlSanitize.js";
 import { reindexItemSearch, searchItems } from "../mail/search.js";
 import { storeCredential, getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
@@ -27,8 +27,8 @@ import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { MailReauthorizationRequiredError } from "../mail/providerTypes.js";
 import { walkBodyStructure } from "../mail/imapFlowClient.js";
 import type { MessageStructureObject } from "imapflow";
-import { simpleParser } from "mailparser";
 import { createHash, randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -276,39 +276,63 @@ describe("message ingest dedup (issue #26)", () => {
   });
 });
 
-describe("attachment classification (issue #26)", () => {
-  it("excludes an inline part referenced via cid: from the HTML body, includes a real attachment", async () => {
-    const raw = [
-      "Content-Type: multipart/related; boundary=BOUNDARY",
-      "",
-      "--BOUNDARY",
-      "Content-Type: multipart/mixed; boundary=INNER",
-      "",
-      "--INNER",
-      "Content-Type: text/html",
-      "",
-      '<p>Hi <img src="cid:logo123"></p>',
-      "--INNER",
-      "Content-Type: application/pdf",
-      "Content-Disposition: attachment; filename=invoice.pdf",
-      "Content-Transfer-Encoding: base64",
-      "",
-      Buffer.from("pdf-bytes").toString("base64"),
-      "--INNER--",
-      "--BOUNDARY",
-      "Content-Type: image/png",
-      "Content-ID: <logo123>",
-      "Content-Disposition: inline; filename=logo.png",
-      "Content-Transfer-Encoding: base64",
-      "",
-      Buffer.from("png-bytes").toString("base64"),
-      "--BOUNDARY--",
-    ].join("\r\n");
+describe("attachment ingest (issue #26)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
 
-    const parsed = await simpleParser(raw, { keepCidLinks: true });
-    const classified = classifyAttachments(parsed);
-    expect(classified.map((a) => a.filename)).toEqual(["invoice.pdf"]);
-    expect(classified[0].disposition).toBe("attachment");
+  function attachment(filename: string, bytes: Buffer): ClassifiedAttachment {
+    return {
+      filename,
+      contentType: "application/pdf",
+      contentId: null,
+      disposition: "attachment",
+      openStream: () => Readable.from(bytes),
+    };
+  }
+
+  it("streams each attachment to storage, creates a Files item, and dedups identical content by hash", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+    const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+    const folder = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+    );
+
+    const sameBytes = Buffer.from("invoice-bytes");
+    const result = await withTransaction(pool, (client) =>
+      ingestEmailMessage(client, {
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        folderRelationPropertyId: folderProperty.id,
+        attachmentsRelationPropertyId: attachmentsProperty.id,
+        folderItemId: folder.id,
+        messageId: "<with-attachments@x>",
+        envelope: {},
+        attachments: [attachment("invoice.pdf", sameBytes), attachment("invoice-copy.pdf", sameBytes)],
+        storage: noopStorage,
+        storageKeyPrefix: "test",
+      }),
+    );
+
+    const { rows: attachmentRows } = await pool.query(`SELECT filename, blob_id, byte_size FROM mail_attachments WHERE message_item_id = $1`, [result.itemId]);
+    expect(attachmentRows).toHaveLength(2);
+    expect(new Set(attachmentRows.map((r) => r.blob_id)).size).toBe(1); // same content hash -> one blob
+    expect(attachmentRows.every((r) => Number(r.byte_size) === sameBytes.length)).toBe(true);
+
+    const { rows: fileItemRows } = await pool.query(`SELECT properties->>'name' AS name FROM items WHERE database_id = $1 ORDER BY 1`, [filesId]);
+    expect(fileItemRows.map((r) => r.name)).toEqual(["invoice-copy.pdf", "invoice.pdf"]);
+
+    const { rows: relationRows } = await pool.query(
+      `SELECT count(*) FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1)`,
+      [attachmentsProperty.id],
+    );
+    expect(Number(relationRows[0].count)).toBe(2);
   });
 });
 

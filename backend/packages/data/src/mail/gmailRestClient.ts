@@ -1,7 +1,8 @@
+import { Readable } from "node:stream";
 import { simpleParser } from "mailparser";
-import { classifyAttachments } from "./attachments.js";
 import type { GmailFetchedMessage, GmailHistoryResult, GmailLabelRef, GmailMailClient } from "./gmailReconcile.js";
 import type { FetchedMessage } from "./providerTypes.js";
+import type { ClassifiedAttachment } from "./attachments.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 
 const BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -10,31 +11,141 @@ function decodeBase64Url(value: string): Buffer {
   return Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 }
 
-async function parseRawMessage(raw: string, gmailMessageId: string): Promise<FetchedMessage> {
-  const parsed = await simpleParser(decodeBase64Url(raw), { keepCidLinks: true });
-  const references = Array.isArray(parsed.references) ? parsed.references : parsed.references ? [parsed.references] : [];
-  const toList = (value: typeof parsed.to): MailEnvelopeAddress[] => {
+interface GmailPayloadHeader {
+  name: string;
+  value: string;
+}
+
+interface GmailPayloadPart {
+  partId?: string;
+  mimeType: string;
+  filename?: string;
+  headers?: GmailPayloadHeader[];
+  body?: { size?: number; data?: string; attachmentId?: string };
+  parts?: GmailPayloadPart[];
+}
+
+function partHeader(part: GmailPayloadPart, name: string): string | undefined {
+  return part.headers?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value;
+}
+
+/**
+ * Only the headers this issue's threading/envelope model needs, reconstructed as a tiny raw
+ * header block (`Name: value\r\n...\r\n\r\n`, empty body) and run through mailparser purely for
+ * its mature address-list/Message-ID parsing — bounded strictly by header size (a few KB),
+ * never by the message's attachment bytes, unlike a whole-message `simpleParser` pass would be.
+ */
+async function parseGmailHeaders(headers: GmailPayloadHeader[]) {
+  const raw = headers.map((h) => `${h.name}: ${h.value.replace(/\r?\n/g, " ")}`).join("\r\n") + "\r\n\r\n";
+  return simpleParser(raw, { skipHtmlToText: true });
+}
+
+interface GmailMimeTree {
+  textPlainPart?: GmailPayloadPart;
+  textHtmlPart?: GmailPayloadPart;
+  attachmentParts: GmailPayloadPart[];
+}
+
+/** Same structural walk as imapFlowClient.ts's walkBodyStructure, over Gmail's `payload.parts` tree instead of IMAP BODYSTRUCTURE — a body leaf is a text/plain or text/html part with no filename of its own; everything else is a candidate attachment. */
+function walkGmailPayload(root: GmailPayloadPart): GmailMimeTree {
+  const tree: GmailMimeTree = { attachmentParts: [] };
+  const visit = (node: GmailPayloadPart): void => {
+    if (node.parts && node.parts.length > 0) {
+      for (const child of node.parts) visit(child);
+      return;
+    }
+    const type = node.mimeType.toLowerCase();
+    if (!tree.textPlainPart && type === "text/plain" && !node.filename) {
+      tree.textPlainPart = node;
+      return;
+    }
+    if (!tree.textHtmlPart && type === "text/html" && !node.filename) {
+      tree.textHtmlPart = node;
+      return;
+    }
+    tree.attachmentParts.push(node);
+  };
+  visit(root);
+  return tree;
+}
+
+function decodePartText(part: GmailPayloadPart | undefined): string | undefined {
+  return part?.body?.data ? decodeBase64Url(part.body.data).toString("utf8") : undefined;
+}
+
+/**
+ * Builds each candidate attachment's lazy byte source. Gmail's REST API has no true streamed
+ * download (unlike imapflow's `download()`/Graph's `$value`) — its only per-attachment
+ * primitive is a single JSON response containing the whole part as base64. What this still
+ * avoids, versus the old `format=raw` whole-message fetch, is buffering *every* attachment of
+ * a message at once: each part's bytes are only fetched, one at a time, when `ingestAttachments`
+ * (mail/attachments.ts) actually calls `openStream()` for that specific part — small parts
+ * Gmail already inlined into `format=full`'s response need no extra request at all.
+ */
+function classifyGmailAttachmentParts(
+  fetchAttachmentBytes: (attachmentId: string) => Promise<Buffer>,
+  parts: GmailPayloadPart[],
+  html: string | undefined,
+): ClassifiedAttachment[] {
+  const candidates = parts.map((part): ClassifiedAttachment => {
+    const dispositionHeader = partHeader(part, "Content-Disposition");
+    const disposition: "attachment" | "inline" = dispositionHeader?.toLowerCase().trim().startsWith("inline") ? "inline" : "attachment";
+    const contentIdHeader = partHeader(part, "Content-ID");
+    const contentId = contentIdHeader ? contentIdHeader.replace(/^<|>$/g, "") : null;
+    return {
+      filename: part.filename || "attachment",
+      contentType: part.mimeType,
+      contentId,
+      disposition,
+      openStream: async () => {
+        if (part.body?.data) return Readable.from(decodeBase64Url(part.body.data));
+        if (!part.body?.attachmentId) throw new Error("Gmail attachment part has neither inline data nor an attachmentId");
+        return Readable.from(await fetchAttachmentBytes(part.body.attachmentId));
+      },
+    };
+  });
+  // Same "inline part actually referenced via cid: in the HTML body is a rendering asset, not
+  // a document" rule the other two adapters apply (attachments.ts / imapFlowClient.ts).
+  return candidates.filter((a) => !(a.disposition === "inline" && a.contentId !== null && Boolean(html?.includes(`cid:${a.contentId}`))));
+}
+
+async function toFetchedMessage(
+  gmailMessageId: string,
+  payload: GmailPayloadPart,
+  fetchAttachmentBytes: (attachmentId: string) => Promise<Buffer>,
+): Promise<FetchedMessage> {
+  const parsedHeaders = await parseGmailHeaders(payload.headers ?? []);
+  const tree = walkGmailPayload(payload);
+  const bodyHtml = decodePartText(tree.textHtmlPart);
+
+  const references = Array.isArray(parsedHeaders.references)
+    ? parsedHeaders.references
+    : parsedHeaders.references
+      ? [parsedHeaders.references]
+      : [];
+  const toList = (value: typeof parsedHeaders.to): MailEnvelopeAddress[] => {
     const objects = Array.isArray(value) ? value : value ? [value] : [];
     return objects.flatMap((o) => o.value).filter((a): a is { name: string; address: string } => Boolean(a.address)).map((a) => ({ name: a.name || undefined, address: a.address }));
   };
+
   return {
     // Falls back to Gmail's own (always-unique) message id, not a fixed placeholder — two
     // different messages both missing a Message-ID header must not collide and get merged
     // into one Emails item by ingestEmailMessage's dedup-by-messageId.
-    messageId: parsed.messageId ?? `<${gmailMessageId}@gmail-api>`,
-    inReplyTo: parsed.inReplyTo ?? null,
+    messageId: parsedHeaders.messageId ?? `<${gmailMessageId}@gmail-api>`,
+    inReplyTo: parsedHeaders.inReplyTo ?? null,
     references,
-    subject: parsed.subject,
+    subject: parsedHeaders.subject,
     envelope: {
-      from: parsed.from?.value[0]?.address ? { name: parsed.from.value[0].name || undefined, address: parsed.from.value[0].address } : undefined,
-      to: toList(parsed.to),
-      cc: toList(parsed.cc),
-      bcc: toList(parsed.bcc),
+      from: parsedHeaders.from?.value[0]?.address ? { name: parsedHeaders.from.value[0].name || undefined, address: parsedHeaders.from.value[0].address } : undefined,
+      to: toList(parsedHeaders.to),
+      cc: toList(parsedHeaders.cc),
+      bcc: toList(parsedHeaders.bcc),
     },
-    bodyText: parsed.text,
-    bodyHtml: typeof parsed.html === "string" ? parsed.html : undefined,
-    date: parsed.date,
-    attachments: classifyAttachments(parsed),
+    bodyText: decodePartText(tree.textPlainPart),
+    bodyHtml,
+    date: parsedHeaders.date,
+    attachments: classifyGmailAttachmentParts(fetchAttachmentBytes, tree.attachmentParts, bodyHtml),
   };
 }
 
@@ -104,10 +215,19 @@ export class GmailRestClient implements GmailMailClient {
     return ids;
   }
 
+  private async fetchAttachmentBytes(gmailMessageId: string, attachmentId: string): Promise<Buffer> {
+    const { json } = await this.request<{ size: number; data: string }>(`/messages/${gmailMessageId}/attachments/${attachmentId}`);
+    if (!json) throw new Error(`Gmail attachment ${attachmentId} on message ${gmailMessageId} not found`);
+    return decodeBase64Url(json.data);
+  }
+
   async fetchMessage(id: string): Promise<GmailFetchedMessage | null> {
-    const { status, json } = await this.request<{ id: string; threadId: string; labelIds?: string[]; raw: string }>(`/messages/${id}?format=raw`);
+    // `format=full` (not `format=raw`): structure + headers + small-part bodies, without ever
+    // pulling every attachment's bytes into one response — see toFetchedMessage's header note.
+    const { status, json } = await this.request<{ id: string; threadId: string; labelIds?: string[]; payload: GmailPayloadPart }>(`/messages/${id}?format=full`);
     if (status === 404 || !json) return null;
-    return { id: json.id, threadId: json.threadId, labelIds: json.labelIds ?? [], message: await parseRawMessage(json.raw, json.id) };
+    const message = await toFetchedMessage(json.id, json.payload, (attachmentId) => this.fetchAttachmentBytes(json.id, attachmentId));
+    return { id: json.id, threadId: json.threadId, labelIds: json.labelIds ?? [], message };
   }
 
   async listLabels(): Promise<GmailLabelRef[]> {
