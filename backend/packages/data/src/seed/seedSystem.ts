@@ -3,62 +3,64 @@ import { withTransaction } from "../db/pool.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
+import { createComputedKeyRegistry, type ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
+import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { DRIFT_CHECK_ACTION_ID } from "../manifest/driftCheck.js";
 import { DEFAULT_TIMEZONE, SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
+import { registerTemporalSwitcherViewType } from "../views/temporalSwitcherViewType.js";
+import { seedTenDatabasesInTransaction } from "./seedTenDatabases.js";
 
-export const PROJECTS_MODULE_ID = "projects";
+export { PROJECTS_MODULE_ID } from "./tenDatabaseKeys.js";
 
 /**
- * Seeds the two system records this issue's spec names directly: the "System settings"
+ * Seeds the system records this issue's spec names directly, plus the ten hardcoded
+ * databases from issue #24 (seedTenDatabasesInTransaction): the "System settings"
  * singleton (home) DB, holding the supervisor's name ("Semp") and the system timezone,
- * and the "Projects" system DB holding the Semprec project row itself (the supervisor's
- * home project — `agent_runs.project_item_id` for a supervisor run points here).
+ * and the "Projects" system DB (now issue #24's full Projects schema) holding the
+ * Semprec project row itself (the supervisor's home project — `agent_runs.project_item_id`
+ * for a supervisor run points here).
  *
  * A code-level migration with direct DB access is the one sanctioned way to write a
  * system DB's schema (see the issue's choke-point section) — this seed uses the raw
  * stores directly rather than the choke-point, which would otherwise reject writes to
  * a `schema_locked`/`system` database. Idempotent: safe to call on every startup.
+ *
+ * `viewTypeRegistry`/`computedKeyRegistry` default to fresh, private instances for
+ * standalone/test use; a real server composition root should pass its own shared instances
+ * so the "temporal-switcher" view type and any declared computed cache keys registered here
+ * are also known to the chokePoint instance(s) it later serves requests through.
  */
-export async function seedSystem(pool: Pool): Promise<void> {
+export async function seedSystem(
+  pool: Pool,
+  viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry(),
+  computedKeyRegistry: ComputedKeyRegistry = createComputedKeyRegistry(),
+): Promise<void> {
+  // Registered unconditionally, ahead of the idempotency-guarded block below: the DB seed
+  // itself only ever runs once (first startup), but `viewTypeRegistry` is an in-memory,
+  // per-process registry — every subsequent process start still needs "temporal-switcher"
+  // registered into *its own* registry instance for Journal's default view to remain usable,
+  // even though `seedTenDatabasesInTransaction` (the only other place that registers it)
+  // gets skipped by the early return. `registerViewType` is idempotent for a non-builtin
+  // type (a plain Map.set), so calling this on every startup is safe.
+  registerTemporalSwitcherViewType(viewTypeRegistry);
+
   await withTransaction(pool, async (client) => {
     const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1`, [SYSTEM_SETTINGS_MODULE_ID]);
     if ((existingSettings.rowCount ?? 0) > 0) return;
 
-    const projectsDb = await databasesStore.createDatabase(client, {
-      name: "Projects",
-      system: true,
-      ownerModuleId: PROJECTS_MODULE_ID,
-    });
-    await propertiesStore.createProperty(client, {
-      databaseId: projectsDb.id,
-      key: "name",
-      name: "Name",
-      type: "text",
-      locked: true,
-      owner: "user",
-    });
-    await propertiesStore.createProperty(client, {
-      databaseId: projectsDb.id,
-      key: "agents",
-      name: "AGENT.md",
-      type: "text",
-      locked: true,
-      owner: "user",
-    });
-
-    // Locked immediately after its (fixed, code-defined) schema is seeded — same rule
-    // as settingsDb below: a system DB's schema changes only via a code-level migration.
-    await client.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [projectsDb.id]);
+    const tenDatabases = await seedTenDatabasesInTransaction(client, viewTypeRegistry, computedKeyRegistry);
+    const projectsDb = tenDatabases.projects;
 
     const semprecProject = await itemsStore.insertItem(client, {
       databaseId: projectsDb.id,
       properties: {
         name: "Semprec",
+        systemActive: true,
         agents:
           "Purpose: supervise Semprec, the personal life-organization system, and delegate to project agents.\n" +
-          "What I may do: read the schema-derived permission manifest for any project and delegate tasks to its agent.\n" +
-          "What I may not do: write any property whose owner is 'system', or change a locked/schema_locked database.\n" +
+          "Allowed: read the schema-derived permission manifest for any project and delegate tasks to its agent.\n" +
+          "Not allowed: write any property whose owner is 'system', or change a locked/schema_locked database.\n" +
           "General instructions: keep delegated tasks and their results terse; the manifest is the source of truth for what is allowed.",
       },
     });
