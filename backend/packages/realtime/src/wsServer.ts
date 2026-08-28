@@ -29,9 +29,19 @@ export async function startRealtimeServer(pool: Pool, wss: WebSocketServer): Pro
   };
   listenClient.on("notification", onNotification);
 
+  // A dedicated LISTEN connection dropping (network blip, Postgres restart) emits
+  // 'error' on this PoolClient; with no listener, Node treats it as an unhandled
+  // EventEmitter error and crashes the whole process. Logging it here just stops fan-out
+  // until the process is restarted — reconnect/supervisor logic is a later concern.
+  const onError = (err: unknown) => {
+    console.error("Realtime LISTEN connection error", err);
+  };
+  listenClient.on("error", onError);
+
   return {
     async close() {
       listenClient.off("notification", onNotification);
+      listenClient.off("error", onError);
       // A client that has issued LISTEN carries session state the pool must not silently
       // reuse — release(true) destroys the underlying connection instead of pooling it.
       listenClient.release(true);
