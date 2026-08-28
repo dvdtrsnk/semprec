@@ -100,14 +100,20 @@ export async function reconcileGmailAccount(dbClient: PoolClient, gmail: GmailMa
   let newHistoryId: string;
 
   if (!state.gmailHistoryId) {
-    changedIds = await gmail.listAllMessageIds();
+    // The cursor is captured *before* listing, not after: a message arriving in the gap
+    // between the two calls would otherwise be silently skipped forever — it wouldn't be in
+    // this pass's listAllMessageIds() result (already fetched), yet newHistoryId would already
+    // be past it, so the next incremental history.list() would never surface it either.
+    // Capturing first means the worst case is re-observing that message on the next pass
+    // (harmless — ingestEmailMessage dedups by Message-ID), not losing it.
     newHistoryId = await gmail.getCurrentHistoryId();
+    changedIds = await gmail.listAllMessageIds();
   } else {
     const history = await gmail.listHistorySince(state.gmailHistoryId);
     if (history.invalidated) {
       await invalidateGmailHistory(dbClient, params.mailboxItemId, "history.list: historyId too old, running full resync");
-      changedIds = await gmail.listAllMessageIds();
       newHistoryId = await gmail.getCurrentHistoryId();
+      changedIds = await gmail.listAllMessageIds();
     } else {
       changedIds = history.changedMessageIds;
       removedIds = history.removedMessageIds;

@@ -1,4 +1,4 @@
-import { MailReauthorizationRequiredError } from "./providerTypes.js";
+import { assertJsonObject, MailReauthorizationRequiredError } from "./providerTypes.js";
 
 /**
  * Generic OAuth2 refresh-token -> access-token exchange (issue #26: "the access token is
@@ -46,7 +46,13 @@ export async function refreshAccessToken(input: RefreshAccessTokenInput): Promis
     }
     throw new Error(`OAuth token refresh failed with status ${response.status}`);
   }
-  const json = (await response.json()) as { access_token: string; expires_in: number };
+  const json = assertJsonObject(await response.json(), `OAuth token refresh response from ${input.tokenUrl}`);
+  if (typeof json.access_token !== "string" || !json.access_token) {
+    throw new Error(`OAuth token refresh response from ${input.tokenUrl} is missing a string access_token`);
+  }
+  if (typeof json.expires_in !== "number" || !Number.isFinite(json.expires_in)) {
+    throw new Error(`OAuth token refresh response from ${input.tokenUrl} is missing a numeric expires_in`);
+  }
   return { accessToken: json.access_token, expiresAt: new Date(Date.now() + json.expires_in * 1000) };
 }
 
