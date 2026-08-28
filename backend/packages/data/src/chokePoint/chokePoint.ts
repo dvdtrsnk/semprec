@@ -211,11 +211,20 @@ export interface UpdateItemInput {
   ifVersion?: string;
 }
 
-/** The item-update logic, factored out for the same reason as `createItemWithClient` above. */
-export async function updateItemWithClient(client: PoolClient, input: UpdateItemInput): Promise<ItemRow> {
+export interface UpdateItemWithClientOptions extends AssertWritablePropertiesOptions {}
+
+/**
+ * The item-update logic, factored out for the same reason as `createItemWithClient` above.
+ * `options.allowedSystemKeys` (issue #25) mirrors `createItemWithClient`'s escape hatch: a
+ * declared owning process — e.g. the library metadata heartbeat writing `cover` after an
+ * item already exists — needs to patch its owner:'system' fields post-creation, not only
+ * at insert time. `createChokePoint(...).updateItem` below never passes it, same as
+ * `createItem`'s public wrapper.
+ */
+export async function updateItemWithClient(client: PoolClient, input: UpdateItemInput, options: UpdateItemWithClientOptions = {}): Promise<ItemRow> {
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   const patchKeys = Object.keys(input.propertiesPatch);
-  assertWritableProperties(properties, patchKeys);
+  assertWritableProperties(properties, patchKeys, options);
 
   const item = await itemsStore.updateItemProperties(client, {
     databaseId: input.databaseId,

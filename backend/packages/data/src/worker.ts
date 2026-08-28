@@ -8,6 +8,7 @@ import { handleDocHistorySquashTask, handleDocHistoryCleanupTask } from "./docs/
 import type { ActionRegistry } from "./scheduler/actions.js";
 import type { PropertyType } from "./types.js";
 import { PROPERTY_TYPES } from "./types.js";
+import { handleProcessLibraryMetadataTask, noopLibraryMetadataFetcher, type LibraryMetadataFetcher, type LibraryMetadataJobConfig } from "./library/libraryMetadataJob.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -19,6 +20,25 @@ function requirePropertyType(payload: unknown, field: string): PropertyType {
   const value = requireString(payload, field);
   if (!PROPERTY_TYPES.includes(value as PropertyType)) throw new Error(`Job payload field '${field}' is not a known property type`);
   return value as PropertyType;
+}
+
+function requireLibraryMetadataConfig(payload: unknown): LibraryMetadataJobConfig {
+  const raw = (payload as Record<string, unknown> | null)?.config as Record<string, unknown> | undefined;
+  if (!raw || typeof raw.source !== "string" || typeof raw.coverKey !== "string") {
+    throw new Error("processLibraryMetadata job payload missing a valid 'config' object");
+  }
+  if (raw.secondaryRatingKey !== undefined && typeof raw.secondaryRatingKey !== "string") {
+    throw new Error("processLibraryMetadata job payload field 'config.secondaryRatingKey' must be a string when present");
+  }
+  if (raw.sourceUrlKey !== undefined && typeof raw.sourceUrlKey !== "string") {
+    throw new Error("processLibraryMetadata job payload field 'config.sourceUrlKey' must be a string when present");
+  }
+  return {
+    source: raw.source,
+    coverKey: raw.coverKey,
+    secondaryRatingKey: raw.secondaryRatingKey as string | undefined,
+    sourceUrlKey: raw.sourceUrlKey as string | undefined,
+  };
 }
 
 /**
@@ -34,8 +54,14 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 15 3 * * * ${CORE_TASK_NAMES.DOC_HISTORY_CLEANUP}
 `;
 
-/** Composes every core task handler this issue implements into one graphile-worker TaskList. */
-export function createCoreTaskList(pool: Pool, actionRegistry: ActionRegistry): TaskList {
+/**
+ * Composes every core task handler this issue implements into one graphile-worker TaskList.
+ * `libraryMetadataFetcher` defaults to a no-op (see libraryMetadataJob.ts): actually calling
+ * an external metadata source (TMDb/OMDB/...) is out of issue #25's scope — a real server
+ * composition root supplies its own fetcher the same way it would supply `runAgent` to
+ * `coreAgentRunAction`.
+ */
+export function createCoreTaskList(pool: Pool, actionRegistry: ActionRegistry, libraryMetadataFetcher: LibraryMetadataFetcher = noopLibraryMetadataFetcher): TaskList {
   return {
     [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {
       await handleHeartbeatSweepTask(pool);
@@ -61,6 +87,13 @@ export function createCoreTaskList(pool: Pool, actionRegistry: ActionRegistry): 
     },
     [CORE_TASK_NAMES.DOC_HISTORY_CLEANUP]: async () => {
       await handleDocHistoryCleanupTask(pool);
+    },
+    [CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS]: async (payload) => {
+      await handleProcessLibraryMetadataTask(
+        pool,
+        { itemId: requireString(payload, "itemId"), databaseId: requireString(payload, "databaseId"), config: requireLibraryMetadataConfig(payload) },
+        libraryMetadataFetcher,
+      );
     },
   };
 }

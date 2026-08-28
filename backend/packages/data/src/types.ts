@@ -24,6 +24,10 @@ export const PROPERTY_TYPES = [
   // from the pre-existing, still-unused `files` (plural) type above.
   "file",
   "url",
+  // Added by issue #25: also `{ blobId }` over `blobs`, like `file` — kept as its own
+  // type (not a reuse of `file`) so a client can tell "renders as a cover image" apart
+  // from "renders as a generic attachment link" without inspecting the value shape.
+  "image",
 ] as const;
 export type PropertyType = (typeof PROPERTY_TYPES)[number];
 

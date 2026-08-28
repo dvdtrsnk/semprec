@@ -10,6 +10,7 @@ import { DRIFT_CHECK_ACTION_ID } from "../manifest/driftCheck.js";
 import { DEFAULT_TIMEZONE, SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { registerTemporalSwitcherViewType } from "../views/temporalSwitcherViewType.js";
 import { seedTenDatabasesInTransaction } from "./seedTenDatabases.js";
+import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
 
 export { PROJECTS_MODULE_ID } from "./tenDatabaseKeys.js";
 
@@ -110,5 +111,10 @@ export async function seedSystem(
       rule: { kind: "dailyTime", at: "03:00" },
       actionId: DRIFT_CHECK_ACTION_ID,
     });
+
+    // Books and Movies/TV (issue #25): the second wave, two concrete instantiations of the
+    // generic "library module" contract. Runs last: needs Projects/People (from
+    // seedTenDatabasesInTransaction above) and the system timezone (settingsDb, just above).
+    await seedLibraryModuleInTransaction(client, projectsDb.id, tenDatabases.people.id, viewTypeRegistry, computedKeyRegistry);
   });
 }
