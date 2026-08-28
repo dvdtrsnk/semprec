@@ -32,6 +32,11 @@ import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { simpleParser } from "mailparser";
 import { createHash, randomUUID } from "node:crypto";
 
+/** ImapMailClient.fetchMessagesSince is an AsyncIterable, not a Promise<Array> — wraps a plain fixture array for tests without changing every fixture's shape. */
+async function* toAsyncIterable<T>(items: T[]): AsyncIterable<T> {
+  for (const item of items) yield item;
+}
+
 let pool: Pool;
 let chokePoint: ChokePoint;
 
@@ -475,16 +480,11 @@ describe("IMAP reconcile core (issue #26)", () => {
       getCapabilities: async () => new Set(["CONDSTORE", "QRESYNC"]),
       listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
       selectFolder: async () => ({ uidvalidity: 111, uidnext: 3, highestModSeq: 5 }),
-      fetchMessagesSince: async (): Promise<ImapFetchedMessage[]> => [
-        {
-          uid: 1,
-          message: { messageId: "<one@x>", envelope: { from: { address: "a@x.com" } }, subject: "First", attachments: [] },
-        },
-        {
-          uid: 2,
-          message: { messageId: "<two@x>", envelope: { from: { address: "b@x.com" } }, subject: "Second", attachments: [] },
-        },
-      ],
+      fetchMessagesSince: (): AsyncIterable<ImapFetchedMessage> =>
+        toAsyncIterable([
+          { uid: 1, message: { messageId: "<one@x>", envelope: { from: { address: "a@x.com" } }, subject: "First", attachments: [] } },
+          { uid: 2, message: { messageId: "<two@x>", envelope: { from: { address: "b@x.com" } }, subject: "Second", attachments: [] } },
+        ]),
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [1, 2],
       fetchFlagsChangedSince: async () => [],
@@ -554,10 +554,10 @@ describe("IMAP reconcile core (issue #26)", () => {
     let fetchCallCount = 0;
     const secondClient = fakeImapClient({
       selectFolder: async () => ({ uidvalidity: 999, uidnext: 2, highestModSeq: 1 }),
-      fetchMessagesSince: async (_path, sinceUid) => {
+      fetchMessagesSince: (_path, sinceUid) => {
         fetchCallCount++;
         expect(sinceUid).toBe(1); // reset back to the start, not resumed from the old uidnext
-        return [];
+        return toAsyncIterable([]);
       },
     });
     await withTransaction(pool, (client) => reconcileImapAccount(client, secondClient, params));
@@ -594,7 +594,7 @@ describe("IMAP reconcile core (issue #26)", () => {
     expect((await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [emailsId])).rows[0].count).toBe("2");
 
     const client2 = fakeImapClient({
-      fetchMessagesSince: async () => [],
+      fetchMessagesSince: () => toAsyncIterable([]),
       fetchVanishedSince: async () => [1],
     });
     await withTransaction(pool, (client) => reconcileImapAccount(client, client2, params));
@@ -633,7 +633,7 @@ describe("IMAP reconcile core (issue #26)", () => {
     await withTransaction(pool, (client) => reconcileImapAccount(client, fakeImapClient(), params));
 
     const client2 = fakeImapClient({
-      fetchMessagesSince: async () => [],
+      fetchMessagesSince: () => toAsyncIterable([]),
       fetchFlagsChangedSince: async () => [{ uid: 1, flags: ["\\Seen"] }],
     });
     await withTransaction(pool, (client) => reconcileImapAccount(client, client2, params));
@@ -704,7 +704,7 @@ describe("mail sync job error handling (issue #26)", () => {
         throw new Error("connection refused");
       },
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
-      fetchMessagesSince: async () => [],
+      fetchMessagesSince: () => toAsyncIterable([]),
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [],
       fetchFlagsChangedSince: async () => [],

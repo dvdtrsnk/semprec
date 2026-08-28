@@ -147,19 +147,31 @@ export class GraphRestClient implements GraphMailClient {
     return page.value ?? [];
   }
 
-  /** Graph's `/mailFolders` (and `/childFolders`) only ever return one level — nested folders need an explicit recursive walk, not a single `$expand`. */
+  /**
+   * Graph's `/mailFolders` (and `/childFolders`) only ever return one level — nested folders
+   * need an explicit walk, not a single `$expand`. Iterative BFS over a queue, not recursion:
+   * an unbounded-depth folder tree (contrived but not impossible in Outlook) would otherwise
+   * grow the call stack per level. `MAX_FOLDER_DEPTH` is a defensive cap, not a real limit
+   * Graph imposes — hitting it just stops descending further rather than looping forever.
+   */
   private async listFoldersUnder(url: string, wellKnownIds: Map<string, string>): Promise<GraphFolderRef[]> {
     const folders: GraphFolderRef[] = [];
-    let pageUrl = url;
-    while (pageUrl) {
-      const page = await this.request<{ value: { id: string; displayName: string; childFolderCount?: number }[]; ["@odata.nextLink"]?: string }>(pageUrl);
-      for (const f of page.value) {
-        folders.push({ id: f.id, displayName: f.displayName, wellKnownName: wellKnownIds.get(f.id) });
-        if (f.childFolderCount && f.childFolderCount > 0) {
-          folders.push(...(await this.listFoldersUnder(`${BASE_URL}/mailFolders/${f.id}/childFolders?$top=999&$select=id,displayName,childFolderCount`, wellKnownIds)));
+    const queue: Array<{ url: string; depth: number }> = [{ url, depth: 0 }];
+    const MAX_FOLDER_DEPTH = 20;
+
+    while (queue.length > 0) {
+      const { url: pageUrl0, depth } = queue.shift()!;
+      let pageUrl = pageUrl0;
+      while (pageUrl) {
+        const page = await this.request<{ value: { id: string; displayName: string; childFolderCount?: number }[]; ["@odata.nextLink"]?: string }>(pageUrl);
+        for (const f of page.value) {
+          folders.push({ id: f.id, displayName: f.displayName, wellKnownName: wellKnownIds.get(f.id) });
+          if (f.childFolderCount && f.childFolderCount > 0 && depth < MAX_FOLDER_DEPTH) {
+            queue.push({ url: `${BASE_URL}/mailFolders/${f.id}/childFolders?$top=999&$select=id,displayName,childFolderCount`, depth: depth + 1 });
+          }
         }
+        pageUrl = page["@odata.nextLink"] ?? "";
       }
-      pageUrl = page["@odata.nextLink"] ?? "";
     }
     return folders;
   }

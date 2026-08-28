@@ -154,18 +154,16 @@ export class ImapFlowMailClient implements ImapMailClient {
     };
   }
 
-  async fetchMessagesSince(path: string, sinceUid: number): Promise<ImapFetchedMessage[]> {
+  async *fetchMessagesSince(path: string, sinceUid: number): AsyncIterable<ImapFetchedMessage> {
     await this.client.mailboxOpen(path);
-    const results: ImapFetchedMessage[] = [];
     for await (const raw of this.client.fetch(
       `${sinceUid}:*`,
       { uid: true, flags: true, envelope: true, bodyStructure: true, headers: ["references"] },
       { uid: true },
     )) {
       if (raw.uid < sinceUid) continue; // "*" in a range can include one message below sinceUid on an empty-range edge case
-      results.push({ uid: raw.uid, message: await this.buildFetchedMessage(raw) });
+      yield { uid: raw.uid, message: await this.buildFetchedMessage(raw) };
     }
-    return results;
   }
 
   async fetchVanishedSince(path: string, sinceModSeq: number): Promise<number[] | null> {

@@ -100,14 +100,20 @@ export async function reconcileGmailAccount(dbClient: PoolClient, gmail: GmailMa
   let newHistoryId: string;
 
   if (!state.gmailHistoryId) {
-    changedIds = await gmail.listAllMessageIds();
+    // historyId captured BEFORE listing, not after: a message arriving in the gap between the
+    // two calls would otherwise fall into a permanent blind spot — too new for the full list
+    // (which already returned) and, since its historyId is > this captured value, exactly the
+    // kind of change listHistorySince(newHistoryId) picks up on the very next incremental pass.
+    // The reverse order can only ever double-report a message (harmless — ingestEmailMessage
+    // dedups), never lose one.
     newHistoryId = await gmail.getCurrentHistoryId();
+    changedIds = await gmail.listAllMessageIds();
   } else {
     const history = await gmail.listHistorySince(state.gmailHistoryId);
     if (history.invalidated) {
       await invalidateGmailHistory(dbClient, params.mailboxItemId, "history.list: historyId too old, running full resync");
-      changedIds = await gmail.listAllMessageIds();
       newHistoryId = await gmail.getCurrentHistoryId();
+      changedIds = await gmail.listAllMessageIds();
     } else {
       changedIds = history.changedMessageIds;
       removedIds = history.removedMessageIds;

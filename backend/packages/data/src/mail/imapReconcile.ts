@@ -42,8 +42,16 @@ export interface ImapMailClient {
   getCapabilities(): Promise<Set<string>>;
   listFolders(): Promise<ImapFolderRef[]>;
   selectFolder(path: string): Promise<ImapFolderSelection>;
-  /** Every message with UID >= `sinceUid` — used both for the initial full sync (`sinceUid: 1`) and every incremental pass. */
-  fetchMessagesSince(path: string, sinceUid: number): Promise<ImapFetchedMessage[]>;
+  /**
+   * Every message with UID >= `sinceUid` — used both for the initial full sync (`sinceUid: 1`)
+   * and every incremental pass. An async iterable, not a pre-collected array: a large initial
+   * sync can have thousands of messages, each with its own body text/html buffer (see
+   * imapFlowClient.ts's `MAX_BODY_TEXT_BYTES`) — collecting them all before the caller
+   * processes any would hold every one of those buffers in memory simultaneously. Yielding
+   * one at a time lets `reconcileImapFolder` ingest (and let the GC reclaim) each message
+   * before the next is even fetched.
+   */
+  fetchMessagesSince(path: string, sinceUid: number): AsyncIterable<ImapFetchedMessage>;
   /** QRESYNC `VANISHED` since the given MODSEQ; `null` when the server doesn't support QRESYNC (caller falls back to `fetchAllUids`). */
   fetchVanishedSince(path: string, sinceModSeq: number): Promise<number[] | null>;
   /** Every UID currently in the folder — the no-QRESYNC deletion-detection fallback (a full UID diff against what this folder's edges already know, see folderMembershipStore.ts). */
@@ -85,8 +93,7 @@ export async function reconcileImapFolder(dbClient: PoolClient, imap: ImapMailCl
   }
 
   const sinceUid = state.uidnext ? Number(state.uidnext) : 1;
-  const fetched = await imap.fetchMessagesSince(params.folderPath, sinceUid);
-  for (const item of fetched) {
+  for await (const item of imap.fetchMessagesSince(params.folderPath, sinceUid)) {
     await ingestEmailMessage(dbClient, {
       emailsDatabaseId: params.emailsDatabaseId,
       filesDatabaseId: params.filesDatabaseId,
