@@ -1,0 +1,203 @@
+import type { PoolClient } from "pg";
+import { deleteRelationWithClient } from "../chokePoint/chokePoint.js";
+import { getRelationDefinitionByPropertyId } from "../chokePoint/relationsStore.js";
+import { ValidationError } from "../errors.js";
+import { ingestEmailMessage } from "./ingest.js";
+import type { FetchedMessage } from "./providerTypes.js";
+import type { BlobStorageWriter } from "./blobStorage.js";
+import {
+  ensureMailFolderSyncState,
+  getMailFolderSyncState,
+  recordFolderSyncError,
+  recordReconcile,
+  resetForUidvalidityChange,
+} from "./mailFolderSyncStateStore.js";
+import { findEmailItemIdByFolderUid, listKnownFolderUids } from "./folderMembershipStore.js";
+import { ensureFolderItem } from "./folderDiscovery.js";
+import { ensureMailAccountSyncState, recordImapActivity, recordSyncError } from "./mailAccountSyncStateStore.js";
+
+export interface ImapFetchedMessage {
+  uid: number;
+  message: FetchedMessage;
+}
+
+export interface ImapFolderSelection {
+  uidvalidity: number;
+  uidnext: number;
+  /** null = server didn't report `HIGHESTMODSEQ` (no CONDSTORE) — see `mail_folder_sync_state.highestmodseq`. */
+  highestModSeq: number | null;
+}
+
+/**
+ * What a sync-mode-specific transport (real `ImapFlowMailClient`, or a fake in tests) must
+ * provide — reconcile logic below only ever talks to this interface, never to `imapflow`
+ * directly, so it is fully testable without a live IMAP server.
+ */
+export interface ImapFolderRef {
+  path: string;
+  /** RFC 6154 special-use attribute (`\Inbox`, `\Sent`, `\Junk`, `\Trash`, `\Drafts`, `\All`, `\Archive`), when the server advertises it. */
+  specialUse?: string;
+}
+
+export interface ImapMailClient {
+  getCapabilities(): Promise<Set<string>>;
+  listFolders(): Promise<ImapFolderRef[]>;
+  selectFolder(path: string): Promise<ImapFolderSelection>;
+  /** Every message with UID >= `sinceUid` — used both for the initial full sync (`sinceUid: 1`) and every incremental pass. */
+  fetchMessagesSince(path: string, sinceUid: number): Promise<ImapFetchedMessage[]>;
+  /** QRESYNC `VANISHED` since the given MODSEQ; `null` when the server doesn't support QRESYNC (caller falls back to `fetchAllUids`). */
+  fetchVanishedSince(path: string, sinceModSeq: number): Promise<number[] | null>;
+  /** Every UID currently in the folder — the no-QRESYNC deletion-detection fallback (a full UID diff against what this folder's edges already know, see folderMembershipStore.ts). */
+  fetchAllUids(path: string): Promise<number[]>;
+}
+
+export interface ReconcileImapFolderParams {
+  folderItemId: string;
+  folderPath: string;
+  emailsDatabaseId: string;
+  filesDatabaseId: string;
+  folderRelationPropertyId: string;
+  attachmentsRelationPropertyId: string;
+  storage: BlobStorageWriter;
+  storageKeyPrefix: string;
+}
+
+/**
+ * One folder's reconcile pass (issue #26's IMAP adapter). `UIDVALIDITY` changing between
+ * runs invalidates the whole UID cache — the folder was rebuilt server-side — so this always
+ * re-derives `sinceUid`/`sinceModSeq` from the (possibly just-reset) sync state rather than
+ * trusting a caller-supplied cursor. QRESYNC/CONDSTORE support is a per-call capability
+ * check (`CAPABILITY`), not a stored assumption — a server can in principle change what it
+ * advertises.
+ */
+export async function reconcileImapFolder(dbClient: PoolClient, imap: ImapMailClient, params: ReconcileImapFolderParams): Promise<void> {
+  try {
+    const relationDefinition = await getRelationDefinitionByPropertyId(dbClient, params.folderRelationPropertyId);
+    if (!relationDefinition) throw new ValidationError(`Folder relation property ${params.folderRelationPropertyId} has no relation definition`);
+
+    const capabilities = await imap.getCapabilities();
+    const selection = await imap.selectFolder(params.folderPath);
+
+    let state = await ensureMailFolderSyncState(dbClient, params.folderItemId);
+    if (state.uidvalidity !== null && state.uidvalidity !== String(selection.uidvalidity)) {
+      await resetForUidvalidityChange(dbClient, params.folderItemId, String(selection.uidvalidity));
+      state = (await getMailFolderSyncState(dbClient, params.folderItemId))!;
+    }
+
+    const sinceUid = state.uidnext ? Number(state.uidnext) : 1;
+    const fetched = await imap.fetchMessagesSince(params.folderPath, sinceUid);
+    for (const item of fetched) {
+      await ingestEmailMessage(dbClient, {
+        emailsDatabaseId: params.emailsDatabaseId,
+        filesDatabaseId: params.filesDatabaseId,
+        folderRelationPropertyId: params.folderRelationPropertyId,
+        attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
+        folderItemId: params.folderItemId,
+        folderUid: item.uid,
+        storage: params.storage,
+        storageKeyPrefix: params.storageKeyPrefix,
+        ...item.message,
+      });
+    }
+
+    const supportsQresync = capabilities.has("QRESYNC");
+    let vanishedUids: number[] | null = null;
+    if (supportsQresync && state.highestmodseq) {
+      vanishedUids = await imap.fetchVanishedSince(params.folderPath, Number(state.highestmodseq));
+    }
+    if (vanishedUids === null && !state.uidvalidity) {
+      // Initial sync: nothing to diff against yet.
+      vanishedUids = [];
+    } else if (vanishedUids === null) {
+      const [known, current] = await Promise.all([
+        listKnownFolderUids(dbClient, relationDefinition.id, params.folderItemId),
+        imap.fetchAllUids(params.folderPath),
+      ]);
+      const currentSet = new Set(current);
+      vanishedUids = known.filter((uid) => !currentSet.has(uid));
+    }
+
+    for (const uid of vanishedUids) {
+      const emailItemId = await findEmailItemIdByFolderUid(dbClient, relationDefinition.id, params.folderItemId, uid);
+      if (emailItemId) {
+        await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, itemId: emailItemId, targetItemId: params.folderItemId });
+      }
+    }
+
+    await recordReconcile(dbClient, {
+      itemId: params.folderItemId,
+      uidvalidity: String(selection.uidvalidity),
+      uidnext: String(selection.uidnext),
+      highestmodseq: selection.highestModSeq !== null ? String(selection.highestModSeq) : null,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await recordFolderSyncError(dbClient, params.folderItemId, message);
+    throw err;
+  }
+}
+
+const SPECIAL_USE_TO_PURPOSE: Record<string, string> = {
+  "\\Inbox": "inbox",
+  "\\Sent": "sent",
+  "\\Junk": "junk",
+  "\\Trash": "trash",
+  "\\Drafts": "drafts",
+  "\\Archive": "archive",
+  "\\All": "all",
+};
+
+export interface ReconcileImapAccountParams {
+  mailboxItemId: string;
+  emailsDatabaseId: string;
+  filesDatabaseId: string;
+  foldersDatabaseId: string;
+  folderRelationPropertyId: string;
+  mailboxFolderRelationPropertyId: string;
+  attachmentsRelationPropertyId: string;
+  storage: BlobStorageWriter;
+  storageKeyPrefix: string;
+  /** Gmail/Outlook in IMAP fallback mode (issue #26): sync only `[Gmail]/All Mail` (or the equivalent `\All` folder) instead of every folder, deriving label membership from `X-GM-LABELS` — not implemented by this reconcile pass; `folderPaths` lets the composition root pass exactly `["[Gmail]/All Mail"]` for that mode. Defaults to every folder the server lists, correct for iCloud/generic IMAP (this adapter's actual default target). */
+  folderPaths?: string[];
+}
+
+/** One IMAP account's full reconcile pass: discovers/creates Folder items, then reconciles each folder in turn. */
+export async function reconcileImapAccount(dbClient: PoolClient, imap: ImapMailClient, params: ReconcileImapAccountParams): Promise<void> {
+  try {
+    await ensureMailAccountSyncState(dbClient, { itemId: params.mailboxItemId, syncMode: "imap" });
+    const allFolders = await imap.listFolders();
+    const folders = params.folderPaths ? allFolders.filter((f) => params.folderPaths!.includes(f.path)) : allFolders;
+
+    for (const folder of folders) {
+      const folderItemId = await ensureFolderItem(dbClient, {
+        foldersDatabaseId: params.foldersDatabaseId,
+        mailboxItemId: params.mailboxItemId,
+        mailboxRelationPropertyId: params.mailboxFolderRelationPropertyId,
+        providerId: folder.path,
+        name: folder.path,
+        behavior: "folder",
+        specialPurpose: (folder.specialUse && SPECIAL_USE_TO_PURPOSE[folder.specialUse]) ?? "none",
+      });
+
+      await reconcileImapFolder(dbClient, imap, {
+        folderItemId,
+        folderPath: folder.path,
+        emailsDatabaseId: params.emailsDatabaseId,
+        filesDatabaseId: params.filesDatabaseId,
+        folderRelationPropertyId: params.folderRelationPropertyId,
+        attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
+        storage: params.storage,
+        storageKeyPrefix: params.storageKeyPrefix,
+      });
+    }
+
+    // IMAP has no push-vs-poll distinction at this layer — periodic reconcile is the only
+    // mechanism (IDLE, when used, just triggers this same pass earlier); a fixed 30-minute
+    // horizon is within the issue's stated 15-60 minute reconcile window.
+    await recordImapActivity(dbClient, { itemId: params.mailboxItemId, nextExpectedActivityAt: new Date(Date.now() + 30 * 60 * 1000) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await recordSyncError(dbClient, params.mailboxItemId, message);
+    throw err;
+  }
+}

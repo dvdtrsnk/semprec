@@ -15,6 +15,14 @@ import {
   type LibraryMetadataFetcher,
   type LibraryMetadataJobConfig,
 } from "./library/libraryMetadataJob.js";
+import {
+  handleMailAccountSyncSweepTask,
+  handleSyncMailAccountTask,
+  noopMailSyncAdapterFactory,
+  type MailModuleIds,
+  type MailSyncAdapterFactory,
+} from "./mail/mailSyncJob.js";
+import { LocalFsBlobStorageWriter, type BlobStorageWriter } from "./mail/blobStorage.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -49,6 +57,7 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 */5 * * * * ${CORE_TASK_NAMES.DOC_COMPACTION_SWEEP}
 0 3 * * * ${CORE_TASK_NAMES.DOC_HISTORY_SQUASH}
 15 3 * * * ${CORE_TASK_NAMES.DOC_HISTORY_CLEANUP}
+*/5 * * * * ${CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP}
 `;
 
 /**
@@ -58,7 +67,14 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
  * composition root supplies its own fetcher the same way it would supply `runAgent` to
  * `coreAgentRunAction`.
  */
-export function createCoreTaskList(pool: Pool, actionRegistry: ActionRegistry, libraryMetadataFetcher: LibraryMetadataFetcher = noopLibraryMetadataFetcher): TaskList {
+export function createCoreTaskList(
+  pool: Pool,
+  actionRegistry: ActionRegistry,
+  libraryMetadataFetcher: LibraryMetadataFetcher = noopLibraryMetadataFetcher,
+  mailSyncAdapters: MailSyncAdapterFactory = noopMailSyncAdapterFactory,
+  mailModuleIds?: MailModuleIds,
+  mailBlobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(process.env.MAIL_ATTACHMENTS_DIR ?? "/tmp/semprec-mail-attachments"),
+): TaskList {
   return {
     [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {
       await handleHeartbeatSweepTask(pool);
@@ -91,6 +107,13 @@ export function createCoreTaskList(pool: Pool, actionRegistry: ActionRegistry, l
         { itemId: requireString(payload, "itemId"), databaseId: requireString(payload, "databaseId"), config: requireLibraryMetadataConfig(payload) },
         libraryMetadataFetcher,
       );
+    },
+    [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: async () => {
+      await handleMailAccountSyncSweepTask(pool);
+    },
+    [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: async (payload) => {
+      if (!mailModuleIds) throw new Error("mailAccountSync job requires createCoreTaskList's mailModuleIds argument to be configured");
+      await handleSyncMailAccountTask(pool, { mailboxItemId: requireString(payload, "mailboxItemId") }, mailSyncAdapters, mailModuleIds, mailBlobStorage);
     },
   };
 }

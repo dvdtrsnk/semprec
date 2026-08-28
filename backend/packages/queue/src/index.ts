@@ -20,6 +20,9 @@ export const CORE_TASK_NAMES = {
   DOC_HISTORY_CLEANUP: "docHistoryCleanup",
   // Issue #25: the library module's per-item cover/metadata processing job.
   LIBRARY_METADATA_PROCESS: "processLibraryMetadata",
+  // Issue #26: the mail sync core's per-account reconcile job and its periodic due-account sweep.
+  MAIL_ACCOUNT_SYNC: "mailAccountSync",
+  MAIL_ACCOUNT_SYNC_SWEEP: "mailAccountSyncSweep",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
