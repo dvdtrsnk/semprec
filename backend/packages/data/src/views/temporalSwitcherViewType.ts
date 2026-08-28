@@ -11,8 +11,11 @@ export const TEMPORAL_SWITCHER_VIEW_TYPE = "temporal-switcher";
 
 const temporalSwitcherConfigSchema = z.object({
   granularity: z.enum(JOURNAL_PERIOD_TYPES).default("month"),
-  /** ISO date the switcher is currently anchored to; defaults client-side to "today" when absent. */
-  anchor: z.string().optional(),
+  /** ISO 'YYYY-MM-DD' date the switcher is currently anchored to; defaults client-side to "today" when absent. */
+  anchor: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "anchor must be an ISO 'YYYY-MM-DD' date")
+    .optional(),
 });
 
 export function registerTemporalSwitcherViewType(registry: ViewTypeRegistry): void {

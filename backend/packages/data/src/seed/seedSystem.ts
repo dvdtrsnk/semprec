@@ -8,6 +8,7 @@ import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/vie
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { DRIFT_CHECK_ACTION_ID } from "../manifest/driftCheck.js";
 import { DEFAULT_TIMEZONE, SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
+import { registerTemporalSwitcherViewType } from "../views/temporalSwitcherViewType.js";
 import { seedTenDatabasesInTransaction } from "./seedTenDatabases.js";
 
 export { PROJECTS_MODULE_ID } from "./tenDatabaseKeys.js";
@@ -35,6 +36,15 @@ export async function seedSystem(
   viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry(),
   computedKeyRegistry: ComputedKeyRegistry = createComputedKeyRegistry(),
 ): Promise<void> {
+  // Registered unconditionally, ahead of the idempotency-guarded block below: the DB seed
+  // itself only ever runs once (first startup), but `viewTypeRegistry` is an in-memory,
+  // per-process registry — every subsequent process start still needs "temporal-switcher"
+  // registered into *its own* registry instance for Journal's default view to remain usable,
+  // even though `seedTenDatabasesInTransaction` (the only other place that registers it)
+  // gets skipped by the early return. `registerViewType` is idempotent for a non-builtin
+  // type (a plain Map.set), so calling this on every startup is safe.
+  registerTemporalSwitcherViewType(viewTypeRegistry);
+
   await withTransaction(pool, async (client) => {
     const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1`, [SYSTEM_SETTINGS_MODULE_ID]);
     if ((existingSettings.rowCount ?? 0) > 0) return;
