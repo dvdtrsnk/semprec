@@ -165,6 +165,11 @@ describe("ten hardcoded databases (issue #24)", () => {
     const plain = await chokePoint.createItem({ databaseId: tasksId, properties: { name: "One-off", status: "notDone" } });
     const noop = await advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: plain.id, timezone: "Europe/Prague" });
     expect(noop).toBeNull();
+
+    // the rolling-model invariant: re-advancing the already-completed original instance is
+    // also a no-op (its recurrence was deactivated when the next instance was created)
+    const reAdvanceOriginal = await advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: task.id, timezone: "Europe/Prague" });
+    expect(reAdvanceOriginal).toBeNull();
   });
 
   it("task recurrence preserves a one-directional edge where the task is the target side (Events -> Tasks actionItems)", async () => {

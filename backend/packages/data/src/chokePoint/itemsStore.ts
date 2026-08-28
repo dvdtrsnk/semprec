@@ -31,7 +31,7 @@ export async function getItemById(client: Queryable, databaseId: string, itemId:
 }
 
 /** Row-locking read used before a mutation, inside the caller's transaction. */
-async function lockItemById(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {
+export async function lockItemById(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {
   const { rows } = await client.query(
     `SELECT id, database_id, properties, computed, updated_at, deleted_at
      FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE`,

@@ -439,8 +439,12 @@ export function createChokePoint(
         // A system-module project (issue #24's Projects.systemActive) "can only be
         // deactivated, never deleted" — checked generically on `properties.systemActive`
         // rather than hardcoded to the Projects database, so any future database adopting
-        // the same convention is covered too.
-        const before = await itemsStore.getItemById(client, databaseId, itemId);
+        // the same convention is covered too. Row-locked (not a plain getItemById): without
+        // the lock, a concurrent updateItem setting systemActive: true could commit between
+        // this read and the delete below, slipping a delete through on what was, by the time
+        // it mattered, a system-active item. The lock is held until this transaction commits,
+        // so a concurrent writer blocks here instead of racing past the check.
+        const before = await itemsStore.lockItemById(client, databaseId, itemId);
         if (before?.properties.systemActive === true) {
           throw new ForbiddenError(`Item ${itemId} is a system-active project and cannot be deleted, only deactivated`, { field: "systemActive" });
         }
