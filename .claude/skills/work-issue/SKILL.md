@@ -89,11 +89,18 @@ Two modes, detected by the `SEMPREC_HARNESS` environment variable:
    Commit each round of fixes as you make it.
 4. **Open the PR**: push your commits, then
    `gh pr create -R dvdtrsnk/semprec --base develop --title "..." --body "... Closes #N"`.
-5. **Drive CI to green**: `gh pr checks --watch`. Both required checks
-   (`review` and `code-review`) must pass. Address every code-review-bot finding
-   (fix it, or reply on the PR with a concrete justification), push, watch again.
-   Iterate until green — branch protection makes merging physically impossible
-   otherwise, so there is no shortcut to look for.
+5. **Drive CI to green**: run `gh pr checks --watch` **in the foreground** —
+   it takes several minutes, but that is exactly why it must block your turn
+   rather than run in the background: a backgrounded command finishing is a
+   notification you will never receive (see "single, non-resumable turn"
+   above) — an interactive session gets woken up by that notification, this
+   run does not, so backgrounding it here means silently stopping forever,
+   not "checking back later". Both required checks (`review` and
+   `code-review`) must pass. Address every code-review-bot finding (fix it,
+   or reply on the PR with a concrete justification), push, watch again
+   (foreground, every time). Iterate until green — branch protection makes
+   merging physically impossible otherwise, so there is no shortcut to look
+   for.
 6. **Merge**: `gh pr merge --squash --delete-branch`.
 7. **Report**: get the new SHA (`git fetch origin && git rev-parse origin/develop`)
    and comment on the issue:
