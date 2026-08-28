@@ -381,11 +381,18 @@ async function applyRollupConfig(client: PoolClient, property: PropertyRow): Pro
       field: "relationPropertyKey",
     });
   }
+  if (!targetDatabaseId) {
+    // Should be unreachable once validateRollupConfig has passed (a relation property
+    // always carries a target database) — guarded explicitly so a data inconsistency
+    // surfaces as this message instead of a NOT NULL constraint violation on
+    // rollup_dependencies.source_database_id.
+    throw new ValidationError("Relation property has no targetDatabaseId in config", { field: "relationPropertyKey" });
+  }
 
   await upsertRollupDependency(client, {
     rollupPropertyId: property.id,
     relationDefinitionId: reldef.id,
-    sourceDatabaseId: targetDatabaseId as string,
+    sourceDatabaseId: targetDatabaseId,
     sourcePropertyKey: validated.targetProperty?.key ?? null,
   });
 }
