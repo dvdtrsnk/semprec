@@ -25,6 +25,8 @@ export default async function setup(): Promise<() => Promise<void>> {
 
   const connectionString = `postgresql://postgres:postgres@localhost:${PORT}/semprec_test`;
   process.env.TEST_DATABASE_URL = connectionString;
+  // Deterministic 32-byte test key for @semprec/credentials (issue #26) — never used outside tests.
+  process.env.CREDENTIALS_MASTER_KEY ??= Buffer.alloc(32, 7).toString("base64");
 
   const pool = new Pool({ connectionString });
   await runMigrations(pool);
