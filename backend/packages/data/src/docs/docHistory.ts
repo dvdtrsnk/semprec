@@ -21,13 +21,24 @@ export async function squashDocHistory(pool: Pool, docId: string, createdBy: Cre
   );
 }
 
-/** Runs the squash for every existing doc — acceptable at the "1-2 users" scale this system targets; see the compaction sweep for the pattern this mirrors. */
+/**
+ * Runs the squash for every existing doc — acceptable at the "1-2 users" scale this
+ * system targets; see the compaction sweep for the pattern this mirrors. One doc
+ * failing (a transient DB error, a corrupted update row) must not abort the sweep for
+ * every doc after it in the list, so each is isolated and logged rather than thrown.
+ */
 export async function runHistorySquashSweep(pool: Pool, createdBy: CreatedBy = "system", retentionMs = DEFAULT_HISTORY_RETENTION_MS): Promise<number> {
   const { rows } = await pool.query<{ id: string }>(`SELECT id FROM docs`);
+  let succeeded = 0;
   for (const row of rows) {
-    await squashDocHistory(pool, row.id, createdBy, retentionMs);
+    try {
+      await squashDocHistory(pool, row.id, createdBy, retentionMs);
+      succeeded++;
+    } catch (err) {
+      console.error(`Failed to squash history for doc ${row.id}`, err);
+    }
   }
-  return rows.length;
+  return succeeded;
 }
 
 export async function handleDocHistorySquashTask(pool: Pool): Promise<void> {

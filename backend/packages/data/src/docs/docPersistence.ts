@@ -126,13 +126,24 @@ export async function mutateDoc<T>(pool: Pool, docId: string, origin: CreatedBy,
   return result;
 }
 
-/** Periodic sweep (issue #23, point 5): catches up documents that are rarely opened, so their log doesn't grow unboundedly just because nobody reads them. */
+/**
+ * Periodic sweep (issue #23, point 5): catches up documents that are rarely opened, so
+ * their log doesn't grow unboundedly just because nobody reads them. One doc failing
+ * (a transient DB error, a corrupted update row) must not abort the sweep before it
+ * reaches the rest of the over-threshold docs, so each is isolated and logged.
+ */
 export async function runCompactionSweep(pool: Pool, threshold = DEFAULT_COMPACTION_THRESHOLD): Promise<number> {
   const { rows } = await pool.query<{ doc_id: string }>(`SELECT doc_id FROM doc_updates GROUP BY doc_id HAVING count(*) >= $1`, [threshold]);
+  let succeeded = 0;
   for (const row of rows) {
-    await loadDoc(pool, row.doc_id, threshold);
+    try {
+      await loadDoc(pool, row.doc_id, threshold);
+      succeeded++;
+    } catch (err) {
+      console.error(`Failed to compact doc ${row.doc_id}`, err);
+    }
   }
-  return rows.length;
+  return succeeded;
 }
 
 export async function handleDocCompactionSweepTask(pool: Pool): Promise<void> {
