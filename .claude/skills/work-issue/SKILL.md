@@ -89,6 +89,9 @@ Two modes, detected by the `SEMPREC_HARNESS` environment variable:
    Commit each round of fixes as you make it.
 4. **Open the PR**: push your commits, then
    `gh pr create -R dvdtrsnk/semprec --base develop --title "..." --body "... Closes #N"`.
+   Then `gh issue edit N -R dvdtrsnk/semprec --remove-label agent:implementing --add-label agent:reviewing-and-fixing`
+   — this tells anyone glancing at the issue list that a PR is up and you're
+   now iterating on checks/findings, not still writing the first draft.
 5. **Drive CI to green**: run `gh pr checks --watch` **in the foreground** —
    it takes several minutes, but that is exactly why it must block your turn
    rather than run in the background: a backgrounded command finishing is a
@@ -107,8 +110,11 @@ Two modes, detected by the `SEMPREC_HARNESS` environment variable:
    `Done. Merged to develop as <SHA>. <one paragraph: what was implemented, plus any notes the next issue's agent needs>`.
    This comment is the inherited context for dependent issues — write it for the
    agent that has read nothing else.
-8. **Close**: `gh issue close N -R dvdtrsnk/semprec`. (Auto-close via "Closes #N"
-   does not fire because develop is not the default branch.)
+8. **Close**: `gh issue close N -R dvdtrsnk/semprec`. `develop` is the
+   repository's default branch, so the merge in step 6 already auto-closed
+   the issue via the "Closes #N" in the PR body — this call is a safety net
+   for the rare case that didn't fire, not the primary mechanism. It is
+   harmless even if the issue is already closed (a no-op).
 
 ## If you cannot finish
 
@@ -116,8 +122,12 @@ If you are blocked — failing CI you cannot fix, missing context, the issue ask
 for something impossible — do NOT merge a broken PR and do NOT close the issue.
 First commit and push whatever you have (`git add -A && git commit && git push
 -u origin feat/issue-N`) so a human can inspect or resume it — this is your
-last chance to do so, per "single, non-resumable turn" above. Then post an
-issue comment starting with `BLOCKED:` explaining precisely what stopped you
-and what a human must decide, and leave the issue OPEN. The harness treats an
-open issue as a failed run and halts the pipeline for human attention — that is
-the correct outcome, not something to route around.
+last chance to do so, per "single, non-resumable turn" above. Then label the
+issue `gh issue edit N -R dvdtrsnk/semprec --remove-label agent:implementing --remove-label agent:reviewing-and-fixing --add-label agent:blocked`
+— this is a deliberate stop over a spec problem, a more specific signal than
+the generic crash/timeout that `agent:failed` means, and the dispatcher relies
+on it to skip its generic failure comment in favor of your `BLOCKED:` one.
+Then post an issue comment starting with `BLOCKED:` explaining precisely what
+stopped you and what a human must decide, and leave the issue OPEN. The
+harness treats an open issue as a failed run and halts the pipeline for human
+attention — that is the correct outcome, not something to route around.
