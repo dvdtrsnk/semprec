@@ -82,3 +82,13 @@ export interface ViewItemRow {
   itemId: string;
   position: number;
 }
+
+/** 'page' = block tree (rich content); 'canvas' = flat map of typed surface elements. */
+export type DocKind = "page" | "canvas";
+
+export interface DocRow {
+  id: string;
+  itemId: string;
+  kind: DocKind;
+  createdAt: string;
+}

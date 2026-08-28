@@ -15,6 +15,9 @@ export const CORE_TASK_NAMES = {
   ROLLUP_RECOMPUTE: "rollupRecompute",
   ROLLUP_RECOMPUTE_FULL: "rollupRecomputeFull",
   PROPERTY_TYPE_MIGRATION: "propertyTypeMigration",
+  DOC_COMPACTION_SWEEP: "docCompactionSweep",
+  DOC_HISTORY_SQUASH: "docHistorySquash",
+  DOC_HISTORY_CLEANUP: "docHistoryCleanup",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 

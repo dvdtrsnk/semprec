@@ -7,5 +7,15 @@
   "types": "src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@semprec/data": "workspace:*",
+    "pg": "^8.23.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "@types/ws": "^8.5.13",
+    "vitest": "^4.1.11"
   }
 }

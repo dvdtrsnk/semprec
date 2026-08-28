@@ -13,6 +13,10 @@ const TABLES = [
   "items",
   "relation_definitions",
   "properties",
+  "doc_snapshot_history",
+  "doc_updates",
+  "doc_snapshots",
+  "docs",
   "databases",
   "users",
 ];
