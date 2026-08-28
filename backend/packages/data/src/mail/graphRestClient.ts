@@ -166,14 +166,20 @@ export class GraphRestClient implements GraphMailClient {
 
   async listFolders(): Promise<GraphFolderRef[]> {
     const wellKnownIds = new Map<string, string>();
-    for (const name of WELL_KNOWN_FOLDERS) {
-      try {
-        const folder = await this.request<{ id: string }>(`${BASE_URL}/mailFolders/${name}`);
-        wellKnownIds.set(folder.id, name);
-      } catch {
-        // Not every well-known folder exists for every account (e.g. no Archive) — skip.
-      }
-    }
+    // Independent lookups (each name is its own request) — run concurrently instead of
+    // serializing up to 6 round trips, most of which are just as likely to be a 4xx for a
+    // well-known folder this account doesn't have (e.g. no Archive) as a hit.
+    const lookups = await Promise.all(
+      WELL_KNOWN_FOLDERS.map(async (name) => {
+        try {
+          const folder = await this.request<{ id: string }>(`${BASE_URL}/mailFolders/${name}`);
+          return { id: folder.id, name };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    for (const lookup of lookups) if (lookup) wellKnownIds.set(lookup.id, lookup.name);
 
     return this.listFoldersUnder(`${BASE_URL}/mailFolders?$top=999&$select=id,displayName,childFolderCount`, wellKnownIds);
   }

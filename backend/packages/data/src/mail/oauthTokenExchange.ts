@@ -1,3 +1,5 @@
+import { readJsonWithLimit } from "./httpJson.js";
+
 /**
  * Generic OAuth2 refresh-token -> access-token exchange (issue #26: "the access token is
  * computed at runtime and never persisted"). Used by both the Gmail and Graph REST clients
@@ -50,13 +52,13 @@ export async function refreshAccessToken(input: RefreshAccessTokenInput): Promis
   });
   if (!response.ok) {
     if (response.status === 400) {
-      const errorBody = (await response.json().catch(() => null)) as { error?: string } | null;
+      const errorBody = await readJsonWithLimit<{ error?: string } | null>(response).catch(() => null);
       if (errorBody?.error === "invalid_grant") throw new OAuthRevokedError(input.tokenUrl);
     }
     // Never includes `body`/the refresh token itself in the thrown message — only the status.
     throw new Error(`OAuth token refresh failed with status ${response.status}`);
   }
-  const json = (await response.json()) as Record<string, unknown> | null;
+  const json = await readJsonWithLimit<Record<string, unknown> | null>(response);
   if (typeof json?.access_token !== "string" || typeof json?.expires_in !== "number") {
     throw new Error("OAuth token refresh response is missing 'access_token'/'expires_in'");
   }

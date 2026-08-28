@@ -30,8 +30,8 @@ export interface MailModuleIds {
   emailsDatabaseId: string;
   filesDatabaseId: string;
   foldersDatabaseId: string;
-  /** Optional: only needed to react to a revoked OAuth refresh token by setting `syncStatus: 'needsReauthorization'` on the Mailbox item (see the `OAuthRevokedError` catch below) — every other reconcile path works without it. */
-  mailboxesDatabaseId?: string;
+  /** Mailboxes database — every terminal state of a sync pass (success, plain error, revoked OAuth token) reflects `syncStatus` back onto the Mailbox item, so this is required, not an opt-in extra. */
+  mailboxesDatabaseId: string;
 }
 
 export function mailAccountSyncJobKey(mailboxItemId: string): string {
@@ -122,13 +122,11 @@ export async function handleSyncMailAccountTask(
       // user actually sees (the mock's existing select), `mail_account_sync_state` is the
       // worker's own bookkeeping. A prior `'error'`/`'needsReauthorization'` clears back to
       // `'ok'` the moment a pass succeeds, same as any other self-healing status field.
-      if (moduleIds.mailboxesDatabaseId) {
-        await updateItemWithClient(
-          client,
-          { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "ok" } },
-          { allowedSystemKeys: ["syncStatus"] },
-        );
-      }
+      await updateItemWithClient(
+        client,
+        { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "ok" } },
+        { allowedSystemKeys: ["syncStatus"] },
+      );
     });
   } catch (err) {
     // The reconcile pass above ran inside one transaction that this error just aborted —
@@ -138,24 +136,20 @@ export async function handleSyncMailAccountTask(
     if (err instanceof OAuthRevokedError) {
       await withTransaction(pool, async (client) => {
         await recordAuthRevoked(client, payload.mailboxItemId, message);
-        if (moduleIds.mailboxesDatabaseId) {
-          await updateItemWithClient(
-            client,
-            { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "needsReauthorization" } },
-            { allowedSystemKeys: ["syncStatus"] },
-          );
-        }
+        await updateItemWithClient(
+          client,
+          { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "needsReauthorization" } },
+          { allowedSystemKeys: ["syncStatus"] },
+        );
       });
     } else {
       await withTransaction(pool, async (client) => {
         await recordSyncError(client, payload.mailboxItemId, message);
-        if (moduleIds.mailboxesDatabaseId) {
-          await updateItemWithClient(
-            client,
-            { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "error" } },
-            { allowedSystemKeys: ["syncStatus"] },
-          );
-        }
+        await updateItemWithClient(
+          client,
+          { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "error" } },
+          { allowedSystemKeys: ["syncStatus"] },
+        );
       });
     }
     throw err;

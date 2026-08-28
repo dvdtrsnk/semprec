@@ -713,7 +713,13 @@ describe("mail sync job error handling (issue #26)", () => {
     const adapters: MailSyncAdapterFactory = { createImapClient: async () => failingImap };
 
     await expect(
-      handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, adapters, { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId }, noopStorage),
+      handleSyncMailAccountTask(
+        pool,
+        { mailboxItemId: mailbox.id },
+        adapters,
+        { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+        noopStorage,
+      ),
     ).rejects.toThrow("connection refused");
 
     const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
