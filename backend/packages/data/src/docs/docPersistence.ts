@@ -65,32 +65,42 @@ async function compact(client: PoolClient, docId: string, doc: Y.Doc, mergedUpda
 /**
  * Loads a headless `Y.Doc` (`gc = false` — see issue #23, point 4: default GC would
  * permanently discard deleted content, breaking `doc_snapshot_history`'s ability to
- * reconstruct it) by replaying `doc_snapshots` plus the following `doc_updates`.
+ * reconstruct it) by replaying `doc_snapshots` plus the following `doc_updates`, inside
+ * a caller-supplied transaction/client.
  *
  * Compaction threshold is checked lazily here, on read (issue #23, point 5): if the
  * pending update count has crossed the threshold, the just-computed merged state is
  * written back and the merged rows deleted, in the same transaction as this read.
+ *
+ * Exported (not just `loadDoc` below) so `squashDocHistory` (docHistory.ts) can run
+ * this read and its own `doc_snapshot_history` INSERT inside one transaction — the
+ * `FOR UPDATE` locks taken here on `doc_snapshots`/`doc_updates` then also serialize it
+ * against a concurrent `compact()` on the same doc, which closes a race where a squash
+ * captures a state that a concurrently-running compaction has already made stale by
+ * the time the squash's own checkpoint gets its (later) timestamp.
  */
+export async function loadDocWithClient(client: PoolClient, docId: string, compactionThreshold = DEFAULT_COMPACTION_THRESHOLD): Promise<Y.Doc> {
+  const snapshot = await loadSnapshotForUpdate(client, docId);
+  const pendingUpdates = await loadPendingUpdatesForUpdate(client, docId);
+
+  const doc = new Y.Doc();
+  doc.gc = false;
+  if (snapshot) Y.applyUpdate(doc, snapshot);
+  for (const row of pendingUpdates) Y.applyUpdate(doc, row.update);
+
+  if (pendingUpdates.length >= compactionThreshold) {
+    await compact(
+      client,
+      docId,
+      doc,
+      pendingUpdates.map((row) => row.id),
+    );
+  }
+  return doc;
+}
+
 export async function loadDoc(pool: Pool, docId: string, compactionThreshold = DEFAULT_COMPACTION_THRESHOLD): Promise<Y.Doc> {
-  return withTransaction(pool, async (client) => {
-    const snapshot = await loadSnapshotForUpdate(client, docId);
-    const pendingUpdates = await loadPendingUpdatesForUpdate(client, docId);
-
-    const doc = new Y.Doc();
-    doc.gc = false;
-    if (snapshot) Y.applyUpdate(doc, snapshot);
-    for (const row of pendingUpdates) Y.applyUpdate(doc, row.update);
-
-    if (pendingUpdates.length >= compactionThreshold) {
-      await compact(
-        client,
-        docId,
-        doc,
-        pendingUpdates.map((row) => row.id),
-      );
-    }
-    return doc;
-  });
+  return withTransaction(pool, (client) => loadDocWithClient(client, docId, compactionThreshold));
 }
 
 async function appendDocUpdate(pool: Pool, docId: string, update: Uint8Array, createdBy: CreatedBy): Promise<void> {

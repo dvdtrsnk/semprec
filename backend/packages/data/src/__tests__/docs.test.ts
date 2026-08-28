@@ -251,6 +251,47 @@ describe("docs (CRDT layer)", () => {
   });
 
   describe("version history", () => {
+    it("squashDocHistory's read-then-checkpoint is atomic: a concurrent compaction on the same doc blocks instead of interleaving", async () => {
+      const item = await makeItem();
+      await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "user");
+      const doc = await docStore.getDoc(item.id);
+      if (!doc) throw new Error("doc not created");
+
+      // Manually reproduce squashDocHistory's read step (loadDocWithClient's FOR UPDATE
+      // queries) on a held-open transaction, standing in for "squashDocHistory has read
+      // the doc but not yet committed its checkpoint insert". If this doesn't block a
+      // concurrent mutateDoc-triggered compaction on the same doc, the two can
+      // interleave and produce the stale-checkpoint race this atomicity fix closes.
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(`SELECT state FROM doc_snapshots WHERE doc_id = $1 FOR UPDATE`, [doc.id]);
+        await client.query(`SELECT id, update FROM doc_updates WHERE doc_id = $1 ORDER BY id ASC FOR UPDATE`, [doc.id]);
+
+        let concurrentCompactionFinished = false;
+        const concurrentCompaction = mutateDoc(
+          pool,
+          doc.id,
+          "user",
+          (ydoc) => {
+            ydoc.getMap("blocks").set("b2", new Y.Map());
+          },
+          1,
+        ).then(() => {
+          concurrentCompactionFinished = true;
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(concurrentCompactionFinished).toBe(false);
+
+        await client.query("COMMIT");
+        await concurrentCompaction;
+        expect(concurrentCompactionFinished).toBe(true);
+      } finally {
+        client.release();
+      }
+    });
+
     it("squashHistory writes a checkpoint with an expiry, and cleanup removes it once expired", async () => {
       const item = await makeItem();
       await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "user");

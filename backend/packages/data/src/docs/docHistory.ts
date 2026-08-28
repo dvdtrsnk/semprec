@@ -3,22 +3,33 @@ import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import type { CreatedBy } from "../types.js";
-import { loadDoc, DEFAULT_HISTORY_RETENTION_MS } from "./docPersistence.js";
+import { loadDocWithClient, DEFAULT_HISTORY_RETENTION_MS } from "./docPersistence.js";
 
 export { DEFAULT_HISTORY_RETENTION_MS };
 
-/** Written by a periodic squash job, not synchronously with every edit (issue #23, point 6). */
+/**
+ * Written by a periodic squash job, not synchronously with every edit (issue #23,
+ * point 6). Capturing the doc state and inserting its checkpoint row must happen in
+ * the same transaction: reading the state in one transaction and writing the
+ * checkpoint (with a fresh `now()` timestamp) in a second, separate one leaves a
+ * window where a concurrent compaction can run in between — that compaction merges
+ * away the very updates this squash's captured state is missing, then drops its own
+ * (correct, older-timestamped) checkpoint, which this squash's later-but-stale
+ * checkpoint would then incorrectly shadow in `openDocVersionAt`'s "most recent
+ * checkpoint before `at`" lookup. `loadDocWithClient`'s `FOR UPDATE` locks make that
+ * interleaving impossible by serializing this against `compact()` on the same doc.
+ */
 export async function squashDocHistory(pool: Pool, docId: string, createdBy: CreatedBy, retentionMs = DEFAULT_HISTORY_RETENTION_MS): Promise<void> {
-  const doc = await loadDoc(pool, docId);
-  const state = Buffer.from(Y.encodeStateAsUpdate(doc));
-  await withTransaction(pool, (client) =>
-    client.query(`INSERT INTO doc_snapshot_history (doc_id, state, expires_at, created_by) VALUES ($1, $2, now() + $3::interval, $4)`, [
+  await withTransaction(pool, async (client) => {
+    const doc = await loadDocWithClient(client, docId);
+    const state = Buffer.from(Y.encodeStateAsUpdate(doc));
+    await client.query(`INSERT INTO doc_snapshot_history (doc_id, state, expires_at, created_by) VALUES ($1, $2, now() + $3::interval, $4)`, [
       docId,
       state,
       `${retentionMs} milliseconds`,
       createdBy,
-    ]),
-  );
+    ]);
+  });
 }
 
 /**
