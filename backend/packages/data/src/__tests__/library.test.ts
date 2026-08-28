@@ -15,7 +15,7 @@ import {
   LIBRARY_METADATA_TRIGGER_ACTION_ID,
   LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID,
 } from "../library/libraryMetadataActions.js";
-import { ensureItemAutomation, getItemAutomation, setItemAutomationLocked } from "../library/itemAutomationStore.js";
+import { ensureItemAutomation, getItemAutomation, markItemAutomationDone, setItemAutomationLocked } from "../library/itemAutomationStore.js";
 import { enqueueLibraryMetadataProcessing, type LibraryMetadataFetcher } from "../library/libraryMetadataJob.js";
 
 let pool: Pool;
@@ -246,5 +246,24 @@ describe("library module (issue #25)", () => {
 
     const settled = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
     expect(settled?.status).toBe("done");
+  });
+
+  it("unlocking a row only transitions it if it was actually locked, never clobbering 'done'/'error'", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const item = await chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } });
+
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+    await withTransaction(pool, (client) => markItemAutomationDone(client, item.id));
+
+    // Unlocking a row that was never locked (already 'done') is a no-op, not a reset to 'pending'.
+    const unlocked = await withTransaction(pool, (client) => setItemAutomationLocked(client, item.id, false));
+    expect(unlocked.status).toBe("done");
+
+    // Locking then unlocking does reach 'pending' — the one real lock/unlock transition.
+    await withTransaction(pool, (client) => setItemAutomationLocked(client, item.id, true));
+    const relocked = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    expect(relocked?.status).toBe("locked");
+    const reunlocked = await withTransaction(pool, (client) => setItemAutomationLocked(client, item.id, false));
+    expect(reunlocked.status).toBe("pending");
   });
 });

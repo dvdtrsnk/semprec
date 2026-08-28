@@ -46,6 +46,12 @@ export async function getItemAutomation(client: PoolClient, itemId: string): Pro
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
+/** Row-locking read used before a mutation, inside the caller's transaction — same pattern as `itemsStore.lockItemById`. */
+export async function lockItemAutomation(client: PoolClient, itemId: string): Promise<ItemAutomationRow | null> {
+  const { rows } = await client.query(`SELECT ${COLUMNS} FROM item_automation WHERE item_id = $1 FOR UPDATE`, [itemId]);
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
 /** A `locked` row is never touched by the heartbeat, on success or failure — the WHERE guards both write paths below. */
 export async function markItemAutomationDone(client: PoolClient, itemId: string): Promise<void> {
   await client.query(`UPDATE item_automation SET status = 'done', error = NULL WHERE item_id = $1 AND status != 'locked'`, [itemId]);
@@ -59,14 +65,25 @@ export async function markItemAutomationError(client: PoolClient, itemId: string
   );
 }
 
-/** The one status transition the heartbeat may never make on its own — settable only by the user (or an authorized agent). */
+/**
+ * The one status transition the heartbeat may never make on its own — settable only by
+ * the user (or an authorized agent). Unlocking only transitions a row that is actually
+ * `'locked'` (guarded in the WHERE clause, not just by convention): without this, calling
+ * this with `locked: false` on a `'done'`/`'error'` row it was never asked to unlock would
+ * overwrite that status with `'pending'`, misrepresenting a settled outcome. A no-op call
+ * (locking an already-locked row, or unlocking a row that isn't locked) returns the row
+ * unchanged instead of erroring.
+ */
 export async function setItemAutomationLocked(client: PoolClient, itemId: string, locked: boolean): Promise<ItemAutomationRow> {
-  const { rows } = await client.query(`UPDATE item_automation SET status = $2 WHERE item_id = $1 RETURNING ${COLUMNS}`, [
-    itemId,
-    locked ? "locked" : "pending",
-  ]);
-  if (!rows[0]) throw new NotFoundError(`item_automation row for item ${itemId} not found`);
-  return mapRow(rows[0]);
+  const { rows } = await client.query(
+    `UPDATE item_automation SET status = $2 WHERE item_id = $1 AND status ${locked ? "!=" : "="} 'locked' RETURNING ${COLUMNS}`,
+    [itemId, locked ? "locked" : "pending"],
+  );
+  if (rows[0]) return mapRow(rows[0]);
+
+  const existing = await getItemAutomation(client, itemId);
+  if (!existing) throw new NotFoundError(`item_automation row for item ${itemId} not found`);
+  return existing;
 }
 
 /**

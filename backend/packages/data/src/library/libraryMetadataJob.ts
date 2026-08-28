@@ -5,7 +5,7 @@ import { withTransaction } from "../db/pool.js";
 import { updateItemWithClient } from "../chokePoint/chokePoint.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createBlob, type CreateBlobInput } from "../blobs/blobsStore.js";
-import { ensureItemAutomation, getItemAutomation, markItemAutomationDone, markItemAutomationError } from "./itemAutomationStore.js";
+import { ensureItemAutomation, getItemAutomation, lockItemAutomation, markItemAutomationDone, markItemAutomationError } from "./itemAutomationStore.js";
 import type { ItemRow } from "../types.js";
 
 /**
@@ -105,6 +105,14 @@ export async function handleProcessLibraryMetadataTask(pool: Pool, payload: Proc
   try {
     const result = await fetcher(item, payload.config);
     await withTransaction(pool, async (client) => {
+      // Re-checked under `FOR UPDATE` inside this same transaction: the plain read above
+      // only decided whether it was worth calling `fetcher` at all — a user could still lock
+      // the row while that fetch was in flight. Without this, the property write below would
+      // land on a since-locked item even though `markItemAutomationDone` (guarded by
+      // `WHERE status != 'locked'`) would then silently no-op.
+      const current = await lockItemAutomation(client, payload.itemId);
+      if (current?.status === "locked") return;
+
       const patch: Record<string, unknown> = {};
       const allowedSystemKeys: string[] = [];
 

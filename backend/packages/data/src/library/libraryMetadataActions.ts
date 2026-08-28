@@ -8,6 +8,13 @@ import { listErroredItemAutomationForDatabases } from "./itemAutomationStore.js"
 export const LIBRARY_METADATA_TRIGGER_ACTION_ID = "core.libraryMetadataTrigger";
 export const LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID = "core.libraryMetadataRetrySweep";
 
+/**
+ * Open backlog point (issue #25, recorded here rather than designed): `processLibraryMetadata`
+ * is only one concrete case of a heartbeat action. The future intent is to also use heartbeats
+ * to enforce best practices and consistency across system projects generally, not just
+ * metadata enrichment — undesigned, no concrete API/schema proposed by this issue.
+ */
+
 /** The heartbeat's `action_config` for both library-metadata actions: the job config plus the database it's scoped to. */
 const libraryMetadataActionConfigSchema = libraryMetadataJobConfigSchema.extend({
   databaseId: z.string().uuid(),
