@@ -1,6 +1,6 @@
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { GraphChangedMessage, GraphDeltaResult, GraphFolderRef, GraphMailClient } from "./graphReconcile.js";
-import type { FetchedMessage } from "./providerTypes.js";
+import { normalizeMessageId, type FetchedMessage } from "./providerTypes.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { readJsonWithLimit } from "./httpJson.js";
 
@@ -78,9 +78,9 @@ async function toFetchedMessage(resource: GraphMessageResource, fetchAttachments
   const attachments = resource.hasAttachments ? classifyGraphAttachments(await fetchAttachments(resource.id), html ?? "") : [];
 
   return {
-    messageId: resource.internetMessageId ?? `<no-message-id-${resource.id}@graph-api>`,
-    inReplyTo: header(resource, "In-Reply-To") ?? null,
-    references: referencesHeader ? referencesHeader.split(/\s+/).filter(Boolean) : [],
+    messageId: normalizeMessageId(resource.internetMessageId ?? `<no-message-id-${resource.id}@graph-api>`),
+    inReplyTo: header(resource, "In-Reply-To") ? normalizeMessageId(header(resource, "In-Reply-To")!) : null,
+    references: referencesHeader ? referencesHeader.split(/\s+/).filter(Boolean).map(normalizeMessageId) : [],
     subject: resource.subject,
     envelope: {
       from: toEnvelopeAddress(resource.from),
@@ -93,6 +93,29 @@ async function toFetchedMessage(resource: GraphMessageResource, fetchAttachments
     date: resource.receivedDateTime ? new Date(resource.receivedDateTime) : undefined,
     attachments,
   };
+}
+
+/**
+ * Bounds how many `/messages/{id}/attachments` requests run at once while processing one
+ * delta page — an initial sync over a large mailbox can have thousands of messages with
+ * `hasAttachments: true`, and awaiting each one sequentially inside the page loop turns a
+ * single delta fetch into O(N) serialized round trips, worth minutes on its own and raising
+ * the odds of a mid-sync timeout losing the whole page's progress (`newDeltaLink` only
+ * advances once a full page completes). A fixed concurrency cap, not `Promise.all` over the
+ * whole page unbounded, since a page can be large enough (`$top` uncapped here) to open an
+ * unreasonable number of simultaneous connections otherwise.
+ */
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index], index);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
 }
 
 class GraphApiError extends Error {
@@ -165,18 +188,16 @@ export class GraphRestClient implements GraphMailClient {
     try {
       while (url) {
         const page = await this.request<{ value: GraphMessageResource[]; ["@odata.nextLink"]?: string; ["@odata.deltaLink"]?: string }>(url);
-        for (const resource of page.value) {
-          if (resource["@removed"]) {
-            changes.push({ id: resource.id, removed: true });
-          } else {
-            changes.push({
-              id: resource.id,
-              parentFolderId: resource.parentFolderId,
-              removed: false,
-              message: await toFetchedMessage(resource, (messageId) => this.fetchAttachments(messageId)),
-            });
-          }
-        }
+        const pageChanges = await mapWithConcurrency(page.value, 8, async (resource): Promise<GraphChangedMessage> => {
+          if (resource["@removed"]) return { id: resource.id, removed: true };
+          return {
+            id: resource.id,
+            parentFolderId: resource.parentFolderId,
+            removed: false,
+            message: await toFetchedMessage(resource, (messageId) => this.fetchAttachments(messageId)),
+          };
+        });
+        changes.push(...pageChanges);
         if (page["@odata.deltaLink"]) newDeltaLink = page["@odata.deltaLink"];
         url = page["@odata.nextLink"] ?? "";
       }

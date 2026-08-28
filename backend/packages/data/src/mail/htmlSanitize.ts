@@ -29,7 +29,7 @@ const ALLOWED_TAGS = [
  * otherwise passes the whole `style` attribute through unmodified when no `allowedStyles`
  * is given, which would silently defeat the `allowRemoteImages` gate above).
  */
-const NO_URL_VALUE = /^(?!.*url\(:?).*$/i;
+const NO_URL_VALUE = /^(?!.*url\s*\().*$/i;
 const SAFE_STYLE_PROPERTIES = [
   "color", "background-color", "font-size", "font-weight", "font-style", "font-family",
   "text-align", "text-decoration", "line-height", "letter-spacing", "white-space",

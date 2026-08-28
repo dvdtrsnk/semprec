@@ -24,6 +24,8 @@ import { sanitizeMailHtml } from "../mail/htmlSanitize.js";
 import { reindexItemSearch, searchItems } from "../mail/search.js";
 import { storeCredential, getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import { reconcileImapAccount, type ImapFetchedMessage, type ImapMailClient } from "../mail/imapReconcile.js";
+import { ensureFolderItem } from "../mail/folderDiscovery.js";
+import { normalizeMessageId } from "../mail/providerTypes.js";
 import { handleSyncMailAccountTask, type MailSyncAdapterFactory } from "../mail/mailSyncJob.js";
 import { ensureMailAccountSyncState, getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
@@ -213,6 +215,14 @@ describe("person <-> email address linking (issue #26)", () => {
       senderProperty.id,
     ]);
     expect(rows.some((r) => r.item_a === alice.id || r.item_b === alice.id)).toBe(true);
+  });
+});
+
+describe("normalizeMessageId (issue #26)", () => {
+  it("ensures exactly one pair of angle brackets regardless of adapter-supplied format", () => {
+    expect(normalizeMessageId("<abc@example.com>")).toBe("<abc@example.com>");
+    expect(normalizeMessageId("abc@example.com")).toBe("<abc@example.com>");
+    expect(normalizeMessageId("  <abc@example.com>  ")).toBe("<abc@example.com>");
   });
 });
 
@@ -631,6 +641,42 @@ describe("IMAP reconcile core (issue #26)", () => {
     const { rows } = await pool.query(`SELECT metadata FROM item_relations WHERE metadata ->> 'uid' = '1'`);
     expect(rows).toHaveLength(1);
     expect(rows[0].metadata).toMatchObject({ uid: 1, flags: ["\\Seen"] });
+  });
+
+  it("ensureFolderItem updates name/behavior/specialPurpose on an already-known providerId instead of freezing it at first discovery", async () => {
+    const foldersDatabaseId = await databaseIdFor("folders");
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const folderProps = await chokePoint.listProperties(foldersDatabaseId);
+    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
+    const mailboxRelationPropertyId = folderProps.find((p) => p.key === "mailbox")!.id;
+
+    const firstId = await withTransaction(pool, (client) =>
+      ensureFolderItem(client, {
+        foldersDatabaseId,
+        mailboxItemId: mailbox.id,
+        mailboxRelationPropertyId,
+        providerId: "Label_1",
+        name: "Old Name",
+        behavior: "label",
+        specialPurpose: "none",
+      }),
+    );
+
+    const secondId = await withTransaction(pool, (client) =>
+      ensureFolderItem(client, {
+        foldersDatabaseId,
+        mailboxItemId: mailbox.id,
+        mailboxRelationPropertyId,
+        providerId: "Label_1",
+        name: "New Name",
+        behavior: "label",
+        specialPurpose: "archive",
+      }),
+    );
+
+    expect(secondId).toBe(firstId); // same providerId converges onto the same Folder item, not a duplicate
+    const { rows } = await pool.query(`SELECT properties FROM items WHERE id = $1`, [firstId]);
+    expect(rows[0].properties).toMatchObject({ name: "New Name", specialPurpose: "archive" });
   });
 });
 

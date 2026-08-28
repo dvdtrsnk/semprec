@@ -2,7 +2,7 @@ import type { Readable } from "node:stream";
 import { ImapFlow, type FetchMessageObject, type MessageStructureObject } from "imapflow";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { ImapFetchedMessage, ImapFlagChange, ImapFolderRef, ImapFolderSelection, ImapMailClient } from "./imapReconcile.js";
-import type { FetchedMessage } from "./providerTypes.js";
+import { normalizeMessageId, type FetchedMessage } from "./providerTypes.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 
 function flattenImapAddresses(list: { name?: string; address?: string }[] | undefined): MailEnvelopeAddress[] {
@@ -36,6 +36,9 @@ function collectLeaves(node: MessageStructureObject, acc: MessageStructureObject
 function extractFilename(node: MessageStructureObject): string | undefined {
   return node.dispositionParameters?.filename ?? node.parameters?.name;
 }
+
+/** A pathological body (not a real attachment, which streams separately — see openAttachmentStream) has no business being this large; caps memory use the same way httpJson.ts caps a REST response instead of trusting a text/plain or text/html part to be small just because it usually is. */
+const MAX_BODY_TEXT_BYTES = 10 * 1024 * 1024;
 
 async function streamToUtf8(stream: Readable): Promise<string> {
   const chunks: Buffer[] = [];
@@ -106,7 +109,7 @@ export class ImapFlowMailClient implements ImapMailClient {
 
   private async downloadTextPart(uid: number, part: string | undefined): Promise<string | undefined> {
     if (!part) return undefined;
-    const { content } = await this.client.download(uid, part, { uid: true });
+    const { content } = await this.client.download(uid, part, { uid: true, maxBytes: MAX_BODY_TEXT_BYTES });
     return streamToUtf8(content);
   }
 
@@ -134,9 +137,9 @@ export class ImapFlowMailClient implements ImapMailClient {
     }
 
     return {
-      messageId: raw.envelope?.messageId ?? `<no-message-id-uid-${raw.uid}@generated>`,
-      inReplyTo: raw.envelope?.inReplyTo ?? null,
-      references: parseReferencesHeader(raw.headers),
+      messageId: normalizeMessageId(raw.envelope?.messageId ?? `<no-message-id-uid-${raw.uid}@generated>`),
+      inReplyTo: raw.envelope?.inReplyTo ? normalizeMessageId(raw.envelope.inReplyTo) : null,
+      references: parseReferencesHeader(raw.headers).map(normalizeMessageId),
       subject: raw.envelope?.subject,
       envelope: {
         from: raw.envelope?.from?.[0]?.address ? { name: raw.envelope.from[0].name || undefined, address: raw.envelope.from[0].address } : undefined,

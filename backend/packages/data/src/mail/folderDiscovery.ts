@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
-import { createItemWithClient, createRelationWithClient } from "../chokePoint/chokePoint.js";
+import { createItemWithClient, createRelationWithClient, updateItemWithClient } from "../chokePoint/chokePoint.js";
+import { getItemById } from "../chokePoint/itemsStore.js";
 
 export interface EnsureFolderItemInput {
   foldersDatabaseId: string;
@@ -30,7 +31,21 @@ export async function ensureFolderItem(client: PoolClient, input: EnsureFolderIt
        AND (r.item_a = $4 OR r.item_b = $4)`,
     [input.foldersDatabaseId, input.providerId, input.mailboxRelationPropertyId, input.mailboxItemId],
   );
-  if (rows[0]) return rows[0].id;
+  if (rows[0]) {
+    // The provider is the source of truth for these fields (a renamed Gmail label, a
+    // display-name change in Graph, or a special-use attribute the server newly advertises)
+    // — reflect a change instead of freezing the Folder item at whatever it looked like the
+    // first time this providerId was seen.
+    const current = await getItemById(client, input.foldersDatabaseId, rows[0].id);
+    if (current && (current.properties.name !== input.name || current.properties.behavior !== input.behavior || current.properties.specialPurpose !== input.specialPurpose)) {
+      await updateItemWithClient(
+        client,
+        { databaseId: input.foldersDatabaseId, itemId: rows[0].id, propertiesPatch: { name: input.name, behavior: input.behavior, specialPurpose: input.specialPurpose } },
+        { allowedSystemKeys: FOLDER_ALLOWED_SYSTEM_KEYS },
+      );
+    }
+    return rows[0].id;
+  }
 
   const folder = await createItemWithClient(
     client,

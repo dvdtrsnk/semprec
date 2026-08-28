@@ -1,7 +1,7 @@
 import { simpleParser } from "mailparser";
 import { classifyAttachments } from "./attachments.js";
 import type { GmailFetchedMessage, GmailHistoryResult, GmailLabelRef, GmailMailClient } from "./gmailReconcile.js";
-import type { FetchedMessage } from "./providerTypes.js";
+import { normalizeMessageId, type FetchedMessage } from "./providerTypes.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { readJsonWithLimit } from "./httpJson.js";
 
@@ -22,9 +22,9 @@ async function parseRawMessage(raw: string, gmailMessageId: string): Promise<Fet
     // Falls back to Gmail's own (always-unique) message id, not a fixed placeholder — two
     // different messages both missing a Message-ID header must not collide and get merged
     // into one Emails item by ingestEmailMessage's dedup-by-messageId.
-    messageId: parsed.messageId ?? `<${gmailMessageId}@gmail-api>`,
-    inReplyTo: parsed.inReplyTo ?? null,
-    references,
+    messageId: normalizeMessageId(parsed.messageId ?? `<${gmailMessageId}@gmail-api>`),
+    inReplyTo: parsed.inReplyTo ? normalizeMessageId(parsed.inReplyTo) : null,
+    references: references.map(normalizeMessageId),
     subject: parsed.subject,
     envelope: {
       from: parsed.from?.value[0]?.address ? { name: parsed.from.value[0].name || undefined, address: parsed.from.value[0].address } : undefined,
