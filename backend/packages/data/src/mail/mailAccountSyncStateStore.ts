@@ -4,6 +4,30 @@ import { assertKnownValue } from "../dbRowValidation.js";
 export const SYNC_MODES = ["imap", "gmail_api", "graph_api"] as const;
 export type SyncMode = (typeof SYNC_MODES)[number];
 
+/**
+ * A Mailbox's `provider` property (seedEmailModule.ts: gmail/outlook/icloud/generic) maps to
+ * its default `sync_mode` — Gmail -> its native history-based API, Outlook -> its native
+ * delta-based API, iCloud/generic -> plain IMAP (issue #26: "the original plan... turned out
+ * to be the worse choice specifically where it matters most" for Gmail/Outlook). This is only
+ * the pure mapping the issue's design describes; the "connect a mailbox" flow that would call
+ * it at account-creation time is issue #27's UI, which doesn't exist yet — `ensureMailAccountSyncState`
+ * below still takes an explicit `syncMode` for that reason, same as every adapter's reconcile
+ * entry point already does. `setSyncMode` remains the one path that changes an *existing*
+ * account's mode (the issue's "manually switchable" escape hatch).
+ */
+export function defaultSyncModeForProvider(provider: string): SyncMode {
+  switch (provider) {
+    case "gmail":
+      return "gmail_api";
+    case "outlook":
+      return "graph_api";
+    case "icloud":
+    case "generic":
+    default:
+      return "imap";
+  }
+}
+
 export interface MailAccountSyncStateRow {
   itemId: string;
   syncMode: SyncMode;

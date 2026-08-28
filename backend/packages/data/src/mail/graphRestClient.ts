@@ -2,7 +2,7 @@ import { Readable } from "node:stream";
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { GraphChangedMessage, GraphDeltaResult, GraphFolderRef, GraphMailClient } from "./graphReconcile.js";
-import type { FetchedMessage } from "./providerTypes.js";
+import { assertJsonObject, type FetchedMessage } from "./providerTypes.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 
 const BASE_URL = "https://graph.microsoft.com/v1.0/me";
@@ -121,14 +121,24 @@ export class GraphRestClient implements GraphMailClient {
     const token = await this.getAccessToken();
     const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
     if (!response.ok) throw new GraphApiError(response.status);
-    return (await response.json()) as T;
+    const body = assertJsonObject(await response.json(), `Graph API response from ${url}`);
+    return body as T;
   }
 
   private async listAttachmentMetadata(messageId: string): Promise<GraphAttachmentResource[]> {
-    const page = await this.request<{ value: GraphAttachmentResource[] }>(
-      `${BASE_URL}/messages/${messageId}/attachments?$select=id,name,contentType,isInline,contentId`,
-    );
-    return page.value;
+    try {
+      const page = await this.request<{ value: GraphAttachmentResource[] }>(
+        `${BASE_URL}/messages/${messageId}/attachments?$select=id,name,contentType,isInline,contentId`,
+      );
+      return page.value;
+    } catch (err) {
+      // The message can be deleted between the delta page that listed it and this follow-up
+      // fetch (a real race in a live mailbox) — a 404 here means "nothing to attach anymore,"
+      // not a sync failure; the message itself getting removed is handled separately, by a
+      // later delta page's own `@removed` entry.
+      if (err instanceof GraphApiError && err.status === 404) return [];
+      throw err;
+    }
   }
 
   /** Streams raw bytes directly from the response body — never materializes the attachment as one in-memory buffer, the same memory-safety property imapflow's `download()` gives the IMAP adapter. */
@@ -143,8 +153,15 @@ export class GraphRestClient implements GraphMailClient {
     return Readable.fromWeb(response.body as unknown as NodeWebReadableStream<Uint8Array>);
   }
 
-  /** Graph's `/mailFolders` (and `/childFolders`) only ever return one level — nested folders need an explicit recursive walk, not a single `$expand`. */
-  private async listFoldersUnder(url: string, wellKnownIds: Map<string, string>): Promise<GraphFolderRef[]> {
+  /**
+   * Graph's `/mailFolders` (and `/childFolders`) only ever return one level — nested folders
+   * need an explicit recursive walk, not a single `$expand`. `depth` bounds that walk: a real
+   * mailbox's folder tree is at most a handful of levels deep, so this is a defensive cap
+   * against a malformed/adversarial API response reporting `childFolderCount > 0` on every
+   * node, not a limit expected to ever bind in practice.
+   */
+  private async listFoldersUnder(url: string, wellKnownIds: Map<string, string>, depth = 0): Promise<GraphFolderRef[]> {
+    if (depth > 50) throw new Error(`Graph mailFolders tree exceeded depth 50 under ${url} — likely a malformed API response`);
     const folders: GraphFolderRef[] = [];
     let pageUrl = url;
     while (pageUrl) {
@@ -152,7 +169,9 @@ export class GraphRestClient implements GraphMailClient {
       for (const f of page.value) {
         folders.push({ id: f.id, displayName: f.displayName, wellKnownName: wellKnownIds.get(f.id) });
         if (f.childFolderCount && f.childFolderCount > 0) {
-          folders.push(...(await this.listFoldersUnder(`${BASE_URL}/mailFolders/${f.id}/childFolders?$top=999&$select=id,displayName,childFolderCount`, wellKnownIds)));
+          folders.push(
+            ...(await this.listFoldersUnder(`${BASE_URL}/mailFolders/${f.id}/childFolders?$top=999&$select=id,displayName,childFolderCount`, wellKnownIds, depth + 1)),
+          );
         }
       }
       pageUrl = page["@odata.nextLink"] ?? "";

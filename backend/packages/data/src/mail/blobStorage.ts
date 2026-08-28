@@ -3,7 +3,7 @@ import { createWriteStream } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
-import type { Readable } from "node:stream";
+import { Transform, type Readable } from "node:stream";
 
 /**
  * Where an attachment's bytes actually land — swappable so a later ops issue can supply a
@@ -36,12 +36,22 @@ export class LocalFsBlobStorageWriter implements BlobStorageWriter {
 
     const hash = createHash("sha256");
     let byteSize = 0;
-    source.on("data", (chunk: Buffer) => {
-      hash.update(chunk);
-      byteSize += chunk.length;
+    // A separate `source.on('data', ...)` listener would race `pipeline()`'s own consumption:
+    // adding a 'data' listener puts a Readable into flowing mode immediately, which can start
+    // emitting chunks before `pipeline()` itself attaches downstream — chunks emitted in that
+    // gap would reach this listener but the file write could still miss bytes depending on the
+    // stream's exact scheduling. A Transform spliced directly into the pipeline is driven by
+    // `pipeline()` itself, so hashing/size accounting can never see a different set of bytes
+    // than what actually gets written.
+    const hasher = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        hash.update(chunk);
+        byteSize += chunk.length;
+        callback(null, chunk);
+      },
     });
 
-    await pipeline(source, createWriteStream(path));
+    await pipeline(source, hasher, createWriteStream(path));
     return { byteSize, contentHash: hash.digest("hex") };
   }
 

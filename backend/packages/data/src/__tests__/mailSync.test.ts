@@ -24,7 +24,7 @@ import { reconcileImapAccount, type ImapFetchedMessage, type ImapMailClient } fr
 import { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
 import { reconcileGraphAccount, type GraphMailClient } from "../mail/graphReconcile.js";
 import { handleSyncMailAccountTask, type MailSyncAdapterFactory } from "../mail/mailSyncJob.js";
-import { ensureMailAccountSyncState, getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
+import { ensureMailAccountSyncState, getMailAccountSyncState, defaultSyncModeForProvider } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { MailReauthorizationRequiredError } from "../mail/providerTypes.js";
 import { walkBodyStructure } from "../mail/imapFlowClient.js";
@@ -477,6 +477,15 @@ describe("credentials (issue #26)", () => {
     expect(decrypted).toBeNull();
     const { rows } = await pool.query(`SELECT 1 FROM credential_access_log WHERE item_id = $1`, [missingItemId]);
     expect(rows).toHaveLength(0);
+  });
+});
+
+describe("sync_mode defaulting by provider (issue #26)", () => {
+  it("maps each Mailbox.provider value to its documented default sync_mode", () => {
+    expect(defaultSyncModeForProvider("gmail")).toBe("gmail_api");
+    expect(defaultSyncModeForProvider("outlook")).toBe("graph_api");
+    expect(defaultSyncModeForProvider("icloud")).toBe("imap");
+    expect(defaultSyncModeForProvider("generic")).toBe("imap");
   });
 });
 

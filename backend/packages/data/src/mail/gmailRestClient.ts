@@ -1,7 +1,7 @@
 import { Readable } from "node:stream";
 import { simpleParser } from "mailparser";
 import type { GmailFetchedMessage, GmailHistoryResult, GmailLabelRef, GmailMailClient } from "./gmailReconcile.js";
-import type { FetchedMessage } from "./providerTypes.js";
+import { assertJsonObject, type FetchedMessage } from "./providerTypes.js";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 
@@ -166,7 +166,8 @@ export class GmailRestClient implements GmailMailClient {
     });
     if (response.status === 404) return { status: 404, json: null };
     if (!response.ok) throw new Error(`Gmail API request to ${path} failed with status ${response.status}`);
-    return { status: response.status, json: (await response.json()) as T };
+    const body = assertJsonObject(await response.json(), `Gmail API response from ${path}`);
+    return { status: response.status, json: body as T };
   }
 
   async getCurrentHistoryId(): Promise<string> {

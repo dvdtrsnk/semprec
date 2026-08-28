@@ -11,6 +11,23 @@ import type { ClassifiedAttachment } from "./attachments.js";
 export class MailReauthorizationRequiredError extends Error {}
 
 /**
+ * Minimal module-boundary validation for a REST client's parsed JSON response (gmailRestClient.ts,
+ * graphRestClient.ts): not a full per-endpoint schema — that would mean hand-maintaining a
+ * shape for every Gmail/Graph resource this issue touches, which is exactly the kind of
+ * machinery beyond what the issue's Task section asks for. What it does guarantee: an
+ * unexpected top-level shape (an array, a string, `null`, an HTML error page that still
+ * returned `200`) fails immediately with a clear, request-scoped error, instead of an
+ * `as T` cast letting it flow silently into `ingestEmailMessage` and fail confusingly deep
+ * inside message processing.
+ */
+export function assertJsonObject(value: unknown, context: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null) {
+    throw new Error(`${context}: expected a JSON object in the response, got ${value === null ? "null" : typeof value}`);
+  }
+  return value as Record<string, unknown>;
+}
+
+/**
  * The shape every provider adapter (imap/gmail/graph) normalizes a message down to before
  * handing it to `mail/ingest.ts`'s `ingestEmailMessage` — the one shared writer. Keeping
  * this provider-agnostic is what lets the three adapters differ only in *how they detect

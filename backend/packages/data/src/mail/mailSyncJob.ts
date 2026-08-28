@@ -68,14 +68,14 @@ export interface SyncMailAccountPayload {
  * (`LocalFsBlobStorageWriter` uses `rm(..., { force: true })`), so re-deleting a key
  * `ingestAttachments` itself already cleaned up as a dedup loser is harmless.
  */
-function trackWrittenKeys(storage: BlobStorageWriter): { storage: BlobStorageWriter; writtenKeys: string[] } {
-  const writtenKeys: string[] = [];
+function trackWrittenKeys(storage: BlobStorageWriter): { storage: BlobStorageWriter; writtenKeys: Set<string> } {
+  const writtenKeys = new Set<string>();
   return {
     writtenKeys,
     storage: {
       async writeStream(storageKey: string, source: Readable) {
         const result = await storage.writeStream(storageKey, source);
-        writtenKeys.push(storageKey);
+        writtenKeys.add(storageKey);
         return result;
       },
       delete: (storageKey: string) => storage.delete(storageKey),
@@ -110,7 +110,12 @@ export async function handleSyncMailAccountTask(
     // just as much a sync failure as anything the reconcile pass itself could throw, and must
     // reach the same `syncStatus`/`last_error` recording below — a mailbox whose credential
     // silently stopped decrypting must not keep showing `syncStatus: 'ok'` forever.
-    const credential = await getDecryptedCredential(pool, { itemId: payload.mailboxItemId, actorType: "sync_worker", purpose: `${state.syncMode}_sync` });
+    // An explicit map (not `${state.syncMode}_sync`): `state.syncMode` is already validated
+    // against `SYNC_MODES` when the row is read (mailAccountSyncStateStore.ts's `mapRow`), but
+    // spelling out every value here means `credential_access_log.purpose` can never carry
+    // anything this file didn't itself write, independent of that upstream guarantee.
+    const syncPurpose: Record<typeof state.syncMode, string> = { imap: "imap_sync", gmail_api: "gmail_api_sync", graph_api: "graph_api_sync" };
+    const credential = await getDecryptedCredential(pool, { itemId: payload.mailboxItemId, actorType: "sync_worker", purpose: syncPurpose[state.syncMode] });
     if (!credential) throw new Error(`Mailbox ${payload.mailboxItemId} has no stored credential`);
 
     await withTransaction(pool, async (client) => {
@@ -164,7 +169,7 @@ export async function handleSyncMailAccountTask(
     // not covered by the transaction rollback the error below just triggered — clean them up
     // rather than leaking them, best-effort: a cleanup failure must not mask the original
     // error, which is why it's swallowed here and not awaited into the outer catch.
-    await Promise.all(writtenKeys.map((key) => trackedStorage.delete(key).catch(() => {})));
+    await Promise.all([...writtenKeys].map((key) => trackedStorage.delete(key).catch(() => {})));
 
     // Whatever failed above (state fetch, credential decrypt, or the reconcile pass itself)
     // either ran outside a transaction or inside one this error just aborted — recording the

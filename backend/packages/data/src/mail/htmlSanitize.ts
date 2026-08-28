@@ -29,13 +29,20 @@ const ALLOWED_TAGS = [
  * on any allowed tag load a remote image exactly like the `img[src]` case below already
  * blocks — the same tracking-pixel vector through a second door.
  */
+// A bounded set of standard CSS named colors, rather than `/^[a-z]+$/` (which structurally
+// can't smuggle a `url(...)` reference either, since it has no room for parens, but does
+// accept meaningless/non-standard keywords with no real value — tightened for precision, not
+// because the looser pattern was actually exploitable).
+const CSS_COLOR_KEYWORDS =
+  "black|silver|gray|grey|white|maroon|red|purple|fuchsia|green|lime|olive|yellow|navy|blue|teal|aqua|orange|pink|brown|gold|indigo|violet|coral|salmon|tan|beige|ivory|lavender|crimson|khaki|plum|orchid|turquoise|transparent|currentcolor|inherit|initial|unset";
+
 const ALLOWED_STYLES = {
   "*": {
     // The rgb()/rgba() pattern is fully anchored down to digits/percent/dot inside the
     // parens — an unbounded `.*` here would (and, in an earlier version of this file, did)
     // let a second `url(...)` function ride along inside a value that still matches
     // start-to-end (e.g. `rgb(0,0,0) url(...)`), since `.` also matches `)` and `(`.
-    color: [/^#[0-9a-f]{3,6}$/i, /^rgba?\(\s*\d{1,3}%?(\s*,\s*\d{1,3}%?){2}(\s*,\s*(0|1|0?\.\d+))?\s*\)$/i, /^[a-z]+$/i],
+    color: [/^#[0-9a-f]{3,6}$/i, /^rgba?\(\s*\d{1,3}%?(\s*,\s*\d{1,3}%?){2}(\s*,\s*(0|1|0?\.\d+))?\s*\)$/i, new RegExp(`^(${CSS_COLOR_KEYWORDS})$`, "i")],
     "text-align": [/^(left|right|center|justify)$/],
     "font-weight": [/^(normal|bold|bolder|lighter|[1-9]00)$/],
     "font-style": [/^(normal|italic|oblique)$/],
