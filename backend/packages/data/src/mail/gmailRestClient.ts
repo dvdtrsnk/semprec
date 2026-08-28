@@ -176,8 +176,12 @@ export class GmailRestClient implements GmailMailClient {
   }
 
   async getCurrentHistoryId(): Promise<string> {
-    const { json } = await this.request<{ historyId: string }>("/profile");
-    return json!.historyId;
+    const { status, json } = await this.request<{ historyId: string }>("/profile");
+    // `request` returns `{ json: null }` on a 404 (deleted account, suspended domain) — a
+    // non-null assertion here would throw an unhelpful "Cannot read properties of null"
+    // instead of a message that actually says what happened.
+    if (!json) throw new Error(`Gmail /profile returned status ${status} with no body — account may be deleted or suspended`);
+    return json.historyId;
   }
 
   async listHistorySince(startHistoryId: string): Promise<GmailHistoryResult> {
