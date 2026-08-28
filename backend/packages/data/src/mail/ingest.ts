@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import sanitizeHtml from "sanitize-html";
 import { createItemWithClient, createRelationWithClient } from "../chokePoint/chokePoint.js";
+import { softDeleteItem } from "../chokePoint/itemsStore.js";
 import { resolveThreadId } from "./threading.js";
 import {
   getMailMessageMetaByMessageId,
@@ -126,8 +127,10 @@ export async function ingestEmailMessage(client: PoolClient, input: IngestEmailM
     // upsert, `meta.itemId` names *that* row's item, not the one just created here. Converging
     // onto it (rather than the just-created item, which becomes an unlinked orphan with no
     // mail_message_meta row) is exactly the "first write wins, second is a no-op" behavior the
-    // issue specifies for a concurrent provider_message_id insert.
+    // issue specifies for a concurrent provider_message_id insert — the losing item itself is
+    // soft-deleted so it doesn't sit around forever with no meta row and no folder edge.
     if (meta.itemId !== itemId) {
+      await softDeleteItem(client, input.emailsDatabaseId, itemId);
       itemId = meta.itemId;
       created = false;
     } else {

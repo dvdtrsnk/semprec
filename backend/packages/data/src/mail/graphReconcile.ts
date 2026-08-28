@@ -5,6 +5,7 @@ import { ValidationError } from "../errors.js";
 import { ensureFolderItem } from "./folderDiscovery.js";
 import { ingestEmailMessage } from "./ingest.js";
 import { getMailMessageMetaByProviderMessageId } from "./mailMessageMetaStore.js";
+import { listKnownProviderMessagesForFolders } from "./folderMembershipStore.js";
 import { ensureMailAccountSyncState, invalidateGraphDeltaLink, recordGraphActivity } from "./mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import type { FetchedMessage } from "./providerTypes.js";
@@ -95,9 +96,30 @@ export async function reconcileGraphAccount(dbClient: PoolClient, graph: GraphMa
   }
 
   let delta = await graph.fetchDelta(state.graphDeltaLink);
+  let isFullResync = false;
   if (delta.invalidated) {
     await invalidateGraphDeltaLink(dbClient, params.mailboxItemId, "delta 410 Gone / resyncRequired, running full resync");
     delta = await graph.fetchDelta(null);
+    isFullResync = true;
+  }
+
+  // Only meaningful after an invalidation-triggered resync (state.graphDeltaLink was
+  // previously set — this account has messages already on record); a genuinely first-ever
+  // sync has nothing stale to diff against. A fresh `/messages/delta` fetch only returns
+  // what *currently* exists — a message permanently deleted from Graph before the resync has
+  // no `@removed` entry to react to, so without this diff its DB item and folder edges would
+  // never get cleaned up (the same gap the Gmail adapter closes for its own full-resync path).
+  if (isFullResync) {
+    const currentIds = new Set(delta.changes.filter((c) => !c.removed).map((c) => c.id));
+    const known = await listKnownProviderMessagesForFolders(dbClient, relationDefinition.id, [...folderItemIdByGraphId.values()]);
+    for (const item of known) {
+      if (currentIds.has(item.providerMessageId)) continue;
+      const edges = await listRelationsForItem(dbClient, relationDefinition.id, item.itemId);
+      for (const edge of edges) {
+        const folderItemId = otherSide(edge, item.itemId);
+        await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, itemId: item.itemId, targetItemId: folderItemId });
+      }
+    }
   }
 
   for (const change of delta.changes) {
