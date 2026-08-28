@@ -1,6 +1,6 @@
 ---
 name: define-behavior
-description: Turn a feature idea into a user-approved behavior specification and a batch of sequential, self-contained GitHub issues (epic + implementation issues) in dvdtrsnk/semprec, finishing with an independent two-agent audit and automatic review:approved labeling. Invoked explicitly as /define-behavior <idea>; supports a dry-run mode.
+description: Turn a feature idea into a user-approved behavior specification and a batch of sequential, self-contained GitHub issues (epic + implementation issues) in dvdtrsnk/semprec, finishing with an independent two-agent audit and automatic spec:approved labeling. Invoked explicitly as /define-behavior <idea>; supports a dry-run mode.
 disable-model-invocation: true
 ---
 
@@ -10,7 +10,7 @@ Input: `$ARGUMENTS` — a short statement of the desired behavior. If the first 
 is `dry-run`, run every phase normally but write issue drafts to local files
 instead of touching GitHub, and skip labeling.
 
-The pipeline this feeds is fully autonomous: once issues get `review:approved`,
+The pipeline this feeds is fully autonomous: once issues get `spec:approved`,
 a headless agent on the VPS implements them one by one with **no human in the
 loop**, reading nothing but the issue bodies. That is why this skill is
 deliberately slow and thorough up front — every ambiguity you leave in an issue
@@ -123,7 +123,7 @@ Compare the two reports:
   dry-run), then re-audit with fresh subagents. Repeat until clean — the
   fix-and-re-audit loop applies in both modes.
 - **Both clean, real mode** → label every implementation issue (NEVER the epic)
-  `review:approved`, then tell the user: batch summary, issue numbers, and that
+  `spec:approved`, then tell the user: batch summary, issue numbers, and that
   the VPS dispatcher will pick up the first issue within ~10 minutes.
 - **Both clean, dry-run** → report the summary and file paths; no labeling.
 - **Unresolvable disagreement or a spec gap** → leave everything unlabeled and

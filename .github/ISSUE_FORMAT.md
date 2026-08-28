@@ -90,16 +90,22 @@ recording the load-bearing Q&A from the specification interview (question →
 adopted answer → reason), and a checklist of the batch's issues
 (`- [ ] #NN — title`). The epic:
 
-- is **never** labeled `review:approved` (it is not implementable work and the
+- is **never** labeled `spec:approved` (it is not implementable work and the
   dispatcher must never pick it up),
 - does not appear in any `Blocked by:` line,
 - is closed manually when the whole batch is done.
 
 ## Labels (workflow — set by tooling, not by hand-editing)
 
+Exactly one `agent:*` label is present at a time while a run is active; it is
+removed once the run reaches a terminal state (`agent:done`) or the pipeline
+halts for human attention (`agent:failed` / `agent:blocked`).
+
 | Label | Meaning |
 |---|---|
-| `review:approved` | Issue passed the batch audit; the VPS dispatcher may pick it up |
-| `agent:in-progress` | An agent run holds the lock on this issue |
+| `spec:approved` | Issue's spec passed the batch audit; the VPS dispatcher may pick it up |
+| `agent:implementing` | An agent is writing the initial implementation — no PR yet |
+| `agent:reviewing-and-fixing` | PR is open; the agent is watching CI and addressing code-review-bot findings |
 | `agent:done` | Agent finished: PR merged, issue closed |
-| `agent:failed` | Agent run failed; pipeline is halted until a human removes this label |
+| `agent:failed` | Agent run crashed/timed out; pipeline is halted until a human removes this label |
+| `agent:blocked` | Agent deliberately stopped on a spec ambiguity/impossible requirement (see its `BLOCKED:` comment) — a human decision is needed, not debugging; pipeline is halted until this is resolved |
