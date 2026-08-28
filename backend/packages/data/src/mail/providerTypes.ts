@@ -11,6 +11,15 @@ import type { ClassifiedAttachment } from "./attachments.js";
 export class MailReauthorizationRequiredError extends Error {}
 
 /**
+ * Shared upper bound on a single attachment part's *decoded* size, enforced identically by
+ * all three adapters (issue #26's provider limits table tops out at iCloud's 20MB baseline /
+ * Gmail's 25MB) — generous enough to never bind on a real attachment, but a hard backstop
+ * against a malicious or malformed response streaming unbounded bytes into memory/disk before
+ * `ingestAttachments` (mail/attachments.ts) ever sees it.
+ */
+export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+
+/**
  * Minimal module-boundary validation for a REST client's parsed JSON response (gmailRestClient.ts,
  * graphRestClient.ts): not a full per-endpoint schema — that would mean hand-maintaining a
  * shape for every Gmail/Graph resource this issue touches, which is exactly the kind of

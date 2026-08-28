@@ -1,8 +1,8 @@
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { GraphChangedMessage, GraphDeltaResult, GraphFolderRef, GraphMailClient } from "./graphReconcile.js";
-import { assertJsonObject, type FetchedMessage } from "./providerTypes.js";
+import { assertJsonObject, MAX_ATTACHMENT_BYTES, type FetchedMessage } from "./providerTypes.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 
 const BASE_URL = "https://graph.microsoft.com/v1.0/me";
@@ -141,7 +141,13 @@ export class GraphRestClient implements GraphMailClient {
     }
   }
 
-  /** Streams raw bytes directly from the response body — never materializes the attachment as one in-memory buffer, the same memory-safety property imapflow's `download()` gives the IMAP adapter. */
+  /**
+   * Streams raw bytes directly from the response body — never materializes the attachment as
+   * one in-memory buffer, the same memory-safety property imapflow's `download()` gives the
+   * IMAP adapter. Unlike `download()`, `fetch`'s web stream has no built-in byte cap of its
+   * own, so a `MAX_ATTACHMENT_BYTES`-counting `Transform` is spliced into the returned stream
+   * — the same backstop the IMAP/Gmail adapters get from their own transports.
+   */
   private async fetchAttachmentStream(messageId: string, attachmentId: string): Promise<Readable> {
     const token = await this.getAccessToken();
     const response = await fetch(`${BASE_URL}/messages/${messageId}/attachments/${attachmentId}/$value`, {
@@ -150,7 +156,19 @@ export class GraphRestClient implements GraphMailClient {
     });
     if (!response.ok) throw new GraphApiError(response.status);
     if (!response.body) throw new Error(`Graph attachment ${attachmentId} on message ${messageId} returned no body`);
-    return Readable.fromWeb(response.body as unknown as NodeWebReadableStream<Uint8Array>);
+
+    let received = 0;
+    const limiter = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        received += chunk.length;
+        if (received > MAX_ATTACHMENT_BYTES) {
+          callback(new Error(`Graph attachment ${attachmentId} on message ${messageId} exceeded the ${MAX_ATTACHMENT_BYTES}-byte cap`));
+          return;
+        }
+        callback(null, chunk);
+      },
+    });
+    return Readable.fromWeb(response.body as unknown as NodeWebReadableStream<Uint8Array>).pipe(limiter);
   }
 
   /**

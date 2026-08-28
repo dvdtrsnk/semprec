@@ -1,7 +1,7 @@
 import { Readable } from "node:stream";
 import { simpleParser } from "mailparser";
 import type { GmailFetchedMessage, GmailHistoryResult, GmailLabelRef, GmailMailClient } from "./gmailReconcile.js";
-import { assertJsonObject, type FetchedMessage } from "./providerTypes.js";
+import { assertJsonObject, MAX_ATTACHMENT_BYTES, type FetchedMessage } from "./providerTypes.js";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 
@@ -98,7 +98,12 @@ function classifyGmailAttachmentParts(
       contentId,
       disposition,
       openStream: async () => {
-        if (part.body?.data) return Readable.from(decodeBase64Url(part.body.data));
+        if (part.body?.data) {
+          if ((part.body.size ?? 0) > MAX_ATTACHMENT_BYTES) {
+            throw new Error(`Gmail inline attachment part is ${part.body.size} bytes, over the ${MAX_ATTACHMENT_BYTES}-byte cap`);
+          }
+          return Readable.from(decodeBase64Url(part.body.data));
+        }
         if (!part.body?.attachmentId) throw new Error("Gmail attachment part has neither inline data nor an attachmentId");
         return Readable.from(await fetchAttachmentBytes(part.body.attachmentId));
       },
@@ -219,6 +224,12 @@ export class GmailRestClient implements GmailMailClient {
   private async fetchAttachmentBytes(gmailMessageId: string, attachmentId: string): Promise<Buffer> {
     const { json } = await this.request<{ size: number; data: string }>(`/messages/${gmailMessageId}/attachments/${attachmentId}`);
     if (!json) throw new Error(`Gmail attachment ${attachmentId} on message ${gmailMessageId} not found`);
+    // Checked against the API's own reported size *before* decoding — Gmail's real limit is
+    // 25MB, well under this, so this only ever binds against a malformed/rogue response, and
+    // catching it pre-decode avoids materializing the oversized buffer at all.
+    if (json.size > MAX_ATTACHMENT_BYTES) {
+      throw new Error(`Gmail attachment ${attachmentId} on message ${gmailMessageId} is ${json.size} bytes, over the ${MAX_ATTACHMENT_BYTES}-byte cap`);
+    }
     return decodeBase64Url(json.data);
   }
 

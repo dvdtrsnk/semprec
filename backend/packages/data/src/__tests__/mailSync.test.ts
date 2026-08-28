@@ -234,6 +234,27 @@ describe("conversation threading (issue #26)", () => {
     const parentThreadId = await withTransaction(pool, (client) => resolveThreadId(client, { messageId: "<late-parent@x>" }));
     expect(parentThreadId).toBe(replyThreadId);
   });
+
+  it("merging two threads deletes the losing thread's now-empty mail_threads row", async () => {
+    const threadAId = await withTransaction(pool, (client) => resolveThreadId(client, { messageId: "<a1@x>" }));
+    await pool.query(`INSERT INTO mail_message_meta (item_id, message_id, thread_id, envelope) VALUES (gen_random_uuid(), '<a1@x>', $1, '{}')`, [threadAId]);
+
+    const threadBId = await withTransaction(pool, (client) => resolveThreadId(client, { messageId: "<b1@x>" }));
+    await pool.query(`INSERT INTO mail_message_meta (item_id, message_id, thread_id, envelope) VALUES (gen_random_uuid(), '<b1@x>', $1, '{}')`, [threadBId]);
+
+    const { rows: before } = await pool.query(`SELECT count(*) FROM mail_threads WHERE id = ANY($1::uuid[])`, [[threadAId, threadBId]]);
+    expect(before[0].count).toBe("2");
+
+    // Bridges the two previously-separate threads: both are found as ancestors, so this
+    // resolves to a merge instead of a fresh thread.
+    const mergedThreadId = await withTransaction(pool, (client) =>
+      resolveThreadId(client, { messageId: "<bridge@x>", references: ["<a1@x>", "<b1@x>"] }),
+    );
+    expect([threadAId, threadBId]).toContain(mergedThreadId);
+
+    const { rows: after } = await pool.query(`SELECT count(*) FROM mail_threads WHERE id = ANY($1::uuid[])`, [[threadAId, threadBId]]);
+    expect(after[0].count).toBe("1"); // the losing thread's row is gone, not just unreferenced
+  });
 });
 
 describe("message ingest dedup (issue #26)", () => {

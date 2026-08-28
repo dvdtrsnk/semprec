@@ -74,9 +74,12 @@ function trackWrittenKeys(storage: BlobStorageWriter): { storage: BlobStorageWri
     writtenKeys,
     storage: {
       async writeStream(storageKey: string, source: Readable) {
-        const result = await storage.writeStream(storageKey, source);
+        // Recorded before the write, not after it succeeds: `LocalFsBlobStorageWriter` opens
+        // the destination file and starts writing before `writeStream` can throw (e.g. disk
+        // full partway through), so a mid-write failure still leaves a partial file at this
+        // key on disk — tracking early ensures the catch-block cleanup below still finds it.
         writtenKeys.add(storageKey);
-        return result;
+        return storage.writeStream(storageKey, source);
       },
       delete: (storageKey: string) => storage.delete(storageKey),
     },

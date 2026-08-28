@@ -55,10 +55,13 @@ export interface DecryptCredentialInput {
 
 /**
  * The narrow decryption accessor — the only function in this codebase that ever calls
- * `decryptSecret`. Logs every successful decryption to `credential_access_log`; returns
- * `null` (no log entry) when there is nothing to decrypt, since "no credential stored" is
- * not itself a credential access. Callers: the mail sync worker (every sync cycle) and the
- * MCP connection manager (once per opened transport) — never an agent tool.
+ * `decryptSecret`. Logs every decryption *attempt* to `credential_access_log` — the log
+ * insert runs before `decryptSecret` itself (see mailSyncJob.ts's caller-side note: this is
+ * intentional, so a decrypt failure downstream of a real key/ciphertext still leaves the
+ * access attempt on record) — and returns `null` (no log entry) only when there is nothing to
+ * decrypt at all, since "no credential stored" is not itself a credential access. Callers: the
+ * mail sync worker (every sync cycle) and the MCP connection manager (once per opened
+ * transport) — never an agent tool.
  */
 export async function getDecryptedCredential(client: Queryable, input: DecryptCredentialInput): Promise<string | null> {
   const { rows } = await client.query<{ ciphertext: Buffer; nonce: Buffer; key_version: number }>(

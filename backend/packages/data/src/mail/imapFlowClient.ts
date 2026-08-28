@@ -1,19 +1,15 @@
 import type { ImapFlow, FetchMessageObject, MessageAddressObject, MessageStructureObject } from "imapflow";
 import type { ImapFetchedMessage, ImapFolderRef, ImapFolderSelection, ImapMailClient } from "./imapReconcile.js";
-import type { FetchedMessage } from "./providerTypes.js";
+import { MAX_ATTACHMENT_BYTES, type FetchedMessage } from "./providerTypes.js";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 
 /**
- * Generous upper bound on a single attachment part's *decoded* size (issue #26's provider
- * limits table tops out at iCloud's 20MB baseline / Gmail's 25MB) — passed to `download()`'s
- * own `maxBytes`, which is enforced by the streaming decoder pipeline itself (not a
- * post-hoc buffer check), so a pathological or malicious part can never grow the process's
+ * `MAX_ATTACHMENT_BYTES` (providerTypes.ts, shared with the Gmail/Graph adapters) is passed to
+ * `download()`'s own `maxBytes` below, enforced by the streaming decoder pipeline itself (not
+ * a post-hoc buffer check) — a pathological or malicious part can never grow the process's
  * memory past this regardless of what the server claims its size is.
- */
-const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
-
-/**
+ *
  * iCloud Mail Drop (issue #26: "the attachment is then sent as a download link, not a real
  * MIME part") needs no special-case detection here: Mail Drop is Apple Mail's own client-side
  * substitution — the message iCloud's IMAP server actually stores and serves to any client
@@ -21,7 +17,7 @@ const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
  * body; there is no oversized or placeholder MIME part on the wire for a generic IMAP client
  * to mistakenly try to fetch. `walkBodyStructure` below only ever downloads a part BODYSTRUCTURE
  * actually reports, so "try to download a non-existent attachment" cannot happen by
- * construction. `MAX_ATTACHMENT_BYTES` above is a separate, general safety net (any
+ * construction. `MAX_ATTACHMENT_BYTES` is a separate, general safety net (any
  * oversized/malicious part, not specifically Mail Drop).
  */
 
