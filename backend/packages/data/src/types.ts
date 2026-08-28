@@ -1,6 +1,9 @@
 export type PropertyOwner = "user" | "system";
 export type MigrationStatus = "stable" | "pending" | "running" | "done" | "partial";
 
+/** Shared across `views.created_by` and (per a later issue) `doc_updates.created_by` — one vocabulary, not a per-table enum. */
+export type CreatedBy = "user" | "ai_agent" | "system";
+
 /** v1 property types. `formula` is deliberately excluded — see the issue's "Formula" section. */
 export const PROPERTY_TYPES = [
   "text",
@@ -60,4 +63,22 @@ export interface ItemRelationRow {
   itemA: string;
   itemB: string;
   metadata: Record<string, unknown>;
+}
+
+export interface ViewRow {
+  id: string;
+  /** null exactly for a curated view (config.membership = 'manual') — see the `views_curated_no_db` CHECK. */
+  databaseId: string | null;
+  type: string;
+  name: string;
+  config: Record<string, unknown>;
+  isDefault: boolean;
+  ownerModuleId: string | null;
+  createdBy: CreatedBy;
+}
+
+export interface ViewItemRow {
+  viewId: string;
+  itemId: string;
+  position: number;
 }

@@ -2,11 +2,14 @@ import type { Pool, PoolClient } from "pg";
 import { DateTime } from "luxon";
 import { withTransaction } from "../db/pool.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
-import type { DatabaseRow, ItemRow, PropertyRow, PropertyType } from "../types.js";
+import type { CreatedBy, DatabaseRow, ItemRow, PropertyRow, PropertyType, ViewItemRow, ViewRow } from "../types.js";
 import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as itemsStore from "./itemsStore.js";
 import * as relationsStore from "./relationsStore.js";
+import * as viewsStore from "./viewsStore.js";
+import * as viewItemsStore from "./viewItemsStore.js";
+import * as viewQuery from "../views/viewQuery.js";
 import { validateRollupConfig } from "../rollup/config.js";
 import { findDependenciesByRelationDefinition, findDependenciesBySource, upsertRollupDependency } from "../rollup/dependencies.js";
 import { enqueueRollupBackfill, enqueueRollupRecompute } from "../rollup/recompute.js";
@@ -15,6 +18,7 @@ import { enqueuePropertyTypeMigration, isConversionSupported } from "../migratio
 import { triggerOnItemEventHeartbeats, recomputeAllForTimezoneChange } from "../scheduler/schedulerStore.js";
 import { getSystemSettingsItemId } from "../systemSettings.js";
 import { createComputedKeyRegistry, type ComputedKeyRegistry } from "./computedKeyRegistry.js";
+import { createViewTypeRegistry, type ViewTypeRegistry } from "./viewTypeRegistry.js";
 
 /** Keys the generic write path never accepts: relation values live only in item_relations, and computed is internal-only. */
 function assertWritableProperties(properties: PropertyRow[], patchKeys: string[]): void {
@@ -81,7 +85,18 @@ function assertNoComputedKeyCollision(registry: ComputedKeyRegistry, key: string
   }
 }
 
-export function createChokePoint(pool: Pool, computedKeyRegistry: ComputedKeyRegistry = createComputedKeyRegistry()) {
+/** Shared by patch/delete on a view and every write to its `view_items` membership. */
+function assertViewWritable(view: ViewRow, actor: CreatedBy): void {
+  if (actor === "ai_agent" && view.createdBy !== "ai_agent") {
+    throw new ForbiddenError(`View ${view.id} is owned by '${view.createdBy}' and cannot be written by an agent`, { field: "createdBy" }, "owner_violation");
+  }
+}
+
+export function createChokePoint(
+  pool: Pool,
+  computedKeyRegistry: ComputedKeyRegistry = createComputedKeyRegistry(),
+  viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry(),
+) {
   return {
     // ---- databases ----
     async createDatabase(input: databasesStore.CreateDatabaseInput): Promise<DatabaseRow> {
@@ -95,6 +110,16 @@ export function createChokePoint(pool: Pool, computedKeyRegistry: ComputedKeyReg
     },
     async getDatabase(id: string): Promise<DatabaseRow | null> {
       return withTransaction(pool, (client) => databasesStore.getDatabase(client, id));
+    },
+
+    /** Inline database creation (issue #22, point 7): a new, independent database owned by a page. Always `system: false` — mechanically, since the input type carries no `system` field to override it. */
+    async createInlineDatabase(input: {
+      name: string;
+      parentItemId: string;
+      ownerProjectItemId?: string;
+      ownerModuleId?: string;
+    }): Promise<DatabaseRow> {
+      return withTransaction(pool, (client) => databasesStore.createDatabase(client, { ...input, system: false }));
     },
 
     // ---- properties ----
@@ -364,6 +389,97 @@ export function createChokePoint(pool: Pool, computedKeyRegistry: ComputedKeyReg
         for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
         return item;
       });
+    },
+
+    // ---- views ----
+    async createView(input: viewsStore.CreateViewInput): Promise<ViewRow> {
+      return withTransaction(pool, (client) => viewsStore.createView(client, input, viewTypeRegistry));
+    },
+
+    async getView(id: string): Promise<ViewRow | null> {
+      return withTransaction(pool, (client) => viewsStore.getView(client, id));
+    },
+
+    async listViewsByDatabase(databaseId: string): Promise<ViewRow[]> {
+      return withTransaction(pool, (client) => viewsStore.listViewsByDatabase(client, databaseId));
+    },
+
+    /** Curated views have no `databaseId` of their own, so they're listed separately rather than scoped to one database. */
+    async listCuratedViews(): Promise<ViewRow[]> {
+      return withTransaction(pool, (client) => viewsStore.listCuratedViews(client));
+    },
+
+    async patchView(input: { id: string; actor: CreatedBy; name?: string; config?: Record<string, unknown>; isDefault?: boolean }): Promise<ViewRow> {
+      return withTransaction(pool, async (client) => {
+        const view = await viewsStore.getView(client, input.id);
+        if (!view) throw new NotFoundError(`View ${input.id} not found`);
+        assertViewWritable(view, input.actor);
+        if (input.actor === "ai_agent" && input.isDefault !== undefined) {
+          throw new ForbiddenError("is_default cannot be set by an agent, not even on its own view", { field: "isDefault" }, "owner_violation");
+        }
+        // One-way adoption: a user's write to an agent's view flips it to 'user'; a system view is never flipped by a user write.
+        const adopt = input.actor === "user" && view.createdBy === "ai_agent";
+        return viewsStore.patchView(
+          client,
+          input.id,
+          {
+            name: input.name,
+            config: input.config,
+            isDefault: input.isDefault,
+            createdBy: adopt ? "user" : undefined,
+          },
+          viewTypeRegistry,
+        );
+      });
+    },
+
+    async deleteView(input: { id: string; actor: CreatedBy }): Promise<void> {
+      return withTransaction(pool, async (client) => {
+        const view = await viewsStore.getView(client, input.id);
+        if (!view) return;
+        assertViewWritable(view, input.actor);
+        await viewsStore.deleteView(client, input.id);
+      });
+    },
+
+    // ---- view_items (curated view membership) ----
+    async addViewItem(input: { viewId: string; itemId: string; position?: number; actor: CreatedBy }): Promise<ViewItemRow> {
+      return withTransaction(pool, async (client) => {
+        const view = await viewsStore.getView(client, input.viewId);
+        if (!view) throw new NotFoundError(`View ${input.viewId} not found`);
+        if (view.databaseId !== null) {
+          throw new ValidationError("Only a curated view (databaseId = null) accepts view_items membership", { field: "viewId" });
+        }
+        assertViewWritable(view, input.actor);
+        return viewItemsStore.addViewItem(client, input.viewId, input.itemId, input.position);
+      });
+    },
+
+    async removeViewItem(input: { viewId: string; itemId: string; actor: CreatedBy }): Promise<void> {
+      return withTransaction(pool, async (client) => {
+        const view = await viewsStore.getView(client, input.viewId);
+        if (!view) return;
+        assertViewWritable(view, input.actor);
+        await viewItemsStore.removeViewItem(client, input.viewId, input.itemId);
+      });
+    },
+
+    async reorderViewItem(input: { viewId: string; itemId: string; position: number; actor: CreatedBy }): Promise<ViewItemRow> {
+      return withTransaction(pool, async (client) => {
+        const view = await viewsStore.getView(client, input.viewId);
+        if (!view) throw new NotFoundError(`View ${input.viewId} not found`);
+        assertViewWritable(view, input.actor);
+        return viewItemsStore.reorderViewItem(client, input.viewId, input.itemId, input.position);
+      });
+    },
+
+    async listViewItems(viewId: string): Promise<ViewItemRow[]> {
+      return withTransaction(pool, (client) => viewItemsStore.listViewItems(client, viewId));
+    },
+
+    // ---- reading through a view: filter/sort/visibility push-down ----
+    async queryView(viewId: string, options?: viewQuery.QueryViewOptions): Promise<viewQuery.QueryViewResult> {
+      return withTransaction(pool, (client) => viewQuery.queryView(client, viewId, options));
     },
   };
 }
