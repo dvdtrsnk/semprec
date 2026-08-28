@@ -21,6 +21,24 @@ const ALLOWED_TAGS = [
   "table", "thead", "tbody", "tr", "th", "td", "img", "font",
 ];
 
+/**
+ * Properties that structurally never take a `url()` value, plus a value-level `url(`
+ * ban as defense in depth — `background`/`background-image`/`list-style-image`/`cursor`/
+ * `content` are deliberately excluded, since those are exactly how a remote-image tracking
+ * pixel is smuggled in through CSS instead of `<img src>` (sanitize-html's `filterCss`
+ * otherwise passes the whole `style` attribute through unmodified when no `allowedStyles`
+ * is given, which would silently defeat the `allowRemoteImages` gate above).
+ */
+const NO_URL_VALUE = /^(?!.*url\(:?).*$/i;
+const SAFE_STYLE_PROPERTIES = [
+  "color", "background-color", "font-size", "font-weight", "font-style", "font-family",
+  "text-align", "text-decoration", "line-height", "letter-spacing", "white-space",
+  "border", "border-color", "border-style", "border-width", "border-radius",
+  "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
+  "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+  "width", "height", "max-width", "vertical-align",
+];
+
 export function sanitizeMailHtml(html: string, options: SanitizeMailHtmlOptions = {}): string {
   return sanitizeHtml(html, {
     allowedTags: ALLOWED_TAGS,
@@ -29,6 +47,9 @@ export function sanitizeMailHtml(html: string, options: SanitizeMailHtmlOptions 
       img: ["src", "alt", "width", "height"],
       font: ["color", "size", "face"],
       "*": ["style"],
+    },
+    allowedStyles: {
+      "*": Object.fromEntries(SAFE_STYLE_PROPERTIES.map((property) => [property, [NO_URL_VALUE]])),
     },
     // Inline data:/cid: images (a rendering asset attached to the message itself) are never
     // "remote" — only a bare http(s) src is a tracking-pixel candidate.

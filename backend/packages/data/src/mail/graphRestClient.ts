@@ -19,7 +19,44 @@ interface GraphMessageResource {
   body?: { contentType: string; content: string };
   receivedDateTime?: string;
   internetMessageHeaders?: { name: string; value: string }[];
+  hasAttachments?: boolean;
   ["@removed"]?: { reason: string };
+}
+
+interface GraphAttachmentResource {
+  "@odata.type": string;
+  name: string;
+  contentType: string;
+  contentId?: string;
+  isInline?: boolean;
+  contentBytes?: string;
+}
+
+/**
+ * Graph gives attachment metadata (isInline/contentId/contentBytes) as structured JSON
+ * fields directly, unlike IMAP/Gmail where the same classification has to be derived from
+ * raw MIME parts (see attachments.ts's `classifyAttachments`) — same cid-referenced-inline
+ * exclusion rule, just applied to already-structured data. Only `fileAttachment` is handled;
+ * `itemAttachment` (a forwarded message/contact as an attachment) and `referenceAttachment`
+ * (a link, e.g. a large OneDrive file) have no bytes to put in Files and are skipped.
+ */
+function classifyGraphAttachments(attachments: GraphAttachmentResource[], html: string): ClassifiedAttachment[] {
+  const result: ClassifiedAttachment[] = [];
+  for (const attachment of attachments) {
+    if (attachment["@odata.type"] !== "#microsoft.graph.fileAttachment" || !attachment.contentBytes) continue;
+    const disposition: "attachment" | "inline" = attachment.isInline ? "inline" : "attachment";
+    const contentId = attachment.contentId ?? null;
+    const referencedInline = disposition === "inline" && contentId !== null && html.includes(`cid:${contentId}`);
+    if (referencedInline) continue;
+    result.push({
+      filename: attachment.name,
+      contentType: attachment.contentType,
+      contentId,
+      disposition,
+      content: { kind: "buffer", data: Buffer.from(attachment.contentBytes, "base64") },
+    });
+  }
+  return result;
 }
 
 function toEnvelopeAddress(v?: { emailAddress: { name?: string; address: string } }): MailEnvelopeAddress | undefined {
@@ -34,14 +71,10 @@ function header(resource: GraphMessageResource, name: string): string | undefine
   return resource.internetMessageHeaders?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value;
 }
 
-async function toFetchedMessage(resource: GraphMessageResource): Promise<FetchedMessage> {
+async function toFetchedMessage(resource: GraphMessageResource, fetchAttachments: (messageId: string) => Promise<GraphAttachmentResource[]>): Promise<FetchedMessage> {
   const referencesHeader = header(resource, "References");
   const html = resource.body?.contentType === "html" ? resource.body.content : undefined;
-  // Graph's REST body doesn't expose raw MIME parts for attachments in this call; a real
-  // deployment fetches `/messages/{id}/attachments` separately and classifies them the same
-  // way as the other two adapters (see attachments.ts) — a second request this compact
-  // client doesn't make, so attachments are omitted here.
-  const attachments: ClassifiedAttachment[] = [];
+  const attachments = resource.hasAttachments ? classifyGraphAttachments(await fetchAttachments(resource.id), html ?? "") : [];
 
   return {
     messageId: resource.internetMessageId ?? `<no-message-id-${resource.id}@graph-api>`,
@@ -85,6 +118,11 @@ export class GraphRestClient implements GraphMailClient {
     return (await response.json()) as T;
   }
 
+  private async fetchAttachments(messageId: string): Promise<GraphAttachmentResource[]> {
+    const page = await this.request<{ value: GraphAttachmentResource[] }>(`${BASE_URL}/messages/${messageId}/attachments`);
+    return page.value ?? [];
+  }
+
   /** Graph's `/mailFolders` (and `/childFolders`) only ever return one level — nested folders need an explicit recursive walk, not a single `$expand`. */
   private async listFoldersUnder(url: string, wellKnownIds: Map<string, string>): Promise<GraphFolderRef[]> {
     const folders: GraphFolderRef[] = [];
@@ -119,7 +157,7 @@ export class GraphRestClient implements GraphMailClient {
   async fetchDelta(deltaLink: string | null): Promise<GraphDeltaResult> {
     let url =
       deltaLink ??
-      `${BASE_URL}/messages/delta?$select=internetMessageId,subject,from,toRecipients,ccRecipients,bccRecipients,body,bodyPreview,receivedDateTime,parentFolderId,internetMessageHeaders`;
+      `${BASE_URL}/messages/delta?$select=internetMessageId,subject,from,toRecipients,ccRecipients,bccRecipients,body,bodyPreview,receivedDateTime,parentFolderId,internetMessageHeaders,hasAttachments`;
     const changes: GraphChangedMessage[] = [];
     let newDeltaLink = "";
 
@@ -130,7 +168,12 @@ export class GraphRestClient implements GraphMailClient {
           if (resource["@removed"]) {
             changes.push({ id: resource.id, removed: true });
           } else {
-            changes.push({ id: resource.id, parentFolderId: resource.parentFolderId, removed: false, message: await toFetchedMessage(resource) });
+            changes.push({
+              id: resource.id,
+              parentFolderId: resource.parentFolderId,
+              removed: false,
+              message: await toFetchedMessage(resource, (messageId) => this.fetchAttachments(messageId)),
+            });
           }
         }
         if (page["@odata.deltaLink"]) newDeltaLink = page["@odata.deltaLink"];

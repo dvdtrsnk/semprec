@@ -6,12 +6,22 @@ import { findOrCreateBlob } from "../blobs/blobsStore.js";
 import { createItemWithClient, createRelationWithClient } from "../chokePoint/chokePoint.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 
+/**
+ * `"buffer"` is used by the Gmail/Graph REST adapters, whose provider APIs hand back
+ * attachment bytes as one already-materialized blob (base64 in a JSON response) with no
+ * streaming option to begin with. `"stream"` is used by the IMAP adapter, whose bytes are
+ * opened lazily (via `imapflow`'s `client.download`) only when `ingestAttachments` is ready
+ * to pipe them straight to storage — never buffered in full, per the issue's explicit
+ * OOM-avoidance requirement for large attachments.
+ */
+export type AttachmentContent = { kind: "buffer"; data: Buffer } | { kind: "stream"; open: () => Promise<Readable> };
+
 export interface ClassifiedAttachment {
   filename: string;
   contentType: string;
   contentId: string | null;
   disposition: "attachment" | "inline";
-  content: Buffer;
+  content: AttachmentContent;
 }
 
 /**
@@ -35,7 +45,7 @@ export function classifyAttachments(parsed: ParsedMail): ClassifiedAttachment[] 
       contentType: part.contentType,
       contentId,
       disposition,
-      content: part.content,
+      content: { kind: "buffer", data: part.content },
     });
   }
   return result;
@@ -76,7 +86,8 @@ function safeStorageFilename(filename: string): string {
 export async function ingestAttachments(client: PoolClient, input: IngestAttachmentsInput): Promise<void> {
   for (const attachment of input.attachments) {
     const storageKey = `${input.storageKeyPrefix}/${randomUUID()}-${safeStorageFilename(attachment.filename)}`;
-    const { byteSize, contentHash } = await input.storage.writeStream(storageKey, Readable.from(attachment.content));
+    const source = attachment.content.kind === "buffer" ? Readable.from(attachment.content.data) : await attachment.content.open();
+    const { byteSize, contentHash } = await input.storage.writeStream(storageKey, source);
 
     const blob = await findOrCreateBlob(client, {
       mimeType: attachment.contentType,
