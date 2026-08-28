@@ -20,8 +20,19 @@ import { getSystemSettingsItemId } from "../systemSettings.js";
 import { createComputedKeyRegistry, type ComputedKeyRegistry } from "./computedKeyRegistry.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "./viewTypeRegistry.js";
 
+interface AssertWritablePropertiesOptions {
+  /**
+   * Relaxes the owner:'system' rejection below — the one narrow escape hatch for a
+   * trusted, code-defined system writer that is itself the module contract's declared
+   * owning process for those fields (e.g. Journal's lazy item creation, see
+   * journal/journalStore.ts). Never set from a request-handling path: doing so would let
+   * an arbitrary caller write a field the module contract reserves for one named process.
+   */
+  allowSystemOwnedProperties?: boolean;
+}
+
 /** Keys the generic write path never accepts: relation values live only in item_relations, and computed is internal-only. */
-function assertWritableProperties(properties: PropertyRow[], patchKeys: string[]): void {
+function assertWritableProperties(properties: PropertyRow[], patchKeys: string[], options: AssertWritablePropertiesOptions = {}): void {
   const byKey = new Map(properties.map((p) => [p.key, p]));
   for (const key of patchKeys) {
     const property = byKey.get(key);
@@ -38,7 +49,7 @@ function assertWritableProperties(properties: PropertyRow[], patchKeys: string[]
         field: key,
       });
     }
-    if (property.owner === "system") {
+    if (property.owner === "system" && !options.allowSystemOwnedProperties) {
       throw new ForbiddenError(`Property '${key}' is owned by 'system' and cannot be written by this caller`, { field: key });
     }
   }
@@ -110,12 +121,19 @@ export interface CreateRelationPropertyInput {
  * `withTransaction`, which would open a second, separate connection — one that cannot see
  * this transaction's not-yet-committed `databases`/`properties` rows under read-committed
  * isolation. `createChokePoint`'s `createRelationProperty` below is a thin wrapper over this
- * for the normal, already-committed-schema case.
+ * for the normal, already-committed-schema case. The computed-key-collision check lives here
+ * (not only in the public wrapper) so every caller of this exported function gets it, not
+ * just the ones that happen to go through `createChokePoint`; `computedKeyRegistry` defaults
+ * to a fresh empty registry, matching `createChokePoint`'s own default.
  */
 export async function createRelationPropertyWithClient(
   client: PoolClient,
   input: CreateRelationPropertyInput,
+  computedKeyRegistry: ComputedKeyRegistry = createComputedKeyRegistry(),
 ): Promise<{ property: PropertyRow; inverseProperty: PropertyRow | null }> {
+  assertNoComputedKeyCollision(computedKeyRegistry, input.key);
+  if (input.inverse) assertNoComputedKeyCollision(computedKeyRegistry, input.inverse.key);
+
   const property = await propertiesStore.createProperty(client, {
     databaseId: input.databaseId,
     key: input.key,
@@ -152,6 +170,115 @@ export async function createRelationPropertyWithClient(
     });
   }
   return { property: finalProperty, inverseProperty };
+}
+
+export interface CreateItemWithClientOptions extends AssertWritablePropertiesOptions {}
+
+export interface CreateItemInput {
+  databaseId: string;
+  properties?: Record<string, unknown>;
+  idempotencyKey?: string;
+}
+
+/**
+ * The item-creation logic, factored out (same reason as `createRelationPropertyWithClient`
+ * above) so a caller already holding an open transaction can run it against that same
+ * `client` — namely `tasks/advanceTaskRecurrence.ts`, whose rolling-model advance must create
+ * the next task instance, mark the old one done, and re-link its relations as a single
+ * all-or-nothing transaction, and `journal/journalStore.ts`, whose lazy item creation writes
+ * owner:'system' properties (`allowSystemOwnedProperties`) as Journal's declared owning
+ * process. `createChokePoint(...)`'s `createItem` below is a thin wrapper over this.
+ */
+export async function createItemWithClient(client: PoolClient, input: CreateItemInput, options: CreateItemWithClientOptions = {}): Promise<ItemRow> {
+  const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
+  assertWritableProperties(properties, Object.keys(input.properties ?? {}), options);
+
+  const item = await itemsStore.insertItem(client, {
+    databaseId: input.databaseId,
+    properties: input.properties ?? {},
+    idempotencyKey: input.idempotencyKey,
+  });
+  await triggerOnItemEventHeartbeats(client, input.databaseId, "create", item.id);
+  return item;
+}
+
+export interface UpdateItemInput {
+  databaseId: string;
+  itemId: string;
+  propertiesPatch: Record<string, unknown>;
+  ifVersion?: string;
+}
+
+/** The item-update logic, factored out for the same reason as `createItemWithClient` above. */
+export async function updateItemWithClient(client: PoolClient, input: UpdateItemInput): Promise<ItemRow> {
+  const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
+  const patchKeys = Object.keys(input.propertiesPatch);
+  assertWritableProperties(properties, patchKeys);
+
+  const item = await itemsStore.updateItemProperties(client, {
+    databaseId: input.databaseId,
+    itemId: input.itemId,
+    propertiesPatch: input.propertiesPatch,
+    ifVersion: input.ifVersion,
+  });
+  await triggerOnItemEventHeartbeats(client, input.databaseId, "update", item.id);
+
+  for (const key of patchKeys) {
+    const dependencies = await findDependenciesBySource(client, input.databaseId, key);
+    for (const dependency of dependencies) {
+      const edges = await relationsStore.listRelationsForItem(client, dependency.relationDefinitionId, item.id);
+      for (const edge of edges) {
+        await enqueueRollupRecompute(client, dependency.rollupPropertyId, relationsStore.otherSide(edge, item.id));
+      }
+    }
+  }
+
+  const settingsItemId = await getSystemSettingsItemId(client).catch((err) => {
+    if (err instanceof NotFoundError) return null; // system not seeded yet
+    throw err;
+  });
+  if (settingsItemId === item.id && typeof input.propertiesPatch.timezone === "string") {
+    const timezone = input.propertiesPatch.timezone;
+    // Luxon accepts any string and silently produces an invalid DateTime for an
+    // unrecognized IANA zone rather than throwing — validate before it reaches
+    // computeNextFireAt, where an invalid zone would surface much later as a
+    // Postgres "Invalid time value" from serializing next_fire_at = NaN.
+    if (!DateTime.local().setZone(timezone).isValid) {
+      throw new ValidationError(`Invalid IANA timezone: '${timezone}'`, { field: "timezone" });
+    }
+    await recomputeAllForTimezoneChange(client, timezone);
+  }
+
+  return item;
+}
+
+export interface CreateRelationInput {
+  relationPropertyId: string;
+  itemId: string;
+  targetItemId: string;
+  metadata?: Record<string, unknown>;
+}
+
+/** The relation-linking logic, factored out for the same reason as `createItemWithClient` above. */
+export async function createRelationWithClient(client: PoolClient, input: CreateRelationInput): Promise<void> {
+  const property = await propertiesStore.getProperty(client, input.relationPropertyId);
+  if (!property || property.type !== "relation") {
+    throw new ValidationError(`${input.relationPropertyId} is not a relation property`);
+  }
+  const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, input.relationPropertyId);
+  if (!reldef) throw new ValidationError(`Relation property ${input.relationPropertyId} has no relation definition`);
+
+  const isSideA = reldef.propertyIdA === input.relationPropertyId;
+  const itemA = isSideA ? input.itemId : input.targetItemId;
+  const itemB = isSideA ? input.targetItemId : input.itemId;
+
+  await relationsStore.createItemRelation(client, {
+    relationDefinitionId: reldef.id,
+    itemA,
+    itemB,
+    metadata: input.metadata,
+  });
+  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: reldef.id, itemA, itemB });
 }
 
 export function createChokePoint(
@@ -270,33 +397,12 @@ export function createChokePoint(
 
     // ---- relations (schema side: creating a paired relation property) ----
     async createRelationProperty(input: CreateRelationPropertyInput): Promise<{ property: PropertyRow; inverseProperty: PropertyRow | null }> {
-      assertNoComputedKeyCollision(computedKeyRegistry, input.key);
-      if (input.inverse) assertNoComputedKeyCollision(computedKeyRegistry, input.inverse.key);
-      return withTransaction(pool, (client) => createRelationPropertyWithClient(client, input));
+      return withTransaction(pool, (client) => createRelationPropertyWithClient(client, input, computedKeyRegistry));
     },
 
     // ---- relations (data side: linking two items) ----
-    async createRelation(input: { relationPropertyId: string; itemId: string; targetItemId: string; metadata?: Record<string, unknown> }): Promise<void> {
-      return withTransaction(pool, async (client) => {
-        const property = await propertiesStore.getProperty(client, input.relationPropertyId);
-        if (!property || property.type !== "relation") {
-          throw new ValidationError(`${input.relationPropertyId} is not a relation property`);
-        }
-        const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, input.relationPropertyId);
-        if (!reldef) throw new ValidationError(`Relation property ${input.relationPropertyId} has no relation definition`);
-
-        const isSideA = reldef.propertyIdA === input.relationPropertyId;
-        const itemA = isSideA ? input.itemId : input.targetItemId;
-        const itemB = isSideA ? input.targetItemId : input.itemId;
-
-        await relationsStore.createItemRelation(client, {
-          relationDefinitionId: reldef.id,
-          itemA,
-          itemB,
-          metadata: input.metadata,
-        });
-        await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: reldef.id, itemA, itemB });
-      });
+    async createRelation(input: CreateRelationInput): Promise<void> {
+      return withTransaction(pool, (client) => createRelationWithClient(client, input));
     },
 
     async deleteRelation(input: { relationPropertyId: string; itemId: string; targetItemId: string }): Promise<void> {
@@ -314,68 +420,12 @@ export function createChokePoint(
     },
 
     // ---- items ----
-    async createItem(input: { databaseId: string; properties?: Record<string, unknown>; idempotencyKey?: string }): Promise<ItemRow> {
-      return withTransaction(pool, async (client) => {
-        const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
-        assertWritableProperties(properties, Object.keys(input.properties ?? {}));
-
-        const item = await itemsStore.insertItem(client, {
-          databaseId: input.databaseId,
-          properties: input.properties ?? {},
-          idempotencyKey: input.idempotencyKey,
-        });
-        await triggerOnItemEventHeartbeats(client, input.databaseId, "create", item.id);
-        return item;
-      });
+    async createItem(input: CreateItemInput): Promise<ItemRow> {
+      return withTransaction(pool, (client) => createItemWithClient(client, input));
     },
 
-    async updateItem(input: {
-      databaseId: string;
-      itemId: string;
-      propertiesPatch: Record<string, unknown>;
-      ifVersion?: string;
-    }): Promise<ItemRow> {
-      return withTransaction(pool, async (client) => {
-        const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
-        const patchKeys = Object.keys(input.propertiesPatch);
-        assertWritableProperties(properties, patchKeys);
-
-        const item = await itemsStore.updateItemProperties(client, {
-          databaseId: input.databaseId,
-          itemId: input.itemId,
-          propertiesPatch: input.propertiesPatch,
-          ifVersion: input.ifVersion,
-        });
-        await triggerOnItemEventHeartbeats(client, input.databaseId, "update", item.id);
-
-        for (const key of patchKeys) {
-          const dependencies = await findDependenciesBySource(client, input.databaseId, key);
-          for (const dependency of dependencies) {
-            const edges = await relationsStore.listRelationsForItem(client, dependency.relationDefinitionId, item.id);
-            for (const edge of edges) {
-              await enqueueRollupRecompute(client, dependency.rollupPropertyId, relationsStore.otherSide(edge, item.id));
-            }
-          }
-        }
-
-        const settingsItemId = await getSystemSettingsItemId(client).catch((err) => {
-          if (err instanceof NotFoundError) return null; // system not seeded yet
-          throw err;
-        });
-        if (settingsItemId === item.id && typeof input.propertiesPatch.timezone === "string") {
-          const timezone = input.propertiesPatch.timezone;
-          // Luxon accepts any string and silently produces an invalid DateTime for an
-          // unrecognized IANA zone rather than throwing — validate before it reaches
-          // computeNextFireAt, where an invalid zone would surface much later as a
-          // Postgres "Invalid time value" from serializing next_fire_at = NaN.
-          if (!DateTime.local().setZone(timezone).isValid) {
-            throw new ValidationError(`Invalid IANA timezone: '${timezone}'`, { field: "timezone" });
-          }
-          await recomputeAllForTimezoneChange(client, timezone);
-        }
-
-        return item;
-      });
+    async updateItem(input: UpdateItemInput): Promise<ItemRow> {
+      return withTransaction(pool, (client) => updateItemWithClient(client, input));
     },
 
     async getItem(databaseId: string, itemId: string): Promise<ItemRow | null> {

@@ -3,6 +3,7 @@ import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import { createRelationPropertyWithClient, type CreateRelationPropertyInput } from "../chokePoint/chokePoint.js";
+import type { ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { registerTemporalSwitcherViewType, TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
 import { JOURNAL_PERIOD_TYPES } from "../journal/journalStore.js";
@@ -54,9 +55,6 @@ async function createProps(client: PoolClient, databaseId: string, specs: PropSp
   }
 }
 
-async function relate(client: PoolClient, input: CreateRelationPropertyInput): Promise<void> {
-  await createRelationPropertyWithClient(client, input);
-}
 
 /**
  * Creates the ten hardcoded databases (issue #24), their fixed properties, the real
@@ -71,7 +69,14 @@ async function relate(client: PoolClient, input: CreateRelationPropertyInput): P
  * Not idempotent on its own — the caller is responsible for the idempotency check (see
  * seedSystem.ts), same as the rest of that seed.
  */
-export async function seedTenDatabasesInTransaction(client: PoolClient, viewTypeRegistry: ViewTypeRegistry): Promise<TenDatabases> {
+export async function seedTenDatabasesInTransaction(
+  client: PoolClient,
+  viewTypeRegistry: ViewTypeRegistry,
+  computedKeyRegistry: ComputedKeyRegistry,
+): Promise<TenDatabases> {
+  const relate = (input: CreateRelationPropertyInput): Promise<{ property: unknown; inverseProperty: unknown }> =>
+    createRelationPropertyWithClient(client, input, computedKeyRegistry);
+
   // ---- phase 1: create each database and its own (non-relation) properties ----
   const areas = await createDb(client, "Areas", AREAS_MODULE_ID);
   await createProps(client, areas.id, [
@@ -206,7 +211,7 @@ export async function seedTenDatabasesInTransaction(client: PoolClient, viewType
   // ---- phase 2: relations — every target database above already exists, so declaration order doesn't matter here ----
 
   // Areas <-> Projects ("Hub"): one area has many projects.
-  await relate(client, {
+  await relate({
     databaseId: projects.id,
     key: "area",
     name: "Hub",
@@ -215,7 +220,7 @@ export async function seedTenDatabasesInTransaction(client: PoolClient, viewType
     inverse: { key: "projects", name: "Projects" },
   });
   // Areas <-> Companies: explicit bidirectional, 1:1 per the issue.
-  await relate(client, {
+  await relate({
     databaseId: areas.id,
     key: "company",
     name: "Company",
@@ -224,7 +229,7 @@ export async function seedTenDatabasesInTransaction(client: PoolClient, viewType
     inverse: { key: "area", name: "Area" },
   });
   // Fix: Areas <-> Health records was one-directional (from Areas) in the mock; unified to bidirectional.
-  await relate(client, {
+  await relate({
     databaseId: areas.id,
     key: "healthRecord",
     name: "Health record",
@@ -234,7 +239,7 @@ export async function seedTenDatabasesInTransaction(client: PoolClient, viewType
   });
   // Fix: Projects <-> Companies was a free-form select ("Osobní"/"MeguMethod") in the mock;
   // unified with the existing Companies -> Projects relation into a real N:1 relation.
-  await relate(client, {
+  await relate({
     databaseId: projects.id,
     key: "company",
     name: "Company",
@@ -243,7 +248,7 @@ export async function seedTenDatabasesInTransaction(client: PoolClient, viewType
     inverse: { key: "projects", name: "Projects" },
   });
   // Tasks -> Projects (hub backlink), optional at the item level (relations carry no NOT NULL in this engine).
-  await relate(client, {
+  await relate({
     databaseId: tasks.id,
     key: "project",
     name: "Project",
@@ -252,7 +257,7 @@ export async function seedTenDatabasesInTransaction(client: PoolClient, viewType
     inverse: { key: "tasks", name: "Tasks" },
   });
   // People -> Projects (hub backlink).
-  await relate(client, {
+  await relate({
     databaseId: people.id,
     key: "projects",
     name: "Projects",
@@ -261,7 +266,7 @@ export async function seedTenDatabasesInTransaction(client: PoolClient, viewType
     inverse: { key: "people", name: "People" },
   });
   // People <-> Companies: explicit bidirectional N:N — a person keeps both a current and a former company link.
-  await relate(client, {
+  await relate({
     databaseId: people.id,
     key: "companies",
     name: "Companies",
@@ -270,9 +275,9 @@ export async function seedTenDatabasesInTransaction(client: PoolClient, viewType
     inverse: { key: "people", name: "People" },
   });
   // Files -> Areas: one-directional only (neither side's relation list names the other beyond this).
-  await relate(client, { databaseId: files.id, key: "area", name: "Area", targetDatabaseId: areas.id, cardinality: "one_to_many" });
+  await relate({ databaseId: files.id, key: "area", name: "Area", targetDatabaseId: areas.id, cardinality: "one_to_many" });
   // Files -> Projects (hub backlink).
-  await relate(client, {
+  await relate({
     databaseId: files.id,
     key: "projects",
     name: "Projects",
@@ -281,7 +286,7 @@ export async function seedTenDatabasesInTransaction(client: PoolClient, viewType
     inverse: { key: "files", name: "Files" },
   });
   // Files <-> Health records: explicit bidirectional attachments.
-  await relate(client, {
+  await relate({
     databaseId: files.id,
     key: "healthRecords",
     name: "Health records",
@@ -290,7 +295,7 @@ export async function seedTenDatabasesInTransaction(client: PoolClient, viewType
     inverse: { key: "files", name: "Files" },
   });
   // Files <-> Companies: explicit bidirectional attachments.
-  await relate(client, {
+  await relate({
     databaseId: files.id,
     key: "companies",
     name: "Companies",
@@ -299,7 +304,7 @@ export async function seedTenDatabasesInTransaction(client: PoolClient, viewType
     inverse: { key: "files", name: "Files" },
   });
   // Events -> Projects (hub backlink).
-  await relate(client, {
+  await relate({
     databaseId: events.id,
     key: "project",
     name: "Project",
@@ -308,9 +313,9 @@ export async function seedTenDatabasesInTransaction(client: PoolClient, viewType
     inverse: { key: "events", name: "Events" },
   });
   // Events -> People: one-directional only (People's own relation list doesn't name Events).
-  await relate(client, { databaseId: events.id, key: "people", name: "People", targetDatabaseId: people.id, cardinality: "many_to_many" });
+  await relate({ databaseId: events.id, key: "people", name: "People", targetDatabaseId: people.id, cardinality: "many_to_many" });
   // Events <-> Transcripts: explicit bidirectional 1:1.
-  await relate(client, {
+  await relate({
     databaseId: events.id,
     key: "transcript",
     name: "Transcript",
@@ -319,7 +324,7 @@ export async function seedTenDatabasesInTransaction(client: PoolClient, viewType
     inverse: { key: "event", name: "Event" },
   });
   // Events -> Tasks (action items from a meeting): one-directional only (Tasks' own relation list doesn't name Events).
-  await relate(client, {
+  await relate({
     databaseId: events.id,
     key: "actionItems",
     name: "Action items",
@@ -328,7 +333,7 @@ export async function seedTenDatabasesInTransaction(client: PoolClient, viewType
   });
   // Fix: Events <-> Companies ("firma") was a free-form multiSelect in the mock, the same
   // inconsistency as Projects'; unified with the existing Companies -> Events ("meetings") relation.
-  await relate(client, {
+  await relate({
     databaseId: events.id,
     key: "company",
     name: "Company",
@@ -337,7 +342,7 @@ export async function seedTenDatabasesInTransaction(client: PoolClient, viewType
     inverse: { key: "meetings", name: "Meetings" },
   });
   // Health records -> Projects (hub backlink).
-  await relate(client, {
+  await relate({
     databaseId: healthRecords.id,
     key: "projects",
     name: "Projects",
@@ -347,7 +352,7 @@ export async function seedTenDatabasesInTransaction(client: PoolClient, viewType
   });
   // Transcripts -> People ("speakers"): one-directional; edges carry { speaker } metadata,
   // written by the transcription pipeline (a later issue), not here.
-  await relate(client, {
+  await relate({
     databaseId: transcripts.id,
     key: "speakers",
     name: "Speakers",
@@ -356,7 +361,7 @@ export async function seedTenDatabasesInTransaction(client: PoolClient, viewType
   });
   // Journal -> Areas: optional, nullable, one-directional; no default value (issue's fix — the
   // mock hardwired every entry to a single "Osobní" area, which this issue explicitly rejects).
-  await relate(client, { databaseId: journal.id, key: "area", name: "Area", targetDatabaseId: areas.id, cardinality: "one_to_many" });
+  await relate({ databaseId: journal.id, key: "area", name: "Area", targetDatabaseId: areas.id, cardinality: "one_to_many" });
 
   // ---- phase 3: lock every schema now that it's fully built (system DBs are not user-editable) ----
   const all: TenDatabases = {

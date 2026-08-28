@@ -3,7 +3,7 @@ import { withTransaction } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
-import { triggerOnItemEventHeartbeats } from "../scheduler/schedulerStore.js";
+import { createItemWithClient, createRelationWithClient, updateItemWithClient } from "../chokePoint/chokePoint.js";
 import type { ItemRow } from "../types.js";
 import { computeNextDueDate } from "./nextDueDate.js";
 import { createTaskRecurrence, getTaskRecurrence, setTaskRecurrenceActive } from "./taskRecurrenceStore.js";
@@ -22,16 +22,17 @@ export interface AdvanceTaskRecurrenceInput {
  * in (e.g. its Projects link) — not just the recurrence rule itself. Returns `null` (no-op)
  * when the completed item has no active recurrence, which is the common case.
  *
- * Runs as a single transaction, via the raw stores directly rather than `createChokePoint`'s
- * per-call `withTransaction` — each choke-point method commits on its own, so calling several
- * of them in sequence here (create the next instance, mark the old one done, copy relations)
- * would leave the rolling-model invariant ("only one open instance") broken by a crash or
- * error partway through, e.g. a completed process crash after the new instance is created but
- * before the old one is marked 'done' would leave both open at once. A single transaction
- * makes the whole advance all-or-nothing. This does mean rollup-recompute enqueueing (which
- * `createChokePoint`'s create/update/createRelation normally do) is not replicated here — Tasks
- * has no rollup properties in this seed, so there is nothing to recompute; onItemEvent
- * heartbeats are still triggered explicitly below, since those are a real, general concern.
+ * Every item/relation write goes through the choke-point's own logic — `createItemWithClient`
+ * / `updateItemWithClient` / `createRelationWithClient` (chokePoint.ts), the same functions
+ * `createChokePoint(...)`'s public `createItem`/`updateItem`/`createRelation` are thin
+ * wrappers over — so idempotency handling, ownership checks, onItemEvent heartbeat
+ * triggering, and rollup-recompute enqueueing all still happen exactly as they would through
+ * the public API. The one difference is transactional scope: `createChokePoint`'s wrappers
+ * each open and commit their own transaction, which here would let a crash or error partway
+ * through this multi-step advance (new instance created, but the old one never marked done)
+ * leave two open instances of the same recurring task — breaking the rolling model's
+ * invariant. Composing the client-scoped versions inside one `withTransaction` instead makes
+ * the whole advance atomic.
  */
 export async function advanceTaskRecurrence(pool: Pool, input: AdvanceTaskRecurrenceInput): Promise<ItemRow | null> {
   return withTransaction(pool, async (client) => {
@@ -43,7 +44,7 @@ export async function advanceTaskRecurrence(pool: Pool, input: AdvanceTaskRecurr
 
     const nextDate = computeNextDueDate(recurrence.mode, recurrence.rule as unknown as TaskRecurrenceRule, input.timezone, new Date());
 
-    const newItem = await itemsStore.insertItem(client, {
+    const newItem = await createItemWithClient(client, {
       databaseId: input.databaseId,
       properties: {
         name: current.properties.name,
@@ -55,15 +56,13 @@ export async function advanceTaskRecurrence(pool: Pool, input: AdvanceTaskRecurr
         persistent: current.properties.persistent ?? false,
       },
     });
-    await triggerOnItemEventHeartbeats(client, input.databaseId, "create", newItem.id);
 
     await createTaskRecurrence(client, { itemId: newItem.id, mode: recurrence.mode, rule: recurrence.rule as unknown as TaskRecurrenceRule });
     await setTaskRecurrenceActive(client, input.itemId, false);
 
     await copyRelationEdges(client, input.itemId, newItem.id);
 
-    await itemsStore.updateItemProperties(client, { databaseId: input.databaseId, itemId: input.itemId, propertiesPatch: { status: "done" } });
-    await triggerOnItemEventHeartbeats(client, input.databaseId, "update", input.itemId);
+    await updateItemWithClient(client, { databaseId: input.databaseId, itemId: input.itemId, propertiesPatch: { status: "done" } });
 
     return newItem;
   });
@@ -73,9 +72,12 @@ export async function advanceTaskRecurrence(pool: Pool, input: AdvanceTaskRecurr
 async function copyRelationEdges(client: PoolClient, fromItemId: string, toItemId: string): Promise<void> {
   const edges = await relationsStore.listAllRelationsForItem(client, fromItemId);
   for (const edge of edges) {
-    const isItemSideA = edge.itemA === fromItemId;
-    const itemA = isItemSideA ? toItemId : edge.itemA;
-    const itemB = isItemSideA ? edge.itemB : toItemId;
-    await relationsStore.createItemRelation(client, { relationDefinitionId: edge.relationDefinitionId, itemA, itemB, metadata: edge.metadata });
+    const reldef = await relationsStore.getRelationDefinition(client, edge.relationDefinitionId);
+    if (!reldef) continue;
+    const isFromSideA = edge.itemA === fromItemId;
+    const relationPropertyId = isFromSideA ? reldef.propertyIdA : reldef.propertyIdB;
+    if (!relationPropertyId) continue;
+    const targetItemId = relationsStore.otherSide(edge, fromItemId);
+    await createRelationWithClient(client, { relationPropertyId, itemId: toItemId, targetItemId, metadata: edge.metadata });
   }
 }

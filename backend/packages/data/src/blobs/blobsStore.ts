@@ -46,8 +46,3 @@ export async function getBlob(client: Queryable, id: string): Promise<BlobRow | 
   const { rows } = await client.query(`SELECT ${BLOB_COLUMNS} FROM blobs WHERE id = $1`, [id]);
   return rows[0] ? mapBlobRow(rows[0]) : null;
 }
-
-export async function getBlobByContentHash(client: Queryable, contentHash: string): Promise<BlobRow | null> {
-  const { rows } = await client.query(`SELECT ${BLOB_COLUMNS} FROM blobs WHERE content_hash = $1`, [contentHash]);
-  return rows[0] ? mapBlobRow(rows[0]) : null;
-}

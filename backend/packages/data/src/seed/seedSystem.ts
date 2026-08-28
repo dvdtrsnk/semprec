@@ -3,6 +3,7 @@ import { withTransaction } from "../db/pool.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
+import { createComputedKeyRegistry, type ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { DRIFT_CHECK_ACTION_ID } from "../manifest/driftCheck.js";
@@ -24,17 +25,21 @@ export { PROJECTS_MODULE_ID } from "./tenDatabaseKeys.js";
  * stores directly rather than the choke-point, which would otherwise reject writes to
  * a `schema_locked`/`system` database. Idempotent: safe to call on every startup.
  *
- * `viewTypeRegistry` defaults to a fresh, private registry for standalone/test use; a real
- * server composition root should pass its own shared instance so the "temporal-switcher"
- * view type registered here (for Journal's default view) is also known to the chokePoint
- * instance(s) it later serves requests through.
+ * `viewTypeRegistry`/`computedKeyRegistry` default to fresh, private instances for
+ * standalone/test use; a real server composition root should pass its own shared instances
+ * so the "temporal-switcher" view type and any declared computed cache keys registered here
+ * are also known to the chokePoint instance(s) it later serves requests through.
  */
-export async function seedSystem(pool: Pool, viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry()): Promise<void> {
+export async function seedSystem(
+  pool: Pool,
+  viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry(),
+  computedKeyRegistry: ComputedKeyRegistry = createComputedKeyRegistry(),
+): Promise<void> {
   await withTransaction(pool, async (client) => {
     const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1`, [SYSTEM_SETTINGS_MODULE_ID]);
     if ((existingSettings.rowCount ?? 0) > 0) return;
 
-    const tenDatabases = await seedTenDatabasesInTransaction(client, viewTypeRegistry);
+    const tenDatabases = await seedTenDatabasesInTransaction(client, viewTypeRegistry, computedKeyRegistry);
     const projectsDb = tenDatabases.projects;
 
     const semprecProject = await itemsStore.insertItem(client, {

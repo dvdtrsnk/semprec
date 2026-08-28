@@ -36,10 +36,7 @@ CREATE TABLE blobs (
 
 CREATE UNIQUE INDEX blobs_content_hash_uq ON blobs (content_hash) WHERE content_hash IS NOT NULL;
 
--- Backs Journal's lazy item creation (issue #24, "an item for a given date is created
--- implicitly by the first write"): at most one item per (database, type, period) — scoped
--- to rows that actually carry a `period` key, so it has no effect on any other database's
--- items (their `properties` never sets that key). Declared on the partitioned parent table,
--- which Postgres propagates to every existing and future partition automatically.
-CREATE UNIQUE INDEX items_period_uq ON items (database_id, (properties ->> 'type'), (properties ->> 'period'))
-  WHERE (properties ? 'period');
+-- Journal's lazy item creation (issue #24, "an item for a given date is created implicitly
+-- by the first write") needs no schema here: concurrency-safety comes from a deterministic
+-- per-period idempotency key through the existing `idempotency_keys` reservation mechanism
+-- (see journal/journalStore.ts, chokePoint/itemsStore.ts's insertItem), not a DB constraint.
