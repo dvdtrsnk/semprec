@@ -331,6 +331,36 @@ describe("docs (CRDT layer)", () => {
       await expect(docStore.openVersionAt(item.id, beforeCompaction)).rejects.toBeInstanceOf(ValidationError);
     });
 
+    it("openVersionAt raises a clear error when a checkpoint exists but a later compaction already deleted the updates between it and the queried time", async () => {
+      const item = await makeItem();
+      await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "user");
+      const doc = await docStore.getDoc(item.id);
+      if (!doc) throw new Error("doc not created");
+
+      await squashDocHistory(pool, doc.id, "system"); // checkpoint sh1, contains only b1
+      await docStore.putBlock(item.id, { id: "b2", flavour: "paragraph" }, "user");
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const queryTime = new Date(); // strictly after sh1 and after b2 — the correct answer here is [b1, b2]
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // A low-threshold compaction now merges *both* b1 and b2 away and drops a new
+      // checkpoint sh2 after queryTime — sh1 is still "the nearest checkpoint before
+      // queryTime", but its remainder (b2's update) is gone, so naively replaying from
+      // sh1 would silently omit b2.
+      await mutateDoc(
+        pool,
+        doc.id,
+        "user",
+        (ydoc) => {
+          ydoc.getMap("blocks").set("b3", new Y.Map());
+        },
+        1,
+      );
+
+      await expect(docStore.openVersionAt(item.id, queryTime)).rejects.toBeInstanceOf(ValidationError);
+    });
+
     it("openVersionAt on an item with no doc returns null", async () => {
       const item = await makeItem();
       expect(await docStore.openVersionAt(item.id, new Date())).toBeNull();

@@ -61,14 +61,15 @@ export async function handleDocHistoryCleanupTask(pool: Pool): Promise<void> {
  * full log from document creation (issue #23, point 6).
  *
  * `compact()` (docPersistence.ts) always drops a checkpoint at the moment it merges
- * and deletes `doc_updates` rows, so any `at` at or after a doc's first-ever
- * checkpoint reconstructs correctly. The one window this can't recover is `at` falling
- * strictly between a doc's creation and its first-ever checkpoint, if that first
- * checkpoint's own compaction has already deleted the intervening updates by the time
- * this is called — there is no earlier checkpoint to fall back to, by definition. That
- * case is detected below (via `doc_snapshots.updated_at`, which a compaction always
- * advances past `at`) and raises `ValidationError` instead of silently returning a doc
- * missing content that genuinely existed at `at`.
+ * and deletes `doc_updates` rows. That's not quite enough on its own: a checkpoint
+ * taken at T1 can still go stale for a query at T3 (T1 < T3) if a *later* compaction at
+ * Tc > T3 has since run — that compaction deletes every `doc_updates` row pending at
+ * Tc, including ones created between T1 and T3, leaving nothing to replay forward from
+ * T1's checkpoint even though T3 has a checkpoint "before" it. The fix is the same in
+ * both the no-checkpoint and stale-checkpoint case: any compaction that ran after `at`
+ * (visible as `doc_snapshots.updated_at > at`, since compact() always bumps it) means
+ * this reconstruction can't be trusted, so it raises `ValidationError` instead of
+ * silently returning a doc missing content that genuinely existed at `at`.
  */
 export async function openDocVersionAt(pool: Pool, docId: string, at: Date): Promise<Y.Doc> {
   return withTransaction(pool, async (client) => {
@@ -87,14 +88,18 @@ export async function openDocVersionAt(pool: Pool, docId: string, at: Date): Pro
     );
     for (const row of updateRows) Y.applyUpdate(doc, row.update);
 
-    if (!checkpointRows[0]) {
-      const { rows: snapshotRows } = await client.query<{ updated_at: Date }>(`SELECT updated_at FROM doc_snapshots WHERE doc_id = $1`, [docId]);
-      if (snapshotRows[0] && snapshotRows[0].updated_at > at) {
-        throw new ValidationError(
-          `Cannot reconstruct doc ${docId} as of ${at.toISOString()}: no checkpoint covers that time, and a compaction since has already deleted the doc_updates that would`,
-          { docId, at: at.toISOString() },
-        );
-      }
+    // A compaction that ran after `at` is a red flag regardless of whether a checkpoint
+    // was found: that compaction deletes every doc_updates row pending at the time it
+    // runs, including ones created before `at` — the exact "checkpoint sh1 before `at`,
+    // but a later compaction already swept away the updates between sh1 and `at`" gap.
+    // If no compaction later than `at` has touched doc_snapshots, the checkpoint (or
+    // lack of one) plus the surviving doc_updates rows above are the full picture.
+    const { rows: snapshotRows } = await client.query<{ updated_at: Date }>(`SELECT updated_at FROM doc_snapshots WHERE doc_id = $1`, [docId]);
+    if (snapshotRows[0] && snapshotRows[0].updated_at > at) {
+      throw new ValidationError(
+        `Cannot reconstruct doc ${docId} as of ${at.toISOString()}: a compaction after that time has already deleted doc_updates rows (and possibly superseded the checkpoint) that would cover it`,
+        { docId, at: at.toISOString() },
+      );
     }
 
     return doc;
