@@ -83,6 +83,13 @@ describe("docs (CRDT layer)", () => {
       expect(await docStore.listBlocks(item.id)).toHaveLength(1);
     });
 
+    it("a caller-supplied field cannot overwrite the reserved sys: identity fields", async () => {
+      const item = await makeItem();
+      await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph", fields: { "sys:id": "spoofed", "sys:flavour": "spoofed" } }, "user");
+      const b1 = await docStore.getBlock(item.id, "b1");
+      expect(b1).toMatchObject({ "sys:id": "b1", "sys:flavour": "paragraph" });
+    });
+
     it("rejects block operations against a canvas doc", async () => {
       const item = await makeItem();
       await docStore.putCanvasElement(item.id, { id: "e1", type: "shape", xywh: [0, 0, 10, 10], index: "a0" }, "user");
@@ -102,6 +109,13 @@ describe("docs (CRDT layer)", () => {
 
       await docStore.deleteCanvasElement(item.id, "e1", "user");
       expect(await docStore.getCanvasElement(item.id, "e1")).toBeNull();
+    });
+
+    it("a caller-supplied field cannot overwrite the required id/type fields", async () => {
+      const item = await makeItem();
+      await docStore.putCanvasElement(item.id, { id: "e1", type: "shape", xywh: [0, 0, 1, 1], index: "a0", fields: { id: "spoofed", type: "text" } }, "user");
+      const el = await docStore.getCanvasElement(item.id, "e1");
+      expect(el).toMatchObject({ id: "e1", type: "shape" });
     });
   });
 
@@ -290,6 +304,31 @@ describe("docs (CRDT layer)", () => {
 
       const version = await docStore.openVersionAt(item.id, new Date());
       expect(version?.blocks?.map((b) => b["sys:id"])).toEqual(["b1"]);
+    });
+
+    it("openVersionAt raises a clear error instead of silently returning wrong content for a time inside an already-compacted, never-checkpointed window", async () => {
+      const item = await makeItem();
+      await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "user");
+      const doc = await docStore.getDoc(item.id);
+      if (!doc) throw new Error("doc not created");
+
+      const beforeCompaction = new Date();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Force a compaction with no preceding checkpoint (a low threshold, crossed by a
+      // single further write) — this deletes the doc_updates row for "b1" and drops the
+      // *only* checkpoint after `beforeCompaction`, so that timestamp becomes unrecoverable.
+      await mutateDoc(
+        pool,
+        doc.id,
+        "user",
+        (ydoc) => {
+          ydoc.getMap("blocks").set("b2", new Y.Map());
+        },
+        1,
+      );
+
+      await expect(docStore.openVersionAt(item.id, beforeCompaction)).rejects.toBeInstanceOf(ValidationError);
     });
 
     it("openVersionAt on an item with no doc returns null", async () => {

@@ -28,6 +28,17 @@ export interface DocVersion {
  * deliberate design, not unified into one consistency model). Every write here goes
  * through this factory, mirroring the choke-point's single-writer discipline for its
  * own tables.
+ *
+ * The `origin: CreatedBy` accepted by every write below (including `"ai_agent"`) is an
+ * explicit, issue-scoped exception to the state-writes skill's "agent code never
+ * writes state directly, only proposes" rule — the same class of exception that rule
+ * already carves out for "the issue that introduces the choke-point itself". Issue
+ * #23, point 4, steps 3-5 explicitly designs a direct agent write path (load doc,
+ * `doc.transact(fn, 'ai_agent')`, persist the resulting update), with `created_by`
+ * attribution as the audit mechanism in place of an approval-queue/`confirm` flow that
+ * doesn't exist yet in this codebase (agent-runtime is still an empty stub). Once an
+ * approval queue exists for CRDT docs, agent-originated writes should route through it
+ * like everything else; until then, this is the sanctioned mechanism.
  */
 export function createDocStore(pool: Pool) {
   return {

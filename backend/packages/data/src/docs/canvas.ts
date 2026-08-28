@@ -39,13 +39,16 @@ export function putCanvasElement(doc: Y.Doc, input: CanvasElementInput): void {
     element = new Y.Map();
     elements.set(input.id, element);
   }
+  // fields first, required fields last — a caller-supplied field must never be able to
+  // overwrite id/type/xywh/index (e.g. fields: { id: "wrong" }), or the element's
+  // identity stops matching its own map key.
+  for (const [key, value] of Object.entries(input.fields ?? {})) {
+    element.set(key, value);
+  }
   element.set("id", input.id);
   element.set("type", input.type);
   element.set("xywh", input.xywh);
   element.set("index", input.index);
-  for (const [key, value] of Object.entries(input.fields ?? {})) {
-    element.set(key, value);
-  }
 }
 
 export function getCanvasElement(doc: Y.Doc, elementId: string): CanvasElementData | null {

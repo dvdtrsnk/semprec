@@ -1,6 +1,7 @@
 import * as Y from "yjs";
 import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
+import { ValidationError } from "../errors.js";
 import type { CreatedBy } from "../types.js";
 import { loadDoc, DEFAULT_HISTORY_RETENTION_MS } from "./docPersistence.js";
 
@@ -48,12 +49,15 @@ export async function handleDocHistoryCleanupTask(pool: Pool): Promise<void> {
  * remainder replayed from `doc_updates` between the checkpoint and `at` — never the
  * full log from document creation (issue #23, point 6).
  *
- * Correctness depends on checkpoints being taken more often than compaction merges
- * `doc_updates` away: once a run of updates has been folded into `doc_snapshots` by
- * compaction, only a checkpoint taken before that compaction can still recover the
- * state as it stood partway through that run. This is the tradeoff the issue's design
- * accepts by introducing `doc_snapshot_history` as a periodic-checkpoint mechanism
- * rather than a full audit log.
+ * `compact()` (docPersistence.ts) always drops a checkpoint at the moment it merges
+ * and deletes `doc_updates` rows, so any `at` at or after a doc's first-ever
+ * checkpoint reconstructs correctly. The one window this can't recover is `at` falling
+ * strictly between a doc's creation and its first-ever checkpoint, if that first
+ * checkpoint's own compaction has already deleted the intervening updates by the time
+ * this is called — there is no earlier checkpoint to fall back to, by definition. That
+ * case is detected below (via `doc_snapshots.updated_at`, which a compaction always
+ * advances past `at`) and raises `ValidationError` instead of silently returning a doc
+ * missing content that genuinely existed at `at`.
  */
 export async function openDocVersionAt(pool: Pool, docId: string, at: Date): Promise<Y.Doc> {
   return withTransaction(pool, async (client) => {
@@ -71,6 +75,16 @@ export async function openDocVersionAt(pool: Pool, docId: string, at: Date): Pro
       [docId, at],
     );
     for (const row of updateRows) Y.applyUpdate(doc, row.update);
+
+    if (!checkpointRows[0]) {
+      const { rows: snapshotRows } = await client.query<{ updated_at: Date }>(`SELECT updated_at FROM doc_snapshots WHERE doc_id = $1`, [docId]);
+      if (snapshotRows[0] && snapshotRows[0].updated_at > at) {
+        throw new ValidationError(
+          `Cannot reconstruct doc ${docId} as of ${at.toISOString()}: no checkpoint covers that time, and a compaction since has already deleted the doc_updates that would`,
+          { docId, at: at.toISOString() },
+        );
+      }
+    }
 
     return doc;
   });

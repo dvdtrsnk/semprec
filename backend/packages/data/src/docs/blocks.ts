@@ -33,12 +33,15 @@ export function putBlock(doc: Y.Doc, input: BlockInput): void {
     block = new Y.Map();
     blocks.set(input.id, block);
   }
-  block.set("sys:id", input.id);
-  block.set("sys:flavour", input.flavour);
-  block.set("sys:children", input.children ?? block.get("sys:children") ?? []);
+  // fields first, sys: fields last — the reserved sys: namespace must never be
+  // overwritable by a caller-supplied field (e.g. fields: { "sys:id": "other" }), or a
+  // block's identity in the map key stops matching its own sys:id.
   for (const [key, value] of Object.entries(input.fields ?? {})) {
     block.set(key, value);
   }
+  block.set("sys:id", input.id);
+  block.set("sys:flavour", input.flavour);
+  block.set("sys:children", input.children ?? block.get("sys:children") ?? []);
 }
 
 export function getBlock(doc: Y.Doc, blockId: string): BlockData | null {
