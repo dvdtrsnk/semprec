@@ -71,14 +71,17 @@ export async function handleSyncMailAccountTask(
   const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, payload.mailboxItemId));
   if (!state) throw new Error(`Mailbox ${payload.mailboxItemId} has no mail_account_sync_state row — never connected`);
 
-  // Passed `pool` directly, not wrapped in `withTransaction`: each statement
-  // (the access-log insert, then the decrypt) commits independently, so a decrypt failure
-  // (wrong key_version, corrupted ciphertext) still leaves the access-attempt logged instead
-  // of rolling it back along with the failed decryption — see externalCredentialsStore.ts.
-  const credential = await getDecryptedCredential(pool, { itemId: payload.mailboxItemId, actorType: "sync_worker", purpose: `${state.syncMode}_sync` });
-  if (!credential) throw new Error(`Mailbox ${payload.mailboxItemId} has no stored credential`);
-
   try {
+    // Passed `pool` directly, not wrapped in the reconcile's `withTransaction` below: each
+    // statement (the access-log insert, then the decrypt) commits independently, so a decrypt
+    // failure (wrong key_version, corrupted ciphertext) still leaves the access-attempt logged
+    // instead of rolling it back along with the failed decryption — see
+    // externalCredentialsStore.ts. Still inside this function's try/catch, though, so a
+    // decrypt failure is recorded via recordSyncError the same as a reconcile failure, instead
+    // of propagating unrecorded.
+    const credential = await getDecryptedCredential(pool, { itemId: payload.mailboxItemId, actorType: "sync_worker", purpose: `${state.syncMode}_sync` });
+    if (!credential) throw new Error(`Mailbox ${payload.mailboxItemId} has no stored credential`);
+
     await withTransaction(pool, async (client) => {
       const [folderProperty, attachmentsProperty, mailboxFolderProperty] = await Promise.all([
         getPropertyByKey(client, moduleIds.emailsDatabaseId, "folder"),
@@ -114,6 +117,18 @@ export async function handleSyncMailAccountTask(
         const graph = adapters.createGraphClient(payload.mailboxItemId, credential);
         await reconcileGraphAccount(client, graph, shared);
       }
+
+      // Reflects a completed pass back onto the Mailbox item itself — `syncStatus` is what a
+      // user actually sees (the mock's existing select), `mail_account_sync_state` is the
+      // worker's own bookkeeping. A prior `'error'`/`'needsReauthorization'` clears back to
+      // `'ok'` the moment a pass succeeds, same as any other self-healing status field.
+      if (moduleIds.mailboxesDatabaseId) {
+        await updateItemWithClient(
+          client,
+          { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "ok" } },
+          { allowedSystemKeys: ["syncStatus"] },
+        );
+      }
     });
   } catch (err) {
     // The reconcile pass above ran inside one transaction that this error just aborted —
@@ -132,7 +147,16 @@ export async function handleSyncMailAccountTask(
         }
       });
     } else {
-      await withTransaction(pool, (client) => recordSyncError(client, payload.mailboxItemId, message));
+      await withTransaction(pool, async (client) => {
+        await recordSyncError(client, payload.mailboxItemId, message);
+        if (moduleIds.mailboxesDatabaseId) {
+          await updateItemWithClient(
+            client,
+            { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "error" } },
+            { allowedSystemKeys: ["syncStatus"] },
+          );
+        }
+      });
     }
     throw err;
   }

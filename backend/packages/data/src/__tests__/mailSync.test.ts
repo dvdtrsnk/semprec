@@ -477,6 +477,7 @@ describe("IMAP reconcile core (issue #26)", () => {
       ],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [1, 2],
+      fetchFlagsChangedSince: async () => [],
       ...overrides,
     };
   }
@@ -594,6 +595,43 @@ describe("IMAP reconcile core (issue #26)", () => {
     );
     expect(Number(rows[0].count)).toBe(1); // one of the two original edges was removed
   });
+
+  it("a CHANGEDSINCE(FLAGS) pass merges new flags onto an already-known folder edge without touching its uid", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const emailProps = await chokePoint.listProperties(emailsId);
+    const folderProps = await chokePoint.listProperties(foldersId);
+    const folderRelationPropertyId = emailProps.find((p) => p.key === "folder")!.id;
+
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+    );
+    const params = {
+      mailboxItemId: mailbox.id,
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      foldersDatabaseId: foldersId,
+      folderRelationPropertyId,
+      mailboxFolderRelationPropertyId: folderProps.find((p) => p.key === "mailbox")!.id,
+      attachmentsRelationPropertyId: emailProps.find((p) => p.key === "attachments")!.id,
+      storage: noopStorage,
+      storageKeyPrefix: "test",
+    };
+
+    await withTransaction(pool, (client) => reconcileImapAccount(client, fakeImapClient(), params));
+
+    const client2 = fakeImapClient({
+      fetchMessagesSince: async () => [],
+      fetchFlagsChangedSince: async () => [{ uid: 1, flags: ["\\Seen"] }],
+    });
+    await withTransaction(pool, (client) => reconcileImapAccount(client, client2, params));
+
+    const { rows } = await pool.query(`SELECT metadata FROM item_relations WHERE metadata ->> 'uid' = '1'`);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].metadata).toMatchObject({ uid: 1, flags: ["\\Seen"] });
+  });
 });
 
 describe("mail sync job error handling (issue #26)", () => {
@@ -623,6 +661,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [],
+      fetchFlagsChangedSince: async () => [],
     };
 
     const adapters: MailSyncAdapterFactory = { createImapClient: async () => failingImap };

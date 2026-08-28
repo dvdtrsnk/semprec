@@ -2,7 +2,13 @@ import type { PoolClient } from "pg";
 import sanitizeHtml from "sanitize-html";
 import { createItemWithClient, createRelationWithClient } from "../chokePoint/chokePoint.js";
 import { resolveThreadId } from "./threading.js";
-import { getMailMessageMetaByMessageId, upsertMailMessageMeta, type MailEnvelope, type MailEnvelopeAddress } from "./mailMessageMetaStore.js";
+import {
+  getMailMessageMetaByMessageId,
+  getMailMessageMetaByProviderMessageId,
+  upsertMailMessageMeta,
+  type MailEnvelope,
+  type MailEnvelopeAddress,
+} from "./mailMessageMetaStore.js";
 import { ingestAttachments, type ClassifiedAttachment } from "./attachments.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import { reindexItemSearch } from "./search.js";
@@ -65,7 +71,12 @@ export interface IngestEmailMessageResult {
  * see a consistent envelope once its enqueued job actually runs.
  */
 export async function ingestEmailMessage(client: PoolClient, input: IngestEmailMessageInput): Promise<IngestEmailMessageResult> {
-  const existing = await getMailMessageMetaByMessageId(client, input.messageId);
+  // Checked in addition to message_id (issue #26: "a concurrent insert... hits a conflict
+  // instead of producing two rows" via the partial unique index on provider_message_id) — two
+  // overlapping sync passes of the same account (e.g. a retry after a crash mid-transaction)
+  // can observe the same provider message twice under a Message-ID that differs slightly
+  // between passes; without this check they'd converge only by luck.
+  const existing = (await getMailMessageMetaByMessageId(client, input.messageId)) ?? (input.providerMessageId ? await getMailMessageMetaByProviderMessageId(client, input.providerMessageId) : null);
   let itemId: string;
   let created = false;
 

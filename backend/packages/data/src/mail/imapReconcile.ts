@@ -6,7 +6,7 @@ import { ingestEmailMessage } from "./ingest.js";
 import type { FetchedMessage } from "./providerTypes.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import { ensureMailFolderSyncState, getMailFolderSyncState, recordReconcile, resetForUidvalidityChange } from "./mailFolderSyncStateStore.js";
-import { findEmailItemIdByFolderUid, listKnownFolderUids } from "./folderMembershipStore.js";
+import { findEmailItemIdByFolderUid, listKnownFolderUids, updateFolderEdgeFlags } from "./folderMembershipStore.js";
 import { ensureFolderItem } from "./folderDiscovery.js";
 import { ensureMailAccountSyncState, recordImapActivity } from "./mailAccountSyncStateStore.js";
 
@@ -33,6 +33,11 @@ export interface ImapFolderRef {
   specialUse?: string;
 }
 
+export interface ImapFlagChange {
+  uid: number;
+  flags: string[];
+}
+
 export interface ImapMailClient {
   getCapabilities(): Promise<Set<string>>;
   listFolders(): Promise<ImapFolderRef[]>;
@@ -43,6 +48,8 @@ export interface ImapMailClient {
   fetchVanishedSince(path: string, sinceModSeq: number): Promise<number[] | null>;
   /** Every UID currently in the folder — the no-QRESYNC deletion-detection fallback (a full UID diff against what this folder's edges already know, see folderMembershipStore.ts). */
   fetchAllUids(path: string): Promise<number[]>;
+  /** `UID FETCH ... CHANGEDSINCE <modseq> (FLAGS)` (issue #26) — flag-only changes (e.g. read elsewhere) on messages this folder already knows about, not just new arrivals. CONDSTORE-only servers support this without full QRESYNC. */
+  fetchFlagsChangedSince(path: string, sinceModSeq: number): Promise<ImapFlagChange[]>;
 }
 
 export interface ReconcileImapFolderParams {
@@ -91,6 +98,17 @@ export async function reconcileImapFolder(dbClient: PoolClient, imap: ImapMailCl
       storageKeyPrefix: params.storageKeyPrefix,
       ...item.message,
     });
+  }
+
+  // CONDSTORE-only servers (no QRESYNC) still support CHANGEDSINCE(FLAGS) — this is
+  // deliberately gated on CONDSTORE alone, not folded into the QRESYNC-only VANISHED check
+  // below, since the two extensions are supported independently (issue #26: "Not all servers
+  // support this... generic IMAP without CONDSTORE falls back to a full reconcile").
+  if (capabilities.has("CONDSTORE") && state.highestmodseq) {
+    const changedFlags = await imap.fetchFlagsChangedSince(params.folderPath, Number(state.highestmodseq));
+    for (const change of changedFlags) {
+      await updateFolderEdgeFlags(dbClient, relationDefinition.id, params.folderItemId, change.uid, change.flags);
+    }
   }
 
   const supportsQresync = capabilities.has("QRESYNC");

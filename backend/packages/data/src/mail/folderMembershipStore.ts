@@ -26,3 +26,27 @@ export async function listKnownFolderUids(client: Queryable, relationDefinitionI
   );
   return rows.map((row) => Number(row.uid));
 }
+
+/**
+ * Merges `flags` into an already-known folder edge's metadata alongside its `uid` (issue #26:
+ * `UID FETCH ... CHANGEDSINCE <modseq> (FLAGS)` — a flag-only change on a message this folder
+ * already knows about, e.g. read elsewhere). A `NULL` result from `findEmailItemIdByFolderUid`
+ * (the message isn't known here yet — a race with this same pass's own new-message fetch, or
+ * simply not synced yet) is a silent no-op: the next full reconcile picks up its flags along
+ * with everything else once the message itself is ingested, there's nothing to merge onto yet.
+ */
+export async function updateFolderEdgeFlags(
+  client: Queryable,
+  relationDefinitionId: string,
+  folderItemId: string,
+  uid: number,
+  flags: string[],
+): Promise<void> {
+  const emailItemId = await findEmailItemIdByFolderUid(client, relationDefinitionId, folderItemId, uid);
+  if (!emailItemId) return;
+  await client.query(
+    `UPDATE item_relations SET metadata = metadata || jsonb_build_object('flags', $3::text[])
+     WHERE relation_definition_id = $1 AND ((item_a = $2 AND item_b = $4) OR (item_a = $4 AND item_b = $2))`,
+    [relationDefinitionId, folderItemId, flags, emailItemId],
+  );
+}

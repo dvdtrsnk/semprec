@@ -1,7 +1,7 @@
 import type { Readable } from "node:stream";
 import { ImapFlow, type FetchMessageObject, type MessageStructureObject } from "imapflow";
 import type { ClassifiedAttachment } from "./attachments.js";
-import type { ImapFetchedMessage, ImapFolderRef, ImapFolderSelection, ImapMailClient } from "./imapReconcile.js";
+import type { ImapFetchedMessage, ImapFlagChange, ImapFolderRef, ImapFolderSelection, ImapMailClient } from "./imapReconcile.js";
 import type { FetchedMessage } from "./providerTypes.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 
@@ -189,5 +189,14 @@ export class ImapFlowMailClient implements ImapMailClient {
     await this.client.mailboxOpen(path);
     const uids = await this.client.search({ all: true }, { uid: true });
     return uids === false ? [] : uids;
+  }
+
+  async fetchFlagsChangedSince(path: string, sinceModSeq: number): Promise<ImapFlagChange[]> {
+    await this.client.mailboxOpen(path);
+    const changes: ImapFlagChange[] = [];
+    for await (const raw of this.client.fetch("1:*", { uid: true, flags: true }, { uid: true, changedSince: BigInt(sinceModSeq) })) {
+      changes.push({ uid: raw.uid, flags: [...(raw.flags ?? [])] });
+    }
+    return changes;
   }
 }

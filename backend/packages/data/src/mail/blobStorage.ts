@@ -3,7 +3,7 @@ import { createWriteStream } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
-import type { Readable } from "node:stream";
+import { Transform, type Readable } from "node:stream";
 
 /**
  * Where an attachment's bytes actually land — swappable so a later ops issue can supply a
@@ -36,12 +36,20 @@ export class LocalFsBlobStorageWriter implements BlobStorageWriter {
 
     const hash = createHash("sha256");
     let byteSize = 0;
-    source.on("data", (chunk: Buffer) => {
-      hash.update(chunk);
-      byteSize += chunk.length;
+    // A Transform in the pipeline itself (not a bare 'data' listener racing pipeline's own
+    // consumption of `source`) ties hash/size accounting to exactly the bytes `pipeline`
+    // actually forwarded — if the write side fails partway, `pipeline` rejects before this
+    // function returns byteSize/contentHash at all, instead of the two ever silently
+    // disagreeing about how much was written.
+    const hasher = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        hash.update(chunk);
+        byteSize += chunk.length;
+        callback(null, chunk);
+      },
     });
 
-    await pipeline(source, createWriteStream(path));
+    await pipeline(source, hasher, createWriteStream(path));
     return { byteSize, contentHash: hash.digest("hex") };
   }
 
