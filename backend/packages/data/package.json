@@ -12,6 +12,7 @@
     "@semprec/queue": "workspace:*",
     "luxon": "^3.7.2",
     "pg": "^8.23.0",
+    "yjs": "^13.6.32",
     "zod": "^4.1.11"
   },
   "devDependencies": {

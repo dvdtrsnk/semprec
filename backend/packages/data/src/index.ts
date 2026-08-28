@@ -50,3 +50,23 @@ export { seedSystem, PROJECTS_MODULE_ID } from "./seed/seedSystem.js";
 export * from "./systemSettings.js";
 export { createCoreTaskList, CORE_CRONTAB } from "./worker.js";
 export * from "./realtimeHook.js";
+
+export { createDocStore, type DocStore, type DocVersion } from "./docs/docStore.js";
+export type { BlockInput, BlockData } from "./docs/blocks.js";
+export { CANVAS_ELEMENT_TYPES, type CanvasElementType, type CanvasElementInput, type CanvasElementData } from "./docs/canvas.js";
+export {
+  loadDoc as loadYDoc,
+  mutateDoc as mutateYDoc,
+  DEFAULT_COMPACTION_THRESHOLD,
+  runCompactionSweep,
+  handleDocCompactionSweepTask,
+} from "./docs/docPersistence.js";
+export {
+  DEFAULT_HISTORY_RETENTION_MS,
+  squashDocHistory,
+  runHistorySquashSweep,
+  handleDocHistorySquashTask,
+  cleanupExpiredDocHistory,
+  handleDocHistoryCleanupTask,
+  openDocVersionAt,
+} from "./docs/docHistory.js";

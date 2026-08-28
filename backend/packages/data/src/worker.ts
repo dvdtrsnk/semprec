@@ -3,6 +3,8 @@ import { CORE_TASK_NAMES, type TaskList } from "@semprec/queue";
 import { handleHeartbeatSweepTask, createHeartbeatFireTask } from "./scheduler/sweep.js";
 import { handleRollupRecomputeTask, handleRollupRecomputeFullTask } from "./rollup/recompute.js";
 import { handlePropertyTypeMigrationTask } from "./migrationJob/propertyTypeMigration.js";
+import { handleDocCompactionSweepTask } from "./docs/docPersistence.js";
+import { handleDocHistorySquashTask, handleDocHistoryCleanupTask } from "./docs/docHistory.js";
 import type { ActionRegistry } from "./scheduler/actions.js";
 import type { PropertyType } from "./types.js";
 import { PROPERTY_TYPES } from "./types.js";
@@ -26,7 +28,11 @@ function requirePropertyType(payload: unknown, field: string): PropertyType {
  * CORE_CRONTAB, taskList: createCoreTaskList(...), ... })`) is for the services/
  * process a later issue stands up; this constant is the ready-to-use entry for it.
  */
-export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}\n`;
+export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
+*/5 * * * * ${CORE_TASK_NAMES.DOC_COMPACTION_SWEEP}
+0 3 * * * ${CORE_TASK_NAMES.DOC_HISTORY_SQUASH}
+15 3 * * * ${CORE_TASK_NAMES.DOC_HISTORY_CLEANUP}
+`;
 
 /** Composes every core task handler this issue implements into one graphile-worker TaskList. */
 export function createCoreTaskList(pool: Pool, actionRegistry: ActionRegistry): TaskList {
@@ -46,6 +52,15 @@ export function createCoreTaskList(pool: Pool, actionRegistry: ActionRegistry): 
         propertyId: requireString(payload, "propertyId"),
         fromType: requirePropertyType(payload, "fromType"),
       });
+    },
+    [CORE_TASK_NAMES.DOC_COMPACTION_SWEEP]: async () => {
+      await handleDocCompactionSweepTask(pool);
+    },
+    [CORE_TASK_NAMES.DOC_HISTORY_SQUASH]: async () => {
+      await handleDocHistorySquashTask(pool);
+    },
+    [CORE_TASK_NAMES.DOC_HISTORY_CLEANUP]: async () => {
+      await handleDocHistoryCleanupTask(pool);
     },
   };
 }
