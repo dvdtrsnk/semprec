@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
-import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { createRelationWithClient, deleteRelationWithClient, updateItemWithClient } from "../chokePoint/chokePoint.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
-import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
+import { getRelationDefinitionByPropertyId } from "../chokePoint/relationsStore.js";
 import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import type { PermissionManifest } from "../manifest/permissionManifest.js";
 import { EMAIL_INGEST_ALLOWED_SYSTEM_KEYS, formatAddress, formatAddressList } from "./ingest.js";
 import { findFolderBySpecialPurpose } from "./folderDiscovery.js";
-import { upsertMailMessageMeta, type MailEnvelope, type MailEnvelopeAddress } from "./mailMessageMetaStore.js";
+import { getMailMessageMetaByItemId, upsertMailMessageMeta, type MailEnvelope, type MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import type { MailSmtpClient } from "./smtpClient.js";
 
 /**
@@ -89,20 +89,23 @@ function generateOutgoingMessageId(fromAddress: string): string {
   return `<${randomUUID()}@${domainOf(fromAddress)}>`;
 }
 
-/** Drops this item's membership in any folder with the given `specialPurpose` — used to remove the Drafts edge once a draft becomes Sent. */
+/** Drops this item's membership in any folder with the given `specialPurpose` — used to remove the Drafts edge once a draft becomes Sent. Filters by `specialPurpose` in SQL (like `findFolderBySpecialPurpose`) rather than fetching every linked folder item to check it in JS. */
 async function unlinkFromFoldersWithSpecialPurpose(
   client: PoolClient,
   input: { foldersDatabaseId: string; folderRelationPropertyId: string; itemId: string; specialPurpose: string },
 ): Promise<void> {
   const reldef = await getRelationDefinitionByPropertyId(client, input.folderRelationPropertyId);
   if (!reldef) return;
-  const edges = await listRelationsForItem(client, reldef.id, input.itemId);
-  for (const edge of edges) {
-    const folderId = otherSide(edge, input.itemId);
-    const folder = await getItemById(client, input.foldersDatabaseId, folderId);
-    if (folder?.properties.specialPurpose === input.specialPurpose) {
-      await deleteRelationWithClient(client, { relationPropertyId: input.folderRelationPropertyId, itemId: input.itemId, targetItemId: folderId });
-    }
+  const { rows } = await client.query<{ folder_id: string }>(
+    `SELECT CASE WHEN r.item_a = $2 THEN r.item_b ELSE r.item_a END AS folder_id
+     FROM item_relations r
+     JOIN items f ON f.id = CASE WHEN r.item_a = $2 THEN r.item_b ELSE r.item_a END
+     WHERE r.relation_definition_id = $1 AND (r.item_a = $2 OR r.item_b = $2)
+       AND f.database_id = $3 AND f.properties ->> 'specialPurpose' = $4`,
+    [reldef.id, input.itemId, input.foldersDatabaseId, input.specialPurpose],
+  );
+  for (const row of rows) {
+    await deleteRelationWithClient(client, { relationPropertyId: input.folderRelationPropertyId, itemId: input.itemId, targetItemId: row.folder_id });
   }
 }
 
@@ -123,8 +126,17 @@ export async function sendDraftEmail(
 ): Promise<SendEmailResult> {
   assertEmailSendAuthorized(input.actor);
 
-  const draft = await withTransaction(pool, (client) => getItemById(client, moduleIds.emailsDatabaseId, input.draftItemId));
+  // `mail_message_meta.item_id` is this table's primary key (one meta row per Email item) — an
+  // existing row here means this draft item already went through the send path below (which
+  // is the only writer that ever gives a draft its first meta row). Checked before the SMTP
+  // call, not just before the final transaction, so a retried/duplicated call (client retry
+  // after a timeout, a double-click) never submits the same message twice.
+  const [draft, existingMeta] = await withTransaction(pool, async (client) => [
+    await getItemById(client, moduleIds.emailsDatabaseId, input.draftItemId),
+    await getMailMessageMetaByItemId(client, input.draftItemId),
+  ]);
   if (!draft) throw new NotFoundError(`Draft ${input.draftItemId} not found`);
+  if (existingMeta) throw new ConflictError(`Draft ${input.draftItemId} was already sent (message_id ${existingMeta.messageId})`);
 
   const sentFolderItemId = await withTransaction(pool, (client) =>
     findFolderBySpecialPurpose(client, {

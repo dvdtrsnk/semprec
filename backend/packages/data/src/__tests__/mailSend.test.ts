@@ -39,6 +39,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
   let folderRelationPropertyId: string;
   let mailboxFolderRelationPropertyId: string;
   let mailboxId: string;
+  let projectsId: string;
   let emailProjectId: string;
   let moduleIds: SendEmailModuleIds;
 
@@ -57,7 +58,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     folderRelationPropertyId = emailProps.find((p) => p.key === "folder")!.id;
     mailboxFolderRelationPropertyId = folderProps.find((p) => p.key === "mailbox")!.id;
 
-    const projectsId = await databaseIdFor("projects");
+    projectsId = await databaseIdFor("projects");
     const { rows: emailProjectRows } = await pool.query<{ id: string }>(
       `SELECT id FROM items WHERE database_id = $1 AND properties ->> 'name' = 'Email'`,
       [projectsId],
@@ -127,6 +128,14 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
 
   it("rejects a direct write to an owner:'system' Emails property through the generic create path even for drafting", async () => {
     await expect(chokePoint.createItem({ databaseId: emailsId, properties: { name: "hi" } })).rejects.toMatchObject({ name: "ForbiddenError" });
+  });
+
+  it("rejects a direct write to Projects.emailSendAutonomous through the generic update path — only direct DB access can grant it", async () => {
+    await expect(
+      chokePoint.updateItem({ databaseId: projectsId, itemId: emailProjectId, propertiesPatch: { emailSendAutonomous: true } }),
+    ).rejects.toMatchObject({ name: "ForbiddenError" });
+    const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, emailProjectId));
+    expect(manifest.capabilities.email.send.autonomous).toBe(false);
   });
 
   it("a user actor is always authorized to send, no manifest needed", () => {
@@ -199,6 +208,27 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       [folderRelationPropertyId, draft.id, draftsId],
     );
     expect(draftRelation).toHaveLength(0);
+
+    // A retried/duplicated call for the same already-sent draft (client retry after a
+    // timeout, a double-click) must not submit the message a second time.
+    const secondSmtp = fakeSmtpClient();
+    await expect(
+      sendDraftEmail(
+        pool,
+        {
+          mailboxItemId: mailboxId,
+          draftItemId: draft.id,
+          actor: { type: "user" },
+          from: { address: "me@example.com" },
+          to: [{ address: "bob@example.com" }],
+          subject: "Hello",
+          bodyText: "hi bob",
+        },
+        moduleIds,
+        { createSmtpClient: async () => secondSmtp },
+      ),
+    ).rejects.toMatchObject({ name: "ConflictError" });
+    expect(secondSmtp.sent).toHaveLength(0);
   });
 
   it("an ungranted agent actor gets a 403, no SMTP call, and the draft (folder membership + missing meta) is left unchanged", async () => {
