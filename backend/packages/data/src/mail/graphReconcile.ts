@@ -58,6 +58,8 @@ export interface ReconcileGraphAccountParams {
   attachmentsRelationPropertyId: string;
   storage: BlobStorageWriter;
   storageKeyPrefix: string;
+  /** This mailbox's registered addresses (`Mailboxes.addresses`) — deliveredToAddress's alias-fallback precedence (mail/deliveredTo.ts, issue #93). Defaults to `[]`. */
+  mailboxAliases?: string[];
 }
 
 /**
@@ -124,6 +126,7 @@ export async function reconcileGraphAccount(dbClient: PoolClient, graph: GraphMa
       providerMessageId: change.id,
       storage: params.storage,
       storageKeyPrefix: params.storageKeyPrefix,
+      mailboxAliases: params.mailboxAliases,
       ...change.message,
     });
 

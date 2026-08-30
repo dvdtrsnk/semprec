@@ -12,6 +12,9 @@ export interface MailEnvelope {
   bcc?: MailEnvelopeAddress[];
 }
 
+export type MailMessageKind = "message" | "dsn";
+export type MailMessageMigrationStatus = "stable" | "partial" | "done";
+
 export interface MailMessageMetaRow {
   itemId: string;
   messageId: string;
@@ -21,6 +24,14 @@ export interface MailMessageMetaRow {
   providerThreadId: string | null;
   providerMessageId: string | null;
   envelope: MailEnvelope;
+  /** Resolved once, at ingest, by mail/deliveredTo.ts's precedence rule — never recomputed. */
+  deliveredToAddress: string | null;
+  /** 'dsn' = a multipart/report;report-type=delivery-status bounce/failure notification, distinguished from an ordinary human reply (issue #93). */
+  messageKind: MailMessageKind;
+  /** For a DSN only: the Message-ID (from References/In-Reply-To) of the outgoing message it reports on. */
+  dsnOriginalMessageId: string | null;
+  /** 'stable' = a normal ingest; 'partial'/'done' = produced by the legacy-Emails backfill job (migrationJob/mailLegacyEmailMigration.ts). */
+  migrationStatus: MailMessageMigrationStatus;
 }
 
 function mapRow(row: {
@@ -32,6 +43,10 @@ function mapRow(row: {
   provider_thread_id: string | null;
   provider_message_id: string | null;
   envelope: MailEnvelope;
+  delivered_to_address: string | null;
+  message_kind: MailMessageKind;
+  dsn_original_message_id: string | null;
+  migration_status: MailMessageMigrationStatus;
 }): MailMessageMetaRow {
   return {
     itemId: row.item_id,
@@ -42,10 +57,16 @@ function mapRow(row: {
     providerThreadId: row.provider_thread_id,
     providerMessageId: row.provider_message_id,
     envelope: row.envelope ?? {},
+    deliveredToAddress: row.delivered_to_address,
+    messageKind: row.message_kind,
+    dsnOriginalMessageId: row.dsn_original_message_id,
+    migrationStatus: row.migration_status,
   };
 }
 
-const COLUMNS = 'item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope';
+const COLUMNS =
+  'item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope, ' +
+  "delivered_to_address, message_kind, dsn_original_message_id, migration_status";
 
 export interface UpsertMailMessageMetaInput {
   itemId: string;
@@ -56,6 +77,10 @@ export interface UpsertMailMessageMetaInput {
   providerThreadId?: string | null;
   providerMessageId?: string | null;
   envelope: MailEnvelope;
+  deliveredToAddress?: string | null;
+  messageKind?: MailMessageKind;
+  dsnOriginalMessageId?: string | null;
+  migrationStatus?: MailMessageMigrationStatus;
 }
 
 /**
@@ -67,12 +92,15 @@ export interface UpsertMailMessageMetaInput {
  */
 export async function upsertMailMessageMeta(client: Queryable, input: UpsertMailMessageMetaInput): Promise<MailMessageMetaRow> {
   const { rows } = await client.query(
-    `INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+    `INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope,
+                                     delivered_to_address, message_kind, dsn_original_message_id, migration_status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12)
      ON CONFLICT (message_id) DO UPDATE SET
        thread_id = COALESCE(EXCLUDED.thread_id, mail_message_meta.thread_id),
        provider_thread_id = COALESCE(EXCLUDED.provider_thread_id, mail_message_meta.provider_thread_id),
-       provider_message_id = COALESCE(EXCLUDED.provider_message_id, mail_message_meta.provider_message_id)
+       provider_message_id = COALESCE(EXCLUDED.provider_message_id, mail_message_meta.provider_message_id),
+       delivered_to_address = COALESCE(EXCLUDED.delivered_to_address, mail_message_meta.delivered_to_address),
+       dsn_original_message_id = COALESCE(EXCLUDED.dsn_original_message_id, mail_message_meta.dsn_original_message_id)
      RETURNING ${COLUMNS}`,
     [
       input.itemId,
@@ -83,6 +111,10 @@ export async function upsertMailMessageMeta(client: Queryable, input: UpsertMail
       input.providerThreadId ?? null,
       input.providerMessageId ?? null,
       JSON.stringify(input.envelope),
+      input.deliveredToAddress ?? null,
+      input.messageKind ?? "message",
+      input.dsnOriginalMessageId ?? null,
+      input.migrationStatus ?? "stable",
     ],
   );
   return mapRow(rows[0]);

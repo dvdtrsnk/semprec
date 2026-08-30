@@ -6,6 +6,7 @@ import { getMailMessageMetaByMessageId, upsertMailMessageMeta, type MailEnvelope
 import { ingestAttachments, type ClassifiedAttachment } from "./attachments.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import { reindexItemSearch } from "./search.js";
+import { resolveDeliveredToAddress } from "./deliveredTo.js";
 
 function formatAddress(address: MailEnvelopeAddress): string {
   return address.name ? `${address.name} <${address.address}>` : address.address;
@@ -44,6 +45,14 @@ export interface IngestEmailMessageInput {
   attachments: ClassifiedAttachment[];
   storage: BlobStorageWriter;
   storageKeyPrefix: string;
+  /** This mailbox's registered addresses (`Mailboxes.addresses`) — the alias-fallback and primary-address steps of deliveredToAddress's precedence rule (mail/deliveredTo.ts). Defaults to `[]` for direct test calls that don't exercise that fallback. */
+  mailboxAliases?: string[];
+  /** Raw deliveredToAddress candidates (mail/deliveredTo.ts) — see FetchedMessage's header note (providerTypes.ts). */
+  deliveredToHeaders?: string[];
+  xOriginalTo?: string | null;
+  envelopeTo?: string | null;
+  /** True for a multipart/report;report-type=delivery-status DSN/bounce (mail/dsn.ts) — distinguished from an ordinary human reply. */
+  isDsn?: boolean;
 }
 
 export interface IngestEmailMessageResult {
@@ -96,6 +105,22 @@ export async function ingestEmailMessage(client: PoolClient, input: IngestEmailM
     itemId = item.id;
     created = true;
 
+    const deliveredToAddress = resolveDeliveredToAddress({
+      candidates: {
+        deliveredToHeaders: input.deliveredToHeaders ?? [],
+        xOriginalTo: input.xOriginalTo,
+        envelopeTo: input.envelopeTo,
+      },
+      structuredTo: input.envelope.to ?? [],
+      structuredCc: input.envelope.cc ?? [],
+      mailboxAliases: input.mailboxAliases ?? [],
+    });
+
+    // RFC 3464: a DSN's own References/In-Reply-To name the outgoing message it reports on —
+    // the same ancestor threading.ts just resolved from, reused here as "the original message"
+    // rather than a second parsing rule for the identical header.
+    const dsnOriginalMessageId = input.isDsn ? (input.inReplyTo ?? input.references?.[input.references.length - 1] ?? null) : null;
+
     await upsertMailMessageMeta(client, {
       itemId,
       messageId: input.messageId,
@@ -105,6 +130,9 @@ export async function ingestEmailMessage(client: PoolClient, input: IngestEmailM
       providerThreadId: input.providerThreadId,
       providerMessageId: input.providerMessageId,
       envelope: input.envelope,
+      deliveredToAddress: deliveredToAddress ?? null,
+      messageKind: input.isDsn ? "dsn" : "message",
+      dsnOriginalMessageId,
     });
 
     const { extractedTexts } = await ingestAttachments(client, {

@@ -58,6 +58,8 @@ export interface ReconcileGmailAccountParams {
   attachmentsRelationPropertyId: string;
   storage: BlobStorageWriter;
   storageKeyPrefix: string;
+  /** This mailbox's registered addresses (`Mailboxes.addresses`) — deliveredToAddress's alias-fallback precedence (mail/deliveredTo.ts, issue #93). Defaults to `[]`. */
+  mailboxAliases?: string[];
 }
 
 /**
@@ -138,6 +140,7 @@ export async function reconcileGmailAccount(dbClient: PoolClient, gmail: GmailMa
         providerThreadId: fetched.threadId,
         storage: params.storage,
         storageKeyPrefix: params.storageKeyPrefix,
+        mailboxAliases: params.mailboxAliases,
         ...fetched.message,
       });
       itemId = result.itemId;
