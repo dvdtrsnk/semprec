@@ -8,11 +8,12 @@ import type { BlobStorageWriter } from "./blobStorage.js";
 import { reindexItemSearch } from "./search.js";
 import { resolveDeliveredToAddress } from "./deliveredTo.js";
 
-function formatAddress(address: MailEnvelopeAddress): string {
+/** Shared with mail/draft.ts and mail/send.ts, whose draft/outgoing display fields are formatted identically to a synced message's. */
+export function formatAddress(address: MailEnvelopeAddress): string {
   return address.name ? `${address.name} <${address.address}>` : address.address;
 }
 
-function formatAddressList(list: MailEnvelopeAddress[] | undefined): string {
+export function formatAddressList(list: MailEnvelopeAddress[] | undefined): string {
   return (list ?? []).map(formatAddress).join(", ");
 }
 

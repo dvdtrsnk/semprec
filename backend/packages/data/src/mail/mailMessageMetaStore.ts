@@ -135,6 +135,16 @@ export async function getMailMessageMetaByProviderMessageId(client: Queryable, p
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
+/**
+ * Compensating delete for mail/send.ts's pre-SMTP claim: if the claim row was written but the
+ * SMTP call itself then failed, the claim must not persist — otherwise the item would look
+ * "already sent" forever with no message actually delivered, and a genuine retry could never
+ * re-claim it.
+ */
+export async function deleteMailMessageMetaByItemId(client: Queryable, itemId: string): Promise<void> {
+  await client.query(`DELETE FROM mail_message_meta WHERE item_id = $1`, [itemId]);
+}
+
 export interface MailThreadRow {
   id: string;
   subjectHint: string | null;

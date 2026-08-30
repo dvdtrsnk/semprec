@@ -43,8 +43,8 @@ export interface EmailModuleResult {
 
 /**
  * Seeds Mailboxes/Folders/Emails (issue #26's sync core: only the tables/schema and the
- * deterministic People-linking wiring — mailbox UI, sending, drafts belong to issue #27) as
- * one system project, the same class as Books/Movies (issue #25). Must run after
+ * deterministic People-linking wiring — drafts/sending belong to issue #95, the mailbox UI to
+ * issues #96-98) as one system project, the same class as Books/Movies (issue #25). Must run after
  * `seedTenDatabasesInTransaction` (needs Projects/People/Files) and after `seedLibraryModule`
  * doesn't matter relative to this — order between the two module seeds is irrelevant, both
  * only depend on the ten databases.
@@ -79,9 +79,9 @@ export async function seedEmailModuleInTransaction(
       systemActive: true,
       agents:
         "Purpose: keep synced mailboxes/folders/messages consistent and link messages to People deterministically.\n" +
-        "Allowed: read Mailboxes/Folders/Emails via the generic list/get endpoints.\n" +
-        "Not allowed: write any Mailboxes/Folders/Emails property directly — every field is owner: 'system', written only by the sync worker, which mirrors the real mailbox (source of truth stays the provider's server, not this DB).\n" +
-        "General instructions: this project has no agent-facing write surface; it exists to host the sync worker's heartbeats.",
+        "Allowed: read Mailboxes/Folders/Emails via the generic list/get endpoints; call email.draft.create freely — drafting never requires confirmation.\n" +
+        "Not allowed: write any Mailboxes/Folders/Emails property directly outside email.draft.create — every field is owner: 'system', written only by the sync worker or the draft/send path (mail/ingest.ts, mail/draft.ts, mail/send.ts). Calling email.send without this project's capabilities.email.send.autonomous grant ends in a 403; the draft is left unchanged, not queued for approval.\n" +
+        "General instructions: this project's only agent-facing write surface is drafting and (when explicitly granted) sending mail; it otherwise exists to host the sync worker's heartbeats.",
     },
   });
 
