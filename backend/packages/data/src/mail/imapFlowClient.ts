@@ -37,7 +37,7 @@ function toEnvelopeAddressList(list: MessageAddressObject[] | undefined): MailEn
  * occurrence — needed for "highest Delivered-To occurrence" (mail/deliveredTo.ts), since a
  * forwarded/relayed message can carry several.
  */
-function parseHeaderBlock(headerBuffer: Buffer | undefined): Array<{ name: string; value: string }> {
+export function parseHeaderBlock(headerBuffer: Buffer | undefined): Array<{ name: string; value: string }> {
   if (!headerBuffer) return [];
   const lines = headerBuffer.toString("utf8").replace(/\r\n/g, "\n").split("\n");
   const headers: Array<{ name: string; value: string }> = [];
@@ -52,7 +52,7 @@ function parseHeaderBlock(headerBuffer: Buffer | undefined): Array<{ name: strin
   return headers;
 }
 
-function headerValues(headers: Array<{ name: string; value: string }>, name: string): string[] {
+export function headerValues(headers: Array<{ name: string; value: string }>, name: string): string[] {
   return headers.filter((h) => h.name.toLowerCase() === name.toLowerCase()).map((h) => h.value.trim());
 }
 

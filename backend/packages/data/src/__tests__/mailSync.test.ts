@@ -36,7 +36,7 @@ import { handleMailSearchReindexSweepTask, handleSyncMailAccountTask, type MailS
 import { ensureMailAccountSyncState, getMailAccountSyncState, defaultSyncModeForProvider } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { MailReauthorizationRequiredError } from "../mail/providerTypes.js";
-import { walkBodyStructure } from "../mail/imapFlowClient.js";
+import { walkBodyStructure, parseHeaderBlock, headerValues } from "../mail/imapFlowClient.js";
 import type { MessageStructureObject } from "imapflow";
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
@@ -1379,6 +1379,34 @@ describe("mail sync job error handling (issue #26)", () => {
   });
 });
 
+describe("IMAP raw header parsing (issue #93)", () => {
+  it("preserves every occurrence of a repeated header, in the message's own top-to-bottom order", () => {
+    const buffer = Buffer.from(
+      ["Delivered-To: newest@example.com", "Delivered-To: oldest@example.com", "X-Original-To: xo@example.com", "References: <a@x> <b@x>"].join(
+        "\r\n",
+      ) + "\r\n",
+    );
+    const headers = parseHeaderBlock(buffer);
+    expect(headerValues(headers, "delivered-to")).toEqual(["newest@example.com", "oldest@example.com"]);
+    expect(headerValues(headers, "x-original-to")).toEqual(["xo@example.com"]);
+    // Header-name lookup is case-insensitive, matching RFC 5322.
+    expect(headerValues(headers, "Delivered-To")).toEqual(["newest@example.com", "oldest@example.com"]);
+  });
+
+  it("unfolds a continuation line (leading whitespace) onto the previous header's value instead of starting a new one", () => {
+    const buffer = Buffer.from(["Envelope-To: someone", "  @example.com", "Delivered-To: me@example.com"].join("\r\n") + "\r\n");
+    const headers = parseHeaderBlock(buffer);
+    expect(headerValues(headers, "envelope-to")).toEqual(["someone @example.com"]);
+    expect(headerValues(headers, "delivered-to")).toEqual(["me@example.com"]);
+  });
+
+  it("returns nothing for an absent header or an undefined buffer", () => {
+    expect(parseHeaderBlock(undefined)).toEqual([]);
+    const headers = parseHeaderBlock(Buffer.from("Delivered-To: me@example.com\r\n"));
+    expect(headerValues(headers, "x-original-to")).toEqual([]);
+  });
+});
+
 describe("deliveredToAddress precedence (issue #93)", () => {
   it("prefers the highest (first) Delivered-To occurrence over everything else", () => {
     const result = resolveDeliveredToAddress({
@@ -1710,6 +1738,58 @@ describe("legacy Emails migration (issue #93)", () => {
     expect(meta?.references).toEqual(["<parent@example.com>"]);
     expect(meta?.envelope.from?.address).toBe("alice@example.com");
     expect(meta?.envelope.to?.[0]?.address).toBe("bob@example.com");
+  });
+
+  it("falls back to its own synthetic id (migrationStatus 'partial') instead of stealing another item's mail_message_meta row when the recovered Message-ID collides", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+    const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+    const folder = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+    );
+
+    // A live-synced item already owns this exact Message-ID — plausible for pre-#26 legacy
+    // rows, which had no dedup at all.
+    const liveItem = await withTransaction(pool, (client) =>
+      ingestEmailMessage(client, {
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        folderRelationPropertyId: folderProperty.id,
+        attachmentsRelationPropertyId: attachmentsProperty.id,
+        folderItemId: folder.id,
+        messageId: "<dup1@example.com>",
+        envelope: { from: { address: "alice@example.com" } },
+        attachments: [],
+        storage: noopStorage,
+        storageKeyPrefix: "test",
+      }),
+    );
+
+    const legacyItemId = await createLegacyEmailItem(emailsId, { name: "Old subject", sender: "alice@example.com", recipients: "bob@example.com" });
+    const rawMime = Buffer.from(
+      ["From: Alice <alice@example.com>", "To: Bob <bob@example.com>", "Subject: Hi", "Message-ID: <dup1@example.com>", "", "Hello", ""].join("\r\n"),
+    );
+    const fetchRawMime: LegacyRawMimeFetcher = async (itemId) => (itemId === legacyItemId ? rawMime : null);
+
+    await runMailLegacyEmailMigrationJob(pool, emailsId, fetchRawMime);
+
+    const legacyMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
+    const liveMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, liveItem.itemId));
+
+    // The legacy item gets its own row (never null — no infinite-reprocessing hazard) under a
+    // synthetic id, and the live item's own row/identity is completely untouched.
+    expect(legacyMeta).not.toBeNull();
+    expect(legacyMeta?.itemId).toBe(legacyItemId);
+    expect(legacyMeta?.messageId).not.toBe("<dup1@example.com>");
+    expect(legacyMeta?.migrationStatus).toBe("partial");
+    expect(liveMeta?.itemId).toBe(liveItem.itemId);
+    expect(liveMeta?.messageId).toBe("<dup1@example.com>");
+
+    // Idempotency check now succeeds for the legacy item too — a retry does not loop forever.
+    const { rows } = await pool.query(`SELECT count(*) FROM mail_message_meta WHERE item_id = $1`, [legacyItemId]);
+    expect(rows[0].count).toBe("1");
   });
 
   it("is resumable: re-running the job after a partial completion never reprocesses an already-migrated row", async () => {

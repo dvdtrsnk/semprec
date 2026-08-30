@@ -3,7 +3,7 @@ import { simpleParser, type AddressObject } from "mailparser";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import type { Queryable } from "../db/pool.js";
 import { resolveThreadId } from "../mail/threading.js";
-import { upsertMailMessageMeta, type MailEnvelope, type MailEnvelopeAddress } from "../mail/mailMessageMetaStore.js";
+import { getMailMessageMetaByMessageId, upsertMailMessageMeta, type MailEnvelope, type MailEnvelopeAddress } from "../mail/mailMessageMetaStore.js";
 
 /**
  * Reads back raw MIME bytes for a legacy Emails item, when some earlier process captured
@@ -81,13 +81,27 @@ async function migrateLegacyItem(client: PoolClient, item: LegacyItemRow, fetchR
   if (rawMime) {
     const parsed = await simpleParser(rawMime);
     const references = Array.isArray(parsed.references) ? parsed.references : parsed.references ? [parsed.references] : [];
-    const messageId = parsed.messageId ?? legacyMessageId(item.id);
+    const recoveredMessageId = parsed.messageId ?? null;
+    // `upsertMailMessageMeta`'s `ON CONFLICT (message_id)` never changes `item_id` — if the
+    // recovered Message-ID already belongs to a *different* item (a live-synced duplicate of
+    // this same physical email, entirely possible for pre-#26 legacy rows with no dedup), a
+    // blind upsert would silently update that other item's row and leave this legacy item with
+    // no `mail_message_meta` of its own, which would then re-select (and re-fail) forever under
+    // this job's `LEFT JOIN ... WHERE item_id IS NULL` idempotency check. Falling back to this
+    // item's own synthetic id keeps every row's meta 1:1 with its item, at the cost of full
+    // (`'done'`) fidelity for this one collision case.
+    const existing = recoveredMessageId ? await getMailMessageMetaByMessageId(client, recoveredMessageId) : null;
+    const collided = existing !== null && existing.itemId !== item.id;
+    const messageId = recoveredMessageId && !collided ? recoveredMessageId : legacyMessageId(item.id);
     const envelope: MailEnvelope = {
       from: parsed.from?.value[0]?.address ? { name: parsed.from.value[0].name || undefined, address: parsed.from.value[0].address } : undefined,
       to: toEnvelopeAddressList(parsed.to),
       cc: toEnvelopeAddressList(parsed.cc),
       bcc: toEnvelopeAddressList(parsed.bcc),
     };
+    // Ancestor linkage (references/inReplyTo point at *other* messages' ids, never this one's
+    // own) stays intact even on a collision — only this message's own identifier needs to
+    // change to avoid stealing the other item's row.
     const threadId = await resolveThreadId(client, {
       messageId,
       inReplyTo: parsed.inReplyTo,
@@ -101,7 +115,7 @@ async function migrateLegacyItem(client: PoolClient, item: LegacyItemRow, fetchR
       references,
       threadId,
       envelope,
-      migrationStatus: "done",
+      migrationStatus: collided ? "partial" : "done",
     });
     return;
   }
