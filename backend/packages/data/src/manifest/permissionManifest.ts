@@ -23,10 +23,23 @@ export interface ManifestHeartbeat {
   rule: HeartbeatRule;
 }
 
+/**
+ * Explicit, whole-project autonomy grants — checked at call time by the relevant choke point
+ * (currently only `email.send`, mail/send.ts), never by the agent itself. `autonomous: false`
+ * is the default for every project unless a human has directly set
+ * `Projects.emailSendAutonomous` (issue #95) — that property is `owner: 'system'` with no
+ * declared writer, deliberately: granting it is a project-level authorization decision, not
+ * something exposed to the generic (agent-reachable) item-update path.
+ */
+export interface ManifestCapabilities {
+  email: { send: { autonomous: boolean } };
+}
+
 export interface PermissionManifest {
   projectItemId: string;
   databases: ManifestDatabase[];
   heartbeats: ManifestHeartbeat[];
+  capabilities: ManifestCapabilities;
 }
 
 /**
@@ -62,5 +75,13 @@ export async function generatePermissionManifest(client: PoolClient, projectItem
     rule: heartbeatRuleSchema.parse(h.rule),
   }));
 
-  return { projectItemId, databases, heartbeats };
+  const { rows: projectRows } = await client.query<{ properties: Record<string, unknown> }>(`SELECT properties FROM items WHERE id = $1`, [
+    projectItemId,
+  ]);
+  const projectProperties = projectRows[0]?.properties ?? {};
+  const capabilities: ManifestCapabilities = {
+    email: { send: { autonomous: projectProperties.emailSendAutonomous === true } },
+  };
+
+  return { projectItemId, databases, heartbeats, capabilities };
 }
