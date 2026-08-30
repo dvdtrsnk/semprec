@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, createItemWithClient, createRelationWithClient, type ChokePoint } from "../chokePoint/chokePoint.js";
@@ -1930,6 +1930,13 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
     expect(isImapConnectionLimitError(unrelated)).toBe(false);
     expect(isImapConnectionLimitError("not an error")).toBe(false);
   });
+
+  it("does not misclassify a TLS/other pre-auth closure as a connection-limit rejection just because it shares imapflow's ClosedAfterConnectTLS code", () => {
+    // imapflow assigns this same code to *any* pre-auth server closure (cert failures, a
+    // suspended account, maintenance) — only the reason text, not the code alone, may decide this.
+    const tlsFailure = Object.assign(new Error("TLS handshake error"), { code: "ClosedAfterConnectTLS", reason: "TLS certificate error" });
+    expect(isImapConnectionLimitError(tlsFailure)).toBe(false);
+  });
 });
 
 describe("per-account IMAP concurrency limiter (issue #94)", () => {
@@ -1976,6 +1983,43 @@ describe("per-account IMAP concurrency limiter (issue #94)", () => {
 
     expect(maxActiveA).toBe(1);
     expect(maxActiveB).toBe(3);
+  });
+
+  it("wakes a queued task immediately when a later call raises the account's limit, instead of waiting for an unrelated task to finish", async () => {
+    const limiter = createImapConnectionLimiter();
+    let releaseFirst: () => void = () => {};
+    const first = limiter.run("account-raise", 1, () => new Promise<void>((resolve) => (releaseFirst = resolve)));
+
+    let secondStarted = false;
+    const second = limiter.run("account-raise", 1, async () => {
+      secondStarted = true;
+    });
+
+    expect(secondStarted).toBe(false); // still queued behind `first` at the original limit of 1
+
+    // A later call for the same account raises the limit to 2 — `second` should be released
+    // right away rather than waiting for `first` to finish first.
+    await limiter.run("account-raise", 2, async () => {});
+    expect(secondStarted).toBe(true);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+  });
+
+  it("rejects a queued task that waits past the per-account timeout instead of hanging on a stalled connection forever", async () => {
+    vi.useFakeTimers();
+    try {
+      const limiter = createImapConnectionLimiter();
+      const blocked = limiter.run("account-stalled", 1, () => new Promise<void>(() => {})); // never resolves — a stuck connection
+      const queued = limiter.run("account-stalled", 1, async () => {});
+      const expectation = expect(queued).rejects.toThrow(/Timed out/);
+
+      await vi.advanceTimersByTimeAsync(3 * 60 * 1000 + 1);
+      await expectation;
+      void blocked;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

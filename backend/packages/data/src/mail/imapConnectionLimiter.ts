@@ -50,18 +50,32 @@ export interface ImapConnectionLimiter {
   run<T>(accountId: string, limit: number, task: () => Promise<T>): Promise<T>;
 }
 
+/** A stalled IMAP task (a stuck socket that never errors or completes) must not pin every later caller for this account behind it forever — a queued task gives up and rejects instead. */
+const ACCOUNT_QUEUE_WAIT_TIMEOUT_MS = 3 * 60 * 1000;
+
+interface Waiter {
+  resolve: () => void;
+  timer: NodeJS.Timeout;
+}
+
 class AccountQueue {
   private active = 0;
-  private readonly waiters: Array<() => void> = [];
+  private readonly waiters: Waiter[] = [];
   constructor(private limit: number) {}
 
   setLimit(limit: number): void {
     this.limit = limit;
+    // Raising the limit can free up slots immediately — without this, a waiter queued under
+    // the old (lower) limit would otherwise sit until an unrelated in-flight task happens to
+    // finish, even though capacity for it already exists.
+    while (this.active < this.limit && this.waiters.length > 0) {
+      this.waiters.shift()!.resolve();
+    }
   }
 
   async run<T>(task: () => Promise<T>): Promise<T> {
     if (this.active >= this.limit) {
-      await new Promise<void>((resolve) => this.waiters.push(resolve));
+      await this.waitForSlot();
     }
     this.active++;
     try {
@@ -69,9 +83,26 @@ class AccountQueue {
     } finally {
       this.active--;
       if (this.active < this.limit) {
-        this.waiters.shift()?.();
+        this.waiters.shift()?.resolve();
       }
     }
+  }
+
+  private waitForSlot(): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const waiter: Waiter = {
+        resolve: () => {
+          clearTimeout(waiter.timer);
+          resolve();
+        },
+        timer: setTimeout(() => {
+          const index = this.waiters.indexOf(waiter);
+          if (index !== -1) this.waiters.splice(index, 1);
+          reject(new Error(`Timed out after ${ACCOUNT_QUEUE_WAIT_TIMEOUT_MS}ms waiting for an IMAP connection slot for this account`));
+        }, ACCOUNT_QUEUE_WAIT_TIMEOUT_MS),
+      };
+      this.waiters.push(waiter);
+    });
   }
 }
 
