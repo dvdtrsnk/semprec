@@ -1878,7 +1878,14 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
       },
       fetch() {
         calls.push("fetch");
-        return (async function* () {})();
+        return (async function* () {
+          yield {
+            uid: 1,
+            envelope: { from: [{ address: "a@x.com" }], to: [], cc: [] },
+            bodyStructure: { type: "text/plain", part: "1" },
+            headers: Buffer.from(""),
+          };
+        })();
       },
       async messageFlagsAdd(range: string, flags: string[]) {
         calls.push(`messageFlagsAdd:${range}:${flags.join(",")}`);
@@ -1894,8 +1901,13 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
     const raw = fakeImapFlow() as unknown as { calls: string[] };
     const client = new ImapFlowMailClient(raw as unknown as ImapFlow);
 
-    await client.fetchMessagesSince("INBOX", 1);
+    const fetched = await client.fetchMessagesSince("INBOX", 1);
 
+    // Confirms the fetch actually walked into a real message's body (calling `download`) rather
+    // than trivially seeing no flag mutation because nothing was fetched at all.
+    expect(fetched).toHaveLength(1);
+    expect(fetched[0].message.bodyText).toBeDefined();
+    expect(raw.calls).toContain("download");
     expect(raw.calls.some((c) => c.startsWith("messageFlagsAdd"))).toBe(false);
   });
 
@@ -1981,8 +1993,10 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     const filesId = await databaseIdFor("files");
     const mailboxesId = await databaseIdFor("mailboxes");
 
+    // Pre-seeded to 'ok' (not left unset) so the assertion below actually proves the status
+    // gets updated on this path, rather than merely being indistinguishable from "never touched".
     const mailbox = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M", provider: "gmail" } }),
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M", provider: "gmail", syncStatus: "ok" } }, { allowedSystemKeys: ["syncStatus"] }),
     );
     await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
     await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
@@ -2011,9 +2025,10 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     // midpoint, distinguishing it from `recordSyncError`'s fixed backoff.
     expect(new Date(state!.nextExpectedActivityAt!).getTime()).toBeGreaterThan(Date.now() + 8 * 60 * 1000);
 
-    // Not an account failure — syncStatus is left exactly as it was (never initialized to 'error').
+    // Mail genuinely isn't syncing right now, so syncStatus reflects that like any other
+    // failure — it clears back to 'ok' the same way, via the next successful pass.
     const item = await withTransaction(pool, (client) => client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]));
-    expect(item.rows[0].properties.syncStatus).toBeUndefined();
+    expect(item.rows[0].properties.syncStatus).toBe("error");
   });
 
   it("routes a real IMAP connection attempt through the injected per-account connection limiter", async () => {
@@ -2056,6 +2071,48 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     );
 
     expect(runCalls).toEqual([{ accountId: mailbox.id, limit: 5 }]); // Gmail's provider default
+  });
+
+  it("uses Mailboxes.connectionLimit instead of the provider default when the user has configured one", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M", provider: "gmail", connectionLimit: 1 } }),
+    );
+    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
+    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+
+    const emptyImap: ImapMailClient = {
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+      fetchMessagesSince: async () => [],
+      fetchVanishedSince: async () => [],
+      fetchAllUids: async () => [],
+      markSeen: async () => {},
+    };
+
+    const runCalls: Array<{ accountId: string; limit: number }> = [];
+    const recordingLimiter = {
+      run: <T>(accountId: string, limit: number, task: () => Promise<T>) => {
+        runCalls.push({ accountId, limit });
+        return task();
+      },
+    };
+
+    await handleSyncMailAccountTask(
+      pool,
+      { mailboxItemId: mailbox.id },
+      { createImapClient: async () => emptyImap },
+      { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+      noopStorage,
+      recordingLimiter,
+    );
+
+    expect(runCalls).toEqual([{ accountId: mailbox.id, limit: 1 }]); // user override wins over Gmail's provider default of 5
   });
 });
 

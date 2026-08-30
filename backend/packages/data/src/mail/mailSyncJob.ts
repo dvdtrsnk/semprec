@@ -215,15 +215,22 @@ export async function handleSyncMailAccountTask(
 
     if (err instanceof MailConnectionLimitError) {
       // The provider rejected this connection purely for having too many of this account's
-      // IMAP sessions open at once — contention, not an account failure, so `syncStatus` is
-      // deliberately left untouched. Recording the backoff through the same
+      // IMAP sessions open at once — contention, not an account failure — but mail genuinely
+      // isn't syncing right now, so `syncStatus` still reflects that exactly like any other
+      // failure (and clears back to 'ok' the same way, via the next successful pass); what's
+      // different is *how* the retry is scheduled. Recording the backoff through the same
       // `next_expected_activity_at` column the sweep already reads, then returning instead of
       // rethrowing, means the next attempt comes from that one delayed sweep pass rather than
       // also stacking graphile-worker's own immediate retry on top of it — which would just
       // reopen a connection and likely hit the same limit again before it has cleared.
-      await withTransaction(pool, (client) =>
-        recordConnectionLimitBackoff(client, payload.mailboxItemId, message, connectionLimitBackoffSecondsForProvider(mailboxProvider)),
-      );
+      await withTransaction(pool, async (client) => {
+        await recordConnectionLimitBackoff(client, payload.mailboxItemId, message, connectionLimitBackoffSecondsForProvider(mailboxProvider));
+        await updateItemWithClient(
+          client,
+          { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "error" } },
+          { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
+        );
+      });
       return;
     }
 
