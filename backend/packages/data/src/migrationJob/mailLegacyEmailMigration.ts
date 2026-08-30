@@ -1,9 +1,10 @@
 import type { Pool, PoolClient } from "pg";
-import { simpleParser, type AddressObject } from "mailparser";
+import { simpleParser, type AddressObject, type StructuredHeader } from "mailparser";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
-import type { Queryable } from "../db/pool.js";
+import { withTransaction, type Queryable } from "../db/pool.js";
 import { resolveThreadId } from "../mail/threading.js";
 import { getMailMessageMetaByMessageId, upsertMailMessageMeta, type MailEnvelope, type MailEnvelopeAddress } from "../mail/mailMessageMetaStore.js";
+import { isDeliveryStatusReport } from "../mail/dsn.js";
 
 /**
  * Reads back raw MIME bytes for a legacy Emails item, when some earlier process captured
@@ -99,6 +100,12 @@ async function migrateLegacyItem(client: PoolClient, item: LegacyItemRow, fetchR
       cc: toEnvelopeAddressList(parsed.cc),
       bcc: toEnvelopeAddressList(parsed.bcc),
     };
+    // Same DSN/bounce classification ingest.ts applies at normal sync time — raw MIME gives
+    // this migration the same Content-Type mailparser already parsed, so there is no reason
+    // this path should leave every migrated DSN misclassified as an ordinary message.
+    const contentType = parsed.headers.get("content-type") as StructuredHeader | undefined;
+    const isDsn = isDeliveryStatusReport(contentType?.value, contentType?.params);
+    const dsnOriginalMessageId = isDsn ? (parsed.inReplyTo ?? references[references.length - 1] ?? null) : null;
     // Ancestor linkage (references/inReplyTo point at *other* messages' ids, never this one's
     // own) stays intact even on a collision — only this message's own identifier needs to
     // change to avoid stealing the other item's row.
@@ -115,6 +122,8 @@ async function migrateLegacyItem(client: PoolClient, item: LegacyItemRow, fetchR
       references,
       threadId,
       envelope,
+      messageKind: isDsn ? "dsn" : "message",
+      dsnOriginalMessageId,
       migrationStatus: collided ? "partial" : "done",
     });
     return;
@@ -167,10 +176,10 @@ export async function runMailLegacyEmailMigrationJob(
 ): Promise<void> {
   const pageSize = 500;
   for (;;) {
-    const client: PoolClient = await pool.connect();
+    const listClient: PoolClient = await pool.connect();
     let rows: LegacyItemRow[] = [];
     try {
-      const result = await client.query<LegacyItemRow>(
+      const result = await listClient.query<LegacyItemRow>(
         `SELECT i.id, i.properties
          FROM items i
          LEFT JOIN mail_message_meta m ON m.item_id = i.id
@@ -180,11 +189,17 @@ export async function runMailLegacyEmailMigrationJob(
         [emailsDatabaseId, pageSize],
       );
       rows = result.rows;
-      for (const row of rows) {
-        await migrateLegacyItem(client, row, fetchRawMime);
-      }
     } finally {
-      client.release();
+      listClient.release();
+    }
+
+    // Each item gets its own transaction: `migrateLegacyItem` can write both a `mail_threads`
+    // row (via resolveThreadId) and the `mail_message_meta` row that references it — on a
+    // shared auto-commit client, a failure in the second write would leave the first
+    // committed and orphaned. Per-item (not one transaction for the whole page) so one bad
+    // row can't roll back everything a page already migrated successfully.
+    for (const row of rows) {
+      await withTransaction(pool, (client) => migrateLegacyItem(client, row, fetchRawMime));
     }
     if (rows.length < pageSize) break;
   }

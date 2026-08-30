@@ -1740,6 +1740,37 @@ describe("legacy Emails migration (issue #93)", () => {
     expect(meta?.envelope.to?.[0]?.address).toBe("bob@example.com");
   });
 
+  it("classifies a DSN recovered from raw MIME as messageKind 'dsn', linked to its original message, not an ordinary reply", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const legacyItemId = await createLegacyEmailItem(emailsId, { name: "Undelivered Mail Returned to Sender", sender: "mailer-daemon@example.com", recipients: "" });
+
+    const rawMime = Buffer.from(
+      [
+        "From: Mail Delivery Subsystem <mailer-daemon@example.com>",
+        "To: me@example.com",
+        "Subject: Undelivered Mail Returned to Sender",
+        "Message-ID: <dsn-raw1@example.com>",
+        "References: <outgoing1@example.com>",
+        'Content-Type: multipart/report; report-type=delivery-status; boundary="b1"',
+        "",
+        "--b1",
+        "Content-Type: text/plain",
+        "",
+        "delivery failed",
+        "--b1--",
+        "",
+      ].join("\r\n"),
+    );
+    const fetchRawMime: LegacyRawMimeFetcher = async (itemId) => (itemId === legacyItemId ? rawMime : null);
+
+    await runMailLegacyEmailMigrationJob(pool, emailsId, fetchRawMime);
+
+    const meta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
+    expect(meta?.migrationStatus).toBe("done");
+    expect(meta?.messageKind).toBe("dsn");
+    expect(meta?.dsnOriginalMessageId).toBe("<outgoing1@example.com>");
+  });
+
   it("falls back to its own synthetic id (migrationStatus 'partial') instead of stealing another item's mail_message_meta row when the recovered Message-ID collides", async () => {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");
