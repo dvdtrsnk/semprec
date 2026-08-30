@@ -9,7 +9,12 @@ import { getDecryptedCredential } from "../credentials/externalCredentialsStore.
 import type { PermissionManifest } from "../manifest/permissionManifest.js";
 import { EMAIL_INGEST_ALLOWED_SYSTEM_KEYS, formatAddress, formatAddressList } from "./ingest.js";
 import { findFolderBySpecialPurpose } from "./folderDiscovery.js";
-import { getMailMessageMetaByItemId, upsertMailMessageMeta, type MailEnvelope, type MailEnvelopeAddress } from "./mailMessageMetaStore.js";
+import {
+  deleteMailMessageMetaByItemId,
+  upsertMailMessageMeta,
+  type MailEnvelope,
+  type MailEnvelopeAddress,
+} from "./mailMessageMetaStore.js";
 import type { MailSmtpClient } from "./smtpClient.js";
 
 /**
@@ -89,6 +94,12 @@ function generateOutgoingMessageId(fromAddress: string): string {
   return `<${randomUUID()}@${domainOf(fromAddress)}>`;
 }
 
+/** True when a Postgres error is `mail_message_meta`'s primary-key (item_id) violation — mirrors chokePoint/viewsStore.ts's own `isUniqueViolation` helper. */
+function isItemAlreadyClaimedError(err: unknown): boolean {
+  const pgErr = err as { code?: string; constraint?: string };
+  return pgErr?.code === "23505" && pgErr?.constraint === "mail_message_meta_pkey";
+}
+
 /** Drops this item's membership in any folder with the given `specialPurpose` — used to remove the Drafts edge once a draft becomes Sent. Filters by `specialPurpose` in SQL (like `findFolderBySpecialPurpose`) rather than fetching every linked folder item to check it in JS. */
 async function unlinkFromFoldersWithSpecialPurpose(
   client: PoolClient,
@@ -111,12 +122,23 @@ async function unlinkFromFoldersWithSpecialPurpose(
 
 /**
  * `email.send` (issue #95). Authorization is checked first, synchronously, before any SMTP
- * call or database write — see `assertEmailSendAuthorized`. Once authorized, submits over SMTP
- * exactly once, then optimistically finalizes the existing draft item into the mailbox's Sent
- * folder and gives it a real Message-ID via `upsertMailMessageMeta` — the same table/dedup key
- * `ingestEmailMessage` (mail/ingest.ts) checks first, so the next IMAP/Gmail/Graph reconcile
- * pass that later observes this same Message-ID in the real Sent folder converges onto this
- * item instead of duplicating it.
+ * call or database write — see `assertEmailSendAuthorized`. Once authorized, this atomically
+ * *claims* the draft for sending (see below) before ever calling SMTP, submits over SMTP, then
+ * on success finalizes the draft item into the mailbox's Sent folder; on SMTP failure it undoes
+ * the claim so a genuine retry can still send.
+ *
+ * The claim is `upsertMailMessageMeta` itself, moved to run *before* `smtp.sendMail` instead of
+ * after — `mail_message_meta.item_id` is this table's primary key (one row per Email item), so
+ * two concurrent calls for the same draft can't both win it: the loser's INSERT fails with a
+ * primary-key violation (each call's `message_id` is a fresh random UUID, so `ON CONFLICT
+ * (message_id)` never itself fires here — it's the `item_id` PK that arbitrates), which this
+ * function turns into a `ConflictError` before ever reaching SMTP. This also closes the
+ * sequential-retry version of the same race: a retry after a transient failure downstream of a
+ * successful send (the finalize transaction failing, a network partition) still finds the claim
+ * from the original call and is rejected, instead of re-sending with a brand-new Message-ID.
+ * `ingestEmailMessage` (mail/ingest.ts) checks this same table/dedup key, so the next
+ * IMAP/Gmail/Graph reconcile pass that later observes this Message-ID in the real Sent folder
+ * converges onto this item instead of duplicating it.
  */
 export async function sendDraftEmail(
   pool: Pool,
@@ -126,17 +148,8 @@ export async function sendDraftEmail(
 ): Promise<SendEmailResult> {
   assertEmailSendAuthorized(input.actor);
 
-  // `mail_message_meta.item_id` is this table's primary key (one meta row per Email item) — an
-  // existing row here means this draft item already went through the send path below (which
-  // is the only writer that ever gives a draft its first meta row). Checked before the SMTP
-  // call, not just before the final transaction, so a retried/duplicated call (client retry
-  // after a timeout, a double-click) never submits the same message twice.
-  const [draft, existingMeta] = await withTransaction(pool, async (client) => [
-    await getItemById(client, moduleIds.emailsDatabaseId, input.draftItemId),
-    await getMailMessageMetaByItemId(client, input.draftItemId),
-  ]);
+  const draft = await withTransaction(pool, (client) => getItemById(client, moduleIds.emailsDatabaseId, input.draftItemId));
   if (!draft) throw new NotFoundError(`Draft ${input.draftItemId} not found`);
-  if (existingMeta) throw new ConflictError(`Draft ${input.draftItemId} was already sent (message_id ${existingMeta.messageId})`);
 
   const sentFolderItemId = await withTransaction(pool, (client) =>
     findFolderBySpecialPurpose(client, {
@@ -156,23 +169,39 @@ export async function sendDraftEmail(
   // if decryption itself fails.
   const credential = await getDecryptedCredential(pool, { itemId: input.mailboxItemId, actorType: "smtp_send", purpose: "email_send" });
   if (!credential) throw new Error(`Mailbox ${input.mailboxItemId} has no stored credential`);
-  const smtp = await adapters.createSmtpClient(input.mailboxItemId, credential);
 
   const messageId = generateOutgoingMessageId(input.from.address);
-  await smtp.sendMail({
-    from: input.from,
-    to: input.to,
-    cc: input.cc,
-    bcc: input.bcc,
-    subject: input.subject,
-    text: input.bodyText,
-    html: input.bodyHtml,
-    messageId,
-    inReplyTo: input.inReplyTo,
-    references: input.references,
-  });
-
   const envelope: MailEnvelope = { from: input.from, to: input.to, cc: input.cc, bcc: input.bcc };
+
+  try {
+    await withTransaction(pool, (client) =>
+      upsertMailMessageMeta(client, { itemId: input.draftItemId, messageId, envelope, inReplyTo: input.inReplyTo, references: input.references }),
+    );
+  } catch (err) {
+    if (isItemAlreadyClaimedError(err)) {
+      throw new ConflictError(`Draft ${input.draftItemId} is already being sent or was already sent`);
+    }
+    throw err;
+  }
+
+  const smtp = await adapters.createSmtpClient(input.mailboxItemId, credential);
+  try {
+    await smtp.sendMail({
+      from: input.from,
+      to: input.to,
+      cc: input.cc,
+      bcc: input.bcc,
+      subject: input.subject,
+      text: input.bodyText,
+      html: input.bodyHtml,
+      messageId,
+      inReplyTo: input.inReplyTo,
+      references: input.references,
+    });
+  } catch (err) {
+    await withTransaction(pool, (client) => deleteMailMessageMetaByItemId(client, input.draftItemId));
+    throw err;
+  }
 
   return withTransaction(pool, async (client) => {
     await updateItemWithClient(
@@ -201,14 +230,6 @@ export async function sendDraftEmail(
       relationPropertyId: moduleIds.folderRelationPropertyId,
       itemId: input.draftItemId,
       targetItemId: sentFolderItemId,
-    });
-
-    await upsertMailMessageMeta(client, {
-      itemId: input.draftItemId,
-      messageId,
-      envelope,
-      inReplyTo: input.inReplyTo,
-      references: input.references,
     });
 
     return { itemId: input.draftItemId, messageId };

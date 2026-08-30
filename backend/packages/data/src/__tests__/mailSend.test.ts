@@ -231,6 +231,114 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     expect(secondSmtp.sent).toHaveLength(0);
   });
 
+  it("two genuinely concurrent sends of the same draft submit over SMTP exactly once between them", async () => {
+    const draftsId = await draftsFolderId();
+    const draft = await withTransaction(pool, (client) =>
+      createEmailDraft(client, {
+        emailsDatabaseId: emailsId,
+        folderRelationPropertyId,
+        draftsFolderItemId: draftsId,
+        subject: "Hello",
+        from: { address: "me@example.com" },
+        to: [{ address: "bob@example.com" }],
+        bodyText: "hi bob",
+      }),
+    );
+
+    const smtpA = fakeSmtpClient();
+    const smtpB = fakeSmtpClient();
+    const send = (smtp: ReturnType<typeof fakeSmtpClient>) =>
+      sendDraftEmail(
+        pool,
+        {
+          mailboxItemId: mailboxId,
+          draftItemId: draft.id,
+          actor: { type: "user" },
+          from: { address: "me@example.com" },
+          to: [{ address: "bob@example.com" }],
+          subject: "Hello",
+          bodyText: "hi bob",
+        },
+        moduleIds,
+        { createSmtpClient: async () => smtp },
+      );
+
+    const [a, b] = await Promise.allSettled([send(smtpA), send(smtpB)]);
+    const outcomes = [a, b];
+    expect(outcomes.filter((o) => o.status === "fulfilled")).toHaveLength(1);
+    expect(outcomes.filter((o) => o.status === "rejected")).toHaveLength(1);
+    const rejected = outcomes.find((o) => o.status === "rejected");
+    expect((rejected as PromiseRejectedResult).reason).toMatchObject({ name: "ConflictError" });
+
+    // The claim (mail_message_meta insert) is what arbitrates the race, before either call
+    // reaches SMTP — so at most one of the two clients should ever have sent anything.
+    expect(smtpA.sent.length + smtpB.sent.length).toBe(1);
+  });
+
+  it("undoes the send claim when SMTP itself fails, so a genuine retry can still send", async () => {
+    const draftsId = await draftsFolderId();
+    const draft = await withTransaction(pool, (client) =>
+      createEmailDraft(client, {
+        emailsDatabaseId: emailsId,
+        folderRelationPropertyId,
+        draftsFolderItemId: draftsId,
+        subject: "Hello",
+        from: { address: "me@example.com" },
+        to: [{ address: "bob@example.com" }],
+        bodyText: "hi bob",
+      }),
+    );
+
+    const failingSmtp = fakeSmtpClient({
+      async sendMail() {
+        throw new Error("SMTP server rejected the message");
+      },
+    });
+
+    await expect(
+      sendDraftEmail(
+        pool,
+        {
+          mailboxItemId: mailboxId,
+          draftItemId: draft.id,
+          actor: { type: "user" },
+          from: { address: "me@example.com" },
+          to: [{ address: "bob@example.com" }],
+          subject: "Hello",
+          bodyText: "hi bob",
+        },
+        moduleIds,
+        { createSmtpClient: async () => failingSmtp },
+      ),
+    ).rejects.toThrow(/SMTP server rejected/);
+
+    // The failed attempt's claim must not persist — the draft is neither "sent" nor stuck.
+    expect(await getMailMessageMetaByItemId(pool, draft.id)).toBeNull();
+    const { rows: draftRelation } = await pool.query(
+      `SELECT 1 FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2) AND (item_a = $3 OR item_b = $3)`,
+      [folderRelationPropertyId, draft.id, draftsId],
+    );
+    expect(draftRelation).toHaveLength(1);
+
+    const workingSmtp = fakeSmtpClient();
+    const result = await sendDraftEmail(
+      pool,
+      {
+        mailboxItemId: mailboxId,
+        draftItemId: draft.id,
+        actor: { type: "user" },
+        from: { address: "me@example.com" },
+        to: [{ address: "bob@example.com" }],
+        subject: "Hello",
+        bodyText: "hi bob",
+      },
+      moduleIds,
+      { createSmtpClient: async () => workingSmtp },
+    );
+    expect(workingSmtp.sent).toHaveLength(1);
+    expect(result.itemId).toBe(draft.id);
+  });
+
   it("an ungranted agent actor gets a 403, no SMTP call, and the draft (folder membership + missing meta) is left unchanged", async () => {
     const draftsId = await draftsFolderId();
     const draft = await withTransaction(pool, (client) =>
