@@ -66,7 +66,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     emailProjectId = emailProjectRows[0].id;
 
     mailboxId = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "Test", provider: "generic" } }),
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "Test", provider: "generic", addresses: "me@example.com" } }),
     ).then((item) => item.id);
 
     await withTransaction(pool, async (client) => {
@@ -85,7 +85,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       await createRelationWithClient(client, { relationPropertyId: mailboxFolderRelationPropertyId, itemId: sent.id, targetItemId: mailboxId });
     });
 
-    moduleIds = { emailsDatabaseId: emailsId, foldersDatabaseId: foldersId, folderRelationPropertyId, mailboxFolderRelationPropertyId };
+    moduleIds = { emailsDatabaseId: emailsId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId, folderRelationPropertyId, mailboxFolderRelationPropertyId };
 
     await storeCredential(pool, { itemId: mailboxId, credentialType: "app_password", plaintext: "s3cr3t" });
   });
@@ -130,10 +130,10 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     await expect(chokePoint.createItem({ databaseId: emailsId, properties: { name: "hi" } })).rejects.toMatchObject({ name: "ForbiddenError" });
   });
 
-  it("rejects a direct write to Projects.emailSendAutonomous through the generic update path — only direct DB access can grant it", async () => {
+  it("rejects a direct write to emailSendAutonomous through the generic update path — it isn't even a declared property, only direct DB access can grant it", async () => {
     await expect(
       chokePoint.updateItem({ databaseId: projectsId, itemId: emailProjectId, propertiesPatch: { emailSendAutonomous: true } }),
-    ).rejects.toMatchObject({ name: "ForbiddenError" });
+    ).rejects.toMatchObject({ name: "ValidationError" });
     const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, emailProjectId));
     expect(manifest.capabilities.email.send.autonomous).toBe(false);
   });
@@ -449,6 +449,40 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
         noopMailSendAdapterFactory,
       ),
     ).rejects.toThrow(/No SMTP adapter configured/);
+  });
+
+  it("rejects a From address that isn't one of the mailbox's registered addresses, before any claim or SMTP call", async () => {
+    const draftsId = await draftsFolderId();
+    const draft = await withTransaction(pool, (client) =>
+      createEmailDraft(client, {
+        emailsDatabaseId: emailsId,
+        folderRelationPropertyId,
+        draftsFolderItemId: draftsId,
+        subject: "Hello",
+        from: { address: "me@example.com" },
+        to: [{ address: "bob@example.com" }],
+      }),
+    );
+
+    const smtp = fakeSmtpClient();
+    await expect(
+      sendDraftEmail(
+        pool,
+        {
+          mailboxItemId: mailboxId,
+          draftItemId: draft.id,
+          actor: { type: "user" },
+          from: { address: "spoofed@somewhere-else.com" },
+          to: [{ address: "bob@example.com" }],
+          subject: "Hello",
+        },
+        moduleIds,
+        { createSmtpClient: async () => smtp },
+      ),
+    ).rejects.toMatchObject({ name: "ForbiddenError" });
+
+    expect(smtp.sent).toHaveLength(0);
+    expect(await getMailMessageMetaByItemId(pool, draft.id)).toBeNull();
   });
 
   it("a later IMAP-style reconcile pass observing the same generated Message-ID in Sent converges onto the same item instead of duplicating it", async () => {

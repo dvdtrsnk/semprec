@@ -26,10 +26,13 @@ export interface ManifestHeartbeat {
 /**
  * Explicit, whole-project autonomy grants — checked at call time by the relevant choke point
  * (currently only `email.send`, mail/send.ts), never by the agent itself. `autonomous: false`
- * is the default for every project unless a human has directly set
- * `Projects.emailSendAutonomous` (issue #95) — that property is `owner: 'system'` with no
- * declared writer, deliberately: granting it is a project-level authorization decision, not
- * something exposed to the generic (agent-reachable) item-update path.
+ * is the default for every project unless a human has directly set `emailSendAutonomous: true`
+ * on that project item's raw properties (issue #95) via direct DB access — deliberately *not* a
+ * property declared in Projects' schema (seed/seedTenDatabases.ts), so this stays specific to
+ * the one project (Email) that actually uses it instead of adding an unused field to every
+ * other project's row; and deliberately with no declared writer anywhere in this codebase, so
+ * granting it can never become reachable through the generic (agent-reachable) item-update
+ * path no matter what a future property declaration might otherwise allow.
  */
 export interface ManifestCapabilities {
   email: { send: { autonomous: boolean } };

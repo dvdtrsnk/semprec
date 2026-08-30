@@ -15,6 +15,8 @@ import {
   type MailEnvelope,
   type MailEnvelopeAddress,
 } from "./mailMessageMetaStore.js";
+import { parseAddressListProperty } from "./addressListParsing.js";
+import { normalizeEmailAddress } from "./personEmailIndexStore.js";
 import type { MailSmtpClient } from "./smtpClient.js";
 
 /**
@@ -58,6 +60,7 @@ export const noopMailSendAdapterFactory: MailSendAdapterFactory = {};
 export interface SendEmailModuleIds {
   emailsDatabaseId: string;
   foldersDatabaseId: string;
+  mailboxesDatabaseId: string;
   /** Emails.folder relation property id. */
   folderRelationPropertyId: string;
   /** Folders.mailbox relation property id. */
@@ -148,8 +151,25 @@ export async function sendDraftEmail(
 ): Promise<SendEmailResult> {
   assertEmailSendAuthorized(input.actor);
 
-  const draft = await withTransaction(pool, (client) => getItemById(client, moduleIds.emailsDatabaseId, input.draftItemId));
+  const [draft, mailbox] = await withTransaction(pool, async (client) => [
+    await getItemById(client, moduleIds.emailsDatabaseId, input.draftItemId),
+    await getItemById(client, moduleIds.mailboxesDatabaseId, input.mailboxItemId),
+  ]);
   if (!draft) throw new NotFoundError(`Draft ${input.draftItemId} not found`);
+
+  // Without this, any actor (including a granted-autonomous agent) could set an arbitrary
+  // `from.address` and have it go out over this mailbox's real SMTP credentials — From-header
+  // spoofing through a mailbox the caller doesn't actually control that address on. Checked
+  // against `Mailboxes.addresses` (the same registered-alias list mail/deliveredTo.ts already
+  // trusts for the inbound direction), not just the caller's say-so.
+  const mailboxAliases = parseAddressListProperty(mailbox?.properties.addresses).map(normalizeEmailAddress);
+  if (!mailboxAliases.includes(normalizeEmailAddress(input.from.address))) {
+    throw new ForbiddenError(
+      `From address ${input.from.address} is not a registered address for mailbox ${input.mailboxItemId}`,
+      { field: "from.address" },
+      "from_address_not_registered",
+    );
+  }
 
   const sentFolderItemId = await withTransaction(pool, (client) =>
     findFolderBySpecialPurpose(client, {
@@ -199,7 +219,12 @@ export async function sendDraftEmail(
       references: input.references,
     });
   } catch (err) {
-    await withTransaction(pool, (client) => deleteMailMessageMetaByItemId(client, input.draftItemId));
+    // Best-effort: the SMTP failure in `err` is the cause this call must surface — if the
+    // compensating delete itself also fails (DB down, timeout), that must not replace it, even
+    // though it does mean the claim is left in place (a subsequent attempt sees `ConflictError`
+    // rather than being able to resend immediately; a human can still clear it directly, the
+    // same "direct DB access" escape hatch this table's other invariants already rely on).
+    await withTransaction(pool, (client) => deleteMailMessageMetaByItemId(client, input.draftItemId)).catch(() => {});
     throw err;
   }
 

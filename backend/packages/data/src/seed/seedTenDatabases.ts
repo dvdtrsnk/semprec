@@ -105,15 +105,6 @@ export async function seedTenDatabasesInTransaction(
     // Present in the schema for every project; only ever set for system-module projects
     // (Email, Personal finance, ...), which can be deactivated but never deleted.
     { key: "systemActive", name: "System active", type: "checkbox", owner: "user", locked: true },
-    // Present in the schema for every project; only the Email project's row meaningfully uses
-    // it today (issue #95's `capabilities.email.send.autonomous` permission-manifest grant,
-    // manifest/permissionManifest.ts). `owner: 'system'` deliberately, with no declared writer
-    // anywhere in this codebase: this is the one whole-project authorization decision that must
-    // never be agent-writable, or even generically user-writable through the choke point —
-    // granting it is a direct-DB-access action until a dedicated admin surface exists, the same
-    // "code-level migration with direct DB access" escape hatch seedSystem.ts documents for
-    // schema writes.
-    { key: "emailSendAutonomous", name: "Autonomous email sending", type: "checkbox", owner: "system", locked: true },
   ]);
 
   const tasks = await createDb(client, "Tasks", TASKS_MODULE_ID);
