@@ -11,6 +11,17 @@ import type { ClassifiedAttachment } from "./attachments.js";
 export class MailReauthorizationRequiredError extends Error {}
 
 /**
+ * Thrown by an adapter's `createImapClient` when the provider rejected the connection purely
+ * for having too many of this account's IMAP sessions open at once (Gmail's well-known
+ * "Too many simultaneous connections" `BYE`, detected via `imapFlowClient.ts`'s
+ * `isImapConnectionLimitError`) — contention, not an account failure. `mailSyncJob.ts` catches
+ * this specifically to schedule a delayed retry through the persisted sync state instead of
+ * rethrowing into graphile-worker's own immediate retry, which would just reopen a connection
+ * and likely hit the same limit again before the provider has cleared it.
+ */
+export class MailConnectionLimitError extends Error {}
+
+/**
  * Shared upper bound on a single attachment part's *decoded* size, enforced identically by
  * all three adapters (issue #26's provider limits table tops out at iCloud's 20MB baseline /
  * Gmail's 25MB) — generous enough to never bind on a real attachment, but a hard backstop

@@ -171,6 +171,23 @@ export async function recordSyncError(client: Queryable, itemId: string, error: 
   );
 }
 
+/**
+ * The connection-limit-specific analogue of `recordSyncError` above: same columns, but the
+ * caller (mailSyncJob.ts) supplies a provider-aware delay instead of the fixed 15 minutes,
+ * since a provider capping simultaneous connections needs longer to clear than an ordinary
+ * transient failure. Also relied on to *not* be a generic error: `mailSyncJob.ts` returns
+ * instead of rethrowing after calling this, so the next attempt comes only from the sweep
+ * reading `next_expected_activity_at` below, not also from graphile-worker's own retry.
+ */
+export async function recordConnectionLimitBackoff(client: Queryable, itemId: string, error: string, delaySeconds: number): Promise<void> {
+  await client.query(
+    `UPDATE mail_account_sync_state
+     SET last_error = $2, last_activity_at = now(), next_expected_activity_at = now() + make_interval(secs => $3)
+     WHERE item_id = $1`,
+    [itemId, error, delaySeconds],
+  );
+}
+
 /** Accounts due for another sync pass — consumed by the periodic sweep job, not the observability check (issue #39), which reads the same column but only to alert. */
 export async function listAccountsDueForSync(client: Queryable): Promise<MailAccountSyncStateRow[]> {
   const { rows } = await client.query(

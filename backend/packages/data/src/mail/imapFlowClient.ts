@@ -247,4 +247,37 @@ export class ImapFlowMailClient implements ImapMailClient {
     const uids = await this.client.search({ all: true }, { uid: true });
     return uids === false ? [] : uids;
   }
+
+  /** `STORE ... +FLAGS (\Seen)` — the only call anywhere in this class that can mark a message read; every fetch/download above is peek-only (imapflow builds `BODY.PEEK[...]` internally and has no non-peek option). */
+  async markSeen(path: string, uid: number): Promise<void> {
+    await this.client.mailboxOpen(path);
+    await this.client.messageFlagsAdd(String(uid), ["\\Seen"], { uid: true });
+  }
+}
+
+const CONNECTION_LIMIT_ERROR_CODES = new Set(["ClosedAfterConnectTLS", "ClosedAfterConnectText"]);
+const CONNECTION_LIMIT_REASON_PATTERN = /too many (simultaneous|concurrent) connections|connection limit exceeded/i;
+
+/**
+ * Detects a provider's simultaneous-connection rejection (Gmail: "Too many simultaneous
+ * connections", similar wording from other IMAP servers) from imapflow's `connect()`-failure
+ * shape — an untagged `BYE` closing the socket before/without ever reaching login, not an
+ * ordinary network error. The composition root's `createImapClient` (mailSyncJob.ts's
+ * `MailSyncAdapterFactory`) is expected to catch its own `ImapFlow.connect()` rejection, check
+ * this, and throw `MailConnectionLimitError` (providerTypes.ts) instead when it matches, so
+ * mailSyncJob.ts backs off rather than retrying immediately.
+ *
+ * The reason text must match (imapflow's `ClosedAfterConnectTLS`/`ClosedAfterConnectText`
+ * codes cover *any* pre-auth server closure — a TLS certificate failure or a suspended-account
+ * BYE included — so the code alone would misclassify those as connection-limit contention);
+ * `code`, when present, only narrows further to imapflow's own connect-failure codes rather
+ * than matching on message text from some other, later failure that happens to reuse the word
+ * "connections".
+ */
+export function isImapConnectionLimitError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as { code?: string }).code;
+  const reason = (err as { reason?: string }).reason ?? err.message;
+  if (!CONNECTION_LIMIT_REASON_PATTERN.test(reason ?? "")) return false;
+  return code === undefined || CONNECTION_LIMIT_ERROR_CODES.has(code);
 }

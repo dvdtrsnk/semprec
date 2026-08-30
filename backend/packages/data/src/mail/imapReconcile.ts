@@ -43,6 +43,12 @@ export interface ImapMailClient {
   fetchVanishedSince(path: string, sinceModSeq: number): Promise<number[] | null>;
   /** Every UID currently in the folder — the no-QRESYNC deletion-detection fallback (a full UID diff against what this folder's edges already know, see folderMembershipStore.ts). */
   fetchAllUids(path: string): Promise<number[]>;
+  /**
+   * The one place `\Seen` is ever set on this account — every fetch above must stay peek-only
+   * regardless of caller. Exists so an explicit user mark-read action has somewhere to go that
+   * isn't a side effect of background/AI reads; nothing in this module calls it itself.
+   */
+  markSeen(path: string, uid: number): Promise<void>;
 }
 
 export interface ReconcileImapFolderParams {
