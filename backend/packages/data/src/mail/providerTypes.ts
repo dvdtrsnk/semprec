@@ -63,4 +63,15 @@ export interface FetchedMessage {
    * logic when this is present, so a plain IMAP/iCloud sync is entirely unaffected.
    */
   gmailLabels?: string[];
+  /**
+   * Raw deliveredToAddress candidates (issue #93) — every `Delivered-To` occurrence (header
+   * order, top to bottom), plus `X-Original-To`/`Envelope-To` when present. mail/ingest.ts
+   * applies the precedence rule centrally (mail/deliveredTo.ts) rather than each adapter
+   * resolving it itself, the same "resolve once, centrally" shape threading.ts already uses.
+   */
+  deliveredToHeaders?: string[];
+  xOriginalTo?: string | null;
+  envelopeTo?: string | null;
+  /** True when this message's top-level Content-Type is `multipart/report; report-type=delivery-status` (mail/dsn.ts) — a DSN/bounce, not an ordinary human reply. */
+  isDsn?: boolean;
 }

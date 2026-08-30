@@ -4,6 +4,7 @@ import type { ClassifiedAttachment } from "./attachments.js";
 import type { GraphChangedMessage, GraphDeltaResult, GraphFolderRef, GraphMailClient } from "./graphReconcile.js";
 import { assertJsonObject, MAX_ATTACHMENT_BYTES, type FetchedMessage } from "./providerTypes.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
+import { isDeliveryStatusReport, parseContentTypeHeader } from "./dsn.js";
 
 const BASE_URL = "https://graph.microsoft.com/v1.0/me";
 const WELL_KNOWN_FOLDERS = ["inbox", "sentitems", "drafts", "deleteditems", "junkemail", "archive"];
@@ -47,6 +48,11 @@ function header(resource: GraphMessageResource, name: string): string | undefine
   return resource.internetMessageHeaders?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value;
 }
 
+/** Every occurrence of a header on this message (`internetMessageHeaders` preserves repeats, unlike `header`'s single-match lookup above) — needed for "highest Delivered-To occurrence" (mail/deliveredTo.ts, issue #93). */
+function headerValues(resource: GraphMessageResource, name: string): string[] {
+  return (resource.internetMessageHeaders ?? []).filter((h) => h.name.toLowerCase() === name.toLowerCase()).map((h) => h.value);
+}
+
 /**
  * Builds each candidate attachment's lazy byte source over Graph's `/attachments/{id}/$value`
  * — unlike the Gmail REST API (gmailRestClient.ts), Graph's `$value` is a true streamed byte
@@ -81,6 +87,7 @@ async function toFetchedMessage(
   const html = resource.body?.contentType === "html" ? resource.body.content : undefined;
   const attachmentMetas = resource.hasAttachments ? await listAttachmentMetadata(resource.id) : [];
   const attachments = classifyGraphAttachments((attachmentId) => fetchAttachmentStream(resource.id, attachmentId), attachmentMetas, html);
+  const contentType = parseContentTypeHeader(header(resource, "Content-Type"));
 
   return {
     messageId: resource.internetMessageId ?? `<no-message-id-${resource.id}@graph-api>`,
@@ -97,6 +104,10 @@ async function toFetchedMessage(
     bodyHtml: html,
     date: resource.receivedDateTime ? new Date(resource.receivedDateTime) : undefined,
     attachments,
+    deliveredToHeaders: headerValues(resource, "Delivered-To"),
+    xOriginalTo: headerValues(resource, "X-Original-To")[0] ?? null,
+    envelopeTo: headerValues(resource, "Envelope-To")[0] ?? null,
+    isDsn: isDeliveryStatusReport(contentType?.type, contentType?.params),
   };
 }
 

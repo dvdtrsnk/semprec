@@ -3,6 +3,7 @@ import type { ImapFetchedMessage, ImapFolderRef, ImapFolderSelection, ImapMailCl
 import { MAX_ATTACHMENT_BYTES, type FetchedMessage } from "./providerTypes.js";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
+import { isDeliveryStatusReport } from "./dsn.js";
 
 /**
  * `MAX_ATTACHMENT_BYTES` (providerTypes.ts, shared with the Gmail/Graph adapters) is passed to
@@ -29,10 +30,35 @@ function toEnvelopeAddressList(list: MessageAddressObject[] | undefined): MailEn
   return (list ?? []).map(toEnvelopeAddress).filter((a): a is MailEnvelopeAddress => Boolean(a));
 }
 
-/** Every `<...>` token in the raw (possibly folded) `References:` header line(s) — the ancestor chain, order preserved, same as mailparser's own splitting rule. */
-function parseReferencesHeader(headerBuffer: Buffer | undefined): string[] {
+/**
+ * Unfolds and splits a raw multi-header-name Buffer (imapflow's `headers: [...]` fetch
+ * concatenates every requested header's raw lines into one Buffer, in the message's own
+ * top-to-bottom order) into individual `{name, value}` lines, preserving every repeated
+ * occurrence — needed for "highest Delivered-To occurrence" (mail/deliveredTo.ts), since a
+ * forwarded/relayed message can carry several.
+ */
+export function parseHeaderBlock(headerBuffer: Buffer | undefined): Array<{ name: string; value: string }> {
   if (!headerBuffer) return [];
-  return headerBuffer.toString("utf8").match(/<[^<>]+>/g) ?? [];
+  const lines = headerBuffer.toString("utf8").replace(/\r\n/g, "\n").split("\n");
+  const headers: Array<{ name: string; value: string }> = [];
+  for (const line of lines) {
+    if (/^[ \t]/.test(line) && headers.length > 0) {
+      headers[headers.length - 1].value += ` ${line.trim()}`;
+      continue;
+    }
+    const match = line.match(/^([^:\s]+):\s*(.*)$/);
+    if (match) headers.push({ name: match[1], value: match[2] });
+  }
+  return headers;
+}
+
+export function headerValues(headers: Array<{ name: string; value: string }>, name: string): string[] {
+  return headers.filter((h) => h.name.toLowerCase() === name.toLowerCase()).map((h) => h.value.trim());
+}
+
+/** Every `<...>` token across every `References:` occurrence — the ancestor chain, order preserved, same as mailparser's own splitting rule. */
+function parseReferences(headers: Array<{ name: string; value: string }>): string[] {
+  return headerValues(headers, "references").flatMap((value) => value.match(/<[^<>]+>/g) ?? []);
 }
 
 export interface MimeTree {
@@ -141,6 +167,7 @@ export class ImapFlowMailClient implements ImapMailClient {
   private async parseFetchedMessage(raw: FetchMessageObject): Promise<FetchedMessage> {
     const envelope = raw.envelope;
     const tree = raw.bodyStructure ? walkBodyStructure(raw.bodyStructure) : { attachmentParts: [] as MessageStructureObject[] };
+    const headerList = parseHeaderBlock(raw.headers);
 
     // A single-part message's root BODYSTRUCTURE node sometimes carries no `.part` of its
     // own — `download()` special-cases part id "1" (checking bodyStructure.childNodes itself
@@ -151,7 +178,7 @@ export class ImapFlowMailClient implements ImapMailClient {
     return {
       messageId: envelope?.messageId ?? `<no-message-id-uid-${raw.uid}@generated>`,
       inReplyTo: envelope?.inReplyTo ?? null,
-      references: parseReferencesHeader(raw.headers),
+      references: parseReferences(headerList),
       subject: envelope?.subject,
       envelope: {
         from: toEnvelopeAddress(envelope?.from?.[0]),
@@ -167,6 +194,10 @@ export class ImapFlowMailClient implements ImapMailClient {
       // server) — imapReconcile.ts only acts on `gmailLabels` when it's actually present.
       providerMessageId: raw.emailId ?? null,
       gmailLabels: raw.labels ? [...raw.labels] : undefined,
+      deliveredToHeaders: headerValues(headerList, "delivered-to"),
+      xOriginalTo: headerValues(headerList, "x-original-to")[0] ?? null,
+      envelopeTo: headerValues(headerList, "envelope-to")[0] ?? null,
+      isDsn: isDeliveryStatusReport(raw.bodyStructure?.type, raw.bodyStructure?.parameters),
     };
   }
 
@@ -175,13 +206,14 @@ export class ImapFlowMailClient implements ImapMailClient {
     const results: ImapFetchedMessage[] = [];
     // Deliberately no `source: true`: that field is a fully-materialized `Buffer` of the whole
     // raw message, attachments included — see walkBodyStructure's header note. BODYSTRUCTURE +
-    // ENVELOPE + the References header are all cheap, bounded fetches; the actual body/
+    // ENVELOPE + a handful of cheap headers are all bounded fetches; the actual body/
     // attachment bytes are fetched separately, lazily, per part. `labels: true` is a no-op on
     // a non-Gmail server (imapReconcile.ts's "Gmail in IMAP fallback mode" support) and costs
-    // nothing extra on one that doesn't support X-GM-EXT-1.
+    // nothing extra on one that doesn't support X-GM-EXT-1. `delivered-to`/`x-original-to`/
+    // `envelope-to` feed deliveredToAddress's precedence rule (mail/deliveredTo.ts, issue #93).
     for await (const raw of this.client.fetch(
       `${sinceUid}:*`,
-      { uid: true, envelope: true, bodyStructure: true, flags: true, headers: ["references"], labels: true },
+      { uid: true, envelope: true, bodyStructure: true, flags: true, headers: ["references", "delivered-to", "x-original-to", "envelope-to"], labels: true },
       { uid: true },
     )) {
       if (raw.uid < sinceUid) continue; // "*" in a range can include one message below sinceUid on an empty-range edge case

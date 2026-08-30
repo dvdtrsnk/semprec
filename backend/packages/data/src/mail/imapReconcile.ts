@@ -64,6 +64,8 @@ export interface ReconcileImapFolderParams {
   foldersDatabaseId: string;
   mailboxItemId: string;
   mailboxFolderRelationPropertyId: string;
+  /** This mailbox's registered addresses (`Mailboxes.addresses`) — deliveredToAddress's alias-fallback precedence (mail/deliveredTo.ts, issue #93). Defaults to `[]`. */
+  mailboxAliases?: string[];
 }
 
 const GMAIL_LABEL_TO_PURPOSE: Record<string, string> = {
@@ -150,6 +152,7 @@ export async function reconcileImapFolder(dbClient: PoolClient, imap: ImapMailCl
       folderUid: item.uid,
       storage: params.storage,
       storageKeyPrefix: params.storageKeyPrefix,
+      mailboxAliases: params.mailboxAliases,
       ...item.message,
     });
 
@@ -212,6 +215,8 @@ export interface ReconcileImapAccountParams {
   storageKeyPrefix: string;
   /** Gmail/Outlook in IMAP fallback mode (issue #26): sync only `[Gmail]/All Mail` (or the equivalent `\All` folder) instead of every folder — `folderPaths` lets the composition root pass exactly `["[Gmail]/All Mail"]` for that mode; label membership is then derived from `X-GM-LABELS` by `syncGmailLabelFolders` below (only when the server actually reports labels — a no-op otherwise). Defaults to every folder the server lists, correct for iCloud/generic IMAP (this adapter's actual default target). */
   folderPaths?: string[];
+  /** This mailbox's registered addresses (`Mailboxes.addresses`) — deliveredToAddress's alias-fallback precedence (mail/deliveredTo.ts, issue #93). Defaults to `[]`. */
+  mailboxAliases?: string[];
 }
 
 /**
@@ -250,6 +255,7 @@ export async function reconcileImapAccount(dbClient: PoolClient, imap: ImapMailC
       foldersDatabaseId: params.foldersDatabaseId,
       mailboxItemId: params.mailboxItemId,
       mailboxFolderRelationPropertyId: params.mailboxFolderRelationPropertyId,
+      mailboxAliases: params.mailboxAliases,
     });
   }
 

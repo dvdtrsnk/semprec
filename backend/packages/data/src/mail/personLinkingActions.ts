@@ -6,18 +6,10 @@ import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createRelationWithClient } from "../chokePoint/chokePoint.js";
 import { getMailMessageMetaByItemId } from "./mailMessageMetaStore.js";
 import { lookupPersonIdByEmail, normalizeEmailAddress, reindexPersonEmails } from "./personEmailIndexStore.js";
+import { parseAddressListProperty } from "./addressListParsing.js";
 
 export const MAIL_REINDEX_PERSON_EMAILS_ACTION_ID = "mail.reindexPersonEmails";
 export const MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID = "mail.linkPeopleByEmail";
-
-/** `People.emails` (issue #26) is free-form `longText`, one address per line — see seedEmailModule.ts for why no dedicated list property type was introduced for this. */
-function parseEmailsProperty(value: unknown): string[] {
-  if (typeof value !== "string") return [];
-  return value
-    .split(/[\n,]/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-}
 
 export interface PersonEmailReindexActionConfig {
   peopleDatabaseId: string;
@@ -38,7 +30,7 @@ export function createPersonEmailReindexAction(pool: Pool): ActionHandler {
     await withTransaction(pool, async (client) => {
       const person = await itemsStore.getItemById(client, config.peopleDatabaseId, context.itemId as string);
       if (!person || person.deletedAt) return;
-      const addresses = parseEmailsProperty(person.properties.emails);
+      const addresses = parseAddressListProperty(person.properties.emails);
       await reindexPersonEmails(client, person.id, addresses);
     });
   };

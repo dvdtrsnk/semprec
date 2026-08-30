@@ -24,6 +24,7 @@ import {
   type MailSyncAdapterFactory,
 } from "./mail/mailSyncJob.js";
 import { LocalFsBlobStorageWriter, type BlobStorageWriter } from "./mail/blobStorage.js";
+import { handleMailLegacyEmailMigrationTask, noopLegacyRawMimeFetcher, type LegacyRawMimeFetcher } from "./migrationJob/mailLegacyEmailMigration.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -76,6 +77,7 @@ export function createCoreTaskList(
   mailSyncAdapters: MailSyncAdapterFactory = noopMailSyncAdapterFactory,
   mailModuleIds?: MailModuleIds,
   mailBlobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(process.env.MAIL_ATTACHMENTS_DIR ?? "/tmp/semprec-mail-attachments"),
+  legacyRawMimeFetcher: LegacyRawMimeFetcher = noopLegacyRawMimeFetcher,
 ): TaskList {
   return {
     [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {
@@ -120,6 +122,9 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: async () => {
       if (!mailModuleIds) throw new Error("mailSearchReindexSweep job requires createCoreTaskList's mailModuleIds argument to be configured");
       await handleMailSearchReindexSweepTask(pool, mailModuleIds.emailsDatabaseId);
+    },
+    [CORE_TASK_NAMES.MAIL_LEGACY_EMAIL_MIGRATION]: async (payload) => {
+      await handleMailLegacyEmailMigrationTask(pool, { emailsDatabaseId: requireString(payload, "emailsDatabaseId") }, legacyRawMimeFetcher);
     },
   };
 }

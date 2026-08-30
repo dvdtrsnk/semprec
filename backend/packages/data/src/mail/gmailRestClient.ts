@@ -4,6 +4,7 @@ import type { GmailFetchedMessage, GmailHistoryResult, GmailLabelRef, GmailMailC
 import { assertJsonObject, MAX_ATTACHMENT_BYTES, type FetchedMessage } from "./providerTypes.js";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
+import { isDeliveryStatusReport, parseContentTypeHeader } from "./dsn.js";
 
 const BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -27,6 +28,11 @@ interface GmailPayloadPart {
 
 function partHeader(part: GmailPayloadPart, name: string): string | undefined {
   return part.headers?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value;
+}
+
+/** Every occurrence of a header on this part (Gmail's `format=full` payload.headers preserves repeats, unlike `partHeader`'s single-match lookup above) — needed for "highest Delivered-To occurrence" (mail/deliveredTo.ts, issue #93). */
+function partHeaderValues(part: GmailPayloadPart, name: string): string[] {
+  return (part.headers ?? []).filter((h) => h.name.toLowerCase() === name.toLowerCase()).map((h) => h.value);
 }
 
 /**
@@ -122,6 +128,7 @@ async function toFetchedMessage(
   const parsedHeaders = await parseGmailHeaders(payload.headers ?? []);
   const tree = walkGmailPayload(payload);
   const bodyHtml = decodePartText(tree.textHtmlPart);
+  const contentType = parseContentTypeHeader(partHeader(payload, "Content-Type"));
 
   const references = Array.isArray(parsedHeaders.references)
     ? parsedHeaders.references
@@ -151,6 +158,10 @@ async function toFetchedMessage(
     bodyHtml,
     date: parsedHeaders.date,
     attachments: classifyGmailAttachmentParts(fetchAttachmentBytes, tree.attachmentParts, bodyHtml),
+    deliveredToHeaders: partHeaderValues(payload, "Delivered-To"),
+    xOriginalTo: partHeaderValues(payload, "X-Original-To")[0] ?? null,
+    envelopeTo: partHeaderValues(payload, "Envelope-To")[0] ?? null,
+    isDsn: isDeliveryStatusReport(contentType?.type, contentType?.params),
   };
 }
 

@@ -4,7 +4,9 @@ import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { withTransaction } from "../db/pool.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { updateItemWithClient } from "../chokePoint/chokePoint.js";
+import { getItemById } from "../chokePoint/itemsStore.js";
 import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
+import { parseAddressListProperty } from "./addressListParsing.js";
 import { getMailAccountSyncState, listAccountsDueForSync, recordSyncError } from "./mailAccountSyncStateStore.js";
 import { reconcileImapAccount, type ImapMailClient } from "./imapReconcile.js";
 import { reconcileGmailAccount, type GmailMailClient } from "./gmailReconcile.js";
@@ -141,10 +143,11 @@ export async function handleSyncMailAccountTask(
     if (!credential) throw new Error(`Mailbox ${payload.mailboxItemId} has no stored credential`);
 
     await withTransaction(pool, async (client) => {
-      const [folderProperty, attachmentsProperty, mailboxFolderProperty] = await Promise.all([
+      const [folderProperty, attachmentsProperty, mailboxFolderProperty, mailboxItem] = await Promise.all([
         getPropertyByKey(client, moduleIds.emailsDatabaseId, "folder"),
         getPropertyByKey(client, moduleIds.emailsDatabaseId, "attachments"),
         getPropertyByKey(client, moduleIds.foldersDatabaseId, "mailbox"),
+        getItemById(client, moduleIds.mailboxesDatabaseId, payload.mailboxItemId),
       ]);
       if (!folderProperty || !attachmentsProperty || !mailboxFolderProperty) {
         throw new Error("Email module schema is missing an expected relation property — was seedEmailModuleInTransaction run?");
@@ -160,6 +163,7 @@ export async function handleSyncMailAccountTask(
         attachmentsRelationPropertyId: attachmentsProperty.id,
         storage: trackedStorage,
         storageKeyPrefix: payload.mailboxItemId,
+        mailboxAliases: parseAddressListProperty(mailboxItem?.properties.addresses),
       };
 
       if (state.syncMode === "imap") {

@@ -16,6 +16,15 @@ import {
 import { lookupPersonIdByEmail, reindexPersonEmails } from "../mail/personEmailIndexStore.js";
 import { resolveThreadId } from "../mail/threading.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
+import { getMailMessageMetaByItemId } from "../mail/mailMessageMetaStore.js";
+import { resolveDeliveredToAddress } from "../mail/deliveredTo.js";
+import { isDeliveryStatusReport, parseContentTypeHeader } from "../mail/dsn.js";
+import {
+  enqueueMailLegacyEmailMigration,
+  mailLegacyEmailMigrationJobKey,
+  runMailLegacyEmailMigrationJob,
+  type LegacyRawMimeFetcher,
+} from "../migrationJob/mailLegacyEmailMigration.js";
 import type { ClassifiedAttachment } from "../mail/attachments.js";
 import { sanitizeMailHtml } from "../mail/htmlSanitize.js";
 import { parseMailSearchQuery, reindexItemSearch, searchItems } from "../mail/search.js";
@@ -27,7 +36,7 @@ import { handleMailSearchReindexSweepTask, handleSyncMailAccountTask, type MailS
 import { ensureMailAccountSyncState, getMailAccountSyncState, defaultSyncModeForProvider } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { MailReauthorizationRequiredError } from "../mail/providerTypes.js";
-import { walkBodyStructure } from "../mail/imapFlowClient.js";
+import { walkBodyStructure, parseHeaderBlock, headerValues } from "../mail/imapFlowClient.js";
 import type { MessageStructureObject } from "imapflow";
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
@@ -1367,6 +1376,482 @@ describe("mail sync job error handling (issue #26)", () => {
 
     const item = await withTransaction(pool, (client) => client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]));
     expect(item.rows[0].properties.syncStatus).toBe("error");
+  });
+});
+
+describe("IMAP raw header parsing (issue #93)", () => {
+  it("preserves every occurrence of a repeated header, in the message's own top-to-bottom order", () => {
+    const buffer = Buffer.from(
+      ["Delivered-To: newest@example.com", "Delivered-To: oldest@example.com", "X-Original-To: xo@example.com", "References: <a@x> <b@x>"].join(
+        "\r\n",
+      ) + "\r\n",
+    );
+    const headers = parseHeaderBlock(buffer);
+    expect(headerValues(headers, "delivered-to")).toEqual(["newest@example.com", "oldest@example.com"]);
+    expect(headerValues(headers, "x-original-to")).toEqual(["xo@example.com"]);
+    // Header-name lookup is case-insensitive, matching RFC 5322.
+    expect(headerValues(headers, "Delivered-To")).toEqual(["newest@example.com", "oldest@example.com"]);
+  });
+
+  it("unfolds a continuation line (leading whitespace) onto the previous header's value instead of starting a new one", () => {
+    const buffer = Buffer.from(["Envelope-To: someone", "  @example.com", "Delivered-To: me@example.com"].join("\r\n") + "\r\n");
+    const headers = parseHeaderBlock(buffer);
+    expect(headerValues(headers, "envelope-to")).toEqual(["someone @example.com"]);
+    expect(headerValues(headers, "delivered-to")).toEqual(["me@example.com"]);
+  });
+
+  it("returns nothing for an absent header or an undefined buffer", () => {
+    expect(parseHeaderBlock(undefined)).toEqual([]);
+    const headers = parseHeaderBlock(Buffer.from("Delivered-To: me@example.com\r\n"));
+    expect(headerValues(headers, "x-original-to")).toEqual([]);
+  });
+});
+
+describe("deliveredToAddress precedence (issue #93)", () => {
+  it("prefers the highest (first) Delivered-To occurrence over everything else", () => {
+    const result = resolveDeliveredToAddress({
+      candidates: { deliveredToHeaders: ["newest@example.com", "oldest@example.com"], xOriginalTo: "xo@example.com", envelopeTo: "et@example.com" },
+      structuredTo: [{ address: "to@example.com" }],
+      structuredCc: [],
+      mailboxAliases: ["alias@example.com"],
+    });
+    expect(result).toBe("newest@example.com");
+  });
+
+  it("extracts the bare address out of a 'Name <addr>' Delivered-To value", () => {
+    const result = resolveDeliveredToAddress({
+      candidates: { deliveredToHeaders: ["Alice Work <Alice@Example.com>"] },
+      structuredTo: [],
+      structuredCc: [],
+      mailboxAliases: [],
+    });
+    expect(result).toBe("alice@example.com");
+  });
+
+  it("falls back to X-Original-To when there is no Delivered-To", () => {
+    const result = resolveDeliveredToAddress({
+      candidates: { deliveredToHeaders: [], xOriginalTo: "xo@example.com", envelopeTo: "et@example.com" },
+      structuredTo: [],
+      structuredCc: [],
+      mailboxAliases: ["alias@example.com"],
+    });
+    expect(result).toBe("xo@example.com");
+  });
+
+  it("falls back to Envelope-To when there is no Delivered-To or X-Original-To", () => {
+    const result = resolveDeliveredToAddress({
+      candidates: { deliveredToHeaders: [], xOriginalTo: null, envelopeTo: "et@example.com" },
+      structuredTo: [],
+      structuredCc: [],
+      mailboxAliases: ["alias@example.com"],
+    });
+    expect(result).toBe("et@example.com");
+  });
+
+  it("falls back to the first registered mailbox alias matching structured To/Cc", () => {
+    const result = resolveDeliveredToAddress({
+      candidates: { deliveredToHeaders: [] },
+      structuredTo: [{ address: "someone-else@example.com" }],
+      structuredCc: [{ address: "Alias2@Example.com" }],
+      mailboxAliases: ["alias1@example.com", "alias2@example.com"],
+    });
+    expect(result).toBe("alias2@example.com");
+  });
+
+  it("falls back to the mailbox's primary (first) address when no alias matches structured To/Cc", () => {
+    const result = resolveDeliveredToAddress({
+      candidates: { deliveredToHeaders: [] },
+      structuredTo: [{ address: "nobody-registered@example.com" }],
+      structuredCc: [],
+      mailboxAliases: ["primary@example.com", "secondary@example.com"],
+    });
+    expect(result).toBe("primary@example.com");
+  });
+
+  it("returns undefined when there are no header candidates and no registered aliases", () => {
+    const result = resolveDeliveredToAddress({ candidates: { deliveredToHeaders: [] }, structuredTo: [], structuredCc: [], mailboxAliases: [] });
+    expect(result).toBeUndefined();
+  });
+});
+
+describe("deliveredToAddress persisted at ingest (issue #93)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  it("persists deliveredToAddress computed from multiple Delivered-To occurrences, not recomputed later", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+    const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+    const folder = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+    );
+
+    const result = await withTransaction(pool, (client) =>
+      ingestEmailMessage(client, {
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        folderRelationPropertyId: folderProperty.id,
+        attachmentsRelationPropertyId: attachmentsProperty.id,
+        folderItemId: folder.id,
+        messageId: "<dta1@example.com>",
+        envelope: { from: { address: "sender@example.com" }, to: [{ address: "me@example.com" }] },
+        attachments: [],
+        storage: noopStorage,
+        storageKeyPrefix: "test",
+        deliveredToHeaders: ["me+relay2@example.com", "me+relay1@example.com"],
+        mailboxAliases: ["me@example.com"],
+      }),
+    );
+
+    const meta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, result.itemId));
+    expect(meta?.deliveredToAddress).toBe("me+relay2@example.com");
+  });
+
+  it("falls back through to the mailbox's registered alias when no delivery headers are present", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+    const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+    const folder = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+    );
+
+    const result = await withTransaction(pool, (client) =>
+      ingestEmailMessage(client, {
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        folderRelationPropertyId: folderProperty.id,
+        attachmentsRelationPropertyId: attachmentsProperty.id,
+        folderItemId: folder.id,
+        messageId: "<dta2@example.com>",
+        envelope: { from: { address: "sender@example.com" }, to: [{ address: "me@example.com" }] },
+        attachments: [],
+        storage: noopStorage,
+        storageKeyPrefix: "test",
+        mailboxAliases: ["me@example.com"],
+      }),
+    );
+
+    const meta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, result.itemId));
+    expect(meta?.deliveredToAddress).toBe("me@example.com");
+  });
+});
+
+describe("DSN/bounce detection (issue #93)", () => {
+  it("isDeliveryStatusReport requires both multipart/report and report-type=delivery-status", () => {
+    expect(isDeliveryStatusReport("multipart/report", { "report-type": "delivery-status" })).toBe(true);
+    expect(isDeliveryStatusReport("multipart/report", { "Report-Type": "Delivery-Status" })).toBe(true);
+    expect(isDeliveryStatusReport("multipart/report", { "report-type": "disposition-notification" })).toBe(false);
+    expect(isDeliveryStatusReport("multipart/mixed", { "report-type": "delivery-status" })).toBe(false);
+    expect(isDeliveryStatusReport(undefined, undefined)).toBe(false);
+  });
+
+  it("parseContentTypeHeader splits type and parameters out of a raw header value", () => {
+    expect(parseContentTypeHeader('multipart/report; report-type="delivery-status"; boundary=abc')).toEqual({
+      type: "multipart/report",
+      params: { "report-type": "delivery-status", boundary: "abc" },
+    });
+    expect(parseContentTypeHeader(undefined)).toBeNull();
+  });
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  it("a DSN threads onto its outgoing message's thread and is tagged messageKind:'dsn', distinct from a human reply", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+    const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+    const folder = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+    );
+
+    const outgoing = await withTransaction(pool, (client) =>
+      ingestEmailMessage(client, {
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        folderRelationPropertyId: folderProperty.id,
+        attachmentsRelationPropertyId: attachmentsProperty.id,
+        folderItemId: folder.id,
+        messageId: "<outgoing@example.com>",
+        subject: "Original",
+        envelope: { from: { address: "me@example.com" }, to: [{ address: "someone@example.com" }] },
+        attachments: [],
+        storage: noopStorage,
+        storageKeyPrefix: "test",
+      }),
+    );
+    const outgoingMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, outgoing.itemId));
+
+    const dsn = await withTransaction(pool, (client) =>
+      ingestEmailMessage(client, {
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        folderRelationPropertyId: folderProperty.id,
+        attachmentsRelationPropertyId: attachmentsProperty.id,
+        folderItemId: folder.id,
+        messageId: "<dsn1@mailer-daemon.example.com>",
+        subject: "Undelivered Mail Returned to Sender",
+        references: ["<outgoing@example.com>"],
+        envelope: { from: { address: "mailer-daemon@example.com" }, to: [{ address: "me@example.com" }] },
+        attachments: [],
+        storage: noopStorage,
+        storageKeyPrefix: "test",
+        isDsn: true,
+      }),
+    );
+
+    const reply = await withTransaction(pool, (client) =>
+      ingestEmailMessage(client, {
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        folderRelationPropertyId: folderProperty.id,
+        attachmentsRelationPropertyId: attachmentsProperty.id,
+        folderItemId: folder.id,
+        messageId: "<reply1@example.com>",
+        subject: "Re: Original",
+        inReplyTo: "<outgoing@example.com>",
+        references: ["<outgoing@example.com>"],
+        envelope: { from: { address: "someone@example.com" }, to: [{ address: "me@example.com" }] },
+        attachments: [],
+        storage: noopStorage,
+        storageKeyPrefix: "test",
+      }),
+    );
+
+    const dsnMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, dsn.itemId));
+    const replyMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, reply.itemId));
+
+    expect(dsnMeta?.messageKind).toBe("dsn");
+    expect(dsnMeta?.dsnOriginalMessageId).toBe("<outgoing@example.com>");
+    expect(dsnMeta?.threadId).toBe(outgoingMeta?.threadId);
+
+    // The ordinary reply is threaded the same way but must not itself be classified as a DSN.
+    expect(replyMeta?.messageKind).toBe("message");
+    expect(replyMeta?.dsnOriginalMessageId).toBeNull();
+    expect(replyMeta?.threadId).toBe(outgoingMeta?.threadId);
+  });
+});
+
+describe("person <-> email linkage determinism (issue #93)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  it("reindexing the same person twice with differently-cased/whitespaced addresses converges on the same normalized index rows", async () => {
+    const peopleId = await databaseIdFor("people");
+    const alice = await chokePoint.createItem({ databaseId: peopleId, properties: { name: "Alice" } });
+
+    await withTransaction(pool, (client) => reindexPersonEmails(client, alice.id, ["  Alice@Example.com ", "ALICE@EXAMPLE.COM"]));
+    // Both variants normalize to the same address — this must not attempt to claim it twice
+    // (email PRIMARY KEY would reject a literal duplicate insert) and must resolve identically
+    // regardless of how a later lookup happens to be cased.
+    expect(await withTransaction(pool, (client) => lookupPersonIdByEmail(client, "alice@example.com"))).toBe(alice.id);
+    expect(await withTransaction(pool, (client) => lookupPersonIdByEmail(client, "Alice@Example.com"))).toBe(alice.id);
+
+    const { rows } = await pool.query(`SELECT email FROM person_email_index WHERE item_id = $1`, [alice.id]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].email).toBe("alice@example.com");
+  });
+});
+
+describe("legacy Emails migration (issue #93)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  /** Creates an Emails item the way pre-issue-93 legacy data would exist: through the raw item-creation path, bypassing `ingestEmailMessage` entirely, so it has no `mail_message_meta` row at all — the exact "legacy" condition the migration job looks for. */
+  async function createLegacyEmailItem(emailsId: string, properties: Record<string, unknown>): Promise<string> {
+    const item = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: emailsId, properties }, { allowedSystemKeys: ["name", "sender", "recipients", "body", "date"] }),
+    );
+    return item.id;
+  }
+
+  it("reconstructs envelope/threadId/messageId from legacy sender/recipients text and marks migrationStatus 'partial'", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const legacyItemId = await createLegacyEmailItem(emailsId, {
+      name: "Old subject",
+      sender: "Alice <alice@example.com>",
+      recipients: "Bob <bob@example.com>, carol@example.com",
+    });
+
+    await runMailLegacyEmailMigrationJob(pool, emailsId);
+
+    const meta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
+    expect(meta).not.toBeNull();
+    expect(meta?.migrationStatus).toBe("partial");
+    expect(meta?.envelope.from).toEqual({ name: "Alice", address: "alice@example.com" });
+    expect(meta?.envelope.to?.map((a) => a.address)).toEqual(["bob@example.com", "carol@example.com"]);
+    expect(meta?.messageId).toBeTruthy();
+    expect(meta?.threadId).toBeTruthy();
+
+    // The row itself is preserved untouched, not replaced/deleted by the migration.
+    const item = await chokePoint.getItem(emailsId, legacyItemId);
+    expect(item?.properties.name).toBe("Old subject");
+  });
+
+  it("parses raw MIME when the injected fetcher has it, marking migrationStatus 'done' and recovering real threading headers", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const legacyItemId = await createLegacyEmailItem(emailsId, { name: "Old subject", sender: "alice@example.com", recipients: "bob@example.com" });
+
+    const rawMime = Buffer.from(
+      [
+        "From: Alice <alice@example.com>",
+        "To: Bob <bob@example.com>",
+        "Subject: Hi",
+        "Message-ID: <raw1@example.com>",
+        "References: <parent@example.com>",
+        "In-Reply-To: <parent@example.com>",
+        "Content-Type: text/plain",
+        "",
+        "Hello",
+        "",
+      ].join("\r\n"),
+    );
+    const fetchRawMime: LegacyRawMimeFetcher = async (itemId) => (itemId === legacyItemId ? rawMime : null);
+
+    await runMailLegacyEmailMigrationJob(pool, emailsId, fetchRawMime);
+
+    const meta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
+    expect(meta?.migrationStatus).toBe("done");
+    expect(meta?.messageId).toBe("<raw1@example.com>");
+    expect(meta?.inReplyTo).toBe("<parent@example.com>");
+    expect(meta?.references).toEqual(["<parent@example.com>"]);
+    expect(meta?.envelope.from?.address).toBe("alice@example.com");
+    expect(meta?.envelope.to?.[0]?.address).toBe("bob@example.com");
+  });
+
+  it("classifies a DSN recovered from raw MIME as messageKind 'dsn', linked to its original message, not an ordinary reply", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const legacyItemId = await createLegacyEmailItem(emailsId, { name: "Undelivered Mail Returned to Sender", sender: "mailer-daemon@example.com", recipients: "" });
+
+    const rawMime = Buffer.from(
+      [
+        "From: Mail Delivery Subsystem <mailer-daemon@example.com>",
+        "To: me@example.com",
+        "Subject: Undelivered Mail Returned to Sender",
+        "Message-ID: <dsn-raw1@example.com>",
+        "References: <outgoing1@example.com>",
+        'Content-Type: multipart/report; report-type=delivery-status; boundary="b1"',
+        "",
+        "--b1",
+        "Content-Type: text/plain",
+        "",
+        "delivery failed",
+        "--b1--",
+        "",
+      ].join("\r\n"),
+    );
+    const fetchRawMime: LegacyRawMimeFetcher = async (itemId) => (itemId === legacyItemId ? rawMime : null);
+
+    await runMailLegacyEmailMigrationJob(pool, emailsId, fetchRawMime);
+
+    const meta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
+    expect(meta?.migrationStatus).toBe("done");
+    expect(meta?.messageKind).toBe("dsn");
+    expect(meta?.dsnOriginalMessageId).toBe("<outgoing1@example.com>");
+  });
+
+  it("falls back to its own synthetic id (migrationStatus 'partial') instead of stealing another item's mail_message_meta row when the recovered Message-ID collides", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+    const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+    const folder = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+    );
+
+    // A live-synced item already owns this exact Message-ID — plausible for pre-#26 legacy
+    // rows, which had no dedup at all.
+    const liveItem = await withTransaction(pool, (client) =>
+      ingestEmailMessage(client, {
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        folderRelationPropertyId: folderProperty.id,
+        attachmentsRelationPropertyId: attachmentsProperty.id,
+        folderItemId: folder.id,
+        messageId: "<dup1@example.com>",
+        envelope: { from: { address: "alice@example.com" } },
+        attachments: [],
+        storage: noopStorage,
+        storageKeyPrefix: "test",
+      }),
+    );
+
+    const legacyItemId = await createLegacyEmailItem(emailsId, { name: "Old subject", sender: "alice@example.com", recipients: "bob@example.com" });
+    const rawMime = Buffer.from(
+      ["From: Alice <alice@example.com>", "To: Bob <bob@example.com>", "Subject: Hi", "Message-ID: <dup1@example.com>", "", "Hello", ""].join("\r\n"),
+    );
+    const fetchRawMime: LegacyRawMimeFetcher = async (itemId) => (itemId === legacyItemId ? rawMime : null);
+
+    await runMailLegacyEmailMigrationJob(pool, emailsId, fetchRawMime);
+
+    const legacyMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
+    const liveMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, liveItem.itemId));
+
+    // The legacy item gets its own row (never null — no infinite-reprocessing hazard) under a
+    // synthetic id, and the live item's own row/identity is completely untouched.
+    expect(legacyMeta).not.toBeNull();
+    expect(legacyMeta?.itemId).toBe(legacyItemId);
+    expect(legacyMeta?.messageId).not.toBe("<dup1@example.com>");
+    expect(legacyMeta?.migrationStatus).toBe("partial");
+    expect(liveMeta?.itemId).toBe(liveItem.itemId);
+    expect(liveMeta?.messageId).toBe("<dup1@example.com>");
+
+    // Idempotency check now succeeds for the legacy item too — a retry does not loop forever.
+    const { rows } = await pool.query(`SELECT count(*) FROM mail_message_meta WHERE item_id = $1`, [legacyItemId]);
+    expect(rows[0].count).toBe("1");
+  });
+
+  it("is resumable: re-running the job after a partial completion never reprocesses an already-migrated row", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const legacyItemId = await createLegacyEmailItem(emailsId, { name: "Old subject", sender: "alice@example.com", recipients: "bob@example.com" });
+
+    await runMailLegacyEmailMigrationJob(pool, emailsId);
+    const firstPassMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
+
+    // Simulates a retry after a crash: the job runs again from scratch (no persisted cursor,
+    // same as propertyTypeMigration.ts) — the already-migrated row must be left exactly alone.
+    await runMailLegacyEmailMigrationJob(pool, emailsId);
+    const secondPassMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
+
+    expect(secondPassMeta).toEqual(firstPassMeta);
+    const { rows } = await pool.query(`SELECT count(*) FROM mail_message_meta WHERE item_id = $1`, [legacyItemId]);
+    expect(rows[0].count).toBe("1");
+  });
+
+  it("is queueable via enqueueMailLegacyEmailMigration/runOnce, with a stable per-database jobKey", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const legacyItemId = await createLegacyEmailItem(emailsId, { name: "Old subject", sender: "alice@example.com", recipients: "" });
+
+    await withTransaction(pool, (client) => enqueueMailLegacyEmailMigration(client, emailsId));
+    const { rows: jobRows } = await pool.query(`SELECT key FROM graphile_worker._private_jobs WHERE key = $1`, [mailLegacyEmailMigrationJobKey(emailsId)]);
+    expect(jobRows).toHaveLength(1);
+
+    await drainQueue();
+
+    const meta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
+    expect(meta?.migrationStatus).toBe("partial");
   });
 });
 

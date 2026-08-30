@@ -26,6 +26,9 @@ export const CORE_TASK_NAMES = {
   // Issue #26: periodic safety net for Emails items whose search index write was skipped
   // (a direct-DB write outside ingestEmailMessage's own standard path).
   MAIL_SEARCH_REINDEX_SWEEP: "mailSearchReindexSweep",
+  // Issue #93: backfills mail_message_meta (envelope/threadId/messageId) for legacy Emails
+  // items that predate it.
+  MAIL_LEGACY_EMAIL_MIGRATION: "mailLegacyEmailMigration",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
