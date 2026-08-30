@@ -7,12 +7,13 @@ import { updateItemWithClient } from "../chokePoint/chokePoint.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
-import { getMailAccountSyncState, listAccountsDueForSync, recordSyncError } from "./mailAccountSyncStateStore.js";
+import { getMailAccountSyncState, listAccountsDueForSync, recordConnectionLimitBackoff, recordSyncError } from "./mailAccountSyncStateStore.js";
 import { reconcileImapAccount, type ImapMailClient } from "./imapReconcile.js";
 import { reconcileGmailAccount, type GmailMailClient } from "./gmailReconcile.js";
 import { reconcileGraphAccount, type GraphMailClient } from "./graphReconcile.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
-import { MailReauthorizationRequiredError } from "./providerTypes.js";
+import { MailConnectionLimitError, MailReauthorizationRequiredError } from "./providerTypes.js";
+import { connectionLimitBackoffSecondsForProvider, imapConnectionLimitForProvider, sharedImapConnectionLimiter, type ImapConnectionLimiter } from "./imapConnectionLimiter.js";
 import { findEmailsMissingSearchIndex, reindexItemSearch } from "./search.js";
 
 /**
@@ -120,8 +121,13 @@ export async function handleSyncMailAccountTask(
   adapters: MailSyncAdapterFactory,
   moduleIds: MailModuleIds,
   storage: BlobStorageWriter,
+  imapConnectionLimiter: ImapConnectionLimiter = sharedImapConnectionLimiter,
 ): Promise<void> {
   const { storage: trackedStorage, writtenKeys } = trackWrittenKeys(storage);
+  // Set inside the transaction below (if it gets that far) so the catch block's connection-limit
+  // backoff can still compute a provider-aware delay even though the transaction that read it
+  // has since been rolled back.
+  let mailboxProvider: string | undefined;
   try {
     const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, payload.mailboxItemId));
     if (!state) throw new Error(`Mailbox ${payload.mailboxItemId} has no mail_account_sync_state row — never connected`);
@@ -152,6 +158,7 @@ export async function handleSyncMailAccountTask(
       if (!folderProperty || !attachmentsProperty || !mailboxFolderProperty) {
         throw new Error("Email module schema is missing an expected relation property — was seedEmailModuleInTransaction run?");
       }
+      mailboxProvider = typeof mailboxItem?.properties.provider === "string" ? mailboxItem.properties.provider : undefined;
 
       const shared = {
         mailboxItemId: payload.mailboxItemId,
@@ -168,8 +175,11 @@ export async function handleSyncMailAccountTask(
 
       if (state.syncMode === "imap") {
         if (!adapters.createImapClient) throw new Error("No IMAP adapter configured for this composition root");
-        const imap = await adapters.createImapClient(payload.mailboxItemId, credential);
-        await reconcileImapAccount(client, imap, shared);
+        const connectionLimit = imapConnectionLimitForProvider(mailboxProvider, mailboxItem?.properties.connectionLimit);
+        await imapConnectionLimiter.run(payload.mailboxItemId, connectionLimit, async () => {
+          const imap = await adapters.createImapClient!(payload.mailboxItemId, credential);
+          await reconcileImapAccount(client, imap, shared);
+        });
       } else if (state.syncMode === "gmail_api") {
         if (!adapters.createGmailClient) throw new Error("No Gmail adapter configured for this composition root");
         const gmail = adapters.createGmailClient(payload.mailboxItemId, credential);
@@ -202,6 +212,21 @@ export async function handleSyncMailAccountTask(
     // failure needs its own, separate transaction, or an UPDATE inside the aborted one would
     // itself be rolled back along with everything else `withTransaction` undoes.
     const message = err instanceof Error ? err.message : String(err);
+
+    if (err instanceof MailConnectionLimitError) {
+      // The provider rejected this connection purely for having too many of this account's
+      // IMAP sessions open at once — contention, not an account failure, so `syncStatus` is
+      // deliberately left untouched. Recording the backoff through the same
+      // `next_expected_activity_at` column the sweep already reads, then returning instead of
+      // rethrowing, means the next attempt comes from that one delayed sweep pass rather than
+      // also stacking graphile-worker's own immediate retry on top of it — which would just
+      // reopen a connection and likely hit the same limit again before it has cleared.
+      await withTransaction(pool, (client) =>
+        recordConnectionLimitBackoff(client, payload.mailboxItemId, message, connectionLimitBackoffSecondsForProvider(mailboxProvider)),
+      );
+      return;
+    }
+
     // A revoked credential (issue #26: "a normal state, not a system error") gets its own
     // visible status so the worker's continued (bounded, backed-off) retries read as "waiting
     // on the user," not as a persistent failure indistinguishable from a flaky connection.

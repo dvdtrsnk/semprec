@@ -90,6 +90,10 @@ export async function seedEmailModuleInTransaction(
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "provider", name: "Provider", type: "select", owner: "user", config: selectConfig(["gmail", "outlook", "icloud", "generic"]) },
     { key: "addresses", name: "Addresses", type: "longText", owner: "user" },
+    // Overrides the sync worker's provider-derived default IMAP simultaneous-connection cap
+    // (imapConnectionLimiter.ts) — unset by default, since most accounts should just take the
+    // conservative per-provider default.
+    { key: "connectionLimit", name: "Connection limit", type: "number", owner: "user" },
     {
       key: "syncStatus",
       name: "Sync status",

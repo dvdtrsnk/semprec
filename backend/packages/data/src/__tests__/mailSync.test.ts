@@ -35,8 +35,10 @@ import { reconcileGraphAccount, type GraphMailClient } from "../mail/graphReconc
 import { handleMailSearchReindexSweepTask, handleSyncMailAccountTask, type MailSyncAdapterFactory } from "../mail/mailSyncJob.js";
 import { ensureMailAccountSyncState, getMailAccountSyncState, defaultSyncModeForProvider } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
-import { MailReauthorizationRequiredError } from "../mail/providerTypes.js";
-import { walkBodyStructure, parseHeaderBlock, headerValues } from "../mail/imapFlowClient.js";
+import { MailConnectionLimitError, MailReauthorizationRequiredError } from "../mail/providerTypes.js";
+import { walkBodyStructure, parseHeaderBlock, headerValues, ImapFlowMailClient, isImapConnectionLimitError } from "../mail/imapFlowClient.js";
+import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
+import type { ImapFlow } from "imapflow";
 import type { MessageStructureObject } from "imapflow";
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
@@ -111,7 +113,7 @@ describe("email module seed (issue #26)", () => {
     const emailsId = await databaseIdFor("emails");
 
     const mailboxProps = await chokePoint.listProperties(mailboxesId);
-    expect(mailboxProps.map((p) => p.key).sort()).toEqual(["addresses", "folders", "name", "provider", "syncStatus"]);
+    expect(mailboxProps.map((p) => p.key).sort()).toEqual(["addresses", "connectionLimit", "folders", "name", "provider", "syncStatus"]);
     expect(mailboxProps.find((p) => p.key === "syncStatus")).toMatchObject({ owner: "system", type: "select" });
 
     const folderProps = await chokePoint.listProperties(foldersId);
@@ -719,6 +721,7 @@ describe("IMAP reconcile core (issue #26)", () => {
       ],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [1, 2],
+      markSeen: async () => {},
       ...overrides,
     };
   }
@@ -1171,6 +1174,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [],
+      markSeen: async () => {},
     };
 
     const adapters: MailSyncAdapterFactory = { createImapClient: async () => failingImap };
@@ -1242,6 +1246,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => null,
       fetchAllUids: async () => [],
+      markSeen: async () => {},
     };
     await handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, { createImapClient: async () => passOneImap }, moduleIds, trackingStorage);
 
@@ -1275,6 +1280,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchAllUids: async () => {
         throw new Error("boom after the attachment was already written");
       },
+      markSeen: async () => {},
     };
 
     const adapters: MailSyncAdapterFactory = { createImapClient: async () => failingAfterAttachmentImap };
@@ -1307,6 +1313,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [],
+      markSeen: async () => {},
     };
     const adapters: MailSyncAdapterFactory = { createImapClient: async () => emptyImap };
 
@@ -1852,6 +1859,203 @@ describe("legacy Emails migration (issue #93)", () => {
 
     const meta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
     expect(meta?.migrationStatus).toBe("partial");
+  });
+});
+
+describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
+  function fakeImapFlow(overrides: Partial<Record<string, unknown>> = {}): ImapFlow {
+    const calls: string[] = [];
+    return {
+      capabilities: new Map(),
+      calls,
+      async mailboxOpen(path: string) {
+        calls.push(`mailboxOpen:${path}`);
+        return { uidValidity: 1n, uidNext: 3, highestModseq: undefined, noModseq: true };
+      },
+      async download() {
+        calls.push("download");
+        return { content: (async function* () {})() };
+      },
+      fetch() {
+        calls.push("fetch");
+        return (async function* () {})();
+      },
+      async messageFlagsAdd(range: string, flags: string[]) {
+        calls.push(`messageFlagsAdd:${range}:${flags.join(",")}`);
+        return true;
+      },
+      on() {},
+      off() {},
+      ...overrides,
+    } as unknown as ImapFlow;
+  }
+
+  it("never calls messageFlagsAdd while fetching message bodies in the background", async () => {
+    const raw = fakeImapFlow() as unknown as { calls: string[] };
+    const client = new ImapFlowMailClient(raw as unknown as ImapFlow);
+
+    await client.fetchMessagesSince("INBOX", 1);
+
+    expect(raw.calls.some((c) => c.startsWith("messageFlagsAdd"))).toBe(false);
+  });
+
+  it("markSeen — the only explicit mark-read path — issues STORE +FLAGS (\\Seen) for the given UID", async () => {
+    const raw = fakeImapFlow() as unknown as { calls: string[] };
+    const client = new ImapFlowMailClient(raw as unknown as ImapFlow);
+
+    await client.markSeen("INBOX", 42);
+
+    expect(raw.calls).toEqual(["mailboxOpen:INBOX", "messageFlagsAdd:42:\\Seen"]);
+  });
+
+  it("isImapConnectionLimitError recognizes a provider's simultaneous-connection BYE, not an ordinary connection failure", () => {
+    const gmailBye = Object.assign(new Error("Connection closed"), { code: "ClosedAfterConnectText", reason: "Too many simultaneous connections." });
+    const genericPhrase = new Error("Login failed: too many concurrent connections for this account");
+    const unrelated = new Error("ECONNREFUSED");
+
+    expect(isImapConnectionLimitError(gmailBye)).toBe(true);
+    expect(isImapConnectionLimitError(genericPhrase)).toBe(true);
+    expect(isImapConnectionLimitError(unrelated)).toBe(false);
+    expect(isImapConnectionLimitError("not an error")).toBe(false);
+  });
+});
+
+describe("per-account IMAP concurrency limiter (issue #94)", () => {
+  it("never runs more than `limit` tasks concurrently for the same account", async () => {
+    const limiter = createImapConnectionLimiter();
+    let active = 0;
+    let maxActive = 0;
+    const task = () =>
+      limiter.run("account-1", 2, async () => {
+        active++;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        active--;
+      });
+
+    await Promise.all([task(), task(), task(), task(), task()]);
+
+    expect(maxActive).toBeLessThanOrEqual(2);
+  });
+
+  it("does not bound one account's concurrency by another account's limit", async () => {
+    const limiter = createImapConnectionLimiter();
+    let activeA = 0;
+    let maxActiveA = 0;
+    let activeB = 0;
+    let maxActiveB = 0;
+
+    const taskA = () =>
+      limiter.run("account-a", 1, async () => {
+        activeA++;
+        maxActiveA = Math.max(maxActiveA, activeA);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        activeA--;
+      });
+    const taskB = () =>
+      limiter.run("account-b", 3, async () => {
+        activeB++;
+        maxActiveB = Math.max(maxActiveB, activeB);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        activeB--;
+      });
+
+    await Promise.all([taskA(), taskA(), taskA(), taskB(), taskB(), taskB()]);
+
+    expect(maxActiveA).toBe(1);
+    expect(maxActiveB).toBe(3);
+  });
+});
+
+describe("mail sync connection-limit backoff (issue #94)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  it("schedules a delayed retry through persisted sync state instead of rethrowing, on a connection-limit rejection", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M", provider: "gmail" } }),
+    );
+    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
+    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+
+    const adapters: MailSyncAdapterFactory = {
+      createImapClient: async () => {
+        throw new MailConnectionLimitError("Too many simultaneous connections.");
+      },
+    };
+
+    // Resolves rather than rejecting: a connection-limit rejection is contention, not a hard
+    // failure, and must not also trigger graphile-worker's own immediate job retry on top of
+    // the delayed sweep-driven retry recorded below.
+    await handleSyncMailAccountTask(
+      pool,
+      { mailboxItemId: mailbox.id },
+      adapters,
+      { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+      noopStorage,
+    );
+
+    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
+    expect(state?.lastError).toBe("Too many simultaneous connections.");
+    expect(state?.nextExpectedActivityAt).toBeTruthy();
+    // Gmail's provider-aware backoff (10 minutes) is well past the generic 15-minute window's
+    // midpoint, distinguishing it from `recordSyncError`'s fixed backoff.
+    expect(new Date(state!.nextExpectedActivityAt!).getTime()).toBeGreaterThan(Date.now() + 8 * 60 * 1000);
+
+    // Not an account failure — syncStatus is left exactly as it was (never initialized to 'error').
+    const item = await withTransaction(pool, (client) => client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]));
+    expect(item.rows[0].properties.syncStatus).toBeUndefined();
+  });
+
+  it("routes a real IMAP connection attempt through the injected per-account connection limiter", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M", provider: "gmail" } }),
+    );
+    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
+    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+
+    const emptyImap: ImapMailClient = {
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+      fetchMessagesSince: async () => [],
+      fetchVanishedSince: async () => [],
+      fetchAllUids: async () => [],
+      markSeen: async () => {},
+    };
+
+    const runCalls: Array<{ accountId: string; limit: number }> = [];
+    const recordingLimiter = {
+      run: <T>(accountId: string, limit: number, task: () => Promise<T>) => {
+        runCalls.push({ accountId, limit });
+        return task();
+      },
+    };
+
+    await handleSyncMailAccountTask(
+      pool,
+      { mailboxItemId: mailbox.id },
+      { createImapClient: async () => emptyImap },
+      { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+      noopStorage,
+      recordingLimiter,
+    );
+
+    expect(runCalls).toEqual([{ accountId: mailbox.id, limit: 5 }]); // Gmail's provider default
   });
 });
 
