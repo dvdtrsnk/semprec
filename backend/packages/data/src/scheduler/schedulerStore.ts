@@ -4,6 +4,7 @@ import { NotFoundError } from "../errors.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { computeNextFireAt } from "./nextFireAt.js";
 import { heartbeatRuleSchema, isOnItemEventRule, type HeartbeatRule } from "./rule.js";
+import type { ActionQueueAffinity } from "./actions.js";
 
 export interface HeartbeatRow {
   id: string;
@@ -144,9 +145,10 @@ export async function triggerOnItemEventHeartbeats(
   databaseId: string,
   event: "create" | "update" | "delete",
   itemId: string,
+  queueAffinity: ActionQueueAffinity = new Map(),
 ): Promise<void> {
-  const { rows } = await client.query<{ id: string }>(
-    `SELECT id FROM project_heartbeats
+  const { rows } = await client.query<{ id: string; action_id: string }>(
+    `SELECT id, action_id FROM project_heartbeats
      WHERE enabled
        AND rule ->> 'kind' = 'onItemEvent'
        AND rule ->> 'databaseId' = $1
@@ -158,7 +160,7 @@ export async function triggerOnItemEventHeartbeats(
       client,
       CORE_TASK_NAMES.HEARTBEAT_FIRE,
       { heartbeatId: row.id, itemId },
-      { jobKey: heartbeatFireJobKey(row.id, itemId), maxAttempts: 3 },
+      { jobKey: heartbeatFireJobKey(row.id, itemId), maxAttempts: 3, queueName: queueAffinity.get(row.action_id) },
     );
   }
 }

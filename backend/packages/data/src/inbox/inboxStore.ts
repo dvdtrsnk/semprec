@@ -1,6 +1,7 @@
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
 import { createItemWithClient, createRelationWithClient } from "../chokePoint/chokePoint.js";
+import type { ActionQueueAffinity } from "../scheduler/actions.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
 import { assertValidTimezone } from "../timezone.js";
@@ -19,6 +20,8 @@ export interface CreateInboxItemInput {
   /** An Inbox item type's id, or omitted — an untyped item is valid (issue #100's `needsClarification`). */
   type?: string;
   idempotencyKey?: string;
+  /** Queue affinity to route the `semprec.tick` onItemEvent heartbeat-fire job to (issue #103). */
+  queueAffinity?: ActionQueueAffinity;
 }
 
 async function getRelationProperty(client: PoolClient, databaseId: string, key: string) {
@@ -47,15 +50,19 @@ export async function createInboxItemWithClient(client: PoolClient, input: Creat
   if (!input.time) throw new ValidationError("Inbox items require 'time'", { field: "time" });
   assertValidTimezone(input.timezone);
 
-  const item = await createItemWithClient(client, {
-    databaseId: input.inboxDatabaseId,
-    properties: {
-      date: input.date,
-      time: input.time,
-      ...(input.text !== undefined ? { text: input.text } : {}),
+  const item = await createItemWithClient(
+    client,
+    {
+      databaseId: input.inboxDatabaseId,
+      properties: {
+        date: input.date,
+        time: input.time,
+        ...(input.text !== undefined ? { text: input.text } : {}),
+      },
+      idempotencyKey: input.idempotencyKey,
     },
-    idempotencyKey: input.idempotencyKey,
-  });
+    { queueAffinity: input.queueAffinity },
+  );
 
   if (input.type) {
     const typeProperty = await getRelationProperty(client, input.inboxDatabaseId, "type");

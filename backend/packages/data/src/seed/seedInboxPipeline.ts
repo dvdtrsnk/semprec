@@ -9,6 +9,8 @@ import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import { INBOX_ITEM_TYPES_MODULE_ID, INBOX_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "./inboxPipelineKeys.js";
 import { TEN_DATABASE_MODULE_IDS } from "./tenDatabaseKeys.js";
 import { PROCESSING_METHODS } from "../inbox/inboxTypesStore.js";
+import { createHeartbeat } from "../scheduler/schedulerStore.js";
+import { SEMPREC_TICK_ACTION_ID } from "../inbox/inboxTickAction.js";
 
 function selectConfig(options: string[]): Record<string, unknown> {
   return { options };
@@ -46,10 +48,11 @@ export interface InboxPipelineDatabases {
  * (needs Journal for `journalDay` and Transcripts for `sourceTranscript`) and after the
  * Semprec project item exists (see seedSystem.ts).
  *
- * The baseline schema, ownership, canonical keys, the Journal relation, and (issue #102)
- * types' `processingMethod`/`targetDatabase` are in scope here — the event-driven tick
- * (#103), fingerprinting/proposal computation (#223), and the confirm/reject/revise
- * endpoints (#105) are later issues in the series and are not implemented by this seed.
+ * The baseline schema, ownership, canonical keys, the Journal relation, (issue #102)
+ * types' `processingMethod`/`targetDatabase`, and (issue #103) the Inbox
+ * `onItemEvent`/`semprec.tick` dispatch heartbeats are in scope here — fingerprinting/
+ * proposal computation (#223) and the confirm/reject/revise endpoints (#105) are later
+ * issues in the series and are not implemented by this seed.
  */
 export async function seedInboxPipelineInTransaction(
   client: PoolClient,
@@ -147,6 +150,20 @@ export async function seedInboxPipelineInTransaction(
     cardinality: "one_to_many",
     owner: "system",
   });
+
+  // Issue #103: react to a changed Inbox item without periodically scanning the whole
+  // database. One heartbeat row per event kind — `onItemEventRule.event` is a single enum,
+  // not an array — each dispatching the same `semprec.tick` action; the actual proposal
+  // computation is issue #223's scope, not this seed's.
+  for (const event of ["create", "update", "delete"] as const) {
+    await createHeartbeat(client, {
+      projectItemId: semprecProjectItemId,
+      name: `Inbox tick (${event})`,
+      rule: { kind: "onItemEvent", databaseId: inbox.id, event },
+      actionId: SEMPREC_TICK_ACTION_ID,
+      actionConfig: { inboxDatabaseId: inbox.id },
+    });
+  }
 
   const all: InboxPipelineDatabases = { inbox, inboxItemTypes, processingProposals };
   await client.query(`UPDATE databases SET schema_locked = true WHERE id = ANY($1::uuid[])`, [[inbox.id, inboxItemTypes.id, processingProposals.id]]);
