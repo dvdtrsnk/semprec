@@ -18,6 +18,18 @@ export function createActionRegistry(): ActionRegistry {
   return new Map();
 }
 
+/**
+ * Graphile-worker queue affinity (`queue_name`) per action id: jobs sharing a queue name
+ * serialize against each other, never running concurrently. An action with no entry here
+ * enqueues on the default, unaffinitized queue. Same "temporary stand-in" caveat as
+ * `ActionRegistry` above — issue #29's module registry is the eventual real home for this.
+ */
+export type ActionQueueAffinity = Map<string, string>;
+
+export function createActionQueueAffinity(): ActionQueueAffinity {
+  return new Map();
+}
+
 export type RunAgentFn = (input: { agentRunId: string; projectItemId: string; task: string }) => Promise<{ result?: string } | void>;
 
 /**

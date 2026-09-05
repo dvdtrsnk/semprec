@@ -19,6 +19,7 @@ import { enqueueRollupBackfill, enqueueRollupRecompute } from "../rollup/recompu
 import { assertRelationDeletable, assertSourceRetypeAllowed } from "../rollup/mirror.js";
 import { enqueuePropertyTypeMigration, isConversionSupported } from "../migrationJob/propertyTypeMigration.js";
 import { triggerOnItemEventHeartbeats, recomputeAllForTimezoneChange } from "../scheduler/schedulerStore.js";
+import { createActionQueueAffinity, type ActionQueueAffinity } from "../scheduler/actions.js";
 import { getSystemSettingsItemId } from "../systemSettings.js";
 import { createComputedKeyRegistry, type ComputedKeyRegistry } from "./computedKeyRegistry.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "./viewTypeRegistry.js";
@@ -217,7 +218,10 @@ async function resolveFilterSql(
   return buildFilterSqlForDatabase(client, databaseId, options.filter);
 }
 
-export interface CreateItemWithClientOptions extends AssertWritablePropertiesOptions {}
+export interface CreateItemWithClientOptions extends AssertWritablePropertiesOptions {
+  /** Queue affinity to route the onItemEvent heartbeat-fire job to, looked up by the matched heartbeat's action id. */
+  queueAffinity?: ActionQueueAffinity;
+}
 
 export interface CreateItemInput {
   databaseId: string;
@@ -243,7 +247,7 @@ export async function createItemWithClient(client: PoolClient, input: CreateItem
     properties: input.properties ?? {},
     idempotencyKey: input.idempotencyKey,
   });
-  await triggerOnItemEventHeartbeats(client, input.databaseId, "create", item.id);
+  await triggerOnItemEventHeartbeats(client, input.databaseId, "create", item.id, options.queueAffinity);
   return item;
 }
 
@@ -254,7 +258,10 @@ export interface UpdateItemInput {
   ifVersion?: string;
 }
 
-export interface UpdateItemWithClientOptions extends AssertWritablePropertiesOptions {}
+export interface UpdateItemWithClientOptions extends AssertWritablePropertiesOptions {
+  /** Queue affinity to route the onItemEvent heartbeat-fire job to, looked up by the matched heartbeat's action id. */
+  queueAffinity?: ActionQueueAffinity;
+}
 
 /**
  * The item-update logic, factored out for the same reason as `createItemWithClient` above.
@@ -275,7 +282,7 @@ export async function updateItemWithClient(client: PoolClient, input: UpdateItem
     propertiesPatch: input.propertiesPatch,
     ifVersion: input.ifVersion,
   });
-  await triggerOnItemEventHeartbeats(client, input.databaseId, "update", item.id);
+  await triggerOnItemEventHeartbeats(client, input.databaseId, "update", item.id, options.queueAffinity);
 
   for (const key of patchKeys) {
     const dependencies = await findDependenciesBySource(client, input.databaseId, key);
@@ -358,6 +365,7 @@ export function createChokePoint(
   pool: Pool,
   computedKeyRegistry: ComputedKeyRegistry = createComputedKeyRegistry(),
   viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry(),
+  queueAffinity: ActionQueueAffinity = createActionQueueAffinity(),
 ) {
   return {
     // ---- databases ----
@@ -494,11 +502,11 @@ export function createChokePoint(
 
     // ---- items ----
     async createItem(input: CreateItemInput): Promise<ItemRow> {
-      return withTransaction(pool, (client) => createItemWithClient(client, input));
+      return withTransaction(pool, (client) => createItemWithClient(client, input, { queueAffinity }));
     },
 
     async updateItem(input: UpdateItemInput): Promise<ItemRow> {
-      return withTransaction(pool, (client) => updateItemWithClient(client, input));
+      return withTransaction(pool, (client) => updateItemWithClient(client, input, { queueAffinity }));
     },
 
     async getItem(databaseId: string, itemId: string): Promise<ItemRow | null> {
@@ -541,7 +549,7 @@ export function createChokePoint(
 
         const item = await itemsStore.softDeleteItem(client, databaseId, itemId);
         if (!item) return null;
-        await triggerOnItemEventHeartbeats(client, databaseId, "delete", itemId);
+        await triggerOnItemEventHeartbeats(client, databaseId, "delete", itemId, queueAffinity);
         const edges = await relationsStore.listAllRelationsForItem(client, itemId);
         for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
         return item;
