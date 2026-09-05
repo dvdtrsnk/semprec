@@ -54,6 +54,15 @@ export * from "./seed/tenDatabaseKeys.js";
 export { seedTenDatabasesInTransaction, type TenDatabases } from "./seed/seedTenDatabases.js";
 export * from "./systemSettings.js";
 export { createCoreTaskList, CORE_CRONTAB } from "./worker.js";
+export {
+  createMailLiveSyncRoot,
+  createNoopMailLiveSyncLifecycleFactory,
+  type MailAccountLifecycle,
+  type MailLiveSyncAccount,
+  type MailLiveSyncLifecycleFactory,
+  type MailLiveSyncRoot,
+  type MailLiveSyncRootOptions,
+} from "./mail/mailLiveSyncRoot.js";
 export * from "./realtimeHook.js";
 
 export { createDocStore, type DocStore, type DocVersion } from "./docs/docStore.js";
