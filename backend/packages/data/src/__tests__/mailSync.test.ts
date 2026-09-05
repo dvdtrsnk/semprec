@@ -38,6 +38,7 @@ import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { MailConnectionLimitError, MailReauthorizationRequiredError } from "../mail/providerTypes.js";
 import { walkBodyStructure, parseHeaderBlock, headerValues, ImapFlowMailClient, isImapConnectionLimitError } from "../mail/imapFlowClient.js";
 import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
+import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG, messageFlagProperties } from "../mail/messageFlags.js";
 import type { ImapFlow } from "imapflow";
 import type { MessageStructureObject } from "imapflow";
 import { createHash, randomUUID } from "node:crypto";
@@ -124,6 +125,7 @@ describe("email module seed (issue #26)", () => {
       "attachments",
       "body",
       "date",
+      "flagged",
       "folder",
       "name",
       "read",
@@ -133,6 +135,10 @@ describe("email module seed (issue #26)", () => {
       "senderPeople",
     ]);
     expect(emailProps.find((p) => p.key === "sender")).toMatchObject({ owner: "system" });
+    // The two triage flags are the exception: user state, written through the generic
+    // item-update path by the mailbox client (issue #97).
+    expect(emailProps.find((p) => p.key === "read")).toMatchObject({ owner: "user", type: "checkbox" });
+    expect(emailProps.find((p) => p.key === "flagged")).toMatchObject({ owner: "user", type: "checkbox" });
   });
 
   it("adds People.emails as a new, user-owned property on the already schema-locked People database", async () => {
@@ -331,6 +337,80 @@ describe("message ingest dedup (issue #26)", () => {
 
     const { rows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [emailsId]);
     expect(Number(rows[0].count)).toBe(1);
+  });
+});
+
+describe("mailbox triage flags (issue #97)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  async function ingestInput(overrides: Partial<Parameters<typeof ingestEmailMessage>[1]> = {}) {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const properties = await chokePoint.listProperties(emailsId);
+    const folder = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+    );
+    return {
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      folderRelationPropertyId: properties.find((p) => p.key === "folder")!.id,
+      attachmentsRelationPropertyId: properties.find((p) => p.key === "attachments")!.id,
+      folderItemId: folder.id,
+      messageId: "<flags@x>",
+      envelope: {},
+      attachments: [],
+      storage: noopStorage,
+      storageKeyPrefix: "test",
+      ...overrides,
+    };
+  }
+
+  it("maps IMAP \\Seen/\\Flagged onto the read/flagged properties, case-insensitively, and leaves both absent without flags", () => {
+    expect(messageFlagProperties(["\\Seen", "\\Answered"])).toEqual({ read: true, flagged: false });
+    expect(messageFlagProperties(["\\flagged"])).toEqual({ read: false, flagged: true });
+    expect(messageFlagProperties([])).toEqual({ read: false, flagged: false });
+    expect(messageFlagProperties(undefined)).toEqual({});
+  });
+
+  it("seeds a newly ingested message's read/flag state from the flags the server reported", async () => {
+    const input = await ingestInput({ flags: [IMAP_SEEN_FLAG, IMAP_FLAGGED_FLAG] });
+    const { itemId } = await withTransaction(pool, (client) => ingestEmailMessage(client, input));
+
+    const item = await chokePoint.getItem(input.emailsDatabaseId, itemId);
+    expect(item?.properties).toMatchObject({ read: true, flagged: true });
+  });
+
+  it("does not overwrite the user's own triage state when the same message is ingested again", async () => {
+    const input = await ingestInput({ flags: [] });
+    const { itemId } = await withTransaction(pool, (client) => ingestEmailMessage(client, input));
+    await chokePoint.updateItem({ databaseId: input.emailsDatabaseId, itemId, propertiesPatch: { read: true } });
+
+    await withTransaction(pool, (client) => ingestEmailMessage(client, input));
+
+    const item = await chokePoint.getItem(input.emailsDatabaseId, itemId);
+    expect(item?.properties.read).toBe(true);
+  });
+
+  it("accepts read/flagged through the generic update path while still refusing an owner:'system' field", async () => {
+    const input = await ingestInput();
+    const { itemId } = await withTransaction(pool, (client) => ingestEmailMessage(client, input));
+
+    const updated = await chokePoint.updateItem({
+      databaseId: input.emailsDatabaseId,
+      itemId,
+      propertiesPatch: { read: true, flagged: true },
+    });
+    expect(updated.properties).toMatchObject({ read: true, flagged: true });
+
+    await expect(
+      chokePoint.updateItem({ databaseId: input.emailsDatabaseId, itemId, propertiesPatch: { sender: "spoofed@example.com" } }),
+    ).rejects.toMatchObject({ name: "ForbiddenError" });
   });
 });
 
@@ -722,7 +802,7 @@ describe("IMAP reconcile core (issue #26)", () => {
       ],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [1, 2],
-      markSeen: async () => {},
+      setMessageFlag: async () => {},
       ...overrides,
     };
   }
@@ -1175,7 +1255,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [],
-      markSeen: async () => {},
+      setMessageFlag: async () => {},
     };
 
     const adapters: MailSyncAdapterFactory = { createImapClient: async () => failingImap };
@@ -1247,7 +1327,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => null,
       fetchAllUids: async () => [],
-      markSeen: async () => {},
+      setMessageFlag: async () => {},
     };
     await handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, { createImapClient: async () => passOneImap }, moduleIds, trackingStorage);
 
@@ -1281,7 +1361,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchAllUids: async () => {
         throw new Error("boom after the attachment was already written");
       },
-      markSeen: async () => {},
+      setMessageFlag: async () => {},
     };
 
     const adapters: MailSyncAdapterFactory = { createImapClient: async () => failingAfterAttachmentImap };
@@ -1314,7 +1394,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [],
-      markSeen: async () => {},
+      setMessageFlag: async () => {},
     };
     const adapters: MailSyncAdapterFactory = { createImapClient: async () => emptyImap };
 
@@ -1892,6 +1972,10 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
         calls.push(`messageFlagsAdd:${range}:${flags.join(",")}`);
         return true;
       },
+      async messageFlagsRemove(range: string, flags: string[]) {
+        calls.push(`messageFlagsRemove:${range}:${flags.join(",")}`);
+        return true;
+      },
       on() {},
       off() {},
       ...overrides,
@@ -1912,13 +1996,19 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
     expect(raw.calls.some((c) => c.startsWith("messageFlagsAdd"))).toBe(false);
   });
 
-  it("markSeen — the only explicit mark-read path — issues STORE +FLAGS (\\Seen) for the given UID", async () => {
+  it("setMessageFlag — the only explicit flag-writing path — issues STORE +FLAGS / -FLAGS for the given UID", async () => {
     const raw = fakeImapFlow() as unknown as { calls: string[] };
     const client = new ImapFlowMailClient(raw as unknown as ImapFlow);
 
-    await client.markSeen("INBOX", 42);
+    await client.setMessageFlag("INBOX", 42, IMAP_SEEN_FLAG, true);
+    await client.setMessageFlag("INBOX", 42, IMAP_FLAGGED_FLAG, false);
 
-    expect(raw.calls).toEqual(["mailboxOpen:INBOX", "messageFlagsAdd:42:\\Seen"]);
+    expect(raw.calls).toEqual([
+      "mailboxOpen:INBOX",
+      "messageFlagsAdd:42:\\Seen",
+      "mailboxOpen:INBOX",
+      "messageFlagsRemove:42:\\Flagged",
+    ]);
   });
 
   it("isImapConnectionLimitError recognizes a provider's simultaneous-connection BYE, not an ordinary connection failure", () => {
@@ -2095,7 +2185,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [],
-      markSeen: async () => {},
+      setMessageFlag: async () => {},
     };
 
     const runCalls: Array<{ accountId: string; limit: number }> = [];
@@ -2137,7 +2227,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [],
-      markSeen: async () => {},
+      setMessageFlag: async () => {},
     };
 
     const runCalls: Array<{ accountId: string; limit: number }> = [];

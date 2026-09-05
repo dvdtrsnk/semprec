@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { FilterNode, SortSpec } from "../../api/genericOperations.js";
+import type { FilterNode, Item, SortSpec } from "../../api/genericOperations.js";
 
 /**
  * The client-side parse of a `mailbox-client` view's config. It mirrors the backend's
@@ -11,6 +11,7 @@ export const mailboxConfigSchema = z.object({
   foldersDatabaseId: z.string().min(1),
   folderRelationKey: z.string().min(1).default("folder"),
   readPropertyKey: z.string().min(1).default("read"),
+  flaggedPropertyKey: z.string().min(1).default("flagged"),
   mailboxesDatabaseId: z.string().min(1).optional(),
   mailboxItemId: z.string().min(1).optional(),
   mailboxRelationKey: z.string().min(1).default("mailbox"),
@@ -47,4 +48,16 @@ export function foldersFilter(config: MailboxConfig): FilterNode | undefined {
 
 export function messageSort(config: MailboxConfig): SortSpec[] {
   return config.sort;
+}
+
+/**
+ * Where archive and delete move a message to: the folder carrying the matching
+ * `specialPurpose`, the same stable semantic key the sidebar already sorts by — never a
+ * folder matched by its (localized, user-renameable) name.
+ */
+export const ARCHIVE_FOLDER_PURPOSE = "archive";
+export const TRASH_FOLDER_PURPOSE = "trash";
+
+export function folderByPurpose(folders: readonly Item[], purpose: string): Item | null {
+  return folders.find((folder) => folder.properties.specialPurpose === purpose) ?? null;
 }

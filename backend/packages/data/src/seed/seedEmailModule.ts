@@ -85,7 +85,7 @@ export async function seedEmailModuleInTransaction(
       agents:
         "Purpose: keep synced mailboxes/folders/messages consistent and link messages to People deterministically.\n" +
         "Allowed: read Mailboxes/Folders/Emails via the generic list/get endpoints; call email.draft.create freely — drafting never requires confirmation.\n" +
-        "Not allowed: write any Mailboxes/Folders/Emails property directly outside email.draft.create — every field is owner: 'system', written only by the sync worker or the draft/send path (mail/ingest.ts, mail/draft.ts, mail/send.ts). Calling email.send without this project's capabilities.email.send.autonomous grant ends in a 403; the draft is left unchanged, not queued for approval.\n" +
+        "Not allowed: write any Mailboxes/Folders/Emails property directly outside email.draft.create — every field except the user-owned Emails.read/Emails.flagged triage flags is owner: 'system', written only by the sync worker or the draft/send path (mail/ingest.ts, mail/draft.ts, mail/send.ts). Calling email.send without this project's capabilities.email.send.autonomous grant ends in a 403; the draft is left unchanged, not queued for approval.\n" +
         "General instructions: this project's only agent-facing write surface is drafting and (when explicitly granted) sending mail; it otherwise exists to host the sync worker's heartbeats.",
     },
   });
@@ -139,11 +139,13 @@ export async function seedEmailModuleInTransaction(
     { key: "recipients", name: "Recipients", type: "text", owner: "system" },
     { key: "body", name: "Body", type: "longText", owner: "system" },
     { key: "date", name: "Date", type: "date", owner: "system", config: { includeTime: true } },
-    // Read state as an ordinary generic property (issue #96 needs it to show unread counts;
-    // marking a message read is issue #97's triage action, and reconciling it back over IMAP
-    // is the live-sync issue's). owner:'system' like every other Emails field — written only
-    // by those code paths, never through the generic update path.
-    { key: "read", name: "Read", type: "checkbox", owner: "system" },
+    // Read and flag state as ordinary generic properties, mirroring the canonical IMAP
+    // `\\Seen`/`\\Flagged` flags (mail/messageFlags.ts): the sync worker seeds them from the
+    // flags a message arrives with, and the mailbox's triage actions (issue #97) set them
+    // afterwards. owner:'user' — unlike every other Emails field, these two are user state,
+    // written through the ordinary generic item-update path rather than by a sync-only writer.
+    { key: "read", name: "Read", type: "checkbox", owner: "user" },
+    { key: "flagged", name: "Flagged", type: "checkbox", owner: "user" },
   ]);
   const folderRelation = await relate({
     databaseId: emails.id,
@@ -175,6 +177,7 @@ export async function seedEmailModuleInTransaction(
         foldersDatabaseId: folders.id,
         folderRelationKey: folderRelation.property.key,
         readPropertyKey: "read",
+        flaggedPropertyKey: "flagged",
         mailboxesDatabaseId: mailboxes.id,
         mailboxRelationKey: "mailbox",
         sort: [{ property: "date", direction: "desc" }],

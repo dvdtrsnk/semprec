@@ -85,4 +85,12 @@ export interface FetchedMessage {
   envelopeTo?: string | null;
   /** True when this message's top-level Content-Type is `multipart/report; report-type=delivery-status` (mail/dsn.ts) — a DSN/bounce, not an ordinary human reply. */
   isDsn?: boolean;
+  /**
+   * The IMAP flags the message carries in the folder it was fetched from (`\Seen`,
+   * `\Flagged`, …) — mail/ingest.ts maps the two the mailbox models (mail/messageFlags.ts)
+   * onto the new item's `read`/`flagged` properties. `undefined` on the Gmail/Graph REST
+   * adapters, which report read state in their own vocabularies; both properties are then
+   * simply absent, which the mailbox reads as unread and unflagged.
+   */
+  flags?: string[];
 }

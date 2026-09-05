@@ -2,9 +2,10 @@ import { z } from "zod";
 
 /**
  * The generic backend operations the web client is allowed to call. These mirror the
- * choke-point's own generic surface (`listItems`/`countItems`/`getItem`/`getView`) one to
- * one — deliberately: a view renderer reads its data through these and nothing else, so no
- * view can grow a private read path of its own into a specific module's tables.
+ * choke-point's own generic surface (`listItems`/`countItems`/`getItem`/`getView`, plus
+ * `updateItem` and the relation link/unlink pair) one to one — deliberately: a view renderer
+ * reads and writes its data through these and nothing else, so no view can grow a private
+ * path of its own into a specific module's tables.
  */
 
 export const itemSchema = z.object({
@@ -64,6 +65,12 @@ export interface GenericOperations {
   countItems(databaseId: string, request?: Pick<ListItemsRequest, "filter">): Promise<number>;
   getItem(databaseId: string, itemId: string): Promise<Item | null>;
   getView(viewId: string): Promise<View>;
+  /** Patches user-owned scalar properties of one item; the backend rejects anything else. */
+  updateItem(databaseId: string, itemId: string, propertiesPatch: Record<string, unknown>): Promise<Item>;
+  /** Adds one edge on the named relation property. Linking an already-linked pair is a no-op, not a failure. */
+  linkItem(databaseId: string, itemId: string, relationKey: string, targetItemId: string): Promise<void>;
+  /** Removes one edge on the named relation property; removing an absent edge is likewise a no-op. */
+  unlinkItem(databaseId: string, itemId: string, relationKey: string, targetItemId: string): Promise<void>;
 }
 
 /**

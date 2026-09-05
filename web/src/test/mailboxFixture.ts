@@ -17,6 +17,7 @@ export const mailboxView: View = {
     foldersDatabaseId: FOLDERS_DATABASE_ID,
     folderRelationKey: "folder",
     readPropertyKey: "read",
+    flaggedPropertyKey: "flagged",
     mailboxesDatabaseId: MAILBOXES_DATABASE_ID,
     mailboxItemId: MAILBOX_ITEM_ID,
     mailboxRelationKey: "mailbox",
@@ -24,7 +25,7 @@ export const mailboxView: View = {
   },
 };
 
-/** One mailbox with an Inbox (three messages, two unread) and an empty Archive. */
+/** One mailbox with an Inbox (three messages, two unread) and empty Archive and Trash folders. */
 export function createMailboxBackend(): FakeBackend {
   return {
     views: [mailboxView],
@@ -32,6 +33,7 @@ export function createMailboxBackend(): FakeBackend {
       { id: MAILBOX_ITEM_ID, databaseId: MAILBOXES_DATABASE_ID, properties: { name: "Personal" } },
       { id: "folder-inbox", databaseId: FOLDERS_DATABASE_ID, properties: { name: "Inbox", specialPurpose: "inbox" } },
       { id: "folder-archive", databaseId: FOLDERS_DATABASE_ID, properties: { name: "Archive", specialPurpose: "archive" } },
+      { id: "folder-trash", databaseId: FOLDERS_DATABASE_ID, properties: { name: "Trash", specialPurpose: "trash" } },
       { id: "folder-other-account", databaseId: FOLDERS_DATABASE_ID, properties: { name: "Work inbox", specialPurpose: "inbox" } },
       {
         id: "email-1",
@@ -46,12 +48,13 @@ export function createMailboxBackend(): FakeBackend {
       {
         id: "email-3",
         databaseId: EMAILS_DATABASE_ID,
-        properties: { name: "Newsletter", sender: "news@example.com", recipients: "me@example.com", body: "Read on.", date: "2026-02-27T10:00:00.000Z", read: true },
+        properties: { name: "Newsletter", sender: "news@example.com", recipients: "me@example.com", body: "Read on.", date: "2026-02-27T10:00:00.000Z", read: true, flagged: true },
       },
     ],
     relations: [
       { property: "mailbox", itemId: "folder-inbox", targetItemId: MAILBOX_ITEM_ID },
       { property: "mailbox", itemId: "folder-archive", targetItemId: MAILBOX_ITEM_ID },
+      { property: "mailbox", itemId: "folder-trash", targetItemId: MAILBOX_ITEM_ID },
       { property: "folder", itemId: "email-1", targetItemId: "folder-inbox" },
       { property: "folder", itemId: "email-2", targetItemId: "folder-inbox" },
       { property: "folder", itemId: "email-3", targetItemId: "folder-inbox" },

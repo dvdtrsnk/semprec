@@ -7,6 +7,7 @@ import { ingestAttachments, type ClassifiedAttachment } from "./attachments.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import { reindexItemSearch } from "./search.js";
 import { resolveDeliveredToAddress } from "./deliveredTo.js";
+import { messageFlagProperties } from "./messageFlags.js";
 
 /** Shared with mail/draft.ts and mail/send.ts, whose draft/outgoing display fields are formatted identically to a synced message's. */
 export function formatAddress(address: MailEnvelopeAddress): string {
@@ -22,7 +23,7 @@ function htmlToSearchText(html: string): string {
   return sanitizeHtml(html, { allowedTags: [], allowedAttributes: {} });
 }
 
-/** Every Emails property this issue defines is `owner: 'system'` (see seedEmailModule.ts) — the sync worker mirrors the real mailbox, so nothing here is user-editable. */
+/** The Emails properties the sync worker mirrors from the real mailbox are `owner: 'system'` (see seedEmailModule.ts) — not user-editable, hence written through this escape hatch. `read`/`flagged` are deliberately absent: those two are owner:'user' (issue #97) and need no exemption. */
 export const EMAIL_INGEST_ALLOWED_SYSTEM_KEYS = ["name", "sender", "recipients", "body", "date"];
 
 export interface IngestEmailMessageInput {
@@ -54,6 +55,8 @@ export interface IngestEmailMessageInput {
   envelopeTo?: string | null;
   /** True for a multipart/report;report-type=delivery-status DSN/bounce (mail/dsn.ts) — distinguished from an ordinary human reply. */
   isDsn?: boolean;
+  /** The message's IMAP flags, when the adapter reports them — see FetchedMessage.flags (providerTypes.ts). */
+  flags?: string[];
 }
 
 export interface IngestEmailMessageResult {
@@ -99,6 +102,11 @@ export async function ingestEmailMessage(client: PoolClient, input: IngestEmailM
           recipients: formatAddressList(input.envelope.to),
           body: input.bodyHtml ?? input.bodyText ?? "",
           ...(input.date ? { date: input.date.toISOString() } : {}),
+          // Read/flag state as the server already has it, so a message that was read or
+          // flagged elsewhere does not arrive here looking unread. Only ever written here,
+          // at creation: a later pass over an already-ingested message must not overwrite
+          // what the user has since done to it in the mailbox client.
+          ...messageFlagProperties(input.flags),
         },
       },
       { allowedSystemKeys: EMAIL_INGEST_ALLOWED_SYSTEM_KEYS },
