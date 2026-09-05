@@ -44,4 +44,11 @@ jobs:
           # over the whole accumulated diff.
           PROMOTION_SOURCE: develop
           PROMOTION_TARGET: main
+          # Block the merge on medium findings, not just critical/high. The
+          # bot's default verdict for a medium finding is `comments`, which it
+          # reports as a `neutral` Check Run conclusion — and GitHub counts
+          # `neutral` as satisfied for a required status check. That is how 39
+          # findings across 42 merged pull requests ended up in summary comments
+          # nobody was obliged to act on.
+          REVIEW_BLOCK_SEVERITY: medium
         run: bash "${GITHUB_WORKSPACE}/.code-review-bot/scripts/run-review-github.sh"
