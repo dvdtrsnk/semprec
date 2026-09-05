@@ -12,6 +12,11 @@ import { registerViewType, type ViewTypeRegistry } from "../chokePoint/viewTypeR
  * filters Emails through the Emails->Folders relation named by `folderRelationKey` with a
  * `relation_contains` condition, and unread counts are `countItems` over the same filter
  * plus `readPropertyKey`. There is deliberately no mailbox-only read endpoint underneath.
+ *
+ * Triage (issue #97) stays on the generic surface the same way: marking a message read or
+ * flagged is an item update of `readPropertyKey`/`flaggedPropertyKey`, and archiving or
+ * deleting one is a relation write on `folderRelationKey` moving it to the Folders item
+ * whose `specialPurpose` is `archive`/`trash`.
  */
 export const MAILBOX_CLIENT_VIEW_TYPE = "mailbox-client";
 
@@ -24,6 +29,8 @@ export const mailboxClientConfigSchema = z.object({
   folderRelationKey: z.string().min(1).default("folder"),
   /** Checkbox property on Emails carrying read state; absent/false counts as unread. */
   readPropertyKey: z.string().min(1).default("read"),
+  /** Checkbox property on Emails carrying flag state; absent/false counts as unflagged. */
+  flaggedPropertyKey: z.string().min(1).default("flagged"),
   /** Mailboxes database + item, when this view is scoped to a single account's folders. */
   mailboxesDatabaseId: uuid.optional(),
   mailboxItemId: uuid.optional(),

@@ -1,10 +1,12 @@
-import type { FilterNode, GenericOperations, Item, ListItemsRequest, View } from "../api/genericOperations.js";
+import { OperationError, type FilterNode, type GenericOperations, type Item, type ListItemsRequest, type View } from "../api/genericOperations.js";
 
 /**
  * An in-memory stand-in for the backend's generic operations, evaluating the same filter
  * trees the real ones compile to SQL — including `relation_contains` over a relation edge
- * list. Tests therefore exercise the actual request the client makes, rather than a
- * hand-stubbed answer per call.
+ * list — and applying writes to the same item/edge lists it reads from. Tests therefore
+ * exercise the actual request the client makes, rather than a hand-stubbed answer per call,
+ * and a triage action's effect is observable in the next read exactly as it would be
+ * against the real backend.
  */
 export interface FakeItem {
   id: string;
@@ -83,6 +85,23 @@ export function createFakeOperations(backend: FakeBackend): GenericOperations {
       const view = backend.views.find((candidate) => candidate.id === viewId);
       if (!view) throw new Error(`View ${viewId} not found`);
       return view;
+    },
+    async updateItem(databaseId, itemId, propertiesPatch) {
+      const row = backend.items.find((item) => item.databaseId === databaseId && item.id === itemId);
+      if (!row) throw new OperationError("unavailable", `Item ${itemId} not found`, 404);
+      row.properties = { ...row.properties, ...propertiesPatch };
+      return toItem(row);
+    },
+    // Edges are keyed by the relation property key alone, exactly as the fake's filter
+    // evaluation reads them; the database id only names where the item lives.
+    async linkItem(_databaseId, itemId, relationKey, targetItemId) {
+      const exists = backend.relations.some((edge) => edge.property === relationKey && edge.itemId === itemId && edge.targetItemId === targetItemId);
+      if (!exists) backend.relations.push({ property: relationKey, itemId, targetItemId });
+    },
+    async unlinkItem(_databaseId, itemId, relationKey, targetItemId) {
+      backend.relations = backend.relations.filter(
+        (edge) => !(edge.property === relationKey && edge.itemId === itemId && edge.targetItemId === targetItemId),
+      );
     },
   };
 }

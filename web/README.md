@@ -24,7 +24,11 @@ pnpm build      # typecheck + production build into dist/
   and `ViewHost` loads a view and hands it to whichever renderer resolves.
 - `src/views/mailbox/` — the `mailbox-client` renderer (issue #96): folder sidebar with
   unread counts, message list, reading pane; three panes on a wide layout, one pane at a
-  time with an explicit back action on a narrow one.
+  time with an explicit back action on a narrow one. Triage (issue #97) lives alongside it:
+  `triage.ts` holds the actions (read/flag as an item update, archive/delete as a relation
+  move) and `keyboard.ts` the `j`/`k`/`e` shortcuts, which go silent inside an editable
+  control. Row buttons, the bulk toolbar over the selected messages and the keyboard all
+  call the same actions.
 - `src/i18n/` — message catalogs (Czech primary, English fallback) and the `useTranslate`
   hook. No user-facing string is written inline in a component.
 - `src/styles/tokens.css` — the design tokens every component styles itself through,

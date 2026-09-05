@@ -63,7 +63,12 @@ describe("mailbox client view (issue #96)", () => {
       const mailbox = views.find((view) => view.type === MAILBOX_CLIENT_VIEW_TYPE);
       expect(mailbox).toBeDefined();
       expect(mailbox?.isDefault).toBe(true);
-      expect(mailbox?.config).toMatchObject({ foldersDatabaseId: foldersId, folderRelationKey: "folder", readPropertyKey: "read" });
+      expect(mailbox?.config).toMatchObject({
+        foldersDatabaseId: foldersId,
+        folderRelationKey: "folder",
+        readPropertyKey: "read",
+        flaggedPropertyKey: "flagged",
+      });
 
       // The registered view type is what the client resolves the renderer through — the
       // backend itself never interprets `clientComponent`.

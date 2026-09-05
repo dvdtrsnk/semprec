@@ -45,6 +45,41 @@ describe("http generic operations", () => {
     await expect(operations.getView("v1")).rejects.toMatchObject({ kind: "retryable" });
   });
 
+  it("patches an item's properties and validates the item it gets back", async () => {
+    const calls: Array<{ url: string; method?: string; body: unknown }> = [];
+    const operations = createHttpGenericOperations({
+      baseUrl: "/api",
+      fetchImpl: async (input, init) => {
+        calls.push({ url: String(input), method: init?.method, body: JSON.parse(String(init?.body)) });
+        return jsonResponse({ id: "e1", databaseId: "db", properties: { read: true }, updatedAt: "2026-01-01T00:00:00.000Z" });
+      },
+    });
+
+    const item = await operations.updateItem("db", "e1", { read: true });
+
+    expect(calls[0]).toMatchObject({ url: "/api/databases/db/items/e1", method: "PATCH", body: { properties: { read: true } } });
+    expect(item.properties.read).toBe(true);
+  });
+
+  it("links and unlinks a relation edge by property key, accepting an empty response body", async () => {
+    const calls: Array<{ url: string; method?: string }> = [];
+    const operations = createHttpGenericOperations({
+      baseUrl: "/api",
+      fetchImpl: async (input, init) => {
+        calls.push({ url: String(input), method: init?.method });
+        return new Response(null, { status: 204 });
+      },
+    });
+
+    await operations.linkItem("db", "e1", "folder", "f2");
+    await operations.unlinkItem("db", "e1", "folder", "f1");
+
+    expect(calls).toEqual([
+      { url: "/api/databases/db/items/e1/relations/folder", method: "POST" },
+      { url: "/api/databases/db/items/e1/relations/folder/f1", method: "DELETE" },
+    ]);
+  });
+
   it("reads a missing item as null rather than as a failed pane", async () => {
     const operations = createHttpGenericOperations({ baseUrl: "/api", fetchImpl: async () => jsonResponse({}, 404) });
     await expect(operations.getItem("db", "gone")).resolves.toBeNull();

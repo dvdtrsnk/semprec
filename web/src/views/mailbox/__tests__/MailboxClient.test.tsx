@@ -32,8 +32,8 @@ describe("MailboxClient", () => {
       expect(messages).not.toBeNull();
       expect(message).not.toBeNull();
 
-      const listed = await within(messages as HTMLElement).findAllByRole("button");
-      expect(listed.map((button) => button.textContent)).toEqual([
+      const listed = await within(messages as HTMLElement).findAllByRole("listitem");
+      expect(listed.map((row) => row.textContent)).toEqual([
         expect.stringContaining("Invoice for March"),
         expect.stringContaining("Lunch?"),
         expect.stringContaining("Newsletter"),
@@ -46,7 +46,7 @@ describe("MailboxClient", () => {
 
       const inbox = await screen.findByRole("button", { name: /Inbox/ });
       expect(within(inbox).getByLabelText("2 unread")).toHaveTextContent("2");
-      const archive = screen.getByRole("button", { name: /Archive/ });
+      const archive = within(panes().folders as HTMLElement).getByRole("button", { name: /Archive/ });
       expect(within(archive).queryByText("0")).toBeNull();
     });
 
@@ -61,10 +61,11 @@ describe("MailboxClient", () => {
       const user = userEvent.setup();
       renderMailbox(createFakeOperations(createMailboxBackend()));
 
-      await user.click(await screen.findByRole("button", { name: /Archive/ }));
+      const folders = (await screen.findByRole("region", { name: "Folders" })) as HTMLElement;
+      await user.click(within(folders).getByRole("button", { name: /Archive/ }));
       expect(await screen.findByText("No messages in this folder")).toBeInTheDocument();
 
-      await user.click(screen.getByRole("button", { name: /Inbox/ }));
+      await user.click(within(folders).getByRole("button", { name: /Inbox/ }));
       await user.click(await screen.findByRole("button", { name: /Invoice for March/ }));
 
       const message = panes().message as HTMLElement;
@@ -194,7 +195,8 @@ describe("MailboxClient", () => {
 
       await screen.findByRole("region", { name: "Messages" });
       await user.click(screen.getByRole("button", { name: "Back" }));
-      await user.click(await screen.findByRole("button", { name: /Archive/ }));
+      const folders = (await screen.findByRole("region", { name: "Folders" })) as HTMLElement;
+      await user.click(within(folders).getByRole("button", { name: /Archive/ }));
 
       await waitFor(() => expect(panes().messages).not.toBeNull());
       expect(await screen.findByText("No messages in this folder")).toBeInTheDocument();

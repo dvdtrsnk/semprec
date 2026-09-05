@@ -198,6 +198,9 @@ export class ImapFlowMailClient implements ImapMailClient {
       xOriginalTo: headerValues(headerList, "x-original-to")[0] ?? null,
       envelopeTo: headerValues(headerList, "envelope-to")[0] ?? null,
       isDsn: isDeliveryStatusReport(raw.bodyStructure?.type, raw.bodyStructure?.parameters),
+      // The `\Seen`/`\Flagged` state a message already has on the server — mail/ingest.ts
+      // seeds a newly ingested message's read/flag properties from it (mail/messageFlags.ts).
+      flags: raw.flags ? [...raw.flags] : undefined,
     };
   }
 
@@ -248,10 +251,17 @@ export class ImapFlowMailClient implements ImapMailClient {
     return uids === false ? [] : uids;
   }
 
-  /** `STORE ... +FLAGS (\Seen)` — the only call anywhere in this class that can mark a message read; every fetch/download above is peek-only (imapflow builds `BODY.PEEK[...]` internally and has no non-peek option). */
-  async markSeen(path: string, uid: number): Promise<void> {
+  /**
+   * `STORE ... +FLAGS/-FLAGS (<flag>)` — the only call anywhere in this class that writes a
+   * flag, and in particular the only one that can mark a message read; every fetch/download
+   * above is peek-only (imapflow builds `BODY.PEEK[...]` internally and has no non-peek
+   * option). The flags the mailbox actually sets are `\Seen` and `\Flagged`
+   * (mail/messageFlags.ts).
+   */
+  async setMessageFlag(path: string, uid: number, flag: string, value: boolean): Promise<void> {
     await this.client.mailboxOpen(path);
-    await this.client.messageFlagsAdd(String(uid), ["\\Seen"], { uid: true });
+    if (value) await this.client.messageFlagsAdd(String(uid), [flag], { uid: true });
+    else await this.client.messageFlagsRemove(String(uid), [flag], { uid: true });
   }
 }
 

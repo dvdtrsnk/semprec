@@ -25,7 +25,17 @@ export interface HttpGenericOperationsOptions {
 
 const UNAVAILABLE_STATUSES = new Set([401, 403, 404, 501]);
 
-async function request(options: Required<Pick<HttpGenericOperationsOptions, "baseUrl">> & { fetchImpl: typeof fetch }, path: string, init?: RequestInit): Promise<unknown> {
+interface RequestOptions {
+  /** A write whose answer the client does not read: the response body is not parsed, so a `204 No Content` is as valid as a JSON one. */
+  discardBody?: boolean;
+}
+
+async function request(
+  options: Required<Pick<HttpGenericOperationsOptions, "baseUrl">> & { fetchImpl: typeof fetch },
+  path: string,
+  init?: RequestInit,
+  requestOptions: RequestOptions = {},
+): Promise<unknown> {
   let response: Response;
   try {
     response = await options.fetchImpl(`${options.baseUrl}${path}`, {
@@ -45,6 +55,8 @@ async function request(options: Required<Pick<HttpGenericOperationsOptions, "bas
     );
   }
 
+  if (requestOptions.discardBody) return undefined;
+
   try {
     return await response.json();
   } catch (error) {
@@ -56,6 +68,12 @@ export function createHttpGenericOperations(options: HttpGenericOperationsOption
   const config = { baseUrl: options.baseUrl.replace(/\/$/, ""), fetchImpl: options.fetchImpl ?? globalThis.fetch.bind(globalThis) };
 
   const post = (path: string, body: unknown) => request(config, path, { method: "POST", body: JSON.stringify(body) });
+  const id = encodeURIComponent;
+  // The relation endpoints address the relation by its *property key* on the item's own
+  // database; the backend resolves the key to the relation property (and its definition) —
+  // the client never learns a property id, exactly as it never learns a table name.
+  const relationPath = (databaseId: string, itemId: string, relationKey: string) =>
+    `/databases/${id(databaseId)}/items/${id(itemId)}/relations/${id(relationKey)}`;
 
   return {
     async listItems(databaseId, listRequest: ListItemsRequest = {}) {
@@ -79,6 +97,28 @@ export function createHttpGenericOperations(options: HttpGenericOperationsOption
 
     async getView(viewId) {
       return viewSchema.parse(await request(config, `/views/${encodeURIComponent(viewId)}`));
+    },
+
+    async updateItem(databaseId, itemId, propertiesPatch) {
+      return itemSchema.parse(
+        await request(config, `/databases/${id(databaseId)}/items/${id(itemId)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ properties: propertiesPatch }),
+        }),
+      );
+    },
+
+    async linkItem(databaseId, itemId, relationKey, targetItemId) {
+      await request(config, relationPath(databaseId, itemId, relationKey), { method: "POST", body: JSON.stringify({ targetItemId }) }, { discardBody: true });
+    },
+
+    async unlinkItem(databaseId, itemId, relationKey, targetItemId) {
+      await request(
+        config,
+        `${relationPath(databaseId, itemId, relationKey)}/${id(targetItemId)}`,
+        { method: "DELETE" },
+        { discardBody: true },
+      );
     },
   };
 }
