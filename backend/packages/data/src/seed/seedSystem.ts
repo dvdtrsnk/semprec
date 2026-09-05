@@ -10,6 +10,7 @@ import { DRIFT_CHECK_ACTION_ID } from "../manifest/driftCheck.js";
 import { DEFAULT_TIMEZONE, SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { registerTemporalSwitcherViewType } from "../views/temporalSwitcherViewType.js";
 import { registerLibraryGridViewType } from "../views/libraryGridViewType.js";
+import { registerMailboxClientViewType } from "../views/mailboxClientViewType.js";
 import { seedTenDatabasesInTransaction } from "./seedTenDatabases.js";
 import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
 import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
@@ -50,6 +51,9 @@ export async function seedSystem(
   // Same reasoning as temporal-switcher just above (issue #25's library-grid view type):
   // needed in *this process's* registry on every startup, not only the one-time DB seed.
   registerLibraryGridViewType(viewTypeRegistry);
+  // Same reasoning again (issue #96's mailbox view type): the Emails default view is a
+  // 'mailbox-client' view, so every process serving it needs the type in its own registry.
+  registerMailboxClientViewType(viewTypeRegistry);
 
   await withTransaction(pool, async (client) => {
     const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1`, [SYSTEM_SETTINGS_MODULE_ID]);
@@ -125,6 +129,6 @@ export async function seedSystem(
     // Mailboxes/Folders/Emails (issue #26): the IMAP sync core's schema and deterministic
     // People-linking wiring. Order relative to the library module doesn't matter — both only
     // depend on the ten databases above.
-    await seedEmailModuleInTransaction(client, projectsDb.id, tenDatabases.people.id, tenDatabases.files.id, computedKeyRegistry);
+    await seedEmailModuleInTransaction(client, projectsDb.id, tenDatabases.people.id, tenDatabases.files.id, computedKeyRegistry, viewTypeRegistry);
   });
 }

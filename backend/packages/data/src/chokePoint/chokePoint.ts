@@ -10,6 +10,9 @@ import * as relationsStore from "./relationsStore.js";
 import * as viewsStore from "./viewsStore.js";
 import * as viewItemsStore from "./viewItemsStore.js";
 import * as viewQuery from "../views/viewQuery.js";
+import { compileFilterNode } from "../views/filterCompiler.js";
+import { buildFilterProperties } from "../views/filterProperties.js";
+import { parseFilterNode } from "../views/filterTree.js";
 import { validateRollupConfig } from "../rollup/config.js";
 import { findDependenciesByRelationDefinition, findDependenciesBySource, upsertRollupDependency } from "../rollup/dependencies.js";
 import { enqueueRollupBackfill, enqueueRollupRecompute } from "../rollup/recompute.js";
@@ -89,6 +92,19 @@ async function enqueueRollupRecomputeForEdge(
   for (const target of targets) {
     await enqueueRollupRecompute(client, target.rollupPropertyId, target.itemId);
   }
+}
+
+/**
+ * Turns a caller-supplied filter tree into the `buildFilterSql` push-down hook the item
+ * store expects. This is the one entry point through which a transport adapter (or any
+ * other generic caller) filters items ad hoc — a stored view's filter goes the same way,
+ * via views/viewQuery.ts — so no caller ever needs its own read path into `items`.
+ */
+async function buildFilterSqlForDatabase(client: PoolClient, databaseId: string, filter: unknown): Promise<(params: unknown[]) => string> {
+  const properties = await propertiesStore.listPropertiesByDatabase(client, databaseId);
+  const filterProperties = await buildFilterProperties(client, properties);
+  const node = parseFilterNode(filter);
+  return (params) => compileFilterNode(node, filterProperties, params);
 }
 
 /** `items.computed` is a shared namespace between rollup values and declared module cache keys — see computedKeyRegistry.ts. */
@@ -172,6 +188,15 @@ export async function createRelationPropertyWithClient(
     });
   }
   return { property: finalProperty, inverseProperty };
+}
+
+export interface ListItemsInput extends itemsStore.ListItemsOptions {
+  /** A filter tree (views/filterTree.ts), as a transport adapter receives it — validated here, never trusted. */
+  filter?: unknown;
+}
+
+export interface CountItemsInput extends Pick<itemsStore.ListItemsOptions, "includeDeleted" | "buildFilterSql"> {
+  filter?: unknown;
 }
 
 export interface CreateItemWithClientOptions extends AssertWritablePropertiesOptions {}
@@ -462,8 +487,22 @@ export function createChokePoint(
       return withTransaction(pool, (client) => itemsStore.getItemById(client, databaseId, itemId));
     },
 
-    async listItems(databaseId: string, options?: itemsStore.ListItemsOptions) {
-      return withTransaction(pool, (client) => itemsStore.listItems(client, databaseId, options));
+    /** `filter` is a filter tree (views/filterTree.ts); it takes precedence over a raw `buildFilterSql` hook. */
+    async listItems(databaseId: string, options?: ListItemsInput) {
+      return withTransaction(pool, async (client) => {
+        const { filter, ...rest } = options ?? {};
+        const buildFilterSql = filter !== undefined ? await buildFilterSqlForDatabase(client, databaseId, filter) : rest.buildFilterSql;
+        return itemsStore.listItems(client, databaseId, { ...rest, buildFilterSql });
+      });
+    },
+
+    /** The matching count for the same `filter` `listItems` takes — a count without paging the rows in. */
+    async countItems(databaseId: string, options?: CountItemsInput): Promise<number> {
+      return withTransaction(pool, async (client) => {
+        const { filter, ...rest } = options ?? {};
+        const buildFilterSql = filter !== undefined ? await buildFilterSqlForDatabase(client, databaseId, filter) : rest.buildFilterSql;
+        return itemsStore.countItems(client, databaseId, { ...rest, buildFilterSql });
+      });
     },
 
     async softDeleteItem(databaseId: string, itemId: string): Promise<ItemRow | null> {

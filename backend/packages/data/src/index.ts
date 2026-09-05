@@ -15,6 +15,9 @@ export { compileFilterNode } from "./views/filterCompiler.js";
 export * from "./views/sortSpec.js";
 export { compileSort } from "./views/sortCompiler.js";
 export * from "./views/viewConfig.js";
+export * from "./views/mailboxClientViewType.js";
+export type { FilterProperty, FilterProperties } from "./views/filterCompiler.js";
+export { buildFilterProperties } from "./views/filterProperties.js";
 export type { QueryViewOptions, QueryViewResult } from "./views/viewQuery.js";
 
 export * from "./scheduler/rule.js";

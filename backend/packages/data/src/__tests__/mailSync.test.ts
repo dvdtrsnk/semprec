@@ -126,6 +126,7 @@ describe("email module seed (issue #26)", () => {
       "date",
       "folder",
       "name",
+      "read",
       "recipients",
       "recipientsPeople",
       "sender",
