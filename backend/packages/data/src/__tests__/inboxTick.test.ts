@@ -218,4 +218,10 @@ describe("Inbox item event dispatch (issue #103)", () => {
     expect(jobs).toHaveLength(1);
     expect(jobs[0].queue_name).toBeNull();
   });
+
+  it("rejects a misconfigured heartbeat instead of silently no-op'ing", async () => {
+    const handler = createSemprecTickAction(pool);
+    await expect(handler({}, { heartbeatId: "hb", projectItemId: "proj", itemId: "item" })).rejects.toThrow();
+    await expect(handler({ inboxDatabaseId: "not-a-uuid" }, { heartbeatId: "hb", projectItemId: "proj", itemId: "item" })).rejects.toThrow();
+  });
 });
