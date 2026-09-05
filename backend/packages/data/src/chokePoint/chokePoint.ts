@@ -199,6 +199,24 @@ export interface CountItemsInput extends Pick<itemsStore.ListItemsOptions, "incl
   filter?: unknown;
 }
 
+/**
+ * Resolves the one filter a read runs under. `filter` (a tree) and `buildFilterSql` (a raw
+ * push-down hook) are two ways of saying the same thing, so a caller passing both is
+ * rejected rather than having one of them silently dropped — combining them would also be a
+ * guess about whether they were meant to be ANDed.
+ */
+async function resolveFilterSql(
+  client: PoolClient,
+  databaseId: string,
+  options: { filter?: unknown; buildFilterSql?: (params: unknown[]) => string | undefined },
+): Promise<((params: unknown[]) => string | undefined) | undefined> {
+  if (options.filter === undefined) return options.buildFilterSql;
+  if (options.buildFilterSql) {
+    throw new ValidationError("Pass either 'filter' or 'buildFilterSql', not both", { field: "filter" });
+  }
+  return buildFilterSqlForDatabase(client, databaseId, options.filter);
+}
+
 export interface CreateItemWithClientOptions extends AssertWritablePropertiesOptions {}
 
 export interface CreateItemInput {
@@ -487,11 +505,12 @@ export function createChokePoint(
       return withTransaction(pool, (client) => itemsStore.getItemById(client, databaseId, itemId));
     },
 
-    /** `filter` is a filter tree (views/filterTree.ts); it takes precedence over a raw `buildFilterSql` hook. */
+    /** Filter with either `filter` (a filter tree, views/filterTree.ts) or `buildFilterSql`, never both. */
     async listItems(databaseId: string, options?: ListItemsInput) {
       return withTransaction(pool, async (client) => {
+        // `filter` is consumed by resolveFilterSql; `rest` is what the store itself takes.
         const { filter, ...rest } = options ?? {};
-        const buildFilterSql = filter !== undefined ? await buildFilterSqlForDatabase(client, databaseId, filter) : rest.buildFilterSql;
+        const buildFilterSql = await resolveFilterSql(client, databaseId, { filter, buildFilterSql: rest.buildFilterSql });
         return itemsStore.listItems(client, databaseId, { ...rest, buildFilterSql });
       });
     },
@@ -500,7 +519,7 @@ export function createChokePoint(
     async countItems(databaseId: string, options?: CountItemsInput): Promise<number> {
       return withTransaction(pool, async (client) => {
         const { filter, ...rest } = options ?? {};
-        const buildFilterSql = filter !== undefined ? await buildFilterSqlForDatabase(client, databaseId, filter) : rest.buildFilterSql;
+        const buildFilterSql = await resolveFilterSql(client, databaseId, { filter, buildFilterSql: rest.buildFilterSql });
         return itemsStore.countItems(client, databaseId, { ...rest, buildFilterSql });
       });
     },

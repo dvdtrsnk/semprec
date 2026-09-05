@@ -1,10 +1,9 @@
 import { render, type RenderResult } from "@testing-library/react";
 import { vi } from "vitest";
 import { I18nProvider } from "../i18n/index.js";
-import type { GenericOperations } from "../api/genericOperations.js";
+import type { GenericOperations, View } from "../api/genericOperations.js";
 import { MailboxClient } from "../views/mailbox/MailboxClient.js";
 import { mailboxView } from "./mailboxFixture.js";
-import type { View } from "../api/genericOperations.js";
 
 /** jsdom implements no `matchMedia`; the layout hook reads it, so every test declares a width. */
 export function setViewport(isNarrow: boolean): void {

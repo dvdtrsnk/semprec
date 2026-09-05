@@ -62,6 +62,33 @@ export async function getRelationDefinition(client: PoolClient, id: string): Pro
   return rows[0] ? mapRelationDefinitionRow(rows[0]) : null;
 }
 
+/**
+ * The batched form of `getRelationDefinitionByPropertyId`: one query for a whole set of
+ * relation properties, keyed by the property id each definition was looked up under. Used
+ * when compiling a filter, where a database's relation properties would otherwise be
+ * resolved one query at a time.
+ */
+export async function getRelationDefinitionsByPropertyIds(
+  client: PoolClient,
+  propertyIds: string[],
+): Promise<Map<string, RelationDefinitionRow>> {
+  if (propertyIds.length === 0) return new Map();
+  const { rows } = await client.query(
+    `SELECT id, property_id_a, property_id_b, cardinality FROM relation_definitions
+     WHERE property_id_a = ANY($1::uuid[]) OR property_id_b = ANY($1::uuid[])`,
+    [propertyIds],
+  );
+
+  const byPropertyId = new Map<string, RelationDefinitionRow>();
+  const requested = new Set(propertyIds);
+  for (const row of rows) {
+    const definition = mapRelationDefinitionRow(row);
+    if (requested.has(definition.propertyIdA)) byPropertyId.set(definition.propertyIdA, definition);
+    if (definition.propertyIdB && requested.has(definition.propertyIdB)) byPropertyId.set(definition.propertyIdB, definition);
+  }
+  return byPropertyId;
+}
+
 export async function getRelationDefinitionByPropertyId(
   client: PoolClient,
   propertyId: string,

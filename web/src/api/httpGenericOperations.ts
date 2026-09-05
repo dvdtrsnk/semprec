@@ -13,9 +13,10 @@ import {
  * knows the shape of the generic endpoints and nothing about any module — a mailbox request
  * and a task-board request leave this file identical apart from their arguments.
  *
- * Status handling is what decides which state the UI shows: 404/403/501 mean the view or
- * database is not there for this client (an `unavailable` state with no retry), everything
- * else — 5xx, a network failure, an unparseable body — is `retryable`.
+ * Status handling is what decides which state the UI shows: 401/403/404/501 mean the view or
+ * database is not there for this client, or not readable by it (an `unavailable` state with
+ * no retry — repeating the request only repeats the same answer), while everything else —
+ * 5xx, a network failure, an unparseable body — is `retryable`.
  */
 export interface HttpGenericOperationsOptions {
   baseUrl: string;
