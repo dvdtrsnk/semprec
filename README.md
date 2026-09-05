@@ -44,13 +44,15 @@ one at a time.
 - `backend/services/` — standalone processes (`semprec-api`,
   `semprec-agents`, `semprec-mailsync`, `semprec-transcribe`,
   `semprec-ai-gateway`) — created incrementally as the issue queue progresses.
-- `apple/`, `web/` — empty until the issue queue reaches them.
+- `apple/` — empty until the issue queue reaches it; `web/` is a React +
+  TypeScript (Vite) app, currently holding the view registry, the generic
+  operations client, and the mailbox view renderer.
 
 ## Stack
 
 Backend: Node LTS, TypeScript, pnpm workspace, Postgres (+ Prisma),
-`graphile-worker`. Apple app and web frontend: stack to be decided when
-their first issues land.
+`graphile-worker`. Web frontend: React + TypeScript on Vite, tested with
+Vitest. Apple app: stack to be decided when its first issue lands.
 
 ## Branching and releases
 

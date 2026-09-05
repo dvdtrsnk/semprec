@@ -4,7 +4,10 @@ import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createRelationPropertyWithClient, type CreateRelationPropertyInput } from "../chokePoint/chokePoint.js";
 import type { ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
+import * as viewsStore from "../chokePoint/viewsStore.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
+import { MAILBOX_CLIENT_VIEW_TYPE, registerMailboxClientViewType } from "../views/mailboxClientViewType.js";
+import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID, MAIL_REINDEX_PERSON_EMAILS_ACTION_ID } from "../mail/personLinkingActions.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID } from "./emailModuleKeys.js";
@@ -69,7 +72,9 @@ export async function seedEmailModuleInTransaction(
   peopleDatabaseId: string,
   filesDatabaseId: string,
   computedKeyRegistry: ComputedKeyRegistry,
+  viewTypeRegistry: ViewTypeRegistry,
 ): Promise<EmailModuleResult> {
+  registerMailboxClientViewType(viewTypeRegistry);
   const relate = (input: CreateRelationPropertyInput) => createRelationPropertyWithClient(client, input, computedKeyRegistry);
 
   const emailProject = await itemsStore.insertItem(client, {
@@ -134,6 +139,11 @@ export async function seedEmailModuleInTransaction(
     { key: "recipients", name: "Recipients", type: "text", owner: "system" },
     { key: "body", name: "Body", type: "longText", owner: "system" },
     { key: "date", name: "Date", type: "date", owner: "system", config: { includeTime: true } },
+    // Read state as an ordinary generic property (issue #96 needs it to show unread counts;
+    // marking a message read is issue #97's triage action, and reconciling it back over IMAP
+    // is the live-sync issue's). owner:'system' like every other Emails field — written only
+    // by those code paths, never through the generic update path.
+    { key: "read", name: "Read", type: "checkbox", owner: "system" },
   ]);
   const folderRelation = await relate({
     databaseId: emails.id,
@@ -150,6 +160,28 @@ export async function seedEmailModuleInTransaction(
   // one-directional for the same reason.
   await relate({ databaseId: emails.id, key: "senderPeople", name: "Sender", targetDatabaseId: peopleDatabaseId, cardinality: "one_to_many" });
   await relate({ databaseId: emails.id, key: "recipientsPeople", name: "Recipients", targetDatabaseId: peopleDatabaseId, cardinality: "many_to_many" });
+
+  // The mailbox's default view, resolved by the client through the registered view type
+  // (clientComponent 'mailboxClient') the same way Journal resolves its temporal switcher.
+  await viewsStore.createView(
+    client,
+    {
+      databaseId: emails.id,
+      type: MAILBOX_CLIENT_VIEW_TYPE,
+      name: "Mailbox",
+      isDefault: true,
+      ownerModuleId: EMAILS_MODULE_ID,
+      config: {
+        foldersDatabaseId: folders.id,
+        folderRelationKey: folderRelation.property.key,
+        readPropertyKey: "read",
+        mailboxesDatabaseId: mailboxes.id,
+        mailboxRelationKey: "mailbox",
+        sort: [{ property: "date", direction: "desc" }],
+      },
+    },
+    viewTypeRegistry,
+  );
 
   await client.query(`UPDATE databases SET schema_locked = true WHERE id = ANY($1::uuid[])`, [[mailboxes.id, folders.id, emails.id]]);
 

@@ -189,6 +189,25 @@ export async function listItems(
 }
 
 /**
+ * Counts the items a filter matches, without paging them in. Shares `buildFilterSql` with
+ * `listItems` so a count and its list always agree on what "matching" means; used for the
+ * per-folder unread counts in issue #96, where the count is needed but the rows are not.
+ */
+export async function countItems(client: Queryable, databaseId: string, options: Pick<ListItemsOptions, "includeDeleted" | "buildFilterSql"> = {}): Promise<number> {
+  const conditions = ["database_id = $1"];
+  const params: unknown[] = [databaseId];
+  if (!options.includeDeleted) conditions.push("deleted_at IS NULL");
+  const filterSql = options.buildFilterSql?.(params);
+  if (filterSql) conditions.push(filterSql);
+
+  const { rows } = await client.query<{ count: string }>(
+    `SELECT count(*)::text AS count FROM items WHERE ${conditions.join(" AND ")}`,
+    params,
+  );
+  return Number(rows[0].count);
+}
+
+/**
  * Looks up items by id alone, with no `database_id` predicate — needed for curated
  * views (`view_items`), which can mix items from multiple databases and therefore
  * cannot supply the partition key. Scans every partition of `items` (see the

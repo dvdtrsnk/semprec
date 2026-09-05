@@ -1,0 +1,54 @@
+/*
+ * The web client's design tokens. Every component below styles itself only through these
+ * custom properties — no component hardcodes a color, radius or spacing value — so a theme
+ * change stays a single-file change. Dark mode follows the OS via `prefers-color-scheme`.
+ */
+:root {
+  color-scheme: light dark;
+
+  --color-surface: #ffffff;
+  --color-surface-raised: #f5f6f8;
+  --color-surface-sunken: #eceef2;
+  --color-border: #d8dbe2;
+  --color-text: #14161a;
+  --color-text-muted: #5c6270;
+  --color-accent: #2f6feb;
+  --color-accent-contrast: #ffffff;
+  --color-danger: #b3261e;
+  --color-unread: #14161a;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+
+  --radius-1: 0.25rem;
+  --radius-2: 0.5rem;
+
+  --font-body: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-size-sm: 0.8125rem;
+  --font-size-md: 0.9375rem;
+  --font-size-lg: 1.125rem;
+
+  --pane-sidebar-width: 15rem;
+  --pane-list-width: 22rem;
+  /* The single-pane breakpoint: below it the three panes collapse to one at a time
+     (the UISplitViewController pattern), which is also every current iOS phone width. */
+  --breakpoint-panes: 900px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-surface: #16181d;
+    --color-surface-raised: #1e2128;
+    --color-surface-sunken: #101216;
+    --color-border: #2c3038;
+    --color-text: #e8eaf0;
+    --color-text-muted: #9aa1b0;
+    --color-accent: #6f9dff;
+    --color-accent-contrast: #10131a;
+    --color-danger: #f2827c;
+    --color-unread: #ffffff;
+  }
+}

@@ -17,6 +17,12 @@ export const FILTER_CONDITION_TYPES = [
   "on_or_after",
   "date_range",
   "in",
+  // Relation-valued conditions (issue #96): relation values live in `item_relations`, not
+  // in `properties`, so they need their own condition types rather than a `value` on the
+  // scalar ones. Generic over any relation property — Emails->Folders is only this issue's
+  // first caller.
+  "relation_contains",
+  "relation_not_contains",
 ] as const;
 export type FilterConditionType = (typeof FILTER_CONDITION_TYPES)[number];
 
@@ -26,7 +32,8 @@ export type FilterCondition =
   | { type: "is_empty" | "is_not_empty"; property: string }
   | { type: "before" | "after" | "on_or_before" | "on_or_after"; property: string; value: string }
   | { type: "date_range"; property: string; value: { from: string; to: string } }
-  | { type: "in"; property: string; value: string[] };
+  | { type: "in"; property: string; value: string[] }
+  | { type: "relation_contains" | "relation_not_contains"; property: string; value: string };
 
 export type FilterNode =
   | FilterCondition
@@ -44,6 +51,7 @@ const filterConditionSchema = z.union([
   z.object({ type: z.enum(["before", "after", "on_or_before", "on_or_after"]), property, value: z.string() }),
   z.object({ type: z.literal("date_range"), property, value: z.object({ from: z.string(), to: z.string() }) }),
   z.object({ type: z.literal("in"), property, value: z.array(z.string()).min(1) }),
+  z.object({ type: z.enum(["relation_contains", "relation_not_contains"]), property, value: z.string().min(1) }),
 ]);
 
 /** Recursive tree: zod needs an explicit `z.ZodType` annotation plus `z.lazy` to type-check a self-referential schema. */

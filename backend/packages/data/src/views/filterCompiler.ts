@@ -2,6 +2,45 @@ import { ValidationError } from "../errors.js";
 import type { PropertyType } from "../types.js";
 import type { FilterCondition, FilterNode } from "./filterTree.js";
 
+/**
+ * What the compiler needs to know about one filterable property. A relation property also
+ * carries which relation definition it belongs to and which side of it this database's items
+ * sit on, since a relation value is an `item_relations` edge rather than a `properties` field.
+ */
+export interface FilterProperty {
+  type: PropertyType;
+  relationDefinitionId?: string;
+  relationSide?: "a" | "b";
+}
+
+export type FilterProperties = Map<string, FilterProperty>;
+
+type RelationCondition = Extract<FilterCondition, { type: "relation_contains" | "relation_not_contains" }>;
+
+function isRelationCondition(node: FilterCondition): node is RelationCondition {
+  return node.type === "relation_contains" || node.type === "relation_not_contains";
+}
+
+/**
+ * A relation condition compiles to an existence check over `item_relations`, never to a
+ * `properties` lookup: the relation-definition id and the target item id are both bound
+ * parameters, and the only thing interpolated into the SQL text is the `a`/`b` side, which
+ * comes from the property's own registered relation definition — never from the filter node.
+ */
+function compileRelationCondition(node: RelationCondition, property: FilterProperty, params: unknown[]): string {
+  if (!property.relationDefinitionId || !property.relationSide) {
+    throw new ValidationError(`Relation property '${node.property}' has no relation definition`, { field: node.property });
+  }
+  const ownSide = property.relationSide === "a" ? "item_a" : "item_b";
+  const targetSide = property.relationSide === "a" ? "item_b" : "item_a";
+  params.push(property.relationDefinitionId);
+  const definitionParam = params.length;
+  params.push(node.value);
+  const targetParam = params.length;
+  const exists = `EXISTS (SELECT 1 FROM item_relations r WHERE r.relation_definition_id = $${definitionParam} AND r.${ownSide} = items.id AND r.${targetSide} = $${targetParam}::uuid)`;
+  return node.type === "relation_contains" ? exists : `(NOT ${exists})`;
+}
+
 /** Escapes LIKE metacharacters so a `contains`/`starts_with`/`ends_with` value can never inject its own wildcard. Paired with `ESCAPE '\'` in the compiled SQL. */
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
@@ -13,15 +52,26 @@ function escapeLikePattern(value: string): string {
  * the node is ever concatenated into the SQL text. That, plus the closed condition set
  * validated by filterTree.ts, is what makes a filter incapable of SQL injection.
  */
-function compileCondition(node: FilterCondition, propertyTypes: Map<string, PropertyType>, params: unknown[]): string {
-  if (!propertyTypes.has(node.property)) {
+function compileCondition(node: FilterCondition, properties: FilterProperties, params: unknown[]): string {
+  const property = properties.get(node.property);
+  if (!property) {
     throw new ValidationError(`Filter references unknown property '${node.property}'`, { field: node.property });
   }
+  if (isRelationCondition(node) !== (property.type === "relation")) {
+    throw new ValidationError(
+      isRelationCondition(node)
+        ? `Condition '${node.type}' requires a relation property, but '${node.property}' is '${property.type}'`
+        : `Property '${node.property}' is a relation; filter it with relation_contains/relation_not_contains`,
+      { field: node.property },
+    );
+  }
+  if (isRelationCondition(node)) return compileRelationCondition(node, property, params);
+
   params.push(node.property);
   const keyParam = params.length;
   const textField = `properties ->> $${keyParam}`;
   const jsonField = `properties -> $${keyParam}`;
-  const isMultiSelect = propertyTypes.get(node.property) === "multi_select";
+  const isMultiSelect = property.type === "multi_select";
 
   switch (node.type) {
     case "equals":
@@ -80,15 +130,15 @@ function compileCondition(node: FilterCondition, propertyTypes: Map<string, Prop
   }
 }
 
-export function compileFilterNode(node: FilterNode, propertyTypes: Map<string, PropertyType>, params: unknown[]): string {
+export function compileFilterNode(node: FilterNode, properties: FilterProperties, params: unknown[]): string {
   switch (node.type) {
     case "and":
-      return `(${node.nodes.map((n) => compileFilterNode(n, propertyTypes, params)).join(" AND ")})`;
+      return `(${node.nodes.map((n) => compileFilterNode(n, properties, params)).join(" AND ")})`;
     case "or":
-      return `(${node.nodes.map((n) => compileFilterNode(n, propertyTypes, params)).join(" OR ")})`;
+      return `(${node.nodes.map((n) => compileFilterNode(n, properties, params)).join(" OR ")})`;
     case "not":
-      return `(NOT ${compileFilterNode(node.node, propertyTypes, params)})`;
+      return `(NOT ${compileFilterNode(node.node, properties, params)})`;
     default:
-      return compileCondition(node, propertyTypes, params);
+      return compileCondition(node, properties, params);
   }
 }
