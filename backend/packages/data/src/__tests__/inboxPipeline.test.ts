@@ -225,7 +225,6 @@ describe("Inbox pipeline databases (issue #101)", () => {
           name: "Thought",
           emoji: "💭",
           processingMethod: "pageContent",
-          // @ts-expect-error — intentionally invalid for the test
           targetDatabase: "tasks",
         }),
       ),

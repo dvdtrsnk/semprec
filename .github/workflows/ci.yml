@@ -12,26 +12,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The job id is the required status check context on `develop` — renaming it
+  # or splitting it into several jobs would leave `ci` permanently pending on
+  # every pull request. Keep both workspaces inside this one job.
   ci:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      # Deterministic build + test gate. The repository predates its first
-      # buildable package; until one exists this passes vacuously, but the
-      # required check is armed from day one so no merge ever happens without
-      # this workflow having run.
-      - name: Build and test
-        run: |
-          if [ -f package.json ]; then
-            npm ci
-            npm run build --if-present
-            npm test
-          else
-            echo "No buildable package yet — passing vacuously"
-          fi
+      # Fast tier only: type checking for the backend workspace plus the web
+      # app's own build and unit tests. The backend integration suite needs a
+      # PostgreSQL instance and takes ~10 minutes serially, so it is gated
+      # separately once #250 lands its ephemeral-PostgreSQL tier.
+      - name: Backend — install
+        working-directory: backend
+        run: pnpm install --frozen-lockfile
+
+      - name: Backend — build
+        working-directory: backend
+        run: pnpm -r run build
+
+      - name: Web — install
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Web — build
+        working-directory: web
+        run: pnpm run build
+
+      - name: Web — test
+        working-directory: web
+        run: pnpm test
