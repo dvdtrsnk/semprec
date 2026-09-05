@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 import { createAgentRun, finishAgentRun } from "../agentRuns/agentRunsStore.js";
+import { parseItemRelationFilterConfig, passesItemRelationFilter } from "./itemRelationFilter.js";
 
 export interface ActionContext {
   heartbeatId: string;
@@ -23,9 +24,21 @@ export type RunAgentFn = (input: { agentRunId: string; projectItemId: string; ta
  * `core.agentRun`: "run the agent owning the project with the task from action_config.task."
  * Actually running an LLM session is out of scope for this issue — `runAgent` is the
  * pluggable/injected function a later agent-orchestration issue will supply.
+ *
+ * `actionConfig.itemRelationFilter` (optional, see itemRelationFilter.ts) gates the run on the
+ * fired item's relation membership — e.g. issue #99's `newEmail` rule, which must only run for
+ * an Emails item related to an inbox Folder and not to a junk/trash one, without any mail-specific
+ * scheduler. Only applied for item-triggered (`onItemEvent`) heartbeats, where `context.itemId`
+ * is set; time-based heartbeats ignore it.
  */
 export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHandler {
   return async (actionConfig, context) => {
+    const relationFilter = parseItemRelationFilterConfig(actionConfig.itemRelationFilter);
+    if (relationFilter && context.itemId) {
+      const passes = await passesItemRelationFilter(pool, context.itemId, relationFilter);
+      if (!passes) return;
+    }
+
     const task = typeof actionConfig.task === "string" ? actionConfig.task : "";
     const run = await createAgentRun(pool, {
       projectItemId: context.projectItemId,

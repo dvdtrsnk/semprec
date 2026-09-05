@@ -6,6 +6,7 @@ import { createRelationPropertyWithClient, type CreateRelationPropertyInput } fr
 import type { ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
+import { CORE_AGENT_RUN_ACTION_ID } from "../scheduler/actions.js";
 import { MAILBOX_CLIENT_VIEW_TYPE, registerMailboxClientViewType } from "../views/mailboxClientViewType.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID, MAIL_REINDEX_PERSON_EMAILS_ACTION_ID } from "../mail/personLinkingActions.js";
@@ -220,6 +221,26 @@ export async function seedEmailModuleInTransaction(
     rule: { kind: "onItemEvent", databaseId: emails.id, event: "create" },
     actionId: MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID,
     actionConfig: { emailsDatabaseId: emails.id, senderPeopleKey: "senderPeople", recipientsPeopleKey: "recipientsPeople" },
+  });
+  // issue #99: a new Inbox message should nudge the owning project's agent — dispatched through
+  // the same core.agentRun action any other project heartbeat uses (no mail-specific scheduler),
+  // gated by itemRelationFilter.ts so junk/trash-only mail (and reconciliation of an
+  // already-known message, which never re-enters createItemWithClient — see mail/ingest.ts)
+  // never triggers it.
+  await createHeartbeat(client, {
+    projectItemId: emailProject.id,
+    name: "newEmail",
+    rule: { kind: "onItemEvent", databaseId: emails.id, event: "create" },
+    actionId: CORE_AGENT_RUN_ACTION_ID,
+    actionConfig: {
+      task: "A new message arrived in the Inbox.",
+      itemRelationFilter: {
+        relationPropertyId: folderRelation.property.id,
+        property: "specialPurpose",
+        include: ["inbox"],
+        exclude: ["junk", "trash"],
+      },
+    },
   });
 
   return {
