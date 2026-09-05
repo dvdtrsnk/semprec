@@ -186,6 +186,25 @@ describe("mailbox client view (issue #96)", () => {
       ).rejects.toBeInstanceOf(ValidationError);
     });
 
+    it("rejects a relation value that is not an item id, before it reaches the query", async () => {
+      const { emailsId } = await seedMailbox();
+
+      await expect(
+        chokePoint.listItems(emailsId, { filter: { type: "relation_contains", property: "folder", value: "not-an-item-id" } }),
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    it("rejects a read that passes both a filter tree and a raw filter hook", async () => {
+      const { emailsId, inboxId } = await seedMailbox();
+
+      await expect(
+        chokePoint.countItems(emailsId, {
+          filter: { type: "relation_contains", property: "folder", value: inboxId },
+          buildFilterSql: () => "true",
+        }),
+      ).rejects.toThrow(/either 'filter' or 'buildFilterSql'/);
+    });
+
     it("resolves one message's full properties through the generic item operation", async () => {
       const { emailsId, readMessage } = await seedMailbox();
       const item = await chokePoint.getItem(emailsId, readMessage);

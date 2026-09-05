@@ -51,7 +51,10 @@ const filterConditionSchema = z.union([
   z.object({ type: z.enum(["before", "after", "on_or_before", "on_or_after"]), property, value: z.string() }),
   z.object({ type: z.literal("date_range"), property, value: z.object({ from: z.string(), to: z.string() }) }),
   z.object({ type: z.literal("in"), property, value: z.array(z.string()).min(1) }),
-  z.object({ type: z.enum(["relation_contains", "relation_not_contains"]), property, value: z.string().min(1) }),
+  // The value is a target *item id*, so it is validated as a uuid here rather than reaching
+  // the compiled `$N::uuid` cast, where a malformed id would surface as a raw Postgres cast
+  // error instead of a ValidationError naming the offending field.
+  z.object({ type: z.enum(["relation_contains", "relation_not_contains"]), property, value: z.uuid() }),
 ]);
 
 /** Recursive tree: zod needs an explicit `z.ZodType` annotation plus `z.lazy` to type-check a self-referential schema. */
