@@ -7,6 +7,8 @@ import type { ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import { INBOX_ITEM_TYPES_MODULE_ID, INBOX_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "./inboxPipelineKeys.js";
+import { TEN_DATABASE_MODULE_IDS } from "./tenDatabaseKeys.js";
+import { PROCESSING_METHODS } from "../inbox/inboxTypesStore.js";
 
 function selectConfig(options: string[]): Record<string, unknown> {
   return { options };
@@ -44,9 +46,9 @@ export interface InboxPipelineDatabases {
  * (needs Journal for `journalDay` and Transcripts for `sourceTranscript`) and after the
  * Semprec project item exists (see seedSystem.ts).
  *
- * Only the baseline schema, ownership, canonical keys, and the Journal relation are in
- * scope here — `processingMethod`/`targetDatabase` on types (issue #102), the event-driven
- * tick (#103), fingerprinting/proposal computation (#223), and the confirm/reject/revise
+ * The baseline schema, ownership, canonical keys, the Journal relation, and (issue #102)
+ * types' `processingMethod`/`targetDatabase` are in scope here — the event-driven tick
+ * (#103), fingerprinting/proposal computation (#223), and the confirm/reject/revise
  * endpoints (#105) are later issues in the series and are not implemented by this seed.
  */
 export async function seedInboxPipelineInTransaction(
@@ -81,6 +83,18 @@ export async function seedInboxPipelineInTransaction(
     // Archiving (issue #102) removes a type from `GET /api/inbox-types` for new capture
     // while existing Inbox items keep pointing at it validly.
     { key: "status", name: "Status", type: "select", owner: "user", config: selectConfig(["active", "archived"]) },
+    // Replaces the mock's hardcoded label-text comparison (issue #100). Cross-field
+    // validation ("database" requires targetDatabase, "pageContent" rejects it) is
+    // enforced in inbox/inboxTypesStore.ts, not here — same reason inboxStore.ts enforces
+    // date/time itself: the schema engine has no generic cross-field validation concept.
+    { key: "processingMethod", name: "Processing method", type: "select", owner: "user", config: selectConfig([...PROCESSING_METHODS]) },
+    // Deliberately not a `relation` property: a relation's target database is fixed at
+    // creation time (chokePoint.ts's `createRelationPropertyWithClient`), but this must be
+    // able to point at any one of the ten hardcoded databases (issue #24) — the same reason
+    // Processing proposals' `resultItemId` above is `text`, not `relation`. Stores the
+    // target's canonical `owner_module_id` key (e.g. 'tasks', 'events'); which project/page
+    // within it is a runtime, content-driven decision (issue #100), never stored here.
+    { key: "targetDatabase", name: "Target database", type: "select", owner: "user", config: selectConfig([...TEN_DATABASE_MODULE_IDS]) },
   ]);
 
   await createProps(client, processingProposals.id, [
