@@ -14,6 +14,7 @@ import { registerMailboxClientViewType } from "../views/mailboxClientViewType.js
 import { seedTenDatabasesInTransaction } from "./seedTenDatabases.js";
 import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
 import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
+import { seedInboxPipelineInTransaction } from "./seedInboxPipeline.js";
 
 export { PROJECTS_MODULE_ID } from "./tenDatabaseKeys.js";
 
@@ -130,5 +131,11 @@ export async function seedSystem(
     // People-linking wiring. Order relative to the library module doesn't matter — both only
     // depend on the ten databases above.
     await seedEmailModuleInTransaction(client, projectsDb.id, tenDatabases.people.id, tenDatabases.files.id, computedKeyRegistry, viewTypeRegistry);
+
+    // Inbox / Inbox item types / Processing proposals (issue #101): the three databases
+    // issue #24's ten hardcoded databases deliberately exclude. Order relative to the
+    // library/email modules doesn't matter — only depends on the ten databases (Journal,
+    // Transcripts) and the Semprec project item, both already created above.
+    await seedInboxPipelineInTransaction(client, tenDatabases.journal.id, tenDatabases.transcripts.id, semprecProject.id, computedKeyRegistry, viewTypeRegistry);
   });
 }
