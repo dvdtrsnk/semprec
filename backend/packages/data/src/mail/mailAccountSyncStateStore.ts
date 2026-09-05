@@ -118,6 +118,16 @@ export async function recordGmailActivity(client: Queryable, input: RecordGmailA
   );
 }
 
+/**
+ * Owned exclusively by the watch-renewal lifecycle (gmailWatchLifecycle.ts, issue #197) — never
+ * `gmail_history_id`, which stays `recordGmailActivity`/`invalidateGmailHistory`'s alone
+ * (issue #26's reconcile pass), so a watch renewal can never race ahead of, or fall behind, the
+ * reconcile cursor it has nothing to do with.
+ */
+export async function recordGmailWatchExpiry(client: Queryable, itemId: string, expiresAt: Date): Promise<void> {
+  await client.query(`UPDATE mail_account_sync_state SET gmail_watch_expires_at = $2 WHERE item_id = $1`, [itemId, expiresAt]);
+}
+
 /** The reaction to a Graph `deltaLink` 410 Gone / `resyncRequired` — analogous to `invalidateGmailHistory`, clearing `graph_delta_link` back to NULL so the next sync runs a full resync instead of resuming from a stale token. */
 export async function invalidateGraphDeltaLink(client: Queryable, itemId: string, reason: string): Promise<void> {
   await client.query(`UPDATE mail_account_sync_state SET graph_delta_link = NULL, last_error = $2 WHERE item_id = $1`, [itemId, reason]);
