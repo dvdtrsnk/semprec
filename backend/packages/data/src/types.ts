@@ -28,6 +28,10 @@ export const PROPERTY_TYPES = [
   // type (not a reuse of `file`) so a client can tell "renders as a cover image" apart
   // from "renders as a generic attachment link" without inspecting the value shape.
   "image",
+  // Added by issue #101: an arbitrary JSON object/array value (Processing proposals'
+  // `proposal`/`history`) — distinct from `text`/`longText` so a client can tell
+  // "structured data" apart from "renders as a string" without inspecting the value shape.
+  "json",
 ] as const;
 export type PropertyType = (typeof PROPERTY_TYPES)[number];
 
