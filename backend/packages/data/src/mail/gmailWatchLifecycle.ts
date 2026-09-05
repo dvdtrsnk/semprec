@@ -1,6 +1,6 @@
 import type { Pool } from "pg";
 import { enqueueMailAccountSync } from "./mailSyncJob.js";
-import { recordGmailWatchExpiry } from "./mailAccountSyncStateStore.js";
+import { recordGmailWatchRegistration } from "./mailAccountSyncStateStore.js";
 import type { MailAccountLifecycle, MailLiveSyncAccount, MailLiveSyncLifecycleFactory } from "./mailLiveSyncRoot.js";
 
 export interface GmailWatchRegistration {
@@ -77,10 +77,12 @@ export interface CreateGmailWatchLifecycleFactoryOptions {
  * independent long-lived loops:
  *
  * - a renewal loop that registers/renews the `users.watch` subscription daily and persists its
- *   expiry via `recordGmailWatchExpiry` (`gmail_watch_expires_at` only — never
- *   `gmail_history_id`, which stays the reconcile pass's alone). Renewal survives a restart by
- *   construction, not by any explicit "is it due yet" check: a fresh `start()` always
- *   re-registers immediately rather than trusting an in-memory timer that a restart would lose.
+ *   expiry via `recordGmailWatchRegistration` (`gmail_watch_expires_at` unconditionally;
+ *   `gmail_history_id` only when the account had no cursor yet — a later renewal's own
+ *   `historyId` is never used to overwrite one the reconcile pass has since advanced). Renewal
+ *   survives a restart by construction, not by any explicit "is it due yet" check: a fresh
+ *   `start()` always re-registers immediately rather than trusting an in-memory timer that a
+ *   restart would lose.
  * - a pull loop that turns each notification into a call to the existing idempotent
  *   `enqueueMailAccountSync` job — never a direct `history.list` call or message mutation of its
  *   own (that happens inside `reconcileGmailAccount`, driven by the job this only enqueues), and
@@ -127,7 +129,7 @@ export function createGmailWatchLifecycleFactory(
       while (!stopped) {
         try {
           const registration = await transport.registerWatch(account.mailboxItemId, credential);
-          await recordGmailWatchExpiry(pool, account.mailboxItemId, registration.expiresAt);
+          await recordGmailWatchRegistration(pool, account.mailboxItemId, registration);
         } catch (err) {
           options.onError?.(account.mailboxItemId, "watch", err);
         }

@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createChokePoint, createItemWithClient, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { createItemWithClient } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { ensureMailAccountSyncState, getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
+import { ensureMailAccountSyncState, getMailAccountSyncState, recordGmailActivity } from "../mail/mailAccountSyncStateStore.js";
 import {
   createGmailWatchLifecycleFactory,
   pullErrorBackoffDelayMs,
@@ -14,7 +14,6 @@ import {
 } from "../mail/gmailWatchLifecycle.js";
 
 let pool: Pool;
-let chokePoint: ChokePoint;
 
 async function databaseIdFor(moduleId: string): Promise<string> {
   const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
@@ -89,7 +88,6 @@ describe("Gmail Pub/Sub pull-error backoff (issue #197)", () => {
 describe("Gmail Pub/Sub watch lifecycle (issue #197)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
-    chokePoint ??= createChokePoint(pool);
     await resetDatabase(pool);
     await seedSystem(pool);
   });
@@ -98,7 +96,7 @@ describe("Gmail Pub/Sub watch lifecycle (issue #197)", () => {
     vi.useRealTimers();
   });
 
-  it("registers the watch and persists its expiry on start, without touching the history cursor", async () => {
+  it("registers the watch and persists its expiry and history cursor on the very first registration", async () => {
     const mailboxItemId = await createMailboxItem("A");
     await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "gmail_api" });
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -117,9 +115,35 @@ describe("Gmail Pub/Sub watch lifecycle (issue #197)", () => {
       expect(state?.gmailWatchExpiresAt).toBe(expiresAt.toISOString());
     });
     expect(registerWatchCalls.length).toBe(1);
-    // The watch registration's own historyId is never written here — reconcileGmailAccount
-    // (gmailReconcile.ts) is the sole owner of `gmail_history_id`.
-    expect((await getMailAccountSyncState(pool, mailboxItemId))?.gmailHistoryId).toBeNull();
+    // The account had no cursor yet, so the watch registration's own historyId seeds it —
+    // issue #197's "persist history/expiry" requirement — sparing reconcileGmailAccount an
+    // otherwise-unavoidable full listAllMessageIds() resync on first sync.
+    expect((await getMailAccountSyncState(pool, mailboxItemId))?.gmailHistoryId).toBe("999999");
+
+    await lifecycle.stop();
+  });
+
+  it("never overwrites an already-advanced history cursor with a later renewal's historyId", async () => {
+    const mailboxItemId = await createMailboxItem("A2");
+    await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "gmail_api" });
+    // Simulates a reconcile pass (gmailReconcile.ts) having already advanced the cursor past
+    // whatever this renewal's watch registration will report.
+    await recordGmailActivity(pool, { itemId: mailboxItemId, historyId: "500000", nextExpectedActivityAt: new Date() });
+
+    const { transport, registerWatchCalls } = createFakeTransport({
+      registerWatch: async () => ({ historyId: "1", expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) }),
+    });
+    const factory = createGmailWatchLifecycleFactory(pool, transport, {
+      getCredential: async () => "refresh-token",
+      getAccountEmailAddress: async () => "user@example.com",
+    });
+    const lifecycle = factory({ mailboxItemId, syncMode: "gmail_api" });
+
+    await lifecycle.start();
+    await vi.waitFor(() => expect(registerWatchCalls.length).toBe(1));
+    // A renewal's own (older-looking) historyId must never regress the cursor a reconcile pass
+    // already advanced past it.
+    expect((await getMailAccountSyncState(pool, mailboxItemId))?.gmailHistoryId).toBe("500000");
 
     await lifecycle.stop();
   });
@@ -218,8 +242,8 @@ describe("Gmail Pub/Sub watch lifecycle (issue #197)", () => {
   });
 
   it("renews the watch on the configured interval, replacing the persisted expiry each time", async () => {
-    // Real timers, not fake ones: each renewal round makes a real `recordGmailWatchExpiry` DB
-    // write, and racing that real I/O against a virtual clock (as the pull-error-backoff test
+    // Real timers, not fake ones: each renewal round makes a real `recordGmailWatchRegistration`
+    // DB write, and racing that real I/O against a virtual clock (as the pull-error-backoff test
     // above safely can, since its loop never touches the DB) is exactly the kind of flake this
     // avoids by using a short real interval and polling instead.
     const mailboxItemId = await createMailboxItem("F");
