@@ -20,10 +20,25 @@ export interface FakeRelationEdge {
   targetItemId: string;
 }
 
+/** What the fake's mail operations need to know about the module they stand in for. */
+export interface FakeMailModule {
+  emailsDatabaseId: string;
+  foldersDatabaseId: string;
+  folderRelationKey: string;
+  /** Structured envelopes, per message item id; a message missing here has none, as a legacy one does. */
+  envelopes: Record<string, unknown>;
+  /** When set, `email.send` is rejected with this message — the backend refusing a send. */
+  rejectSend?: string | null;
+  /** Every accepted send, in order, exactly as the client submitted it. */
+  sent: { draftItemId: string; payload: Record<string, unknown> }[];
+  drafts: string[];
+}
+
 export interface FakeBackend {
   items: FakeItem[];
   relations: FakeRelationEdge[];
   views: View[];
+  mail?: FakeMailModule;
 }
 
 function toItem(item: FakeItem): Item {
@@ -103,5 +118,80 @@ export function createFakeOperations(backend: FakeBackend): GenericOperations {
         (edge) => !(edge.property === relationKey && edge.itemId === itemId && edge.targetItemId === targetItemId),
       );
     },
+
+    async callOperation(operationId, input) {
+      return runMailOperation(backend, operationId, input);
+    },
   };
+}
+
+/** The mailbox item a folder belongs to, through the Folders-to-Mailboxes relation. */
+function mailboxOfFolder(backend: FakeBackend, folderId: string): string | null {
+  return backend.relations.find((edge) => edge.property === "mailbox" && edge.itemId === folderId)?.targetItemId ?? null;
+}
+
+function folderWithPurpose(backend: FakeBackend, mail: FakeMailModule, mailboxItemId: string, purpose: string): string | null {
+  const folder = backend.items.find(
+    (item) => item.databaseId === mail.foldersDatabaseId && item.properties.specialPurpose === purpose && mailboxOfFolder(backend, item.id) === mailboxItemId,
+  );
+  return folder?.id ?? null;
+}
+
+/**
+ * The mail module's named operations, standing in for `email.message.envelope`,
+ * `email.draft.create` and `email.send`. They behave the way the real ones do where the client
+ * can tell the difference: a draft becomes a real Emails item linked into Drafts, a send moves
+ * it to Sent, an unregistered From address is refused, and a message with no envelope row
+ * simply has none — which is what makes the client's fallback to display text observable.
+ */
+async function runMailOperation(backend: FakeBackend, operationId: string, input: Record<string, unknown>): Promise<unknown> {
+  const mail = backend.mail;
+  if (!mail) throw new OperationError("unavailable", `Operation ${operationId} is not available`, 501);
+
+  if (operationId === "email.message.envelope") {
+    const envelope = mail.envelopes[String(input.itemId)];
+    if (!envelope) throw new OperationError("unavailable", `No envelope for ${String(input.itemId)}`, 404);
+    return envelope;
+  }
+
+  if (operationId === "email.draft.create") {
+    const mailboxItemId = String(input.mailboxItemId);
+    const draftsFolderId = folderWithPurpose(backend, mail, mailboxItemId, "drafts");
+    if (!draftsFolderId) throw new OperationError("retryable", `Mailbox ${mailboxItemId} has no Drafts folder`, 400);
+    const itemId = `draft-${mail.drafts.length + 1}`;
+    backend.items.push({
+      id: itemId,
+      databaseId: mail.emailsDatabaseId,
+      properties: { name: String(input.subject ?? ""), sender: "", recipients: "", body: String(input.bodyText ?? "") },
+    });
+    backend.relations.push({ property: mail.folderRelationKey, itemId, targetItemId: draftsFolderId });
+    mail.drafts.push(itemId);
+    return { itemId };
+  }
+
+  if (operationId === "email.send") {
+    if (mail.rejectSend) throw new OperationError("retryable", mail.rejectSend, 500);
+    const mailboxItemId = String(input.mailboxItemId);
+    const draftItemId = String(input.draftItemId);
+    const from = input.from as { address?: string } | undefined;
+    const mailbox = backend.items.find((item) => item.id === mailboxItemId);
+    const registered = String(mailbox?.properties.addresses ?? "")
+      .split(/[\n,]/)
+      .map((entry) => entry.trim().toLowerCase())
+      .filter((entry) => entry.length > 0);
+    if (!registered.includes((from?.address ?? "").trim().toLowerCase())) {
+      throw new OperationError("unavailable", `From address ${from?.address ?? ""} is not registered for mailbox ${mailboxItemId}`, 403);
+    }
+    const sentFolderId = folderWithPurpose(backend, mail, mailboxItemId, "sent");
+    if (!sentFolderId) throw new OperationError("retryable", `Mailbox ${mailboxItemId} has no Sent folder`, 400);
+    const draftsFolderId = folderWithPurpose(backend, mail, mailboxItemId, "drafts");
+    backend.relations = backend.relations.filter(
+      (edge) => !(edge.property === mail.folderRelationKey && edge.itemId === draftItemId && edge.targetItemId === draftsFolderId),
+    );
+    backend.relations.push({ property: mail.folderRelationKey, itemId: draftItemId, targetItemId: sentFolderId });
+    mail.sent.push({ draftItemId, payload: input });
+    return { itemId: draftItemId, messageId: `<sent-${mail.sent.length}@example.com>` };
+  }
+
+  throw new OperationError("unavailable", `Unknown operation ${operationId}`, 404);
 }

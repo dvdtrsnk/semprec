@@ -18,7 +18,10 @@ pnpm build      # typecheck + production build into dist/
 
 - `src/api/` — the generic operations port (`GenericOperations`) plus its HTTP binding.
   Every view reads through this port and nothing else: no view gets a private read path
-  into a module's own tables, and all writes go through the backend choke point.
+  into a module's own tables, and all writes go through the backend choke point. Alongside
+  the generic reads/writes it carries `callOperation`, which invokes a module's *declared*
+  named operation (`email.send`, …) — the same surface an agent calls, for the actions no
+  generic call can express.
 - `src/views/` — the client half of the backend's view-type registry: `viewRegistry.ts`
   maps a registered view type's `clientComponent` id to the component that renders it,
   and `ViewHost` loads a view and hands it to whichever renderer resolves.
@@ -28,7 +31,12 @@ pnpm build      # typecheck + production build into dist/
   `triage.ts` holds the actions (read/flag as an item update, archive/delete as a relation
   move) and `keyboard.ts` the `j`/`k`/`e` shortcuts, which go silent inside an editable
   control. Row buttons, the bulk toolbar over the selected messages and the keyboard all
-  call the same actions.
+  call the same actions. Compose (issue #98) is `compose.ts` (reply/reply-all recipients from
+  the stored envelope, the From fallback order, the draft/send payloads), `ComposeWindow.tsx`
+  (the floating minimizable window and the inline reply, sharing one form) and
+  `mailOperations.ts` (`email.message.envelope`, `email.draft.create`, `email.send`). Compose
+  state lives in `MailboxClient`, so minimizing, navigating the reading pane or a rejected
+  send never loses what was typed.
 - `src/i18n/` — message catalogs (Czech primary, English fallback) and the `useTranslate`
   hook. No user-facing string is written inline in a component.
 - `src/styles/tokens.css` — the design tokens every component styles itself through,

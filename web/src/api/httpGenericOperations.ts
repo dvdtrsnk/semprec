@@ -112,6 +112,12 @@ export function createHttpGenericOperations(options: HttpGenericOperationsOption
       await request(config, relationPath(databaseId, itemId, relationKey), { method: "POST", body: JSON.stringify({ targetItemId }) }, { discardBody: true });
     },
 
+    async callOperation(operationId, input) {
+      // Addressed by operation id alone: which module owns it, and which databases/properties
+      // it touches, are the backend's business — the client only names the operation.
+      return post(`/operations/${id(operationId)}`, input);
+    },
+
     async unlinkItem(databaseId, itemId, relationKey, targetItemId) {
       await request(
         config,

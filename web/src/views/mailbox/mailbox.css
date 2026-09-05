@@ -211,3 +211,130 @@
   overflow-wrap: anywhere;
   line-height: 1.5;
 }
+
+.reading-pane__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.reading-pane__no-aliases {
+  margin-top: var(--space-4);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.mailbox__pane-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+/*
+ * The compose window floats over the mailbox rather than taking a pane: reading, triaging and
+ * navigating all continue underneath it, which is the point of composing without losing the
+ * reading context. Minimized, it keeps only its title bar — the form is unmounted, its content
+ * is not (that lives in the client's state).
+ */
+.compose {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+  padding: var(--space-3);
+}
+
+.compose--window {
+  position: fixed;
+  right: var(--space-4);
+  bottom: 0;
+  z-index: 10;
+  width: min(32rem, calc(100vw - 2 * var(--space-4)));
+  max-height: min(36rem, 90vh);
+  overflow-y: auto;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  box-shadow: 0 0 var(--space-4) rgb(0 0 0 / 25%);
+}
+
+.compose--minimized {
+  max-height: none;
+}
+
+.compose--inline {
+  margin-top: var(--space-4);
+  background: var(--color-surface-raised);
+}
+
+.compose__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.compose__title {
+  margin: 0;
+  font-size: var(--font-size-md);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compose__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.compose__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--font-size-sm);
+}
+
+.compose__field input,
+.compose__field select,
+.compose__field textarea {
+  font: inherit;
+  font-size: var(--font-size-md);
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-1);
+  padding: var(--space-1) var(--space-2);
+}
+
+.compose__field textarea {
+  resize: vertical;
+  min-height: 8rem;
+}
+
+.compose__copies {
+  align-self: flex-start;
+}
+
+.compose__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.compose__saved,
+.compose__error {
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+
+.compose__saved {
+  color: var(--color-text-muted);
+}
+
+.compose__error {
+  color: var(--color-danger);
+}

@@ -3,7 +3,7 @@ import { z } from "zod";
 /**
  * The generic backend operations the web client is allowed to call. These mirror the
  * choke-point's own generic surface (`listItems`/`countItems`/`getItem`/`getView`, plus
- * `updateItem` and the relation link/unlink pair) one to one — deliberately: a view renderer
+ * `updateItem`, the relation link/unlink pair and the named module operations) one to one — deliberately: a view renderer
  * reads and writes its data through these and nothing else, so no view can grow a private
  * path of its own into a specific module's tables.
  */
@@ -71,6 +71,16 @@ export interface GenericOperations {
   linkItem(databaseId: string, itemId: string, relationKey: string, targetItemId: string): Promise<void>;
   /** Removes one edge on the named relation property; removing an absent edge is likewise a no-op. */
   unlinkItem(databaseId: string, itemId: string, relationKey: string, targetItemId: string): Promise<void>;
+  /**
+   * Invokes a module's declared named operation (`email.draft.create`, `email.send`, …) by
+   * its id. Still the same choke point, not a private path: these are exactly the named
+   * operations a module declares and an agent may call, with the module — not the caller —
+   * resolving its own database and property ids. A view reaches for one only where no
+   * generic read or write can express the action: sending mail over SMTP is not an item
+   * update, and the structured envelope a reply is built from lives in the mail module's own
+   * metadata rather than in item properties.
+   */
+  callOperation(operationId: string, input: Record<string, unknown>): Promise<unknown>;
 }
 
 /**
