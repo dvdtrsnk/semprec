@@ -124,6 +124,19 @@ describe("mailbox compose (issue #98)", () => {
       expect(field(reply, "From").value).toBe(PRIMARY_ADDRESS);
     });
 
+    it("widens a half-written reply to everyone without discarding what was typed", async () => {
+      await renderReady(createMailboxBackend());
+
+      await openMessage("Invoice for March");
+      const reply = await startReply("Reply");
+      await userEvent.type(field(reply, "Message"), "On it. ");
+
+      const widened = await startReply("Reply to all");
+      expect(field(widened, "To").value).toBe("Billing <billing@example.com>, Ada <ada@example.com>");
+      expect(field(widened, "Cc").value).toBe("books@example.com");
+      expect(field(widened, "Message").value).toContain("On it. ");
+    });
+
     it("keeps a half-written reply while another message is read", async () => {
       await renderReady(createMailboxBackend());
 

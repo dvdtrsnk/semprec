@@ -417,7 +417,7 @@ function MailboxPanes({ config, operations, databaseId }: { config: MailboxConfi
     return { folders, unreadCounts, mailboxes, folderMailbox };
   }, [config, databaseId]);
 
-  const messagesResource = useAsyncResource<Item[]>(
+  const { resource: messagesResource, reload: reloadMessages } = useAsyncResource<Item[]>(
     async () => {
       if (!folderId) return [];
       const page = await operations.listItems(databaseId, { filter: folderFilter(config, folderId), sort: messageSort(config), limit: 50 });
@@ -432,10 +432,10 @@ function MailboxPanes({ config, operations, databaseId }: { config: MailboxConfi
   // resolves again (a retry, another folder), so a fresh answer always wins.
   const [triagedMessages, setTriagedMessages] = useState<Item[] | null>(null);
   const [unreadDeltas, setUnreadDeltas] = useState<Record<string, number>>({});
-  useEffect(() => setTriagedMessages(null), [messagesResource.resource]);
+  useEffect(() => setTriagedMessages(null), [messagesResource]);
   useEffect(() => setUnreadDeltas({}), [resource]);
 
-  const messages = triagedMessages ?? (messagesResource.resource.status === "ready" ? messagesResource.resource.value : []);
+  const messages = triagedMessages ?? (messagesResource.status === "ready" ? messagesResource.value : []);
   const unreadCounts = useMemo(() => {
     const base = resource.status === "ready" ? resource.value.unreadCounts : {};
     const entries = Object.entries(unreadDeltas);
@@ -591,8 +591,8 @@ function MailboxPanes({ config, operations, databaseId }: { config: MailboxConfi
   // the draft has just moved into Sent, and the folder counts changed with it.
   const refreshAfterSend = useCallback(() => {
     reload();
-    messagesResource.reload();
-  }, [reload, messagesResource]);
+    reloadMessages();
+  }, [reload, reloadMessages]);
 
   const runCompose = useCallback(
     async (state: ComposeState, action: "save" | "send", apply: (next: ComposeState) => void) => {
@@ -641,10 +641,15 @@ function MailboxPanes({ config, operations, databaseId }: { config: MailboxConfi
   const startReply = useCallback(
     (mode: Exclude<ComposeMode, "new">, message: Item, envelope: MessageEnvelope) => {
       const sender = envelope.envelope.from ? formatAddress(envelope.envelope.from) : (text(message, "sender") ?? "");
-      setReplies((current) => ({
-        ...current,
-        [message.id]: replyCompose({ mode, message, envelope, aliases, contextMailboxItemId, attribution: t("mailbox.compose.attribution", { sender }) }),
-      }));
+      setReplies((current) => {
+        const derived = replyCompose({ mode, message, envelope, aliases, contextMailboxItemId, attribution: t("mailbox.compose.attribution", { sender }) });
+        const existing = current[message.id];
+        // Switching between Reply and Reply to all on a message already being answered is a
+        // change of who it goes to, and nothing else: the body, the subject, the chosen alias
+        // and the draft the content may already be saved as all stay exactly as they are.
+        const next = existing ? { ...existing, mode, to: derived.to, cc: derived.cc, showCopies: existing.showCopies || derived.showCopies } : derived;
+        return { ...current, [message.id]: next };
+      });
     },
     [aliases, contextMailboxItemId, t],
   );
@@ -695,11 +700,11 @@ function MailboxPanes({ config, operations, databaseId }: { config: MailboxConfi
             ) : null}
           </div>
           {!folderId ? <EmptyState message={t("mailbox.messages.empty")} /> : null}
-          {folderId && messagesResource.resource.status === "loading" ? <LoadingState /> : null}
-          {folderId && messagesResource.resource.status === "failed" ? (
-            <ErrorState error={messagesResource.resource.error} onRetry={messagesResource.reload} />
+          {folderId && messagesResource.status === "loading" ? <LoadingState /> : null}
+          {folderId && messagesResource.status === "failed" ? (
+            <ErrorState error={messagesResource.error} onRetry={reloadMessages} />
           ) : null}
-          {folderId && messagesResource.resource.status === "ready" ? (
+          {folderId && messagesResource.status === "ready" ? (
             <MessagesPane
               config={config}
               targets={targets}
