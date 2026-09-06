@@ -76,9 +76,7 @@ interface LegacyItemRow {
  * persisted for these rows before this migration, so there is nothing to "discard": the
  * reconstructed row carries the maximum information legacy storage ever held.
  */
-async function migrateLegacyItem(client: PoolClient, item: LegacyItemRow, fetchRawMime: LegacyRawMimeFetcher): Promise<void> {
-  const rawMime = await fetchRawMime(item.id);
-
+async function migrateLegacyItem(client: PoolClient, item: LegacyItemRow, rawMime: Buffer | null): Promise<void> {
   if (rawMime) {
     const parsed = await simpleParser(rawMime);
     const references = Array.isArray(parsed.references) ? parsed.references : parsed.references ? [parsed.references] : [];
@@ -199,7 +197,8 @@ export async function runMailLegacyEmailMigrationJob(
     // committed and orphaned. Per-item (not one transaction for the whole page) so one bad
     // row can't roll back everything a page already migrated successfully.
     for (const row of rows) {
-      await withTransaction(pool, (client) => migrateLegacyItem(client, row, fetchRawMime));
+      const rawMime = await fetchRawMime(row.id);
+      await withTransaction(pool, (client) => migrateLegacyItem(client, row, rawMime));
     }
     if (rows.length < pageSize) break;
   }
