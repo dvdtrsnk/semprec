@@ -16,7 +16,7 @@ import {
 import { lookupPersonIdByEmail, reindexPersonEmails } from "../mail/personEmailIndexStore.js";
 import { resolveThreadId } from "../mail/threading.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
-import { getMailMessageMetaByItemId } from "../mail/mailMessageMetaStore.js";
+import { getMailMessageMetaByItemId, upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
 import { resolveDeliveredToAddress } from "../mail/deliveredTo.js";
 import { isDeliveryStatusReport, parseContentTypeHeader } from "../mail/dsn.js";
 import {
@@ -337,6 +337,77 @@ describe("message ingest dedup (issue #26)", () => {
 
     const { rows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [emailsId]);
     expect(Number(rows[0].count)).toBe(1);
+  });
+});
+
+describe("provider_message_id uniqueness convergence (issue #204)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  async function baseInput(messageId: string, overrides: Partial<Parameters<typeof ingestEmailMessage>[1]> = {}) {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const properties = await chokePoint.listProperties(emailsId);
+    const folder = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+    );
+    return {
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      folderRelationPropertyId: properties.find((p) => p.key === "folder")!.id,
+      attachmentsRelationPropertyId: properties.find((p) => p.key === "attachments")!.id,
+      folderItemId: folder.id,
+      messageId,
+      envelope: {},
+      attachments: [],
+      storage: noopStorage,
+      storageKeyPrefix: "test",
+      ...overrides,
+    };
+  }
+
+  it("converges two concurrent inserts for distinct Message-IDs sharing one provider id onto a single stable row without a raw Postgres error", async () => {
+    const inputA = await baseInput("<race-a@x>", { providerMessageId: "provider-race-1" });
+    const inputB = await baseInput("<race-b@x>", { providerMessageId: "provider-race-1" });
+
+    const [resultA, resultB] = await Promise.all([
+      withTransaction(pool, (client) => ingestEmailMessage(client, inputA)),
+      withTransaction(pool, (client) => ingestEmailMessage(client, inputB)),
+    ]);
+
+    expect(resultA.itemId).toBe(resultB.itemId);
+    expect([resultA.created, resultB.created].sort()).toEqual([false, true]);
+
+    const { rows } = await pool.query(`SELECT count(*) FROM mail_message_meta WHERE provider_message_id = $1`, ["provider-race-1"]);
+    expect(Number(rows[0].count)).toBe(1);
+
+    const { rows: itemRows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [inputA.emailsDatabaseId]);
+    expect(Number(itemRows[0].count)).toBe(1);
+  });
+
+  it("fills a null provider_message_id via the message_id upsert's ON CONFLICT DO UPDATE (same-message fill)", async () => {
+    const itemId = randomUUID();
+    const messageId = "<fill@x>";
+    const sharedProviderId = "provider-fill-1";
+
+    await withTransaction(pool, (client) => upsertMailMessageMeta(client, { itemId, messageId, envelope: {} }));
+    await withTransaction(pool, (client) => upsertMailMessageMeta(client, { itemId, messageId, envelope: {}, providerMessageId: sharedProviderId }));
+
+    const meta = await getMailMessageMetaByItemId(pool, itemId);
+    expect(meta?.providerMessageId).toBe(sharedProviderId);
+  });
+
+  it("leaves a null provider_message_id message-id-only, uninvolved in the partial unique index", async () => {
+    const input = await baseInput("<nullprovider@x>");
+    const { itemId } = await withTransaction(pool, (client) => ingestEmailMessage(client, input));
+
+    const meta = await getMailMessageMetaByItemId(pool, itemId);
+    expect(meta?.providerMessageId).toBeNull();
   });
 });
 
