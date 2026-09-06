@@ -1,0 +1,26 @@
+name: Verify resolve token permissions
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check CODE_REVIEW_BOT_TOKEN's write access to this repo
+        env:
+          TOKEN: ${{ secrets.CODE_REVIEW_BOT_TOKEN }}
+        run: |
+          resp=$(curl -s -X POST https://api.github.com/graphql \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"query":"query { viewer { login } repository(owner:\"dvdtrsnk\", name:\"semprec\") { viewerPermission } }"}')
+          echo "$resp"
+          perm=$(echo "$resp" | grep -o '"viewerPermission":"[A-Z]*"' | cut -d'"' -f4)
+          echo "viewerPermission=$perm"
+          if [ "$perm" = "WRITE" ] || [ "$perm" = "ADMIN" ] || [ "$perm" = "MAINTAIN" ]; then
+            echo "OK: token has write access"
+          else
+            echo "FAIL: token does not have write access (perm=$perm)"
+            exit 1
+          fi
