@@ -3,7 +3,8 @@ export { runMigrations } from "./db/migrate.js";
 export * from "./errors.js";
 export * from "./types.js";
 
-export { createChokePoint, type ChokePoint } from "./chokePoint/chokePoint.js";
+export { createChokePoint, createItemWithClient, type ChokePoint } from "./chokePoint/chokePoint.js";
+export type { CreateItemInput } from "./chokePoint/chokePoint.js";
 export type { CreateDatabaseInput } from "./chokePoint/databasesStore.js";
 export type { CreatePropertyInput } from "./chokePoint/propertiesStore.js";
 export type { ListItemsOptions } from "./chokePoint/itemsStore.js";

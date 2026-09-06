@@ -1,5 +1,6 @@
 import type { ModuleManifest } from "@semprec/module-registry";
 import type { JobHelpers } from "graphile-worker";
+import { createItemWithClient } from "@semprec/data";
 
 /**
  * One half of the e2e cross-module scenario (module-contract issue #114): declares its own
@@ -39,17 +40,13 @@ export const ingestPayloadSchema = {
   },
 };
 
-/** Records its own item, then relays to beta's task via the queue — the scenario's cross-module hop. */
+/** Records its own item via the choke point, then relays to beta's task via the queue — the scenario's cross-module hop. */
 export async function handleIngest(payload: IngestPayload, helpers: JobHelpers): Promise<void> {
-  const itemId = await helpers.withPgClient(async (client) => {
-    const { rows } = await client.query<{ id: string }>(`INSERT INTO items (database_id, properties) VALUES ($1, $2::jsonb) RETURNING id`, [
-      payload.alphaDatabaseId,
-      JSON.stringify({ value: payload.value }),
-    ]);
-    return rows[0].id;
-  });
+  const item = await helpers.withPgClient((client) =>
+    createItemWithClient(client, { databaseId: payload.alphaDatabaseId, properties: { value: payload.value } }),
+  );
 
-  await helpers.addJob("e2eBeta.relay", { betaDatabaseId: payload.betaDatabaseId, sourceItemId: itemId });
+  await helpers.addJob("e2eBeta.relay", { betaDatabaseId: payload.betaDatabaseId, sourceItemId: item.id });
 }
 
 export const alphaTickRuleSchema = {

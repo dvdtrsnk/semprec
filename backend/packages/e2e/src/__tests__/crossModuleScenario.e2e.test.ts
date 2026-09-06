@@ -13,11 +13,7 @@ import {
   runMigrations,
   type ChokePoint,
 } from "@semprec/data";
-// Deep import: this package has no public "testSupport" export of its own (it's a test-only
-// helper), but nothing restricts subpath resolution since @semprec/data declares no "exports"
-// map — see vitest.integration.config.ts / vitest.e2e.config.ts, which reuse this same file's
-// default export as their shared `globalSetup`.
-import { getTestPool, resetDatabase } from "@semprec/data/src/testSupport/testDb.js";
+import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 
 const FIXTURES_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.join(FIXTURES_DIR, "fixtures/migrations");
@@ -88,6 +84,8 @@ describe("e2e: cross-module scenario (module-contract issue #114)", () => {
     const registry = await loadRegistry();
     const alphaDb = await chokePoint.createDatabase({ name: "Alpha", ownerModuleId: "e2eAlphaItems" });
     const betaDb = await chokePoint.createDatabase({ name: "Beta", ownerModuleId: "e2eBetaItems" });
+    await chokePoint.createProperty({ databaseId: alphaDb.id, key: "value", name: "Value", type: "text" });
+    await chokePoint.createProperty({ databaseId: betaDb.id, key: "sourceItemId", name: "Source item", type: "text" });
 
     const taskList: TaskList = await mergeModuleTaskList({}, registry);
     await pool.query(`SELECT graphile_worker.add_job($1, $2::json)`, [
