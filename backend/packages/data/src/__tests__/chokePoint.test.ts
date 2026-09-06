@@ -62,6 +62,18 @@ describe("choke-point", () => {
     expect(rows[0].n).toBe(1);
   });
 
+  it("two concurrent creates racing on the same Idempotency-Key still produce exactly one item", async () => {
+    const db = await makeMoviesDb();
+    const [first, second] = await Promise.all([
+      chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" }, idempotencyKey: "race" }),
+      chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune 2" }, idempotencyKey: "race" }),
+    ]);
+    expect(second.id).toBe(first.id);
+
+    const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [db.id]);
+    expect(rows[0].n).toBe(1);
+  });
+
   it("reusing an Idempotency-Key across a different database is a conflict, not a silent cross-lookup", async () => {
     const dbA = await makeMoviesDb();
     const dbB = await makeMoviesDb();
