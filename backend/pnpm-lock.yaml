@@ -35,6 +35,9 @@ importers:
       '@semprec/credentials':
         specifier: workspace:*
         version: link:../credentials
+      '@semprec/module-registry':
+        specifier: workspace:*
+        version: link:../module-registry
       '@semprec/queue':
         specifier: workspace:*
         version: link:../queue
@@ -91,7 +94,15 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1))
 
-  packages/module-registry: {}
+  packages/module-registry:
+    dependencies:
+      zod:
+        specifier: ^4.1.11
+        version: 4.4.3
+    devDependencies:
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1))
 
   packages/queue:
     dependencies:

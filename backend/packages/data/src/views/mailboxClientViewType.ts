@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { registerViewType, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
+import { FLAGGED_PROPERTY_KEY, READ_PROPERTY_KEY } from "../mail/messageFlags.js";
 
 /**
  * The mailbox's own view type (issue #96, epic #92): a folder sidebar + message list +
@@ -28,9 +29,9 @@ export const mailboxClientConfigSchema = z.object({
   /** Relation property on Emails pointing at Folders — the message list's only filter path. */
   folderRelationKey: z.string().min(1).default("folder"),
   /** Checkbox property on Emails carrying read state; absent/false counts as unread. */
-  readPropertyKey: z.string().min(1).default("read"),
+  readPropertyKey: z.string().min(1).default(READ_PROPERTY_KEY),
   /** Checkbox property on Emails carrying flag state; absent/false counts as unflagged. */
-  flaggedPropertyKey: z.string().min(1).default("flagged"),
+  flaggedPropertyKey: z.string().min(1).default(FLAGGED_PROPERTY_KEY),
   /** Mailboxes database + item, when this view is scoped to a single account's folders. */
   mailboxesDatabaseId: uuid.optional(),
   mailboxItemId: uuid.optional(),
