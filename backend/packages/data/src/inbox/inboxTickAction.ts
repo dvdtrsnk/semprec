@@ -9,6 +9,7 @@ import * as databasesStore from "../chokePoint/databasesStore.js";
 import { createItemWithClient, createRelationWithClient, updateItemWithClient } from "../chokePoint/chokePoint.js";
 import { PROCESSING_METHODS, LOCKED_PROPOSAL_STATUSES, type ProcessingMethod } from "./inboxTypesStore.js";
 import { computeInboxFingerprint } from "./fingerprint.js";
+import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
 import { ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 
@@ -186,6 +187,15 @@ export async function assertValidProposalEnvelope(client: PoolClient, envelope: 
     const targetDatabase = await databasesStore.getDatabase(client, envelope.target);
     if (!targetDatabase || targetDatabase.archivedAt) {
       throw new ValidationError(`Proposal envelope target '${envelope.target}' is not an existing target database`, { field: "target" });
+    }
+    // Issue #105's grant separation, enforced here rather than only declared in the
+    // manifest: a user-supplied `revise` builds its envelope from raw request input, so
+    // without this check it could name Inbox/Inbox item types as `target` and have a
+    // later `confirm` write to them via the generic create-item choke point — bypassing
+    // `permissionManifest.ts`'s `writable: false` for those two databases, since nothing
+    // upstream of that choke-point call reads the manifest at all.
+    if (targetDatabase.ownerModuleId && SEMPREC_READ_ONLY_MODULE_IDS.includes(targetDatabase.ownerModuleId)) {
+      throw new ValidationError(`Proposal envelope target '${envelope.target}' is not a writable target database`, { field: "target" });
     }
 
     const targetProperties = await propertiesStore.listPropertiesByDatabase(client, targetDatabase.id);

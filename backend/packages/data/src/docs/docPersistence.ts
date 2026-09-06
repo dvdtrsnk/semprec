@@ -1,6 +1,6 @@
 import * as Y from "yjs";
 import type { Pool, PoolClient } from "pg";
-import { withTransaction } from "../db/pool.js";
+import { runAfterCommit, withTransaction } from "../db/pool.js";
 import type { CreatedBy } from "../types.js";
 import { notifyDocUpdate } from "../realtimeHook.js";
 
@@ -103,10 +103,17 @@ export async function loadDoc(pool: Pool, docId: string, compactionThreshold = D
   return withTransaction(pool, (client) => loadDocWithClient(client, docId, compactionThreshold));
 }
 
+/**
+ * The realtime notification is deferred via `runAfterCommit` rather than fired here —
+ * this runs inside the caller's still-open transaction (possibly one also writing other
+ * tables, e.g. `inbox/proposalActions.ts`'s `confirmProposalWithClient`), and firing
+ * immediately would let a subscriber observe a `doc_updates` row that a later failure in
+ * that same transaction then rolls back.
+ */
 async function appendDocUpdateWithClient(client: PoolClient, docId: string, update: Uint8Array, createdBy: CreatedBy): Promise<void> {
   const updateBuffer = Buffer.from(update);
   await client.query(`INSERT INTO doc_updates (doc_id, update, created_by) VALUES ($1, $2, $3)`, [docId, updateBuffer, createdBy]);
-  notifyDocUpdate({ docId, update: updateBuffer.toString("base64"), createdBy });
+  runAfterCommit(client, () => notifyDocUpdate({ docId, update: updateBuffer.toString("base64"), createdBy }));
 }
 
 /**

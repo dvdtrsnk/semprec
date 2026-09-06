@@ -249,6 +249,36 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       ),
     ).rejects.toThrow();
   });
+
+  it("revise cannot retarget a proposal at Inbox or Inbox item types — the agent's grant excludes them even via a user-supplied envelope (issue #105 review fix)", async () => {
+    const proposal = await createDatabaseProposal("Buy milk");
+
+    await expect(
+      withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id, {
+          message: "retarget to Inbox",
+          entityKind: "database",
+          target: inboxId,
+          properties: {},
+        }),
+      ),
+    ).rejects.toThrow(/not a writable target database/);
+
+    await expect(
+      withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id, {
+          message: "retarget to Inbox item types",
+          entityKind: "database",
+          target: typesId,
+          properties: {},
+        }),
+      ),
+    ).rejects.toThrow(/not a writable target database/);
+
+    // The proposal must be untouched by the rejected revise attempts — still pointed at Tasks.
+    const untouched = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, proposal.id));
+    expect((untouched!.properties.proposal as { target: string }).target).toBe(tasksId);
+  });
 });
 
 afterAll(async () => {

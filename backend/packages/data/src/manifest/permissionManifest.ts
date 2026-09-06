@@ -1,7 +1,7 @@
 import type { PoolClient } from "pg";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { heartbeatRuleSchema, type HeartbeatRule } from "../scheduler/rule.js";
-import { INBOX_MODULE_ID, INBOX_ITEM_TYPES_MODULE_ID } from "../seed/inboxPipelineKeys.js";
+import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
 
 export interface ManifestProperty {
   key: string;
@@ -28,9 +28,6 @@ export interface ManifestDatabase {
   writable: boolean;
   properties: ManifestProperty[];
 }
-
-/** `owner_module_id`s the Semprec project owns but that stay read-only in its own grant (issue #105). */
-const SEMPREC_READ_ONLY_MODULE_IDS: readonly string[] = [INBOX_MODULE_ID, INBOX_ITEM_TYPES_MODULE_ID];
 
 export interface ManifestHeartbeat {
   id: string;
