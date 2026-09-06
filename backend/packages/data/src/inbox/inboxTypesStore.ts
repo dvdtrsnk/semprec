@@ -190,13 +190,21 @@ export async function deleteInboxTypeWithClient(client: PoolClient, input: Delet
  * never `emoji` — renaming a type's emoji afterwards cannot break an Inbox item's relation.
  */
 export async function listActiveInboxTypes(client: Queryable, inboxItemTypesDatabaseId: string): Promise<InboxTypeSummary[]> {
-  const { items } = await itemsStore.listItems(client, inboxItemTypesDatabaseId, {
-    limit: 200,
-    buildFilterSql: (params) => {
-      params.push("active");
-      return `properties ->> 'status' = $${params.length}`;
-    },
-  });
+  const items: ItemRow[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await itemsStore.listItems(client, inboxItemTypesDatabaseId, {
+      limit: 200,
+      cursor,
+      buildFilterSql: (params) => {
+        params.push("active");
+        return `properties ->> 'status' = $${params.length}`;
+      },
+    });
+    items.push(...page.items);
+    if (!page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
   return items.map((item) => ({
     id: item.id,
     emoji: typeof item.properties.emoji === "string" ? item.properties.emoji : "",

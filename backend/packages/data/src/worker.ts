@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import { CORE_TASK_NAMES, type TaskList } from "@semprec/queue";
 import { handleHeartbeatSweepTask, createHeartbeatFireTask } from "./scheduler/sweep.js";
 import { handleRollupRecomputeTask, handleRollupRecomputeFullTask } from "./rollup/recompute.js";
+import { handleJournalInboxRecomputeTask } from "./inbox/journalInboxCompute.js";
 import { handlePropertyTypeMigrationTask } from "./migrationJob/propertyTypeMigration.js";
 import { handleDocCompactionSweepTask } from "./docs/docPersistence.js";
 import { handleDocHistorySquashTask, handleDocHistoryCleanupTask } from "./docs/docHistory.js";
@@ -89,6 +90,9 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.ROLLUP_RECOMPUTE_FULL]: async (payload) => {
       await handleRollupRecomputeFullTask(pool, { rollupPropertyId: requireString(payload, "rollupPropertyId") });
+    },
+    [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE]: async (payload) => {
+      await handleJournalInboxRecomputeTask(pool, { journalDayItemId: requireString(payload, "journalDayItemId") });
     },
     [CORE_TASK_NAMES.PROPERTY_TYPE_MIGRATION]: async (payload) => {
       await handlePropertyTypeMigrationTask(pool, {
