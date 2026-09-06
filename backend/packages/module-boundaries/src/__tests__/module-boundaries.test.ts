@@ -32,6 +32,14 @@ describe("checkModuleBoundaries", () => {
     expect(violation?.rules).toContain("no-module-service-internal-cross-import");
   });
 
+  it("rejects a service reaching into a module's internals", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const violation = violations.find((v: BoundaryViolation) => v.importer === "services/svcB/src/badModuleImport.ts");
+
+    expect(violation?.imported).toBe("modules/alpha/src/internal.ts");
+    expect(violation?.rules).toContain("no-module-service-internal-cross-import");
+  });
+
   it("allows imports of another module's or service's public entry point", async () => {
     const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
     const importers = violations.map((violation: BoundaryViolation) => violation.importer);
@@ -75,8 +83,13 @@ describe("checkModuleBoundaries", () => {
           imported: "services/svcA/src/internal.ts",
           rules: ["no-module-service-internal-cross-import"],
         },
+        {
+          importer: "services/svcB/src/badModuleImport.ts",
+          imported: "modules/alpha/src/internal.ts",
+          rules: ["no-module-service-internal-cross-import"],
+        },
       ]),
     );
-    expect(violations).toHaveLength(3);
+    expect(violations).toHaveLength(4);
   });
 });
