@@ -45,4 +45,19 @@ export function getTestPool(): Pool {
 export async function resetDatabase(pool: Pool): Promise<void> {
   await pool.query(`TRUNCATE ${TABLES.join(", ")} RESTART IDENTITY CASCADE`);
   await pool.query(`TRUNCATE graphile_worker._private_jobs RESTART IDENTITY CASCADE`);
+  // `databasesStore.createDatabase` creates one `items_p_<id>` partition per database and
+  // there is no DEFAULT partition (see migration 0001's header note), so the TRUNCATE above
+  // never removes the partition tables themselves — only their rows. Left unchecked across a
+  // whole test run (every `seedSystem` call creates a couple dozen fresh ones), the resulting
+  // catalog/lock-table bloat eventually exhausts Postgres's shared memory. Dropping every
+  // dynamic partition here keeps the count bounded to whatever the current test creates.
+  await pool.query(`
+    DO $$
+    DECLARE partition RECORD;
+    BEGIN
+      FOR partition IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE 'items\\_p\\_%' LOOP
+        EXECUTE format('DROP TABLE IF EXISTS %I', partition.tablename);
+      END LOOP;
+    END $$;
+  `);
 }

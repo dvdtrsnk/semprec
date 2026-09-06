@@ -85,6 +85,16 @@ export async function getDatabase(client: PoolClient, id: string): Promise<Datab
   return rows[0] ? mapDatabaseRow(rows[0]) : null;
 }
 
+/** Looks up a system database by its canonical `owner_module_id` (e.g. 'tasks', 'events') — see the `canonical-keys` skill's established vocabulary. */
+export async function getDatabaseByModuleId(client: PoolClient, ownerModuleId: string): Promise<DatabaseRow | null> {
+  const { rows } = await client.query(
+    `SELECT id, name, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, archived_at
+     FROM databases WHERE owner_module_id = $1`,
+    [ownerModuleId],
+  );
+  return rows[0] ? mapDatabaseRow(rows[0]) : null;
+}
+
 async function requireDatabase(client: PoolClient, id: string): Promise<DatabaseRow> {
   const database = await getDatabase(client, id);
   if (!database) throw new NotFoundError(`Database ${id} not found`);
