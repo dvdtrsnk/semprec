@@ -68,23 +68,36 @@ class AccountQueue {
     // Raising the limit can free up slots immediately — without this, a waiter queued under
     // the old (lower) limit would otherwise sit until an unrelated in-flight task happens to
     // finish, even though capacity for it already exists.
-    while (this.active < this.limit && this.waiters.length > 0) {
-      this.waiters.shift()!.resolve();
-    }
+    this.wakeWaiters();
   }
 
   async run<T>(task: () => Promise<T>): Promise<T> {
-    if (this.active >= this.limit) {
+    if (this.active < this.limit) {
+      this.active++;
+    } else {
+      // `waitForSlot` only resolves once a slot has already been granted (see `wakeWaiters`),
+      // so `this.active` is already accounted for by the time we get here — no `active++` needed.
       await this.waitForSlot();
     }
-    this.active++;
     try {
       return await task();
     } finally {
       this.active--;
-      if (this.active < this.limit) {
-        this.waiters.shift()?.resolve();
-      }
+      this.wakeWaiters();
+    }
+  }
+
+  /**
+   * Grants queued waiters their slot as soon as one is free. `this.active` is incremented right
+   * here, synchronously, rather than left for the woken waiter's `run()` to bump on its next
+   * microtask turn — otherwise a second waiter examined later in the same loop (or a concurrent
+   * `run()` call reading `this.active` before that microtask runs) would see stale headroom and
+   * over-admit past `limit`.
+   */
+  private wakeWaiters(): void {
+    while (this.active < this.limit && this.waiters.length > 0) {
+      this.active++;
+      this.waiters.shift()!.resolve();
     }
   }
 

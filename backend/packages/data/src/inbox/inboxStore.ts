@@ -4,6 +4,7 @@ import { createItemWithClient, createRelationWithClient } from "../chokePoint/ch
 import type { ActionQueueAffinity } from "../scheduler/actions.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
+import { enqueueJournalInboxRecompute } from "./journalInboxCompute.js";
 import { assertValidTimezone } from "../timezone.js";
 import { ValidationError, NotFoundError } from "../errors.js";
 import type { ItemRow } from "../types.js";
@@ -48,6 +49,12 @@ async function getRelationProperty(client: PoolClient, databaseId: string, key: 
 export async function createInboxItemWithClient(client: PoolClient, input: CreateInboxItemInput): Promise<ItemRow> {
   if (!input.date) throw new ValidationError("Inbox items require 'date'", { field: "date" });
   if (!input.time) throw new ValidationError("Inbox items require 'time'", { field: "time" });
+  // `DateTime.fromISO` also accepts non-calendar-date ISO forms Luxon parses as valid (e.g.
+  // "2026", "2026-W35"). Rejecting those is explicitly out of scope for this check (issue #270)
+  // — this only needs to close the unparseable-string path that corrupts Journal-day resolution.
+  if (!DateTime.fromISO(input.date).isValid) {
+    throw new ValidationError("Inbox items require a valid ISO date for 'date'", { field: "date" });
+  }
   assertValidTimezone(input.timezone);
 
   const item = await createItemWithClient(
@@ -73,6 +80,9 @@ export async function createInboxItemWithClient(client: PoolClient, input: Creat
   const referenceDate = DateTime.fromISO(input.date, { zone: input.timezone }).toJSDate();
   const journalDay = await getOrCreateJournalItem(client, input.journalDatabaseId, "day", referenceDate, input.timezone);
   await createRelationWithClient(client, { relationPropertyId: journalDayProperty.id, itemId: item.id, targetItemId: journalDay.id });
+  // Issue #106: capture is one of the three triggers ("capture, proposal transition, and
+  // deletion") that must invalidate the day's cached Inbox-item list.
+  await enqueueJournalInboxRecompute(client, journalDay.id);
 
   return item;
 }
