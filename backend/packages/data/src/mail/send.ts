@@ -156,13 +156,19 @@ export async function sendDraftEmail(
     await getItemById(client, moduleIds.mailboxesDatabaseId, input.mailboxItemId),
   ]);
   if (!draft) throw new NotFoundError(`Draft ${input.draftItemId} not found`);
+  // `deletedAt` half is deliberate: `itemsStore.getItemById` selects by id with no
+  // `deleted_at IS NULL` filter, and nothing in this repository hard-deletes items
+  // (`chokePoint.softDeleteItem` sets `deleted_at`), so a removed mailbox comes back as a row
+  // with `deletedAt` set, not as `null` — a null-only guard would leave sending over a deleted
+  // mailbox working.
+  if (!mailbox || mailbox.deletedAt) throw new NotFoundError(`Mailbox ${input.mailboxItemId} not found`);
 
   // Without this, any actor (including a granted-autonomous agent) could set an arbitrary
   // `from.address` and have it go out over this mailbox's real SMTP credentials — From-header
   // spoofing through a mailbox the caller doesn't actually control that address on. Checked
   // against `Mailboxes.addresses` (the same registered-alias list mail/deliveredTo.ts already
   // trusts for the inbound direction), not just the caller's say-so.
-  const mailboxAliases = parseAddressListProperty(mailbox?.properties.addresses).map(normalizeEmailAddress);
+  const mailboxAliases = parseAddressListProperty(mailbox.properties.addresses).map(normalizeEmailAddress);
   if (!mailboxAliases.includes(normalizeEmailAddress(input.from.address))) {
     throw new ForbiddenError(
       `From address ${input.from.address} is not a registered address for mailbox ${input.mailboxItemId}`,

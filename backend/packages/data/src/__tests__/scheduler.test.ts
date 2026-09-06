@@ -8,14 +8,17 @@ import { withTransaction } from "../db/pool.js";
 import {
   createHeartbeat,
   getHeartbeat,
+  recomputeAllForTimezoneChange,
   setHeartbeatEnabled,
   sweepDueHeartbeats,
   triggerOnItemEventHeartbeats,
+  updateHeartbeatRule,
 } from "../scheduler/schedulerStore.js";
 import { createActionRegistry, CORE_AGENT_RUN_ACTION_ID, coreAgentRunAction } from "../scheduler/actions.js";
 import { createCoreTaskList } from "../worker.js";
 import { getSystemSettingsItemId } from "../systemSettings.js";
 import { listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
+import type { HeartbeatRuleKindRegistry } from "../scheduler/rule.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -185,5 +188,269 @@ describe("scheduler", () => {
     expect(runs[0].status).toBe("done");
     expect(runs[0].result).toBe("handled: process the inbox");
     expect(runs[0].triggeredBy).toBe("heartbeat");
+  });
+
+  describe("module-declared heartbeat rule kinds", () => {
+    function fixtureModuleRuleKinds(nextFireAt: (rule: unknown, timezone: string, after: Date) => Date | null): HeartbeatRuleKindRegistry {
+      return new Map([
+        [
+          "fixtureModule.onWidgetTick",
+          {
+            schema: { safeParse: (raw: unknown) => ({ success: true, data: raw }) },
+            nextFireAt,
+          },
+        ],
+      ]);
+    }
+
+    it("creates and schedules a heartbeat using an active module's rule kind, dispatched through its nextFireAtExport", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "noop",
+          },
+          moduleRuleKinds,
+        ),
+      );
+      expect(heartbeat.nextFireAt).not.toBeNull();
+      expect(heartbeat.rule).toEqual({ kind: "fixtureModule.onWidgetTick", every: 5 });
+    });
+
+    it("rejects creating a heartbeat for a rule kind whose module isn't active", async () => {
+      const projectItemId = await getSemprecProjectId();
+      await expect(
+        withTransaction(pool, (client) =>
+          createHeartbeat(client, {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "noop",
+          }),
+        ),
+      ).rejects.toThrow(/Unknown heartbeat rule kind/);
+    });
+
+    it("sweep dispatches a due module-kind heartbeat via its nextFireAtExport", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "noop",
+          },
+          moduleRuleKinds,
+        ),
+      );
+      await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [heartbeat.id]);
+
+      const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client, moduleRuleKinds));
+      expect(fired.map((f) => f.id)).toEqual([heartbeat.id]);
+
+      const after = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id, moduleRuleKinds));
+      expect(after!.lastFiredAt).not.toBeNull();
+    });
+
+    it("a heartbeat whose module rule kind became inactive is skipped by the sweep, not dispatched", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "noop",
+          },
+          moduleRuleKinds,
+        ),
+      );
+      await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [heartbeat.id]);
+
+      // The module is now deactivated: the sweep is run with no module rule kinds registered.
+      const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+      expect(fired).toHaveLength(0);
+
+      const { rows } = await pool.query("SELECT last_error, next_fire_at FROM project_heartbeats WHERE id = $1", [heartbeat.id]);
+      expect(rows[0].last_error).toMatch(/Unknown heartbeat rule kind/);
+      expect(rows[0].next_fire_at).not.toBeNull(); // left due, so reactivating the module lets the next sweep pick it up
+    });
+
+    it("a heartbeat whose module rule kind became inactive can still be disabled", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "noop",
+          },
+          moduleRuleKinds,
+        ),
+      );
+
+      // The module is now deactivated: disabling is called with no module rule kinds registered.
+      const disabled = await withTransaction(pool, (client) => setHeartbeatEnabled(client, heartbeat.id, false));
+      expect(disabled.enabled).toBe(false);
+      expect(disabled.nextFireAt).toBeNull();
+      expect(disabled.rule).toEqual({ kind: "fixtureModule.onWidgetTick", every: 5 });
+    });
+
+    it("re-enabling a heartbeat whose module rule kind is still inactive fails (there is no calculator to schedule it with)", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "noop",
+          },
+          moduleRuleKinds,
+        ),
+      );
+      await withTransaction(pool, (client) => setHeartbeatEnabled(client, heartbeat.id, false));
+
+      await expect(withTransaction(pool, (client) => setHeartbeatEnabled(client, heartbeat.id, true))).rejects.toThrow(
+        /Unknown heartbeat rule kind/,
+      );
+    });
+
+    it("a heartbeat whose module rule kind became inactive can be updated to a new (core) rule", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "noop",
+          },
+          moduleRuleKinds,
+        ),
+      );
+
+      // The module is now deactivated: updateHeartbeatRule is called with no module rule kinds
+      // registered, replacing the now-unparseable rule with a working core one.
+      const updated = await withTransaction(pool, (client) => updateHeartbeatRule(client, heartbeat.id, { kind: "dailyTime", at: "09:00" }));
+      expect(updated.rule).toEqual({ kind: "dailyTime", at: "09:00" });
+      expect(updated.nextFireAt).not.toBeNull();
+    });
+
+    it("the fire job degrades gracefully when its module rule kind is deactivated between sweep and fire, instead of retrying and losing the run", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+      let ran = 0;
+      const registry = createActionRegistry();
+      registry.set("markRan", async () => {
+        ran += 1;
+      });
+
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "markRan",
+          },
+          moduleRuleKinds,
+        ),
+      );
+      await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [heartbeat.id]);
+
+      // Sweep while the module is still active: enqueues the fire job and advances next_fire_at.
+      const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client, moduleRuleKinds));
+      expect(fired.map((f) => f.id)).toEqual([heartbeat.id]);
+
+      // The module is deactivated by the time the fire job actually runs: drainQueue's
+      // createCoreTaskList carries no moduleRegistry, so the fire task sees no active module
+      // rule kinds. This must not throw (and thus retry/dead-letter) — it should record the
+      // failure and skip firing.
+      await expect(drainQueue(registry)).resolves.not.toThrow();
+      expect(ran).toBe(0);
+
+      const { rows } = await pool.query("SELECT last_error FROM project_heartbeats WHERE id = $1", [heartbeat.id]);
+      expect(rows[0].last_error).toMatch(/Unknown heartbeat rule kind/);
+    });
+
+    it("recomputeAllForTimezoneChange recomputes a heartbeat using an active module's rule kind", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "noop",
+          },
+          moduleRuleKinds,
+        ),
+      );
+      const before = (await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id, moduleRuleKinds)))!.nextFireAt;
+
+      await withTransaction(pool, (client) => recomputeAllForTimezoneChange(client, "Pacific/Kiritimati", moduleRuleKinds));
+
+      const after = (await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id, moduleRuleKinds)))!.nextFireAt;
+      expect(after).not.toBeNull();
+      expect(after).not.toBe(before);
+    });
+
+    it("recomputeAllForTimezoneChange skips a heartbeat whose module rule kind became inactive, without aborting the batch", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+      const moduleHeartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "noop",
+          },
+          moduleRuleKinds,
+        ),
+      );
+      const coreHeartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(client, {
+          projectItemId,
+          name: "Daily",
+          rule: { kind: "dailyTime", at: "09:00" },
+          actionId: "noop",
+        }),
+      );
+      const coreBefore = (await withTransaction(pool, (client) => getHeartbeat(client, coreHeartbeat.id)))!.nextFireAt;
+
+      // The module is now deactivated: recompute runs with no module rule kinds registered.
+      await expect(withTransaction(pool, (client) => recomputeAllForTimezoneChange(client, "Pacific/Kiritimati"))).resolves.toBeUndefined();
+
+      const { rows } = await pool.query("SELECT last_error FROM project_heartbeats WHERE id = $1", [moduleHeartbeat.id]);
+      expect(rows[0].last_error).toMatch(/Unknown heartbeat rule kind/);
+
+      // The core heartbeat after it in the same batch still gets recomputed.
+      const coreAfter = (await withTransaction(pool, (client) => getHeartbeat(client, coreHeartbeat.id)))!.nextFireAt;
+      expect(coreAfter).not.toBe(coreBefore);
+    });
   });
 });
