@@ -48,6 +48,9 @@ async function getRelationProperty(client: PoolClient, databaseId: string, key: 
 export async function createInboxItemWithClient(client: PoolClient, input: CreateInboxItemInput): Promise<ItemRow> {
   if (!input.date) throw new ValidationError("Inbox items require 'date'", { field: "date" });
   if (!input.time) throw new ValidationError("Inbox items require 'time'", { field: "time" });
+  // `DateTime.fromISO` also accepts non-calendar-date ISO forms Luxon parses as valid (e.g.
+  // "2026", "2026-W35"). Rejecting those is explicitly out of scope for this check (issue #270)
+  // — this only needs to close the unparseable-string path that corrupts Journal-day resolution.
   if (!DateTime.fromISO(input.date).isValid) {
     throw new ValidationError("Inbox items require a valid ISO date for 'date'", { field: "date" });
   }
