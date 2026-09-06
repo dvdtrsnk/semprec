@@ -4,6 +4,7 @@ import { MAX_ATTACHMENT_BYTES, type FetchedMessage } from "./providerTypes.js";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { isDeliveryStatusReport } from "./dsn.js";
+import type { WritableImapFlag } from "./messageFlags.js";
 
 /**
  * `MAX_ATTACHMENT_BYTES` (providerTypes.ts, shared with the Gmail/Graph adapters) is passed to
@@ -258,7 +259,7 @@ export class ImapFlowMailClient implements ImapMailClient {
    * option). The flags the mailbox actually sets are `\Seen` and `\Flagged`
    * (mail/messageFlags.ts).
    */
-  async setMessageFlag(path: string, uid: number, flag: string, value: boolean): Promise<void> {
+  async setMessageFlag(path: string, uid: number, flag: WritableImapFlag, value: boolean): Promise<void> {
     await this.client.mailboxOpen(path);
     if (value) await this.client.messageFlagsAdd(String(uid), [flag], { uid: true });
     else await this.client.messageFlagsRemove(String(uid), [flag], { uid: true });

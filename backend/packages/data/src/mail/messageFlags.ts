@@ -15,10 +15,18 @@ export const FLAGGED_PROPERTY_KEY = "flagged";
 export const IMAP_SEEN_FLAG = "\\Seen";
 export const IMAP_FLAGGED_FLAG = "\\Flagged";
 
-export const MESSAGE_FLAG_PROPERTIES: ReadonlyArray<{ propertyKey: string; imapFlag: string }> = [
+export const MESSAGE_FLAG_PROPERTIES: ReadonlyArray<{ propertyKey: string; imapFlag: WritableImapFlag }> = [
   { propertyKey: READ_PROPERTY_KEY, imapFlag: IMAP_SEEN_FLAG },
   { propertyKey: FLAGGED_PROPERTY_KEY, imapFlag: IMAP_FLAGGED_FLAG },
 ];
+
+/**
+ * The only IMAP flags this codebase ever writes over `STORE` (`ImapFlowMailClient.setMessageFlag`) —
+ * the two mirrored above, named as a union so the write surface can't be handed an arbitrary
+ * string (a typo'd flag name, or one of the many read-only/other-system flags a server may
+ * report back from `fetchMessagesSince`).
+ */
+export type WritableImapFlag = typeof IMAP_SEEN_FLAG | typeof IMAP_FLAGGED_FLAG;
 
 /**
  * The `read`/`flagged` properties a newly ingested message starts out with, derived from the
