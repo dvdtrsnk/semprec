@@ -12,7 +12,7 @@ import { withTransaction } from "../db/pool.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inbox/inboxTickAction.js";
-import { confirmProposalWithClient, rejectProposalWithClient } from "../inbox/proposalActions.js";
+import { confirmProposalWithClient, rejectProposalWithClient, reviseProposalWithClient } from "../inbox/proposalActions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
@@ -109,7 +109,10 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     const definition = viewTypeRegistry.get(JOURNAL_INBOX_VIEW_TYPE);
     expect(definition).toBeTruthy();
     expect(definition!.configSchema!.safeParse({}).success).toBe(false);
-    expect(definition!.configSchema!.safeParse({ inboxDatabaseId: inboxId }).success).toBe(true);
+    expect(definition!.configSchema!.safeParse({ inboxDatabaseId: inboxId }).success).toBe(false);
+    const item = await captureItem("Buy milk");
+    const dayId = await journalDayIdFor(item.id);
+    expect(definition!.configSchema!.safeParse({ inboxDatabaseId: inboxId, journalDayItemId: dayId }).success).toBe(true);
   });
 
   it("declares its computed key so a colliding regular property is refused", async () => {
@@ -197,6 +200,33 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
 
     const items = await computedInboxItems(dayId);
     expect(items![0].status).toBe("rejected");
+  });
+
+  it("updates the cached status after a proposal is revised", async () => {
+    // No type given: the tick puts the source item's proposal into 'needsClarification'.
+    const item = await captureItem("A thought");
+    const dayId = await journalDayIdFor(item.id);
+    await runTick(item.id, async () => {
+      throw new Error("computeProposal should not be called for an untyped item");
+    });
+    const proposal = (await findProposalForItem(item.id))!;
+    expect(proposal.properties.status).toBe("needsClarification");
+    await drainQueue();
+    expect((await computedInboxItems(dayId))![0].status).toBe("needsClarification");
+
+    // The Inbox item itself stands in for a "page" target — revise only needs an existing item id.
+    await withTransaction(pool, (client) =>
+      reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id, {
+        message: "Resolved manually",
+        entityKind: "pageContent",
+        target: item.id,
+        properties: { flavour: "paragraph" },
+      }),
+    );
+    await drainQueue();
+
+    const items = await computedInboxItems(dayId);
+    expect(items![0].status).toBe("proposed");
   });
 
   it("drops a deleted Inbox item from the cached day list", async () => {

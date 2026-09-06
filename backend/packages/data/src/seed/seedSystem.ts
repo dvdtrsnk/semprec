@@ -12,6 +12,7 @@ import { registerTemporalSwitcherViewType } from "../views/temporalSwitcherViewT
 import { registerLibraryGridViewType } from "../views/libraryGridViewType.js";
 import { registerMailboxClientViewType } from "../views/mailboxClientViewType.js";
 import { registerJournalInboxViewType } from "../views/journalInboxViewType.js";
+import { JOURNAL_INBOX_COMPUTED_KEY } from "../inbox/journalInboxCompute.js";
 import { seedTenDatabasesInTransaction } from "./seedTenDatabases.js";
 import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
 import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
@@ -58,6 +59,12 @@ export async function seedSystem(
   registerMailboxClientViewType(viewTypeRegistry);
   // Same reasoning again (issue #106's Journal Inbox-list view type).
   registerJournalInboxViewType(viewTypeRegistry);
+  // Same reasoning as the view-type registrations above, but for the computed-key
+  // collision guard: `computedKeyRegistry` is also a per-process, in-memory instance, so
+  // 'inboxItems' must be declared here on every startup too, not only inside
+  // seedInboxPipelineInTransaction, which the idempotency early-return below skips after
+  // the first run.
+  computedKeyRegistry.add(JOURNAL_INBOX_COMPUTED_KEY);
 
   await withTransaction(pool, async (client) => {
     const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1`, [SYSTEM_SETTINGS_MODULE_ID]);

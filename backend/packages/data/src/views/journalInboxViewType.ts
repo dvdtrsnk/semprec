@@ -12,6 +12,13 @@ export const JOURNAL_INBOX_VIEW_TYPE = "journal-inbox";
 
 const journalInboxConfigSchema = z.object({
   inboxDatabaseId: z.string().uuid(),
+  /**
+   * The one Journal day item this view instance renders — "everything the client needs
+   * to read [this view] is in this config" (mailboxClientViewType.ts's own rule): there is
+   * no live "current day" context this generic view/operations surface could resolve on
+   * its own, so the day is named directly rather than left to be inferred client-side.
+   */
+  journalDayItemId: z.string().uuid(),
   /** Relation property on Inbox pointing back at the Journal day item — the grouping this view renders by. */
   journalDayRelationKey: z.string().min(1).default("journalDay"),
   /** `items.computed` key on each Journal day item holding the cached list this view renders. */
