@@ -149,6 +149,10 @@ export async function setPropertyMigrationStatus(
   await client.query(`UPDATE properties SET migration_status = $2 WHERE id = $1`, [propertyId, migrationStatus]);
 }
 
+export async function setPropertyLocked(client: PoolClient, propertyId: string, locked: boolean): Promise<void> {
+  await client.query(`UPDATE properties SET locked = $2 WHERE id = $1`, [propertyId, locked]);
+}
+
 export async function updatePropertyConfig(
   client: PoolClient,
   propertyId: string,

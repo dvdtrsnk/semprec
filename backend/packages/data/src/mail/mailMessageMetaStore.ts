@@ -136,6 +136,17 @@ export async function getMailMessageMetaByProviderMessageId(client: Queryable, p
 }
 
 /**
+ * True when a Postgres error is `mail_message_meta_provider_msg_uq`'s partial-unique
+ * violation (the concurrency-safe arbiter for distinct `message_id`s racing to the same
+ * non-null `provider_message_id` — see ingest.ts's SAVEPOINT-guarded catch of this). Mirrors
+ * chokePoint/viewsStore.ts's own `isUniqueViolation` helper.
+ */
+export function isProviderMessageIdConflict(err: unknown): boolean {
+  const pgErr = err as { code?: string; constraint?: string };
+  return pgErr?.code === "23505" && pgErr?.constraint === "mail_message_meta_provider_msg_uq";
+}
+
+/**
  * Compensating delete for mail/send.ts's pre-SMTP claim: if the claim row was written but the
  * SMTP call itself then failed, the claim must not persist — otherwise the item would look
  * "already sent" forever with no message actually delivered, and a genuine retry could never
