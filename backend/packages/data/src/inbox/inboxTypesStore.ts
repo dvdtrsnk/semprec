@@ -3,8 +3,7 @@ import type { Queryable } from "../db/pool.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
-import { createItemWithClient, deleteRelationWithClient, updateItemWithClient } from "../chokePoint/chokePoint.js";
-import { triggerOnItemEventHeartbeats } from "../scheduler/schedulerStore.js";
+import { createItemWithClient, deleteRelationWithClient, softDeleteItemWithClient, updateItemWithClient } from "../chokePoint/chokePoint.js";
 import { TEN_DATABASE_MODULE_IDS, type TenDatabaseModuleId } from "../seed/tenDatabaseKeys.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
@@ -161,10 +160,7 @@ export async function deleteInboxTypeWithClient(client: PoolClient, input: Delet
     await deleteRelationWithClient(client, { relationPropertyId: typeProperty.id, itemId: inboxItemId, targetItemId: input.typeItemId });
   }
 
-  const item = await itemsStore.softDeleteItem(client, input.inboxItemTypesDatabaseId, input.typeItemId);
-  if (!item) return null;
-  await triggerOnItemEventHeartbeats(client, input.inboxItemTypesDatabaseId, "delete", input.typeItemId);
-  return item;
+  return softDeleteItemWithClient(client, input.inboxItemTypesDatabaseId, input.typeItemId);
 }
 
 /**
