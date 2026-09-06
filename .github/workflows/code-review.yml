@@ -40,10 +40,14 @@ jobs:
           # The default GITHUB_TOKEN cannot call resolveReviewThread ("Resource not
           # accessible by integration"), so a finding the bot has already fixed
           # replies "Fixed." but never actually closes the thread — which silently
-          # defeats required_conversation_resolution below. Reuse the PAT already
-          # used to check out the private code-review-bot repo; classic PATs are not
-          # subject to that restriction.
-          GITHUB_RESOLVE_TOKEN: ${{ secrets.CODE_REVIEW_BOT_TOKEN }}
+          # defeats required_conversation_resolution below. CODE_REVIEW_BOT_TOKEN
+          # (a classic PAT scoped to the whole account) hits the same restriction
+          # under a different error ("by personal access token") because it wasn't
+          # granted the Pull requests scope. PR_RESOLVE_TOKEN is a fine-grained PAT
+          # scoped only to this repo with Pull requests: read/write, dedicated to
+          # this one mutation. Secret names can't start with GITHUB_, hence the
+          # differing names either side of this mapping.
+          GITHUB_RESOLVE_TOKEN: ${{ secrets.PR_RESOLVE_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.ANTHROPIC_API_KEY }}
           # develop -> main is a release promotion, not a feature review: switch
           # to the bot's release-readiness rules (migrations/config/rollback/
