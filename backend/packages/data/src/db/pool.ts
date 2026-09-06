@@ -37,7 +37,17 @@ export async function withTransaction<T>(pool: Pool, fn: (client: PoolClient) =>
       const callbacks = afterCommitCallbacks.get(client);
       afterCommitCallbacks.delete(client);
       if (callbacks) {
-        for (const callback of callbacks) callback();
+        // The transaction has already committed at this point — a callback throwing must
+        // never surface as if this call had failed (the caller would see an error for an
+        // operation that actually succeeded), and one callback's failure must not skip the
+        // rest of the list.
+        for (const callback of callbacks) {
+          try {
+            callback();
+          } catch (err) {
+            console.error("withTransaction: an afterCommit callback threw", err);
+          }
+        }
       }
       return result;
     } catch (err) {

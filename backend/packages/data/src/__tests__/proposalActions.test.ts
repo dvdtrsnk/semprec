@@ -219,6 +219,31 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     expect(history[history.length - 1]).toMatchObject({ author: "user", message: "Actually this is a note" });
   });
 
+  it("revise transitions a 'needsClarification' proposal (no type at all) to 'proposed' with a valid envelope", async () => {
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "09:00", text: "no type" }),
+    );
+    await runTick(item.id, async () => {
+      throw new Error("computeProposal must not be called for an untyped item");
+    });
+    const needsClarification = (await findProposalForItem(item.id))!;
+    expect(needsClarification.properties.status).toBe("needsClarification");
+
+    const revised = await withTransaction(pool, (client) =>
+      reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, needsClarification.id, {
+        message: "Filed this under Tasks myself",
+        entityKind: "database",
+        target: tasksId,
+        properties: { name: "Buy milk" },
+      }),
+    );
+
+    expect(revised.properties.status).toBe("proposed");
+    expect(revised.properties.proposal).toEqual({ entityKind: "database", target: tasksId, properties: { name: "Buy milk" } });
+    const history = revised.properties.history as Array<Record<string, unknown>>;
+    expect(history[history.length - 1]).toMatchObject({ author: "user", message: "Filed this under Tasks myself" });
+  });
+
   it("revise refuses a locked (confirmed) proposal", async () => {
     const proposal = await createDatabaseProposal("Buy milk");
     await withTransaction(pool, (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id));
