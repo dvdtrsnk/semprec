@@ -1465,6 +1465,74 @@ describe("mail sync job error handling (issue #26)", () => {
     const item = await withTransaction(pool, (client) => client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]));
     expect(item.rows[0].properties.syncStatus).toBe("error");
   });
+
+  it("resolves as a no-op, without ever invoking the adapter, when the Mailbox item has been soft-deleted", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+
+    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
+    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
+    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+
+    await chokePoint.softDeleteItem(mailboxesId, mailbox.id);
+
+    const createImapClient = vi.fn(async (): Promise<ImapMailClient> => ({
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+      fetchMessagesSince: async () => [],
+      fetchVanishedSince: async () => [],
+      fetchAllUids: async () => [],
+      setMessageFlag: async () => {},
+    }));
+    const adapters: MailSyncAdapterFactory = { createImapClient };
+
+    // On current code, this rejects with a NotFoundError from the closing syncStatus write and
+    // the adapter has already run — this test discriminates exactly that.
+    await expect(
+      handleSyncMailAccountTask(
+        pool,
+        { mailboxItemId: mailbox.id },
+        adapters,
+        { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+        noopStorage,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(createImapClient).not.toHaveBeenCalled();
+  });
+
+  it("resolves as a no-op, without ever invoking the adapter, when the Mailbox item is missing entirely", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+
+    const createImapClient = vi.fn(async (): Promise<ImapMailClient> => ({
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+      fetchMessagesSince: async () => [],
+      fetchVanishedSince: async () => [],
+      fetchAllUids: async () => [],
+      setMessageFlag: async () => {},
+    }));
+    const adapters: MailSyncAdapterFactory = { createImapClient };
+
+    await expect(
+      handleSyncMailAccountTask(
+        pool,
+        { mailboxItemId: "00000000-0000-0000-0000-000000000000" },
+        adapters,
+        { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+        noopStorage,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(createImapClient).not.toHaveBeenCalled();
+  });
 });
 
 describe("IMAP raw header parsing (issue #93)", () => {
