@@ -202,6 +202,29 @@ describe("choke-point", () => {
     expect(property.config.relationDefinitionId).toBeTruthy();
   });
 
+  it("createRelationProperty({ locked: true, inverse }) locks both sides of the pair", async () => {
+    const db = await chokePoint.createDatabase({ name: "Db" });
+    const target = await chokePoint.createDatabase({ name: "Target" });
+
+    const { property, inverseProperty } = await chokePoint.createRelationProperty({
+      databaseId: db.id,
+      key: "tasks",
+      name: "Tasks",
+      targetDatabaseId: target.id,
+      locked: true,
+      inverse: { key: "project", name: "Project" },
+    });
+
+    expect(property.locked).toBe(true);
+    expect(inverseProperty?.locked).toBe(true);
+    expect(inverseProperty?.config).toMatchObject({ targetDatabaseId: db.id });
+    expect(inverseProperty?.config.relationDefinitionId).toBeTruthy();
+
+    // The stored row must agree with the returned value — not just the in-memory patch.
+    const reloadedInverse = await chokePoint.getProperty(inverseProperty!.id);
+    expect(reloadedInverse?.locked).toBe(true);
+  });
+
   it("creating and updating an item in an archived database is rejected, while the same operations succeed before archiving", async () => {
     const db = await makeMoviesDb();
     const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });

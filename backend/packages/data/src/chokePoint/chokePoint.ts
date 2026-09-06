@@ -204,6 +204,10 @@ export async function createRelationPropertyWithClient(
   if (input.locked) {
     await propertiesStore.setPropertyLocked(client, finalProperty.id, true);
     finalProperty = { ...finalProperty, locked: true };
+    if (inverseProperty) {
+      await propertiesStore.setPropertyLocked(client, inverseProperty.id, true);
+      inverseProperty = { ...inverseProperty, locked: true };
+    }
   }
   return { property: finalProperty, inverseProperty };
 }
