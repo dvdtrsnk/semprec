@@ -255,6 +255,24 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
 
     const stillDeleted = await itemsStore.getItemById(pool, proposalsId, original!.id);
     expect(stillDeleted!.deletedAt).not.toBeNull();
+
+    // Now two `sourceInbox` edges exist for this item: one to the soft-deleted original, one
+    // to the live replacement. A further tick must find the live one regardless of which edge
+    // comes back first from the relation lookup — reviving it rather than creating a third row.
+    await withTransaction(pool, (client) =>
+      itemsStore.updateItemProperties(client, { databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "Buy milk and eggs" } }),
+    );
+    await runTick(item.id, async () => ({ properties: { name: "Buy milk and eggs" } }));
+
+    const { rows: afterThirdTick } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [proposalsId]);
+    expect(afterThirdTick[0].n).toBe(2);
+
+    const { rows: liveRows } = await pool.query(
+      "SELECT id, properties FROM items WHERE database_id = $1 AND deleted_at IS NULL",
+      [proposalsId],
+    );
+    expect(liveRows).toHaveLength(1);
+    expect(liveRows[0].properties.fingerprint).toBe(sha256Of("☑️", "Buy milk and eggs"));
   });
 
   it("an item with no type creates no proposal (stub for issue #104)", async () => {

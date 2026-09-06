@@ -99,19 +99,24 @@ async function resolveRecognizedType(
  * create/revise/skip gate). A soft-deleted proposal is treated the same as no proposal at
  * all — falling through to the create path — rather than being handed to the revise branch,
  * where `updateItemWithClient` would throw `NotFoundError` on a deleted item.
+ *
+ * Scans every edge rather than trusting `edges[0]`: once a soft-deleted proposal's edge has
+ * been left behind by a prior tick (see the scenario above) alongside the edge to its live
+ * replacement, `listRelationsForItem`'s heap order is not guaranteed to put the live one
+ * first — picking `edges[0]` blindly could keep finding the deleted row, "creating" a fresh
+ * proposal on every subsequent tick without bound.
  */
 async function findExistingProposal(client: PoolClient, config: SemprecTickActionConfig, sourceItemId: string): Promise<ItemRow | null> {
   const sourceInboxRelationDefinition = await getRelationDefinitionByKey(client, config.processingProposalsDatabaseId, "sourceInbox");
   if (!sourceInboxRelationDefinition) return null;
 
   const edges = await relationsStore.listRelationsForItem(client, sourceInboxRelationDefinition.id, sourceItemId);
-  const edge = edges[0];
-  if (!edge) return null;
-
-  const proposalItemId = relationsStore.otherSide(edge, sourceItemId);
-  const proposal = await itemsStore.getItemById(client, config.processingProposalsDatabaseId, proposalItemId);
-  if (!proposal || proposal.deletedAt) return null;
-  return proposal;
+  for (const edge of edges) {
+    const proposalItemId = relationsStore.otherSide(edge, sourceItemId);
+    const proposal = await itemsStore.getItemById(client, config.processingProposalsDatabaseId, proposalItemId);
+    if (proposal && !proposal.deletedAt) return proposal;
+  }
+  return null;
 }
 
 async function computeProposalEnvelope(
