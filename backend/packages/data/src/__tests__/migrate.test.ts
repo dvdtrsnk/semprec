@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { runMigrations } from "../db/migrate.js";
 
@@ -42,10 +42,6 @@ async function withMigrationsDir(files: Record<string, string>, fn: (dir: string
 }
 
 describe("runMigrations", () => {
-  afterAll(async () => {
-    // Individual tests own their pools via withScratchSchema; nothing to clean up here.
-  });
-
   it("applies files in ascending order and records them, once each", async () => {
     await withMigrationsDir(
       {
@@ -60,7 +56,7 @@ describe("runMigrations", () => {
           expect(applied.map((r) => r.id)).toEqual(["0001_create_table.sql", "0002_add_column.sql"]);
 
           const { rows: columns } = await pool.query<{ column_name: string }>(
-            "SELECT column_name FROM information_schema.columns WHERE table_name = 't' ORDER BY column_name",
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 't' ORDER BY column_name",
           );
           expect(columns.map((c) => c.column_name)).toEqual(["id", "label"]);
 
