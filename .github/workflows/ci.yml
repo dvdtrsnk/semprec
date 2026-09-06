@@ -41,6 +41,15 @@ jobs:
         working-directory: backend
         run: pnpm -r run build
 
+      # Catches two independently-created branches each picking the same
+      # next migration ordinal (e.g. two branches both adding 0011_*.sql).
+      # The migration runner keys applied migrations by full filename, so a
+      # collision like this never fails at the database layer or as a git
+      # merge conflict — it silently applies both in alphabetical order.
+      - name: Backend — check migration numbering
+        working-directory: backend
+        run: pnpm --filter @semprec/data run check-migration-numbering
+
       - name: Web — install
         working-directory: web
         run: pnpm install --frozen-lockfile
