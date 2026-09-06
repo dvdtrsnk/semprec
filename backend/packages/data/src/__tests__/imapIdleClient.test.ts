@@ -8,6 +8,8 @@ class FakeImapFlow extends EventEmitter {
   logoutCalls = 0;
   openedMailbox: string | undefined;
   listResult: Array<{ path: string; specialUse?: string }> = [];
+  /** Simulates a final server push (e.g. an EXISTS) arriving during logout, right before BYE/close. */
+  emitOnLogout: string | undefined;
 
   async connect(): Promise<void> {
     this.connectCalls++;
@@ -23,6 +25,7 @@ class FakeImapFlow extends EventEmitter {
 
   async logout(): Promise<void> {
     this.logoutCalls++;
+    if (this.emitOnLogout) this.emit(this.emitOnLogout, {});
     this.emit("close");
   }
 
@@ -96,6 +99,20 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     await connection.close();
     await expect(ended).resolves.toBeUndefined();
     expect(client.logoutCalls).toBe(1);
+  });
+
+  it("no longer invokes onSignal for a signal the server emits during logout, after close() has resolved", async () => {
+    const client = new FakeImapFlow();
+    client.emitOnLogout = "exists";
+    const { createClient } = makeFactory([client]);
+    const transport = createImapFlowIdleTransport(createClient);
+
+    let signals = 0;
+    const connection = await transport.connect("mailbox-1", "cred", "INBOX", () => signals++);
+
+    await connection.close();
+
+    expect(signals).toBe(0);
   });
 
   it("waitForEnd resolves with the error when the connection fails, and close() afterward is a harmless no-op", async () => {
