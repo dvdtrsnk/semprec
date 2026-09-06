@@ -5,6 +5,7 @@ export type {
   ModuleTaskDescriptor,
   ModuleWorkerDescriptor,
   ModuleHeartbeatRuleKindDescriptor,
+  ModuleDataMigrationDescriptor,
 } from "./manifest.js";
 export { moduleManifestSchema } from "./manifest.js";
 export {
@@ -16,6 +17,8 @@ export {
   type ModuleTaskProjection,
   type ModuleWorkerProjection,
   type ModuleMigrationProjection,
+  type ModuleDataMigrationProjection,
   type ModuleTaskDefinition,
   type ModuleHeartbeatRuleKindDefinition,
+  type ModuleDataMigrationDefinition,
 } from "./registry.js";
