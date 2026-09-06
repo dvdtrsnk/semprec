@@ -9,7 +9,7 @@ import { withTransaction } from "../db/pool.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createActionRegistry, type ActionRegistry } from "../scheduler/actions.js";
-import { createSemprecTickAction, SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "../inbox/inboxTickAction.js";
+import { createSemprecTickAction, SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME, type ComputeSemprecProposalFn } from "../inbox/inboxTickAction.js";
 import { createCoreTaskList } from "../worker.js";
 
 let pool: Pool;
@@ -43,9 +43,14 @@ async function drainQueue(registry: ActionRegistry = createActionRegistry()): Pr
   await runOnce({ pgPool: pool, taskList: createCoreTaskList(pool, registry) });
 }
 
+/** These dispatch-only tests never exercise a recognized-type item, so this is never actually invoked. */
+const unusedComputeProposal: ComputeSemprecProposalFn = async () => {
+  throw new Error("computeProposal should not be called by these tests");
+};
+
 function countingTickRegistry(calls: string[]): ActionRegistry {
   const registry = createActionRegistry();
-  const real = createSemprecTickAction(pool);
+  const real = createSemprecTickAction(pool, unusedComputeProposal);
   registry.set(SEMPREC_TICK_ACTION_ID, async (actionConfig, context) => {
     calls.push(context.itemId!);
     await real(actionConfig, context);
@@ -220,7 +225,7 @@ describe("Inbox item event dispatch (issue #103)", () => {
   });
 
   it("rejects a misconfigured heartbeat instead of silently no-op'ing", async () => {
-    const handler = createSemprecTickAction(pool);
+    const handler = createSemprecTickAction(pool, unusedComputeProposal);
     await expect(handler({}, { heartbeatId: "hb", projectItemId: "proj", itemId: "item" })).rejects.toThrow();
     await expect(handler({ inboxDatabaseId: "not-a-uuid" }, { heartbeatId: "hb", projectItemId: "proj", itemId: "item" })).rejects.toThrow();
   });

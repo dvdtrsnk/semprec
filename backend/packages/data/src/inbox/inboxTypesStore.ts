@@ -107,7 +107,7 @@ export async function updateInboxTypeWithClient(client: PoolClient, input: Updat
 }
 
 /** Processing proposal states in which the card, and therefore its source Inbox item, is never recomputed again (issue #100's "a locked card is never recomputed again"). */
-const LOCKED_PROPOSAL_STATUSES = new Set(["confirmed", "rejected"]);
+export const LOCKED_PROPOSAL_STATUSES = new Set(["confirmed", "rejected"]);
 
 export interface DeleteInboxTypeInput {
   inboxDatabaseId: string;

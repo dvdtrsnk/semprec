@@ -161,7 +161,7 @@ export async function seedInboxPipelineInTransaction(
       name: `Inbox tick (${event})`,
       rule: { kind: "onItemEvent", databaseId: inbox.id, event },
       actionId: SEMPREC_TICK_ACTION_ID,
-      actionConfig: { inboxDatabaseId: inbox.id },
+      actionConfig: { inboxDatabaseId: inbox.id, inboxItemTypesDatabaseId: inboxItemTypes.id, processingProposalsDatabaseId: processingProposals.id },
     });
   }
 
