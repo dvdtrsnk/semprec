@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cruise, type IForbiddenRuleType } from "dependency-cruiser";
+import { cruise, type ICruiseResult, type IForbiddenRuleType } from "dependency-cruiser";
 
 const packageDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRulesPath = path.join(packageDir, "..", "..", "..", "dependency-cruiser.rules.json");
@@ -42,24 +42,19 @@ export async function checkModuleBoundaries(
     {},
     undefined,
   );
-  const output = typeof result.output === "string" ? JSON.parse(result.output) : result.output;
+  const output: ICruiseResult =
+    typeof result.output === "string" ? JSON.parse(result.output) : result.output;
   const violations: BoundaryViolation[] = [];
-  for (const module of output.modules ?? []) {
-    for (const dependency of module.dependencies ?? []) {
+  for (const module of output.modules) {
+    for (const dependency of module.dependencies) {
       if (dependency.valid === false) {
         violations.push({
           importer: module.source,
           imported: dependency.resolved,
-          rules: (dependency.rules ?? []).map((rule: { name: string }) => rule.name),
+          rules: (dependency.rules ?? []).map((rule) => rule.name),
         });
       }
     }
   }
   return { violations };
-}
-
-export function formatViolations(pViolations: BoundaryViolation[]): string {
-  return pViolations
-    .map((violation) => `${violation.importer} -> ${violation.imported} violates [${violation.rules.join(", ")}]`)
-    .join("\n");
 }
