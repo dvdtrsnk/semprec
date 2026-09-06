@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
@@ -19,6 +19,19 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
   if (!rows[0]) throw new Error(`Database '${moduleId}' was not seeded`);
   return rows[0].id;
+}
+
+/** Records every SQL text `client.query` is called with, for asserting which queries a code path actually issues. */
+function instrumentQueries(client: PoolClient): string[] {
+  const texts: string[] = [];
+  const originalQuery = client.query.bind(client);
+  client.query = ((...args: Parameters<typeof client.query>) => {
+    const [first] = args;
+    const text = typeof first === "string" ? first : (first as { text?: string })?.text;
+    if (typeof text === "string") texts.push(text);
+    return (originalQuery as (...a: unknown[]) => unknown)(...args);
+  }) as typeof client.query;
+  return texts;
 }
 
 describe("Inbox pipeline databases (issue #101)", () => {
@@ -332,5 +345,95 @@ describe("Inbox pipeline databases (issue #101)", () => {
 
     const lockedEdges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, lockedItem.id));
     expect(lockedEdges.some((e) => e.itemA === type.id || e.itemB === type.id)).toBe(true);
+  });
+
+  it("mirrors the choke-point's rollup-recompute step for the edge that survives the delete", async () => {
+    const inboxId = await databaseIdFor("inbox");
+    const typesId = await databaseIdFor("inboxItemTypes");
+    const proposalsId = await databaseIdFor("processingProposals");
+    const journalId = await databaseIdFor("journal");
+
+    const type = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
+    );
+
+    // Referenced only by a locked Inbox item, so its `type` edge survives the delete:
+    // `deleteRelationWithClient` (which performs its own dependency lookup) is never called
+    // for it, so the only possible source of a rollup-dependency lookup for this edge is
+    // `deleteInboxTypeWithClient`'s own post-soft-delete recompute step.
+    const lockedItem = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "09:00", type: type.id }),
+    );
+    const proposal = await withTransaction(pool, (client) =>
+      itemsStore.insertItem(client, {
+        databaseId: proposalsId,
+        properties: { kind: "inbox", fingerprint: "x", proposal: {}, history: [], status: "confirmed" },
+      }),
+    );
+    const sourceInboxProperty = await chokePoint.listProperties(proposalsId).then((props) => props.find((p) => p.key === "sourceInbox")!);
+    await chokePoint.createRelation({ relationPropertyId: sourceInboxProperty.id, itemId: proposal.id, targetItemId: lockedItem.id });
+
+    const queries = await withTransaction(pool, async (client) => {
+      const texts = instrumentQueries(client);
+      await deleteInboxTypeWithClient(client, { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId, typeItemId: type.id });
+      return texts;
+    });
+
+    // `enqueueRollupRecomputeForEdge` always calls `findDependenciesByRelationDefinition`,
+    // which issues a SELECT even when there are no rollup dependencies — so this SELECT is
+    // observable proof the recompute step ran for the surviving edge, and only for it.
+    const dependencyLookups = queries.filter((sql) => sql.includes("FROM rollup_dependencies"));
+    expect(dependencyLookups).toHaveLength(1);
+
+    const lockedEdges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, lockedItem.id));
+    expect(lockedEdges.some((e) => e.itemA === type.id || e.itemB === type.id)).toBe(true);
+  });
+
+  it("batches the lock lookup: query count does not scale with proposals per Inbox item", async () => {
+    const inboxId = await databaseIdFor("inbox");
+    const typesId = await databaseIdFor("inboxItemTypes");
+    const proposalsId = await databaseIdFor("processingProposals");
+    const journalId = await databaseIdFor("journal");
+
+    const type = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
+    );
+    const sourceInboxProperty = await chokePoint.listProperties(proposalsId).then((props) => props.find((p) => p.key === "sourceInbox")!);
+
+    // Two unlocked Inbox items with an uneven number of (non-locking) proposals each — the
+    // lock lookup's query count must not grow with the number of referencing items or the
+    // number of proposals per item.
+    const itemNoProposals = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "09:00", type: type.id }),
+    );
+    const itemManyProposals = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "10:00", type: type.id }),
+    );
+    for (let i = 0; i < 3; i++) {
+      const proposal = await withTransaction(pool, (client) =>
+        itemsStore.insertItem(client, {
+          databaseId: proposalsId,
+          properties: { kind: "inbox", fingerprint: `p${i}`, proposal: {}, history: [], status: "pending" },
+        }),
+      );
+      await chokePoint.createRelation({ relationPropertyId: sourceInboxProperty.id, itemId: proposal.id, targetItemId: itemManyProposals.id });
+    }
+
+    const queries = await withTransaction(pool, async (client) => {
+      const texts = instrumentQueries(client);
+      await deleteInboxTypeWithClient(client, { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId, typeItemId: type.id });
+      return texts;
+    });
+
+    const bulkRelationsLookups = queries.filter((sql) => sql.includes("item_a = ANY($2::uuid[]) OR item_b = ANY($2::uuid[])"));
+    const bulkItemsLookups = queries.filter((sql) => sql.includes("database_id = $1 AND id = ANY($2::uuid[])"));
+    // Fixed at one call each regardless of how many referencing Inbox items exist or how many
+    // proposals any of them has — not asserting on the overall query total, which still grows
+    // with the number of unlocked items via one `deleteRelationWithClient` call each.
+    expect(bulkRelationsLookups).toHaveLength(1);
+    expect(bulkItemsLookups).toHaveLength(1);
+
+    const clearedEdges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, itemManyProposals.id));
+    expect(clearedEdges.some((e) => e.itemA === type.id || e.itemB === type.id)).toBe(false);
   });
 });

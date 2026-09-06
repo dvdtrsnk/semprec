@@ -226,6 +226,25 @@ export async function getItemsByIds(client: Queryable, itemIds: string[]): Promi
 }
 
 /**
+ * The batched form of `getItemById`, scoped to a single database like it, but for a whole
+ * set of ids in one query — used where a caller would otherwise fetch one item per id in a
+ * loop (e.g. inbox/inboxTypesStore.ts's proposal-status lookups). Deliberately has no
+ * `deleted_at` filter, unlike `getItemsByIds`: a soft-deleted proposal card still recorded a
+ * real `confirmed`/`rejected` outcome, and a caller judging whether that outcome locks
+ * something else must see it exactly as it would have via `getItemById`, which also never
+ * filters on `deleted_at`.
+ */
+export async function getItemsByIdsInDatabase(client: Queryable, databaseId: string, itemIds: string[]): Promise<ItemRow[]> {
+  if (itemIds.length === 0) return [];
+  const { rows } = await client.query(
+    `SELECT id, database_id, properties, computed, updated_at, deleted_at
+     FROM items WHERE database_id = $1 AND id = ANY($2::uuid[])`,
+    [databaseId, itemIds],
+  );
+  return rows.map(mapItemRow);
+}
+
+/**
  * Writes exclusively to `items.computed`, never to `properties`, and never advances
  * `updated_at`/the ifVersion token — a background rollup recompute must not cause a
  * spurious 409 on the client's next properties write. Not reachable from the generic

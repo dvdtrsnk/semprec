@@ -85,7 +85,8 @@ async function resolveRollupRecomputeTargets(
   return targets;
 }
 
-async function enqueueRollupRecomputeForEdge(
+/** Exported so a module-specific delete that unlinks relations outside `softDeleteItem` (e.g. inbox/inboxTypesStore.ts's `deleteInboxTypeWithClient`) can enqueue the same rollup recompute per edge it removes. */
+export async function enqueueRollupRecomputeForEdge(
   client: PoolClient,
   edge: { relationDefinitionId: string; itemA: string; itemB: string },
 ): Promise<void> {
@@ -361,42 +362,6 @@ export async function deleteRelationWithClient(client: PoolClient, input: Delete
   await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: reldef.id, itemA, itemB });
 }
 
-export interface SoftDeleteItemWithClientOptions {
-  queueAffinity?: ActionQueueAffinity;
-}
-
-/**
- * The item soft-delete contract (issue #24's systemActive guard, event heartbeats, rollup
- * recompute of every edge the item sat on), factored out so a module-specific delete (e.g.
- * inbox/inboxTypesStore.ts's `deleteInboxTypeWithClient`, which must also unlink relations
- * before soft-deleting the type item itself) can compose it inside its own transaction
- * instead of re-deriving a partial copy of it. `createChokePoint(...)`'s `softDeleteItem`
- * below is a thin wrapper over this, same as `createItemWithClient`/`updateItemWithClient`.
- */
-export async function softDeleteItemWithClient(
-  client: PoolClient,
-  databaseId: string,
-  itemId: string,
-  options: SoftDeleteItemWithClientOptions = {},
-): Promise<ItemRow | null> {
-  // Row-locked (not a plain getItemById): without the lock, a concurrent updateItem setting
-  // systemActive: true could commit between this read and the delete below, slipping a
-  // delete through on what was, by the time it mattered, a system-active item. The lock is
-  // held until the caller's transaction commits, so a concurrent writer blocks here instead
-  // of racing past the check.
-  const before = await itemsStore.lockItemById(client, databaseId, itemId);
-  if (before?.properties.systemActive === true) {
-    throw new ForbiddenError(`Item ${itemId} is a system-active project and cannot be deleted, only deactivated`, { field: "systemActive" });
-  }
-
-  const item = await itemsStore.softDeleteItem(client, databaseId, itemId);
-  if (!item) return null;
-  await triggerOnItemEventHeartbeats(client, databaseId, "delete", itemId, options.queueAffinity);
-  const edges = await relationsStore.listAllRelationsForItem(client, itemId);
-  for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
-  return item;
-}
-
 export function createChokePoint(
   pool: Pool,
   computedKeyRegistry: ComputedKeyRegistry = createComputedKeyRegistry(),
@@ -569,7 +534,27 @@ export function createChokePoint(
     },
 
     async softDeleteItem(databaseId: string, itemId: string): Promise<ItemRow | null> {
-      return withTransaction(pool, (client) => softDeleteItemWithClient(client, databaseId, itemId, { queueAffinity }));
+      return withTransaction(pool, async (client) => {
+        // A system-module project (issue #24's Projects.systemActive) "can only be
+        // deactivated, never deleted" — checked generically on `properties.systemActive`
+        // rather than hardcoded to the Projects database, so any future database adopting
+        // the same convention is covered too. Row-locked (not a plain getItemById): without
+        // the lock, a concurrent updateItem setting systemActive: true could commit between
+        // this read and the delete below, slipping a delete through on what was, by the time
+        // it mattered, a system-active item. The lock is held until this transaction commits,
+        // so a concurrent writer blocks here instead of racing past the check.
+        const before = await itemsStore.lockItemById(client, databaseId, itemId);
+        if (before?.properties.systemActive === true) {
+          throw new ForbiddenError(`Item ${itemId} is a system-active project and cannot be deleted, only deactivated`, { field: "systemActive" });
+        }
+
+        const item = await itemsStore.softDeleteItem(client, databaseId, itemId);
+        if (!item) return null;
+        await triggerOnItemEventHeartbeats(client, databaseId, "delete", itemId, queueAffinity);
+        const edges = await relationsStore.listAllRelationsForItem(client, itemId);
+        for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
+        return item;
+      });
     },
 
     async restoreItem(databaseId: string, itemId: string): Promise<ItemRow | null> {

@@ -150,6 +150,27 @@ export async function listRelationsForItem(
   return rows.map(mapItemRelationRow);
 }
 
+/**
+ * The batched form of `listRelationsForItem`: one query for every edge any of `itemIds` sits
+ * on for a single relation definition, instead of one query per item. A returned edge's
+ * `itemA`/`itemB` may each be either one of `itemIds` or its counterpart on the other side —
+ * a caller grouping by which of `itemIds` an edge belongs to must check both sides itself,
+ * the same as `otherSide` requires for the single-item form.
+ */
+export async function listRelationsForItems(
+  client: PoolClient,
+  relationDefinitionId: string,
+  itemIds: string[],
+): Promise<ItemRelationRow[]> {
+  if (itemIds.length === 0) return [];
+  const { rows } = await client.query(
+    `SELECT id, relation_definition_id, item_a, item_b, metadata FROM item_relations
+     WHERE relation_definition_id = $1 AND (item_a = ANY($2::uuid[]) OR item_b = ANY($2::uuid[]))`,
+    [relationDefinitionId, itemIds],
+  );
+  return rows.map(mapItemRelationRow);
+}
+
 /** Every edge `itemId` participates in, across all relation definitions — used for the soft-delete/restore rollup trigger. */
 export async function listAllRelationsForItem(client: PoolClient, itemId: string): Promise<ItemRelationRow[]> {
   const { rows } = await client.query(
