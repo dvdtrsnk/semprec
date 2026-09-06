@@ -98,30 +98,47 @@ export function createMailLiveSyncRoot(
   const discoveryIntervalMs = options.discoveryIntervalMs ?? 60_000;
   const hosted = new Map<string, HostedEntry>();
   let timer: NodeJS.Timeout | undefined;
+  // Bumped by `stop()` and captured synchronously at the top of `start()`, before the initial
+  // `await reconcileOnce()`. A plain "already running" boolean isn't enough: `start()` -> `stop()`
+  // -> `start()` would leave it set again by the time the first call's await resumes, so it would
+  // schedule an interval anyway. Comparing the generation captured at entry against the current
+  // one after the await catches that — a `stop()` in between means they no longer match.
+  let generation = 0;
+  // Guards against a second `start()` re-running the initial reconcile and scheduling a second
+  // interval. Set synchronously at the top of `start()` (no `await` in between the check and the
+  // set), so two un-awaited `start()` calls can't both observe it unset.
+  let started = false;
 
   async function discoverActiveAccounts(): Promise<Map<string, SyncMode>> {
     const active = new Map<string, SyncMode>();
     let cursor: string | null = null;
     do {
-      const page = await withTransaction(pool, (client) => listItems(client, mailboxesDatabaseId, { cursor: cursor ?? undefined }));
-      for (const item of page.items) {
-        try {
-          const provider = typeof item.properties.provider === "string" ? item.properties.provider : "generic";
-          // Never overwrites an existing row's `syncMode` (mailAccountSyncStateStore.ts) — this
-          // only seeds state for an account discovered here for the first time; a user's
-          // subsequent manual `setSyncMode` switch is picked up below because we read it back
-          // from the row itself, not from `defaultSyncModeForProvider` again.
-          const state = await withTransaction(pool, (client) =>
-            ensureMailAccountSyncState(client, { itemId: item.id, syncMode: defaultSyncModeForProvider(provider) }),
-          );
-          active.set(item.id, state.syncMode);
-        } catch (err) {
-          // One account's state failing to read/seed must not drop every other account on this
-          // page from the active set, and must not throw out of discovery entirely.
-          options.onLifecycleError?.(item.id, "discover", err);
+      const nextCursor = cursor;
+      cursor = await withTransaction(pool, async (client) => {
+        const page = await listItems(client, mailboxesDatabaseId, { cursor: nextCursor ?? undefined });
+        for (const item of page.items) {
+          // Each account's seed runs under its own SAVEPOINT: a failed statement aborts the
+          // whole surrounding transaction in Postgres, so without this, one bad account would
+          // poison the page's shared transaction and take every other account on it down too.
+          await client.query("SAVEPOINT discover_account");
+          try {
+            const provider = typeof item.properties.provider === "string" ? item.properties.provider : "generic";
+            // Never overwrites an existing row's `syncMode` (mailAccountSyncStateStore.ts) — this
+            // only seeds state for an account discovered here for the first time; a user's
+            // subsequent manual `setSyncMode` switch is picked up below because we read it back
+            // from the row itself, not from `defaultSyncModeForProvider` again.
+            const state = await ensureMailAccountSyncState(client, { itemId: item.id, syncMode: defaultSyncModeForProvider(provider) });
+            active.set(item.id, state.syncMode);
+            await client.query("RELEASE SAVEPOINT discover_account");
+          } catch (err) {
+            await client.query("ROLLBACK TO SAVEPOINT discover_account");
+            // One account's state failing to read/seed must not drop every other account on this
+            // page from the active set, and must not throw out of discovery entirely.
+            options.onLifecycleError?.(item.id, "discover", err);
+          }
         }
-      }
-      cursor = page.nextCursor;
+        return page.nextCursor;
+      });
     } while (cursor);
     return active;
   }
@@ -164,13 +181,31 @@ export function createMailLiveSyncRoot(
   return {
     reconcileOnce,
     async start() {
-      await reconcileOnce();
+      if (started) return;
+      started = true;
+      const myGeneration = generation;
+      try {
+        await reconcileOnce();
+      } catch (err) {
+        // A failed initial reconcile must not leave `started` stuck `true` forever — that would
+        // make every later `start()` call silently no-op at the guard check above. Only reset it
+        // if nothing superseded this call in the meantime (a `stop()` already reset it itself,
+        // and a `start()` after that `stop()` may have already set it back to `true`).
+        if (generation === myGeneration) started = false;
+        throw err;
+      }
+      // `stop()` bumped `generation` while this call was awaiting its initial reconcile —
+      // scheduling here would install an interval nothing holds a reference to (the same leak
+      // one step over), so skip it once superseded.
+      if (generation !== myGeneration) return;
       timer = setInterval(() => {
         reconcileOnce().catch((err) => options.onLifecycleError?.("*", "discover", err));
       }, discoveryIntervalMs);
       timer.unref?.();
     },
     async stop() {
+      generation++;
+      started = false;
       if (timer) clearInterval(timer);
       timer = undefined;
       await Promise.all([...hosted].map(([mailboxItemId, entry]) => stopHosted(mailboxItemId, entry)));
