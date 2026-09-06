@@ -3,14 +3,14 @@ import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { NotFoundError } from "../errors.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { computeNextFireAt } from "./nextFireAt.js";
-import { heartbeatRuleSchema, isOnItemEventRule, type HeartbeatRule } from "./rule.js";
+import { isOnItemEventRule, parseHeartbeatRule, type AnyHeartbeatRule, type HeartbeatRuleKindRegistry } from "./rule.js";
 import type { ActionQueueAffinity } from "./actions.js";
 
 export interface HeartbeatRow {
   id: string;
   projectItemId: string;
   name: string;
-  rule: HeartbeatRule;
+  rule: AnyHeartbeatRule;
   actionId: string;
   actionConfig: Record<string, unknown>;
   enabled: boolean;
@@ -19,23 +19,26 @@ export interface HeartbeatRow {
   lastError: string | null;
 }
 
-function mapRow(row: {
-  id: string;
-  project_item_id: string;
-  name: string;
-  rule: unknown;
-  action_id: string;
-  action_config: Record<string, unknown>;
-  enabled: boolean;
-  next_fire_at: Date | null;
-  last_fired_at: Date | null;
-  last_error: string | null;
-}): HeartbeatRow {
+function mapRow(
+  row: {
+    id: string;
+    project_item_id: string;
+    name: string;
+    rule: unknown;
+    action_id: string;
+    action_config: Record<string, unknown>;
+    enabled: boolean;
+    next_fire_at: Date | null;
+    last_fired_at: Date | null;
+    last_error: string | null;
+  },
+  moduleRuleKinds: HeartbeatRuleKindRegistry,
+): HeartbeatRow {
   return {
     id: row.id,
     projectItemId: row.project_item_id,
     name: row.name,
-    rule: heartbeatRuleSchema.parse(row.rule),
+    rule: parseHeartbeatRule(row.rule, moduleRuleKinds),
     actionId: row.action_id,
     actionConfig: row.action_config,
     enabled: row.enabled,
@@ -56,10 +59,14 @@ export interface CreateHeartbeatInput {
   enabled?: boolean;
 }
 
-export async function createHeartbeat(client: PoolClient, input: CreateHeartbeatInput): Promise<HeartbeatRow> {
-  const rule = heartbeatRuleSchema.parse(input.rule);
+export async function createHeartbeat(
+  client: PoolClient,
+  input: CreateHeartbeatInput,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<HeartbeatRow> {
+  const rule = parseHeartbeatRule(input.rule, moduleRuleKinds);
   const enabled = input.enabled ?? true;
-  const nextFireAt = enabled && !isOnItemEventRule(rule) ? await computeNextFireAtNow(client, rule) : null;
+  const nextFireAt = enabled && !isOnItemEventRule(rule) ? await computeNextFireAtNow(client, rule, moduleRuleKinds) : null;
 
   const { rows } = await client.query(
     `INSERT INTO project_heartbeats (project_item_id, name, rule, action_id, action_config, enabled, next_fire_at)
@@ -67,58 +74,76 @@ export async function createHeartbeat(client: PoolClient, input: CreateHeartbeat
      RETURNING ${COLUMNS}`,
     [input.projectItemId, input.name, JSON.stringify(rule), input.actionId, JSON.stringify(input.actionConfig ?? {}), enabled, nextFireAt],
   );
-  return mapRow(rows[0]);
+  return mapRow(rows[0], moduleRuleKinds);
 }
 
-async function computeNextFireAtNow(client: PoolClient, rule: HeartbeatRule): Promise<Date | null> {
+async function computeNextFireAtNow(client: PoolClient, rule: AnyHeartbeatRule, moduleRuleKinds: HeartbeatRuleKindRegistry): Promise<Date | null> {
   const timezone = await getSystemTimezone(client);
-  return computeNextFireAt(rule, timezone, new Date());
+  return computeNextFireAt(rule, timezone, new Date(), moduleRuleKinds);
 }
 
-export async function getHeartbeat(client: PoolClient, id: string): Promise<HeartbeatRow | null> {
+export async function getHeartbeat(
+  client: PoolClient,
+  id: string,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<HeartbeatRow | null> {
   const { rows } = await client.query(`SELECT ${COLUMNS} FROM project_heartbeats WHERE id = $1`, [id]);
-  return rows[0] ? mapRow(rows[0]) : null;
+  return rows[0] ? mapRow(rows[0], moduleRuleKinds) : null;
 }
 
-async function requireHeartbeat(client: PoolClient, id: string): Promise<HeartbeatRow> {
-  const heartbeat = await getHeartbeat(client, id);
+async function requireHeartbeat(client: PoolClient, id: string, moduleRuleKinds: HeartbeatRuleKindRegistry): Promise<HeartbeatRow> {
+  const heartbeat = await getHeartbeat(client, id, moduleRuleKinds);
   if (!heartbeat) throw new NotFoundError(`Heartbeat ${id} not found`);
   return heartbeat;
 }
 
 /** Recomputes next_fire_at using the same pure function as the sweep — deterministic at write time. */
-export async function updateHeartbeatRule(client: PoolClient, id: string, rawRule: unknown): Promise<HeartbeatRow> {
-  const heartbeat = await requireHeartbeat(client, id);
-  const rule = heartbeatRuleSchema.parse(rawRule);
-  const nextFireAt = heartbeat.enabled && !isOnItemEventRule(rule) ? await computeNextFireAtNow(client, rule) : null;
+export async function updateHeartbeatRule(
+  client: PoolClient,
+  id: string,
+  rawRule: unknown,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<HeartbeatRow> {
+  const heartbeat = await requireHeartbeat(client, id, moduleRuleKinds);
+  const rule = parseHeartbeatRule(rawRule, moduleRuleKinds);
+  const nextFireAt = heartbeat.enabled && !isOnItemEventRule(rule) ? await computeNextFireAtNow(client, rule, moduleRuleKinds) : null;
 
   const { rows } = await client.query(
     `UPDATE project_heartbeats SET rule = $2::jsonb, next_fire_at = $3 WHERE id = $1 RETURNING ${COLUMNS}`,
     [id, JSON.stringify(rule), nextFireAt],
   );
-  return mapRow(rows[0]);
+  return mapRow(rows[0], moduleRuleKinds);
 }
 
 /** Disabling is a plain flag flip; re-enabling recomputes from now — occurrences missed while paused are not caught up. */
-export async function setHeartbeatEnabled(client: PoolClient, id: string, enabled: boolean): Promise<HeartbeatRow> {
-  const heartbeat = await requireHeartbeat(client, id);
-  const nextFireAt = enabled && !isOnItemEventRule(heartbeat.rule) ? await computeNextFireAtNow(client, heartbeat.rule) : null;
+export async function setHeartbeatEnabled(
+  client: PoolClient,
+  id: string,
+  enabled: boolean,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<HeartbeatRow> {
+  const heartbeat = await requireHeartbeat(client, id, moduleRuleKinds);
+  const nextFireAt = enabled && !isOnItemEventRule(heartbeat.rule) ? await computeNextFireAtNow(client, heartbeat.rule, moduleRuleKinds) : null;
 
   const { rows } = await client.query(
     `UPDATE project_heartbeats SET enabled = $2, next_fire_at = $3 WHERE id = $1 RETURNING ${COLUMNS}`,
     [id, enabled, enabled ? nextFireAt : null],
   );
-  return mapRow(rows[0]);
+  return mapRow(rows[0], moduleRuleKinds);
 }
 
 /** Called in the same transaction as the `timezone` settings write. */
-export async function recomputeAllForTimezoneChange(client: PoolClient, newTimezone: string): Promise<void> {
+export async function recomputeAllForTimezoneChange(
+  client: PoolClient,
+  newTimezone: string,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<void> {
   const { rows } = await client.query<{ id: string; rule: unknown }>(
     `SELECT id, rule FROM project_heartbeats WHERE enabled AND next_fire_at IS NOT NULL FOR UPDATE`,
   );
   for (const row of rows) {
-    const rule = heartbeatRuleSchema.parse(row.rule);
-    const nextFireAt = computeNextFireAt(rule, newTimezone, new Date());
+    const rule = parseHeartbeatRule(row.rule, moduleRuleKinds);
+    const nextFireAt = computeNextFireAt(rule, newTimezone, new Date(), moduleRuleKinds);
     await client.query(`UPDATE project_heartbeats SET next_fire_at = $2 WHERE id = $1`, [row.id, nextFireAt]);
   }
 }
@@ -177,7 +202,7 @@ export interface SweptHeartbeat {
  * down is picked up on the first sweep after restart and fired exactly once, with the
  * same "compute the next occurrence from now" logic as a regular on-time fire.
  */
-export async function sweepDueHeartbeats(client: PoolClient): Promise<SweptHeartbeat[]> {
+export async function sweepDueHeartbeats(client: PoolClient, moduleRuleKinds: HeartbeatRuleKindRegistry = new Map()): Promise<SweptHeartbeat[]> {
   const { rows } = await client.query<{ id: string; rule: unknown }>(
     `SELECT id, rule FROM project_heartbeats
      WHERE enabled AND next_fire_at IS NOT NULL AND next_fire_at <= now()
@@ -189,8 +214,20 @@ export async function sweepDueHeartbeats(client: PoolClient): Promise<SweptHeart
   const now = new Date();
   const fired: SweptHeartbeat[] = [];
   for (const row of rows) {
-    const rule = heartbeatRuleSchema.parse(row.rule);
-    const nextFireAt = computeNextFireAt(rule, timezone, now);
+    // A row whose rule kind belongs to a module deactivated since it was last scheduled must
+    // not be newly dispatched: record the failure and leave next_fire_at as-is (still due) so
+    // reactivating the module lets the next sweep pick it back up, instead of enqueueing a
+    // heartbeatFire job for a rule core can no longer even parse.
+    let rule: AnyHeartbeatRule;
+    let nextFireAt: Date | null;
+    try {
+      rule = parseHeartbeatRule(row.rule, moduleRuleKinds);
+      nextFireAt = computeNextFireAt(rule, timezone, now, moduleRuleKinds);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await recordHeartbeatFailure(client, row.id, message);
+      continue;
+    }
     await client.query(`UPDATE project_heartbeats SET next_fire_at = $2, last_fired_at = $3 WHERE id = $1`, [row.id, nextFireAt, now]);
     await enqueueJob(client, CORE_TASK_NAMES.HEARTBEAT_FIRE, { heartbeatId: row.id }, { jobKey: heartbeatFireJobKey(row.id), maxAttempts: 3 });
     fired.push({ id: row.id });

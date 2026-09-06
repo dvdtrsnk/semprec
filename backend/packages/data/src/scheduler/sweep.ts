@@ -1,13 +1,27 @@
 import type { Pool } from "pg";
 import type { Task } from "@semprec/queue";
+import type { ModuleRegistry } from "@semprec/module-registry";
 import { withTransaction } from "../db/pool.js";
 import { getHeartbeat, recordHeartbeatFailure, recordHeartbeatSuccess, sweepDueHeartbeats } from "./schedulerStore.js";
+import type { HeartbeatRuleKindRegistry } from "./rule.js";
 import type { ActionRegistry } from "./actions.js";
 
+/**
+ * Resolved fresh on every call (never cached) so a module activated or deactivated between
+ * two sweeps/fires is reflected immediately — the same "always evaluate current activation"
+ * contract `ModuleRegistry`'s own projections make.
+ */
+async function resolveModuleRuleKinds(moduleRegistry?: ModuleRegistry): Promise<HeartbeatRuleKindRegistry> {
+  if (!moduleRegistry) return new Map();
+  const definitions = await moduleRegistry.getHeartbeatRuleKindDefinitions();
+  return new Map(definitions.map((def) => [def.kind, { schema: def.schema, nextFireAt: def.nextFireAt }]));
+}
+
 /** Registered against the queue's cron table at a static "every minute" entry — no in-process setInterval. */
-export async function handleHeartbeatSweepTask(pool: Pool): Promise<void> {
+export async function handleHeartbeatSweepTask(pool: Pool, moduleRegistry?: ModuleRegistry): Promise<void> {
+  const moduleRuleKinds = await resolveModuleRuleKinds(moduleRegistry);
   await withTransaction(pool, async (client) => {
-    await sweepDueHeartbeats(client);
+    await sweepDueHeartbeats(client, moduleRuleKinds);
   });
 }
 
@@ -17,7 +31,7 @@ export async function handleHeartbeatSweepTask(pool: Pool): Promise<void> {
  * is written in the same transaction; the next scheduled occurrence is unaffected
  * (next_fire_at was already advanced by the sweep regardless of outcome).
  */
-export function createHeartbeatFireTask(pool: Pool, registry: ActionRegistry): Task {
+export function createHeartbeatFireTask(pool: Pool, registry: ActionRegistry, moduleRegistry?: ModuleRegistry): Task {
   return async (rawPayload, helpers) => {
     const record = rawPayload as Record<string, unknown> | null;
     const heartbeatId = record?.heartbeatId;
@@ -30,10 +44,11 @@ export function createHeartbeatFireTask(pool: Pool, registry: ActionRegistry): T
     }
     const payload = { heartbeatId, itemId: rawItemId };
 
+    const moduleRuleKinds = await resolveModuleRuleKinds(moduleRegistry);
     const readClient = await pool.connect();
     let heartbeat;
     try {
-      heartbeat = await getHeartbeat(readClient, payload.heartbeatId);
+      heartbeat = await getHeartbeat(readClient, payload.heartbeatId, moduleRuleKinds);
     } finally {
       readClient.release();
     }

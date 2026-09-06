@@ -31,6 +31,39 @@ export interface ModuleMigrationProjection {
 }
 
 /**
+ * A module task's payload schema and handler resolved to the actual imported values (not
+ * just the export names `ModuleTaskProjection` carries) — what a queue-registration consumer
+ * needs to actually validate a payload and run the job.
+ */
+export interface ModuleTaskDefinition {
+  moduleId: string;
+  name: string;
+  payloadSchema: { parse: (raw: unknown) => unknown };
+  handler: (...args: unknown[]) => unknown;
+}
+
+/**
+ * A module heartbeat rule kind's schema and next-fire calculator resolved to the actual
+ * imported values, for the scheduler to dispatch against.
+ */
+export interface ModuleHeartbeatRuleKindDefinition {
+  moduleId: string;
+  kind: string;
+  schema: { safeParse: (raw: unknown) => { success: boolean; data?: unknown; error?: { message: string } } };
+  nextFireAt: (rule: unknown, timezone: string, after: Date) => Date | null;
+}
+
+export interface ModuleRegistryOptions {
+  /**
+   * Task names core itself owns (`CORE_TASK_NAMES` from `@semprec/queue`). A module declaring
+   * one of these fails to load — a module extends the task namespace, it never shadows core.
+   */
+  reservedTaskNames?: ReadonlySet<string>;
+  /** Heartbeat rule kinds core itself owns (`dailyTime`, `weekly`, ...) — same override rejection as `reservedTaskNames`. */
+  reservedHeartbeatRuleKinds?: ReadonlySet<string>;
+}
+
+/**
  * Resolves which module ids are currently active (`modules.active`), evaluated fresh on every
  * projection call rather than cached at load time — so deactivating a module takes effect
  * immediately without reloading anything. The actual source (system settings, env, ...) is a
@@ -57,8 +90,17 @@ export class ModuleRegistry {
   private readonly taskNameOwners = new Map<string, string>();
   private readonly agentToolNameOwners = new Map<string, string>();
   private readonly workerNameOwners = new Map<string, string>();
+  private readonly heartbeatRuleKindOwners = new Map<string, string>();
+  private readonly reservedTaskNames: ReadonlySet<string>;
+  private readonly reservedHeartbeatRuleKinds: ReadonlySet<string>;
 
-  constructor(private readonly getActiveModuleIds: ActiveModuleIdsSource) {}
+  constructor(
+    private readonly getActiveModuleIds: ActiveModuleIdsSource,
+    options: ModuleRegistryOptions = {},
+  ) {
+    this.reservedTaskNames = options.reservedTaskNames ?? new Set();
+    this.reservedHeartbeatRuleKinds = options.reservedHeartbeatRuleKinds ?? new Set();
+  }
 
   /**
    * Imports exactly the module at `path`, validates its manifest's shape and every named
@@ -108,6 +150,10 @@ export class ModuleRegistry {
     for (const worker of manifest.workers ?? []) {
       this.requireFunctionExport(imported, worker.handlerExport, path, `worker "${worker.name}"`);
     }
+    for (const ruleKind of manifest.heartbeatRuleKinds ?? []) {
+      this.requireExport(imported, ruleKind.schemaExport, path, `heartbeat rule kind "${ruleKind.kind}"`);
+      this.requireFunctionExport(imported, ruleKind.nextFireAtExport, path, `heartbeat rule kind "${ruleKind.kind}"`);
+    }
   }
 
   private requireExport(imported: Record<string, unknown>, exportName: string, path: string, context: string): unknown {
@@ -131,18 +177,32 @@ export class ModuleRegistry {
    * a module that was ultimately rejected and never added to `modulesById`.
    */
   private claimCrossModuleIdentifiers(path: string, manifest: ModuleManifest): void {
-    const claims: Array<{ owners: Map<string, string>; key: string; label: string }> = [
+    const claims: Array<{ owners: Map<string, string>; key: string; label: string; reserved?: ReadonlySet<string> }> = [
       ...manifest.databases.map((db) => ({ owners: this.databaseKeyOwners, key: db.key, label: "database key" })),
       ...manifest.agentTools.map((tool) => ({ owners: this.agentToolNameOwners, key: tool.name, label: "agent tool name" })),
-      ...(manifest.taskNames ?? []).map((task) => ({ owners: this.taskNameOwners, key: task.name, label: "task name" })),
+      ...(manifest.taskNames ?? []).map((task) => ({
+        owners: this.taskNameOwners,
+        key: task.name,
+        label: "task name",
+        reserved: this.reservedTaskNames,
+      })),
       ...(manifest.workers ?? []).map((worker) => ({ owners: this.workerNameOwners, key: worker.name, label: "worker name" })),
+      ...(manifest.heartbeatRuleKinds ?? []).map((ruleKind) => ({
+        owners: this.heartbeatRuleKindOwners,
+        key: ruleKind.kind,
+        label: "heartbeat rule kind",
+        reserved: this.reservedHeartbeatRuleKinds,
+      })),
     ];
 
     // Two entries of the same kind declared twice within this one manifest (e.g. two
     // databases with the same key) collide with each other, not with any prior module — the
     // owner maps alone can't see that until something is actually committed.
     const seenInThisManifest = new Set<string>();
-    for (const { owners, key, label } of claims) {
+    for (const { owners, key, label, reserved } of claims) {
+      if (reserved?.has(key)) {
+        throw new Error(`${label} "${key}" loading "${path}" collides with a core-reserved ${label}`);
+      }
       const existingOwner = owners.get(key);
       if (existingOwner !== undefined) {
         throw new Error(`Duplicate ${label} "${key}" loading "${path}" (already claimed by module "${existingOwner}")`);
@@ -212,12 +272,44 @@ export class ModuleRegistry {
 
   async getHeartbeatRuleKinds(): Promise<string[]> {
     const active = await this.getActiveModules();
-    return active.flatMap((loaded) => loaded.manifest.heartbeatRuleKinds ?? []);
+    return active.flatMap((loaded) => (loaded.manifest.heartbeatRuleKinds ?? []).map((ruleKind) => ruleKind.kind));
+  }
+
+  /**
+   * Resolves each active module's declared heartbeat rule kinds to their actual imported
+   * schema/next-fire-calculator values, for the scheduler to validate and dispatch against.
+   */
+  async getHeartbeatRuleKindDefinitions(): Promise<ModuleHeartbeatRuleKindDefinition[]> {
+    const active = await this.getActiveModules();
+    return active.flatMap((loaded) =>
+      (loaded.manifest.heartbeatRuleKinds ?? []).map((ruleKind) => ({
+        moduleId: loaded.manifest.id,
+        kind: ruleKind.kind,
+        schema: loaded.exports[ruleKind.schemaExport] as ModuleHeartbeatRuleKindDefinition["schema"],
+        nextFireAt: loaded.exports[ruleKind.nextFireAtExport] as ModuleHeartbeatRuleKindDefinition["nextFireAt"],
+      })),
+    );
   }
 
   async getTasks(): Promise<ModuleTaskProjection[]> {
     const active = await this.getActiveModules();
     return active.flatMap((loaded) => (loaded.manifest.taskNames ?? []).map((task) => ({ moduleId: loaded.manifest.id, ...task })));
+  }
+
+  /**
+   * Resolves each active module's declared tasks to their actual imported payload-schema/handler
+   * values, for the queue to register and dispatch against.
+   */
+  async getTaskDefinitions(): Promise<ModuleTaskDefinition[]> {
+    const active = await this.getActiveModules();
+    return active.flatMap((loaded) =>
+      (loaded.manifest.taskNames ?? []).map((task) => ({
+        moduleId: loaded.manifest.id,
+        name: task.name,
+        payloadSchema: loaded.exports[task.payloadSchemaExport] as ModuleTaskDefinition["payloadSchema"],
+        handler: loaded.exports[task.handlerExport] as ModuleTaskDefinition["handler"],
+      })),
+    );
   }
 
   async getWorkers(): Promise<ModuleWorkerProjection[]> {

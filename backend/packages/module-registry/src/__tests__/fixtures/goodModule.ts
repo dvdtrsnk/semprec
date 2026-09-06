@@ -11,7 +11,7 @@ export const manifest: ModuleManifest = {
   agentTools: [{ name: "fixtureGood.doThing", handlerExport: "handleDoThing", capability: "fixtureGood.send" }],
   viewTypes: ["fixture-good-view"],
   heartbeatActions: ["fixtureGood.heartbeat"],
-  heartbeatRuleKinds: ["onItemEvent"],
+  heartbeatRuleKinds: [{ kind: "fixtureGood.onWidgetTick", schemaExport: "widgetTickRuleSchema", nextFireAtExport: "computeWidgetTickNextFireAt" }],
   taskNames: [{ name: "fixtureGood.processThing", payloadSchemaExport: "processThingPayloadSchema", handlerExport: "handleProcessThing" }],
   workers: [{ name: "fixtureGood.worker", handlerExport: "runWorker" }],
   migrations: ["0001_fixture_good.sql"],
@@ -26,3 +26,9 @@ export const processThingPayloadSchema = { parse: (value: unknown) => value };
 export function handleProcessThing(): void {}
 
 export function runWorker(): void {}
+
+export const widgetTickRuleSchema = { safeParse: (value: unknown) => ({ success: true, data: value }) };
+
+export function computeWidgetTickNextFireAt(): Date {
+  return new Date(0);
+}
