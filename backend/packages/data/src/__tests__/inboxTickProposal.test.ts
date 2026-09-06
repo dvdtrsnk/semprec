@@ -293,6 +293,22 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     expect((proposal!.properties.history as Array<Record<string, unknown>>)[0]).toMatchObject({ author: "ai" });
   });
 
+  it("a repeated tick on the same untyped item stays needsClarification without a second history entry", async () => {
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "09:00", text: "no type" }),
+    );
+
+    const throwing: ComputeSemprecProposalFn = async () => {
+      throw new Error("computeProposal must not be called for an untyped item");
+    };
+    await runTick(item.id, throwing);
+    await runTick(item.id, throwing);
+
+    const proposal = await findProposalForItem(item.id);
+    expect(proposal!.properties.status).toBe("needsClarification");
+    expect(proposal!.properties.history).toHaveLength(1);
+  });
+
   it("never writes a row into any database other than processingProposals", async () => {
     const type = await withTransaction(pool, (client) =>
       createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
