@@ -66,6 +66,10 @@ export async function confirmProposalWithClient(client: PoolClient, config: Prop
     resultItemId = created.id;
     resultLabel = await resolveResultLabel(client, envelope.target, created);
   } else {
+    // Safe to cast without a further runtime check here: `assertValidProposalEnvelope`
+    // above already rejects a 'pageContent' envelope whose `flavour` isn't a non-empty
+    // string, or whose `fields`/`children` (if present) aren't a plain object / string
+    // array respectively.
     const { flavour, fields, children } = envelope.properties as { flavour: string; fields?: Record<string, unknown>; children?: string[] };
     await putBlockWithClient(client, envelope.target, { id: proposal.id, flavour, fields, children }, "ai_agent");
     const [targetPage] = await itemsStore.getItemsByIds(client, [envelope.target]);

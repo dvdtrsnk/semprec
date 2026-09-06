@@ -228,6 +228,17 @@ export async function assertValidProposalEnvelope(client: PoolClient, envelope: 
   if (typeof envelope.properties.flavour !== "string" || envelope.properties.flavour.length === 0) {
     throw new ValidationError("Proposal properties for entityKind 'pageContent' must carry a 'flavour' block field", { field: "properties" });
   }
+  // `fields`/`children` are read back out of storage and cast at confirm time (issue #105's
+  // proposalActions.ts) to build the block-append call — validated here, at the one point
+  // every pageContent envelope (freshly computed or user-revised) passes through, so that
+  // cast is never the first thing to notice a malformed stored value.
+  const { fields, children } = envelope.properties;
+  if (fields !== undefined && (typeof fields !== "object" || fields === null || Array.isArray(fields))) {
+    throw new ValidationError("Proposal properties 'fields', if present, must be a plain object", { field: "properties" });
+  }
+  if (children !== undefined && (!Array.isArray(children) || !children.every((child) => typeof child === "string"))) {
+    throw new ValidationError("Proposal properties 'children', if present, must be an array of strings", { field: "properties" });
+  }
 }
 
 /** Links a freshly created Processing proposal back to its source Inbox item via `sourceInbox`. */

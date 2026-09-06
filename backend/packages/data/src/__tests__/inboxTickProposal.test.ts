@@ -568,6 +568,50 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     expect(proposal!.properties.status).toBe("needsClarification");
   });
 
+  it("a pageContent envelope whose 'fields' is not a plain object fails validation (issue #105 review fix)", async () => {
+    const type = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Thought", emoji: "💭", processingMethod: "pageContent" }),
+    );
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        text: "A thought",
+        type: type.id,
+      }),
+    );
+
+    await runTick(item.id, async () => ({ target: type.id, properties: { flavour: "paragraph", fields: "not an object" } }));
+
+    const proposal = await findProposalForItem(item.id);
+    expect(proposal!.properties.status).toBe("needsClarification");
+  });
+
+  it("a pageContent envelope whose 'children' is not an array of strings fails validation (issue #105 review fix)", async () => {
+    const type = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Thought", emoji: "💭", processingMethod: "pageContent" }),
+    );
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        text: "A thought",
+        type: type.id,
+      }),
+    );
+
+    await runTick(item.id, async () => ({ target: type.id, properties: { flavour: "paragraph", children: [1, 2, 3] } }));
+
+    const proposal = await findProposalForItem(item.id);
+    expect(proposal!.properties.status).toBe("needsClarification");
+  });
+
   it("a repeated tick with the same invalid envelope does not call computeProposal again", async () => {
     const { item } = await createTypedItem("Buy milk");
 
