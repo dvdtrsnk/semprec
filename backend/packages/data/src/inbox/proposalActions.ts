@@ -5,6 +5,7 @@ import { createItemWithClient, updateItemWithClient } from "../chokePoint/chokeP
 import { putBlockWithClient } from "../docs/docStore.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
 import { appendHistoryEntry, assertValidProposalEnvelope, type ProposalEntityKind, type ProposalEnvelope } from "./inboxTickAction.js";
+import { enqueueJournalInboxRecomputeForProposal } from "./journalInboxCompute.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 
@@ -77,7 +78,7 @@ export async function confirmProposalWithClient(client: PoolClient, config: Prop
     resultLabel = targetPage ? await resolveResultLabel(client, targetPage.databaseId, targetPage) : envelope.target;
   }
 
-  return updateItemWithClient(
+  const updated = await updateItemWithClient(
     client,
     {
       databaseId: config.processingProposalsDatabaseId,
@@ -91,6 +92,11 @@ export async function confirmProposalWithClient(client: PoolClient, config: Prop
     },
     { allowedSystemKeys: ["status", "resultItemId", "resultLabel", "history"] },
   );
+  // Issue #106's "proposal transition" invalidation trigger: confirm/reject/revise change
+  // the source Inbox item's displayed status but never touch the Inbox item itself, so
+  // nothing else would invalidate its Journal day's cached list.
+  await enqueueJournalInboxRecomputeForProposal(client, proposal.id);
+  return updated;
 }
 
 /**
@@ -107,7 +113,7 @@ export async function rejectProposalWithClient(client: PoolClient, config: Propo
     throw new ValidationError("Cannot reject a proposal that has already been confirmed", { field: "status" });
   }
 
-  return updateItemWithClient(
+  const updated = await updateItemWithClient(
     client,
     {
       databaseId: config.processingProposalsDatabaseId,
@@ -119,6 +125,8 @@ export async function rejectProposalWithClient(client: PoolClient, config: Propo
     },
     { allowedSystemKeys: ["status", "history"] },
   );
+  await enqueueJournalInboxRecomputeForProposal(client, proposal.id);
+  return updated;
 }
 
 export interface ReviseProposalInput {
@@ -148,7 +156,7 @@ export async function reviseProposalWithClient(client: PoolClient, config: Propo
   const envelope: ProposalEnvelope = { entityKind: input.entityKind, target: input.target, properties: input.properties };
   await assertValidProposalEnvelope(client, envelope);
 
-  return updateItemWithClient(
+  const updated = await updateItemWithClient(
     client,
     {
       databaseId: config.processingProposalsDatabaseId,
@@ -161,4 +169,6 @@ export async function reviseProposalWithClient(client: PoolClient, config: Propo
     },
     { allowedSystemKeys: ["proposal", "status", "history"] },
   );
+  await enqueueJournalInboxRecomputeForProposal(client, proposal.id);
+  return updated;
 }

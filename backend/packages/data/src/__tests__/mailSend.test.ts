@@ -485,6 +485,77 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     expect(await getMailMessageMetaByItemId(pool, draft.id)).toBeNull();
   });
 
+  it("rejects an unknown mailboxItemId with NotFoundError, before the from-address check", async () => {
+    const draftsId = await draftsFolderId();
+    const draft = await withTransaction(pool, (client) =>
+      createEmailDraft(client, {
+        emailsDatabaseId: emailsId,
+        folderRelationPropertyId,
+        draftsFolderItemId: draftsId,
+        subject: "Hello",
+        from: { address: "me@example.com" },
+        to: [{ address: "bob@example.com" }],
+      }),
+    );
+
+    const smtp = fakeSmtpClient();
+    const unknownMailboxId = "00000000-0000-0000-0000-000000000000";
+    await expect(
+      sendDraftEmail(
+        pool,
+        {
+          mailboxItemId: unknownMailboxId,
+          draftItemId: draft.id,
+          actor: { type: "user" },
+          from: { address: "spoofed@somewhere-else.com" },
+          to: [{ address: "bob@example.com" }],
+          subject: "Hello",
+        },
+        moduleIds,
+        { createSmtpClient: async () => smtp },
+      ),
+    ).rejects.toMatchObject({ name: "NotFoundError" });
+
+    expect(smtp.sent).toHaveLength(0);
+    expect(await getMailMessageMetaByItemId(pool, draft.id)).toBeNull();
+  });
+
+  it("rejects sending over a soft-deleted mailbox with NotFoundError, not ForbiddenError", async () => {
+    const draftsId = await draftsFolderId();
+    const draft = await withTransaction(pool, (client) =>
+      createEmailDraft(client, {
+        emailsDatabaseId: emailsId,
+        folderRelationPropertyId,
+        draftsFolderItemId: draftsId,
+        subject: "Hello",
+        from: { address: "me@example.com" },
+        to: [{ address: "bob@example.com" }],
+      }),
+    );
+
+    await chokePoint.softDeleteItem(mailboxesId, mailboxId);
+
+    const smtp = fakeSmtpClient();
+    await expect(
+      sendDraftEmail(
+        pool,
+        {
+          mailboxItemId: mailboxId,
+          draftItemId: draft.id,
+          actor: { type: "user" },
+          from: { address: "me@example.com" },
+          to: [{ address: "bob@example.com" }],
+          subject: "Hello",
+        },
+        moduleIds,
+        { createSmtpClient: async () => smtp },
+      ),
+    ).rejects.toMatchObject({ name: "NotFoundError" });
+
+    expect(smtp.sent).toHaveLength(0);
+    expect(await getMailMessageMetaByItemId(pool, draft.id)).toBeNull();
+  });
+
   it("a later IMAP-style reconcile pass observing the same generated Message-ID in Sent converges onto the same item instead of duplicating it", async () => {
     const draftsId = await draftsFolderId();
     const draft = await withTransaction(pool, (client) =>
