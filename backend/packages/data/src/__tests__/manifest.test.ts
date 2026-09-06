@@ -5,6 +5,8 @@ import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { generatePermissionManifest } from "../manifest/permissionManifest.js";
 import { createDriftCheckAction, findOrphanedOwnerProcessProperties } from "../manifest/driftCheck.js";
+import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
+import { seedSystem } from "../seed/seedSystem.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -40,7 +42,27 @@ describe("permission manifest and drift check", () => {
     const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, projectItem.id));
     expect(manifest.databases).toHaveLength(1);
     expect(manifest.databases[0].databaseId).toBe(owned.id);
+    expect(manifest.databases[0].writable).toBe(true);
     expect(manifest.databases[0].properties.map((p) => p.key).sort()).toEqual(["note", "rating"]);
+  });
+
+  it("scopes Semprec's own grant to Processing proposals only, per issue #105's grant separation", async () => {
+    const viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry();
+    await seedSystem(pool, viewTypeRegistry);
+
+    const { rows } = await pool.query<{ id: string }>(`SELECT id FROM items WHERE properties ->> 'name' = 'Semprec'`);
+    const semprecProjectItemId = rows[0]!.id;
+
+    const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, semprecProjectItemId));
+
+    const byName = new Map(manifest.databases.map((db) => [db.name, db]));
+    expect(byName.get("Processing proposals")?.writable).toBe(true);
+    expect(byName.get("Inbox")?.writable).toBe(false);
+    expect(byName.get("Inbox item types")?.writable).toBe(false);
+    // No target database (Tasks, Journal, ...) is ever part of this project's grant at all —
+    // they carry no owner_project_item_id, so they never appear here regardless of `writable`.
+    expect(manifest.databases.map((db) => db.name).sort()).not.toContain("Tasks");
+    expect(manifest.databases.map((db) => db.name).sort()).not.toContain("Journal");
   });
 
   it("finds owner:'system' properties with no owner_process as orphaned", async () => {

@@ -9,6 +9,7 @@ import * as databasesStore from "../chokePoint/databasesStore.js";
 import { createItemWithClient, createRelationWithClient, updateItemWithClient } from "../chokePoint/chokePoint.js";
 import { PROCESSING_METHODS, LOCKED_PROPOSAL_STATUSES, type ProcessingMethod } from "./inboxTypesStore.js";
 import { computeInboxFingerprint } from "./fingerprint.js";
+import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
 import { ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 
@@ -156,10 +157,15 @@ export interface ProposalHistoryEntry {
   at: string;
 }
 
-/** Appends one `author: 'ai'` entry to a proposal's `history`, tolerating a missing/malformed stored value as empty. */
-function appendHistoryEntry(history: unknown, message: string): ProposalHistoryEntry[] {
+/**
+ * Appends one history entry to a proposal's `history`, tolerating a missing/malformed
+ * stored value as empty. Defaults to `author: 'ai'` for this module's own tick-driven
+ * entries; inbox/proposalActions.ts (issue #105) reuses this with `author: 'user'` for
+ * confirm/reject/revise's own log entries.
+ */
+export function appendHistoryEntry(history: unknown, message: string, author: "ai" | "user" = "ai"): ProposalHistoryEntry[] {
   const existing = Array.isArray(history) ? (history as ProposalHistoryEntry[]) : [];
-  return [...existing, { author: "ai", message, at: new Date().toISOString() }];
+  return [...existing, { author, message, at: new Date().toISOString() }];
 }
 
 /**
@@ -169,7 +175,7 @@ function appendHistoryEntry(history: unknown, message: string): ProposalHistoryE
  * carried over from issue #223). Throws `ValidationError` for a wrong `entityKind`, an
  * unknown/malformed target, or properties the destination could not accept.
  */
-async function assertValidProposalEnvelope(client: PoolClient, envelope: ProposalEnvelope): Promise<void> {
+export async function assertValidProposalEnvelope(client: PoolClient, envelope: ProposalEnvelope): Promise<void> {
   if (envelope.entityKind !== "pageContent" && envelope.entityKind !== "database") {
     throw new ValidationError(`Proposal envelope has unknown entityKind '${String(envelope.entityKind)}'`, { field: "entityKind" });
   }
@@ -181,6 +187,15 @@ async function assertValidProposalEnvelope(client: PoolClient, envelope: Proposa
     const targetDatabase = await databasesStore.getDatabase(client, envelope.target);
     if (!targetDatabase || targetDatabase.archivedAt) {
       throw new ValidationError(`Proposal envelope target '${envelope.target}' is not an existing target database`, { field: "target" });
+    }
+    // Issue #105's grant separation, enforced here rather than only declared in the
+    // manifest: a user-supplied `revise` builds its envelope from raw request input, so
+    // without this check it could name Inbox/Inbox item types as `target` and have a
+    // later `confirm` write to them via the generic create-item choke point — bypassing
+    // `permissionManifest.ts`'s `writable: false` for those two databases, since nothing
+    // upstream of that choke-point call reads the manifest at all.
+    if (targetDatabase.ownerModuleId && SEMPREC_READ_ONLY_MODULE_IDS.includes(targetDatabase.ownerModuleId)) {
+      throw new ValidationError(`Proposal envelope target '${envelope.target}' is not a writable target database`, { field: "target" });
     }
 
     const targetProperties = await propertiesStore.listPropertiesByDatabase(client, targetDatabase.id);
@@ -212,6 +227,17 @@ async function assertValidProposalEnvelope(client: PoolClient, envelope: Proposa
   }
   if (typeof envelope.properties.flavour !== "string" || envelope.properties.flavour.length === 0) {
     throw new ValidationError("Proposal properties for entityKind 'pageContent' must carry a 'flavour' block field", { field: "properties" });
+  }
+  // `fields`/`children` are read back out of storage and cast at confirm time (issue #105's
+  // proposalActions.ts) to build the block-append call — validated here, at the one point
+  // every pageContent envelope (freshly computed or user-revised) passes through, so that
+  // cast is never the first thing to notice a malformed stored value.
+  const { fields, children } = envelope.properties;
+  if (fields !== undefined && (typeof fields !== "object" || fields === null || Array.isArray(fields))) {
+    throw new ValidationError("Proposal properties 'fields', if present, must be a plain object", { field: "properties" });
+  }
+  if (children !== undefined && (!Array.isArray(children) || !children.every((child) => typeof child === "string"))) {
+    throw new ValidationError("Proposal properties 'children', if present, must be an array of strings", { field: "properties" });
   }
 }
 
