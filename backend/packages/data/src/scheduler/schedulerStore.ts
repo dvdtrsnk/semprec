@@ -142,8 +142,19 @@ export async function recomputeAllForTimezoneChange(
     `SELECT id, rule FROM project_heartbeats WHERE enabled AND next_fire_at IS NOT NULL FOR UPDATE`,
   );
   for (const row of rows) {
-    const rule = parseHeartbeatRule(row.rule, moduleRuleKinds);
-    const nextFireAt = computeNextFireAt(rule, newTimezone, new Date(), moduleRuleKinds);
+    // Same deactivated-module guard as sweepDueHeartbeats: one row whose rule kind no longer
+    // resolves must not abort the whole batch (and the whole timezone-change transaction) —
+    // record the failure and move on, leaving that row's next_fire_at as-is.
+    let rule: AnyHeartbeatRule;
+    let nextFireAt: Date | null;
+    try {
+      rule = parseHeartbeatRule(row.rule, moduleRuleKinds);
+      nextFireAt = computeNextFireAt(rule, newTimezone, new Date(), moduleRuleKinds);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await recordHeartbeatFailure(client, row.id, message);
+      continue;
+    }
     await client.query(`UPDATE project_heartbeats SET next_fire_at = $2 WHERE id = $1`, [row.id, nextFireAt]);
   }
 }

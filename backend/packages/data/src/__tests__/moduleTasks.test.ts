@@ -83,4 +83,16 @@ describe("mergeModuleTaskList", () => {
     const mergedInactive = await mergeModuleTaskList(coreTaskList, registryInactive);
     expect(Object.keys(mergedInactive)).not.toContain("fixtureModule.processThing");
   });
+
+  it("rejects a module task colliding with a core task name, even if the registry didn't reserve it", async () => {
+    const registry = fakeRegistry([
+      {
+        moduleId: "fixture-module",
+        name: CORE_TASK_NAMES.HEARTBEAT_SWEEP,
+        payloadSchema: { parse: (raw: unknown) => raw },
+        handler: async () => {},
+      },
+    ]);
+    await expect(mergeModuleTaskList(coreTaskList, registry)).rejects.toThrow(/collides with a core task name/);
+  });
 });
