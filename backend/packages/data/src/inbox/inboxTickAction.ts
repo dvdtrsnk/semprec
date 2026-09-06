@@ -156,10 +156,15 @@ export interface ProposalHistoryEntry {
   at: string;
 }
 
-/** Appends one `author: 'ai'` entry to a proposal's `history`, tolerating a missing/malformed stored value as empty. */
-function appendHistoryEntry(history: unknown, message: string): ProposalHistoryEntry[] {
+/**
+ * Appends one history entry to a proposal's `history`, tolerating a missing/malformed
+ * stored value as empty. Defaults to `author: 'ai'` for this module's own tick-driven
+ * entries; inbox/proposalActions.ts (issue #105) reuses this with `author: 'user'` for
+ * confirm/reject/revise's own log entries.
+ */
+export function appendHistoryEntry(history: unknown, message: string, author: "ai" | "user" = "ai"): ProposalHistoryEntry[] {
   const existing = Array.isArray(history) ? (history as ProposalHistoryEntry[]) : [];
-  return [...existing, { author: "ai", message, at: new Date().toISOString() }];
+  return [...existing, { author, message, at: new Date().toISOString() }];
 }
 
 /**
@@ -169,7 +174,7 @@ function appendHistoryEntry(history: unknown, message: string): ProposalHistoryE
  * carried over from issue #223). Throws `ValidationError` for a wrong `entityKind`, an
  * unknown/malformed target, or properties the destination could not accept.
  */
-async function assertValidProposalEnvelope(client: PoolClient, envelope: ProposalEnvelope): Promise<void> {
+export async function assertValidProposalEnvelope(client: PoolClient, envelope: ProposalEnvelope): Promise<void> {
   if (envelope.entityKind !== "pageContent" && envelope.entityKind !== "database") {
     throw new ValidationError(`Proposal envelope has unknown entityKind '${String(envelope.entityKind)}'`, { field: "entityKind" });
   }
