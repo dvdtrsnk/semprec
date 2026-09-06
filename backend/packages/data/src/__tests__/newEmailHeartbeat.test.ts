@@ -165,10 +165,12 @@ describe("newEmail heartbeat (issue #99)", () => {
     const { rows } = await pool.query<{ id: string }>(
       `SELECT related.id FROM item_relations r
        JOIN items related ON related.id = CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END
-       WHERE related.database_id = $2 AND related.properties ->> 'specialPurpose' = 'junk'`,
+       WHERE (r.item_a = $1 OR r.item_b = $1)
+         AND related.database_id = $2 AND related.properties ->> 'specialPurpose' = 'junk'`,
       [emailItemId, foldersId],
     );
-    const junkFolderId = rows[0]!.id;
+    if (!rows[0]) throw new Error(`No junk folder relation found for email item ${emailItemId}`);
+    const junkFolderId = rows[0].id;
     await chokePoint.softDeleteItem(foldersId, junkFolderId);
 
     await drainQueue(registry);
