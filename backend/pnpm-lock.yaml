@@ -97,6 +97,31 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1))
 
+  packages/e2e:
+    dependencies:
+      '@semprec/data':
+        specifier: workspace:*
+        version: link:../data
+      '@semprec/module-registry':
+        specifier: workspace:*
+        version: link:../module-registry
+      '@semprec/queue':
+        specifier: workspace:*
+        version: link:../queue
+      pg:
+        specifier: ^8.23.0
+        version: 8.23.0
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
+      graphile-worker:
+        specifier: ^0.17.3
+        version: 0.17.3(typescript@5.9.3)
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1))
+
   packages/module-boundaries:
     dependencies:
       dependency-cruiser:
