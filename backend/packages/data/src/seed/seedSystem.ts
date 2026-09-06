@@ -11,6 +11,7 @@ import { DEFAULT_TIMEZONE, SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.j
 import { registerTemporalSwitcherViewType } from "../views/temporalSwitcherViewType.js";
 import { registerLibraryGridViewType } from "../views/libraryGridViewType.js";
 import { registerMailboxClientViewType } from "../views/mailboxClientViewType.js";
+import { registerJournalInboxViewType } from "../views/journalInboxViewType.js";
 import { seedTenDatabasesInTransaction } from "./seedTenDatabases.js";
 import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
 import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
@@ -55,6 +56,8 @@ export async function seedSystem(
   // Same reasoning again (issue #96's mailbox view type): the Emails default view is a
   // 'mailbox-client' view, so every process serving it needs the type in its own registry.
   registerMailboxClientViewType(viewTypeRegistry);
+  // Same reasoning again (issue #106's Journal Inbox-list view type).
+  registerJournalInboxViewType(viewTypeRegistry);
 
   await withTransaction(pool, async (client) => {
     const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1`, [SYSTEM_SETTINGS_MODULE_ID]);

@@ -9,6 +9,7 @@ import * as databasesStore from "../chokePoint/databasesStore.js";
 import { createItemWithClient, createRelationWithClient, updateItemWithClient } from "../chokePoint/chokePoint.js";
 import { PROCESSING_METHODS, LOCKED_PROPOSAL_STATUSES, type ProcessingMethod } from "./inboxTypesStore.js";
 import { computeInboxFingerprint } from "./fingerprint.js";
+import { enqueueJournalInboxRecomputeForInboxItem } from "./journalInboxCompute.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
 import { ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
@@ -356,6 +357,12 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
     await withTransaction(pool, async (client) => {
       const item = await itemsStore.getItemById(client, config.inboxDatabaseId, sourceItemId);
       const existingProposal = await findExistingProposal(client, config, sourceItemId);
+
+      // Issue #106: covers "capture" and "deletion" of the three invalidation triggers —
+      // this fires on every create/update/delete tick (issue #103's onItemEvent heartbeats),
+      // and the item's `journalDay` edge (set once at capture, inboxStore.ts) still resolves
+      // after a soft delete, since deleting an item never removes its relation edges.
+      if (item) await enqueueJournalInboxRecomputeForInboxItem(client, item.id);
 
       if (!item || item.deletedAt) {
         await invalidateProposalForDeletedSource(client, config, existingProposal);

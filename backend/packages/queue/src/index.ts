@@ -29,6 +29,8 @@ export const CORE_TASK_NAMES = {
   // Issue #93: backfills mail_message_meta (envelope/threadId/messageId) for legacy Emails
   // items that predate it.
   MAIL_LEGACY_EMAIL_MIGRATION: "mailLegacyEmailMigration",
+  // Issue #106: recomputes one Journal day item's cached `items.computed` Inbox-item list.
+  JOURNAL_INBOX_RECOMPUTE: "journalInboxRecompute",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
