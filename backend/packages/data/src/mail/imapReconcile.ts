@@ -9,10 +9,7 @@ import { ensureMailFolderSyncState, getMailFolderSyncState, recordReconcile, res
 import { findEmailItemIdByFolderUid, listKnownFolderUids } from "./folderMembershipStore.js";
 import { ensureFolderItem } from "./folderDiscovery.js";
 import { ensureMailAccountSyncState, recordImapActivity } from "./mailAccountSyncStateStore.js";
-import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG, type WritableImapFlag } from "./messageFlags.js";
-
-/** The full, enumerable set of `WritableImapFlag` values — the two canonical flag keys `setMessageFlag` may write. */
-export const WRITABLE_IMAP_FLAGS: readonly WritableImapFlag[] = [IMAP_SEEN_FLAG, IMAP_FLAGGED_FLAG];
+import type { WritableImapFlag } from "./messageFlags.js";
 
 export interface ImapFetchedMessage {
   uid: number;
