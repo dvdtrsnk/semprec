@@ -9,7 +9,10 @@ import * as databasesStore from "../chokePoint/databasesStore.js";
 import { createItemWithClient, createRelationWithClient, updateItemWithClient } from "../chokePoint/chokePoint.js";
 import { PROCESSING_METHODS, LOCKED_PROPOSAL_STATUSES, type ProcessingMethod } from "./inboxTypesStore.js";
 import { computeInboxFingerprint } from "./fingerprint.js";
+import { ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const SEMPREC_TICK_ACTION_ID = "semprec.tick";
 
@@ -69,8 +72,9 @@ async function getRelationDefinitionByKey(client: PoolClient, databaseId: string
 
 /**
  * Resolves the Inbox item's linked, recognized type (issue #223's "recognized type" gate):
- * `null` for any of the stub cases #104 later replaces with `needsClarification` — no
- * `type` relation, a dangling/deleted target, or a type missing a valid `processingMethod`.
+ * `null` for any case `createSemprecTickAction` below turns into `needsClarification`
+ * (issue #104) — no `type` relation, a dangling/deleted target, or a type missing a valid
+ * `processingMethod`.
  */
 async function resolveRecognizedType(
   client: PoolClient,
@@ -145,6 +149,157 @@ async function computeProposalEnvelope(
   return { entityKind, target: result.target, properties: result.properties };
 }
 
+/** A Processing proposal's chat + decision log entry (issue #104). */
+export interface ProposalHistoryEntry {
+  author: "ai" | "user";
+  message: string;
+  at: string;
+}
+
+/** Appends one `author: 'ai'` entry to a proposal's `history`, tolerating a missing/malformed stored value as empty. */
+function appendHistoryEntry(history: unknown, message: string): ProposalHistoryEntry[] {
+  const existing = Array.isArray(history) ? (history as ProposalHistoryEntry[]) : [];
+  return [...existing, { author: "ai", message, at: new Date().toISOString() }];
+}
+
+/**
+ * Validates a computed envelope against its destination's own requirements (issue #104) —
+ * never against the generic choke-point schema engine's write path, since a proposal is
+ * never itself written to the destination (`computeProposal`'s "no target write" guarantee,
+ * carried over from issue #223). Throws `ValidationError` for a wrong `entityKind`, an
+ * unknown/malformed target, or properties the destination could not accept.
+ */
+async function assertValidProposalEnvelope(client: PoolClient, envelope: ProposalEnvelope): Promise<void> {
+  if (envelope.entityKind !== "pageContent" && envelope.entityKind !== "database") {
+    throw new ValidationError(`Proposal envelope has unknown entityKind '${String(envelope.entityKind)}'`, { field: "entityKind" });
+  }
+
+  if (envelope.entityKind === "database") {
+    if (!UUID_RE.test(envelope.target)) {
+      throw new ValidationError(`Proposal envelope target '${envelope.target}' is not a database id`, { field: "target" });
+    }
+    const targetDatabase = await databasesStore.getDatabase(client, envelope.target);
+    if (!targetDatabase || targetDatabase.archivedAt) {
+      throw new ValidationError(`Proposal envelope target '${envelope.target}' is not an existing target database`, { field: "target" });
+    }
+
+    const targetProperties = await propertiesStore.listPropertiesByDatabase(client, targetDatabase.id);
+    const byKey = new Map(targetProperties.map((property) => [property.key, property]));
+    for (const key of Object.keys(envelope.properties)) {
+      const property = byKey.get(key);
+      if (!property) {
+        throw new ValidationError(`Proposal properties reference unknown property '${key}' on target database ${targetDatabase.id}`, { field: key });
+      }
+      if (property.type === "relation") {
+        throw new ValidationError(`Proposal properties cannot set relation property '${key}' directly`, { field: key });
+      }
+      if (property.type === "rollup") {
+        throw new ValidationError(`Proposal properties cannot set read-only rollup property '${key}'`, { field: key });
+      }
+      if (property.owner === "system") {
+        throw new ValidationError(`Proposal properties cannot set system-owned property '${key}'`, { field: key });
+      }
+    }
+    return;
+  }
+
+  if (!UUID_RE.test(envelope.target)) {
+    throw new ValidationError(`Proposal envelope target '${envelope.target}' is not a page id`, { field: "target" });
+  }
+  const [targetPage] = await itemsStore.getItemsByIds(client, [envelope.target]);
+  if (!targetPage) {
+    throw new ValidationError(`Proposal envelope target '${envelope.target}' is not an existing page`, { field: "target" });
+  }
+  if (typeof envelope.properties.flavour !== "string" || envelope.properties.flavour.length === 0) {
+    throw new ValidationError("Proposal properties for entityKind 'pageContent' must carry a 'flavour' block field", { field: "properties" });
+  }
+}
+
+/** Links a freshly created Processing proposal back to its source Inbox item via `sourceInbox`. */
+async function linkSourceInboxRelation(client: PoolClient, config: SemprecTickActionConfig, proposalId: string, sourceItemId: string): Promise<void> {
+  const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, config.processingProposalsDatabaseId, "sourceInbox");
+  if (!sourceInboxProperty) throw new Error(`Processing proposals database ${config.processingProposalsDatabaseId} has no 'sourceInbox' relation property`);
+  await createRelationWithClient(client, { relationPropertyId: sourceInboxProperty.id, itemId: proposalId, targetItemId: sourceItemId });
+}
+
+/**
+ * Puts a source Inbox item's proposal into `needsClarification` (issue #104): the shared path
+ * for "no usable type" (missing or deleted-type reference, per the epic's "no special case for
+ * deleted references") and for a computed `proposed` envelope that failed destination
+ * validation — both are "the AI/tick could not produce a usable proposal", so both land here
+ * with no pre-filled `proposal` rather than ever going silent. Creates the row if none exists,
+ * revises it if unlocked, and is a no-op if the row is already locked or already
+ * `needsClarification` with the same `fingerprint` (so a repeatedly-untyped or
+ * repeatedly-invalid item doesn't spam its history on every tick).
+ */
+async function writeNeedsClarification(
+  client: PoolClient,
+  config: SemprecTickActionConfig,
+  sourceItemId: string,
+  existingProposal: ItemRow | null,
+  message: string,
+  fingerprint: string | null = null,
+): Promise<void> {
+  if (existingProposal) {
+    const status = existingProposal.properties.status;
+    if (typeof status === "string" && LOCKED_PROPOSAL_STATUSES.has(status)) return;
+    if (status === "needsClarification" && existingProposal.properties.fingerprint === fingerprint) return;
+
+    await updateItemWithClient(
+      client,
+      {
+        databaseId: config.processingProposalsDatabaseId,
+        itemId: existingProposal.id,
+        propertiesPatch: {
+          fingerprint,
+          proposal: null,
+          status: "needsClarification",
+          history: appendHistoryEntry(existingProposal.properties.history, message),
+        },
+      },
+      { allowedSystemKeys: ["fingerprint", "proposal", "status", "history"] },
+    );
+    return;
+  }
+
+  const proposal = await createItemWithClient(
+    client,
+    {
+      databaseId: config.processingProposalsDatabaseId,
+      properties: { kind: "inbox", fingerprint, proposal: null, history: appendHistoryEntry([], message), status: "needsClarification" },
+    },
+    { allowedSystemKeys: ["kind", "fingerprint", "proposal", "history", "status"] },
+  );
+  await linkSourceInboxRelation(client, config, proposal.id, sourceItemId);
+}
+
+/**
+ * Puts an unlocked proposal into `invalid` (issue #104) when its source Inbox item no longer
+ * exists. A locked (`confirmed`/`rejected`) proposal, or one with no proposal row at all, is
+ * left untouched — per the epic's "a locked card is never recomputed again" rule and because
+ * there is nothing to invalidate. A no-op if already `invalid`, so a source deleted more than
+ * once (e.g. soft-deleted, then its delete event re-fires) doesn't spam history.
+ */
+async function invalidateProposalForDeletedSource(client: PoolClient, config: SemprecTickActionConfig, existingProposal: ItemRow | null): Promise<void> {
+  if (!existingProposal) return;
+  const status = existingProposal.properties.status;
+  if (typeof status === "string" && LOCKED_PROPOSAL_STATUSES.has(status)) return;
+  if (status === "invalid") return;
+
+  await updateItemWithClient(
+    client,
+    {
+      databaseId: config.processingProposalsDatabaseId,
+      itemId: existingProposal.id,
+      propertiesPatch: {
+        status: "invalid",
+        history: appendHistoryEntry(existingProposal.properties.history, "Source Inbox item was deleted."),
+      },
+    },
+    { allowedSystemKeys: ["status", "history"] },
+  );
+}
+
 /**
  * Registered as an `onItemEvent` ('create'/'update'/'delete') heartbeat action on the Inbox
  * database (issue #103): re-reads the item by id at run time — never trusting anything about
@@ -153,13 +308,17 @@ async function computeProposalEnvelope(
  * reflects whatever state is current at that moment, not a stale snapshot from whichever edit
  * enqueued it.
  *
- * Issue #223's fingerprinting and create/revise/skip gate: a deleted (or since-deleted) item,
- * or one whose `type` is missing/unresolved (issue #104's `needsClarification`, out of this
- * issue's scope), is a legitimate no-op. Otherwise this fingerprints the source (SHA-256 of
+ * Issue #223's fingerprinting and create/revise/skip gate, plus issue #104's closure of the
+ * state space: a deleted (or since-deleted) source item transitions its unlocked proposal (if
+ * any) to `invalid`; a source with no usable type (missing, or referencing a deleted Inbox item
+ * type) transitions to `needsClarification`. Otherwise this fingerprints the source (SHA-256 of
  * its type's canonical emoji and text), and only calls `computeProposal` — the injected,
  * LLM-backed content decision — when there is no existing proposal row, or an existing
  * unlocked one whose stored fingerprint has changed; a `confirmed`/`rejected` (locked) row is
- * never recomputed, and an unchanged fingerprint makes no AI call and no proposal write.
+ * never recomputed, and an unchanged fingerprint makes no AI call and no proposal write. A
+ * computed envelope that fails destination validation also lands in `needsClarification`
+ * rather than being stored as `proposed`. Every create, revise, or status change appends one
+ * `{ author: 'ai', message, at }` history entry (issue #104).
  */
 export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemprecProposalFn): ActionHandler {
   return async (actionConfig: Record<string, unknown>, context: ActionContext) => {
@@ -167,19 +326,26 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
     // Throws (surfacing as a recorded heartbeat failure + notification, see sweep.ts's
     // createHeartbeatFireTask) rather than silently no-op'ing on a misconfigured heartbeat.
     const config = semprecTickActionConfigSchema.parse(actionConfig);
+    const sourceItemId = context.itemId as string;
     await withTransaction(pool, async (client) => {
-      const item = await itemsStore.getItemById(client, config.inboxDatabaseId, context.itemId as string);
-      if (!item || item.deletedAt) return;
+      const item = await itemsStore.getItemById(client, config.inboxDatabaseId, sourceItemId);
+      const existingProposal = await findExistingProposal(client, config, sourceItemId);
+
+      if (!item || item.deletedAt) {
+        await invalidateProposalForDeletedSource(client, config, existingProposal);
+        return;
+      }
 
       const recognized = await resolveRecognizedType(client, config, item);
-      if (!recognized) return;
+      if (!recognized) {
+        await writeNeedsClarification(client, config, item.id, existingProposal, "Source item has no recognized type; needs clarification.");
+        return;
+      }
       const { type, processingMethod } = recognized;
 
       const emoji = typeof type.properties.emoji === "string" ? type.properties.emoji : "";
       const text = typeof item.properties.text === "string" ? item.properties.text : "";
       const fingerprint = computeInboxFingerprint(emoji, text);
-
-      const existingProposal = await findExistingProposal(client, config, item.id);
 
       if (existingProposal) {
         const status = existingProposal.properties.status;
@@ -187,31 +353,56 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
         if (existingProposal.properties.fingerprint === fingerprint) return;
 
         const envelope = await computeProposalEnvelope(client, computeProposal, item, type, processingMethod);
+        try {
+          await assertValidProposalEnvelope(client, envelope);
+        } catch (err) {
+          if (!(err instanceof ValidationError)) throw err;
+          await writeNeedsClarification(client, config, item.id, existingProposal, `Computed proposal failed validation: ${err.message}`, fingerprint);
+          return;
+        }
+
         await updateItemWithClient(
           client,
           {
             databaseId: config.processingProposalsDatabaseId,
             itemId: existingProposal.id,
-            propertiesPatch: { fingerprint, proposal: envelope, status: "proposed" },
+            propertiesPatch: {
+              fingerprint,
+              proposal: envelope,
+              status: "proposed",
+              history: appendHistoryEntry(existingProposal.properties.history, "Revised the proposal after the source item changed."),
+            },
           },
-          { allowedSystemKeys: ["fingerprint", "proposal", "status"] },
+          { allowedSystemKeys: ["fingerprint", "proposal", "status", "history"] },
         );
         return;
       }
 
       const envelope = await computeProposalEnvelope(client, computeProposal, item, type, processingMethod);
+      try {
+        await assertValidProposalEnvelope(client, envelope);
+      } catch (err) {
+        if (!(err instanceof ValidationError)) throw err;
+        await writeNeedsClarification(client, config, item.id, null, `Computed proposal failed validation: ${err.message}`, fingerprint);
+        return;
+      }
+
       const proposal = await createItemWithClient(
         client,
         {
           databaseId: config.processingProposalsDatabaseId,
-          properties: { kind: "inbox", fingerprint, proposal: envelope, history: [], status: "proposed" },
+          properties: {
+            kind: "inbox",
+            fingerprint,
+            proposal: envelope,
+            history: appendHistoryEntry([], "Created a proposal for the source item."),
+            status: "proposed",
+          },
         },
         { allowedSystemKeys: ["kind", "fingerprint", "proposal", "history", "status"] },
       );
 
-      const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, config.processingProposalsDatabaseId, "sourceInbox");
-      if (!sourceInboxProperty) throw new Error(`Processing proposals database ${config.processingProposalsDatabaseId} has no 'sourceInbox' relation property`);
-      await createRelationWithClient(client, { relationPropertyId: sourceInboxProperty.id, itemId: proposal.id, targetItemId: item.id });
+      await linkSourceInboxRelation(client, config, proposal.id, item.id);
     });
   };
 }
