@@ -73,6 +73,7 @@ export {
   type WorkerSupervisorPort,
   type ModuleWorkerInstanceReconciler,
 } from "./moduleWorkers.js";
+export { manifest as libraryModuleManifest } from "./library/libraryModuleManifest.js";
 export {
   createMailLiveSyncRoot,
   createNoopMailLiveSyncLifecycleFactory,
@@ -82,6 +83,7 @@ export {
   type MailLiveSyncRoot,
   type MailLiveSyncRootOptions,
 } from "./mail/mailLiveSyncRoot.js";
+export { manifest as mailModuleManifest } from "./mail/mailModuleManifest.js";
 export * from "./realtimeHook.js";
 
 export { createDocStore, type DocStore, type DocVersion } from "./docs/docStore.js";
@@ -116,3 +118,4 @@ export * from "./journal/journalStore.js";
 export * from "./views/temporalSwitcherViewType.js";
 
 export * from "./inbox/inboxTickAction.js";
+export { manifest as inboxPipelineModuleManifest } from "./inbox/inboxModuleManifest.js";
