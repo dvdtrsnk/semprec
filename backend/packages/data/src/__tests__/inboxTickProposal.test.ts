@@ -10,6 +10,7 @@ import { createInboxTypeWithClient, deleteInboxTypeWithClient } from "../inbox/i
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
+import { createRelationWithClient } from "../chokePoint/chokePoint.js";
 import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inbox/inboxTickAction.js";
 
 let pool: Pool;
@@ -389,6 +390,36 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     expect(proposal!.properties.history).toHaveLength(1);
   });
 
+  it("an item that gains a recognized type after needsClarification transitions to proposed on the next tick", async () => {
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "09:00", text: "Buy milk" }),
+    );
+
+    await runTick(item.id, async () => {
+      throw new Error("computeProposal must not be called for an untyped item");
+    });
+    const needsClarification = await findProposalForItem(item.id);
+    expect(needsClarification!.properties.status).toBe("needsClarification");
+    expect(needsClarification!.properties.fingerprint).toBeNull();
+
+    const type = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
+    );
+    await withTransaction(pool, async (client) => {
+      const typeProperty = await propertiesStore.getPropertyByKey(client, inboxId, "type");
+      await createRelationWithClient(client, { relationPropertyId: typeProperty!.id, itemId: item.id, targetItemId: type.id });
+    });
+
+    await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+
+    const proposed = await findProposalForItem(item.id);
+    expect(proposed!.id).toBe(needsClarification!.id);
+    expect(proposed!.properties.status).toBe("proposed");
+    expect(proposed!.properties.fingerprint).toBe(sha256Of("☑️", "Buy milk"));
+    expect(proposed!.properties.proposal).toEqual({ entityKind: "database", target: await databaseIdFor("tasks"), properties: { name: "Buy milk" } });
+    expect(proposed!.properties.history).toHaveLength(2);
+  });
+
   it("deleting a source item invalidates its unlocked proposal", async () => {
     const { item } = await createTypedItem("Buy milk");
     await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
@@ -422,6 +453,25 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
 
     const stillConfirmed = await findProposalForItem(item.id);
     expect(stillConfirmed!.properties.status).toBe("confirmed");
+  });
+
+  it("a rejected proposal keeps its status when its source item is deleted", async () => {
+    const { item } = await createTypedItem("Buy milk");
+    await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+    const proposal = await findProposalForItem(item.id);
+    await withTransaction(pool, (client) =>
+      itemsStore.updateItemProperties(client, { databaseId: proposalsId, itemId: proposal!.id, propertiesPatch: { status: "rejected" } }),
+    );
+    const historyLengthBeforeDelete = (proposal!.properties.history as unknown[]).length;
+
+    await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, item.id));
+    await runTick(item.id, async () => {
+      throw new Error("computeProposal must not be called for a deleted source");
+    });
+
+    const stillRejected = await findProposalForItem(item.id);
+    expect(stillRejected!.properties.status).toBe("rejected");
+    expect((stillRejected!.properties.history as unknown[]).length).toBe(historyLengthBeforeDelete);
   });
 
   it("deleting a source with no proposal at all is a harmless no-op", async () => {
