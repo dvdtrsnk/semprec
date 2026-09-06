@@ -37,19 +37,17 @@ export interface CreateDriftCheckActionOptions {
  */
 export function createDriftCheckAction(pool: Pool, options: CreateDriftCheckActionOptions = {}): ActionHandler {
   return async (_actionConfig: Record<string, unknown>, context: ActionContext) => {
-    const readClient = await pool.connect();
-    try {
-      // Confirms the schema this drift check reports against is actually resolvable;
-      // the manifest's content is only consumed once the text comparator (above) exists.
-      await generatePermissionManifest(readClient, context.projectItemId);
-    } finally {
-      readClient.release();
-    }
-
-    // The orphan check and the notification it produces must be atomic: without a
+    // The manifest generation and the orphan check must see one schema snapshot: reading
+    // the manifest outside this transaction would let a schema change land between the
+    // two reads, so the manifest and the orphan check would describe different states.
+    // The orphan check and the notification it produces must also be atomic: without a
     // transaction, a crash (or the INSERT throwing) between the SELECT and the INSERT
     // would drop the drift report for this cycle with no trace it was ever detected.
     await withTransaction(pool, async (client) => {
+      // Confirms the schema this drift check reports against is actually resolvable;
+      // the manifest's content is only consumed once the text comparator (above) exists.
+      await generatePermissionManifest(client, context.projectItemId);
+
       const orphaned = await findOrphanedOwnerProcessProperties(client, options.activeProcessIds);
       if (orphaned.length > 0) {
         await client.query(`INSERT INTO notifications (kind, payload) VALUES ('agent_manifest_drift', $1::jsonb)`, [

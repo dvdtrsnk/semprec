@@ -7,10 +7,13 @@ import { createComputedKeyRegistry, type ComputedKeyRegistry } from "../chokePoi
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { DRIFT_CHECK_ACTION_ID } from "../manifest/driftCheck.js";
+import { MODULE_REGISTRY_CHECK_DRIFT_ACTION_ID } from "../manifest/moduleRegistryDriftCheck.js";
 import { DEFAULT_TIMEZONE, SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { registerTemporalSwitcherViewType } from "../views/temporalSwitcherViewType.js";
 import { registerLibraryGridViewType } from "../views/libraryGridViewType.js";
 import { registerMailboxClientViewType } from "../views/mailboxClientViewType.js";
+import { registerJournalInboxViewType } from "../views/journalInboxViewType.js";
+import { JOURNAL_INBOX_COMPUTED_KEY } from "../inbox/journalInboxCompute.js";
 import { seedTenDatabasesInTransaction } from "./seedTenDatabases.js";
 import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
 import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
@@ -55,6 +58,14 @@ export async function seedSystem(
   // Same reasoning again (issue #96's mailbox view type): the Emails default view is a
   // 'mailbox-client' view, so every process serving it needs the type in its own registry.
   registerMailboxClientViewType(viewTypeRegistry);
+  // Same reasoning again (issue #106's Journal Inbox-list view type).
+  registerJournalInboxViewType(viewTypeRegistry);
+  // Same reasoning as the view-type registrations above, but for the computed-key
+  // collision guard: `computedKeyRegistry` is also a per-process, in-memory instance, so
+  // 'inboxItems' must be declared here on every startup too, not only inside
+  // seedInboxPipelineInTransaction, which the idempotency early-return below skips after
+  // the first run.
+  computedKeyRegistry.add(JOURNAL_INBOX_COMPUTED_KEY);
 
   await withTransaction(pool, async (client) => {
     const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1`, [SYSTEM_SETTINGS_MODULE_ID]);
@@ -120,6 +131,17 @@ export async function seedSystem(
       name: "Manifest drift check",
       rule: { kind: "dailyTime", at: "03:00" },
       actionId: DRIFT_CHECK_ACTION_ID,
+    });
+
+    // Issue #112's live mechanical drift check: load-time validation (the drift heartbeat
+    // just above) can't see manual live-DB edits made after startup, so this one re-runs
+    // periodically instead of once. Offset five minutes from the check above so the two
+    // don't compete for the same fire slot.
+    await createHeartbeat(client, {
+      projectItemId: semprecProject.id,
+      name: "Module registry drift check",
+      rule: { kind: "dailyTime", at: "03:05" },
+      actionId: MODULE_REGISTRY_CHECK_DRIFT_ACTION_ID,
     });
 
     // Books and Movies/TV (issue #25): the second wave, two concrete instantiations of the

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { computeNextFireAt } from "../scheduler/nextFireAt.js";
-import type { HeartbeatRule } from "../scheduler/rule.js";
+import type { HeartbeatRule, HeartbeatRuleKindRegistry, ModuleHeartbeatRule } from "../scheduler/rule.js";
 
 const TZ = "Europe/Prague";
 
@@ -46,5 +46,31 @@ describe("computeNextFireAt", () => {
   it("onItemEvent: has no next_fire_at at all", () => {
     const rule: HeartbeatRule = { kind: "onItemEvent", databaseId: "00000000-0000-0000-0000-000000000000", event: "create" };
     expect(computeNextFireAt(rule, TZ, new Date())).toBeNull();
+  });
+
+  it("dispatches a module-declared rule kind to its registered nextFireAtExport", () => {
+    const rule: ModuleHeartbeatRule = { kind: "fixtureModule.onWidgetTick", every: 5 };
+    const calls: unknown[] = [];
+    const moduleRuleKinds: HeartbeatRuleKindRegistry = new Map([
+      [
+        "fixtureModule.onWidgetTick",
+        {
+          schema: { safeParse: (raw: unknown) => ({ success: true, data: raw }) },
+          nextFireAt: (r: unknown, timezone: string, after: Date) => {
+            calls.push([r, timezone, after]);
+            return new Date(after.getTime() + 42);
+          },
+        },
+      ],
+    ]);
+    const ref = new Date("2026-01-05T10:00:00.000Z");
+    const next = computeNextFireAt(rule, TZ, ref, moduleRuleKinds);
+    expect(next!.toISOString()).toBe("2026-01-05T10:00:00.042Z");
+    expect(calls).toEqual([[rule, TZ, ref]]);
+  });
+
+  it("throws for a rule kind that is neither core nor a currently registered module kind", () => {
+    const rule: ModuleHeartbeatRule = { kind: "fixtureModule.deactivated" };
+    expect(() => computeNextFireAt(rule, TZ, new Date())).toThrow(/No next-fire calculator registered/);
   });
 });
