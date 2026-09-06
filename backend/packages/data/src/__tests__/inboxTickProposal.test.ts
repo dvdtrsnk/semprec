@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
@@ -14,7 +13,6 @@ import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inbox/inboxTickAction.js";
 
 let pool: Pool;
-let chokePoint: ChokePoint;
 let viewTypeRegistry: ViewTypeRegistry;
 
 async function databaseIdFor(moduleId: string): Promise<string> {
@@ -36,7 +34,6 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
   beforeEach(async () => {
     pool ??= getTestPool();
     viewTypeRegistry = createViewTypeRegistry();
-    chokePoint = createChokePoint(pool, undefined, viewTypeRegistry);
     await resetDatabase(pool);
     await seedSystem(pool, viewTypeRegistry);
     inboxId = await databaseIdFor("inbox");
@@ -228,6 +225,36 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     const stillLocked = await findProposalForItem(item.id);
     expect(stillLocked!.properties.status).toBe("confirmed");
     expect(stillLocked!.properties.fingerprint).toBe(sha256Of("☑️", "Buy milk"));
+  });
+
+  it("a soft-deleted existing proposal is treated as absent — a later tick creates a fresh one instead of throwing", async () => {
+    const type = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
+    );
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        text: "Buy milk",
+        type: type.id,
+      }),
+    );
+    await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+    const original = await findProposalForItem(item.id);
+    await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, proposalsId, original!.id));
+
+    // The relation edge to the now-deleted proposal is still there, so this must not throw
+    // NotFoundError from trying to update a deleted item — it must fall through and create.
+    await runTick(item.id, async () => ({ properties: { name: "Buy milk (retry)" } }));
+
+    const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [proposalsId]);
+    expect(rows[0].n).toBe(2);
+
+    const stillDeleted = await itemsStore.getItemById(pool, proposalsId, original!.id);
+    expect(stillDeleted!.deletedAt).not.toBeNull();
   });
 
   it("an item with no type creates no proposal (stub for issue #104)", async () => {

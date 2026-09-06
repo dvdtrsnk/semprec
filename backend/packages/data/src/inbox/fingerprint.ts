@@ -7,7 +7,6 @@ import { createHash } from "node:crypto";
  * issue's scope) keeps the pre-existing `{text,startsAt,endsAt}` object shape instead —
  * the same property, two shapes, distinguished by `kind`.
  */
-export type TranscriptFingerprint = { text: string; startsAt: string; endsAt: string };
 
 /**
  * SHA-256 fingerprint of an Inbox source (issue #223's create/revise/skip gate): the

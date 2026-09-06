@@ -94,7 +94,12 @@ async function resolveRecognizedType(
   return { type, processingMethod: processingMethod as ProcessingMethod };
 }
 
-/** The existing Processing proposal row for a source Inbox item, if any (issue #223's create/revise/skip gate). */
+/**
+ * The existing Processing proposal row for a source Inbox item, if any (issue #223's
+ * create/revise/skip gate). A soft-deleted proposal is treated the same as no proposal at
+ * all — falling through to the create path — rather than being handed to the revise branch,
+ * where `updateItemWithClient` would throw `NotFoundError` on a deleted item.
+ */
 async function findExistingProposal(client: PoolClient, config: SemprecTickActionConfig, sourceItemId: string): Promise<ItemRow | null> {
   const sourceInboxRelationDefinition = await getRelationDefinitionByKey(client, config.processingProposalsDatabaseId, "sourceInbox");
   if (!sourceInboxRelationDefinition) return null;
@@ -104,7 +109,9 @@ async function findExistingProposal(client: PoolClient, config: SemprecTickActio
   if (!edge) return null;
 
   const proposalItemId = relationsStore.otherSide(edge, sourceItemId);
-  return itemsStore.getItemById(client, config.processingProposalsDatabaseId, proposalItemId);
+  const proposal = await itemsStore.getItemById(client, config.processingProposalsDatabaseId, proposalItemId);
+  if (!proposal || proposal.deletedAt) return null;
+  return proposal;
 }
 
 async function computeProposalEnvelope(
