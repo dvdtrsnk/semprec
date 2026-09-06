@@ -33,12 +33,22 @@ function mapRow(
     last_error: string | null;
   },
   moduleRuleKinds: HeartbeatRuleKindRegistry,
+  options: { tolerateUnknownRuleKind?: boolean } = {},
 ): HeartbeatRow {
+  let rule: AnyHeartbeatRule;
+  try {
+    rule = parseHeartbeatRule(row.rule, moduleRuleKinds);
+  } catch (err) {
+    // Some callers (disabling a heartbeat) only need the row to exist, not its rule to
+    // still resolve — a heartbeat whose module was deactivated must stay disable-able.
+    if (!options.tolerateUnknownRuleKind) throw err;
+    rule = row.rule as AnyHeartbeatRule;
+  }
   return {
     id: row.id,
     projectItemId: row.project_item_id,
     name: row.name,
-    rule: parseHeartbeatRule(row.rule, moduleRuleKinds),
+    rule,
     actionId: row.action_id,
     actionConfig: row.action_config,
     enabled: row.enabled,
@@ -97,16 +107,22 @@ async function requireHeartbeat(client: PoolClient, id: string, moduleRuleKinds:
   return heartbeat;
 }
 
-/** Recomputes next_fire_at using the same pure function as the sweep — deterministic at write time. */
+/**
+ * Recomputes next_fire_at using the same pure function as the sweep — deterministic at write
+ * time. Only the row's `enabled` flag is needed from the *current* state — never its current
+ * rule — so replacing a heartbeat whose existing rule kind's module was deactivated (e.g. to
+ * point it at a different, working rule) isn't itself blocked by that old rule failing to parse.
+ */
 export async function updateHeartbeatRule(
   client: PoolClient,
   id: string,
   rawRule: unknown,
   moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
 ): Promise<HeartbeatRow> {
-  const heartbeat = await requireHeartbeat(client, id, moduleRuleKinds);
+  const { rows: existingRows } = await client.query<{ enabled: boolean }>(`SELECT enabled FROM project_heartbeats WHERE id = $1`, [id]);
+  if (!existingRows[0]) throw new NotFoundError(`Heartbeat ${id} not found`);
   const rule = parseHeartbeatRule(rawRule, moduleRuleKinds);
-  const nextFireAt = heartbeat.enabled && !isOnItemEventRule(rule) ? await computeNextFireAtNow(client, rule, moduleRuleKinds) : null;
+  const nextFireAt = existingRows[0].enabled && !isOnItemEventRule(rule) ? await computeNextFireAtNow(client, rule, moduleRuleKinds) : null;
 
   const { rows } = await client.query(
     `UPDATE project_heartbeats SET rule = $2::jsonb, next_fire_at = $3 WHERE id = $1 RETURNING ${COLUMNS}`,
@@ -122,12 +138,26 @@ export async function setHeartbeatEnabled(
   enabled: boolean,
   moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
 ): Promise<HeartbeatRow> {
+  if (!enabled) {
+    // Disabling must never depend on the rule still being parseable: a heartbeat whose rule
+    // kind's module was deactivated needs to be disable-able precisely because it can no
+    // longer be scheduled, not stuck enabled forever for the same reason.
+    const { rows } = await client.query(
+      `UPDATE project_heartbeats SET enabled = false, next_fire_at = NULL WHERE id = $1 RETURNING ${COLUMNS}`,
+      [id],
+    );
+    if (!rows[0]) throw new NotFoundError(`Heartbeat ${id} not found`);
+    return mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true });
+  }
+
+  // Re-enabling does need the rule: computing next_fire_at requires knowing which calculator
+  // (core or module) applies, so this still throws if the owning module is inactive.
   const heartbeat = await requireHeartbeat(client, id, moduleRuleKinds);
-  const nextFireAt = enabled && !isOnItemEventRule(heartbeat.rule) ? await computeNextFireAtNow(client, heartbeat.rule, moduleRuleKinds) : null;
+  const nextFireAt = !isOnItemEventRule(heartbeat.rule) ? await computeNextFireAtNow(client, heartbeat.rule, moduleRuleKinds) : null;
 
   const { rows } = await client.query(
-    `UPDATE project_heartbeats SET enabled = $2, next_fire_at = $3 WHERE id = $1 RETURNING ${COLUMNS}`,
-    [id, enabled, enabled ? nextFireAt : null],
+    `UPDATE project_heartbeats SET enabled = true, next_fire_at = $2 WHERE id = $1 RETURNING ${COLUMNS}`,
+    [id, nextFireAt],
   );
   return mapRow(rows[0], moduleRuleKinds);
 }

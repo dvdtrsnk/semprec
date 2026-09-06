@@ -25,6 +25,14 @@ describe("ModuleRegistry.loadModule", () => {
     await expect(registry.loadModule(fixturePath("missingExportModule.js"))).rejects.toThrow(/missing export "doesNotExist"/);
   });
 
+  it("rejects a heartbeat rule kind whose schemaExport isn't schema-shaped (no safeParse)", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await expect(registry.loadModule(fixturePath("malformedRuleKindSchemaModule.js"))).rejects.toThrow(
+      /export "notASchema" is not a schema \(missing a "safeParse" method\)/,
+    );
+    expect(registry.listModuleIds()).toEqual([]);
+  });
+
   it("rejects a duplicate module id", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     await registry.loadModule(fixturePath("goodModule.js"));

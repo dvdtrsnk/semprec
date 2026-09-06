@@ -151,7 +151,7 @@ export class ModuleRegistry {
       this.requireFunctionExport(imported, worker.handlerExport, path, `worker "${worker.name}"`);
     }
     for (const ruleKind of manifest.heartbeatRuleKinds ?? []) {
-      this.requireExport(imported, ruleKind.schemaExport, path, `heartbeat rule kind "${ruleKind.kind}"`);
+      this.requireSchemaExport(imported, ruleKind.schemaExport, path, `heartbeat rule kind "${ruleKind.kind}"`);
       this.requireFunctionExport(imported, ruleKind.nextFireAtExport, path, `heartbeat rule kind "${ruleKind.kind}"`);
     }
   }
@@ -167,6 +167,19 @@ export class ModuleRegistry {
     const value = this.requireExport(imported, exportName, path, context);
     if (typeof value !== "function") {
       throw new Error(`Module at "${path}" ${context} export "${exportName}" is not a function`);
+    }
+  }
+
+  /**
+   * A `schemaExport` must structurally look like a zod-style schema (a `safeParse` method) —
+   * checked here, at load time, so a module that points `schemaExport` at the wrong export
+   * fails startup loudly instead of surfacing as a confusing `TypeError` deep inside
+   * `parseHeartbeatRule` the first time a rule of that kind is actually validated.
+   */
+  private requireSchemaExport(imported: Record<string, unknown>, exportName: string, path: string, context: string): void {
+    const value = this.requireExport(imported, exportName, path, context);
+    if (typeof value !== "object" || value === null || typeof (value as { safeParse?: unknown }).safeParse !== "function") {
+      throw new Error(`Module at "${path}" ${context} export "${exportName}" is not a schema (missing a "safeParse" method)`);
     }
   }
 
