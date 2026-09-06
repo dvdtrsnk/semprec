@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { heartbeatRuleSchema, type HeartbeatRule } from "../scheduler/rule.js";
+import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
 
 export interface ManifestProperty {
   key: string;
@@ -13,6 +14,18 @@ export interface ManifestDatabase {
   databaseId: string;
   name: string;
   schemaLocked: boolean;
+  /**
+   * Whether an agent run against this project may create/update items here at all
+   * (issue #105's grant separation) — `false` for Inbox and Inbox item types, which the
+   * Semprec project also owns but which are user-managed content the agent only ever
+   * reads (via `semprec.tick`'s own code path, not this manifest) to compute a proposal.
+   * The agent's one write surface is Processing proposals; a target database/page is
+   * never included in any project's grant at all — see `generatePermissionManifest`'s
+   * `owner_project_item_id` scoping, which already excludes the ten hardcoded databases
+   * (they carry no project owner) — so this only needs to additionally narrow Semprec's
+   * own three owned databases down to the one the agent may actually write.
+   */
+  writable: boolean;
   properties: ManifestProperty[];
 }
 
@@ -51,8 +64,8 @@ export interface PermissionManifest {
  * is called fresh at the start of every agent_run.
  */
 export async function generatePermissionManifest(client: PoolClient, projectItemId: string): Promise<PermissionManifest> {
-  const { rows: databaseRows } = await client.query<{ id: string; name: string; schema_locked: boolean }>(
-    `SELECT id, name, schema_locked FROM databases WHERE owner_project_item_id = $1 AND archived_at IS NULL`,
+  const { rows: databaseRows } = await client.query<{ id: string; name: string; schema_locked: boolean; owner_module_id: string | null }>(
+    `SELECT id, name, schema_locked, owner_module_id FROM databases WHERE owner_project_item_id = $1 AND archived_at IS NULL`,
     [projectItemId],
   );
 
@@ -63,6 +76,7 @@ export async function generatePermissionManifest(client: PoolClient, projectItem
       databaseId: db.id,
       name: db.name,
       schemaLocked: db.schema_locked,
+      writable: !(db.owner_module_id && SEMPREC_READ_ONLY_MODULE_IDS.includes(db.owner_module_id)),
       properties: properties.map((p) => ({ key: p.key, name: p.name, owner: p.owner, locked: p.locked })),
     });
   }

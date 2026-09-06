@@ -1,6 +1,6 @@
 import * as Y from "yjs";
 import type { Pool, PoolClient } from "pg";
-import { withTransaction } from "../db/pool.js";
+import { runAfterCommit, withTransaction } from "../db/pool.js";
 import type { CreatedBy } from "../types.js";
 import { notifyDocUpdate } from "../realtimeHook.js";
 
@@ -103,10 +103,17 @@ export async function loadDoc(pool: Pool, docId: string, compactionThreshold = D
   return withTransaction(pool, (client) => loadDocWithClient(client, docId, compactionThreshold));
 }
 
-async function appendDocUpdate(pool: Pool, docId: string, update: Uint8Array, createdBy: CreatedBy): Promise<void> {
+/**
+ * The realtime notification is deferred via `runAfterCommit` rather than fired here —
+ * this runs inside the caller's still-open transaction (possibly one also writing other
+ * tables, e.g. `inbox/proposalActions.ts`'s `confirmProposalWithClient`), and firing
+ * immediately would let a subscriber observe a `doc_updates` row that a later failure in
+ * that same transaction then rolls back.
+ */
+async function appendDocUpdateWithClient(client: PoolClient, docId: string, update: Uint8Array, createdBy: CreatedBy): Promise<void> {
   const updateBuffer = Buffer.from(update);
-  await withTransaction(pool, (client) => client.query(`INSERT INTO doc_updates (doc_id, update, created_by) VALUES ($1, $2, $3)`, [docId, updateBuffer, createdBy]));
-  notifyDocUpdate({ docId, update: updateBuffer.toString("base64"), createdBy });
+  await client.query(`INSERT INTO doc_updates (doc_id, update, created_by) VALUES ($1, $2, $3)`, [docId, updateBuffer, createdBy]);
+  runAfterCommit(client, () => notifyDocUpdate({ docId, update: updateBuffer.toString("base64"), createdBy }));
 }
 
 /**
@@ -114,9 +121,22 @@ async function appendDocUpdate(pool: Pool, docId: string, update: Uint8Array, cr
  * resulting binary diff as a new `doc_updates` row attributed to `origin` — the Yjs
  * `origin` parameter propagating into `created_by` (issue #23, point 4, steps 3-5).
  * `fn` returning without mutating the doc produces no `doc_updates` row.
+ *
+ * Runs inside a caller-supplied transaction/client — so a caller that also writes to
+ * the structured-data tables in the same transaction (e.g. inbox/proposalActions.ts's
+ * `confirmProposalWithClient`, issue #105) gets one atomic commit across both, despite
+ * docs being an otherwise-independent persistence mechanism (see docStore.ts's module
+ * comment). `mutateDoc` below is the pool-opening convenience wrapper for callers with
+ * no transaction of their own.
  */
-export async function mutateDoc<T>(pool: Pool, docId: string, origin: CreatedBy, fn: (doc: Y.Doc) => T, compactionThreshold = DEFAULT_COMPACTION_THRESHOLD): Promise<T> {
-  const doc = await loadDoc(pool, docId, compactionThreshold);
+export async function mutateDocWithClient<T>(
+  client: PoolClient,
+  docId: string,
+  origin: CreatedBy,
+  fn: (doc: Y.Doc) => T,
+  compactionThreshold = DEFAULT_COMPACTION_THRESHOLD,
+): Promise<T> {
+  const doc = await loadDocWithClient(client, docId, compactionThreshold);
 
   let capturedUpdate: Uint8Array | null = null;
   const onUpdate = (update: Uint8Array) => {
@@ -131,9 +151,13 @@ export async function mutateDoc<T>(pool: Pool, docId: string, origin: CreatedBy,
   }
 
   if (capturedUpdate) {
-    await appendDocUpdate(pool, docId, capturedUpdate, origin);
+    await appendDocUpdateWithClient(client, docId, capturedUpdate, origin);
   }
   return result;
+}
+
+export async function mutateDoc<T>(pool: Pool, docId: string, origin: CreatedBy, fn: (doc: Y.Doc) => T, compactionThreshold = DEFAULT_COMPACTION_THRESHOLD): Promise<T> {
+  return withTransaction(pool, (client) => mutateDocWithClient(client, docId, origin, fn, compactionThreshold));
 }
 
 /**

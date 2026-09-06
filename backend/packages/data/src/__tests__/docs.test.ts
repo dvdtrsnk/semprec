@@ -2,8 +2,9 @@ import * as Y from "yjs";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { withTransaction } from "../db/pool.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
-import { createDocStore, type DocStore } from "../docs/docStore.js";
+import { createDocStore, putBlockWithClient, type DocStore } from "../docs/docStore.js";
 import { ConflictError, ValidationError } from "../errors.js";
 import { DEFAULT_COMPACTION_THRESHOLD, loadDoc, mutateDoc, runCompactionSweep } from "../docs/docPersistence.js";
 import { runHistorySquashSweep, cleanupExpiredDocHistory, squashDocHistory } from "../docs/docHistory.js";
@@ -141,6 +142,35 @@ describe("docs (CRDT layer)", () => {
       expect(events[0].createdBy).toBe("user");
       expect(typeof events[0].update).toBe("string");
       expect(Buffer.from(events[0].update, "base64").length).toBeGreaterThan(0);
+    });
+
+    it("does not fire the realtime doc-update hook if the enclosing transaction rolls back (issue #105 review fix)", async () => {
+      const events: DocUpdateEvent[] = [];
+      setDocUpdateHook((event) => events.push(event));
+      const item = await makeItem();
+
+      await expect(
+        withTransaction(pool, async (client) => {
+          await putBlockWithClient(client, item.id, { id: "b1", flavour: "paragraph" }, "user");
+          throw new Error("boom");
+        }),
+      ).rejects.toThrow("boom");
+
+      expect(events).toHaveLength(0);
+      expect(await docStore.getBlock(item.id, "b1")).toBeNull();
+    });
+
+    it("fires the realtime doc-update hook only once the enclosing transaction has committed, not while it is still open", async () => {
+      const events: DocUpdateEvent[] = [];
+      setDocUpdateHook((event) => events.push(event));
+      const item = await makeItem();
+
+      await withTransaction(pool, async (client) => {
+        await putBlockWithClient(client, item.id, { id: "b1", flavour: "paragraph" }, "user");
+        expect(events).toHaveLength(0);
+      });
+
+      expect(events).toHaveLength(1);
     });
   });
 

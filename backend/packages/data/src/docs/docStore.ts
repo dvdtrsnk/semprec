@@ -1,9 +1,9 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import type { CreatedBy, DocKind, DocRow } from "../types.js";
 import * as docsStore from "./docsStore.js";
-import { loadDoc, mutateDoc } from "./docPersistence.js";
+import { loadDoc, mutateDoc, mutateDocWithClient } from "./docPersistence.js";
 import * as blocks from "./blocks.js";
 import type { BlockInput, BlockData } from "./blocks.js";
 import * as canvas from "./canvas.js";
@@ -14,6 +14,17 @@ function assertKind(doc: DocRow, expected: DocKind): void {
   if (doc.kind !== expected) {
     throw new ValidationError(`Doc for item ${doc.itemId} is '${doc.kind}', not '${expected}'`, { itemId: doc.itemId, kind: doc.kind });
   }
+}
+
+/**
+ * The client-scoped counterpart to `createDocStore(pool).putBlock` below, for a caller
+ * that needs the block append to commit atomically with its own structured-data write
+ * (issue #105's proposal confirm: the block append and the Processing proposal's
+ * `confirmed` lock must both land, or neither does).
+ */
+export async function putBlockWithClient(client: PoolClient, itemId: string, block: BlockInput, origin: CreatedBy): Promise<void> {
+  const doc = await docsStore.getOrCreateDoc(client, itemId, "page");
+  await mutateDocWithClient(client, doc.id, origin, (ydoc) => blocks.putBlock(ydoc, block));
 }
 
 export interface DocVersion {
