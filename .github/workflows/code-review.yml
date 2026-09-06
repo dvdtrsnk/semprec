@@ -37,6 +37,13 @@ jobs:
       - name: Run review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The default GITHUB_TOKEN cannot call resolveReviewThread ("Resource not
+          # accessible by integration"), so a finding the bot has already fixed
+          # replies "Fixed." but never actually closes the thread — which silently
+          # defeats required_conversation_resolution below. Reuse the PAT already
+          # used to check out the private code-review-bot repo; classic PATs are not
+          # subject to that restriction.
+          GITHUB_RESOLVE_TOKEN: ${{ secrets.CODE_REVIEW_BOT_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.ANTHROPIC_API_KEY }}
           # develop -> main is a release promotion, not a feature review: switch
           # to the bot's release-readiness rules (migrations/config/rollback/
