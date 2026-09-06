@@ -34,6 +34,20 @@ export interface ModuleDatabaseDescriptor {
 }
 
 /**
+ * A manifest-declared resumable data migration (issue #111) for one `from_version` ->
+ * `to_version` transition of `databaseKey`'s items, distinct from the plain-string
+ * `migrations` field above (that one names the module's own structural/DDL files applied
+ * by the forward-only runner, issue #224). `converterExport` names a function of shape
+ * `(properties) => properties` the module data migration runner calls once per item.
+ */
+export interface ModuleDataMigrationDescriptor {
+  databaseKey: string;
+  fromVersion: string;
+  toVersion: string;
+  converterExport: string;
+}
+
+/**
  * `capability`, when present, names an entry that must be granted at runtime (see
  * `ModuleRegistry.getAgentTools`) for the tool to appear in a projection at all — an
  * ungranted tool is absent, never present-but-denied.
@@ -59,6 +73,7 @@ export interface ModuleManifest {
   taskNames?: ModuleTaskDescriptor[];
   workers?: ModuleWorkerDescriptor[];
   migrations?: string[];
+  dataMigrations?: ModuleDataMigrationDescriptor[];
 }
 
 const moduleTaskDescriptorSchema = z.object({
@@ -83,6 +98,13 @@ const moduleDatabaseDescriptorSchema = z.object({
   name: z.string().min(1),
 });
 
+const moduleDataMigrationDescriptorSchema = z.object({
+  databaseKey: z.string().min(1),
+  fromVersion: z.string().min(1),
+  toVersion: z.string().min(1),
+  converterExport: z.string().min(1),
+});
+
 const moduleAgentToolDescriptorSchema = z.object({
   name: z.string().min(1),
   handlerExport: z.string().min(1),
@@ -104,4 +126,5 @@ export const moduleManifestSchema = z.object({
   taskNames: z.array(moduleTaskDescriptorSchema).optional(),
   workers: z.array(moduleWorkerDescriptorSchema).optional(),
   migrations: z.array(z.string().min(1)).optional(),
+  dataMigrations: z.array(moduleDataMigrationDescriptorSchema).optional(),
 });
