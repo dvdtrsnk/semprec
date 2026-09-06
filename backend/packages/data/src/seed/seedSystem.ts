@@ -7,6 +7,7 @@ import { createComputedKeyRegistry, type ComputedKeyRegistry } from "../chokePoi
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { DRIFT_CHECK_ACTION_ID } from "../manifest/driftCheck.js";
+import { MODULE_REGISTRY_CHECK_DRIFT_ACTION_ID } from "../manifest/moduleRegistryDriftCheck.js";
 import { DEFAULT_TIMEZONE, SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { registerTemporalSwitcherViewType } from "../views/temporalSwitcherViewType.js";
 import { registerLibraryGridViewType } from "../views/libraryGridViewType.js";
@@ -120,6 +121,17 @@ export async function seedSystem(
       name: "Manifest drift check",
       rule: { kind: "dailyTime", at: "03:00" },
       actionId: DRIFT_CHECK_ACTION_ID,
+    });
+
+    // Issue #112's live mechanical drift check: load-time validation (the drift heartbeat
+    // just above) can't see manual live-DB edits made after startup, so this one re-runs
+    // periodically instead of once. Offset five minutes from the check above so the two
+    // don't compete for the same fire slot.
+    await createHeartbeat(client, {
+      projectItemId: semprecProject.id,
+      name: "Module registry drift check",
+      rule: { kind: "dailyTime", at: "03:05" },
+      actionId: MODULE_REGISTRY_CHECK_DRIFT_ACTION_ID,
     });
 
     // Books and Movies/TV (issue #25): the second wave, two concrete instantiations of the
