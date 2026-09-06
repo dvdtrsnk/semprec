@@ -44,6 +44,7 @@ export {
   runPropertyTypeMigrationJob,
   handlePropertyTypeMigrationTask,
 } from "./migrationJob/propertyTypeMigration.js";
+export { runModuleDataMigration, runModuleDataMigrations } from "./migrationJob/moduleDataMigration.js";
 
 export * from "./manifest/permissionManifest.js";
 export * from "./manifest/driftCheck.js";
