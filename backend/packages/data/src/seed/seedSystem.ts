@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { ModuleRegistry } from "@semprec/module-registry";
 import { withTransaction } from "../db/pool.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
@@ -67,11 +68,18 @@ export async function seedSystem(
   // the first run.
   computedKeyRegistry.add(JOURNAL_INBOX_COMPUTED_KEY);
 
+  // The systemDatabases module is always active for this seed: it's the retrofit manifest
+  // (module-contract issue #226) describing the ten hardcoded databases this function itself
+  // creates, and `seedTenDatabasesInTransaction` reads its `defaultViewType` projection
+  // instead of a hardcoded `moduleId === JOURNAL_MODULE_ID` branch (issue #115).
+  const moduleRegistry = new ModuleRegistry(() => new Set(["systemDatabases"]));
+  await moduleRegistry.loadModule(new URL("./systemDatabasesModuleManifest.js", import.meta.url).href);
+
   await withTransaction(pool, async (client) => {
     const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1`, [SYSTEM_SETTINGS_MODULE_ID]);
     if ((existingSettings.rowCount ?? 0) > 0) return;
 
-    const tenDatabases = await seedTenDatabasesInTransaction(client, viewTypeRegistry, computedKeyRegistry);
+    const tenDatabases = await seedTenDatabasesInTransaction(client, viewTypeRegistry, computedKeyRegistry, moduleRegistry);
     const projectsDb = tenDatabases.projects;
 
     const semprecProject = await itemsStore.insertItem(client, {

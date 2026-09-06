@@ -22,7 +22,10 @@ import {
  * (`seedTenDatabases.ts`), so this manifest is a pure structural description of what already
  * exists — loading it creates nothing and changes no stored data. `temporal-switcher` is
  * declared here, not in the views module's manifest, because it is Journal-specific
- * (`temporalSwitcherViewType.ts`), not part of the generic views mechanism.
+ * (`temporalSwitcherViewType.ts`), not part of the generic views mechanism. Journal's
+ * `defaultViewType` below (module-contract issue #115) is what `seedTenDatabasesInTransaction`
+ * reads through `ModuleRegistry.getDatabases()` instead of a hardcoded `moduleId === JOURNAL_MODULE_ID`
+ * branch — every other database here defaults to `"table"` by leaving the field unset.
  */
 export const manifest: ModuleManifest = {
   id: "systemDatabases",
@@ -40,7 +43,7 @@ export const manifest: ModuleManifest = {
     { key: HEALTH_RECORDS_MODULE_ID, name: "Health records" },
     { key: COMPANIES_MODULE_ID, name: "Companies" },
     { key: TRANSCRIPTS_MODULE_ID, name: "Transcripts" },
-    { key: JOURNAL_MODULE_ID, name: "Journal" },
+    { key: JOURNAL_MODULE_ID, name: "Journal", defaultViewType: TEMPORAL_SWITCHER_VIEW_TYPE },
   ],
   capabilities: [],
   agentTools: [],

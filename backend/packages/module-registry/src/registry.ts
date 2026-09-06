@@ -4,6 +4,7 @@ export interface ModuleDatabaseProjection {
   moduleId: string;
   key: string;
   name: string;
+  defaultViewType?: string;
 }
 
 export interface ModuleAgentToolProjection {
@@ -301,7 +302,14 @@ export class ModuleRegistry {
 
   async getDatabases(): Promise<ModuleDatabaseProjection[]> {
     const active = await this.getActiveModules();
-    return active.flatMap((loaded) => loaded.manifest.databases.map((db) => ({ moduleId: loaded.manifest.id, key: db.key, name: db.name })));
+    return active.flatMap((loaded) =>
+      loaded.manifest.databases.map((db) => ({
+        moduleId: loaded.manifest.id,
+        key: db.key,
+        name: db.name,
+        ...(db.defaultViewType !== undefined ? { defaultViewType: db.defaultViewType } : {}),
+      })),
+    );
   }
 
   async getCapabilities(): Promise<string[]> {
