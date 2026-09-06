@@ -7,7 +7,6 @@ import * as viewsStore from "../chokePoint/viewsStore.js";
 import * as viewItemsStore from "../chokePoint/viewItemsStore.js";
 import { compileFilterNode } from "./filterCompiler.js";
 import { buildFilterProperties } from "./filterProperties.js";
-import { parseFilterNode } from "./filterTree.js";
 import { compileSort } from "./sortCompiler.js";
 import { parseSortConfig, type SortSpec } from "./sortSpec.js";
 import { parseViewConfig, projectProperties, type ViewConfig } from "./viewConfig.js";
@@ -34,15 +33,16 @@ function buildSortSpecs(config: ViewConfig): SortSpec[] {
 }
 
 async function queryFilteredView(client: PoolClient, databaseId: string, config: ViewConfig, options: QueryViewOptions): Promise<QueryViewResult> {
+  const filterNode = config.filter;
   const properties = await listPropertiesByDatabase(client, databaseId);
   const propertyTypes = new Map(properties.map((p) => [p.key, p.type]));
-  const filterProperties = config.filter ? await buildFilterProperties(client, properties) : undefined;
+  const filterProperties = filterNode ? await buildFilterProperties(client, properties) : undefined;
   const sortSpecs = buildSortSpecs(config);
 
   const { items, nextCursor } = await listItems(client, databaseId, {
     limit: options.limit,
     cursor: sortSpecs.length === 0 ? options.cursor : undefined,
-    buildFilterSql: filterProperties ? (params) => compileFilterNode(parseFilterNode(config.filter), filterProperties, params) : undefined,
+    buildFilterSql: filterNode ? (params) => compileFilterNode(filterNode, filterProperties!, params) : undefined,
     buildOrderBySql: sortSpecs.length > 0 ? (params) => compileSort(sortSpecs, propertyTypes, params) : undefined,
   });
 
