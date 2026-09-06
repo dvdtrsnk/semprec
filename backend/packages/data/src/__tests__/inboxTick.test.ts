@@ -9,7 +9,13 @@ import { withTransaction } from "../db/pool.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createActionRegistry, type ActionRegistry } from "../scheduler/actions.js";
-import { createSemprecTickAction, SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME, type ComputeSemprecProposalFn } from "../inbox/inboxTickAction.js";
+import {
+  createSemprecTickAction,
+  semprecTickActionConfigSchema,
+  SEMPREC_TICK_ACTION_ID,
+  SEMPREC_TICK_QUEUE_NAME,
+  type ComputeSemprecProposalFn,
+} from "../inbox/inboxTickAction.js";
 import { createCoreTaskList } from "../worker.js";
 
 let pool: Pool;
@@ -62,7 +68,7 @@ function countingTickRegistry(calls: string[]): ActionRegistry {
 function capturingTickRegistry(captured: Array<Record<string, unknown> | null>): ActionRegistry {
   const registry = createActionRegistry();
   registry.set(SEMPREC_TICK_ACTION_ID, async (actionConfig, context) => {
-    const config = actionConfig as { inboxDatabaseId: string };
+    const config = semprecTickActionConfigSchema.parse(actionConfig);
     await withTransaction(pool, async (client) => {
       const item = await itemsStore.getItemById(client, config.inboxDatabaseId, context.itemId!);
       captured.push(item ? item.properties : null);
@@ -228,5 +234,39 @@ describe("Inbox item event dispatch (issue #103)", () => {
     const handler = createSemprecTickAction(pool, unusedComputeProposal);
     await expect(handler({}, { heartbeatId: "hb", projectItemId: "proj", itemId: "item" })).rejects.toThrow();
     await expect(handler({ inboxDatabaseId: "not-a-uuid" }, { heartbeatId: "hb", projectItemId: "proj", itemId: "item" })).rejects.toThrow();
+  });
+
+  it("capturingTickRegistry's handler rejects a malformed actionConfig exactly like production", async () => {
+    const handler = capturingTickRegistry([]).get(SEMPREC_TICK_ACTION_ID)!;
+    await expect(handler({}, { heartbeatId: "hb", projectItemId: "proj", itemId: "item" })).rejects.toThrow();
+    await expect(handler({ inboxDatabaseId: "not-a-uuid" }, { heartbeatId: "hb", projectItemId: "proj", itemId: "item" })).rejects.toThrow();
+  });
+
+  it("routes the update and soft-delete paths' heartbeat-fire jobs to the same queue affinity as create", async () => {
+    const inboxId = await databaseIdFor("inbox");
+    const journalId = await databaseIdFor("journal");
+    const queueAffinity = new Map([[SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME]]);
+    const affinitizedChokePoint = createChokePoint(pool, undefined, viewTypeRegistry, queueAffinity);
+
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        queueAffinity,
+      }),
+    );
+
+    await affinitizedChokePoint.updateItem({ databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "edited" } });
+    const afterUpdate = await pendingTickJobs();
+    expect(afterUpdate).toHaveLength(2); // create's pending job plus update's
+    expect(afterUpdate.every((j) => j.queue_name === SEMPREC_TICK_QUEUE_NAME)).toBe(true);
+
+    await affinitizedChokePoint.softDeleteItem(inboxId, item.id);
+    const afterDelete = await pendingTickJobs();
+    expect(afterDelete).toHaveLength(3);
+    expect(afterDelete.every((j) => j.queue_name === SEMPREC_TICK_QUEUE_NAME)).toBe(true);
   });
 });

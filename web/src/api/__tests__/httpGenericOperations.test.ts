@@ -78,11 +78,15 @@ describe("http generic operations", () => {
   });
 
   it("links and unlinks a relation edge by property key, accepting an empty response body", async () => {
-    const calls: Array<{ url: string; method?: string }> = [];
+    const calls: Array<{ url: string; method?: string; body?: unknown }> = [];
     const operations = createHttpGenericOperations({
       baseUrl: "/api",
       fetchImpl: async (input, init) => {
-        calls.push({ url: String(input), method: init?.method });
+        calls.push({
+          url: String(input),
+          method: init?.method,
+          body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+        });
         return new Response(null, { status: 204 });
       },
     });
@@ -90,10 +94,16 @@ describe("http generic operations", () => {
     await operations.linkItem("db", "e1", "folder", "f2");
     await operations.unlinkItem("db", "e1", "folder", "f1");
 
-    expect(calls).toEqual([
-      { url: "/api/databases/db/items/e1/relations/folder", method: "POST" },
-      { url: "/api/databases/db/items/e1/relations/folder/f1", method: "DELETE" },
-    ]);
+    expect(calls[0]).toMatchObject({
+      url: "/api/databases/db/items/e1/relations/folder",
+      method: "POST",
+      body: { targetItemId: "f2" },
+    });
+    expect(calls[1]).toMatchObject({
+      url: "/api/databases/db/items/e1/relations/folder/f1",
+      method: "DELETE",
+    });
+    expect(calls[1]?.body).toBeUndefined();
   });
 
   it("reads a missing item as null rather than as a failed pane", async () => {

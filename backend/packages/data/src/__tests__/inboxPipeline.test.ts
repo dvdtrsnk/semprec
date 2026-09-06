@@ -95,8 +95,10 @@ describe("Inbox pipeline databases (issue #101)", () => {
 
   it("re-running the seed is idempotent — no duplicate databases/properties", async () => {
     await seedSystem(pool, viewTypeRegistry); // second run, same process's registry
-    const { rows } = await pool.query("SELECT count(*)::int AS n FROM databases WHERE owner_module_id = $1", ["inbox"]);
-    expect(rows[0].n).toBe(1);
+    for (const moduleId of ["inbox", "inboxItemTypes", "processingProposals"]) {
+      const { rows } = await pool.query("SELECT count(*)::int AS n FROM databases WHERE owner_module_id = $1", [moduleId]);
+      expect(rows[0].n).toBe(1);
+    }
   });
 
   it("rejects an Inbox item missing date or time", async () => {
