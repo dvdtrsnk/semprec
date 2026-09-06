@@ -22,7 +22,7 @@ export const SEMPREC_TICK_ACTION_ID = "semprec.tick";
 export const SEMPREC_TICK_QUEUE_NAME = "semprec-tick";
 
 /** `action_config` is a raw JSONB column (a module boundary) — validated, not just cast. */
-const semprecTickActionConfigSchema = z.object({
+export const semprecTickActionConfigSchema = z.object({
   inboxDatabaseId: z.string().uuid(),
   inboxItemTypesDatabaseId: z.string().uuid(),
   processingProposalsDatabaseId: z.string().uuid(),
