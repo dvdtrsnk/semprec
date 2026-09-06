@@ -129,6 +129,7 @@ export function createMailLiveSyncRoot(
             // from the row itself, not from `defaultSyncModeForProvider` again.
             const state = await ensureMailAccountSyncState(client, { itemId: item.id, syncMode: defaultSyncModeForProvider(provider) });
             active.set(item.id, state.syncMode);
+            await client.query("RELEASE SAVEPOINT discover_account");
           } catch (err) {
             await client.query("ROLLBACK TO SAVEPOINT discover_account");
             // One account's state failing to read/seed must not drop every other account on this
@@ -183,7 +184,16 @@ export function createMailLiveSyncRoot(
       if (started) return;
       started = true;
       const myGeneration = generation;
-      await reconcileOnce();
+      try {
+        await reconcileOnce();
+      } catch (err) {
+        // A failed initial reconcile must not leave `started` stuck `true` forever — that would
+        // make every later `start()` call silently no-op at the guard check above. Only reset it
+        // if nothing superseded this call in the meantime (a `stop()` already reset it itself,
+        // and a `start()` after that `stop()` may have already set it back to `true`).
+        if (generation === myGeneration) started = false;
+        throw err;
+      }
       // `stop()` bumped `generation` while this call was awaiting its initial reconcile —
       // scheduling here would install an interval nothing holds a reference to (the same leak
       // one step over), so skip it once superseded.

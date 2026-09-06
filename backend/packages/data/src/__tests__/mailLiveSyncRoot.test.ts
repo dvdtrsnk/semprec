@@ -381,4 +381,35 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     expect(stateB).toBeNull();
     expect(stateC).not.toBeNull();
   });
+
+  it("resets the started guard when start()'s initial reconcile throws, so a later start() is not a permanent no-op", async () => {
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const a = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }));
+
+    let connectCalls = 0;
+    const flakyPool = new Proxy(pool, {
+      get(t, prop, receiver) {
+        if (prop === "connect") {
+          return (...args: unknown[]) => {
+            connectCalls++;
+            if (connectCalls === 1) return Promise.reject(new Error("boom: simulated transient connection failure"));
+            return (t.connect as (...a: unknown[]) => unknown)(...args);
+          };
+        }
+        return Reflect.get(t, prop, receiver);
+      },
+    }) as unknown as Pool;
+
+    const { factory, byAccount } = recordingFactory();
+    const root = createMailLiveSyncRoot(flakyPool, mailboxesId, factory);
+
+    await expect(root.start()).rejects.toThrow(/boom/);
+
+    // If `started` had stayed stuck `true` after that failure, this second call would silently
+    // no-op at the guard check instead of actually running discovery.
+    await root.start();
+    expect(byAccount.get(a.id)?.starts).toBe(1);
+
+    await root.stop();
+  });
 });
