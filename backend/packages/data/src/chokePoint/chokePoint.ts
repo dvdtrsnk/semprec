@@ -85,7 +85,8 @@ async function resolveRollupRecomputeTargets(
   return targets;
 }
 
-async function enqueueRollupRecomputeForEdge(
+/** Exported so a module-specific delete that unlinks relations outside `softDeleteItem` (e.g. inbox/inboxTypesStore.ts's `deleteInboxTypeWithClient`) can enqueue the same rollup recompute per edge it removes. */
+export async function enqueueRollupRecomputeForEdge(
   client: PoolClient,
   edge: { relationDefinitionId: string; itemA: string; itemB: string },
 ): Promise<void> {
@@ -112,6 +113,15 @@ async function buildFilterSqlForDatabase(client: PoolClient, databaseId: string,
 function assertNoComputedKeyCollision(registry: ComputedKeyRegistry, key: string): void {
   if (registry.has(key)) {
     throw new ValidationError(`Property key '${key}' collides with a declared module cache key`, { field: key });
+  }
+}
+
+/** Blocks item writes against a database that has been archived; reads, soft-delete and restore are unaffected. */
+async function assertDatabaseNotArchived(client: PoolClient, databaseId: string): Promise<void> {
+  const database = await databasesStore.getDatabase(client, databaseId);
+  if (!database) throw new NotFoundError(`Database ${databaseId} not found`);
+  if (database.archivedAt) {
+    throw new ValidationError(`Database ${databaseId} is archived and cannot be written to`, { field: "databaseId" });
   }
 }
 
@@ -153,12 +163,16 @@ export async function createRelationPropertyWithClient(
   assertNoComputedKeyCollision(computedKeyRegistry, input.key);
   if (input.inverse) assertNoComputedKeyCollision(computedKeyRegistry, input.inverse.key);
 
+  const targetDatabase = await databasesStore.getDatabase(client, input.targetDatabaseId);
+  if (!targetDatabase) {
+    throw new ValidationError(`Target database ${input.targetDatabaseId} does not exist`, { field: "targetDatabaseId" });
+  }
+
   const property = await propertiesStore.createProperty(client, {
     databaseId: input.databaseId,
     key: input.key,
     name: input.name,
     type: "relation",
-    locked: input.locked,
     owner: input.owner,
   });
 
@@ -178,7 +192,7 @@ export async function createRelationPropertyWithClient(
     cardinality: input.cardinality,
   });
 
-  const finalProperty = await propertiesStore.updatePropertyConfig(client, property.id, {
+  let finalProperty = await propertiesStore.updatePropertyConfig(client, property.id, {
     relationDefinitionId: reldef.id,
     targetDatabaseId: input.targetDatabaseId,
   });
@@ -187,6 +201,14 @@ export async function createRelationPropertyWithClient(
       relationDefinitionId: reldef.id,
       targetDatabaseId: input.databaseId,
     });
+  }
+  if (input.locked) {
+    await propertiesStore.setPropertyLocked(client, finalProperty.id, true);
+    finalProperty = { ...finalProperty, locked: true };
+    if (inverseProperty) {
+      await propertiesStore.setPropertyLocked(client, inverseProperty.id, true);
+      inverseProperty = { ...inverseProperty, locked: true };
+    }
   }
   return { property: finalProperty, inverseProperty };
 }
@@ -239,6 +261,7 @@ export interface CreateItemInput {
  * exactly those keys. `createChokePoint(...)`'s `createItem` below is a thin wrapper over this.
  */
 export async function createItemWithClient(client: PoolClient, input: CreateItemInput, options: CreateItemWithClientOptions = {}): Promise<ItemRow> {
+  await assertDatabaseNotArchived(client, input.databaseId);
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   assertWritableProperties(properties, Object.keys(input.properties ?? {}), options);
 
@@ -272,6 +295,7 @@ export interface UpdateItemWithClientOptions extends AssertWritablePropertiesOpt
  * `createItem`'s public wrapper.
  */
 export async function updateItemWithClient(client: PoolClient, input: UpdateItemInput, options: UpdateItemWithClientOptions = {}): Promise<ItemRow> {
+  await assertDatabaseNotArchived(client, input.databaseId);
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   const patchKeys = Object.keys(input.propertiesPatch);
   assertWritableProperties(properties, patchKeys, options);
