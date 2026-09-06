@@ -48,9 +48,19 @@ export function createHeartbeatFireTask(pool: Pool, registry: ActionRegistry, mo
     const readClient = await pool.connect();
     let heartbeat;
     try {
-      heartbeat = await getHeartbeat(readClient, payload.heartbeatId, moduleRuleKinds);
-    } finally {
-      readClient.release();
+      try {
+        heartbeat = await getHeartbeat(readClient, payload.heartbeatId, moduleRuleKinds);
+      } finally {
+        readClient.release();
+      }
+    } catch (err) {
+      // The heartbeat's rule kind belongs to a module deactivated between the sweep enqueuing
+      // this job and it running now: degrade the same way the sweep does (record the failure,
+      // don't fire) instead of retrying up to max_attempts and dead-lettering with no
+      // last_error recorded at all — retrying can't un-deactivate the module.
+      const message = err instanceof Error ? err.message : String(err);
+      await recordHeartbeatFailure(pool, payload.heartbeatId, message);
+      return;
     }
     if (!heartbeat) return; // heartbeat was deleted after this job was enqueued
 

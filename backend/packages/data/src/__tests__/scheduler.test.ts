@@ -286,6 +286,44 @@ describe("scheduler", () => {
       expect(rows[0].next_fire_at).not.toBeNull(); // left due, so reactivating the module lets the next sweep pick it up
     });
 
+    it("the fire job degrades gracefully when its module rule kind is deactivated between sweep and fire, instead of retrying and losing the run", async () => {
+      const projectItemId = await getSemprecProjectId();
+      const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
+      let ran = 0;
+      const registry = createActionRegistry();
+      registry.set("markRan", async () => {
+        ran += 1;
+      });
+
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(
+          client,
+          {
+            projectItemId,
+            name: "Widget tick",
+            rule: { kind: "fixtureModule.onWidgetTick", every: 5 },
+            actionId: "markRan",
+          },
+          moduleRuleKinds,
+        ),
+      );
+      await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [heartbeat.id]);
+
+      // Sweep while the module is still active: enqueues the fire job and advances next_fire_at.
+      const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client, moduleRuleKinds));
+      expect(fired.map((f) => f.id)).toEqual([heartbeat.id]);
+
+      // The module is deactivated by the time the fire job actually runs: drainQueue's
+      // createCoreTaskList carries no moduleRegistry, so the fire task sees no active module
+      // rule kinds. This must not throw (and thus retry/dead-letter) — it should record the
+      // failure and skip firing.
+      await expect(drainQueue(registry)).resolves.not.toThrow();
+      expect(ran).toBe(0);
+
+      const { rows } = await pool.query("SELECT last_error FROM project_heartbeats WHERE id = $1", [heartbeat.id]);
+      expect(rows[0].last_error).toMatch(/Unknown heartbeat rule kind/);
+    });
+
     it("recomputeAllForTimezoneChange recomputes a heartbeat using an active module's rule kind", async () => {
       const projectItemId = await getSemprecProjectId();
       const moduleRuleKinds = fixtureModuleRuleKinds((_rule, _tz, after) => new Date(after.getTime() + 60_000));
