@@ -63,9 +63,12 @@ export class ModuleRegistry {
   /**
    * Imports exactly the module at `path`, validates its manifest's shape and every named
    * handler/schema export it references, and registers it. Throws synchronously on any
-   * problem — a bad module must fail startup loudly, not degrade silently at runtime.
+   * problem — a bad module must fail startup loudly, not degrade silently at runtime — and
+   * never partially registers a rejected module's identifiers. Returns only the loaded
+   * module's id, never the manifest itself: a caller that wants the loaded aspects reads them
+   * back through the narrow projection getters below.
    */
-  async loadModule(path: string): Promise<ModuleManifest> {
+  async loadModule(path: string): Promise<string> {
     const imported = (await import(path)) as Record<string, unknown>;
     const rawManifest = imported.manifest;
     if (rawManifest === undefined) {
@@ -91,7 +94,7 @@ export class ModuleRegistry {
 
     this.modulesById.set(manifest.id, { manifest, exports: imported });
     this.moduleIdByName.set(manifest.name, manifest.id);
-    return manifest;
+    return manifest.id;
   }
 
   private assertExportsExist(path: string, manifest: ModuleManifest, imported: Record<string, unknown>): void {
@@ -121,27 +124,39 @@ export class ModuleRegistry {
     }
   }
 
+  /**
+   * Checks every identifier this manifest would claim against every owner map *before*
+   * mutating any of them, then commits all claims together — so a module that collides on,
+   * say, its second database key never leaves its first database key registered as owned by
+   * a module that was ultimately rejected and never added to `modulesById`.
+   */
   private claimCrossModuleIdentifiers(path: string, manifest: ModuleManifest): void {
-    for (const db of manifest.databases) {
-      this.claim(this.databaseKeyOwners, db.key, "database key", manifest.id, path);
-    }
-    for (const tool of manifest.agentTools) {
-      this.claim(this.agentToolNameOwners, tool.name, "agent tool name", manifest.id, path);
-    }
-    for (const task of manifest.taskNames ?? []) {
-      this.claim(this.taskNameOwners, task.name, "task name", manifest.id, path);
-    }
-    for (const worker of manifest.workers ?? []) {
-      this.claim(this.workerNameOwners, worker.name, "worker name", manifest.id, path);
-    }
-  }
+    const claims: Array<{ owners: Map<string, string>; key: string; label: string }> = [
+      ...manifest.databases.map((db) => ({ owners: this.databaseKeyOwners, key: db.key, label: "database key" })),
+      ...manifest.agentTools.map((tool) => ({ owners: this.agentToolNameOwners, key: tool.name, label: "agent tool name" })),
+      ...(manifest.taskNames ?? []).map((task) => ({ owners: this.taskNameOwners, key: task.name, label: "task name" })),
+      ...(manifest.workers ?? []).map((worker) => ({ owners: this.workerNameOwners, key: worker.name, label: "worker name" })),
+    ];
 
-  private claim(owners: Map<string, string>, key: string, label: string, moduleId: string, path: string): void {
-    const existingOwner = owners.get(key);
-    if (existingOwner !== undefined) {
-      throw new Error(`Duplicate ${label} "${key}" loading "${path}" (already claimed by module "${existingOwner}")`);
+    // Two entries of the same kind declared twice within this one manifest (e.g. two
+    // databases with the same key) collide with each other, not with any prior module — the
+    // owner maps alone can't see that until something is actually committed.
+    const seenInThisManifest = new Set<string>();
+    for (const { owners, key, label } of claims) {
+      const existingOwner = owners.get(key);
+      if (existingOwner !== undefined) {
+        throw new Error(`Duplicate ${label} "${key}" loading "${path}" (already claimed by module "${existingOwner}")`);
+      }
+      const seenKey = `${label}:${key}`;
+      if (seenInThisManifest.has(seenKey)) {
+        throw new Error(`Duplicate ${label} "${key}" loading "${path}" (declared twice in the same manifest)`);
+      }
+      seenInThisManifest.add(seenKey);
     }
-    owners.set(key, moduleId);
+
+    for (const { owners, key } of claims) {
+      owners.set(key, manifest.id);
+    }
   }
 
   private async getActiveModules(): Promise<LoadedModule[]> {

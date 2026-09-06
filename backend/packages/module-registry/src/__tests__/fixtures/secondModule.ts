@@ -7,7 +7,9 @@ export const manifest: ModuleManifest = {
   removable: false,
   systemProject: false,
   databases: [{ key: "fixtureSecondItems", name: "Fixture Second Items" }],
-  capabilities: [],
+  // Deliberately overlaps with goodModule's "fixtureGood.send" to exercise getCapabilities'
+  // cross-module deduplication.
+  capabilities: ["fixtureGood.send", "fixtureSecond.onlyHere"],
   agentTools: [{ name: "fixtureSecond.ungranted", handlerExport: "handleUngranted", capability: "fixtureSecond.neverGranted" }],
 };
 

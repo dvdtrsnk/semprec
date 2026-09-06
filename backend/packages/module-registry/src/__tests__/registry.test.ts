@@ -8,10 +8,10 @@ function fixturePath(name: string): string {
 const alwaysActive: () => ReadonlySet<string> = () => new Set(["fixture-good", "fixture-second"]);
 
 describe("ModuleRegistry.loadModule", () => {
-  it("loads a structurally valid module and returns its manifest", async () => {
+  it("loads a structurally valid module and returns only its id", async () => {
     const registry = new ModuleRegistry(alwaysActive);
-    const manifest = await registry.loadModule(fixturePath("goodModule.js"));
-    expect(manifest.id).toBe("fixture-good");
+    const moduleId = await registry.loadModule(fixturePath("goodModule.js"));
+    expect(moduleId).toBe("fixture-good");
     expect(registry.listModuleIds()).toEqual(["fixture-good"]);
   });
 
@@ -35,6 +35,39 @@ describe("ModuleRegistry.loadModule", () => {
     const registry = new ModuleRegistry(alwaysActive);
     await registry.loadModule(fixturePath("goodModule.js"));
     await expect(registry.loadModule(fixturePath("duplicateDatabaseKeyModule.js"))).rejects.toThrow(/Duplicate database key "fixtureGoodItems"/);
+  });
+
+  it("rejects a duplicate agent tool name across modules", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await registry.loadModule(fixturePath("goodModule.js"));
+    await expect(registry.loadModule(fixturePath("duplicateAgentToolNameModule.js"))).rejects.toThrow(/Duplicate agent tool name "fixtureGood.doThing"/);
+  });
+
+  it("rejects a duplicate task name across modules", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await registry.loadModule(fixturePath("goodModule.js"));
+    await expect(registry.loadModule(fixturePath("duplicateTaskNameModule.js"))).rejects.toThrow(/Duplicate task name "fixtureGood.processThing"/);
+  });
+
+  it("rejects a duplicate worker name across modules", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await registry.loadModule(fixturePath("goodModule.js"));
+    await expect(registry.loadModule(fixturePath("duplicateWorkerNameModule.js"))).rejects.toThrow(/Duplicate worker name "fixtureGood.worker"/);
+  });
+
+  it("never partially claims identifiers from a module that ultimately fails to load", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await registry.loadModule(fixturePath("goodModule.js"));
+
+    // Collides on its second database key ("fixtureGoodItems"); its first key
+    // ("fixturePartialFirst") must not be left claimed even though it was checked first.
+    await expect(registry.loadModule(fixturePath("partialCollisionModule.js"))).rejects.toThrow(/Duplicate database key "fixtureGoodItems"/);
+    expect(registry.listModuleIds()).toEqual(["fixture-good"]);
+
+    // A later, unrelated module reusing that same key must succeed — it was never
+    // actually claimed by the rejected module.
+    const reclaimedId = await registry.loadModule(fixturePath("reclaimsPartialFirstModule.js"));
+    expect(reclaimedId).toBe("fixture-reclaims-partial-first");
   });
 });
 
@@ -80,6 +113,15 @@ describe("ModuleRegistry projections", () => {
     expect(await registry.getViewTypes()).toEqual([]);
     expect(await registry.getSystemProjectModuleIds()).toEqual([]);
     expect(await registry.listActiveModuleIds()).toEqual(["fixture-second"]);
+  });
+
+  it("collects capabilities from active modules only, deduplicated across modules", async () => {
+    const registry = await loadBoth(alwaysActive);
+    // "fixtureGood.send" is declared by both fixtures but appears once.
+    expect(await registry.getCapabilities()).toEqual(["fixtureGood.send", "fixtureSecond.onlyHere"]);
+
+    const onlySecond = await loadBoth(() => new Set(["fixture-second"]));
+    expect(await onlySecond.getCapabilities()).toEqual(["fixtureGood.send", "fixtureSecond.onlyHere"]);
   });
 
   it("filters out an agent tool entirely when its capability isn't granted, rather than marking it denied", async () => {
