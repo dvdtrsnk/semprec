@@ -16,6 +16,18 @@ export interface ModuleWorkerDescriptor {
   handlerExport: string;
 }
 
+/**
+ * Lets a module add its own heartbeat trigger kind (issue #109) without patching core's
+ * `heartbeatRuleSchema` discriminated union: `schemaExport` validates a rule of this kind's
+ * shape, `nextFireAtExport` computes its next occurrence — both dispatched to by core's
+ * scheduler once the kind's owning module is active.
+ */
+export interface ModuleHeartbeatRuleKindDescriptor {
+  kind: string;
+  schemaExport: string;
+  nextFireAtExport: string;
+}
+
 export interface ModuleDatabaseDescriptor {
   key: string;
   name: string;
@@ -43,7 +55,7 @@ export interface ModuleManifest {
   agentTools: ModuleAgentToolDescriptor[];
   viewTypes?: string[];
   heartbeatActions?: string[];
-  heartbeatRuleKinds?: string[];
+  heartbeatRuleKinds?: ModuleHeartbeatRuleKindDescriptor[];
   taskNames?: ModuleTaskDescriptor[];
   workers?: ModuleWorkerDescriptor[];
   migrations?: string[];
@@ -58,6 +70,12 @@ const moduleTaskDescriptorSchema = z.object({
 const moduleWorkerDescriptorSchema = z.object({
   name: z.string().min(1),
   handlerExport: z.string().min(1),
+});
+
+const moduleHeartbeatRuleKindDescriptorSchema = z.object({
+  kind: z.string().min(1),
+  schemaExport: z.string().min(1),
+  nextFireAtExport: z.string().min(1),
 });
 
 const moduleDatabaseDescriptorSchema = z.object({
@@ -82,7 +100,7 @@ export const moduleManifestSchema = z.object({
   agentTools: z.array(moduleAgentToolDescriptorSchema),
   viewTypes: z.array(z.string().min(1)).optional(),
   heartbeatActions: z.array(z.string().min(1)).optional(),
-  heartbeatRuleKinds: z.array(z.string().min(1)).optional(),
+  heartbeatRuleKinds: z.array(moduleHeartbeatRuleKindDescriptorSchema).optional(),
   taskNames: z.array(moduleTaskDescriptorSchema).optional(),
   workers: z.array(moduleWorkerDescriptorSchema).optional(),
   migrations: z.array(z.string().min(1)).optional(),

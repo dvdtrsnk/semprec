@@ -25,6 +25,14 @@ describe("ModuleRegistry.loadModule", () => {
     await expect(registry.loadModule(fixturePath("missingExportModule.js"))).rejects.toThrow(/missing export "doesNotExist"/);
   });
 
+  it("rejects a heartbeat rule kind whose schemaExport isn't schema-shaped (no safeParse)", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await expect(registry.loadModule(fixturePath("malformedRuleKindSchemaModule.js"))).rejects.toThrow(
+      /export "notASchema" is not a schema \(missing a "safeParse" method\)/,
+    );
+    expect(registry.listModuleIds()).toEqual([]);
+  });
+
   it("rejects a duplicate module id", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     await registry.loadModule(fixturePath("goodModule.js"));
@@ -69,6 +77,22 @@ describe("ModuleRegistry.loadModule", () => {
     const reclaimedId = await registry.loadModule(fixturePath("reclaimsPartialFirstModule.js"));
     expect(reclaimedId).toBe("fixture-reclaims-partial-first");
   });
+
+  it("rejects a task name colliding with a core-reserved task name", async () => {
+    const registry = new ModuleRegistry(alwaysActive, { reservedTaskNames: new Set(["heartbeatSweep"]) });
+    await expect(registry.loadModule(fixturePath("reservedTaskNameModule.js"))).rejects.toThrow(
+      /task name "heartbeatSweep" loading .* collides with a core-reserved task name/,
+    );
+    expect(registry.listModuleIds()).toEqual([]);
+  });
+
+  it("rejects a heartbeat rule kind colliding with a core-reserved rule kind", async () => {
+    const registry = new ModuleRegistry(alwaysActive, { reservedHeartbeatRuleKinds: new Set(["dailyTime", "weekly", "everyNDays", "interval", "onItemEvent"]) });
+    await expect(registry.loadModule(fixturePath("reservedHeartbeatRuleKindModule.js"))).rejects.toThrow(
+      /heartbeat rule kind "dailyTime" loading .* collides with a core-reserved heartbeat rule kind/,
+    );
+    expect(registry.listModuleIds()).toEqual([]);
+  });
 });
 
 describe("ModuleRegistry projections", () => {
@@ -88,7 +112,7 @@ describe("ModuleRegistry projections", () => {
     ]);
     expect(await registry.getViewTypes()).toEqual(["fixture-good-view"]);
     expect(await registry.getHeartbeatActions()).toEqual(["fixtureGood.heartbeat"]);
-    expect(await registry.getHeartbeatRuleKinds()).toEqual(["onItemEvent"]);
+    expect(await registry.getHeartbeatRuleKinds()).toEqual(["fixtureGood.onWidgetTick"]);
     expect(await registry.getMigrations()).toEqual([{ moduleId: "fixture-good", migration: "0001_fixture_good.sql" }]);
     expect(await registry.getSystemProjectModuleIds()).toEqual(["fixture-good"]);
 
@@ -140,5 +164,31 @@ describe("ModuleRegistry projections", () => {
     expect(await registry.getDatabases()).toEqual([]);
     active = new Set(["fixture-good"]);
     expect(await registry.getDatabases()).toEqual([{ moduleId: "fixture-good", key: "fixtureGoodItems", name: "Fixture Good Items" }]);
+  });
+
+  it("resolves task definitions to their actual imported schema/handler, active modules only", async () => {
+    const registry = await loadBoth(alwaysActive);
+    const definitions = await registry.getTaskDefinitions();
+    expect(definitions).toHaveLength(1);
+    expect(definitions[0]?.moduleId).toBe("fixture-good");
+    expect(definitions[0]?.name).toBe("fixtureGood.processThing");
+    expect(typeof definitions[0]?.handler).toBe("function");
+    expect(typeof definitions[0]?.payloadSchema.parse).toBe("function");
+
+    const inactive = await loadBoth(() => new Set(["fixture-second"]));
+    expect(await inactive.getTaskDefinitions()).toEqual([]);
+  });
+
+  it("resolves heartbeat rule kind definitions to their actual imported schema/calculator, active modules only", async () => {
+    const registry = await loadBoth(alwaysActive);
+    const definitions = await registry.getHeartbeatRuleKindDefinitions();
+    expect(definitions).toHaveLength(1);
+    expect(definitions[0]?.moduleId).toBe("fixture-good");
+    expect(definitions[0]?.kind).toBe("fixtureGood.onWidgetTick");
+    expect(typeof definitions[0]?.nextFireAt).toBe("function");
+    expect(typeof definitions[0]?.schema.safeParse).toBe("function");
+
+    const inactive = await loadBoth(() => new Set(["fixture-second"]));
+    expect(await inactive.getHeartbeatRuleKindDefinitions()).toEqual([]);
   });
 });
