@@ -40,10 +40,10 @@ export interface ImapIdleTransport {
   /**
    * Discovers the folder paths this account keeps under IDLE — Inbox and an All-Mail-
    * equivalent folder (issue #196's Task) when the server has one, Inbox alone otherwise
-   * (plain IMAP/iCloud has no such folder). Called once per `start()` and again for whichever
-   * folder is reconnecting after a hard-cycle recycle or an error — a folder renamed between
-   * rounds is picked up the same way any other config drift is, by re-resolving rather than
-   * trusting a cached path.
+   * (plain IMAP/iCloud has no such folder). Called once per `start()`; the resolved paths are
+   * held for the lifetime of that lifecycle and reused as-is across every hard-cycle recycle
+   * and reconnect. A folder renamed or added while the lifecycle is running is only picked up
+   * the next time the lifecycle is started.
    */
   resolveFolders(mailboxItemId: string, credential: string): Promise<ImapIdleFolderTarget[]>;
   /**

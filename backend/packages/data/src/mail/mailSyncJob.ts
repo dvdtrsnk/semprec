@@ -124,11 +124,38 @@ export async function handleSyncMailAccountTask(
   imapConnectionLimiter: ImapConnectionLimiter = sharedImapConnectionLimiter,
 ): Promise<void> {
   const { storage: trackedStorage, writtenKeys } = trackWrittenKeys(storage);
-  // Set inside the transaction below (if it gets that far) so the catch block's connection-limit
+  // Set from the prologue read below (if it gets that far) so the catch block's connection-limit
   // backoff can still compute a provider-aware delay even though the transaction that read it
   // has since been rolled back.
   let mailboxProvider: string | undefined;
   try {
+    // Its own short, read-only transaction — not part of the write transaction below — because
+    // these are plain lookups of stable ids that don't need to be atomic with anything the sync
+    // itself writes. Read first (before the `mail_account_sync_state` read and the credential
+    // decrypt) so #268's schema-missing check can run before either of those need to succeed.
+    const prologue = await withTransaction(pool, async (client) => {
+      const [folderProperty, attachmentsProperty, mailboxFolderProperty, mailboxItem] = await Promise.all([
+        getPropertyByKey(client, moduleIds.emailsDatabaseId, "folder"),
+        getPropertyByKey(client, moduleIds.emailsDatabaseId, "attachments"),
+        getPropertyByKey(client, moduleIds.foldersDatabaseId, "mailbox"),
+        getItemById(client, moduleIds.mailboxesDatabaseId, payload.mailboxItemId),
+      ]);
+      if (!folderProperty || !attachmentsProperty || !mailboxFolderProperty) {
+        throw new Error("Email module schema is missing an expected relation property — was seedEmailModuleInTransaction run?");
+      }
+      return { folderProperty, attachmentsProperty, mailboxFolderProperty, mailboxItem };
+    });
+    const { folderProperty, attachmentsProperty, mailboxFolderProperty, mailboxItem } = prologue;
+
+    // A missing or soft-deleted mailbox item is "nothing to sync," not a failure: it's the very
+    // row a sync-status write would target, so the catch block's own `updateItemWithClient`
+    // would throw `NotFoundError` and roll back `recordSyncError` in the same transaction,
+    // leaving a task that can never succeed and that the worker would retry forever. Returning
+    // here, before any credential decrypt or provider call, avoids that dead end entirely.
+    if (!mailboxItem || mailboxItem.deletedAt) return;
+
+    mailboxProvider = typeof mailboxItem.properties.provider === "string" ? mailboxItem.properties.provider : undefined;
+
     const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, payload.mailboxItemId));
     if (!state) throw new Error(`Mailbox ${payload.mailboxItemId} has no mail_account_sync_state row — never connected`);
 
@@ -148,57 +175,62 @@ export async function handleSyncMailAccountTask(
     const credential = await getDecryptedCredential(pool, { itemId: payload.mailboxItemId, actorType: "sync_worker", purpose: syncPurpose[state.syncMode] });
     if (!credential) throw new Error(`Mailbox ${payload.mailboxItemId} has no stored credential`);
 
-    await withTransaction(pool, async (client) => {
-      const [folderProperty, attachmentsProperty, mailboxFolderProperty, mailboxItem] = await Promise.all([
-        getPropertyByKey(client, moduleIds.emailsDatabaseId, "folder"),
-        getPropertyByKey(client, moduleIds.emailsDatabaseId, "attachments"),
-        getPropertyByKey(client, moduleIds.foldersDatabaseId, "mailbox"),
-        getItemById(client, moduleIds.mailboxesDatabaseId, payload.mailboxItemId),
-      ]);
-      if (!folderProperty || !attachmentsProperty || !mailboxFolderProperty) {
-        throw new Error("Email module schema is missing an expected relation property — was seedEmailModuleInTransaction run?");
-      }
-      mailboxProvider = typeof mailboxItem?.properties.provider === "string" ? mailboxItem.properties.provider : undefined;
+    const shared = {
+      mailboxItemId: payload.mailboxItemId,
+      emailsDatabaseId: moduleIds.emailsDatabaseId,
+      filesDatabaseId: moduleIds.filesDatabaseId,
+      foldersDatabaseId: moduleIds.foldersDatabaseId,
+      folderRelationPropertyId: folderProperty.id,
+      mailboxFolderRelationPropertyId: mailboxFolderProperty.id,
+      attachmentsRelationPropertyId: attachmentsProperty.id,
+      storage: trackedStorage,
+      storageKeyPrefix: payload.mailboxItemId,
+      mailboxAliases: parseAddressListProperty(mailboxItem.properties.addresses),
+    };
 
-      const shared = {
-        mailboxItemId: payload.mailboxItemId,
-        emailsDatabaseId: moduleIds.emailsDatabaseId,
-        filesDatabaseId: moduleIds.filesDatabaseId,
-        foldersDatabaseId: moduleIds.foldersDatabaseId,
-        folderRelationPropertyId: folderProperty.id,
-        mailboxFolderRelationPropertyId: mailboxFolderProperty.id,
-        attachmentsRelationPropertyId: attachmentsProperty.id,
-        storage: trackedStorage,
-        storageKeyPrefix: payload.mailboxItemId,
-        mailboxAliases: parseAddressListProperty(mailboxItem?.properties.addresses),
-      };
-
-      if (state.syncMode === "imap") {
-        if (!adapters.createImapClient) throw new Error("No IMAP adapter configured for this composition root");
-        const connectionLimit = imapConnectionLimitForProvider(mailboxProvider, mailboxItem?.properties.connectionLimit);
-        await imapConnectionLimiter.run(payload.mailboxItemId, connectionLimit, async () => {
+    if (state.syncMode === "imap") {
+      if (!adapters.createImapClient) throw new Error("No IMAP adapter configured for this composition root");
+      const connectionLimit = imapConnectionLimitForProvider(mailboxProvider, mailboxItem.properties.connectionLimit);
+      // The limiter's wait for a free slot happens here, outside any transaction — a pooled
+      // database connection is only ever checked out once a slot is actually granted, so a
+      // long queue wait (up to `ACCOUNT_QUEUE_WAIT_TIMEOUT_MS`) never pins one for nothing.
+      await imapConnectionLimiter.run(payload.mailboxItemId, connectionLimit, () =>
+        withTransaction(pool, async (client) => {
           const imap = await adapters.createImapClient!(payload.mailboxItemId, credential);
           await reconcileImapAccount(client, imap, shared);
-        });
-      } else if (state.syncMode === "gmail_api") {
-        if (!adapters.createGmailClient) throw new Error("No Gmail adapter configured for this composition root");
-        const gmail = adapters.createGmailClient(payload.mailboxItemId, credential);
-        await reconcileGmailAccount(client, gmail, shared);
-      } else {
-        if (!adapters.createGraphClient) throw new Error("No Graph adapter configured for this composition root");
-        const graph = adapters.createGraphClient(payload.mailboxItemId, credential);
-        await reconcileGraphAccount(client, graph, shared);
-      }
-
-      // A completed pass (even one that ingested nothing new) is the user-visible signal that
-      // this Mailbox is healthy again — clears a prior 'error'/'needsReauthorization' the same
-      // way the internal `mail_account_sync_state.last_error` columns above already do.
-      await updateItemWithClient(
-        client,
-        { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "ok" } },
-        { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
+          // A completed pass (even one that ingested nothing new) is the user-visible signal
+          // that this Mailbox is healthy again — clears a prior 'error'/'needsReauthorization'
+          // the same way the internal `mail_account_sync_state.last_error` columns above already do.
+          await updateItemWithClient(
+            client,
+            { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "ok" } },
+            { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
+          );
+        }),
       );
-    });
+    } else if (state.syncMode === "gmail_api") {
+      if (!adapters.createGmailClient) throw new Error("No Gmail adapter configured for this composition root");
+      const gmail = adapters.createGmailClient(payload.mailboxItemId, credential);
+      await withTransaction(pool, async (client) => {
+        await reconcileGmailAccount(client, gmail, shared);
+        await updateItemWithClient(
+          client,
+          { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "ok" } },
+          { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
+        );
+      });
+    } else {
+      if (!adapters.createGraphClient) throw new Error("No Graph adapter configured for this composition root");
+      const graph = adapters.createGraphClient(payload.mailboxItemId, credential);
+      await withTransaction(pool, async (client) => {
+        await reconcileGraphAccount(client, graph, shared);
+        await updateItemWithClient(
+          client,
+          { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "ok" } },
+          { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
+        );
+      });
+    }
   } catch (err) {
     // Any attachment bytes already written to disk this pass (mail/attachments.ts writes
     // before the DB transaction that references them commits, see trackWrittenKeys above) are

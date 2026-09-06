@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
@@ -150,5 +151,92 @@ describe("choke-point", () => {
     await expect(
       chokePoint.updateItem({ databaseId: db.id, itemId: "00000000-0000-0000-0000-000000000000", propertiesPatch: {} }),
     ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("creating a relation property against a non-existent targetDatabaseId is rejected, leaving no property or relation definition behind", async () => {
+    const db = await chokePoint.createDatabase({ name: "Db" });
+    const bogusTargetId = randomUUID();
+
+    await expect(
+      chokePoint.createRelationProperty({ databaseId: db.id, key: "tasks", name: "Tasks", targetDatabaseId: bogusTargetId }),
+    ).rejects.toBeInstanceOf(ValidationError);
+
+    const properties = await chokePoint.listProperties(db.id);
+    expect(properties).toHaveLength(0);
+    const { rows } = await pool.query("SELECT count(*)::int AS n FROM relation_definitions");
+    expect(rows[0].n).toBe(0);
+  });
+
+  it("creating a relation property with an inverse against a non-existent targetDatabaseId is rejected", async () => {
+    const db = await chokePoint.createDatabase({ name: "Db" });
+    const bogusTargetId = randomUUID();
+
+    await expect(
+      chokePoint.createRelationProperty({
+        databaseId: db.id,
+        key: "tasks",
+        name: "Tasks",
+        targetDatabaseId: bogusTargetId,
+        inverse: { key: "project", name: "Project" },
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+
+    const properties = await chokePoint.listProperties(db.id);
+    expect(properties).toHaveLength(0);
+  });
+
+  it("createRelationProperty({ locked: true }) succeeds and returns a locked property whose config carries the relation definition and target database", async () => {
+    const db = await chokePoint.createDatabase({ name: "Db" });
+    const target = await chokePoint.createDatabase({ name: "Target" });
+
+    const { property } = await chokePoint.createRelationProperty({
+      databaseId: db.id,
+      key: "tasks",
+      name: "Tasks",
+      targetDatabaseId: target.id,
+      locked: true,
+    });
+
+    expect(property.locked).toBe(true);
+    expect(property.config).toMatchObject({ targetDatabaseId: target.id });
+    expect(property.config.relationDefinitionId).toBeTruthy();
+  });
+
+  it("createRelationProperty({ locked: true, inverse }) locks both sides of the pair", async () => {
+    const db = await chokePoint.createDatabase({ name: "Db" });
+    const target = await chokePoint.createDatabase({ name: "Target" });
+
+    const { property, inverseProperty } = await chokePoint.createRelationProperty({
+      databaseId: db.id,
+      key: "tasks",
+      name: "Tasks",
+      targetDatabaseId: target.id,
+      locked: true,
+      inverse: { key: "project", name: "Project" },
+    });
+
+    expect(property.locked).toBe(true);
+    expect(inverseProperty?.locked).toBe(true);
+    expect(inverseProperty?.config).toMatchObject({ targetDatabaseId: db.id });
+    expect(inverseProperty?.config.relationDefinitionId).toBeTruthy();
+
+    // The stored row must agree with the returned value — not just the in-memory patch.
+    const reloadedInverse = await chokePoint.getProperty(inverseProperty!.id);
+    expect(reloadedInverse?.locked).toBe(true);
+  });
+
+  it("creating and updating an item in an archived database is rejected, while the same operations succeed before archiving", async () => {
+    const db = await makeMoviesDb();
+    const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
+    await chokePoint.updateItem({ databaseId: db.id, itemId: item.id, propertiesPatch: { title: "Dune Part Two" } });
+
+    await chokePoint.archiveDatabase(db.id);
+
+    await expect(chokePoint.createItem({ databaseId: db.id, properties: { title: "Arrival" } })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    await expect(
+      chokePoint.updateItem({ databaseId: db.id, itemId: item.id, propertiesPatch: { title: "Blade Runner" } }),
+    ).rejects.toBeInstanceOf(ValidationError);
   });
 });
