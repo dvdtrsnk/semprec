@@ -47,6 +47,9 @@ export {
 
 export * from "./manifest/permissionManifest.js";
 export * from "./manifest/driftCheck.js";
+export * from "./manifest/moduleRegistryDriftCheck.js";
+export * from "./manifest/knownActionIds.js";
+export * from "./notifications/findings.js";
 
 export * from "./agentRuns/agentRunsStore.js";
 export { seedSystem } from "./seed/seedSystem.js";
