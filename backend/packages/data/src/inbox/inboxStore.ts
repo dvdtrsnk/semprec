@@ -48,6 +48,9 @@ async function getRelationProperty(client: PoolClient, databaseId: string, key: 
 export async function createInboxItemWithClient(client: PoolClient, input: CreateInboxItemInput): Promise<ItemRow> {
   if (!input.date) throw new ValidationError("Inbox items require 'date'", { field: "date" });
   if (!input.time) throw new ValidationError("Inbox items require 'time'", { field: "time" });
+  if (!DateTime.fromISO(input.date).isValid) {
+    throw new ValidationError("Inbox items require a valid ISO date for 'date'", { field: "date" });
+  }
   assertValidTimezone(input.timezone);
 
   const item = await createItemWithClient(
