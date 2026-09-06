@@ -2130,6 +2130,15 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
     ]);
   });
 
+  // Compile-time-only guard, never invoked: `setMessageFlag`'s flag parameter is `WritableImapFlag`
+  // (the two canonical keys from messageFlags.ts), not a bare `string` — so any other IMAP flag,
+  // like `\Deleted`, must fail to typecheck. If `WritableImapFlag` is ever widened back to
+  // `string`, this `@ts-expect-error` becomes unused and `tsc`/`pnpm -r run build` fails.
+  function _typeAssertion_setMessageFlagRejectsNonCanonicalFlags(client: ImapFlowMailClient): void {
+    // @ts-expect-error - "\Deleted" is not a WritableImapFlag
+    client.setMessageFlag("INBOX", 42, "\\Deleted", true);
+  }
+
   it("isImapConnectionLimitError recognizes a provider's simultaneous-connection BYE, not an ordinary connection failure", () => {
     const gmailBye = Object.assign(new Error("Connection closed"), { code: "ClosedAfterConnectText", reason: "Too many simultaneous connections." });
     const genericPhrase = new Error("Login failed: too many concurrent connections for this account");
