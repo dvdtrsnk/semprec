@@ -33,21 +33,39 @@ export function parseItemRelationFilterConfig(raw: unknown): ItemRelationFilterC
 }
 
 /**
+ * `items` is PARTITION BY LIST (database_id) (see 0001_core_schema.sql), so the join to
+ * `related` must pin database_id — resolved here off the *other* side's property, via the
+ * small unpartitioned `properties` table — or Postgres has to scan every partition instead
+ * of pruning to the one the related item actually lives in. `related.deleted_at IS NULL`
+ * guards against a soft-deleted folder (e.g. a since-deleted Junk folder) still counting
+ * toward `include`/`exclude`. Exported (rather than inlined below) so tests can EXPLAIN the
+ * exact query plan `passesItemRelationFilter` runs.
+ */
+export const ITEM_RELATION_FILTER_QUERY = `
+  SELECT related.properties ->> $2 AS value
+  FROM relation_definitions rd
+  JOIN properties op ON op.id = CASE WHEN rd.property_id_a = $1 THEN rd.property_id_b ELSE rd.property_id_a END
+  JOIN item_relations r ON r.relation_definition_id = rd.id
+  JOIN items related
+    ON related.database_id = op.database_id
+   AND related.id = CASE WHEN r.item_a = $3 THEN r.item_b ELSE r.item_a END
+  WHERE (rd.property_id_a = $1 OR rd.property_id_b = $1)
+    AND (r.item_a = $3 OR r.item_b = $3)
+    AND related.deleted_at IS NULL
+`;
+
+/**
  * Evaluated at heartbeat-fire time (after the enqueuing transaction has committed), not at
  * enqueue time: a message's folder-membership relation is written after the Emails item itself
  * within the same ingest transaction (mail/ingest.ts), so it would not yet exist if this were
  * checked at `triggerOnItemEventHeartbeats` time.
  */
 export async function passesItemRelationFilter(pool: Pool, itemId: string, filter: ItemRelationFilterConfig): Promise<boolean> {
-  const { rows } = await pool.query<{ value: string | null }>(
-    `SELECT related.properties ->> $2 AS value
-     FROM relation_definitions rd
-     JOIN item_relations r ON r.relation_definition_id = rd.id
-     JOIN items related ON related.id = CASE WHEN r.item_a = $3 THEN r.item_b ELSE r.item_a END
-     WHERE (rd.property_id_a = $1 OR rd.property_id_b = $1)
-       AND (r.item_a = $3 OR r.item_b = $3)`,
-    [filter.relationPropertyId, filter.property, itemId],
-  );
+  const { rows } = await pool.query<{ value: string | null }>(ITEM_RELATION_FILTER_QUERY, [
+    filter.relationPropertyId,
+    filter.property,
+    itemId,
+  ]);
   const values = rows.map((row) => row.value).filter((value): value is string => value !== null);
   const included = filter.include.length === 0 || values.some((value) => filter.include.includes(value));
   const excluded = values.some((value) => filter.exclude.includes(value));

@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, createItemWithClient, createRelationWithClient, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -1465,6 +1465,74 @@ describe("mail sync job error handling (issue #26)", () => {
     const item = await withTransaction(pool, (client) => client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]));
     expect(item.rows[0].properties.syncStatus).toBe("error");
   });
+
+  it("resolves as a no-op, without ever invoking the adapter, when the Mailbox item has been soft-deleted", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+
+    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
+    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
+    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+
+    await chokePoint.softDeleteItem(mailboxesId, mailbox.id);
+
+    const createImapClient = vi.fn(async (): Promise<ImapMailClient> => ({
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+      fetchMessagesSince: async () => [],
+      fetchVanishedSince: async () => [],
+      fetchAllUids: async () => [],
+      setMessageFlag: async () => {},
+    }));
+    const adapters: MailSyncAdapterFactory = { createImapClient };
+
+    // On current code, this rejects with a NotFoundError from the closing syncStatus write and
+    // the adapter has already run — this test discriminates exactly that.
+    await expect(
+      handleSyncMailAccountTask(
+        pool,
+        { mailboxItemId: mailbox.id },
+        adapters,
+        { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+        noopStorage,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(createImapClient).not.toHaveBeenCalled();
+  });
+
+  it("resolves as a no-op, without ever invoking the adapter, when the Mailbox item is missing entirely", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+
+    const createImapClient = vi.fn(async (): Promise<ImapMailClient> => ({
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+      fetchMessagesSince: async () => [],
+      fetchVanishedSince: async () => [],
+      fetchAllUids: async () => [],
+      setMessageFlag: async () => {},
+    }));
+    const adapters: MailSyncAdapterFactory = { createImapClient };
+
+    await expect(
+      handleSyncMailAccountTask(
+        pool,
+        { mailboxItemId: "00000000-0000-0000-0000-000000000000" },
+        adapters,
+        { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+        noopStorage,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(createImapClient).not.toHaveBeenCalled();
+  });
 });
 
 describe("IMAP raw header parsing (issue #93)", () => {
@@ -1941,6 +2009,57 @@ describe("legacy Emails migration (issue #93)", () => {
     const meta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
     expect(meta?.migrationStatus).toBe("partial");
   });
+
+  it("fetches an item's raw MIME before opening that item's transaction, not from inside it (issue #267)", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const legacyItemId1 = await createLegacyEmailItem(emailsId, { name: "First", sender: "a@example.com", recipients: "" });
+    const legacyItemId2 = await createLegacyEmailItem(emailsId, { name: "Second", sender: "b@example.com", recipients: "" });
+
+    // No pool-wrapper precedent exists in `backend/` to copy, and `withTransaction` is typed
+    // against `pg.Pool` — a `Proxy` over the real pool lets `connect()` be intercepted while
+    // everything else (including `pool.query` used elsewhere in this test) still goes straight
+    // through to the real pool.
+    const log: string[] = [];
+    // Postgres pooled clients are reused across separate `connect()` calls — re-wrapping
+    // `client.query` on every checkout (instead of once, tracked here) would stack a fresh
+    // logging layer on top of the previous checkout's, double- (or triple-) counting BEGIN/COMMIT.
+    const originalQueryByClient = new WeakMap<PoolClient, PoolClient["query"]>();
+    async function connectAndRecord(): Promise<PoolClient> {
+      const client = await pool.connect();
+      if (!originalQueryByClient.has(client)) {
+        originalQueryByClient.set(client, client.query.bind(client));
+        const originalQuery = originalQueryByClient.get(client)!;
+        (client as unknown as { query: unknown }).query = ((...queryArgs: unknown[]) => {
+          const text = typeof queryArgs[0] === "string" ? queryArgs[0] : (queryArgs[0] as { text?: string } | undefined)?.text;
+          if (text === "BEGIN" || text === "COMMIT") log.push(text);
+          return (originalQuery as (...a: unknown[]) => unknown)(...queryArgs);
+        }) as typeof client.query;
+      }
+      return client;
+    }
+    const recordingPool = new Proxy(pool, {
+      get(target, prop, receiver) {
+        if (prop === "connect") return connectAndRecord;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    const fetchRawMime: LegacyRawMimeFetcher = async (itemId) => {
+      log.push(`fetch:${itemId}`);
+      return null;
+    };
+
+    await runMailLegacyEmailMigrationJob(recordingPool, emailsId, fetchRawMime);
+
+    expect(log.filter((entry) => entry.startsWith("fetch:")).sort()).toEqual([`fetch:${legacyItemId1}`, `fetch:${legacyItemId2}`].sort());
+    const beginIndices = log.reduce<number[]>((acc, entry, index) => (entry === "BEGIN" ? [...acc, index] : acc), []);
+    expect(beginIndices.length).toBeGreaterThanOrEqual(2);
+    // Every transaction's BEGIN is immediately preceded by that item's fetch marker — proving
+    // the fetch happened before the transaction opened, not from inside it.
+    for (const index of beginIndices) {
+      expect(log[index - 1]).toMatch(/^fetch:/);
+    }
+  });
 });
 
 describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
@@ -2010,6 +2129,15 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
       "messageFlagsRemove:42:\\Flagged",
     ]);
   });
+
+  // Compile-time-only guard, never invoked: `setMessageFlag`'s flag parameter is `WritableImapFlag`
+  // (the two canonical keys from messageFlags.ts), not a bare `string` — so any other IMAP flag,
+  // like `\Deleted`, must fail to typecheck. If `WritableImapFlag` is ever widened back to
+  // `string`, this `@ts-expect-error` becomes unused and `tsc`/`pnpm -r run build` fails.
+  function _typeAssertion_setMessageFlagRejectsNonCanonicalFlags(client: ImapFlowMailClient): void {
+    // @ts-expect-error - "\Deleted" is not a WritableImapFlag
+    client.setMessageFlag("INBOX", 42, "\\Deleted", true);
+  }
 
   it("isImapConnectionLimitError recognizes a provider's simultaneous-connection BYE, not an ordinary connection failure", () => {
     const gmailBye = Object.assign(new Error("Connection closed"), { code: "ClosedAfterConnectText", reason: "Too many simultaneous connections." });
@@ -2111,6 +2239,50 @@ describe("per-account IMAP concurrency limiter (issue #94)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("bounds a limit raise's wake-up to the capacity that actually freed up, not every queued waiter", async () => {
+    // Resolves once pending microtasks (a woken waiter's `run()` continuation) have had a chance
+    // to settle, without advancing real time.
+    const flushMicrotasks = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+    const limiter = createImapConnectionLimiter();
+    const accountId = "account-bounded-raise";
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const releasers: Array<() => void> = [];
+
+    const runTask = (limit: number) =>
+      limiter.run(accountId, limit, async () => {
+        concurrent++;
+        maxConcurrent = Math.max(maxConcurrent, concurrent);
+        await new Promise<void>((resolve) => releasers.push(resolve));
+        concurrent--;
+      });
+
+    // One task runs under limit 1; three more queue up behind it.
+    const results = [runTask(1), runTask(1), runTask(1), runTask(1)];
+    await flushMicrotasks();
+    expect(concurrent).toBe(1);
+
+    // Raising the limit to 3 must free up exactly two more slots (3 - 1 active), not all three
+    // remaining waiters — this is the capacity-bound the limiter must enforce.
+    const raised = runTask(3);
+    await flushMicrotasks();
+    expect(concurrent).toBe(3);
+    expect(maxConcurrent).toBe(3);
+
+    // Release the first task so the queue drains; every queued task eventually runs, and the
+    // limit is never exceeded as later waiters get woken to backfill freed slots.
+    for (let i = 0; i < 10 && releasers.length > 0; i++) {
+      releasers.splice(0).forEach((release) => release());
+      await flushMicrotasks();
+      expect(concurrent).toBeLessThanOrEqual(3);
+    }
+
+    await Promise.all([...results, raised]);
+    expect(maxConcurrent).toBe(3);
+    expect(concurrent).toBe(0);
   });
 });
 
@@ -2248,6 +2420,87 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     );
 
     expect(runCalls).toEqual([{ accountId: mailbox.id, limit: 1 }]); // user override wins over Gmail's provider default of 5
+  });
+
+  it("holds no pooled database connection while a sync pass waits for an IMAP connection slot (issue #267)", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const moduleIds = { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId };
+
+    // connectionLimit: 1 forces genuine contention between two concurrent passes for this
+    // account — at the default limit of 2 (imapConnectionLimitForProvider) they never wait and
+    // this test would pass vacuously even on the unfixed code.
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M", connectionLimit: 1 } }),
+    );
+    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
+    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+
+    // A real (not fake/recording) limiter — the point of this test is genuine queueing.
+    const limiter = createImapConnectionLimiter();
+
+    let releaseFirst: () => void = () => {};
+    let resolveFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      resolveFirstStarted = resolve;
+    });
+    const blockingImap: ImapMailClient = {
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
+      selectFolder: async () => {
+        resolveFirstStarted();
+        await new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        });
+        return { uidvalidity: 1, uidnext: 1, highestModSeq: null };
+      },
+      fetchMessagesSince: async () => [],
+      fetchVanishedSince: async () => [],
+      fetchAllUids: async () => [],
+      setMessageFlag: async () => {},
+    };
+    const emptyImap: ImapMailClient = {
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+      fetchMessagesSince: async () => [],
+      fetchVanishedSince: async () => [],
+      fetchAllUids: async () => [],
+      setMessageFlag: async () => {},
+    };
+
+    // The first pass takes the account's only slot and holds it (blocked inside `selectFolder`,
+    // with its write transaction's connection checked out) until `releaseFirst()` is called.
+    const firstPass = handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, { createImapClient: async () => blockingImap }, moduleIds, noopStorage, limiter);
+    await firstStarted;
+
+    const checkedOut = () => pool.totalCount - pool.idleCount;
+    const baseline = checkedOut();
+
+    const secondPass = handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, { createImapClient: async () => emptyImap }, moduleIds, noopStorage, limiter);
+
+    // Waits until the second pass's own credential fetch (which happens before it ever calls
+    // the limiter) has been logged — proof it has run its prologue/credential work and is now
+    // either calling or blocked in `imapConnectionLimiter.run`, not still doing earlier work.
+    for (;;) {
+      const { rows } = await pool.query(`SELECT count(*) FROM credential_access_log WHERE item_id = $1`, [mailbox.id]);
+      if (Number(rows[0].count) >= 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    // One more tick so the second pass's synchronous `imapConnectionLimiter.run(...)` call (and
+    // its internal queueing) has actually run.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // The second pass is queued behind the first (limit 1, one already active) — it must not
+    // have checked out a database connection while it waits. On the unfixed code, the write
+    // transaction opened before the limiter wait, so this would be +1.
+    expect(checkedOut() - baseline).toBe(0);
+
+    releaseFirst();
+    await firstPass;
+    await secondPass;
   });
 });
 

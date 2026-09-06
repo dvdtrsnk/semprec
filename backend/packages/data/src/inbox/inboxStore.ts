@@ -4,6 +4,7 @@ import { createItemWithClient, createRelationWithClient } from "../chokePoint/ch
 import type { ActionQueueAffinity } from "../scheduler/actions.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
+import { enqueueJournalInboxRecompute } from "./journalInboxCompute.js";
 import { assertValidTimezone } from "../timezone.js";
 import { ValidationError, NotFoundError } from "../errors.js";
 import type { ItemRow } from "../types.js";
@@ -76,6 +77,9 @@ export async function createInboxItemWithClient(client: PoolClient, input: Creat
   const referenceDate = DateTime.fromISO(input.date, { zone: input.timezone }).toJSDate();
   const journalDay = await getOrCreateJournalItem(client, input.journalDatabaseId, "day", referenceDate, input.timezone);
   await createRelationWithClient(client, { relationPropertyId: journalDayProperty.id, itemId: item.id, targetItemId: journalDay.id });
+  // Issue #106: capture is one of the three triggers ("capture, proposal transition, and
+  // deletion") that must invalidate the day's cached Inbox-item list.
+  await enqueueJournalInboxRecompute(client, journalDay.id);
 
   return item;
 }
