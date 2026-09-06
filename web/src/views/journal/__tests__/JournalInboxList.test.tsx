@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "../../../i18n/index.js";
 import type { GenericOperations, Item, View } from "../../../api/genericOperations.js";
 import { JournalInboxList, type JournalInboxItemSummary } from "../JournalInboxList.js";
@@ -16,7 +17,7 @@ function makeDayItem(computed: Record<string, unknown>): Item {
   return { id: DAY_ITEM_ID, databaseId: JOURNAL_DATABASE_ID, properties: {}, computed, updatedAt: "2026-08-28T00:00:00.000Z", deletedAt: null };
 }
 
-function stubOperations(dayItem: Item | null): GenericOperations {
+function stubOperations(getItem: GenericOperations["getItem"]): GenericOperations {
   return {
     async listItems() {
       return { items: [], nextCursor: null };
@@ -24,10 +25,7 @@ function stubOperations(dayItem: Item | null): GenericOperations {
     async countItems() {
       return 0;
     },
-    async getItem(databaseId, itemId) {
-      if (databaseId === JOURNAL_DATABASE_ID && itemId === DAY_ITEM_ID) return dayItem;
-      return null;
-    },
+    getItem,
     async getView() {
       throw new Error("not used by this renderer");
     },
@@ -47,9 +45,11 @@ function stubOperations(dayItem: Item | null): GenericOperations {
 }
 
 function renderList(config: Record<string, unknown> | undefined, dayItem: Item | null) {
+  const getItem: GenericOperations["getItem"] = async (databaseId, itemId) =>
+    databaseId === JOURNAL_DATABASE_ID && itemId === DAY_ITEM_ID ? dayItem : null;
   return render(
     <I18nProvider locale="en">
-      <JournalInboxList view={makeView(config)} operations={stubOperations(dayItem)} />
+      <JournalInboxList view={makeView(config)} operations={stubOperations(getItem)} />
     </I18nProvider>,
   );
 }
@@ -85,5 +85,36 @@ describe("JournalInboxList (issue #106)", () => {
     renderList({ inboxDatabaseId: INBOX_DATABASE_ID }, makeDayItem({ inboxItems: [] }));
 
     expect(await screen.findByText("This Inbox view is not configured correctly")).toBeInTheDocument();
+  });
+
+  it("shows an error state when the day fails to load, and retries on demand", async () => {
+    let calls = 0;
+    const getItem: GenericOperations["getItem"] = async () => {
+      calls++;
+      if (calls === 1) throw new Error("network blip");
+      return makeDayItem({ inboxItems: [] });
+    };
+    render(
+      <I18nProvider locale="en">
+        <JournalInboxList
+          view={makeView({ inboxDatabaseId: INBOX_DATABASE_ID, journalDayItemId: DAY_ITEM_ID })}
+          operations={stubOperations(getItem)}
+        />
+      </I18nProvider>,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("network blip");
+    expect(calls).toBe(1);
+
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByText("No Inbox items for this day")).toBeInTheDocument();
+    expect(calls).toBe(2);
+  });
+
+  it("treats a malformed cached payload as an error rather than rendering garbage", async () => {
+    renderList({ inboxDatabaseId: INBOX_DATABASE_ID, journalDayItemId: DAY_ITEM_ID }, makeDayItem({ inboxItems: [{ id: "i1" }] }));
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
   });
 });
