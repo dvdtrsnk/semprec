@@ -11,6 +11,8 @@ import { TEN_DATABASE_MODULE_IDS } from "./tenDatabaseKeys.js";
 import { PROCESSING_METHODS } from "../inbox/inboxTypesStore.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { SEMPREC_TICK_ACTION_ID } from "../inbox/inboxTickAction.js";
+import { JOURNAL_INBOX_COMPUTED_KEY } from "../inbox/journalInboxCompute.js";
+import { registerJournalInboxViewType } from "../views/journalInboxViewType.js";
 
 function selectConfig(options: string[]): Record<string, unknown> {
   return { options };
@@ -64,6 +66,12 @@ export async function seedInboxPipelineInTransaction(
 ): Promise<InboxPipelineDatabases> {
   const relate = (input: CreateRelationPropertyInput): Promise<{ property: unknown; inverseProperty: unknown }> =>
     createRelationPropertyWithClient(client, input, computedKeyRegistry);
+
+  // Issue #106: declares the Journal day cache key ahead of any writes, and registers
+  // "journal-inbox" into *this process's* registry the same way registerTemporalSwitcherViewType
+  // etc. do in seedSystem.ts — needed on every startup, not only the one-time DB seed.
+  computedKeyRegistry.add(JOURNAL_INBOX_COMPUTED_KEY);
+  registerJournalInboxViewType(viewTypeRegistry);
 
   const inbox = await createDb(client, "Inbox", INBOX_MODULE_ID, semprecProjectItemId);
   const inboxItemTypes = await createDb(client, "Inbox item types", INBOX_ITEM_TYPES_MODULE_ID, semprecProjectItemId);
