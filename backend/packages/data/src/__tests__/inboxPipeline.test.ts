@@ -116,6 +116,22 @@ describe("Inbox pipeline databases (issue #101)", () => {
     ).rejects.toBeInstanceOf(ValidationError);
   });
 
+  it("rejects an Inbox item with an unparseable date, before any write is attempted", async () => {
+    const inboxId = await databaseIdFor("inbox");
+    const journalId = await databaseIdFor("journal");
+
+    await expect(
+      withTransaction(pool, (client) =>
+        createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "not-a-date", time: "14:30" }),
+      ),
+    ).rejects.toBeInstanceOf(ValidationError);
+
+    const { rows: inboxRows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [inboxId]);
+    expect(inboxRows[0].n).toBe(0);
+    const { rows: journalRows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [journalId]);
+    expect(journalRows[0].n).toBe(0);
+  });
+
   it("preserves client-supplied date/time verbatim and resolves journalDay lazily, once", async () => {
     const inboxId = await databaseIdFor("inbox");
     const journalId = await databaseIdFor("journal");
@@ -192,6 +208,26 @@ describe("Inbox pipeline databases (issue #101)", () => {
 
     const types = await withTransaction(pool, (client) => listActiveInboxTypes(client, typesId));
     expect(types).toEqual([{ id: active.id, emoji: "☑️", label: "Task" }]);
+  });
+
+  it("returns every active type, not a silently truncated first page", async () => {
+    const typesId = await databaseIdFor("inboxItemTypes");
+    const count = 210;
+
+    await withTransaction(pool, async (client) => {
+      for (let i = 0; i < count; i++) {
+        await createInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          name: `Type ${i}`,
+          emoji: "☑️",
+          status: "active",
+          processingMethod: "pageContent",
+        });
+      }
+    });
+
+    const types = await withTransaction(pool, (client) => listActiveInboxTypes(client, typesId));
+    expect(types).toHaveLength(count);
   });
 
   it("accepts 'database' with a valid targetDatabase, and 'pageContent' with none", async () => {
