@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 import { CORE_TASK_NAMES, type TaskList } from "@semprec/queue";
+import type { ModuleRegistry } from "@semprec/module-registry";
 import { handleHeartbeatSweepTask, createHeartbeatFireTask } from "./scheduler/sweep.js";
 import { handleRollupRecomputeTask, handleRollupRecomputeFullTask } from "./rollup/recompute.js";
 import { handleJournalInboxRecomputeTask } from "./inbox/journalInboxCompute.js";
@@ -79,12 +80,13 @@ export function createCoreTaskList(
   mailModuleIds?: MailModuleIds,
   mailBlobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(process.env.MAIL_ATTACHMENTS_DIR ?? "/tmp/semprec-mail-attachments"),
   legacyRawMimeFetcher: LegacyRawMimeFetcher = noopLegacyRawMimeFetcher,
+  moduleRegistry?: ModuleRegistry,
 ): TaskList {
   return {
     [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {
-      await handleHeartbeatSweepTask(pool);
+      await handleHeartbeatSweepTask(pool, moduleRegistry);
     },
-    [CORE_TASK_NAMES.HEARTBEAT_FIRE]: createHeartbeatFireTask(pool, actionRegistry),
+    [CORE_TASK_NAMES.HEARTBEAT_FIRE]: createHeartbeatFireTask(pool, actionRegistry, moduleRegistry),
     [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: async (payload) => {
       await handleRollupRecomputeTask(pool, { rollupPropertyId: requireString(payload, "rollupPropertyId"), itemId: requireString(payload, "itemId") });
     },
