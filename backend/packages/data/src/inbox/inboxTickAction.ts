@@ -9,6 +9,7 @@ import * as databasesStore from "../chokePoint/databasesStore.js";
 import { createItemWithClient, createRelationWithClient, updateItemWithClient } from "../chokePoint/chokePoint.js";
 import { PROCESSING_METHODS, LOCKED_PROPOSAL_STATUSES, type ProcessingMethod } from "./inboxTypesStore.js";
 import { computeInboxFingerprint } from "./fingerprint.js";
+import { enqueueJournalInboxRecomputeForInboxItem } from "./journalInboxCompute.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
 import { ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
@@ -356,6 +357,15 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
     await withTransaction(pool, async (client) => {
       const item = await itemsStore.getItemById(client, config.inboxDatabaseId, sourceItemId);
       const existingProposal = await findExistingProposal(client, config, sourceItemId);
+
+      // Issue #106: this fires on every create/update/delete tick (issue #103's onItemEvent
+      // heartbeats), so it is the one trigger point that covers a property edit (text/date/
+      // time) on an existing Inbox item — capture already enqueues its own recompute
+      // (inboxStore.ts), so this is redundant-but-harmless there. It also covers deletion:
+      // the item's `journalDay` edge (set once at capture) still resolves after a soft
+      // delete, since deleting an item never removes its relation edges, and the deleted
+      // item is then excluded from the recomputed list by `getItemsByIds`'s deleted_at filter.
+      if (item) await enqueueJournalInboxRecomputeForInboxItem(client, item.id);
 
       if (!item || item.deletedAt) {
         await invalidateProposalForDeletedSource(client, config, existingProposal);

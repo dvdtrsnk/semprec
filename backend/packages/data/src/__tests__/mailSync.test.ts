@@ -2112,6 +2112,50 @@ describe("per-account IMAP concurrency limiter (issue #94)", () => {
       vi.useRealTimers();
     }
   });
+
+  it("bounds a limit raise's wake-up to the capacity that actually freed up, not every queued waiter", async () => {
+    // Resolves once pending microtasks (a woken waiter's `run()` continuation) have had a chance
+    // to settle, without advancing real time.
+    const flushMicrotasks = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+    const limiter = createImapConnectionLimiter();
+    const accountId = "account-bounded-raise";
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const releasers: Array<() => void> = [];
+
+    const runTask = (limit: number) =>
+      limiter.run(accountId, limit, async () => {
+        concurrent++;
+        maxConcurrent = Math.max(maxConcurrent, concurrent);
+        await new Promise<void>((resolve) => releasers.push(resolve));
+        concurrent--;
+      });
+
+    // One task runs under limit 1; three more queue up behind it.
+    const results = [runTask(1), runTask(1), runTask(1), runTask(1)];
+    await flushMicrotasks();
+    expect(concurrent).toBe(1);
+
+    // Raising the limit to 3 must free up exactly two more slots (3 - 1 active), not all three
+    // remaining waiters — this is the capacity-bound the limiter must enforce.
+    const raised = runTask(3);
+    await flushMicrotasks();
+    expect(concurrent).toBe(3);
+    expect(maxConcurrent).toBe(3);
+
+    // Release the first task so the queue drains; every queued task eventually runs, and the
+    // limit is never exceeded as later waiters get woken to backfill freed slots.
+    for (let i = 0; i < 10 && releasers.length > 0; i++) {
+      releasers.splice(0).forEach((release) => release());
+      await flushMicrotasks();
+      expect(concurrent).toBeLessThanOrEqual(3);
+    }
+
+    await Promise.all([...results, raised]);
+    expect(maxConcurrent).toBe(3);
+    expect(concurrent).toBe(0);
+  });
 });
 
 describe("mail sync connection-limit backoff (issue #94)", () => {
