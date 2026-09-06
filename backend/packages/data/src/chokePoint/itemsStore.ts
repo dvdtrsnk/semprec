@@ -228,13 +228,14 @@ export async function getItemsByIds(client: Queryable, itemIds: string[]): Promi
 /**
  * The batched form of `getItemById`, scoped to a single database like it, but for a whole
  * set of ids in one query — used where a caller would otherwise fetch one item per id in a
- * loop (e.g. inbox/inboxTypesStore.ts's proposal-status lookups). Deliberately has no
- * `deleted_at` filter, unlike `getItemsByIds`: a soft-deleted proposal card still recorded a
- * real `confirmed`/`rejected` outcome, and a caller judging whether that outcome locks
- * something else must see it exactly as it would have via `getItemById`, which also never
- * filters on `deleted_at`.
+ * loop (e.g. inbox/inboxTypesStore.ts's proposal-status lookups). The `IncludingDeleted` in
+ * the name is load-bearing, not decorative: unlike `getItemsByIds`, this has no `deleted_at`
+ * filter, because a soft-deleted proposal card still recorded a real `confirmed`/`rejected`
+ * outcome, and a caller judging whether that outcome locks something else must see it
+ * exactly as it would have via `getItemById`, which also never filters on `deleted_at`. Pick
+ * `getItemsByIds` instead if the caller actually wants deleted rows excluded.
  */
-export async function getItemsByIdsInDatabase(client: Queryable, databaseId: string, itemIds: string[]): Promise<ItemRow[]> {
+export async function getItemsByIdsInDatabaseIncludingDeleted(client: Queryable, databaseId: string, itemIds: string[]): Promise<ItemRow[]> {
   if (itemIds.length === 0) return [];
   const { rows } = await client.query(
     `SELECT id, database_id, properties, computed, updated_at, deleted_at

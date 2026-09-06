@@ -159,7 +159,7 @@ export async function deleteInboxTypeWithClient(client: PoolClient, input: Delet
   }
 
   // One query for every referenced proposal, instead of one `getItemById` per proposal edge.
-  const proposals = await itemsStore.getItemsByIdsInDatabase(client, input.processingProposalsDatabaseId, allProposalIds);
+  const proposals = await itemsStore.getItemsByIdsInDatabaseIncludingDeleted(client, input.processingProposalsDatabaseId, allProposalIds);
   const proposalById = new Map(proposals.map((proposal) => [proposal.id, proposal]));
 
   for (const inboxItemId of inboxItemIds) {

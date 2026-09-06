@@ -152,10 +152,14 @@ export async function listRelationsForItem(
 
 /**
  * The batched form of `listRelationsForItem`: one query for every edge any of `itemIds` sits
- * on for a single relation definition, instead of one query per item. A returned edge's
- * `itemA`/`itemB` may each be either one of `itemIds` or its counterpart on the other side —
- * a caller grouping by which of `itemIds` an edge belongs to must check both sides itself,
- * the same as `otherSide` requires for the single-item form.
+ * on for a single relation definition, instead of one query per item. Added for issue #271's
+ * explicit in-scope requirement — its Task lists "a bulk relations read alongside the
+ * existing [relationsStore] helpers" as one of the two reads `deleteInboxTypeWithClient`
+ * needs to stop issuing one `listRelationsForItem` call per referencing Inbox item — not a
+ * speculative general-purpose addition. A returned edge's `itemA`/`itemB` may each be either
+ * one of `itemIds` or its counterpart on the other side — a caller grouping by which of
+ * `itemIds` an edge belongs to must check both sides itself, the same as `otherSide`
+ * requires for the single-item form.
  */
 export async function listRelationsForItems(
   client: PoolClient,
