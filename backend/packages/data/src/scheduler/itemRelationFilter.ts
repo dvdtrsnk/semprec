@@ -40,12 +40,22 @@ export function parseItemRelationFilterConfig(raw: unknown): ItemRelationFilterC
  */
 export async function passesItemRelationFilter(pool: Pool, itemId: string, filter: ItemRelationFilterConfig): Promise<boolean> {
   const { rows } = await pool.query<{ value: string | null }>(
+    // `items` is PARTITION BY LIST (database_id) (see 0001_core_schema.sql), so the join to
+    // `related` must pin database_id — resolved here off the *other* side's property, via the
+    // small unpartitioned `properties` table — or Postgres has to scan every partition instead
+    // of pruning to the one the related item actually lives in. `related.deleted_at IS NULL`
+    // guards against a soft-deleted folder (e.g. a since-deleted Junk folder) still counting
+    // toward `include`/`exclude`.
     `SELECT related.properties ->> $2 AS value
      FROM relation_definitions rd
+     JOIN properties op ON op.id = CASE WHEN rd.property_id_a = $1 THEN rd.property_id_b ELSE rd.property_id_a END
      JOIN item_relations r ON r.relation_definition_id = rd.id
-     JOIN items related ON related.id = CASE WHEN r.item_a = $3 THEN r.item_b ELSE r.item_a END
+     JOIN items related
+       ON related.database_id = op.database_id
+      AND related.id = CASE WHEN r.item_a = $3 THEN r.item_b ELSE r.item_a END
      WHERE (rd.property_id_a = $1 OR rd.property_id_b = $1)
-       AND (r.item_a = $3 OR r.item_b = $3)`,
+       AND (r.item_a = $3 OR r.item_b = $3)
+       AND related.deleted_at IS NULL`,
     [filter.relationPropertyId, filter.property, itemId],
   );
   const values = rows.map((row) => row.value).filter((value): value is string => value !== null);

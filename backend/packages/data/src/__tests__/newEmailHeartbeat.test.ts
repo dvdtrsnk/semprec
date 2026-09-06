@@ -154,6 +154,30 @@ describe("newEmail heartbeat (issue #99)", () => {
     expect(runCalls).toHaveLength(0);
   });
 
+  it("ignores a soft-deleted Junk folder when evaluating the exclude set", async () => {
+    const heartbeatId = await getNewEmailHeartbeatId();
+    const runCalls: string[] = [];
+    const registry = agentRunRegistry(runCalls);
+
+    const foldersId = await databaseIdFor("folders");
+    const { itemId: emailItemId } = await ingestInto(["inbox", "junk"], "<soft-deleted-junk1@example.com>");
+
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT related.id FROM item_relations r
+       JOIN items related ON related.id = CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END
+       WHERE related.database_id = $2 AND related.properties ->> 'specialPurpose' = 'junk'`,
+      [emailItemId, foldersId],
+    );
+    const junkFolderId = rows[0]!.id;
+    await chokePoint.softDeleteItem(foldersId, junkFolderId);
+
+    await drainQueue(registry);
+
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeatId);
+    expect(runs).toHaveLength(1);
+    expect(runCalls).toHaveLength(1);
+  });
+
   it("does not emit a second event when an already-known message is reconciled", async () => {
     const heartbeatId = await getNewEmailHeartbeatId();
     const runCalls: string[] = [];
