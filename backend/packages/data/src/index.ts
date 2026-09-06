@@ -56,6 +56,16 @@ export * from "./systemSettings.js";
 export { createCoreTaskList, CORE_CRONTAB } from "./worker.js";
 export { mergeModuleTaskList, CORE_TASK_NAME_SET } from "./moduleTasks.js";
 export {
+  deriveDesiredWorkerInstances,
+  createModuleWorkerInstanceReconciler,
+  workerInstanceId,
+  type DesiredWorkerInstance,
+  type WorkerInstanceIdentity,
+  type WorkerActiveRowIdsSource,
+  type WorkerSupervisorPort,
+  type ModuleWorkerInstanceReconciler,
+} from "./moduleWorkers.js";
+export {
   createMailLiveSyncRoot,
   createNoopMailLiveSyncLifecycleFactory,
   type MailAccountLifecycle,
