@@ -78,7 +78,10 @@ async function closeQuietly(client: ImapFlow): Promise<void> {
 class ImapFlowIdleConnection implements ImapIdleConnection {
   private readonly ended: Promise<unknown>;
 
-  constructor(private readonly client: ImapFlow) {
+  constructor(
+    private readonly client: ImapFlow,
+    private readonly detachSignalListeners: () => void,
+  ) {
     this.ended = endPromiseFor(client);
   }
 
@@ -87,6 +90,9 @@ class ImapFlowIdleConnection implements ImapIdleConnection {
   }
 
   close(): Promise<void> {
+    // Detach exists/expunge/flags before logout so a final server push during BYE can't still
+    // reach onSignal after the caller considers this connection closed.
+    this.detachSignalListeners();
     return closeQuietly(this.client);
   }
 }
@@ -133,7 +139,12 @@ export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlo
       client.on("exists", onSignal);
       client.on("expunge", onSignal);
       client.on("flags", onSignal);
-      return new ImapFlowIdleConnection(client);
+      const detachSignalListeners = () => {
+        client.off("exists", onSignal);
+        client.off("expunge", onSignal);
+        client.off("flags", onSignal);
+      };
+      return new ImapFlowIdleConnection(client, detachSignalListeners);
     },
   };
 }

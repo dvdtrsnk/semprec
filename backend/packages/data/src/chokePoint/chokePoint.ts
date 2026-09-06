@@ -85,7 +85,8 @@ async function resolveRollupRecomputeTargets(
   return targets;
 }
 
-async function enqueueRollupRecomputeForEdge(
+/** Exported so a module-specific delete that unlinks relations outside `softDeleteItem` (e.g. inbox/inboxTypesStore.ts's `deleteInboxTypeWithClient`) can enqueue the same rollup recompute per edge it removes. */
+export async function enqueueRollupRecomputeForEdge(
   client: PoolClient,
   edge: { relationDefinitionId: string; itemA: string; itemB: string },
 ): Promise<void> {

@@ -6,10 +6,12 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "check-migration-numbering": "node scripts/check-migration-numbering.mjs"
   },
   "dependencies": {
     "@semprec/credentials": "workspace:*",
+    "@semprec/module-registry": "workspace:*",
     "@semprec/queue": "workspace:*",
     "imapflow": "^1.7.6",
     "luxon": "^3.7.2",
