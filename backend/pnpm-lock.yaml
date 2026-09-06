@@ -35,6 +35,9 @@ importers:
       '@semprec/credentials':
         specifier: workspace:*
         version: link:../credentials
+      '@semprec/module-registry':
+        specifier: workspace:*
+        version: link:../module-registry
       '@semprec/queue':
         specifier: workspace:*
         version: link:../queue
