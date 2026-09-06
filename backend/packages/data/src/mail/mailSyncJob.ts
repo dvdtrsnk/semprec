@@ -146,7 +146,15 @@ export async function handleSyncMailAccountTask(
       return { folderProperty, attachmentsProperty, mailboxFolderProperty, mailboxItem };
     });
     const { folderProperty, attachmentsProperty, mailboxFolderProperty, mailboxItem } = prologue;
-    mailboxProvider = typeof mailboxItem?.properties.provider === "string" ? mailboxItem.properties.provider : undefined;
+
+    // A missing or soft-deleted mailbox item is "nothing to sync," not a failure: it's the very
+    // row a sync-status write would target, so the catch block's own `updateItemWithClient`
+    // would throw `NotFoundError` and roll back `recordSyncError` in the same transaction,
+    // leaving a task that can never succeed and that the worker would retry forever. Returning
+    // here, before any credential decrypt or provider call, avoids that dead end entirely.
+    if (!mailboxItem || mailboxItem.deletedAt) return;
+
+    mailboxProvider = typeof mailboxItem.properties.provider === "string" ? mailboxItem.properties.provider : undefined;
 
     const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, payload.mailboxItemId));
     if (!state) throw new Error(`Mailbox ${payload.mailboxItemId} has no mail_account_sync_state row — never connected`);
@@ -177,12 +185,12 @@ export async function handleSyncMailAccountTask(
       attachmentsRelationPropertyId: attachmentsProperty.id,
       storage: trackedStorage,
       storageKeyPrefix: payload.mailboxItemId,
-      mailboxAliases: parseAddressListProperty(mailboxItem?.properties.addresses),
+      mailboxAliases: parseAddressListProperty(mailboxItem.properties.addresses),
     };
 
     if (state.syncMode === "imap") {
       if (!adapters.createImapClient) throw new Error("No IMAP adapter configured for this composition root");
-      const connectionLimit = imapConnectionLimitForProvider(mailboxProvider, mailboxItem?.properties.connectionLimit);
+      const connectionLimit = imapConnectionLimitForProvider(mailboxProvider, mailboxItem.properties.connectionLimit);
       // The limiter's wait for a free slot happens here, outside any transaction — a pooled
       // database connection is only ever checked out once a slot is actually granted, so a
       // long queue wait (up to `ACCOUNT_QUEUE_WAIT_TIMEOUT_MS`) never pins one for nothing.
