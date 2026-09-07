@@ -130,35 +130,63 @@ describe("relation cardinality enforcement (issue #82)", () => {
     expect(property.config).toEqual({ relationDefinitionId: expect.any(String), targetDatabaseId: target.id });
   });
 
-  it("under concurrency, a losing racer against a one_to_many conflict is rejected, not silently corrupted", async () => {
-    const { property, a1, b1, b2 } = await makeRelation("one_to_many");
-
+  /**
+   * Drives the exact race the trigger's advisory lock exists to prevent: two overlapping
+   * transactions each inserting a conflicting edge for the same relation definition. Ordering
+   * is made deterministic (not timing-dependent) by having `clientX` explicitly take the same
+   * advisory lock the trigger itself uses (`pg_advisory_xact_lock(hashtextextended(...))`)
+   * *before* `clientY`'s insert is even issued — X is then guaranteed to hold the lock when
+   * Y's trigger tries to acquire it, so Y blocks until X commits or rolls back, regardless of
+   * how fast either connection's earlier queries happen to run. X's own insert re-acquires the
+   * same lock afterward, which succeeds immediately since Postgres advisory locks are
+   * reentrant within one session/transaction.
+   */
+  async function assertLosesRaceOnConflict(input: {
+    relationDefinitionId: string;
+    winner: { relationPropertyId: string; callerItemId: string; targetItemId: string };
+    loser: { relationPropertyId: string; callerItemId: string; targetItemId: string };
+  }): Promise<void> {
     const clientX = await pool.connect();
     const clientY = await pool.connect();
     try {
       await clientX.query("BEGIN");
+      await clientX.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [input.relationDefinitionId]);
+
       await clientY.query("BEGIN");
+      const pendingY = createRelationWithClient(clientY, input.loser);
 
-      // X links item_a=a1 to b1 first and holds the advisory lock for this relation
-      // definition until it commits — Y's insert (same item_a, different item_b) must block
-      // on that lock rather than racing X's not-yet-committed check under read-committed.
-      const pendingX = createRelationWithClient(clientX, { relationPropertyId: property.id, callerItemId: a1.id, targetItemId: b1.id });
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      const pendingY = createRelationWithClient(clientY, { relationPropertyId: property.id, callerItemId: a1.id, targetItemId: b2.id });
-
-      await expect(pendingX).resolves.toBeDefined();
+      const resultX = await createRelationWithClient(clientX, input.winner);
+      expect(resultX).toBeDefined();
       await clientX.query("COMMIT");
 
       await expect(pendingY).rejects.toBeInstanceOf(CardinalityViolationError);
       await clientY.query("ROLLBACK");
 
       const { rows } = await pool.query("SELECT count(*)::int AS n FROM item_relations WHERE relation_definition_id = $1", [
-        (property.config as { relationDefinitionId: string }).relationDefinitionId,
+        input.relationDefinitionId,
       ]);
       expect(rows[0].n).toBe(1);
     } finally {
       clientX.release();
       clientY.release();
     }
+  }
+
+  it("under concurrency, a losing racer against a one_to_many conflict (same item_a) is rejected, not silently corrupted", async () => {
+    const { property, a1, b1, b2 } = await makeRelation("one_to_many");
+    await assertLosesRaceOnConflict({
+      relationDefinitionId: (property.config as { relationDefinitionId: string }).relationDefinitionId,
+      winner: { relationPropertyId: property.id, callerItemId: a1.id, targetItemId: b1.id },
+      loser: { relationPropertyId: property.id, callerItemId: a1.id, targetItemId: b2.id },
+    });
+  });
+
+  it("under concurrency, a losing racer against a one_to_one conflict (same item_b, different item_a) is rejected, not silently corrupted", async () => {
+    const { property, a1, a2, b1 } = await makeRelation("one_to_one");
+    await assertLosesRaceOnConflict({
+      relationDefinitionId: (property.config as { relationDefinitionId: string }).relationDefinitionId,
+      winner: { relationPropertyId: property.id, callerItemId: a1.id, targetItemId: b1.id },
+      loser: { relationPropertyId: property.id, callerItemId: a2.id, targetItemId: b1.id },
+    });
   });
 });
