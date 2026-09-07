@@ -135,6 +135,50 @@ describe("relation edge contract", () => {
     expect(viaB.itemB).toBe(viaA.itemB);
   });
 
+  it("update through the inverse property_id_b updates the same edge created through property_id_a", async () => {
+    const { assignedTo, assignedTasks, task, person } = await makeParticipantsAndTasks();
+    const created = await chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id, metadata: { role: "owner" } });
+
+    const updated = await chokePoint.updateRelation({
+      relationPropertyId: assignedTasks.id,
+      callerItemId: person.id,
+      targetItemId: task.id,
+      metadata: { role: "reviewer" },
+    });
+
+    expect(updated.id).toBe(created.id);
+    expect(updated.itemA).toBe(task.id);
+    expect(updated.itemB).toBe(person.id);
+    expect(updated.metadata).toEqual({ role: "reviewer" });
+  });
+
+  it("update on a missing edge through the inverse property_id_b is a 404 not_found naming the B-side identity", async () => {
+    const { assignedTasks, task, person } = await makeParticipantsAndTasks();
+
+    try {
+      await chokePoint.updateRelation({ relationPropertyId: assignedTasks.id, callerItemId: person.id, targetItemId: task.id, metadata: { role: "owner" } });
+      expect.unreachable("expected a NotFoundError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(NotFoundError);
+      expect((err as NotFoundError).details).toEqual({
+        resource: "relationEdge",
+        relationPropertyId: assignedTasks.id,
+        callerItemId: person.id,
+        targetItemId: task.id,
+      });
+    }
+  });
+
+  it("delete through the inverse property_id_b removes the same edge created through property_id_a", async () => {
+    const { assignedTo, assignedTasks, task, person } = await makeParticipantsAndTasks();
+    await chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id });
+
+    await chokePoint.deleteRelation({ relationPropertyId: assignedTasks.id, callerItemId: person.id, targetItemId: task.id });
+
+    const { rows } = await pool.query("SELECT count(*)::int AS n FROM item_relations");
+    expect(rows[0].n).toBe(0);
+  });
+
   it("delete is idempotent and returns void whether or not the edge existed", async () => {
     const { assignedTo, task, person } = await makeParticipantsAndTasks();
     await expect(chokePoint.deleteRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id })).resolves.toBeUndefined();
