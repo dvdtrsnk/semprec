@@ -3,6 +3,7 @@ import { createItemWithClient, createRelationWithClient } from "../chokePoint/ch
 import type { ItemRow } from "../types.js";
 import { EMAIL_INGEST_ALLOWED_SYSTEM_KEYS, formatAddress, formatAddressList } from "./ingest.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
+import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 
 export interface CreateEmailDraftInput {
   emailsDatabaseId: string;
@@ -39,11 +40,15 @@ export async function createEmailDraft(client: PoolClient, input: CreateEmailDra
     { allowedSystemKeys: EMAIL_INGEST_ALLOWED_SYSTEM_KEYS },
   );
 
-  await createRelationWithClient(client, {
-    relationPropertyId: input.folderRelationPropertyId,
-    callerItemId: item.id,
-    targetItemId: input.draftsFolderItemId,
-  });
+  await createRelationWithClient(
+    client,
+    {
+      relationPropertyId: input.folderRelationPropertyId,
+      callerItemId: item.id,
+      targetItemId: input.draftsFolderItemId,
+    },
+    EMAILS_RELATION_CONTEXT,
+  );
 
   return item;
 }

@@ -1,5 +1,8 @@
 import type { PoolClient } from "pg";
-import { createItemWithClient, createRelationWithClient } from "../chokePoint/chokePoint.js";
+import { createItemWithClient, createRelationWithClient, type SystemRelationWriteContext } from "../chokePoint/chokePoint.js";
+import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
+
+const FOLDERS_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: FOLDERS_MODULE_ID };
 
 export interface EnsureFolderItemInput {
   foldersDatabaseId: string;
@@ -40,7 +43,11 @@ export async function ensureFolderItem(client: PoolClient, input: EnsureFolderIt
     },
     { allowedSystemKeys: FOLDER_ALLOWED_SYSTEM_KEYS },
   );
-  await createRelationWithClient(client, { relationPropertyId: input.mailboxRelationPropertyId, callerItemId: folder.id, targetItemId: input.mailboxItemId });
+  await createRelationWithClient(
+    client,
+    { relationPropertyId: input.mailboxRelationPropertyId, callerItemId: folder.id, targetItemId: input.mailboxItemId },
+    FOLDERS_RELATION_CONTEXT,
+  );
   return folder.id;
 }
 

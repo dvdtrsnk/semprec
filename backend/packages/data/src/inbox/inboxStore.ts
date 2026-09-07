@@ -1,9 +1,12 @@
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
-import { createItemWithClient, createRelationWithClient } from "../chokePoint/chokePoint.js";
+import { createItemWithClient, createRelationWithClient, type SystemRelationWriteContext } from "../chokePoint/chokePoint.js";
 import type { ActionQueueAffinity } from "../scheduler/actions.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
+import { INBOX_MODULE_ID } from "../seed/inboxPipelineKeys.js";
+
+const INBOX_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: INBOX_MODULE_ID };
 import { enqueueJournalInboxRecompute } from "./journalInboxCompute.js";
 import { assertValidTimezone } from "../timezone.js";
 import { ValidationError, NotFoundError } from "../errors.js";
@@ -79,7 +82,11 @@ export async function createInboxItemWithClient(client: PoolClient, input: Creat
   const journalDayProperty = await getRelationProperty(client, input.inboxDatabaseId, "journalDay");
   const referenceDate = DateTime.fromISO(input.date, { zone: input.timezone }).toJSDate();
   const journalDay = await getOrCreateJournalItem(client, input.journalDatabaseId, "day", referenceDate, input.timezone);
-  await createRelationWithClient(client, { relationPropertyId: journalDayProperty.id, callerItemId: item.id, targetItemId: journalDay.id });
+  await createRelationWithClient(
+    client,
+    { relationPropertyId: journalDayProperty.id, callerItemId: item.id, targetItemId: journalDay.id },
+    INBOX_RELATION_CONTEXT,
+  );
   // Issue #106: capture is one of the three triggers ("capture, proposal transition, and
   // deletion") that must invalidate the day's cached Inbox-item list.
   await enqueueJournalInboxRecompute(client, journalDay.id);

@@ -4,6 +4,7 @@ import type { ActionContext, ActionHandler } from "../scheduler/actions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createRelationWithClient } from "../chokePoint/chokePoint.js";
+import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { getMailMessageMetaByItemId } from "./mailMessageMetaStore.js";
 import { lookupPersonIdByEmail, normalizeEmailAddress, reindexPersonEmails } from "./personEmailIndexStore.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
@@ -65,7 +66,11 @@ export function createLinkEmailToPeopleAction(pool: Pool): ActionHandler {
       if (senderProperty && meta.envelope.from) {
         const personId = await lookupPersonIdByEmail(client, meta.envelope.from.address);
         if (personId) {
-          await createRelationWithClient(client, { relationPropertyId: senderProperty.id, callerItemId: context.itemId as string, targetItemId: personId });
+          await createRelationWithClient(
+            client,
+            { relationPropertyId: senderProperty.id, callerItemId: context.itemId as string, targetItemId: personId },
+            EMAILS_RELATION_CONTEXT,
+          );
         }
       }
 
@@ -78,7 +83,11 @@ export function createLinkEmailToPeopleAction(pool: Pool): ActionHandler {
           seen.add(normalized);
           const personId = await lookupPersonIdByEmail(client, normalized);
           if (personId) {
-            await createRelationWithClient(client, { relationPropertyId: recipientsProperty.id, callerItemId: context.itemId as string, targetItemId: personId });
+            await createRelationWithClient(
+              client,
+              { relationPropertyId: recipientsProperty.id, callerItemId: context.itemId as string, targetItemId: personId },
+              EMAILS_RELATION_CONTEXT,
+            );
           }
         }
       }

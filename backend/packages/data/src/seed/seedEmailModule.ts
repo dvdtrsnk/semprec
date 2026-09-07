@@ -2,7 +2,7 @@ import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
-import { createRelationPropertyWithClient, type CreateRelationPropertyInput } from "../chokePoint/chokePoint.js";
+import { createRelationPropertyWithClient, type CreateRelationPropertyInput, type SystemRelationWriteContext } from "../chokePoint/chokePoint.js";
 import type { ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
@@ -76,7 +76,8 @@ export async function seedEmailModuleInTransaction(
   viewTypeRegistry: ViewTypeRegistry,
 ): Promise<EmailModuleResult> {
   registerMailboxClientViewType(viewTypeRegistry);
-  const relate = (input: CreateRelationPropertyInput) => createRelationPropertyWithClient(client, input, computedKeyRegistry);
+  const relate = (input: CreateRelationPropertyInput, context?: SystemRelationWriteContext) =>
+    createRelationPropertyWithClient(client, input, context, computedKeyRegistry);
 
   const emailProject = await itemsStore.insertItem(client, {
     databaseId: projectsDatabaseId,
@@ -129,7 +130,21 @@ export async function seedEmailModuleInTransaction(
     // literally "INBOX").
     { key: "providerId", name: "Provider ID", type: "text", owner: "system" },
   ]);
-  await relate({ databaseId: folders.id, key: "mailbox", name: "Mailbox", targetDatabaseId: mailboxes.id, cardinality: "one_to_many", inverse: { key: "folders", name: "Folders" } });
+  // Written by mail/folderDiscovery.ts as the Folders module's own process — system-owned so
+  // no caller outside that discovery path can attach a Folder to a different Mailbox.
+  await relate(
+    {
+      sourceDatabaseId: folders.id,
+      key: "mailbox",
+      name: "Mailbox",
+      targetDatabaseId: mailboxes.id,
+      cardinality: "one_to_many",
+      owner: "system",
+      ownerProcess: FOLDERS_MODULE_ID,
+      inverse: { key: "folders", name: "Folders" },
+    },
+    { ownerProcess: FOLDERS_MODULE_ID },
+  );
 
   const emails = await createDb(client, "Emails", EMAILS_MODULE_ID, emailProject.id);
   await createProps(client, emails.id, [
@@ -148,21 +163,39 @@ export async function seedEmailModuleInTransaction(
     { key: "read", name: "Read", type: "checkbox", owner: "user" },
     { key: "flagged", name: "Flagged", type: "checkbox", owner: "user" },
   ]);
-  const folderRelation = await relate({
-    databaseId: emails.id,
-    key: "folder",
-    name: "Folder",
-    targetDatabaseId: folders.id,
-    cardinality: "many_to_many",
-    inverse: { key: "emails", name: "Emails" },
-  });
+  // Every Emails relation below is system-owned by the Emails module process — written only
+  // by the sync/ingest/send/attachments/person-linking writers, matching the "every field ...
+  // is owner: 'system'" contract above for Emails' plain properties.
+  const emailsContext: SystemRelationWriteContext = { ownerProcess: EMAILS_MODULE_ID };
+  const folderRelation = await relate(
+    {
+      sourceDatabaseId: emails.id,
+      key: "folder",
+      name: "Folder",
+      targetDatabaseId: folders.id,
+      cardinality: "many_to_many",
+      owner: "system",
+      ownerProcess: EMAILS_MODULE_ID,
+      inverse: { key: "emails", name: "Emails" },
+    },
+    emailsContext,
+  );
   // One-directional: Files' schema is already locked by the time this runs (issue #24),
   // same reason Movies -> People (issue #25) carries no inverse property on People either.
-  const attachmentsRelation = await relate({ databaseId: emails.id, key: "attachments", name: "Attachments", targetDatabaseId: filesDatabaseId, cardinality: "one_to_many" });
+  const attachmentsRelation = await relate(
+    { sourceDatabaseId: emails.id, key: "attachments", name: "Attachments", targetDatabaseId: filesDatabaseId, cardinality: "one_to_many", owner: "system", ownerProcess: EMAILS_MODULE_ID },
+    emailsContext,
+  );
   // People's schema is likewise already locked — both People-facing relations below are
   // one-directional for the same reason.
-  await relate({ databaseId: emails.id, key: "senderPeople", name: "Sender", targetDatabaseId: peopleDatabaseId, cardinality: "one_to_many" });
-  await relate({ databaseId: emails.id, key: "recipientsPeople", name: "Recipients", targetDatabaseId: peopleDatabaseId, cardinality: "many_to_many" });
+  await relate(
+    { sourceDatabaseId: emails.id, key: "senderPeople", name: "Sender", targetDatabaseId: peopleDatabaseId, cardinality: "one_to_many", owner: "system", ownerProcess: EMAILS_MODULE_ID },
+    emailsContext,
+  );
+  await relate(
+    { sourceDatabaseId: emails.id, key: "recipientsPeople", name: "Recipients", targetDatabaseId: peopleDatabaseId, cardinality: "many_to_many", owner: "system", ownerProcess: EMAILS_MODULE_ID },
+    emailsContext,
+  );
 
   // The mailbox's default view, resolved by the client through the registered view type
   // (clientComponent 'mailboxClient') the same way Journal resolves its temporal switcher.

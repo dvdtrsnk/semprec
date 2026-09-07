@@ -2,7 +2,18 @@ import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { assertValidTimezone } from "../timezone.js";
-import type { CreatedBy, DatabaseRow, ItemRelationRow, ItemRow, PropertyRow, PropertyType, RelationDefinitionRow, ViewItemRow, ViewRow } from "../types.js";
+import type {
+  CreatedBy,
+  DatabaseRow,
+  ItemRelationRow,
+  ItemRow,
+  PropertyOwner,
+  PropertyRow,
+  PropertyType,
+  RelationDefinitionRow,
+  ViewItemRow,
+  ViewRow,
+} from "../types.js";
 import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as itemsStore from "./itemsStore.js";
@@ -132,15 +143,50 @@ function assertViewWritable(view: ViewRow, actor: CreatedBy): void {
   }
 }
 
+/** Proves the caller's process identity for a protected system relation write — see `assertRelationSideCreatable`/`assertRelationPropertyWritable` below. Never accepted on the public facade. */
+export interface SystemRelationWriteContext {
+  ownerProcess: string;
+}
+
+export interface RelationPropertySideInput {
+  key: string;
+  name: string;
+  owner?: PropertyOwner;
+  /** Required and non-empty exactly when `owner` is `'system'`; must be omitted otherwise. */
+  ownerProcess?: string;
+  locked?: boolean;
+}
+
 export interface CreateRelationPropertyInput {
-  databaseId: string;
+  sourceDatabaseId: string;
   key: string;
   name: string;
   targetDatabaseId: string;
   cardinality?: "one_to_one" | "one_to_many" | "many_to_many";
-  inverse?: { key: string; name: string };
+  owner?: PropertyOwner;
+  /** Required and non-empty exactly when `owner` is `'system'`; must be omitted otherwise. */
+  ownerProcess?: string;
   locked?: boolean;
-  owner?: "user" | "system";
+  inverse?: Omit<RelationPropertySideInput, "key" | "name"> & Pick<RelationPropertySideInput, "key" | "name">;
+}
+
+/** `ownerProcess` is required and non-empty exactly when `owner` is `'system'`, and must be absent otherwise — enforced per side, independently. */
+function assertValidOwnerSide(owner: PropertyOwner, ownerProcess: string | undefined, field: string): void {
+  if (owner === "system") {
+    if (!ownerProcess) {
+      throw new ValidationError(`${field}.ownerProcess is required and non-empty when ${field}.owner is 'system'`, { field: `${field}.ownerProcess` });
+    }
+  } else if (ownerProcess !== undefined) {
+    throw new ValidationError(`${field}.ownerProcess must be omitted unless ${field}.owner is 'system'`, { field: `${field}.ownerProcess` });
+  }
+}
+
+/** A public caller (no context) may only create `owner: 'user'` sides; a protected system caller may create an `owner: 'system'` side only when its context matches that side's declared `ownerProcess`. */
+function assertRelationSideCreatable(owner: PropertyOwner, ownerProcess: string | undefined, context: SystemRelationWriteContext | undefined, field: string): void {
+  if (owner !== "system") return;
+  if (!context || context.ownerProcess !== ownerProcess) {
+    throw new ForbiddenError(`Creating ${field} as owner:'system' requires a matching SystemRelationWriteContext`, { field }, "owner_violation");
+  }
 }
 
 /**
@@ -150,18 +196,36 @@ export interface CreateRelationPropertyInput {
  * `withTransaction`, which would open a second, separate connection — one that cannot see
  * this transaction's not-yet-committed `databases`/`properties` rows under read-committed
  * isolation. `createChokePoint`'s `createRelationProperty` below is a thin wrapper over this
- * for the normal, already-committed-schema case. The computed-key-collision check lives here
- * (not only in the public wrapper) so every caller of this exported function gets it, not
- * just the ones that happen to go through `createChokePoint`; `computedKeyRegistry` defaults
- * to a fresh empty registry, matching `createChokePoint`'s own default.
+ * for the normal, already-committed-schema case, always called with no `context` — so a
+ * public caller can never create an `owner: 'system'` side (see `assertRelationSideCreatable`).
+ * The computed-key-collision check lives here (not only in the public wrapper) so every
+ * caller of this exported function gets it, not just the ones that happen to go through
+ * `createChokePoint`; `computedKeyRegistry` defaults to a fresh empty registry, matching
+ * `createChokePoint`'s own default.
+ *
+ * Both sides' schema (property + config) are created before either side's `locked` is
+ * applied, so a `locked: true` request never has an externally visible intermediate state —
+ * a concurrent reader in another transaction sees either the whole thing committed, unlocked
+ * schema and all, or nothing at all.
  */
 export async function createRelationPropertyWithClient(
   client: PoolClient,
   input: CreateRelationPropertyInput,
+  context?: SystemRelationWriteContext,
   computedKeyRegistry: ComputedKeyRegistry = createComputedKeyRegistry(),
 ): Promise<{ property: PropertyRow; inverseProperty: PropertyRow | null }> {
   assertNoComputedKeyCollision(computedKeyRegistry, input.key);
   if (input.inverse) assertNoComputedKeyCollision(computedKeyRegistry, input.inverse.key);
+
+  const sourceOwner: PropertyOwner = input.owner ?? "user";
+  assertValidOwnerSide(sourceOwner, input.ownerProcess, "source");
+  assertRelationSideCreatable(sourceOwner, input.ownerProcess, context, "source");
+
+  const inverseOwner: PropertyOwner | undefined = input.inverse ? (input.inverse.owner ?? "user") : undefined;
+  if (input.inverse) {
+    assertValidOwnerSide(inverseOwner!, input.inverse.ownerProcess, "inverse");
+    assertRelationSideCreatable(inverseOwner!, input.inverse.ownerProcess, context, "inverse");
+  }
 
   const targetDatabase = await databasesStore.getDatabase(client, input.targetDatabaseId);
   if (!targetDatabase) {
@@ -169,11 +233,12 @@ export async function createRelationPropertyWithClient(
   }
 
   const property = await propertiesStore.createProperty(client, {
-    databaseId: input.databaseId,
+    databaseId: input.sourceDatabaseId,
     key: input.key,
     name: input.name,
     type: "relation",
-    owner: input.owner,
+    owner: sourceOwner,
+    ownerProcess: input.ownerProcess,
   });
 
   let inverseProperty: PropertyRow | null = null;
@@ -183,6 +248,8 @@ export async function createRelationPropertyWithClient(
       key: input.inverse.key,
       name: input.inverse.name,
       type: "relation",
+      owner: inverseOwner,
+      ownerProcess: input.inverse.ownerProcess,
     });
   }
 
@@ -199,16 +266,16 @@ export async function createRelationPropertyWithClient(
   if (inverseProperty) {
     inverseProperty = await propertiesStore.updatePropertyConfig(client, inverseProperty.id, {
       relationDefinitionId: reldef.id,
-      targetDatabaseId: input.databaseId,
+      targetDatabaseId: input.sourceDatabaseId,
     });
   }
   if (input.locked) {
     await propertiesStore.setPropertyLocked(client, finalProperty.id, true);
     finalProperty = { ...finalProperty, locked: true };
-    if (inverseProperty) {
-      await propertiesStore.setPropertyLocked(client, inverseProperty.id, true);
-      inverseProperty = { ...inverseProperty, locked: true };
-    }
+  }
+  if (inverseProperty && input.inverse?.locked) {
+    await propertiesStore.setPropertyLocked(client, inverseProperty.id, true);
+    inverseProperty = { ...inverseProperty, locked: true };
   }
   return { property: finalProperty, inverseProperty };
 }
@@ -409,34 +476,56 @@ async function assertRelationEndpointsValid(client: PoolClient, context: Relatio
 }
 
 /**
+ * Authorizes an edge write against the exact property named by `relationPropertyId` — a
+ * paired definition's two sides may have different owners, and only the side the caller
+ * named governs this particular call. A public caller (no context) is rejected outright when
+ * that side is `owner: 'system'`; a protected system caller is rejected unless its
+ * `context.ownerProcess` matches the property's declared `owner_process` exactly.
+ */
+function assertRelationPropertyWritable(property: PropertyRow, context: SystemRelationWriteContext | undefined): void {
+  if (property.owner !== "system") return;
+  if (!context || context.ownerProcess !== property.ownerProcess) {
+    throw new ForbiddenError(
+      `Relation property ${property.id} is owned by 'system' and cannot be written by this caller`,
+      { field: "relationPropertyId" },
+      "owner_violation",
+    );
+  }
+}
+
+/**
  * The relation-linking logic, factored out for the same reason as `createItemWithClient` above.
  * Idempotent on the normalized `(relationDefinitionId, itemA, itemB)` tuple: a repeat create
  * replaces the entire metadata object (never merges), including back to `{}` when the caller
  * omits it — `relationsStore.createItemRelation`'s `ON CONFLICT ... DO UPDATE` is what makes
- * this atomic against a concurrent create of the same edge.
+ * this atomic against a concurrent create of the same edge. `context` is never supplied by the
+ * public facade (see `createChokePoint`'s `createRelation` below) — only a protected internal
+ * caller passes one.
  */
-export async function createRelationWithClient(client: PoolClient, input: CreateRelationInput): Promise<RelationEdge> {
-  const context = await loadRelationEdgeContext(client, input.relationPropertyId);
-  await assertRelationEndpointsValid(client, context, input.callerItemId, input.targetItemId);
+export async function createRelationWithClient(client: PoolClient, input: CreateRelationInput, context?: SystemRelationWriteContext): Promise<RelationEdge> {
+  const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
+  assertRelationPropertyWritable(edgeContext.property, context);
+  await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
 
-  const { itemA, itemB } = normalizeRelationSides(context.reldef, input.relationPropertyId, input.callerItemId, input.targetItemId);
+  const { itemA, itemB } = normalizeRelationSides(edgeContext.reldef, input.relationPropertyId, input.callerItemId, input.targetItemId);
   const edge = await relationsStore.createItemRelation(client, {
-    relationDefinitionId: context.reldef.id,
+    relationDefinitionId: edgeContext.reldef.id,
     itemA,
     itemB,
     metadata: input.metadata,
   });
-  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: context.reldef.id, itemA, itemB });
+  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
   return edge;
 }
 
-/** The metadata-replacement counterpart to `createRelationWithClient`: requires an existing normalized edge (endpoints are immutable — moving one is delete plus create), and rejects a missing edge with a `404 not_found`. */
-export async function updateRelationWithClient(client: PoolClient, input: UpdateRelationInput): Promise<RelationEdge> {
-  const context = await loadRelationEdgeContext(client, input.relationPropertyId);
-  await assertRelationEndpointsValid(client, context, input.callerItemId, input.targetItemId);
+/** The metadata-replacement counterpart to `createRelationWithClient`: requires an existing normalized edge (endpoints are immutable — moving one is delete plus create), and rejects a missing edge with a `404 not_found`. Same `context` contract as `createRelationWithClient`. */
+export async function updateRelationWithClient(client: PoolClient, input: UpdateRelationInput, context?: SystemRelationWriteContext): Promise<RelationEdge> {
+  const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
+  assertRelationPropertyWritable(edgeContext.property, context);
+  await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
 
-  const { itemA, itemB } = normalizeRelationSides(context.reldef, input.relationPropertyId, input.callerItemId, input.targetItemId);
-  const edge = await relationsStore.updateItemRelationMetadata(client, context.reldef.id, itemA, itemB, input.metadata);
+  const { itemA, itemB } = normalizeRelationSides(edgeContext.reldef, input.relationPropertyId, input.callerItemId, input.targetItemId);
+  const edge = await relationsStore.updateItemRelationMetadata(client, edgeContext.reldef.id, itemA, itemB, input.metadata);
   if (!edge) {
     throw new NotFoundError(`Relation edge not found`, {
       resource: "relationEdge",
@@ -445,7 +534,7 @@ export async function updateRelationWithClient(client: PoolClient, input: Update
       targetItemId: input.targetItemId,
     });
   }
-  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: context.reldef.id, itemA, itemB });
+  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
   return edge;
 }
 
@@ -461,13 +550,14 @@ export type DeleteRelationInput = Omit<CreateRelationInput, "metadata">;
  * Gmail/Graph/IMAP reconcilers dropping folder edges for an already-removed message) — endpoint
  * validity only matters for creating or moving an edge, never for tearing one down. The
  * normalized `(relationDefinitionId, itemA, itemB)` lookup in `deleteItemRelation` is safe
- * regardless of endpoint state.
+ * regardless of endpoint state. Same `context` contract as `createRelationWithClient`.
  */
-export async function deleteRelationWithClient(client: PoolClient, input: DeleteRelationInput): Promise<void> {
-  const context = await loadRelationEdgeContext(client, input.relationPropertyId);
-  const { itemA, itemB } = normalizeRelationSides(context.reldef, input.relationPropertyId, input.callerItemId, input.targetItemId);
-  await relationsStore.deleteItemRelation(client, context.reldef.id, itemA, itemB);
-  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: context.reldef.id, itemA, itemB });
+export async function deleteRelationWithClient(client: PoolClient, input: DeleteRelationInput, context?: SystemRelationWriteContext): Promise<void> {
+  const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
+  assertRelationPropertyWritable(edgeContext.property, context);
+  const { itemA, itemB } = normalizeRelationSides(edgeContext.reldef, input.relationPropertyId, input.callerItemId, input.targetItemId);
+  await relationsStore.deleteItemRelation(client, edgeContext.reldef.id, itemA, itemB);
+  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
 }
 
 export function createChokePoint(
@@ -586,8 +676,9 @@ export function createChokePoint(
     },
 
     // ---- relations (schema side: creating a paired relation property) ----
+    /** Public facade: never passes a `SystemRelationWriteContext`, so an `owner: 'system'` side is always rejected (`owner_violation`). */
     async createRelationProperty(input: CreateRelationPropertyInput): Promise<{ property: PropertyRow; inverseProperty: PropertyRow | null }> {
-      return withTransaction(pool, (client) => createRelationPropertyWithClient(client, input, computedKeyRegistry));
+      return withTransaction(pool, (client) => createRelationPropertyWithClient(client, input, undefined, computedKeyRegistry));
     },
 
     // ---- relations (data side: linking two items) ----

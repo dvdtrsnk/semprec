@@ -4,11 +4,15 @@ import { NotFoundError } from "../errors.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
-import { createItemWithClient, createRelationWithClient, updateItemWithClient } from "../chokePoint/chokePoint.js";
+import { createItemWithClient, createRelationWithClient, updateItemWithClient, type SystemRelationWriteContext } from "../chokePoint/chokePoint.js";
 import { assertValidTimezone } from "../timezone.js";
 import type { ItemRow } from "../types.js";
 import { computeNextDueDate } from "./nextDueDate.js";
 import { createTaskRecurrence, getTaskRecurrence, setTaskRecurrenceActive } from "./taskRecurrenceStore.js";
+import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+
+/** The Tasks module's own process identity — proves ownership when `copyRelationEdges` re-links an edge whose property happens to be `owner: 'system'` (none exist on Tasks today, but the check must hold regardless). */
+const TASKS_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: TASKS_MODULE_ID };
 
 export interface AdvanceTaskRecurrenceInput {
   databaseId: string;
@@ -105,6 +109,10 @@ async function copyRelationEdges(client: PoolClient, fromItemId: string, toItemI
 
     const newItemA = edge.itemA === fromItemId ? toItemId : edge.itemA;
     const newItemB = edge.itemB === fromItemId ? toItemId : edge.itemB;
-    await createRelationWithClient(client, { relationPropertyId: reldef.propertyIdA, callerItemId: newItemA, targetItemId: newItemB, metadata: edge.metadata });
+    await createRelationWithClient(
+      client,
+      { relationPropertyId: reldef.propertyIdA, callerItemId: newItemA, targetItemId: newItemB, metadata: edge.metadata },
+      TASKS_RELATION_CONTEXT,
+    );
   }
 }

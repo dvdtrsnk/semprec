@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import sanitizeHtml from "sanitize-html";
 import { createItemWithClient, createRelationWithClient } from "../chokePoint/chokePoint.js";
+import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { resolveThreadId } from "./threading.js";
 import {
   getMailMessageMetaByMessageId,
@@ -195,12 +196,16 @@ export async function ingestEmailMessage(client: PoolClient, input: IngestEmailM
     }
   }
 
-  await createRelationWithClient(client, {
-    relationPropertyId: input.folderRelationPropertyId,
-    callerItemId: itemId,
-    targetItemId: input.folderItemId,
-    metadata: input.folderUid !== undefined ? { uid: input.folderUid } : {},
-  });
+  await createRelationWithClient(
+    client,
+    {
+      relationPropertyId: input.folderRelationPropertyId,
+      callerItemId: itemId,
+      targetItemId: input.folderItemId,
+      metadata: input.folderUid !== undefined ? { uid: input.folderUid } : {},
+    },
+    EMAILS_RELATION_CONTEXT,
+  );
 
   return { itemId, created };
 }

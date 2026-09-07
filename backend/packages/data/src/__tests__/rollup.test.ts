@@ -32,7 +32,7 @@ describe("rollup engine", () => {
     await chokePoint.createProperty({ databaseId: tasks.id, key: "hours", name: "Hours", type: "number" });
 
     const { property: tasksRelation } = await chokePoint.createRelationProperty({
-      databaseId: projects.id,
+      sourceDatabaseId: projects.id,
       key: "tasks",
       name: "Tasks",
       targetDatabaseId: tasks.id,
@@ -74,7 +74,7 @@ describe("rollup engine", () => {
     const projects = await chokePoint.createDatabase({ name: "P" });
     const tasks = await chokePoint.createDatabase({ name: "T" });
     await chokePoint.createProperty({ databaseId: tasks.id, key: "label", name: "Label", type: "text" });
-    await chokePoint.createRelationProperty({ databaseId: projects.id, key: "tasks", name: "Tasks", targetDatabaseId: tasks.id });
+    await chokePoint.createRelationProperty({ sourceDatabaseId: projects.id, key: "tasks", name: "Tasks", targetDatabaseId: tasks.id });
 
     await expect(
       chokePoint.createProperty({
@@ -154,7 +154,7 @@ describe("rollup engine", () => {
     const tasks = await chokePoint.createDatabase({ name: "T2" });
     await chokePoint.createProperty({ databaseId: tasks.id, key: "hours", name: "Hours", type: "number" });
     const { property: relation } = await chokePoint.createRelationProperty({
-      databaseId: projects.id,
+      sourceDatabaseId: projects.id,
       key: "tasks",
       name: "Tasks",
       targetDatabaseId: tasks.id,
