@@ -56,6 +56,7 @@ export * from "./manifest/knownActionIds.js";
 export * from "./notifications/findings.js";
 
 export * from "./agentRuns/agentRunsStore.js";
+export * from "./agentRuns/agentRunEventsStore.js";
 export { seedSystem } from "./seed/seedSystem.js";
 export * from "./seed/tenDatabaseKeys.js";
 export { seedTenDatabasesInTransaction, type TenDatabases } from "./seed/seedTenDatabases.js";
