@@ -130,21 +130,30 @@ export async function seedInboxPipelineInTransaction(
 
   // Inbox -> Inbox item types: nullable (an item without a type is valid — it later enters
   // `needsClarification`, issue #100), one-directional — no inverse is needed by this issue.
-  await relate({ sourceDatabaseId: inbox.id, key: "type", name: "Type", targetDatabaseId: inboxItemTypes.id, cardinality: "one_to_many", owner: "user" });
+  // `many_to_many`, not `one_to_many` (issue #82): property_id_a/item_a (the Inbox item) is
+  // single-valued for this field, so the enforced `one_to_many` contract would land its
+  // "at most one edge" constraint on item_b (the type) instead — wrongly capping each type to
+  // one Inbox item. With no inverse to swap this source/target pairing onto (Inbox item types'
+  // schema has no reciprocal property here), `one_to_many` can never correctly enforce this
+  // relation, same as Emails.attachments.
+  await relate({ sourceDatabaseId: inbox.id, key: "type", name: "Type", targetDatabaseId: inboxItemTypes.id, cardinality: "many_to_many", owner: "user" });
 
   // Inbox -> Journal ("journalDay"): system-owned, resolved at write time through the
   // existing lazy Journal-day mechanism (journal/journalStore.ts's `getOrCreateJournalItem`,
   // wired up in inbox/inboxStore.ts's `createInboxItemWithClient`) — no default database is
   // added for this, it reuses the Journal relation directly. One-directional: Journal's
   // schema is already locked by `seedTenDatabasesInTransaction`, the same reason
-  // Emails->Files/People (issue #26) carry no inverse either.
+  // Emails->Files/People (issue #26) carry no inverse either. `many_to_many`, not
+  // `one_to_many` (issue #82), for the same structural reason as Inbox.type above — many
+  // Inbox items share one Journal day, and this one-directional relation has no inverse to
+  // swap the source/target pairing onto.
   await relate(
     {
       sourceDatabaseId: inbox.id,
       key: "journalDay",
       name: "Journal day",
       targetDatabaseId: journalDatabaseId,
-      cardinality: "one_to_many",
+      cardinality: "many_to_many",
       owner: "system",
       ownerProcess: INBOX_MODULE_ID,
     },
@@ -153,6 +162,10 @@ export async function seedInboxPipelineInTransaction(
 
   // Processing proposals -> Inbox / Transcripts: nullable, populated according to `kind`.
   // Both targets are already locked, so both are one-directional for the same reason as above.
+  // `many_to_many`, not `one_to_many` (issue #82): a source Inbox item/Transcript can end up
+  // referenced by more than one proposal over time (e.g. a superseding proposal created after
+  // an earlier one for the same source was rejected/soft-deleted), and with no inverse to
+  // swap onto, `one_to_many` would wrongly cap each source to a single proposal.
   const processingProposalsContext: SystemRelationWriteContext = { ownerProcess: PROCESSING_PROPOSALS_MODULE_ID };
   await relate(
     {
@@ -160,7 +173,7 @@ export async function seedInboxPipelineInTransaction(
       key: "sourceInbox",
       name: "Source inbox item",
       targetDatabaseId: inbox.id,
-      cardinality: "one_to_many",
+      cardinality: "many_to_many",
       owner: "system",
       ownerProcess: PROCESSING_PROPOSALS_MODULE_ID,
     },
@@ -172,7 +185,7 @@ export async function seedInboxPipelineInTransaction(
       key: "sourceTranscript",
       name: "Source transcript",
       targetDatabaseId: transcriptsDatabaseId,
-      cardinality: "one_to_many",
+      cardinality: "many_to_many",
       owner: "system",
       ownerProcess: PROCESSING_PROPOSALS_MODULE_ID,
     },
