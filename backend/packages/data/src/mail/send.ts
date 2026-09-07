@@ -119,7 +119,7 @@ async function unlinkFromFoldersWithSpecialPurpose(
     [reldef.id, input.itemId, input.foldersDatabaseId, input.specialPurpose],
   );
   for (const row of rows) {
-    await deleteRelationWithClient(client, { relationPropertyId: input.folderRelationPropertyId, itemId: input.itemId, targetItemId: row.folder_id });
+    await deleteRelationWithClient(client, { relationPropertyId: input.folderRelationPropertyId, callerItemId: input.itemId, targetItemId: row.folder_id });
   }
 }
 
@@ -253,7 +253,7 @@ export async function sendDraftEmail(
     });
     await createRelationWithClient(client, {
       relationPropertyId: moduleIds.folderRelationPropertyId,
-      itemId: input.draftItemId,
+      callerItemId: input.draftItemId,
       targetItemId: sentFolderItemId,
     });
 

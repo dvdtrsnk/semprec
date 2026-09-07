@@ -167,7 +167,7 @@ export async function ingestEmailMessage(client: PoolClient, input: IngestEmailM
 
   await createRelationWithClient(client, {
     relationPropertyId: input.folderRelationPropertyId,
-    itemId,
+    callerItemId: itemId,
     targetItemId: input.folderItemId,
     metadata: input.folderUid !== undefined ? { uid: input.folderUid } : {},
   });

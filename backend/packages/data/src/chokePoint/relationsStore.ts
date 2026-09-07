@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { NotFoundError, ValidationError } from "../errors.js";
-import type { ItemRelationRow, RelationDefinitionRow } from "../types.js";
+import type { RelationDefinitionRow, RelationEdge } from "../types.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 
 const CARDINALITIES: readonly RelationDefinitionRow["cardinality"][] = ["one_to_one", "one_to_many", "many_to_many"];
@@ -19,13 +19,13 @@ function mapRelationDefinitionRow(row: {
   };
 }
 
-function mapItemRelationRow(row: {
+function mapRelationEdge(row: {
   id: string;
   relation_definition_id: string;
   item_a: string;
   item_b: string;
   metadata: Record<string, unknown>;
-}): ItemRelationRow {
+}): RelationEdge {
   return {
     id: row.id,
     relationDefinitionId: row.relation_definition_id,
@@ -108,7 +108,10 @@ export interface CreateItemRelationInput {
   metadata?: Record<string, unknown>;
 }
 
-export async function createItemRelation(client: PoolClient, input: CreateItemRelationInput): Promise<ItemRelationRow> {
+/** Idempotent on the unique `(relationDefinitionId, itemA, itemB)` tuple: a repeat call
+ * replaces the entire stored metadata object, including back to `{}` when the caller omits
+ * `metadata` — never merges JSON. */
+export async function createItemRelation(client: PoolClient, input: CreateItemRelationInput): Promise<RelationEdge> {
   const definition = await getRelationDefinition(client, input.relationDefinitionId);
   if (!definition) throw new NotFoundError(`Relation definition ${input.relationDefinitionId} not found`);
 
@@ -119,21 +122,41 @@ export async function createItemRelation(client: PoolClient, input: CreateItemRe
      RETURNING id, relation_definition_id, item_a, item_b, metadata`,
     [input.relationDefinitionId, input.itemA, input.itemB, JSON.stringify(input.metadata ?? {})],
   );
-  return mapItemRelationRow(rows[0]);
+  return mapRelationEdge(rows[0]);
 }
 
+export interface UpdateItemRelationInput {
+  relationDefinitionId: string;
+  itemA: string;
+  itemB: string;
+  metadata: Record<string, unknown>;
+}
+
+/** Requires an existing edge on the normalized tuple; returns `null` (never inserts) when
+ * there is none, so the caller can raise `404 not_found` — endpoints are immutable, so an
+ * update never changes `itemA`/`itemB`, only replaces `metadata` in full. */
+export async function updateItemRelation(client: PoolClient, input: UpdateItemRelationInput): Promise<RelationEdge | null> {
+  const { rows } = await client.query(
+    `UPDATE item_relations SET metadata = $4::jsonb
+     WHERE relation_definition_id = $1 AND item_a = $2 AND item_b = $3
+     RETURNING id, relation_definition_id, item_a, item_b, metadata`,
+    [input.relationDefinitionId, input.itemA, input.itemB, JSON.stringify(input.metadata)],
+  );
+  return rows[0] ? mapRelationEdge(rows[0]) : null;
+}
+
+/** Idempotent: returns normally whether or not the edge existed. */
 export async function deleteItemRelation(
   client: PoolClient,
   relationDefinitionId: string,
   itemA: string,
   itemB: string,
-): Promise<ItemRelationRow | null> {
-  const { rows } = await client.query(
-    `DELETE FROM item_relations WHERE relation_definition_id = $1 AND item_a = $2 AND item_b = $3
-     RETURNING id, relation_definition_id, item_a, item_b, metadata`,
-    [relationDefinitionId, itemA, itemB],
-  );
-  return rows[0] ? mapItemRelationRow(rows[0]) : null;
+): Promise<void> {
+  await client.query(`DELETE FROM item_relations WHERE relation_definition_id = $1 AND item_a = $2 AND item_b = $3`, [
+    relationDefinitionId,
+    itemA,
+    itemB,
+  ]);
 }
 
 /** Every edge for `itemId` on this relation, from either side (relations are stored once, undirected in storage). */
@@ -141,25 +164,25 @@ export async function listRelationsForItem(
   client: PoolClient,
   relationDefinitionId: string,
   itemId: string,
-): Promise<ItemRelationRow[]> {
+): Promise<RelationEdge[]> {
   const { rows } = await client.query(
     `SELECT id, relation_definition_id, item_a, item_b, metadata FROM item_relations
      WHERE relation_definition_id = $1 AND (item_a = $2 OR item_b = $2)`,
     [relationDefinitionId, itemId],
   );
-  return rows.map(mapItemRelationRow);
+  return rows.map(mapRelationEdge);
 }
 
 /** Every edge `itemId` participates in, across all relation definitions — used for the soft-delete/restore rollup trigger. */
-export async function listAllRelationsForItem(client: PoolClient, itemId: string): Promise<ItemRelationRow[]> {
+export async function listAllRelationsForItem(client: PoolClient, itemId: string): Promise<RelationEdge[]> {
   const { rows } = await client.query(
     `SELECT id, relation_definition_id, item_a, item_b, metadata FROM item_relations WHERE item_a = $1 OR item_b = $1`,
     [itemId],
   );
-  return rows.map(mapItemRelationRow);
+  return rows.map(mapRelationEdge);
 }
 
-export function otherSide(relation: ItemRelationRow, itemId: string): string {
+export function otherSide(relation: RelationEdge, itemId: string): string {
   if (relation.itemA === itemId) return relation.itemB;
   if (relation.itemB === itemId) return relation.itemA;
   throw new ValidationError(`Item ${itemId} is not part of relation ${relation.id}`);

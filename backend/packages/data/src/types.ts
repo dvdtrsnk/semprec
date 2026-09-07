@@ -75,7 +75,10 @@ export interface ItemRow {
   deletedAt: string | null;
 }
 
-export interface ItemRelationRow {
+/** The normalized shape of a stored relation edge (issue #211): `itemA`/`itemB` are the
+ * stored, definition-side endpoints, not caller-relative — see `CreateRelationInput` in
+ * chokePoint.ts for the caller-relative shape that gets normalized into this one. */
+export interface RelationEdge {
   id: string;
   relationDefinitionId: string;
   itemA: string;

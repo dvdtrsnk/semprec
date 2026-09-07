@@ -162,7 +162,7 @@ export async function reconcileGmailAccount(dbClient: PoolClient, gmail: GmailMa
       for (const edge of currentEdges) {
         const folderItemId = otherSide(edge, itemId);
         if (!mappedSet.has(folderItemId)) {
-          await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, itemId, targetItemId: folderItemId });
+          await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, callerItemId: itemId, targetItemId: folderItemId });
         }
       }
     }
@@ -174,7 +174,7 @@ export async function reconcileGmailAccount(dbClient: PoolClient, gmail: GmailMa
     const currentEdges = await listRelationsForItem(dbClient, relationDefinition.id, meta.itemId);
     for (const edge of currentEdges) {
       const folderItemId = otherSide(edge, meta.itemId);
-      await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, itemId: meta.itemId, targetItemId: folderItemId });
+      await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, callerItemId: meta.itemId, targetItemId: folderItemId });
     }
   }
 

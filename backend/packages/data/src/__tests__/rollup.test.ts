@@ -93,15 +93,15 @@ describe("rollup engine", () => {
     const task1 = await chokePoint.createItem({ databaseId: tasks.id, properties: { hours: 3 } });
     const task2 = await chokePoint.createItem({ databaseId: tasks.id, properties: { hours: 4 } });
 
-    await chokePoint.createRelation({ relationPropertyId: tasksRelation.id, itemId: project.id, targetItemId: task1.id });
-    await chokePoint.createRelation({ relationPropertyId: tasksRelation.id, itemId: project.id, targetItemId: task2.id });
+    await chokePoint.createRelation({ relationPropertyId: tasksRelation.id, callerItemId: project.id, targetItemId: task1.id });
+    await chokePoint.createRelation({ relationPropertyId: tasksRelation.id, callerItemId: project.id, targetItemId: task2.id });
     await drainQueue();
 
     const afterLink = await chokePoint.getItem(projects.id, project.id);
     expect(afterLink?.computed[countProp.key]).toBe(2);
     expect(afterLink?.computed[sumProp.key]).toBe(7);
 
-    await chokePoint.deleteRelation({ relationPropertyId: tasksRelation.id, itemId: project.id, targetItemId: task1.id });
+    await chokePoint.deleteRelation({ relationPropertyId: tasksRelation.id, callerItemId: project.id, targetItemId: task1.id });
     await drainQueue();
     const afterUnlink = await chokePoint.getItem(projects.id, project.id);
     expect(afterUnlink?.computed[countProp.key]).toBe(1);
@@ -112,7 +112,7 @@ describe("rollup engine", () => {
     const { projects, tasks, tasksRelation, sumProp } = await makeProjectsAndTasks();
     const project = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
     const task1 = await chokePoint.createItem({ databaseId: tasks.id, properties: { hours: 3 } });
-    await chokePoint.createRelation({ relationPropertyId: tasksRelation.id, itemId: project.id, targetItemId: task1.id });
+    await chokePoint.createRelation({ relationPropertyId: tasksRelation.id, callerItemId: project.id, targetItemId: task1.id });
     await drainQueue();
 
     await chokePoint.updateItem({ databaseId: tasks.id, itemId: task1.id, propertiesPatch: { hours: 10 } });
@@ -126,7 +126,7 @@ describe("rollup engine", () => {
     const { projects, tasks, tasksRelation, countProp } = await makeProjectsAndTasks();
     const project = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
     const task1 = await chokePoint.createItem({ databaseId: tasks.id, properties: {} });
-    await chokePoint.createRelation({ relationPropertyId: tasksRelation.id, itemId: project.id, targetItemId: task1.id });
+    await chokePoint.createRelation({ relationPropertyId: tasksRelation.id, callerItemId: project.id, targetItemId: task1.id });
     await drainQueue();
 
     await chokePoint.softDeleteItem(tasks.id, task1.id);
@@ -161,7 +161,7 @@ describe("rollup engine", () => {
     });
     const project = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
     const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { hours: 5 } });
-    await chokePoint.createRelation({ relationPropertyId: relation.id, itemId: project.id, targetItemId: task.id });
+    await chokePoint.createRelation({ relationPropertyId: relation.id, callerItemId: project.id, targetItemId: task.id });
     await drainQueue();
 
     const sumProp = await chokePoint.createProperty({

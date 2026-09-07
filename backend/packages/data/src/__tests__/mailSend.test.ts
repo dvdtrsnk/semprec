@@ -75,14 +75,14 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
         { databaseId: foldersId, properties: { name: "Drafts", behavior: "folder", specialPurpose: "drafts" } },
         { allowedSystemKeys: ["name", "behavior", "specialPurpose"] },
       );
-      await createRelationWithClient(client, { relationPropertyId: mailboxFolderRelationPropertyId, itemId: drafts.id, targetItemId: mailboxId });
+      await createRelationWithClient(client, { relationPropertyId: mailboxFolderRelationPropertyId, callerItemId: drafts.id, targetItemId: mailboxId });
 
       const sent = await createItemWithClient(
         client,
         { databaseId: foldersId, properties: { name: "Sent", behavior: "folder", specialPurpose: "sent" } },
         { allowedSystemKeys: ["name", "behavior", "specialPurpose"] },
       );
-      await createRelationWithClient(client, { relationPropertyId: mailboxFolderRelationPropertyId, itemId: sent.id, targetItemId: mailboxId });
+      await createRelationWithClient(client, { relationPropertyId: mailboxFolderRelationPropertyId, callerItemId: sent.id, targetItemId: mailboxId });
     });
 
     moduleIds = { emailsDatabaseId: emailsId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId, folderRelationPropertyId, mailboxFolderRelationPropertyId };

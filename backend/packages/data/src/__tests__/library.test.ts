@@ -183,7 +183,7 @@ describe("library module (issue #25)", () => {
     const person = await chokePoint.createItem({ databaseId: peopleId, properties: { name: "Alex" } });
 
     const watchedWith = (await chokePoint.listProperties(moviesId)).find((p) => p.key === "watchedWith")!;
-    await chokePoint.createRelation({ relationPropertyId: watchedWith.id, itemId: movie.id, targetItemId: person.id, metadata: { rating: 4 } });
+    await chokePoint.createRelation({ relationPropertyId: watchedWith.id, callerItemId: movie.id, targetItemId: person.id, metadata: { rating: 4 } });
 
     const { rows } = await pool.query<{ metadata: Record<string, unknown> }>(
       `SELECT metadata FROM item_relations WHERE item_a = $1 OR item_b = $1`,

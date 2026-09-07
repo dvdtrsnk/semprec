@@ -41,7 +41,7 @@ export async function createEmailDraft(client: PoolClient, input: CreateEmailDra
 
   await createRelationWithClient(client, {
     relationPropertyId: input.folderRelationPropertyId,
-    itemId: item.id,
+    callerItemId: item.id,
     targetItemId: input.draftsFolderItemId,
   });
 

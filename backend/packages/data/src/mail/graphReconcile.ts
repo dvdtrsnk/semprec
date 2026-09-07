@@ -109,7 +109,7 @@ export async function reconcileGraphAccount(dbClient: PoolClient, graph: GraphMa
       const edges = await listRelationsForItem(dbClient, relationDefinition.id, meta.itemId);
       for (const edge of edges) {
         const folderItemId = otherSide(edge, meta.itemId);
-        await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, itemId: meta.itemId, targetItemId: folderItemId });
+        await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, callerItemId: meta.itemId, targetItemId: folderItemId });
       }
       continue;
     }
@@ -134,7 +134,7 @@ export async function reconcileGraphAccount(dbClient: PoolClient, graph: GraphMa
     for (const edge of edges) {
       const otherFolderId = otherSide(edge, result.itemId);
       if (otherFolderId !== folderItemId) {
-        await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, itemId: result.itemId, targetItemId: otherFolderId });
+        await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, callerItemId: result.itemId, targetItemId: otherFolderId });
       }
     }
   }

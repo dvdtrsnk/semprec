@@ -111,7 +111,7 @@ async function syncGmailLabelFolders(
       specialPurpose: GMAIL_LABEL_TO_PURPOSE[label] ?? "none",
     });
     mappedFolderIds.add(folderItemId);
-    await createRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, itemId: emailItemId, targetItemId: folderItemId });
+    await createRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, callerItemId: emailItemId, targetItemId: folderItemId });
   }
 
   // Drop any label-derived edge for a label this message no longer carries — never touches
@@ -122,7 +122,7 @@ async function syncGmailLabelFolders(
   for (const edge of currentEdges) {
     const otherFolderId = otherSide(edge, emailItemId);
     if (otherFolderId !== params.folderItemId && !mappedFolderIds.has(otherFolderId)) {
-      await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, itemId: emailItemId, targetItemId: otherFolderId });
+      await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, callerItemId: emailItemId, targetItemId: otherFolderId });
     }
   }
 }
@@ -189,7 +189,7 @@ export async function reconcileImapFolder(dbClient: PoolClient, imap: ImapMailCl
   for (const uid of vanishedUids) {
     const emailItemId = await findEmailItemIdByFolderUid(dbClient, relationDefinition.id, params.folderItemId, uid);
     if (emailItemId) {
-      await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, itemId: emailItemId, targetItemId: params.folderItemId });
+      await deleteRelationWithClient(dbClient, { relationPropertyId: params.folderRelationPropertyId, callerItemId: emailItemId, targetItemId: params.folderItemId });
     }
   }
 
