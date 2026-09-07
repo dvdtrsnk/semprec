@@ -93,6 +93,25 @@ export async function insertItem(client: Queryable, input: InsertItemInput): Pro
   return mapItemRow(rows[0]);
 }
 
+/**
+ * Looks up the item already committed for an idempotency key reserved against `databaseId`,
+ * without reserving a new key or writing anything — the read half of `insertItem`'s replay
+ * path, split out so the archived-database guard can decide whether a create is an allowed
+ * no-write replay *before* calling `insertItem` at all. Returns null when no reservation exists
+ * for this exact key+database (including a key reserved for a *different* database, which is a
+ * new key as far as this database is concerned), or when the reservation's item row is somehow
+ * missing (the same defensive, practically-unreachable case `insertItem` itself guards against).
+ */
+export async function findIdempotentReplay(client: Queryable, databaseId: string, idempotencyKey: string): Promise<ItemRow | null> {
+  const { rows } = await client.query<{ item_id: string; database_id: string }>(
+    `SELECT item_id, database_id FROM idempotency_keys WHERE key = $1`,
+    [idempotencyKey],
+  );
+  const reserved = rows[0];
+  if (!reserved || reserved.database_id !== databaseId) return null;
+  return getItemById(client, databaseId, reserved.item_id);
+}
+
 export interface UpdateItemInput {
   databaseId: string;
   itemId: string;
