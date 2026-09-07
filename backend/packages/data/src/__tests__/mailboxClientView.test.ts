@@ -6,7 +6,8 @@ import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/vie
 import { insertItem } from "../chokePoint/itemsStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { ValidationError } from "../errors.js";
-import { MAILBOX_CLIENT_VIEW_TYPE } from "../views/mailboxClientViewType.js";
+import { MAILBOX_CLIENT_VIEW_TYPE, mailboxClientConfigSchema } from "../views/mailboxClientViewType.js";
+import { FLAGGED_PROPERTY_KEY, READ_PROPERTY_KEY } from "../mail/messageFlags.js";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
@@ -80,6 +81,16 @@ describe("mailbox client view (issue #96)", () => {
       await expect(
         chokePoint.createView({ databaseId: emailsId, type: MAILBOX_CLIENT_VIEW_TYPE, name: "Broken", config: {} }),
       ).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    it("defaults readPropertyKey to the canonical read property key when omitted", () => {
+      const config = mailboxClientConfigSchema.parse({ foldersDatabaseId: "00000000-0000-0000-0000-000000000000" });
+      expect(config.readPropertyKey).toBe(READ_PROPERTY_KEY);
+    });
+
+    it("defaults flaggedPropertyKey to the canonical flagged property key when omitted", () => {
+      const config = mailboxClientConfigSchema.parse({ foldersDatabaseId: "00000000-0000-0000-0000-000000000000" });
+      expect(config.flaggedPropertyKey).toBe(FLAGGED_PROPERTY_KEY);
     });
 
     it("rejects a mailbox-scoped config that names an item without the database it lives in", async () => {

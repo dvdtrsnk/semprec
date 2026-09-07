@@ -5,11 +5,17 @@
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testSupport": "./src/testSupport/testDb.ts"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json && cp -r src/db/migrations dist/db/migrations",
+    "check-migration-numbering": "node scripts/check-migration-numbering.mjs"
   },
   "dependencies": {
     "@semprec/credentials": "workspace:*",
+    "@semprec/module-registry": "workspace:*",
     "@semprec/queue": "workspace:*",
     "imapflow": "^1.7.6",
     "luxon": "^3.7.2",

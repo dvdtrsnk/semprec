@@ -3,12 +3,14 @@ export { runMigrations } from "./db/migrate.js";
 export * from "./errors.js";
 export * from "./types.js";
 
-export { createChokePoint, type ChokePoint } from "./chokePoint/chokePoint.js";
+export { createChokePoint, createItemWithClient, type ChokePoint } from "./chokePoint/chokePoint.js";
+export type { CreateItemInput } from "./chokePoint/chokePoint.js";
 export type { CreateDatabaseInput } from "./chokePoint/databasesStore.js";
 export type { CreatePropertyInput } from "./chokePoint/propertiesStore.js";
 export type { ListItemsOptions } from "./chokePoint/itemsStore.js";
 export type { CreateViewInput, PatchViewInput } from "./chokePoint/viewsStore.js";
 export * from "./chokePoint/viewTypeRegistry.js";
+export { manifest as schemaCoreModuleManifest } from "./chokePoint/schemaCoreModuleManifest.js";
 
 export * from "./views/filterTree.js";
 export { compileFilterNode } from "./views/filterCompiler.js";
@@ -19,6 +21,7 @@ export * from "./views/mailboxClientViewType.js";
 export type { FilterProperty, FilterProperties } from "./views/filterCompiler.js";
 export { buildFilterProperties } from "./views/filterProperties.js";
 export type { QueryViewOptions, QueryViewResult } from "./views/viewQuery.js";
+export { manifest as viewsModuleManifest } from "./views/viewsModuleManifest.js";
 
 export * from "./scheduler/rule.js";
 export { computeNextFireAt } from "./scheduler/nextFireAt.js";
@@ -44,16 +47,33 @@ export {
   runPropertyTypeMigrationJob,
   handlePropertyTypeMigrationTask,
 } from "./migrationJob/propertyTypeMigration.js";
+export { runModuleDataMigration, runModuleDataMigrations } from "./migrationJob/moduleDataMigration.js";
 
 export * from "./manifest/permissionManifest.js";
 export * from "./manifest/driftCheck.js";
+export * from "./manifest/moduleRegistryDriftCheck.js";
+export * from "./manifest/knownActionIds.js";
+export * from "./notifications/findings.js";
 
 export * from "./agentRuns/agentRunsStore.js";
 export { seedSystem } from "./seed/seedSystem.js";
 export * from "./seed/tenDatabaseKeys.js";
 export { seedTenDatabasesInTransaction, type TenDatabases } from "./seed/seedTenDatabases.js";
+export { manifest as systemDatabasesModuleManifest } from "./seed/systemDatabasesModuleManifest.js";
 export * from "./systemSettings.js";
 export { createCoreTaskList, CORE_CRONTAB } from "./worker.js";
+export { mergeModuleTaskList, CORE_TASK_NAME_SET } from "./moduleTasks.js";
+export {
+  deriveDesiredWorkerInstances,
+  createModuleWorkerInstanceReconciler,
+  workerInstanceId,
+  type DesiredWorkerInstance,
+  type WorkerInstanceIdentity,
+  type WorkerActiveRowIdsSource,
+  type WorkerSupervisorPort,
+  type ModuleWorkerInstanceReconciler,
+} from "./moduleWorkers.js";
+export { manifest as libraryModuleManifest } from "./library/libraryModuleManifest.js";
 export {
   createMailLiveSyncRoot,
   createNoopMailLiveSyncLifecycleFactory,
@@ -63,6 +83,7 @@ export {
   type MailLiveSyncRoot,
   type MailLiveSyncRootOptions,
 } from "./mail/mailLiveSyncRoot.js";
+export { manifest as mailModuleManifest } from "./mail/mailModuleManifest.js";
 export * from "./realtimeHook.js";
 
 export { createDocStore, type DocStore, type DocVersion } from "./docs/docStore.js";
@@ -84,6 +105,7 @@ export {
   handleDocHistoryCleanupTask,
   openDocVersionAt,
 } from "./docs/docHistory.js";
+export { manifest as docsModuleManifest } from "./docs/docsModuleManifest.js";
 
 export * from "./blobs/blobsStore.js";
 
@@ -96,3 +118,4 @@ export * from "./journal/journalStore.js";
 export * from "./views/temporalSwitcherViewType.js";
 
 export * from "./inbox/inboxTickAction.js";
+export { manifest as inboxPipelineModuleManifest } from "./inbox/inboxModuleManifest.js";

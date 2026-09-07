@@ -6,6 +6,7 @@ import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 import { ValidationError } from "../errors.js";
+import { runPropertyTypeMigrationJob } from "../migrationJob/propertyTypeMigration.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -52,6 +53,28 @@ describe("property type migration", () => {
     await drainQueue();
 
     expect((await chokePoint.getProperty(prop.id))!.migrationStatus).toBe("done");
+  });
+
+  it("two concurrent runs of the same property's migration job converge on one consistent, correct result", async () => {
+    const db = await chokePoint.createDatabase({ name: "D5" });
+    const prop = await chokePoint.createProperty({ databaseId: db.id, key: "score", name: "Score", type: "text" });
+    const good = await chokePoint.createItem({ databaseId: db.id, properties: { score: "42" } });
+    const bad = await chokePoint.createItem({ databaseId: db.id, properties: { score: "not a number" } });
+
+    await chokePoint.changePropertyType(prop.id, "number");
+    // Run the job body itself twice concurrently, rather than draining the queue once,
+    // to exercise the retry-replay guarantee documented on isAlreadyTargetType: a second
+    // pass over rows the first pass already converted must recognize and skip them
+    // instead of re-converting (and failing) an already-converted value.
+    await Promise.all([
+      runPropertyTypeMigrationJob(pool, prop.id, "text"),
+      runPropertyTypeMigrationJob(pool, prop.id, "text"),
+    ]);
+
+    const finalProp = await chokePoint.getProperty(prop.id);
+    expect(finalProp!.migrationStatus).toBe("partial");
+    expect((await chokePoint.getItem(db.id, good.id))?.properties.score).toBe(42);
+    expect((await chokePoint.getItem(db.id, bad.id))?.properties).not.toHaveProperty("score");
   });
 
   it("rejects a retype with no defined conversion path", async () => {

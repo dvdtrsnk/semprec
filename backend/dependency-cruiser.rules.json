@@ -1,0 +1,15 @@
+{
+  "forbidden": [
+    {
+      "name": "no-module-service-internal-cross-import",
+      "severity": "error",
+      "comment": "A module or service may only be imported by another module or service through its public entry point (src/index.ts). Reach into another module's or service's internals directly, and this rule fires. Shared packages/* stay unrestricted since they are the intended neutral integration point.",
+      "from": {
+        "path": "^(modules|services)/([^/]+)/src/"
+      },
+      "to": {
+        "path": "^(?!$1/$2/)(modules|services)/[^/]+/src/(?!index\\.ts$)"
+      }
+    }
+  ]
+}

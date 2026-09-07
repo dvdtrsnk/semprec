@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import {
   createBoundedImapIdleLifecycleFactory,
@@ -12,7 +11,6 @@ import {
 } from "../mail/imapIdleLifecycle.js";
 
 let pool: Pool;
-let chokePoint: ChokePoint;
 
 async function pendingMailSyncJobCount(mailboxItemId: string): Promise<number> {
   const { rows } = await pool.query<{ count: string }>(
@@ -96,7 +94,6 @@ describe("bounded IMAP IDLE reconnect backoff (issue #196)", () => {
 describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
-    chokePoint ??= createChokePoint(pool);
     await resetDatabase(pool);
     await seedSystem(pool);
   });
