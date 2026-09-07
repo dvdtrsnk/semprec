@@ -175,7 +175,7 @@ export interface CreateRelationPropertyInput {
    * created unlocked.
    */
   locked?: boolean;
-  inverse?: Omit<RelationPropertySideInput, "key" | "name"> & Pick<RelationPropertySideInput, "key" | "name">;
+  inverse?: RelationPropertySideInput;
 }
 
 /** `ownerProcess` is required and non-empty exactly when `owner` is `'system'`, and must be absent otherwise — enforced per side, independently. */

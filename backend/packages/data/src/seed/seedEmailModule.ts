@@ -141,7 +141,10 @@ export async function seedEmailModuleInTransaction(
       cardinality: "one_to_many",
       owner: "system",
       ownerProcess: FOLDERS_MODULE_ID,
-      inverse: { key: "folders", name: "Folders" },
+      // Also system-owned by the same process: otherwise a caller could write this edge
+      // through the inverse property's default owner:'user', bypassing the ownership the
+      // source side declares.
+      inverse: { key: "folders", name: "Folders", owner: "system", ownerProcess: FOLDERS_MODULE_ID },
     },
     { ownerProcess: FOLDERS_MODULE_ID },
   );
@@ -176,7 +179,10 @@ export async function seedEmailModuleInTransaction(
       cardinality: "many_to_many",
       owner: "system",
       ownerProcess: EMAILS_MODULE_ID,
-      inverse: { key: "emails", name: "Emails" },
+      // Also system-owned by the same process: otherwise a caller could write this edge
+      // through the inverse property's default owner:'user', bypassing the ownership the
+      // source side declares.
+      inverse: { key: "emails", name: "Emails", owner: "system", ownerProcess: EMAILS_MODULE_ID },
     },
     emailsContext,
   );
