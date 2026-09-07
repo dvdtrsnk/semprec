@@ -115,4 +115,55 @@ describe("runAgentSession", () => {
     expect(rows[0].status).toBe("error");
     expect(rows[0].result).toBe("boom");
   });
+
+  it("pushes every message, including message_update deltas, as a live agent_run_event NOTIFY", async () => {
+    const listenClient = await pool.connect();
+    await listenClient.query("LISTEN semprec_realtime");
+    const notifications: Array<{ channel: string; payload?: string }> = [];
+    listenClient.on("notification", (msg) => notifications.push(msg));
+
+    const messages: AgentMessage[] = [
+      { kind: "turn_start" },
+      { kind: "message_update", text: "partial" },
+      { kind: "message", text: "done" },
+      { kind: "turn_end" },
+    ];
+
+    const run = await runAgentSession(pool, {
+      createAgentSession: fakeSession(messages),
+      task: "push live",
+      triggeredBy: "user",
+    });
+
+    const pushedForRun = () =>
+      notifications
+        .filter((n) => n.channel === "semprec_realtime")
+        .map((n) => JSON.parse(n.payload ?? "{}"))
+        .filter((m) => m.agentRunId === run.id);
+
+    // NOTIFY delivery to a LISTEN-ing client is asynchronous relative to the query that
+    // triggered it; poll instead of a fixed sleep so this isn't flaky under load.
+    const expectedCount = 6; // run_status(running), turn_start, message_update, message, turn_end, run_status(done)
+    const deadline = Date.now() + 5000;
+    while (pushedForRun().length < expectedCount && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    const pushed = pushedForRun();
+
+    expect(pushed.map((m) => m.kind)).toEqual([
+      "run_status",
+      "turn_start",
+      "message_update",
+      "message",
+      "turn_end",
+      "run_status",
+    ]);
+    expect(pushed.every((m) => m.type === "agent_run_event")).toBe(true);
+    expect(pushed.find((m) => m.kind === "message_update")?.payload).toEqual({ kind: "message_update", text: "partial" });
+    expect(pushed[0].payload).toEqual({ kind: "run_status", status: "running" });
+    expect(pushed[5].payload).toEqual({ kind: "run_status", status: "done" });
+
+    listenClient.release(true);
+  });
 });

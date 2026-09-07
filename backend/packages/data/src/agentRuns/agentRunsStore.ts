@@ -108,3 +108,16 @@ export async function listAgentRunsByHeartbeat(client: Pool | PoolClient, heartb
   );
   return rows.map(mapRow);
 }
+
+/**
+ * Every run still marked `running` — orphaned after a process restart, since the
+ * in-memory session registry that would otherwise be driving them is gone. Startup
+ * repair (`@semprec/agent-runtime`'s `repairInterruptedRuns`) is the only caller.
+ */
+export async function listRunningAgentRuns(client: Pool | PoolClient): Promise<AgentRunRow[]> {
+  const { rows } = await client.query(
+    `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
+     FROM agent_runs WHERE status = 'running' ORDER BY started_at ASC`,
+  );
+  return rows.map(mapRow);
+}
