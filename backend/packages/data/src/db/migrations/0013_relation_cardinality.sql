@@ -12,14 +12,12 @@
 -- (unrelated definitions never contend), so the second transaction's check runs only after
 -- the first has committed (or rolled back) and therefore sees its effect.
 --
--- `property_id_a`/`item_a` is the single-valued side: a `one_to_many` definition allows at
--- most one edge per `item_a` (e.g. Tasks.project — a task has one project) while the same
--- `item_b` may be reused across many edges (many tasks share one project) — confirmed by
--- `tenDatabases.test.ts`'s task-recurrence case, which re-links a *different* task
--- (`item_a`) to the *same* project (`item_b`) and must keep succeeding. `one_to_one` applies
--- that same single-edge-per-value rule to both `item_a` and `item_b`. `many_to_many` adds no
--- constraint beyond the existing `(relation_definition_id, item_a, item_b)` uniqueness. The
--- idempotent re-create path (`ON CONFLICT ... DO UPDATE SET metadata`,
+-- Per the issue's contract, `property_id_a`/`item_a` is the "one" side of a `one_to_many`
+-- definition: one `item_a` may have many `item_b` edges, but a given `item_b` may point to
+-- only one `item_a` — the constraint therefore lands on `item_b`, not `item_a`. `one_to_one`
+-- applies that same single-edge-per-value rule to both `item_a` and `item_b`. `many_to_many`
+-- adds no constraint beyond the existing `(relation_definition_id, item_a, item_b)`
+-- uniqueness. The idempotent re-create path (`ON CONFLICT ... DO UPDATE SET metadata`,
 -- relationsStore.createItemRelation) re-attempts the exact same tuple — excluded explicitly
 -- below so replaying an existing edge is never mistaken for a new conflict.
 CREATE OR REPLACE FUNCTION enforce_relation_cardinality() RETURNS trigger AS $$
@@ -50,13 +48,13 @@ BEGIN
     SELECT EXISTS (
       SELECT 1 FROM item_relations
       WHERE relation_definition_id = NEW.relation_definition_id
-        AND item_a = NEW.item_a
+        AND item_b = NEW.item_b
         AND NOT (item_a = NEW.item_a AND item_b = NEW.item_b)
     ) INTO v_conflict;
     IF v_conflict THEN
       RAISE EXCEPTION USING
         ERRCODE = 'SC001',
-        MESSAGE = format('cardinality_violation: relation %s is one_to_many and item_a %s already has a different item_b', NEW.relation_definition_id, NEW.item_a);
+        MESSAGE = format('cardinality_violation: relation %s is one_to_many and item_b %s already has a different item_a', NEW.relation_definition_id, NEW.item_b);
     END IF;
   END IF;
 
@@ -64,6 +62,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- `CREATE TRIGGER` has no `OR REPLACE` in this Postgres version, so a bare `CREATE TRIGGER`
+-- would raise "trigger already exists" if this migration file were ever re-executed after a
+-- schema_migrations bookkeeping reset without also dropping the schema — unlike the function
+-- above, which `CREATE OR REPLACE` already makes safe to redefine. `DROP ... IF EXISTS` first
+-- makes the whole file re-runnable the same way.
+DROP TRIGGER IF EXISTS item_relations_cardinality_trigger ON item_relations;
 CREATE TRIGGER item_relations_cardinality_trigger
   BEFORE INSERT ON item_relations
   FOR EACH ROW

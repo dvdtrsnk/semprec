@@ -54,17 +54,17 @@ describe("relation cardinality enforcement (issue #82)", () => {
     ).resolves.toBeDefined();
   });
 
-  it("one_to_many: item_a gets at most one edge, but the same item_b may be reused across many item_a", async () => {
+  it("one_to_many: item_b gets at most one edge, but the same item_a may gain many item_b edges", async () => {
     const { property, a1, a2, b1, b2 } = await makeRelation("one_to_many");
 
     await chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: a1.id, targetItemId: b1.id });
 
     await expect(
-      chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: a1.id, targetItemId: b2.id }),
+      chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: a2.id, targetItemId: b1.id }),
     ).rejects.toBeInstanceOf(CardinalityViolationError);
 
     await expect(
-      chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: a2.id, targetItemId: b1.id }),
+      chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: a1.id, targetItemId: b2.id }),
     ).resolves.toBeDefined();
   });
 
@@ -155,12 +155,24 @@ describe("relation cardinality enforcement (issue #82)", () => {
       await clientY.query("BEGIN");
       const pendingY = createRelationWithClient(clientY, input.loser);
 
-      const resultX = await createRelationWithClient(clientX, input.winner);
-      expect(resultX).toBeDefined();
-      await clientX.query("COMMIT");
+      // Each client's own transaction is closed in its own try/catch/finally — if an
+      // assertion throws partway through, both clients still leave the pool with no open
+      // transaction (node-postgres does not roll back on release), rather than X sitting
+      // uncommitted or Y's already-failed INSERT leaving its aborted transaction unclosed.
+      try {
+        const resultX = await createRelationWithClient(clientX, input.winner);
+        await clientX.query("COMMIT");
+        expect(resultX).toBeDefined();
+      } catch (err) {
+        await clientX.query("ROLLBACK").catch(() => {});
+        throw err;
+      }
 
-      await expect(pendingY).rejects.toBeInstanceOf(CardinalityViolationError);
-      await clientY.query("ROLLBACK");
+      try {
+        await expect(pendingY).rejects.toBeInstanceOf(CardinalityViolationError);
+      } finally {
+        await clientY.query("ROLLBACK").catch(() => {});
+      }
 
       const { rows } = await pool.query("SELECT count(*)::int AS n FROM item_relations WHERE relation_definition_id = $1", [
         input.relationDefinitionId,
@@ -172,12 +184,12 @@ describe("relation cardinality enforcement (issue #82)", () => {
     }
   }
 
-  it("under concurrency, a losing racer against a one_to_many conflict (same item_a) is rejected, not silently corrupted", async () => {
-    const { property, a1, b1, b2 } = await makeRelation("one_to_many");
+  it("under concurrency, a losing racer against a one_to_many conflict (same item_b, different item_a) is rejected, not silently corrupted", async () => {
+    const { property, a1, a2, b1 } = await makeRelation("one_to_many");
     await assertLosesRaceOnConflict({
       relationDefinitionId: (property.config as { relationDefinitionId: string }).relationDefinitionId,
       winner: { relationPropertyId: property.id, callerItemId: a1.id, targetItemId: b1.id },
-      loser: { relationPropertyId: property.id, callerItemId: a1.id, targetItemId: b2.id },
+      loser: { relationPropertyId: property.id, callerItemId: a2.id, targetItemId: b1.id },
     });
   });
 
