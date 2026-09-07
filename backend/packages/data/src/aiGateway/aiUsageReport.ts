@@ -2,6 +2,9 @@ import type { Queryable } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import { getAiBudgets, getSystemTimezone, type AiBudgets } from "../systemSettings.js";
 import type { AgentRunUnit } from "../agentRuns/agentRunsStore.js";
+import { assertKnownValue } from "../dbRowValidation.js";
+
+const AGENT_RUN_UNITS: readonly AgentRunUnit[] = ["invocation", "session"];
 
 /** A caller-supplied range wider than this would let one request scan the table unbounded. */
 const MAX_RANGE_DAYS = 366;
@@ -112,7 +115,7 @@ export async function getAiUsageReport(client: Queryable, input: AiUsageReportIn
     provider: row.provider,
     model: row.model,
     nativeUnit: row.native_unit,
-    runUnit: row.run_unit,
+    runUnit: row.run_unit === null ? null : assertKnownValue(AGENT_RUN_UNITS, row.run_unit, "run_unit"),
     callCount: Number(row.call_count),
     costUsd: Number(row.cost_usd),
     inputTokens: row.input_tokens === null ? null : Number(row.input_tokens),
