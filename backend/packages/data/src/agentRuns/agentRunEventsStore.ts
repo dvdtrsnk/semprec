@@ -66,3 +66,18 @@ export async function listAgentRunEvents(client: Pool | PoolClient, agentRunId: 
   );
   return rows.map(mapRow);
 }
+
+/**
+ * Batch form of `listAgentRunEvents` for `@semprec/agent-runtime`'s reconstruction path (#119),
+ * which otherwise issues one round trip per prior session run it walks. Ordered by
+ * `(agent_run_id, id)` so a caller grouping by run still sees each run's own events in
+ * monotonic order.
+ */
+export async function listAgentRunEventsByRunIds(client: Pool | PoolClient, agentRunIds: string[]): Promise<AgentRunEventRow[]> {
+  if (agentRunIds.length === 0) return [];
+  const { rows } = await client.query(
+    `SELECT id, agent_run_id, kind, payload, at FROM agent_run_events WHERE agent_run_id = ANY($1) ORDER BY agent_run_id, id ASC`,
+    [agentRunIds],
+  );
+  return rows.map(mapRow);
+}

@@ -1,8 +1,9 @@
 import type { Pool } from "pg";
 import {
   insertAgentRunEvent,
-  listAgentRunEvents,
+  listAgentRunEventsByRunIds,
   listSessionAgentRuns,
+  type AgentRunEventRow,
   type SessionAgentRunsFilter,
 } from "@semprec/data";
 import type { CompactionAdapter } from "./compaction.js";
@@ -108,12 +109,29 @@ function validateProtocolInvariants(entries: ConversationEntry[]): void {
  */
 async function walkStoredEntries(pool: Pool, filter: SessionAgentRunsFilter): Promise<ConversationEntry[]> {
   const runs = await listSessionAgentRuns(pool, filter);
+  if (runs.length === 0) return [];
+
+  // One batched round trip for every prior run's events instead of one round trip per run --
+  // `runs` is already in wake order, and `listAgentRunEventsByRunIds` sorts by
+  // (agent_run_id, id), so grouping by run id below and walking `runs` in order reconstructs
+  // the exact same sequence a per-run query loop would have.
+  const allEvents = await listAgentRunEventsByRunIds(
+    pool,
+    runs.map((run) => run.id),
+  );
+  const eventsByRunId = new Map<string, AgentRunEventRow[]>();
+  for (const event of allEvents) {
+    const bucket = eventsByRunId.get(event.agentRunId);
+    if (bucket) bucket.push(event);
+    else eventsByRunId.set(event.agentRunId, [event]);
+  }
+
   let entries: ConversationEntry[] = [];
   let seq = 0;
   let parentId: string | null = null;
 
   for (const run of runs) {
-    const events = await listAgentRunEvents(pool, run.id);
+    const events = eventsByRunId.get(run.id) ?? [];
     for (const event of events) {
       if (event.kind === "compaction") {
         entries = parseCompactionPayload(event.payload, run.id);
