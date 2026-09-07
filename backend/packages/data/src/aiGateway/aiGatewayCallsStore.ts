@@ -80,3 +80,28 @@ export async function recordAudioGatewayCall(
   );
   return mapRow(rows[0]);
 }
+
+export interface GatewaySpend {
+  spentToday: number;
+  spentMonth: number;
+}
+
+/**
+ * Calendar-day and calendar-month spend in one query, per #120's budget check. Boundaries are
+ * computed in the system's configured `timezone` (not the Postgres session timezone, typically
+ * UTC), so a daily budget resets at local midnight rather than UTC midnight: `now() AT TIME ZONE
+ * timezone` shifts "now" onto that zone's wall clock, `date_trunc` truncates it there, and the
+ * second `AT TIME ZONE timezone` converts the local midnight back into the UTC instant that
+ * `ai_gateway_calls.at` (timestamptz) is compared against.
+ */
+export async function getGatewaySpend(client: Pool | PoolClient, timezone: string): Promise<GatewaySpend> {
+  const { rows } = await client.query<{ spent_today: string; spent_month: string }>(
+    `SELECT
+       COALESCE(SUM(cost_usd) FILTER (WHERE at >= date_trunc('day', now() AT TIME ZONE $1) AT TIME ZONE $1), 0)  AS spent_today,
+       COALESCE(SUM(cost_usd), 0)                                                                               AS spent_month
+     FROM ai_gateway_calls
+     WHERE at >= date_trunc('month', now() AT TIME ZONE $1) AT TIME ZONE $1`,
+    [timezone],
+  );
+  return { spentToday: Number(rows[0].spent_today), spentMonth: Number(rows[0].spent_month) };
+}

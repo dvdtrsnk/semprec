@@ -1,10 +1,23 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createAgentRun } from "@semprec/data";
+import { createAgentRun, createChokePoint, getSystemSettingsDatabaseId, getSystemSettingsItemId, seedSystem } from "@semprec/data";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { complete, diarize, embed, transcribe } from "../gateway.js";
+import { BudgetExceededError, complete, diarize, embed, transcribe } from "../gateway.js";
 
 let pool: Pool;
+
+async function setBudgets(pool: Pool, budgets: { dailyBudgetUsd?: number | null; monthlyBudgetUsd?: number | null }): Promise<void> {
+  const client = await pool.connect();
+  let itemId: string;
+  let databaseId: string;
+  try {
+    itemId = await getSystemSettingsItemId(client);
+    databaseId = await getSystemSettingsDatabaseId(client);
+  } finally {
+    client.release();
+  }
+  await createChokePoint(pool).updateItem({ databaseId, itemId, propertiesPatch: budgets });
+}
 
 describe("gateway", () => {
   beforeEach(async () => {
@@ -82,5 +95,63 @@ describe("gateway", () => {
 
     const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
     expect(rows).toHaveLength(0);
+  });
+
+  describe("budget enforcement", () => {
+    beforeEach(async () => {
+      await seedSystem(pool);
+    });
+
+    it("rejects the call once the daily cap is already reached, without recording a row", async () => {
+      await setBudgets(pool, { dailyBudgetUsd: 1, monthlyBudgetUsd: null });
+      await pool.query(
+        `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, cost_usd) VALUES ('anthropic', 'claude-sonnet-5', 10, 10, 1)`,
+      );
+
+      await expect(
+        complete(pool, { provider: "anthropic", model: "claude-sonnet-5" }, async () => ({ inputTokens: 1, outputTokens: 1, costUsd: 0.01 })),
+      ).rejects.toThrow(BudgetExceededError);
+
+      const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
+      expect(rows).toHaveLength(1); // only the seeded row above, nothing from the rejected call
+    });
+
+    it("rejects the call once the monthly cap is already reached, independently of the daily cap", async () => {
+      await setBudgets(pool, { dailyBudgetUsd: null, monthlyBudgetUsd: 5 });
+      await pool.query(
+        `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, cost_usd) VALUES ('anthropic', 'claude-sonnet-5', 10, 10, 5)`,
+      );
+
+      await expect(
+        complete(pool, { provider: "anthropic", model: "claude-sonnet-5" }, async () => ({ inputTokens: 1, outputTokens: 1, costUsd: 0.01 })),
+      ).rejects.toThrow(BudgetExceededError);
+    });
+
+    it("never blocks when both caps are null, even with heavy prior spend", async () => {
+      await setBudgets(pool, { dailyBudgetUsd: null, monthlyBudgetUsd: null });
+      await pool.query(
+        `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, cost_usd) VALUES ('anthropic', 'claude-sonnet-5', 10, 10, 10000)`,
+      );
+
+      const result = await complete(pool, { provider: "anthropic", model: "claude-sonnet-5" }, async () => ({
+        inputTokens: 1,
+        outputTokens: 1,
+        costUsd: 0.01,
+      }));
+
+      expect(result).toEqual({ inputTokens: 1, outputTokens: 1, costUsd: 0.01 });
+    });
+
+    it("still allows the call while spend is below both non-null caps", async () => {
+      await setBudgets(pool, { dailyBudgetUsd: 50, monthlyBudgetUsd: 100 });
+
+      const result = await complete(pool, { provider: "anthropic", model: "claude-sonnet-5" }, async () => ({
+        inputTokens: 1,
+        outputTokens: 1,
+        costUsd: 0.01,
+      }));
+
+      expect(result).toEqual({ inputTokens: 1, outputTokens: 1, costUsd: 0.01 });
+    });
   });
 });
