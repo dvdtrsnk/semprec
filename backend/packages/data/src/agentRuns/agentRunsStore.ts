@@ -128,7 +128,7 @@ export async function listSessionAgentRuns(client: Pool | PoolClient, filter: Se
     `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
      FROM agent_runs
      WHERE project_item_id = $1 AND unit = 'session' AND triggered_by = $2 AND parent_run_id IS NOT DISTINCT FROM $3
-     ORDER BY started_at ASC`,
+     ORDER BY wake_seq ASC`,
     [filter.projectItemId, filter.triggeredBy, filter.parentRunId],
   );
   return rows.map(mapRow);

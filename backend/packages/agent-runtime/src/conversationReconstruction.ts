@@ -168,6 +168,9 @@ export async function reconstructConversationHistory(
 
   const prepared = compaction.prepareCompaction(entries, compaction.settings);
   const compacted = await compaction.compact(prepared);
+  // A non-conforming CompactionAdapter is just as capable of handing pi-agent-core a broken
+  // transcript as a corrupted stored payload is — validate its output the same way.
+  validateProtocolInvariants(compacted);
   return { entries: compacted, compacted: true };
 }
 
