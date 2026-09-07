@@ -137,6 +137,20 @@ describe("relation edge contract", () => {
     expect(rows[0].n).toBe(0);
   });
 
+  it("delete stays idempotent for a dangling edge whose endpoint was soft-deleted after the edge was created", async () => {
+    const { participants, assignedTo, task, person } = await makeParticipantsAndTasks();
+    await chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id });
+    await chokePoint.softDeleteItem(participants.id, person.id);
+
+    // Cleanup callers (e.g. inboxTypesStore's deleteInboxTypeWithClient, the Gmail/Graph/IMAP
+    // reconcilers) routinely delete an edge whose endpoint was already soft-deleted — this must
+    // never fail validation, only create/update endpoint validity.
+    await expect(chokePoint.deleteRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id })).resolves.toBeUndefined();
+
+    const { rows } = await pool.query("SELECT count(*)::int AS n FROM item_relations");
+    expect(rows[0].n).toBe(0);
+  });
+
   it("rejects a caller endpoint that does not exist", async () => {
     const { assignedTo, person } = await makeParticipantsAndTasks();
     const missingTaskId = "00000000-0000-0000-0000-000000000000";

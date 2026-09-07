@@ -451,11 +451,20 @@ export async function updateRelationWithClient(client: PoolClient, input: Update
 
 export type DeleteRelationInput = Omit<CreateRelationInput, "metadata">;
 
-/** The relation-unlinking counterpart to `createRelationWithClient` above, factored out for the same reason (issue #26: the IMAP adapter's VANISHED/UID-diff handling removes a folder-membership edge inside its own larger sync transaction). Idempotent: returns regardless of whether the edge existed. */
+/**
+ * The relation-unlinking counterpart to `createRelationWithClient` above, factored out for the
+ * same reason (issue #26: the IMAP adapter's VANISHED/UID-diff handling removes a
+ * folder-membership edge inside its own larger sync transaction). Idempotent: returns
+ * regardless of whether the edge existed — deliberately skips `assertRelationEndpointsValid`
+ * (unlike create/update), because a real cleanup caller routinely deletes an edge *after* one
+ * of its endpoints was soft-deleted (`inboxTypesStore`'s `deleteInboxTypeWithClient`, and the
+ * Gmail/Graph/IMAP reconcilers dropping folder edges for an already-removed message) — endpoint
+ * validity only matters for creating or moving an edge, never for tearing one down. The
+ * normalized `(relationDefinitionId, itemA, itemB)` lookup in `deleteItemRelation` is safe
+ * regardless of endpoint state.
+ */
 export async function deleteRelationWithClient(client: PoolClient, input: DeleteRelationInput): Promise<void> {
   const context = await loadRelationEdgeContext(client, input.relationPropertyId);
-  await assertRelationEndpointsValid(client, context, input.callerItemId, input.targetItemId);
-
   const { itemA, itemB } = normalizeRelationSides(context.reldef, input.relationPropertyId, input.callerItemId, input.targetItemId);
   await relationsStore.deleteItemRelation(client, context.reldef.id, itemA, itemB);
   await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: context.reldef.id, itemA, itemB });
