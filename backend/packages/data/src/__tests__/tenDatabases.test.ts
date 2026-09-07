@@ -172,6 +172,30 @@ describe("ten hardcoded databases (issue #24)", () => {
     expect(reAdvanceOriginal).toBeNull();
   });
 
+  it("task recurrence: a soft-deleted counterpart on a carried-forward edge is dropped, not a reason to fail the advance", async () => {
+    const tasksId = await databaseIdFor("tasks");
+    const projectsId = await databaseIdFor("projects");
+    const project = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Household" } });
+    const task = await chokePoint.createItem({
+      databaseId: tasksId,
+      properties: { name: "Take out trash", status: "notDone", date: "2026-08-24" },
+    });
+
+    const { rows: propRows } = await pool.query("SELECT id FROM properties WHERE database_id = $1 AND key = 'project'", [tasksId]);
+    await chokePoint.createRelation({ relationPropertyId: propRows[0].id, callerItemId: task.id, targetItemId: project.id });
+    await withTransaction(pool, (client) =>
+      createTaskRecurrence(client, { itemId: task.id, mode: "fixed", rule: { kind: "weekdays", days: ["mon", "fri"] } }),
+    );
+
+    await chokePoint.softDeleteItem(projectsId, project.id);
+
+    const next = await advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: task.id, timezone: "Europe/Prague" });
+    expect(next).not.toBeNull();
+
+    const newEdges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, next!.id));
+    expect(newEdges).toHaveLength(0);
+  });
+
   it("task recurrence preserves a one-directional edge where the task is the target side (Events -> Tasks actionItems)", async () => {
     const tasksId = await databaseIdFor("tasks");
     const eventsId = await databaseIdFor("events");

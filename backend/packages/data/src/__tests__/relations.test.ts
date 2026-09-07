@@ -82,6 +82,16 @@ describe("relation edge contract", () => {
     expect(updated.metadata).toEqual({ role: "reviewer" });
   });
 
+  it("update on an edge whose endpoint was soft-deleted since creation is a validation_failed, not a 404 — unlike delete, which stays idempotent", async () => {
+    const { participants, assignedTo, task, person } = await makeParticipantsAndTasks();
+    await chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id, metadata: { role: "owner" } });
+    await chokePoint.softDeleteItem(participants.id, person.id);
+
+    await expect(
+      chokePoint.updateRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id, metadata: { role: "reviewer" } }),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
   it("update on a missing edge is a 404 not_found naming the resource and normalized identity", async () => {
     const { assignedTo, task, person } = await makeParticipantsAndTasks();
 

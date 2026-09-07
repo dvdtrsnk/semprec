@@ -2,6 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
+import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { createItemWithClient, createRelationWithClient, updateItemWithClient } from "../chokePoint/chokePoint.js";
 import { assertValidTimezone } from "../timezone.js";
@@ -72,20 +73,38 @@ export async function advanceTaskRecurrence(pool: Pool, input: AdvanceTaskRecurr
   });
 }
 
-/** Re-links every relation edge `fromItemId` participated in onto `toItemId`, preserving edge metadata (e.g. Transcripts' `{ speaker }`). */
+/**
+ * Re-links every relation edge `fromItemId` participated in onto `toItemId`, preserving edge
+ * metadata (e.g. Transcripts' `{ speaker }`). Skips an edge whose counterpart item (the side
+ * that isn't being replaced) has been soft-deleted since the edge was created — the advance
+ * must not fail over one stale link; it simply drops that edge, the same as if it had never
+ * existed, rather than letting `createRelationWithClient`'s endpoint validation abort the
+ * whole recurrence transaction.
+ */
 async function copyRelationEdges(client: PoolClient, fromItemId: string, toItemId: string): Promise<void> {
   const edges = await relationsStore.listAllRelationsForItem(client, fromItemId);
   for (const edge of edges) {
     const reldef = await relationsStore.getRelationDefinition(client, edge.relationDefinitionId);
     if (!reldef) continue;
-    const newItemA = edge.itemA === fromItemId ? toItemId : edge.itemA;
-    const newItemB = edge.itemB === fromItemId ? toItemId : edge.itemB;
     // propertyIdA always exists (NOT NULL in the schema); anchoring on it — and passing the
     // desired itemA/itemB straight through as itemId/targetItemId — works regardless of
     // which side `fromItemId` was actually on, including a one-directional relation where
     // only side A has a property (e.g. Events -> Tasks "actionItems", propertyIdB null).
     // Picking propertyIdA/propertyIdB based on which side fromItemId was on, and skipping
     // when that side's property is null, would silently drop exactly that case.
+    const propertyA = await propertiesStore.getProperty(client, reldef.propertyIdA);
+    if (!propertyA) continue;
+    const targetDatabaseId = (propertyA.config as { targetDatabaseId?: unknown }).targetDatabaseId;
+    if (typeof targetDatabaseId !== "string") continue;
+
+    const counterpartIsItemA = edge.itemA !== fromItemId;
+    const counterpartId = counterpartIsItemA ? edge.itemA : edge.itemB;
+    const counterpartDatabaseId = counterpartIsItemA ? propertyA.databaseId : targetDatabaseId;
+    const counterpart = await itemsStore.getItemById(client, counterpartDatabaseId, counterpartId);
+    if (!counterpart || counterpart.deletedAt) continue;
+
+    const newItemA = edge.itemA === fromItemId ? toItemId : edge.itemA;
+    const newItemB = edge.itemB === fromItemId ? toItemId : edge.itemB;
     await createRelationWithClient(client, { relationPropertyId: reldef.propertyIdA, callerItemId: newItemA, targetItemId: newItemB, metadata: edge.metadata });
   }
 }
