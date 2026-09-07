@@ -28,9 +28,15 @@ export interface ModuleHeartbeatRuleKindDescriptor {
   nextFireAtExport: string;
 }
 
+/**
+ * `defaultViewType`, when present, names the view type a database's default (system-created)
+ * view uses instead of the generic `"table"` type — e.g. Journal's `temporal-switcher`
+ * (issue #24). Absent means the database's default view is a plain table.
+ */
 export interface ModuleDatabaseDescriptor {
   key: string;
   name: string;
+  defaultViewType?: string;
 }
 
 /**
@@ -96,6 +102,7 @@ const moduleHeartbeatRuleKindDescriptorSchema = z.object({
 const moduleDatabaseDescriptorSchema = z.object({
   key: z.string().min(1),
   name: z.string().min(1),
+  defaultViewType: z.string().min(1).optional(),
 });
 
 const moduleDataMigrationDescriptorSchema = z.object({

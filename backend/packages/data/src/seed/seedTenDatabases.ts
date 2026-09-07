@@ -1,11 +1,12 @@
 import type { PoolClient } from "pg";
+import type { ModuleRegistry } from "@semprec/module-registry";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import { createRelationPropertyWithClient, type CreateRelationPropertyInput } from "../chokePoint/chokePoint.js";
 import type { ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
-import { registerTemporalSwitcherViewType, TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
+import { registerTemporalSwitcherViewType } from "../views/temporalSwitcherViewType.js";
 import { JOURNAL_PERIOD_TYPES } from "../journal/journalStore.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import {
@@ -73,6 +74,7 @@ export async function seedTenDatabasesInTransaction(
   client: PoolClient,
   viewTypeRegistry: ViewTypeRegistry,
   computedKeyRegistry: ComputedKeyRegistry,
+  moduleRegistry: ModuleRegistry,
 ): Promise<TenDatabases> {
   const relate = (input: CreateRelationPropertyInput): Promise<{ property: unknown; inverseProperty: unknown }> =>
     createRelationPropertyWithClient(client, input, computedKeyRegistry);
@@ -382,8 +384,13 @@ export async function seedTenDatabasesInTransaction(
 
   // ---- phase 4: seed default views (created_by: 'system') ----
   registerTemporalSwitcherViewType(viewTypeRegistry);
+  const defaultViewTypeByKey = new Map(
+    (await moduleRegistry.getDatabases())
+      .filter((db) => db.defaultViewType !== undefined)
+      .map((db) => [db.key, db.defaultViewType as string]),
+  );
   for (const [moduleId, database] of Object.entries(all) as [TenDatabaseModuleId, DatabaseRow][]) {
-    const type = moduleId === JOURNAL_MODULE_ID ? TEMPORAL_SWITCHER_VIEW_TYPE : "table";
+    const type = defaultViewTypeByKey.get(moduleId) ?? "table";
     await viewsStore.createView(
       client,
       { databaseId: database.id, type, name: database.name, isDefault: true, createdBy: "system" },
