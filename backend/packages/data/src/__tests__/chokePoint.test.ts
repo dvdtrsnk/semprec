@@ -309,6 +309,12 @@ describe("choke-point", () => {
     await expectDatabaseArchived(
       chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: itemA2.id, targetItemId: itemB.id }),
     );
+    await expectDatabaseArchived(
+      chokePoint.updateRelation({ relationPropertyId: property.id, callerItemId: itemA1.id, targetItemId: itemB.id, metadata: { y: 2 } }),
+    );
+    await expectDatabaseArchived(
+      chokePoint.deleteRelation({ relationPropertyId: property.id, callerItemId: itemA1.id, targetItemId: itemB.id }),
+    );
   });
 
   it("an idempotent create replays the pre-archive row without writing, but a new key is rejected once archived", async () => {
