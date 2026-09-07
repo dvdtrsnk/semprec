@@ -78,7 +78,12 @@ export async function runAgentSession(client: Pool | PoolClient, input: RunAgent
 
     await finishAgentRun(client, run.id, "done", extractResultSnapshot(lastMessage));
   } catch (err) {
-    await finishAgentRun(client, run.id, "error", err instanceof Error ? err.message : String(err));
+    try {
+      await finishAgentRun(client, run.id, "error", err instanceof Error ? err.message : String(err));
+    } catch {
+      // Best-effort: the run is left 'running' if this secondary write fails, but the
+      // original session error below is what the caller needs to see, not this one.
+    }
     throw err;
   }
 

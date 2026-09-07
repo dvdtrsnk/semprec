@@ -60,8 +60,8 @@ describe("runAgentSession", () => {
       "turn_end",
     ]);
 
-    const ids = rows.map((r) => Number(r.id));
-    expect(ids).toEqual([...ids].sort((a, b) => a - b));
+    const ids = rows.map((r) => BigInt(r.id));
+    expect(ids).toEqual([...ids].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
   });
 
   it("never persists message_update deltas", async () => {
