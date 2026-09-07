@@ -36,14 +36,14 @@ export interface RunAgentSessionInput {
   onEvent?: (message: AgentMessage) => void;
 }
 
-function extractResultSnapshot(lastMessage: AgentMessage | null): string | null {
+export function extractResultSnapshot(lastMessage: AgentMessage | null): string | null {
   if (!lastMessage) return null;
   const { text } = lastMessage as { text?: unknown };
   return typeof text === "string" ? text : JSON.stringify(lastMessage);
 }
 
 /** Best-effort: a failed NOTIFY must not fail the run it's reporting on. */
-async function pushLiveEvent(client: Pool | PoolClient, agentRunId: string, kind: string, payload: unknown): Promise<void> {
+export async function pushLiveEvent(client: Pool | PoolClient, agentRunId: string, kind: string, payload: unknown): Promise<void> {
   try {
     await publishRealtimeMessage(client, { type: "agent_run_event", agentRunId, kind, payload });
   } catch (err) {
@@ -51,8 +51,46 @@ async function pushLiveEvent(client: Pool | PoolClient, agentRunId: string, kind
   }
 }
 
-function pushRunStatus(client: Pool | PoolClient, agentRunId: string, status: "running" | "done" | "error"): Promise<void> {
+export function pushRunStatus(client: Pool | PoolClient, agentRunId: string, status: "running" | "done" | "error"): Promise<void> {
   return pushLiveEvent(client, agentRunId, "run_status", { kind: "run_status", status });
+}
+
+/**
+ * Drives one turn's message stream to completion against an already-open `agent_runs` row:
+ * pushes every message live (including `message_update` deltas, never persisted) and appends
+ * the persisted-kind ones to `agent_run_events` in arrival order. Returns the turn's last
+ * `message`-kind event, or null if it never produced one.
+ *
+ * Shared by `runAgentSession` (one turn, closing the run immediately after) and the
+ * delegation registry (#229: many turns reusing one long-lived `agent_runs` row that only
+ * closes on TTL expiry) — both need identical event bookkeeping, just different lifecycle
+ * bookends around it.
+ */
+export async function runAgentTurn(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  messages: AsyncIterable<AgentMessage>,
+  onEvent?: (message: AgentMessage) => void,
+): Promise<AgentMessage | null> {
+  let lastMessage: AgentMessage | null = null;
+
+  for await (const message of messages) {
+    onEvent?.(message);
+
+    // A watcher missing a live update for a persisted kind still catches up from
+    // `agent_run_events`; a missed `message_update` delta is lost, same as a dropped WS frame.
+    await pushLiveEvent(client, agentRunId, message.kind, message);
+
+    if (message.kind === "message_update") continue;
+
+    if (PERSISTED_EVENT_KINDS.has(message.kind)) {
+      await insertAgentRunEvent(client, agentRunId, message.kind as AgentRunEventKind, message);
+    }
+
+    if (message.kind === "message") lastMessage = message;
+  }
+
+  return lastMessage;
 }
 
 /**
@@ -77,25 +115,8 @@ export async function runAgentSession(client: Pool | PoolClient, input: RunAgent
     systemPromptOverride: input.systemPromptOverride,
   });
 
-  let lastMessage: AgentMessage | null = null;
-
   try {
-    for await (const message of session.messages()) {
-      input.onEvent?.(message);
-
-      // A watcher missing a live update for a persisted kind still catches up from
-      // `agent_run_events`; a missed `message_update` delta is lost, same as a dropped WS frame.
-      await pushLiveEvent(client, run.id, message.kind, message);
-
-      if (message.kind === "message_update") continue;
-
-      if (PERSISTED_EVENT_KINDS.has(message.kind)) {
-        await insertAgentRunEvent(client, run.id, message.kind as AgentRunEventKind, message);
-      }
-
-      if (message.kind === "message") lastMessage = message;
-    }
-
+    const lastMessage = await runAgentTurn(client, run.id, session.messages(), input.onEvent);
     await finishAgentRun(client, run.id, "done", extractResultSnapshot(lastMessage));
     await pushRunStatus(client, run.id, "done");
   } catch (err) {
