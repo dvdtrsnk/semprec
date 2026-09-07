@@ -2,8 +2,8 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createAgentRun } from "@semprec/data";
-import { BUSY_ERROR_MESSAGE, DelegationRegistry } from "../delegationRegistry.js";
-import type { AgentMessage, AgentSession, CreateAgentSession } from "../types.js";
+import { BUSY_ERROR_MESSAGE, DelegationRegistry, type ReconstructDelegatedHistory } from "../delegationRegistry.js";
+import type { AgentMessage, AgentSession, ConversationEntry, CreateAgentSession } from "../types.js";
 
 let pool: Pool;
 
@@ -267,6 +267,44 @@ describe("DelegationRegistry", () => {
     ]);
     expect(rows).toHaveLength(1);
     expect(rows[0].status).toBe("running");
+
+    registry.clear();
+  });
+
+  it("persists a compacted reconstruction as a 'compaction' event on the run it seeds", async () => {
+    const registry = new DelegationRegistry(pool);
+    const supervisorRunId = await newSupervisorRunId();
+    const targetProjectItemId = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+    const priorEntry: ConversationEntry = {
+      id: "1",
+      parentId: null,
+      seq: 0,
+      timestamp: 0,
+      message: { kind: "message", text: "summary" },
+    };
+    const reconstructHistory: ReconstructDelegatedHistory = async () => ({ entries: [priorEntry], compacted: true });
+    const { createAgentSession } = scriptedSession([{ kind: "turn_start" }, { kind: "message", text: "woke" }, { kind: "turn_end" }]);
+
+    const result = await registry.delegate({
+      createAgentSession,
+      supervisorRunId,
+      targetProjectItemId,
+      task: "do it",
+      reconstructHistory,
+    });
+    expect(result).toEqual({ ok: true, message: "woke" });
+
+    const { rows: runs } = await pool.query<{ id: string }>(`SELECT id FROM agent_runs WHERE project_item_id = $1`, [
+      targetProjectItemId,
+    ]);
+    expect(runs).toHaveLength(1);
+
+    const { rows: events } = await pool.query<{ kind: string; payload: unknown }>(
+      `SELECT kind, payload FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'compaction'`,
+      [runs[0].id],
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0].payload).toEqual([priorEntry]);
 
     registry.clear();
   });

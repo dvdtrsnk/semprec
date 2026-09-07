@@ -44,3 +44,50 @@ body {
 .button:hover {
   background: var(--color-surface-raised);
 }
+
+.ai-usage__chart {
+  width: 100%;
+  height: auto;
+  max-height: 200px;
+}
+
+.ai-usage__bar {
+  fill: var(--color-accent);
+}
+
+.ai-usage__bar--exceeded {
+  fill: var(--color-danger);
+}
+
+.ai-usage__budget-line {
+  stroke: var(--color-text-muted);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+
+.ai-usage__bar--input-tokens {
+  fill: var(--color-accent);
+}
+
+.ai-usage__bar--output-tokens {
+  fill: var(--color-accent-strong, var(--color-accent));
+}
+
+.ai-usage__budgets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin: var(--space-2) 0;
+}
+
+.ai-usage__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.ai-usage__table th,
+.ai-usage__table td {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  text-align: left;
+}
