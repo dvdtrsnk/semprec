@@ -367,4 +367,49 @@ describe("DelegationRegistry", () => {
 
     registry.clear();
   });
+
+  it("closes the run and drops the entry when a reuse attempt hits a session that cannot continue", async () => {
+    const registry = new DelegationRegistry(pool);
+    const supervisorRunId = await newSupervisorRunId();
+    const targetProjectItemId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+    // No `send` implemented — only supports the very first turn, like every session before #229.
+    const createAgentSession: CreateAgentSession = (): AgentSession => ({
+      async *messages() {
+        yield { kind: "turn_start" };
+        yield { kind: "message", text: "first" };
+        yield { kind: "turn_end" };
+      },
+    });
+
+    const first = await registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: "one" });
+    expect(first).toEqual({ ok: true, message: "first" });
+
+    await expect(
+      registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: "two" }),
+    ).rejects.toThrow("does not support continuation");
+
+    const { rows } = await pool.query<{ status: string; result: string | null }>(
+      `SELECT status, result FROM agent_runs WHERE project_item_id = $1`,
+      [targetProjectItemId],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("error");
+    expect(rows[0].result).toMatch(/does not support continuation/);
+
+    // The entry must be gone, not left busy=false-but-broken — a fresh delegation succeeds.
+    const { createAgentSession: retrySession } = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "recovered" },
+      { kind: "turn_end" },
+    ]);
+    const retry = await registry.delegate({
+      createAgentSession: retrySession,
+      supervisorRunId,
+      targetProjectItemId,
+      task: "retry",
+    });
+    expect(retry).toEqual({ ok: true, message: "recovered" });
+
+    registry.clear();
+  });
 });

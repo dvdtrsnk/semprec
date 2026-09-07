@@ -100,16 +100,17 @@ export class DelegationRegistry {
     if (existing) {
       existing.busy = true;
       try {
-        if (!existing.session.send) {
-          throw new Error("AgentSession does not support continuation (send) required to reuse a delegated session");
-        }
         let lastMessage: AgentMessage | null;
         try {
+          if (!existing.session.send) {
+            throw new Error("AgentSession does not support continuation (send) required to reuse a delegated session");
+          }
           lastMessage = await runAgentTurn(this.pool, existing.agentRunId, existing.session.send(input.task));
         } catch (err) {
-          // A broken turn leaves the underlying AgentSession in an unknown state — close the
-          // run as error and drop the entry rather than leaving a busy-cleared but unusable
-          // session in the registry for the next delegation to reuse.
+          // A broken turn (including a session that can't be continued at all) leaves the
+          // underlying AgentSession in an unknown state — close the run as error and drop the
+          // entry rather than leaving a busy-cleared but unusable session in the registry for
+          // the next delegation to reuse.
           this.entries.delete(entryKey);
           clearTimeout(existing.ttlTimer);
           await failRun(this.pool, existing.agentRunId, err);
