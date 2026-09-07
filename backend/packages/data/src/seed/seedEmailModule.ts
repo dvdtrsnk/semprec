@@ -188,8 +188,15 @@ export async function seedEmailModuleInTransaction(
   );
   // One-directional: Files' schema is already locked by the time this runs (issue #24),
   // same reason Movies -> People (issue #25) carries no inverse property on People either.
+  // `many_to_many`, not `one_to_many` (issue #82): under the enforced cardinality contract,
+  // `property_id_a`/`item_a` (here, the Email) is the side that gets at most one edge — the
+  // opposite of what "one email, many attachment files" needs, and with no inverse to swap
+  // this source/target pairing onto (Files is locked), `one_to_many` can never correctly
+  // enforce this relation. Each Files item is created fresh per attachment (only the
+  // underlying blob is content-hash-deduped, see attachments.ts), so no cardinality
+  // constraint was ever actually load-bearing here.
   const attachmentsRelation = await relate(
-    { sourceDatabaseId: emails.id, key: "attachments", name: "Attachments", targetDatabaseId: filesDatabaseId, cardinality: "one_to_many", owner: "system", ownerProcess: EMAILS_MODULE_ID },
+    { sourceDatabaseId: emails.id, key: "attachments", name: "Attachments", targetDatabaseId: filesDatabaseId, cardinality: "many_to_many", owner: "system", ownerProcess: EMAILS_MODULE_ID },
     emailsContext,
   );
   // People's schema is likewise already locked — both People-facing relations below are

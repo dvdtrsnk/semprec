@@ -34,6 +34,14 @@ export class ConflictError extends ChokePointError {
   }
 }
 
+/** Raised when an edge write would violate its relation definition's declared cardinality (see item_relations' `enforce_relation_cardinality` trigger). */
+export class CardinalityViolationError extends ChokePointError {
+  constructor(message: string, details?: unknown) {
+    super(409, "cardinality_violation", message, details);
+    this.name = "CardinalityViolationError";
+  }
+}
+
 export class NotFoundError extends ChokePointError {
   constructor(message: string, details?: unknown) {
     super(404, "not_found", message, details);
