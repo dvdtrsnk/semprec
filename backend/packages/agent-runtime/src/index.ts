@@ -19,8 +19,4 @@ export {
   type ReconstructConversationHistory,
 } from "./sempConversation.js";
 export type { CompactionAdapter, CompactionSettings, PreparedCompaction } from "./compaction.js";
-export {
-  reconstructConversationHistory,
-  persistCompaction,
-  type ReconstructedHistory,
-} from "./conversationReconstruction.js";
+export type { ReconstructedHistory } from "./conversationReconstruction.js";

@@ -222,4 +222,44 @@ describe("reconstructConversationHistory", () => {
     expect(delegatedResult?.entries.map((e) => (e.message as { text?: string }).text)).toEqual(["delegated turn"]);
     expect(sempResult?.entries.map((e) => (e.message as { text?: string }).text)).toEqual(["semp turn"]);
   });
+
+  it("rejects a stored event payload that is not a valid AgentMessage instead of silently reconstructing it", async () => {
+    const run = await createAgentRun(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", unit: "session", task: "one" });
+    await pool.query(`INSERT INTO agent_run_events (agent_run_id, kind, payload) VALUES ($1, 'message', $2::jsonb)`, [
+      run.id,
+      JSON.stringify(["not", "a", "message"]),
+    ]);
+
+    await expect(
+      reconstructConversationHistory(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", parentRunId: null }, noopCompaction),
+    ).rejects.toThrow(/not a valid AgentMessage/);
+  });
+
+  it("rejects a persisted 'compaction' checkpoint whose payload is not a valid ConversationEntry[]", async () => {
+    const run = await createAgentRun(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", unit: "session", task: "one" });
+    await insertAgentRunEvent(pool, run.id, "compaction", [{ id: "bad", seq: "not-a-number" }]);
+
+    await expect(
+      reconstructConversationHistory(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", parentRunId: null }, noopCompaction),
+    ).rejects.toThrow(/not a valid ConversationEntry\[\]/);
+  });
+
+  it("rejects a reconstructed history with an unmatched trailing tool_use", async () => {
+    const run = await createAgentRun(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", unit: "session", task: "one" });
+    await insertAgentRunEvent(pool, run.id, "tool_use", { kind: "tool_use", toolCallId: "call_1", name: "search" });
+
+    await expect(
+      reconstructConversationHistory(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", parentRunId: null }, noopCompaction),
+    ).rejects.toThrow(/unmatched tool_use/);
+  });
+
+  it("rejects a reconstructed history with a tool_result whose toolCallId doesn't match the pending tool_use", async () => {
+    const run = await createAgentRun(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", unit: "session", task: "one" });
+    await insertAgentRunEvent(pool, run.id, "tool_use", { kind: "tool_use", toolCallId: "call_1", name: "search" });
+    await insertAgentRunEvent(pool, run.id, "tool_result", { kind: "tool_result", toolCallId: "call_2", result: "ok" });
+
+    await expect(
+      reconstructConversationHistory(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", parentRunId: null }, noopCompaction),
+    ).rejects.toThrow(/does not match the pending tool_use call/);
+  });
 });
