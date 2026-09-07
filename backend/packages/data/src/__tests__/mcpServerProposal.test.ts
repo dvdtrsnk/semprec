@@ -96,6 +96,26 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
     await expect(createMcpProposal({ name: "Sneaky", [field]: "shh" })).rejects.toThrow(/cannot carry credential field/);
   });
 
+  it("rejects a stdio connectionConfig whose env map smuggles a credential-shaped key", async () => {
+    await expect(
+      createMcpProposal({ name: "Sneaky env", connectionConfig: { transport: "stdio", command: "my-mcp-server", env: { apiKey: "sk-shh" } } }),
+    ).rejects.toThrow(/cannot carry credential field/);
+  });
+
+  it("rejects a stdio connectionConfig env key that only matches the denylist once normalized (SCREAMING_SNAKE_CASE)", async () => {
+    await expect(
+      createMcpProposal({ name: "Sneaky env", connectionConfig: { transport: "stdio", command: "my-mcp-server", env: { API_KEY: "sk-shh" } } }),
+    ).rejects.toThrow(/cannot carry credential field/);
+  });
+
+  it("accepts a stdio connectionConfig whose env map carries only non-credential keys", async () => {
+    const proposal = await createMcpProposal({
+      name: "Fine env",
+      connectionConfig: { transport: "stdio", command: "my-mcp-server", env: { LOG_LEVEL: "debug" } },
+    });
+    expect(proposal.properties.status).toBe("proposed");
+  });
+
   it("confirm with a credential atomically stores the item and the encrypted credential", async () => {
     const proposal = await createMcpProposal({ name: "Remote tool", connectionConfig: { transport: "sse", url: "https://mcp.example.com/sse" } });
 

@@ -22,6 +22,31 @@ export const MCP_CREDENTIAL_FIELD_NAMES: readonly string[] = [
   "password",
 ];
 
+/** Lowercases and strips `_`/`-` so `apiKey`, `API_KEY`, and `api-key` all normalize the same way. */
+function normalizeFieldName(name: string): string {
+  return name.toLowerCase().replace(/[_-]/g, "");
+}
+
+const NORMALIZED_CREDENTIAL_FIELD_NAMES: ReadonlySet<string> = new Set(MCP_CREDENTIAL_FIELD_NAMES.map(normalizeFieldName));
+
+/**
+ * A `stdio` transport's `env` map is itself a plausible smuggling route for a secret an agent
+ * isn't allowed to set (e.g. `env: { apiKey: "sk-..." }` or `env: { API_KEY: "sk-..." }`) — it
+ * never appears as a top-level proposal property, so the loop below wouldn't otherwise catch
+ * it. Checked against the same denylist, normalized (env vars are conventionally
+ * `SCREAMING_SNAKE_CASE`, not camelCase) rather than exact-matched.
+ */
+function assertNoCredentialShapedEnvKeys(connectionConfig: unknown): void {
+  if (typeof connectionConfig !== "object" || connectionConfig === null) return;
+  const env = (connectionConfig as { env?: unknown }).env;
+  if (typeof env !== "object" || env === null) return;
+  for (const key of Object.keys(env)) {
+    if (NORMALIZED_CREDENTIAL_FIELD_NAMES.has(normalizeFieldName(key))) {
+      throw new ValidationError(`Proposal properties for an MCP server cannot carry credential field '${key}' in connectionConfig.env`, { field: key });
+    }
+  }
+}
+
 /**
  * Extra validation `assertValidProposalEnvelope` (inboxTickAction.ts) runs for a `database`
  * envelope whose target is the `mcpServers` system database, on top of the generic
@@ -38,6 +63,7 @@ export function assertValidMcpServerProposalProperties(properties: Record<string
     }
   }
   if ("connectionConfig" in properties) {
+    assertNoCredentialShapedEnvKeys(properties.connectionConfig);
     assertValidMcpConnectionConfig(properties.connectionConfig);
   }
 }
