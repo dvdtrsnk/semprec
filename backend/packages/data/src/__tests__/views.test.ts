@@ -281,6 +281,36 @@ describe("views", () => {
       expect(secondPage.items.map((i) => i.id)).toEqual([items[2].id]);
       expect(secondPage.nextCursor).toBeNull();
     });
+
+    it("two concurrent reorders on the same view never leave two items tied on a position", async () => {
+      // Two racing reorders don't tie deterministically — the window in which both
+      // transactions read the same pre-shift positions is narrow — so run enough
+      // parallel pairs that an unlocked reorderViewItem reliably produces a duplicate
+      // position at least once, proving the view-level lock (mirroring addViewItem's)
+      // actually serializes them.
+      const trials = 20;
+      for (let trial = 0; trial < trials; trial++) {
+        const db = await makeTasksDb();
+        const item1 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "One" } });
+        const item2 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Two" } });
+        const item3 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Three" } });
+        const item4 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Four" } });
+        const curated = await chokePoint.createView({ type: "list", name: "Collection", config: { membership: "manual" } });
+        await chokePoint.addViewItem({ viewId: curated.id, itemId: item1.id, actor: "user" });
+        await chokePoint.addViewItem({ viewId: curated.id, itemId: item2.id, actor: "user" });
+        await chokePoint.addViewItem({ viewId: curated.id, itemId: item3.id, actor: "user" });
+        await chokePoint.addViewItem({ viewId: curated.id, itemId: item4.id, actor: "user" });
+
+        await Promise.all([
+          chokePoint.reorderViewItem({ viewId: curated.id, itemId: item1.id, position: 3, actor: "user" }),
+          chokePoint.reorderViewItem({ viewId: curated.id, itemId: item4.id, position: 0, actor: "user" }),
+        ]);
+
+        const members = await chokePoint.listViewItems(curated.id);
+        const positions = members.map((m) => m.position);
+        expect(new Set(positions).size).toBe(positions.length);
+      }
+    });
   });
 
   describe("queryView: filter/sort/visibility push-down", () => {

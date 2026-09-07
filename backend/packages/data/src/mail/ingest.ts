@@ -2,7 +2,14 @@ import type { PoolClient } from "pg";
 import sanitizeHtml from "sanitize-html";
 import { createItemWithClient, createRelationWithClient } from "../chokePoint/chokePoint.js";
 import { resolveThreadId } from "./threading.js";
-import { getMailMessageMetaByMessageId, upsertMailMessageMeta, type MailEnvelope, type MailEnvelopeAddress } from "./mailMessageMetaStore.js";
+import {
+  getMailMessageMetaByMessageId,
+  getMailMessageMetaByProviderMessageId,
+  isProviderMessageIdConflict,
+  upsertMailMessageMeta,
+  type MailEnvelope,
+  type MailEnvelopeAddress,
+} from "./mailMessageMetaStore.js";
 import { ingestAttachments, type ClassifiedAttachment } from "./attachments.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import { reindexItemSearch } from "./search.js";
@@ -85,84 +92,107 @@ export async function ingestEmailMessage(client: PoolClient, input: IngestEmailM
   if (existing) {
     itemId = existing.itemId;
   } else {
-    const threadId = await resolveThreadId(client, {
-      messageId: input.messageId,
-      inReplyTo: input.inReplyTo,
-      references: input.references,
-      subjectHint: input.subject,
-    });
+    // Concurrency-safe arbiter for the partial-unique, non-null `provider_message_id` index
+    // (mail_message_meta_provider_msg_uq): two sync passes can race to ingest distinct
+    // Message-IDs (the `existing` check above found neither) that turn out to name the same
+    // provider message. Rather than let the loser's INSERT surface a raw Postgres unique-
+    // violation, its item/thread/meta writes run under a SAVEPOINT and get rolled back on
+    // that specific conflict, converging onto whichever insert actually won — the winner's
+    // item/message identity is left unchanged, and this call still links the folder relation
+    // below so synchronization continues.
+    await client.query("SAVEPOINT ingest_provider_msg_conflict");
+    try {
+      const threadId = await resolveThreadId(client, {
+        messageId: input.messageId,
+        inReplyTo: input.inReplyTo,
+        references: input.references,
+        subjectHint: input.subject,
+      });
 
-    const item = await createItemWithClient(
-      client,
-      {
-        databaseId: input.emailsDatabaseId,
-        properties: {
-          name: input.subject ?? "(no subject)",
-          sender: input.envelope.from ? formatAddress(input.envelope.from) : "",
-          recipients: formatAddressList(input.envelope.to),
-          body: input.bodyHtml ?? input.bodyText ?? "",
-          ...(input.date ? { date: input.date.toISOString() } : {}),
-          // Read/flag state as the server already has it, so a message that was read or
-          // flagged elsewhere does not arrive here looking unread. Only ever written here,
-          // at creation: a later pass over an already-ingested message must not overwrite
-          // what the user has since done to it in the mailbox client.
-          ...messageFlagProperties(input.flags),
+      const item = await createItemWithClient(
+        client,
+        {
+          databaseId: input.emailsDatabaseId,
+          properties: {
+            name: input.subject ?? "(no subject)",
+            sender: input.envelope.from ? formatAddress(input.envelope.from) : "",
+            recipients: formatAddressList(input.envelope.to),
+            body: input.bodyHtml ?? input.bodyText ?? "",
+            ...(input.date ? { date: input.date.toISOString() } : {}),
+            // Read/flag state as the server already has it, so a message that was read or
+            // flagged elsewhere does not arrive here looking unread. Only ever written here,
+            // at creation: a later pass over an already-ingested message must not overwrite
+            // what the user has since done to it in the mailbox client.
+            ...messageFlagProperties(input.flags),
+          },
         },
-      },
-      { allowedSystemKeys: EMAIL_INGEST_ALLOWED_SYSTEM_KEYS },
-    );
-    itemId = item.id;
-    created = true;
+        { allowedSystemKeys: EMAIL_INGEST_ALLOWED_SYSTEM_KEYS },
+      );
+      itemId = item.id;
+      created = true;
 
-    const deliveredToAddress = resolveDeliveredToAddress({
-      candidates: {
-        deliveredToHeaders: input.deliveredToHeaders ?? [],
-        xOriginalTo: input.xOriginalTo,
-        envelopeTo: input.envelopeTo,
-      },
-      structuredTo: input.envelope.to ?? [],
-      structuredCc: input.envelope.cc ?? [],
-      mailboxAliases: input.mailboxAliases ?? [],
-    });
+      const deliveredToAddress = resolveDeliveredToAddress({
+        candidates: {
+          deliveredToHeaders: input.deliveredToHeaders ?? [],
+          xOriginalTo: input.xOriginalTo,
+          envelopeTo: input.envelopeTo,
+        },
+        structuredTo: input.envelope.to ?? [],
+        structuredCc: input.envelope.cc ?? [],
+        mailboxAliases: input.mailboxAliases ?? [],
+      });
 
-    // RFC 3464: a DSN's own References/In-Reply-To name the outgoing message it reports on —
-    // the same ancestor threading.ts just resolved from, reused here as "the original message"
-    // rather than a second parsing rule for the identical header.
-    const dsnOriginalMessageId = input.isDsn ? (input.inReplyTo ?? input.references?.[input.references.length - 1] ?? null) : null;
+      // RFC 3464: a DSN's own References/In-Reply-To name the outgoing message it reports on —
+      // the same ancestor threading.ts just resolved from, reused here as "the original message"
+      // rather than a second parsing rule for the identical header.
+      const dsnOriginalMessageId = input.isDsn ? (input.inReplyTo ?? input.references?.[input.references.length - 1] ?? null) : null;
 
-    await upsertMailMessageMeta(client, {
-      itemId,
-      messageId: input.messageId,
-      inReplyTo: input.inReplyTo,
-      references: input.references,
-      threadId,
-      providerThreadId: input.providerThreadId,
-      providerMessageId: input.providerMessageId,
-      envelope: input.envelope,
-      deliveredToAddress: deliveredToAddress ?? null,
-      messageKind: input.isDsn ? "dsn" : "message",
-      dsnOriginalMessageId,
-    });
+      await upsertMailMessageMeta(client, {
+        itemId,
+        messageId: input.messageId,
+        inReplyTo: input.inReplyTo,
+        references: input.references,
+        threadId,
+        providerThreadId: input.providerThreadId,
+        providerMessageId: input.providerMessageId,
+        envelope: input.envelope,
+        deliveredToAddress: deliveredToAddress ?? null,
+        messageKind: input.isDsn ? "dsn" : "message",
+        dsnOriginalMessageId,
+      });
 
-    const { extractedTexts } = await ingestAttachments(client, {
-      messageItemId: itemId,
-      filesDatabaseId: input.filesDatabaseId,
-      attachmentsRelationPropertyId: input.attachmentsRelationPropertyId,
-      attachments: input.attachments,
-      storage: input.storage,
-      storageKeyPrefix: input.storageKeyPrefix,
-    });
+      const { extractedTexts } = await ingestAttachments(client, {
+        messageItemId: itemId,
+        filesDatabaseId: input.filesDatabaseId,
+        attachmentsRelationPropertyId: input.attachmentsRelationPropertyId,
+        attachments: input.attachments,
+        storage: input.storage,
+        storageKeyPrefix: input.storageKeyPrefix,
+      });
 
-    // PDF/DOCX attachment text (issue #26: "the output goes into the same index table") is
-    // folded into the owning message's own search text rather than indexed as a separate
-    // item — there is no per-attachment search surface in this issue's scope, only "search my
-    // mail," which a PDF invoice's contents should still match.
-    const bodyForSearch = input.bodyText ?? (input.bodyHtml ? htmlToSearchText(input.bodyHtml) : "");
-    await reindexItemSearch(client, {
-      itemId,
-      databaseId: input.emailsDatabaseId,
-      text: [input.subject ?? "", bodyForSearch, ...extractedTexts].join("\n\n"),
-    });
+      // PDF/DOCX attachment text (issue #26: "the output goes into the same index table") is
+      // folded into the owning message's own search text rather than indexed as a separate
+      // item — there is no per-attachment search surface in this issue's scope, only "search my
+      // mail," which a PDF invoice's contents should still match.
+      const bodyForSearch = input.bodyText ?? (input.bodyHtml ? htmlToSearchText(input.bodyHtml) : "");
+      await reindexItemSearch(client, {
+        itemId,
+        databaseId: input.emailsDatabaseId,
+        text: [input.subject ?? "", bodyForSearch, ...extractedTexts].join("\n\n"),
+      });
+
+      await client.query("RELEASE SAVEPOINT ingest_provider_msg_conflict");
+    } catch (err) {
+      if (!isProviderMessageIdConflict(err)) throw err;
+      await client.query("ROLLBACK TO SAVEPOINT ingest_provider_msg_conflict");
+      await client.query("RELEASE SAVEPOINT ingest_provider_msg_conflict");
+
+      // The constraint that just fired guarantees a winning row exists under this provider id.
+      const winner = await getMailMessageMetaByProviderMessageId(client, input.providerMessageId as string);
+      if (!winner) throw err;
+      itemId = winner.itemId;
+      created = false;
+    }
   }
 
   await createRelationWithClient(client, {

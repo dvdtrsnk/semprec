@@ -9,6 +9,7 @@ import { ensureMailFolderSyncState, getMailFolderSyncState, recordReconcile, res
 import { findEmailItemIdByFolderUid, listKnownFolderUids } from "./folderMembershipStore.js";
 import { ensureFolderItem } from "./folderDiscovery.js";
 import { ensureMailAccountSyncState, recordImapActivity } from "./mailAccountSyncStateStore.js";
+import type { WritableImapFlag } from "./messageFlags.js";
 
 export interface ImapFetchedMessage {
   uid: number;
@@ -50,7 +51,7 @@ export interface ImapMailClient {
    * somewhere to go that isn't a side effect of background/AI reads; nothing in this module
    * calls it itself.
    */
-  setMessageFlag(path: string, uid: number, flag: string, value: boolean): Promise<void>;
+  setMessageFlag(path: string, uid: number, flag: WritableImapFlag, value: boolean): Promise<void>;
 }
 
 export interface ReconcileImapFolderParams {

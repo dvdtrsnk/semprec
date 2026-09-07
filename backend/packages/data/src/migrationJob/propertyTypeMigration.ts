@@ -35,6 +35,18 @@ export function isConversionSupported(from: PropertyType, to: PropertyType): boo
 }
 
 /**
+ * The pure conversion step `runPropertyTypeMigrationJob` applies to each value, exposed
+ * standalone so its per-type-pair behavior (what converts, what's left empty) can be unit
+ * tested without a database. `from === to` always passes the value through unchanged,
+ * matching the no-op retype `runPropertyTypeMigrationJob` allows.
+ */
+export function convertPropertyValue(from: PropertyType, to: PropertyType, value: unknown): { ok: true; value: unknown } | { ok: false } {
+  if (from === to) return { ok: true, value };
+  const converter = CONVERTERS[from]?.[to];
+  return converter ? converter(value) : { ok: false };
+}
+
+/**
  * True when `value` is already in the JS shape a converter targeting `type` would
  * produce. Used to make the migration idempotent under graphile-worker retries: a
  * retry replays the whole job from the start (cursor null), so rows already
@@ -86,7 +98,7 @@ export async function runPropertyTypeMigrationJob(pool: Pool, propertyId: string
     bootstrapClient.release();
   }
 
-  const converter = fromType === property.type ? null : CONVERTERS[fromType]?.[property.type];
+  const needsConversion = fromType !== property.type;
   let anyFailures = false;
   let cursor: string | null = null;
   const pageSize = 500;
@@ -105,12 +117,12 @@ export async function runPropertyTypeMigrationJob(pool: Pool, propertyId: string
       for (const row of rows) {
         if (!(property.key in row.properties)) continue;
         const oldValue = row.properties[property.key];
-        if (converter && isAlreadyTargetType(property.type, oldValue)) {
+        if (needsConversion && isAlreadyTargetType(property.type, oldValue)) {
           // Already converted by an earlier attempt at this same migration (see
           // isAlreadyTargetType) — leave it exactly as-is instead of re-converting.
           continue;
         }
-        const converted = converter ? converter(oldValue) : { ok: true as const, value: oldValue };
+        const converted = convertPropertyValue(fromType, property.type, oldValue);
         if (converted.ok) {
           // updated_at DOES advance here, unlike a `computed` write — this changes the
           // value a client sees under `properties`, so a stale ifVersion must conflict.
