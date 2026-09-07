@@ -2,7 +2,7 @@ import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
-import { createRelationPropertyWithClient, type CreateRelationPropertyInput } from "../chokePoint/chokePoint.js";
+import { createRelationPropertyWithClient, type CreateRelationPropertyInput, type SystemRelationWriteContext } from "../chokePoint/chokePoint.js";
 import type { ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
@@ -64,8 +64,8 @@ export async function seedInboxPipelineInTransaction(
   computedKeyRegistry: ComputedKeyRegistry,
   viewTypeRegistry: ViewTypeRegistry,
 ): Promise<InboxPipelineDatabases> {
-  const relate = (input: CreateRelationPropertyInput): Promise<{ property: unknown; inverseProperty: unknown }> =>
-    createRelationPropertyWithClient(client, input, computedKeyRegistry);
+  const relate = (input: CreateRelationPropertyInput, context?: SystemRelationWriteContext): Promise<{ property: unknown; inverseProperty: unknown }> =>
+    createRelationPropertyWithClient(client, input, context, computedKeyRegistry);
 
   // Issue #106: declares the Journal day cache key ahead of any writes, and registers
   // "journal-inbox" into *this process's* registry the same way registerTemporalSwitcherViewType
@@ -130,7 +130,7 @@ export async function seedInboxPipelineInTransaction(
 
   // Inbox -> Inbox item types: nullable (an item without a type is valid — it later enters
   // `needsClarification`, issue #100), one-directional — no inverse is needed by this issue.
-  await relate({ databaseId: inbox.id, key: "type", name: "Type", targetDatabaseId: inboxItemTypes.id, cardinality: "one_to_many", owner: "user" });
+  await relate({ sourceDatabaseId: inbox.id, key: "type", name: "Type", targetDatabaseId: inboxItemTypes.id, cardinality: "one_to_many", owner: "user" });
 
   // Inbox -> Journal ("journalDay"): system-owned, resolved at write time through the
   // existing lazy Journal-day mechanism (journal/journalStore.ts's `getOrCreateJournalItem`,
@@ -138,26 +138,46 @@ export async function seedInboxPipelineInTransaction(
   // added for this, it reuses the Journal relation directly. One-directional: Journal's
   // schema is already locked by `seedTenDatabasesInTransaction`, the same reason
   // Emails->Files/People (issue #26) carry no inverse either.
-  await relate({ databaseId: inbox.id, key: "journalDay", name: "Journal day", targetDatabaseId: journalDatabaseId, cardinality: "one_to_many", owner: "system" });
+  await relate(
+    {
+      sourceDatabaseId: inbox.id,
+      key: "journalDay",
+      name: "Journal day",
+      targetDatabaseId: journalDatabaseId,
+      cardinality: "one_to_many",
+      owner: "system",
+      ownerProcess: INBOX_MODULE_ID,
+    },
+    { ownerProcess: INBOX_MODULE_ID },
+  );
 
   // Processing proposals -> Inbox / Transcripts: nullable, populated according to `kind`.
   // Both targets are already locked, so both are one-directional for the same reason as above.
-  await relate({
-    databaseId: processingProposals.id,
-    key: "sourceInbox",
-    name: "Source inbox item",
-    targetDatabaseId: inbox.id,
-    cardinality: "one_to_many",
-    owner: "system",
-  });
-  await relate({
-    databaseId: processingProposals.id,
-    key: "sourceTranscript",
-    name: "Source transcript",
-    targetDatabaseId: transcriptsDatabaseId,
-    cardinality: "one_to_many",
-    owner: "system",
-  });
+  const processingProposalsContext: SystemRelationWriteContext = { ownerProcess: PROCESSING_PROPOSALS_MODULE_ID };
+  await relate(
+    {
+      sourceDatabaseId: processingProposals.id,
+      key: "sourceInbox",
+      name: "Source inbox item",
+      targetDatabaseId: inbox.id,
+      cardinality: "one_to_many",
+      owner: "system",
+      ownerProcess: PROCESSING_PROPOSALS_MODULE_ID,
+    },
+    processingProposalsContext,
+  );
+  await relate(
+    {
+      sourceDatabaseId: processingProposals.id,
+      key: "sourceTranscript",
+      name: "Source transcript",
+      targetDatabaseId: transcriptsDatabaseId,
+      cardinality: "one_to_many",
+      owner: "system",
+      ownerProcess: PROCESSING_PROPOSALS_MODULE_ID,
+    },
+    processingProposalsContext,
+  );
 
   // Issue #103: react to a changed Inbox item without periodically scanning the whole
   // database. One heartbeat row per event kind — `onItemEventRule.event` is a single enum,

@@ -1,13 +1,15 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { createChokePoint, createRelationWithClient, deleteRelationWithClient, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { insertItem } from "../chokePoint/itemsStore.js";
+import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { ValidationError } from "../errors.js";
 import { MAILBOX_CLIENT_VIEW_TYPE, mailboxClientConfigSchema } from "../views/mailboxClientViewType.js";
 import { FLAGGED_PROPERTY_KEY, READ_PROPERTY_KEY } from "../mail/messageFlags.js";
+import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
@@ -40,6 +42,11 @@ async function relationPropertyId(databaseId: string, key: string): Promise<stri
   const property = properties.find((p) => p.key === key);
   if (!property) throw new Error(`Property '${key}' not found`);
   return property.id;
+}
+
+/** Folders' `mailbox`/Emails' `folder` relations are `owner: 'system'` (seed/seedEmailModule.ts) — writable only through the protected entry point with the module's own context, same as `insertSystemItem` above bypasses the generic create path. */
+async function createSystemRelation(relationPropertyId: string, callerItemId: string, targetItemId: string, ownerProcess: string): Promise<void> {
+  await withTransaction(pool, (client) => createRelationWithClient(client, { relationPropertyId, callerItemId, targetItemId }, { ownerProcess }));
 }
 
 describe("mailbox client view (issue #96)", () => {
@@ -122,13 +129,13 @@ describe("mailbox client view (issue #96)", () => {
 
       const folderMailboxRelation = await relationPropertyId(foldersId, "mailbox");
       for (const folderId of [inboxId, archiveId]) {
-        await chokePoint.createRelation({ relationPropertyId: folderMailboxRelation, callerItemId: folderId, targetItemId: mailboxItemId });
+        await createSystemRelation(folderMailboxRelation, folderId, mailboxItemId, FOLDERS_MODULE_ID);
       }
 
       const emailFolderRelation = await relationPropertyId(emailsId, "folder");
       const link = async (properties: Record<string, unknown>, folderId: string) => {
         const itemId = await insertSystemItem(emailsId, properties);
-        await chokePoint.createRelation({ relationPropertyId: emailFolderRelation, callerItemId: itemId, targetItemId: folderId });
+        await createSystemRelation(emailFolderRelation, itemId, folderId, EMAILS_MODULE_ID);
         return itemId;
       };
 
@@ -177,7 +184,13 @@ describe("mailbox client view (issue #96)", () => {
       const { emailsId, inboxId, readMessage, unread } = await seedMailbox();
       const emailFolderRelation = await relationPropertyId(emailsId, "folder");
 
-      await chokePoint.deleteRelation({ relationPropertyId: emailFolderRelation, callerItemId: readMessage, targetItemId: inboxId });
+      await withTransaction(pool, (client) =>
+        deleteRelationWithClient(
+          client,
+          { relationPropertyId: emailFolderRelation, callerItemId: readMessage, targetItemId: inboxId },
+          { ownerProcess: EMAILS_MODULE_ID },
+        ),
+      );
       await chokePoint.softDeleteItem(emailsId, unread);
 
       const inbox = await chokePoint.listItems(emailsId, { filter: { type: "relation_contains", property: "folder", value: inboxId } });

@@ -87,7 +87,7 @@ describe("choke-point", () => {
   it("a rollup-typed property key is rejected with computed_readonly (403), not a generic validation error", async () => {
     const db = await chokePoint.createDatabase({ name: "P" });
     const target = await chokePoint.createDatabase({ name: "T" });
-    const { property: relation } = await chokePoint.createRelationProperty({ databaseId: db.id, key: "tasks", name: "Tasks", targetDatabaseId: target.id });
+    const { property: relation } = await chokePoint.createRelationProperty({ sourceDatabaseId: db.id, key: "tasks", name: "Tasks", targetDatabaseId: target.id });
     const rollup = await chokePoint.createProperty({
       databaseId: db.id,
       key: "count",
@@ -170,7 +170,7 @@ describe("choke-point", () => {
     const bogusTargetId = randomUUID();
 
     await expect(
-      chokePoint.createRelationProperty({ databaseId: db.id, key: "tasks", name: "Tasks", targetDatabaseId: bogusTargetId }),
+      chokePoint.createRelationProperty({ sourceDatabaseId: db.id, key: "tasks", name: "Tasks", targetDatabaseId: bogusTargetId }),
     ).rejects.toBeInstanceOf(ValidationError);
 
     const properties = await chokePoint.listProperties(db.id);
@@ -185,7 +185,7 @@ describe("choke-point", () => {
 
     await expect(
       chokePoint.createRelationProperty({
-        databaseId: db.id,
+        sourceDatabaseId: db.id,
         key: "tasks",
         name: "Tasks",
         targetDatabaseId: bogusTargetId,
@@ -202,7 +202,7 @@ describe("choke-point", () => {
     const target = await chokePoint.createDatabase({ name: "Target" });
 
     const { property } = await chokePoint.createRelationProperty({
-      databaseId: db.id,
+      sourceDatabaseId: db.id,
       key: "tasks",
       name: "Tasks",
       targetDatabaseId: target.id,
@@ -214,17 +214,17 @@ describe("choke-point", () => {
     expect(property.config.relationDefinitionId).toBeTruthy();
   });
 
-  it("createRelationProperty({ locked: true, inverse }) locks both sides of the pair", async () => {
+  it("createRelationProperty({ locked: true, inverse: { locked: true } }) locks both sides of the pair independently", async () => {
     const db = await chokePoint.createDatabase({ name: "Db" });
     const target = await chokePoint.createDatabase({ name: "Target" });
 
     const { property, inverseProperty } = await chokePoint.createRelationProperty({
-      databaseId: db.id,
+      sourceDatabaseId: db.id,
       key: "tasks",
       name: "Tasks",
       targetDatabaseId: target.id,
       locked: true,
-      inverse: { key: "project", name: "Project" },
+      inverse: { key: "project", name: "Project", locked: true },
     });
 
     expect(property.locked).toBe(true);

@@ -1,7 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { createChokePoint, createRelationWithClient, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
@@ -369,7 +370,13 @@ describe("Inbox pipeline databases (issue #101)", () => {
       }),
     );
     const sourceInboxProperty = await chokePoint.listProperties(proposalsId).then((props) => props.find((p) => p.key === "sourceInbox")!);
-    await chokePoint.createRelation({ relationPropertyId: sourceInboxProperty.id, callerItemId: proposal.id, targetItemId: lockedItem.id });
+    await withTransaction(pool, (client) =>
+      createRelationWithClient(
+        client,
+        { relationPropertyId: sourceInboxProperty.id, callerItemId: proposal.id, targetItemId: lockedItem.id },
+        { ownerProcess: PROCESSING_PROPOSALS_MODULE_ID },
+      ),
+    );
 
     await withTransaction(pool, (client) =>
       deleteInboxTypeWithClient(client, { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId, typeItemId: type.id }),
@@ -413,7 +420,13 @@ describe("Inbox pipeline databases (issue #101)", () => {
           properties: { kind: "inbox", fingerprint: `p${i}`, proposal: {}, history: [], status: "pending" },
         }),
       );
-      await chokePoint.createRelation({ relationPropertyId: sourceInboxProperty.id, callerItemId: pendingProposal.id, targetItemId: unlockedManyProposals.id });
+      await withTransaction(pool, (client) =>
+        createRelationWithClient(
+          client,
+          { relationPropertyId: sourceInboxProperty.id, callerItemId: pendingProposal.id, targetItemId: unlockedManyProposals.id },
+          { ownerProcess: PROCESSING_PROPOSALS_MODULE_ID },
+        ),
+      );
     }
     const lockedItem = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "11:00", type: type.id }),
@@ -427,7 +440,13 @@ describe("Inbox pipeline databases (issue #101)", () => {
         properties: { kind: "inbox", fingerprint: "x", proposal: {}, history: [], status: "confirmed" },
       }),
     );
-    await chokePoint.createRelation({ relationPropertyId: sourceInboxProperty.id, callerItemId: confirmedProposal.id, targetItemId: lockedItem.id });
+    await withTransaction(pool, (client) =>
+      createRelationWithClient(
+        client,
+        { relationPropertyId: sourceInboxProperty.id, callerItemId: confirmedProposal.id, targetItemId: lockedItem.id },
+        { ownerProcess: PROCESSING_PROPOSALS_MODULE_ID },
+      ),
+    );
 
     const queries = await withTransaction(pool, async (client) => {
       const texts = instrumentQueries(client);

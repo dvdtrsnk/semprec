@@ -3,6 +3,7 @@ import type { Pool, PoolClient } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, createItemWithClient, createRelationWithClient, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { withTransaction } from "../db/pool.js";
 import { runOnce } from "@semprec/queue";
 import { createCoreTaskList } from "../worker.js";
@@ -207,7 +208,11 @@ describe("person <-> email address linking (issue #26)", () => {
         { databaseId: foldersId, properties: { name: "INBOX", behavior: "folder", specialPurpose: "inbox" } },
         { allowedSystemKeys: ["name", "behavior", "specialPurpose"] },
       );
-      await createRelationWithClient(client, { relationPropertyId: mailboxFolderProperty.id, callerItemId: folder.id, targetItemId: mailbox.id });
+      await createRelationWithClient(
+        client,
+        { relationPropertyId: mailboxFolderProperty.id, callerItemId: folder.id, targetItemId: mailbox.id },
+        { ownerProcess: FOLDERS_MODULE_ID },
+      );
       return folder;
     });
 

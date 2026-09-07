@@ -11,6 +11,7 @@ import { createCoreTaskList } from "../worker.js";
 import { listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
+import { EMAILS_RELATION_CONTEXT } from "../mail/emailsRelationContext.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -106,7 +107,11 @@ describe("newEmail heartbeat (issue #99)", () => {
       });
       // A message with multiple folder memberships (e.g. Gmail labels) — link the rest too.
       for (const folder of folders.slice(1)) {
-        await createRelationWithClient(client, { relationPropertyId: folderProperty.id, callerItemId: ingestResult.itemId, targetItemId: folder.id });
+        await createRelationWithClient(
+          client,
+          { relationPropertyId: folderProperty.id, callerItemId: ingestResult.itemId, targetItemId: folder.id },
+          EMAILS_RELATION_CONTEXT,
+        );
       }
       return ingestResult;
     });

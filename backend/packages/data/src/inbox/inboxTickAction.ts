@@ -6,13 +6,15 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import { createItemWithClient, createRelationWithClient, updateItemWithClient } from "../chokePoint/chokePoint.js";
+import { createItemWithClient, createRelationWithClient, updateItemWithClient, type SystemRelationWriteContext } from "../chokePoint/chokePoint.js";
 import { PROCESSING_METHODS, LOCKED_PROPOSAL_STATUSES, type ProcessingMethod } from "./inboxTypesStore.js";
 import { computeInboxFingerprint } from "./fingerprint.js";
 import { enqueueJournalInboxRecomputeForInboxItem } from "./journalInboxCompute.js";
-import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
+import { SEMPREC_READ_ONLY_MODULE_IDS, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
+
+const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: PROCESSING_PROPOSALS_MODULE_ID };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -246,7 +248,11 @@ export async function assertValidProposalEnvelope(client: PoolClient, envelope: 
 async function linkSourceInboxRelation(client: PoolClient, config: SemprecTickActionConfig, proposalId: string, sourceItemId: string): Promise<void> {
   const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, config.processingProposalsDatabaseId, "sourceInbox");
   if (!sourceInboxProperty) throw new Error(`Processing proposals database ${config.processingProposalsDatabaseId} has no 'sourceInbox' relation property`);
-  await createRelationWithClient(client, { relationPropertyId: sourceInboxProperty.id, callerItemId: proposalId, targetItemId: sourceItemId });
+  await createRelationWithClient(
+    client,
+    { relationPropertyId: sourceInboxProperty.id, callerItemId: proposalId, targetItemId: sourceItemId },
+    PROCESSING_PROPOSALS_RELATION_CONTEXT,
+  );
 }
 
 /**

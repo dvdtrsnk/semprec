@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, createItemWithClient, createRelationWithClient, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { withTransaction } from "../db/pool.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { generatePermissionManifest } from "../manifest/permissionManifest.js";
@@ -75,14 +76,22 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
         { databaseId: foldersId, properties: { name: "Drafts", behavior: "folder", specialPurpose: "drafts" } },
         { allowedSystemKeys: ["name", "behavior", "specialPurpose"] },
       );
-      await createRelationWithClient(client, { relationPropertyId: mailboxFolderRelationPropertyId, callerItemId: drafts.id, targetItemId: mailboxId });
+      await createRelationWithClient(
+        client,
+        { relationPropertyId: mailboxFolderRelationPropertyId, callerItemId: drafts.id, targetItemId: mailboxId },
+        { ownerProcess: FOLDERS_MODULE_ID },
+      );
 
       const sent = await createItemWithClient(
         client,
         { databaseId: foldersId, properties: { name: "Sent", behavior: "folder", specialPurpose: "sent" } },
         { allowedSystemKeys: ["name", "behavior", "specialPurpose"] },
       );
-      await createRelationWithClient(client, { relationPropertyId: mailboxFolderRelationPropertyId, callerItemId: sent.id, targetItemId: mailboxId });
+      await createRelationWithClient(
+        client,
+        { relationPropertyId: mailboxFolderRelationPropertyId, callerItemId: sent.id, targetItemId: mailboxId },
+        { ownerProcess: FOLDERS_MODULE_ID },
+      );
     });
 
     moduleIds = { emailsDatabaseId: emailsId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId, folderRelationPropertyId, mailboxFolderRelationPropertyId };

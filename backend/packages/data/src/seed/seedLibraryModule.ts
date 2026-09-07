@@ -73,7 +73,7 @@ export async function seedLibraryModuleInTransaction(
 ): Promise<LibraryModuleResult> {
   registerLibraryGridViewType(viewTypeRegistry);
 
-  const relate = (input: CreateRelationPropertyInput) => createRelationPropertyWithClient(client, input, computedKeyRegistry);
+  const relate = (input: CreateRelationPropertyInput) => createRelationPropertyWithClient(client, input, undefined, computedKeyRegistry);
 
   const booksProject = await itemsStore.insertItem(client, {
     databaseId: projectsDatabaseId,
@@ -130,7 +130,7 @@ export async function seedLibraryModuleInTransaction(
   // not either side — written into item_relations.metadata as `{ rating }` on each edge
   // (issue #25), not as a property here.
   await relate({
-    databaseId: movies.id,
+    sourceDatabaseId: movies.id,
     key: "watchedWith",
     name: "Watched with",
     targetDatabaseId: peopleDatabaseId,

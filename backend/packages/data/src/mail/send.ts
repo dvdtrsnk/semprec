@@ -8,6 +8,7 @@ import { getRelationDefinitionByPropertyId } from "../chokePoint/relationsStore.
 import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import type { PermissionManifest } from "../manifest/permissionManifest.js";
 import { EMAIL_INGEST_ALLOWED_SYSTEM_KEYS, formatAddress, formatAddressList } from "./ingest.js";
+import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { findFolderBySpecialPurpose } from "./folderDiscovery.js";
 import {
   deleteMailMessageMetaByItemId,
@@ -119,7 +120,11 @@ async function unlinkFromFoldersWithSpecialPurpose(
     [reldef.id, input.itemId, input.foldersDatabaseId, input.specialPurpose],
   );
   for (const row of rows) {
-    await deleteRelationWithClient(client, { relationPropertyId: input.folderRelationPropertyId, callerItemId: input.itemId, targetItemId: row.folder_id });
+    await deleteRelationWithClient(
+      client,
+      { relationPropertyId: input.folderRelationPropertyId, callerItemId: input.itemId, targetItemId: row.folder_id },
+      EMAILS_RELATION_CONTEXT,
+    );
   }
 }
 
@@ -257,11 +262,15 @@ export async function sendDraftEmail(
       itemId: input.draftItemId,
       specialPurpose: "drafts",
     });
-    await createRelationWithClient(client, {
-      relationPropertyId: moduleIds.folderRelationPropertyId,
-      callerItemId: input.draftItemId,
-      targetItemId: sentFolderItemId,
-    });
+    await createRelationWithClient(
+      client,
+      {
+        relationPropertyId: moduleIds.folderRelationPropertyId,
+        callerItemId: input.draftItemId,
+        targetItemId: sentFolderItemId,
+      },
+      EMAILS_RELATION_CONTEXT,
+    );
 
     return { itemId: input.draftItemId, messageId };
   });

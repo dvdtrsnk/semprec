@@ -4,6 +4,7 @@ import type { PoolClient } from "pg";
 import { findOrCreateBlob } from "../blobs/blobsStore.js";
 import { createItemWithClient, createRelationWithClient } from "../chokePoint/chokePoint.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
+import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { extractAttachmentText, isTextExtractableContentType } from "./attachmentTextExtraction.js";
 
 /**
@@ -120,11 +121,15 @@ export async function ingestAttachments(client: PoolClient, input: IngestAttachm
       properties: { name: attachment.filename, file: { blobId: blob.id } },
     });
 
-    await createRelationWithClient(client, {
-      relationPropertyId: input.attachmentsRelationPropertyId,
-      callerItemId: input.messageItemId,
-      targetItemId: fileItem.id,
-    });
+    await createRelationWithClient(
+      client,
+      {
+        relationPropertyId: input.attachmentsRelationPropertyId,
+        callerItemId: input.messageItemId,
+        targetItemId: fileItem.id,
+      },
+      EMAILS_RELATION_CONTEXT,
+    );
   }
   return { extractedTexts };
 }
