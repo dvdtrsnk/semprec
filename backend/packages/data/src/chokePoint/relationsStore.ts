@@ -1,7 +1,14 @@
 import type { PoolClient } from "pg";
-import { NotFoundError, ValidationError } from "../errors.js";
+import { CardinalityViolationError, NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRelationRow, RelationDefinitionRow } from "../types.js";
 import { assertKnownValue } from "../dbRowValidation.js";
+
+/** The custom SQLSTATE `enforce_relation_cardinality` (0013_relation_cardinality.sql) raises on a cardinality conflict. */
+const CARDINALITY_VIOLATION_ERRCODE = "SC001";
+
+function isCardinalityViolation(err: unknown): boolean {
+  return (err as { code?: string })?.code === CARDINALITY_VIOLATION_ERRCODE;
+}
 
 const CARDINALITIES: readonly RelationDefinitionRow["cardinality"][] = ["one_to_one", "one_to_many", "many_to_many"];
 
@@ -112,14 +119,26 @@ export async function createItemRelation(client: PoolClient, input: CreateItemRe
   const definition = await getRelationDefinition(client, input.relationDefinitionId);
   if (!definition) throw new NotFoundError(`Relation definition ${input.relationDefinitionId} not found`);
 
-  const { rows } = await client.query(
-    `INSERT INTO item_relations (relation_definition_id, item_a, item_b, metadata)
-     VALUES ($1, $2, $3, $4::jsonb)
-     ON CONFLICT (relation_definition_id, item_a, item_b) DO UPDATE SET metadata = EXCLUDED.metadata
-     RETURNING id, relation_definition_id, item_a, item_b, metadata`,
-    [input.relationDefinitionId, input.itemA, input.itemB, JSON.stringify(input.metadata ?? {})],
-  );
-  return mapItemRelationRow(rows[0]);
+  try {
+    const { rows } = await client.query(
+      `INSERT INTO item_relations (relation_definition_id, item_a, item_b, metadata)
+       VALUES ($1, $2, $3, $4::jsonb)
+       ON CONFLICT (relation_definition_id, item_a, item_b) DO UPDATE SET metadata = EXCLUDED.metadata
+       RETURNING id, relation_definition_id, item_a, item_b, metadata`,
+      [input.relationDefinitionId, input.itemA, input.itemB, JSON.stringify(input.metadata ?? {})],
+    );
+    return mapItemRelationRow(rows[0]);
+  } catch (err) {
+    if (isCardinalityViolation(err)) {
+      throw new CardinalityViolationError(`Relation ${input.relationDefinitionId} (${definition.cardinality}) rejected item_a=${input.itemA}/item_b=${input.itemB}: cardinality violation`, {
+        relationDefinitionId: input.relationDefinitionId,
+        cardinality: definition.cardinality,
+        itemA: input.itemA,
+        itemB: input.itemB,
+      });
+    }
+    throw err;
+  }
 }
 
 /** Full-replacement metadata update for an existing edge; returns `null` if the normalized tuple has no row (never merges JSON). */

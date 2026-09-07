@@ -132,19 +132,23 @@ export async function seedEmailModuleInTransaction(
   ]);
   // Written by mail/folderDiscovery.ts as the Folders module's own process — system-owned so
   // no caller outside that discovery path can attach a Folder to a different Mailbox.
+  // `property_id_a` is Mailboxes.folders (the "one" side, per issue #82's cardinality
+  // contract: one mailbox may have many folder edges), with Folders.mailbox as the inverse —
+  // not the other way around, since a folder's own `mailbox` field is single-valued and must
+  // be the side the enforced `one_to_many` constraint lands on.
   await relate(
     {
-      sourceDatabaseId: folders.id,
-      key: "mailbox",
-      name: "Mailbox",
-      targetDatabaseId: mailboxes.id,
+      sourceDatabaseId: mailboxes.id,
+      key: "folders",
+      name: "Folders",
+      targetDatabaseId: folders.id,
       cardinality: "one_to_many",
       owner: "system",
       ownerProcess: FOLDERS_MODULE_ID,
       // Also system-owned by the same process: otherwise a caller could write this edge
       // through the inverse property's default owner:'user', bypassing the ownership the
       // source side declares.
-      inverse: { key: "folders", name: "Folders", owner: "system", ownerProcess: FOLDERS_MODULE_ID },
+      inverse: { key: "mailbox", name: "Mailbox", owner: "system", ownerProcess: FOLDERS_MODULE_ID },
     },
     { ownerProcess: FOLDERS_MODULE_ID },
   );
@@ -188,6 +192,9 @@ export async function seedEmailModuleInTransaction(
   );
   // One-directional: Files' schema is already locked by the time this runs (issue #24),
   // same reason Movies -> People (issue #25) carries no inverse property on People either.
+  // `one_to_many` (issue #82): property_id_a/item_a (the Email) is the "one" side that may
+  // have many item_b edges — one email, many attachment files — while each Files item
+  // (item_b), freshly created per attachment, is used by exactly one email.
   const attachmentsRelation = await relate(
     { sourceDatabaseId: emails.id, key: "attachments", name: "Attachments", targetDatabaseId: filesDatabaseId, cardinality: "one_to_many", owner: "system", ownerProcess: EMAILS_MODULE_ID },
     emailsContext,

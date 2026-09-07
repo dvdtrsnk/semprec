@@ -212,14 +212,17 @@ export async function seedTenDatabasesInTransaction(
 
   // ---- phase 2: relations — every target database above already exists, so declaration order doesn't matter here ----
 
-  // Areas <-> Projects ("Hub"): one area has many projects.
+  // Areas <-> Projects ("Hub"): one area has many projects. `property_id_a` is Areas.projects
+  // (the "one" side, issue #82's cardinality contract), Projects.area/"Hub" is the inverse —
+  // a project's own "Hub" field is single-valued and must be the side the enforced
+  // `one_to_many` constraint lands on.
   await relate({
-    sourceDatabaseId: projects.id,
-    key: "area",
-    name: "Hub",
-    targetDatabaseId: areas.id,
+    sourceDatabaseId: areas.id,
+    key: "projects",
+    name: "Projects",
+    targetDatabaseId: projects.id,
     cardinality: "one_to_many",
-    inverse: { key: "projects", name: "Projects" },
+    inverse: { key: "area", name: "Hub" },
   });
   // Areas <-> Companies: explicit bidirectional, 1:1 per the issue.
   await relate({
@@ -241,22 +244,26 @@ export async function seedTenDatabasesInTransaction(
   });
   // Fix: Projects <-> Companies was a free-form select ("Osobní"/"MeguMethod") in the mock;
   // unified with the existing Companies -> Projects relation into a real N:1 relation.
+  // `property_id_a` is Companies.projects (the "one" side) — Projects.company is single-valued
+  // and must be the inverse for the same reason as the Areas/Projects Hub above.
   await relate({
-    sourceDatabaseId: projects.id,
-    key: "company",
-    name: "Company",
-    targetDatabaseId: companies.id,
-    cardinality: "one_to_many",
-    inverse: { key: "projects", name: "Projects" },
-  });
-  // Tasks -> Projects (hub backlink), optional at the item level (relations carry no NOT NULL in this engine).
-  await relate({
-    sourceDatabaseId: tasks.id,
-    key: "project",
-    name: "Project",
+    sourceDatabaseId: companies.id,
+    key: "projects",
+    name: "Projects",
     targetDatabaseId: projects.id,
     cardinality: "one_to_many",
-    inverse: { key: "tasks", name: "Tasks" },
+    inverse: { key: "company", name: "Company" },
+  });
+  // Tasks -> Projects (hub backlink), optional at the item level (relations carry no NOT NULL
+  // in this engine). `property_id_a` is Projects.tasks (the "one" side) — Tasks.project is
+  // single-valued and must be the inverse, same reasoning as above.
+  await relate({
+    sourceDatabaseId: projects.id,
+    key: "tasks",
+    name: "Tasks",
+    targetDatabaseId: tasks.id,
+    cardinality: "one_to_many",
+    inverse: { key: "project", name: "Project" },
   });
   // People -> Projects (hub backlink).
   await relate({
@@ -276,8 +283,12 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "many_to_many",
     inverse: { key: "people", name: "People" },
   });
-  // Files -> Areas: one-directional only (neither side's relation list names the other beyond this).
-  await relate({ sourceDatabaseId: files.id, key: "area", name: "Area", targetDatabaseId: areas.id, cardinality: "one_to_many" });
+  // Files -> Areas: one-directional only (neither side's relation list names the other beyond
+  // this). `many_to_many`, not `one_to_many` (issue #82): Files.area is single-valued, so
+  // `one_to_many`'s "item_b gets at most one edge" would wrongly cap each Area to one File,
+  // and there's no inverse to swap this source/target pairing onto — same reasoning as
+  // Emails.attachments/Inbox.type.
+  await relate({ sourceDatabaseId: files.id, key: "area", name: "Area", targetDatabaseId: areas.id, cardinality: "many_to_many" });
   // Files -> Projects (hub backlink).
   await relate({
     sourceDatabaseId: files.id,
@@ -305,14 +316,16 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "many_to_many",
     inverse: { key: "files", name: "Files" },
   });
-  // Events -> Projects (hub backlink).
+  // Events -> Projects (hub backlink). `property_id_a` is Projects.events (the "one" side) —
+  // Events.project is single-valued and must be the inverse, same reasoning as the other hub
+  // backlinks above.
   await relate({
-    sourceDatabaseId: events.id,
-    key: "project",
-    name: "Project",
-    targetDatabaseId: projects.id,
+    sourceDatabaseId: projects.id,
+    key: "events",
+    name: "Events",
+    targetDatabaseId: events.id,
     cardinality: "one_to_many",
-    inverse: { key: "events", name: "Events" },
+    inverse: { key: "project", name: "Project" },
   });
   // Events -> People: one-directional only (People's own relation list doesn't name Events).
   await relate({ sourceDatabaseId: events.id, key: "people", name: "People", targetDatabaseId: people.id, cardinality: "many_to_many" });
@@ -363,7 +376,8 @@ export async function seedTenDatabasesInTransaction(
   });
   // Journal -> Areas: optional, nullable, one-directional; no default value (issue's fix — the
   // mock hardwired every entry to a single "Osobní" area, which this issue explicitly rejects).
-  await relate({ sourceDatabaseId: journal.id, key: "area", name: "Area", targetDatabaseId: areas.id, cardinality: "one_to_many" });
+  // `many_to_many`, not `one_to_many` (issue #82) — same reasoning as Files.area above.
+  await relate({ sourceDatabaseId: journal.id, key: "area", name: "Area", targetDatabaseId: areas.id, cardinality: "many_to_many" });
 
   // ---- phase 3: lock every schema now that it's fully built (system DBs are not user-editable) ----
   const all: TenDatabases = {
