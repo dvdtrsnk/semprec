@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@semprec/data": "workspace:*",
+    "@semprec/realtime": "workspace:*",
     "pg": "^8.23.0"
   },
   "devDependencies": {
