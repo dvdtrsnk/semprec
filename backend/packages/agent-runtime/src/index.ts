@@ -1,6 +1,7 @@
 export * from "./types.js";
 export { runAgentSession, type RunAgentSessionInput } from "./lifecycleAdapter.js";
 export { repairInterruptedRuns } from "./startupRepair.js";
+export { registerPiProviders, type PiProviderRegistry } from "./piProviders.js";
 export {
   DelegationRegistry,
   BUSY_ERROR_MESSAGE,

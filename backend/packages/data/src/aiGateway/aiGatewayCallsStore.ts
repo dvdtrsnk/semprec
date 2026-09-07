@@ -80,3 +80,20 @@ export async function recordAudioGatewayCall(
   );
   return mapRow(rows[0]);
 }
+
+export interface GatewaySpend {
+  spentToday: number;
+  spentMonth: number;
+}
+
+/** Calendar-day and calendar-month spend in one query, per #120's budget check. */
+export async function getGatewaySpend(client: Pool | PoolClient): Promise<GatewaySpend> {
+  const { rows } = await client.query<{ spent_today: string; spent_month: string }>(
+    `SELECT
+       COALESCE(SUM(cost_usd) FILTER (WHERE at >= date_trunc('day', now())), 0)  AS spent_today,
+       COALESCE(SUM(cost_usd), 0)                                               AS spent_month
+     FROM ai_gateway_calls
+     WHERE at >= date_trunc('month', now())`,
+  );
+  return { spentToday: Number(rows[0].spent_today), spentMonth: Number(rows[0].spent_month) };
+}
