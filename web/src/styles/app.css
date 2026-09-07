@@ -65,6 +65,14 @@ body {
   stroke-dasharray: 4 3;
 }
 
+.ai-usage__bar--input-tokens {
+  fill: var(--color-accent);
+}
+
+.ai-usage__bar--output-tokens {
+  fill: var(--color-accent-strong, var(--color-accent));
+}
+
 .ai-usage__budgets {
   display: flex;
   flex-wrap: wrap;

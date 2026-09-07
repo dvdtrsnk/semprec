@@ -1,7 +1,13 @@
 import { EmptyState, ErrorState, LoadingState } from "../../components/StateViews.js";
 import { useTranslate, type MessageKey } from "../../i18n/index.js";
 import { useAsyncResource } from "../mailbox/useAsyncResource.js";
-import type { AiUsageOperations, AiUsageReport, AiUsageRow, DailyCostPoint } from "../../api/aiUsageOperations.js";
+import type {
+  AiUsageOperations,
+  AiUsageReport,
+  AiUsageRow,
+  DailyCostPoint,
+  DailyTokenPoint,
+} from "../../api/aiUsageOperations.js";
 
 const DAY_MS = 86_400_000;
 const DEFAULT_RANGE_DAYS = 30;
@@ -60,6 +66,49 @@ function CostByDayChart({ points, dailyBudgetUsd }: { points: readonly DailyCost
           <title>{`daily budget: ${formatUsd(dailyBudgetUsd)}`}</title>
         </line>
       ) : null}
+    </svg>
+  );
+}
+
+/** Stacked input/output token bars per day, mirroring CostByDayChart's layout but with two series instead of a budget line. */
+function TokenUsageByDayChart({ points }: { points: readonly DailyTokenPoint[] }) {
+  const width = 600;
+  const height = 160;
+  const padding = 8;
+  const maxTokens = Math.max(...points.map((p) => p.inputTokens + p.outputTokens), 1);
+  const barWidth = points.length > 0 ? (width - padding * 2) / points.length : 0;
+  const scale = (value: number) => (value / maxTokens) * (height - padding * 2);
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="ai-usage__chart" role="img" aria-label="tokens-per-day">
+      {points.map((point, index) => {
+        const inputHeight = scale(point.inputTokens);
+        const outputHeight = scale(point.outputTokens);
+        const x = padding + index * barWidth;
+        const barW = Math.max(barWidth - 2, 1);
+        return (
+          <g key={point.day}>
+            <rect
+              x={x}
+              y={height - padding - inputHeight}
+              width={barW}
+              height={inputHeight}
+              className="ai-usage__bar ai-usage__bar--input-tokens"
+            >
+              <title>{`${point.day}: ${point.inputTokens} input tokens`}</title>
+            </rect>
+            <rect
+              x={x}
+              y={height - padding - inputHeight - outputHeight}
+              width={barW}
+              height={outputHeight}
+              className="ai-usage__bar ai-usage__bar--output-tokens"
+            >
+              <title>{`${point.day}: ${point.outputTokens} output tokens`}</title>
+            </rect>
+          </g>
+        );
+      })}
     </svg>
   );
 }
@@ -165,6 +214,8 @@ export function UtilizationPage({ operations }: { operations: AiUsageOperations 
       <BudgetSummary report={report} />
       <h2>{t("aiUsage.chart.costPerDay")}</h2>
       <CostByDayChart points={report.dailyCostUsd} dailyBudgetUsd={report.budgets.dailyBudgetUsd} />
+      <h2>{t("aiUsage.chart.tokensPerDay")}</h2>
+      <TokenUsageByDayChart points={report.dailyTokenUsage} />
       <UsageTable rows={report.rows} />
     </section>
   );

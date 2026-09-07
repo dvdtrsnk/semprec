@@ -30,12 +30,17 @@ export const dailyCostPointSchema = z.object({ day: z.string(), costUsd: z.numbe
 
 export type DailyCostPoint = z.infer<typeof dailyCostPointSchema>;
 
+export const dailyTokenPointSchema = z.object({ day: z.string(), inputTokens: z.number(), outputTokens: z.number() });
+
+export type DailyTokenPoint = z.infer<typeof dailyTokenPointSchema>;
+
 export const aiUsageReportSchema = z.object({
   from: z.string(),
   to: z.string(),
   rows: z.array(aiUsageRowSchema),
   totalCostUsd: z.number(),
   dailyCostUsd: z.array(dailyCostPointSchema),
+  dailyTokenUsage: z.array(dailyTokenPointSchema),
   budgets: z.object({
     dailyBudgetUsd: z.number().nullable(),
     monthlyBudgetUsd: z.number().nullable(),

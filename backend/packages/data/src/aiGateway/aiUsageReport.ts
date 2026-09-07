@@ -40,6 +40,14 @@ export interface DailyCostPoint {
   costUsd: number;
 }
 
+export interface DailyTokenPoint {
+  /** Calendar day in the system's configured timezone, YYYY-MM-DD — same boundary as DailyCostPoint. */
+  day: string;
+  /** Always a number, including 0 — sums only token-native calls, audio-only calls contribute 0. */
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface AiUsageReport {
   from: string;
   to: string;
@@ -49,6 +57,8 @@ export interface AiUsageReport {
   totalCostUsd: number;
   /** One point per calendar day in [from, to), for the reference-line graph against dailyBudgetUsd. */
   dailyCostUsd: DailyCostPoint[];
+  /** One point per calendar day in [from, to), for the token-usage graph — audio-only days show 0/0. */
+  dailyTokenUsage: DailyTokenPoint[];
   budgets: AiBudgets;
 }
 
@@ -80,6 +90,8 @@ interface UsageRow {
 interface DailyRow {
   day: string;
   cost_usd: string;
+  input_tokens: string | null;
+  output_tokens: string | null;
 }
 
 /**
@@ -132,20 +144,41 @@ export async function getAiUsageReport(client: Queryable, input: AiUsageReportIn
        ) AS day
      ),
      daily AS (
-       SELECT date_trunc('day', at AT TIME ZONE $3) AS day, SUM(cost_usd) AS cost_usd
+       SELECT
+         date_trunc('day', at AT TIME ZONE $3) AS day,
+         SUM(cost_usd) AS cost_usd,
+         SUM(input_tokens) AS input_tokens,
+         SUM(output_tokens) AS output_tokens
        FROM ai_gateway_calls
        WHERE at >= $1 AND at < $2
        GROUP BY 1
      )
-     SELECT to_char(days.day, 'YYYY-MM-DD') AS day, COALESCE(daily.cost_usd, 0) AS cost_usd
+     SELECT
+       to_char(days.day, 'YYYY-MM-DD') AS day,
+       COALESCE(daily.cost_usd, 0) AS cost_usd,
+       daily.input_tokens,
+       daily.output_tokens
      FROM days LEFT JOIN daily ON daily.day = days.day
      ORDER BY days.day`,
     [fromDate.toISOString(), toDate.toISOString(), timezone],
   );
 
   const dailyCostUsd: DailyCostPoint[] = dailyRows.map((row) => ({ day: row.day, costUsd: Number(row.cost_usd) }));
+  const dailyTokenUsage: DailyTokenPoint[] = dailyRows.map((row) => ({
+    day: row.day,
+    inputTokens: row.input_tokens === null ? 0 : Number(row.input_tokens),
+    outputTokens: row.output_tokens === null ? 0 : Number(row.output_tokens),
+  }));
   const totalCostUsd = reportRows.reduce((sum, row) => sum + row.costUsd, 0);
   const budgets = await getAiBudgets(client);
 
-  return { from: fromDate.toISOString(), to: toDate.toISOString(), rows: reportRows, totalCostUsd, dailyCostUsd, budgets };
+  return {
+    from: fromDate.toISOString(),
+    to: toDate.toISOString(),
+    rows: reportRows,
+    totalCostUsd,
+    dailyCostUsd,
+    dailyTokenUsage,
+    budgets,
+  };
 }

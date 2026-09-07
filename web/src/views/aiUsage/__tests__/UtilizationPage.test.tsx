@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "../../../i18n/index.js";
 import type { AiUsageOperations, AiUsageReport } from "../../../api/aiUsageOperations.js";
 import { UtilizationPage } from "../UtilizationPage.js";
@@ -36,6 +37,10 @@ function makeReport(overrides: Partial<AiUsageReport> = {}): AiUsageReport {
     dailyCostUsd: [
       { day: "2026-09-05", costUsd: 1 },
       { day: "2026-09-06", costUsd: 60 },
+    ],
+    dailyTokenUsage: [
+      { day: "2026-09-05", inputTokens: 100, outputTokens: 20 },
+      { day: "2026-09-06", inputTokens: 300, outputTokens: 100 },
     ],
     budgets: { dailyBudgetUsd: 50, monthlyBudgetUsd: null },
     ...overrides,
@@ -84,7 +89,7 @@ describe("UtilizationPage (issue #121)", () => {
   });
 
   it("shows an empty state when there is no usage in the period", async () => {
-    renderPage(stubOperations(async () => makeReport({ rows: [], dailyCostUsd: [], totalCostUsd: 0 })));
+    renderPage(stubOperations(async () => makeReport({ rows: [], dailyCostUsd: [], dailyTokenUsage: [], totalCostUsd: 0 })));
 
     expect(await screen.findByText("No AI usage in this period")).toBeInTheDocument();
   });
@@ -95,10 +100,14 @@ describe("UtilizationPage (issue #121)", () => {
       stubOperations(async () => {
         calls++;
         if (calls === 1) throw new Error("network blip");
-        return makeReport({ rows: [], dailyCostUsd: [], totalCostUsd: 0 });
+        return makeReport({ rows: [], dailyCostUsd: [], dailyTokenUsage: [], totalCostUsd: 0 });
       }),
     );
 
     expect(await screen.findByRole("alert")).toHaveTextContent("network blip");
+
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByText("No AI usage in this period")).toBeInTheDocument();
   });
 });

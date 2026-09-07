@@ -112,6 +112,11 @@ describe("getAiUsageReport", () => {
     for (const point of report.dailyCostUsd) {
       expect(point.costUsd).toBe(0);
     }
+    expect(report.dailyTokenUsage).toHaveLength(3);
+    for (const point of report.dailyTokenUsage) {
+      expect(point.inputTokens).toBe(0);
+      expect(point.outputTokens).toBe(0);
+    }
     expect(report.rows).toEqual([]);
     expect(report.totalCostUsd).toBe(0);
   });
@@ -128,6 +133,21 @@ describe("getAiUsageReport", () => {
     const report = await getAiUsageReport(pool, { from: "2026-01-01T00:00:00Z", to: "2026-12-30T00:00:00Z" });
     const totalDaily = report.dailyCostUsd.reduce((sum, point) => sum + point.costUsd, 0);
     expect(totalDaily).toBeCloseTo(3);
+
+    const totalInputTokens = report.dailyTokenUsage.reduce((sum, point) => sum + point.inputTokens, 0);
+    const totalOutputTokens = report.dailyTokenUsage.reduce((sum, point) => sum + point.outputTokens, 0);
+    expect(totalInputTokens).toBe(10);
+    expect(totalOutputTokens).toBe(10);
+  });
+
+  it("does not count an audio-only day's seconds as tokens in the daily token series", async () => {
+    await recordAudioGatewayCall(pool, { provider: "deepinfra", model: "whisper-large-v3", audioSeconds: 100, costUsd: 0.05 });
+
+    const report = await getAiUsageReport(pool, { from: "2026-01-01T00:00:00Z", to: "2026-12-30T00:00:00Z" });
+    for (const point of report.dailyTokenUsage) {
+      expect(point.inputTokens).toBe(0);
+      expect(point.outputTokens).toBe(0);
+    }
   });
 
   it("rejects an unbounded or inverted date range", async () => {
