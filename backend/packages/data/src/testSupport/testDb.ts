@@ -6,6 +6,7 @@ const TABLES = [
   "notifications",
   "rollup_dependencies",
   "resource_grants",
+  "agent_run_events",
   "agent_runs",
   "project_heartbeats",
   "view_items",
