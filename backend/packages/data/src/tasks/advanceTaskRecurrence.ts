@@ -86,6 +86,6 @@ async function copyRelationEdges(client: PoolClient, fromItemId: string, toItemI
     // only side A has a property (e.g. Events -> Tasks "actionItems", propertyIdB null).
     // Picking propertyIdA/propertyIdB based on which side fromItemId was on, and skipping
     // when that side's property is null, would silently drop exactly that case.
-    await createRelationWithClient(client, { relationPropertyId: reldef.propertyIdA, itemId: newItemA, targetItemId: newItemB, metadata: edge.metadata });
+    await createRelationWithClient(client, { relationPropertyId: reldef.propertyIdA, callerItemId: newItemA, targetItemId: newItemB, metadata: edge.metadata });
   }
 }

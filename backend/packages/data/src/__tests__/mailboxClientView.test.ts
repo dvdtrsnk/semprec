@@ -111,13 +111,13 @@ describe("mailbox client view (issue #96)", () => {
 
       const folderMailboxRelation = await relationPropertyId(foldersId, "mailbox");
       for (const folderId of [inboxId, archiveId]) {
-        await chokePoint.createRelation({ relationPropertyId: folderMailboxRelation, itemId: folderId, targetItemId: mailboxItemId });
+        await chokePoint.createRelation({ relationPropertyId: folderMailboxRelation, callerItemId: folderId, targetItemId: mailboxItemId });
       }
 
       const emailFolderRelation = await relationPropertyId(emailsId, "folder");
       const link = async (properties: Record<string, unknown>, folderId: string) => {
         const itemId = await insertSystemItem(emailsId, properties);
-        await chokePoint.createRelation({ relationPropertyId: emailFolderRelation, itemId, targetItemId: folderId });
+        await chokePoint.createRelation({ relationPropertyId: emailFolderRelation, callerItemId: itemId, targetItemId: folderId });
         return itemId;
       };
 
@@ -166,7 +166,7 @@ describe("mailbox client view (issue #96)", () => {
       const { emailsId, inboxId, readMessage, unread } = await seedMailbox();
       const emailFolderRelation = await relationPropertyId(emailsId, "folder");
 
-      await chokePoint.deleteRelation({ relationPropertyId: emailFolderRelation, itemId: readMessage, targetItemId: inboxId });
+      await chokePoint.deleteRelation({ relationPropertyId: emailFolderRelation, callerItemId: readMessage, targetItemId: inboxId });
       await chokePoint.softDeleteItem(emailsId, unread);
 
       const inbox = await chokePoint.listItems(emailsId, { filter: { type: "relation_contains", property: "folder", value: inboxId } });

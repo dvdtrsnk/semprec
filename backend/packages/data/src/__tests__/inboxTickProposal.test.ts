@@ -423,7 +423,7 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     );
     await withTransaction(pool, async (client) => {
       const typeProperty = await propertiesStore.getPropertyByKey(client, inboxId, "type");
-      await createRelationWithClient(client, { relationPropertyId: typeProperty!.id, itemId: item.id, targetItemId: type.id });
+      await createRelationWithClient(client, { relationPropertyId: typeProperty!.id, callerItemId: item.id, targetItemId: type.id });
     });
 
     await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));

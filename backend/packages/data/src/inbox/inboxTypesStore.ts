@@ -158,7 +158,7 @@ export async function deleteInboxTypeWithClient(client: PoolClient, input: Delet
     }
     if (locked) continue;
 
-    await deleteRelationWithClient(client, { relationPropertyId: typeProperty.id, itemId: inboxItemId, targetItemId: input.typeItemId });
+    await deleteRelationWithClient(client, { relationPropertyId: typeProperty.id, callerItemId: inboxItemId, targetItemId: input.typeItemId });
   }
 
   const item = await itemsStore.softDeleteItem(client, input.inboxItemTypesDatabaseId, input.typeItemId);

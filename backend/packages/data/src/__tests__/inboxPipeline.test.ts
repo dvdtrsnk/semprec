@@ -318,7 +318,7 @@ describe("Inbox pipeline databases (issue #101)", () => {
       }),
     );
     const sourceInboxProperty = await chokePoint.listProperties(proposalsId).then((props) => props.find((p) => p.key === "sourceInbox")!);
-    await chokePoint.createRelation({ relationPropertyId: sourceInboxProperty.id, itemId: proposal.id, targetItemId: lockedItem.id });
+    await chokePoint.createRelation({ relationPropertyId: sourceInboxProperty.id, callerItemId: proposal.id, targetItemId: lockedItem.id });
 
     await withTransaction(pool, (client) =>
       deleteInboxTypeWithClient(client, { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId, typeItemId: type.id }),
