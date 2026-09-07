@@ -9,7 +9,7 @@ import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/vie
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { DRIFT_CHECK_ACTION_ID } from "../manifest/driftCheck.js";
 import { MODULE_REGISTRY_CHECK_DRIFT_ACTION_ID } from "../manifest/moduleRegistryDriftCheck.js";
-import { DEFAULT_TIMEZONE, SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
+import { DEFAULT_DAILY_BUDGET_USD, DEFAULT_TIMEZONE, SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { registerTemporalSwitcherViewType } from "../views/temporalSwitcherViewType.js";
 import { registerLibraryGridViewType } from "../views/libraryGridViewType.js";
 import { registerMailboxClientViewType } from "../views/mailboxClientViewType.js";
@@ -122,10 +122,28 @@ export async function seedSystem(
       locked: true,
       owner: "user",
     });
+    // Issue #120's dual budget caps: dailyBudgetUsd starts capped, monthlyBudgetUsd starts
+    // uncapped, and either one going to `null` later means "uncapped" for that window.
+    await propertiesStore.createProperty(client, {
+      databaseId: settingsDb.id,
+      key: "dailyBudgetUsd",
+      name: "Daily AI budget (USD)",
+      type: "number",
+      locked: true,
+      owner: "user",
+    });
+    await propertiesStore.createProperty(client, {
+      databaseId: settingsDb.id,
+      key: "monthlyBudgetUsd",
+      name: "Monthly AI budget (USD)",
+      type: "number",
+      locked: true,
+      owner: "user",
+    });
 
     await itemsStore.insertItem(client, {
       databaseId: settingsDb.id,
-      properties: { name: "Semp", timezone: DEFAULT_TIMEZONE },
+      properties: { name: "Semp", timezone: DEFAULT_TIMEZONE, dailyBudgetUsd: DEFAULT_DAILY_BUDGET_USD, monthlyBudgetUsd: null },
     });
 
     await client.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [settingsDb.id]);
