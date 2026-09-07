@@ -58,7 +58,7 @@ describe("ten hardcoded databases (issue #24)", () => {
     const project = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Vacation planning" } });
 
     const { rows: propRows } = await pool.query("SELECT id FROM properties WHERE database_id = $1 AND key = 'area'", [projectsId]);
-    await chokePoint.createRelation({ relationPropertyId: propRows[0].id, itemId: project.id, targetItemId: area.id });
+    await chokePoint.createRelation({ relationPropertyId: propRows[0].id, callerItemId: project.id, targetItemId: area.id });
 
     const edges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, area.id));
     expect(edges).toHaveLength(1);
@@ -73,7 +73,7 @@ describe("ten hardcoded databases (issue #24)", () => {
 
     const { rows: propRows } = await pool.query("SELECT id FROM properties WHERE database_id = $1 AND key = 'company'", [projectsId]);
     expect(propRows).toHaveLength(1);
-    await chokePoint.createRelation({ relationPropertyId: propRows[0].id, itemId: project.id, targetItemId: company.id });
+    await chokePoint.createRelation({ relationPropertyId: propRows[0].id, callerItemId: project.id, targetItemId: company.id });
 
     // the inverse ("Companies -> Projects") side exists too and is queryable from the company's item
     const { rows: inverseProp } = await pool.query("SELECT id FROM properties WHERE database_id = $1 AND key = 'projects'", [companiesId]);
@@ -142,7 +142,7 @@ describe("ten hardcoded databases (issue #24)", () => {
     });
 
     const { rows: propRows } = await pool.query("SELECT id FROM properties WHERE database_id = $1 AND key = 'project'", [tasksId]);
-    await chokePoint.createRelation({ relationPropertyId: propRows[0].id, itemId: task.id, targetItemId: project.id });
+    await chokePoint.createRelation({ relationPropertyId: propRows[0].id, callerItemId: task.id, targetItemId: project.id });
 
     await withTransaction(pool, (client) =>
       createTaskRecurrence(client, { itemId: task.id, mode: "fixed", rule: { kind: "weekdays", days: ["mon", "fri"] } }),
@@ -172,6 +172,30 @@ describe("ten hardcoded databases (issue #24)", () => {
     expect(reAdvanceOriginal).toBeNull();
   });
 
+  it("task recurrence: a soft-deleted counterpart on a carried-forward edge is dropped, not a reason to fail the advance", async () => {
+    const tasksId = await databaseIdFor("tasks");
+    const projectsId = await databaseIdFor("projects");
+    const project = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Household" } });
+    const task = await chokePoint.createItem({
+      databaseId: tasksId,
+      properties: { name: "Take out trash", status: "notDone", date: "2026-08-24" },
+    });
+
+    const { rows: propRows } = await pool.query("SELECT id FROM properties WHERE database_id = $1 AND key = 'project'", [tasksId]);
+    await chokePoint.createRelation({ relationPropertyId: propRows[0].id, callerItemId: task.id, targetItemId: project.id });
+    await withTransaction(pool, (client) =>
+      createTaskRecurrence(client, { itemId: task.id, mode: "fixed", rule: { kind: "weekdays", days: ["mon", "fri"] } }),
+    );
+
+    await chokePoint.softDeleteItem(projectsId, project.id);
+
+    const next = await advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: task.id, timezone: "Europe/Prague" });
+    expect(next).not.toBeNull();
+
+    const newEdges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, next!.id));
+    expect(newEdges).toHaveLength(0);
+  });
+
   it("task recurrence preserves a one-directional edge where the task is the target side (Events -> Tasks actionItems)", async () => {
     const tasksId = await databaseIdFor("tasks");
     const eventsId = await databaseIdFor("events");
@@ -179,7 +203,7 @@ describe("ten hardcoded databases (issue #24)", () => {
     const task = await chokePoint.createItem({ databaseId: tasksId, properties: { name: "Follow up", status: "notDone" } });
 
     const { rows: actionItemsProp } = await pool.query("SELECT id FROM properties WHERE database_id = $1 AND key = 'actionItems'", [eventsId]);
-    await chokePoint.createRelation({ relationPropertyId: actionItemsProp[0].id, itemId: event.id, targetItemId: task.id });
+    await chokePoint.createRelation({ relationPropertyId: actionItemsProp[0].id, callerItemId: event.id, targetItemId: task.id });
 
     await withTransaction(pool, (client) => createTaskRecurrence(client, { itemId: task.id, mode: "floating", rule: { unit: "days", n: 1 } }));
     const next = await advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: task.id, timezone: "Europe/Prague" });

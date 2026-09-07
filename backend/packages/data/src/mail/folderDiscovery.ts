@@ -40,7 +40,7 @@ export async function ensureFolderItem(client: PoolClient, input: EnsureFolderIt
     },
     { allowedSystemKeys: FOLDER_ALLOWED_SYSTEM_KEYS },
   );
-  await createRelationWithClient(client, { relationPropertyId: input.mailboxRelationPropertyId, itemId: folder.id, targetItemId: input.mailboxItemId });
+  await createRelationWithClient(client, { relationPropertyId: input.mailboxRelationPropertyId, callerItemId: folder.id, targetItemId: input.mailboxItemId });
   return folder.id;
 }
 

@@ -246,7 +246,7 @@ export async function assertValidProposalEnvelope(client: PoolClient, envelope: 
 async function linkSourceInboxRelation(client: PoolClient, config: SemprecTickActionConfig, proposalId: string, sourceItemId: string): Promise<void> {
   const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, config.processingProposalsDatabaseId, "sourceInbox");
   if (!sourceInboxProperty) throw new Error(`Processing proposals database ${config.processingProposalsDatabaseId} has no 'sourceInbox' relation property`);
-  await createRelationWithClient(client, { relationPropertyId: sourceInboxProperty.id, itemId: proposalId, targetItemId: sourceItemId });
+  await createRelationWithClient(client, { relationPropertyId: sourceInboxProperty.id, callerItemId: proposalId, targetItemId: sourceItemId });
 }
 
 /**

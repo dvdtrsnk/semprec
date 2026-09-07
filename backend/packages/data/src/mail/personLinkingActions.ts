@@ -65,7 +65,7 @@ export function createLinkEmailToPeopleAction(pool: Pool): ActionHandler {
       if (senderProperty && meta.envelope.from) {
         const personId = await lookupPersonIdByEmail(client, meta.envelope.from.address);
         if (personId) {
-          await createRelationWithClient(client, { relationPropertyId: senderProperty.id, itemId: context.itemId as string, targetItemId: personId });
+          await createRelationWithClient(client, { relationPropertyId: senderProperty.id, callerItemId: context.itemId as string, targetItemId: personId });
         }
       }
 
@@ -78,7 +78,7 @@ export function createLinkEmailToPeopleAction(pool: Pool): ActionHandler {
           seen.add(normalized);
           const personId = await lookupPersonIdByEmail(client, normalized);
           if (personId) {
-            await createRelationWithClient(client, { relationPropertyId: recipientsProperty.id, itemId: context.itemId as string, targetItemId: personId });
+            await createRelationWithClient(client, { relationPropertyId: recipientsProperty.id, callerItemId: context.itemId as string, targetItemId: personId });
           }
         }
       }

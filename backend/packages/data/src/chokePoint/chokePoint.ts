@@ -2,7 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { assertValidTimezone } from "../timezone.js";
-import type { CreatedBy, DatabaseRow, ItemRow, PropertyRow, PropertyType, ViewItemRow, ViewRow } from "../types.js";
+import type { CreatedBy, DatabaseRow, ItemRelationRow, ItemRow, PropertyRow, PropertyType, RelationDefinitionRow, ViewItemRow, ViewRow } from "../types.js";
 import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as itemsStore from "./itemsStore.js";
@@ -333,56 +333,141 @@ export async function updateItemWithClient(client: PoolClient, input: UpdateItem
   return item;
 }
 
+/** The normalized public shape of a stored edge — same fields as `relationsStore.ItemRelationRow`, named here to match the choke-point's own edge contract. */
+export type RelationEdge = ItemRelationRow;
+
 export interface CreateRelationInput {
   relationPropertyId: string;
-  itemId: string;
+  callerItemId: string;
   targetItemId: string;
   metadata?: Record<string, unknown>;
 }
 
-/** The relation-linking logic, factored out for the same reason as `createItemWithClient` above. */
-export async function createRelationWithClient(client: PoolClient, input: CreateRelationInput): Promise<void> {
-  const property = await propertiesStore.getProperty(client, input.relationPropertyId);
+export interface UpdateRelationInput {
+  relationPropertyId: string;
+  callerItemId: string;
+  targetItemId: string;
+  metadata: Record<string, unknown>;
+}
+
+interface RelationEdgeContext {
+  reldef: RelationDefinitionRow;
+  property: PropertyRow;
+  targetDatabaseId: string;
+}
+
+/**
+ * Loads the relation property named by an edge input and normalizes it against its relation
+ * definition. `relationPropertyId` always identifies the caller's own side of the definition;
+ * its `config.relationDefinitionId`/`config.targetDatabaseId` are the only source of truth for
+ * which definition and target database an edge call resolves against — a property whose config
+ * lacks either is a data inconsistency (a relation property is never usable before
+ * `createRelationPropertyWithClient` fills in both), not a case to infer around.
+ */
+async function loadRelationEdgeContext(client: PoolClient, relationPropertyId: string): Promise<RelationEdgeContext> {
+  const property = await propertiesStore.getProperty(client, relationPropertyId);
   if (!property || property.type !== "relation") {
-    throw new ValidationError(`${input.relationPropertyId} is not a relation property`);
+    throw new ValidationError(`${relationPropertyId} is not a relation property`, { field: "relationPropertyId" });
   }
-  const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, input.relationPropertyId);
-  if (!reldef) throw new ValidationError(`Relation property ${input.relationPropertyId} has no relation definition`);
+  const config = property.config as { relationDefinitionId?: unknown; targetDatabaseId?: unknown };
+  if (typeof config.relationDefinitionId !== "string" || typeof config.targetDatabaseId !== "string") {
+    throw new ValidationError(`Relation property ${relationPropertyId} is missing a valid relationDefinitionId/targetDatabaseId`, {
+      field: "relationPropertyId",
+    });
+  }
+  const reldef = await relationsStore.getRelationDefinition(client, config.relationDefinitionId);
+  if (!reldef || (reldef.propertyIdA !== relationPropertyId && reldef.propertyIdB !== relationPropertyId)) {
+    throw new ValidationError(`Relation property ${relationPropertyId} has no matching relation definition`, {
+      field: "relationPropertyId",
+    });
+  }
+  return { reldef, property, targetDatabaseId: config.targetDatabaseId };
+}
 
-  const isSideA = reldef.propertyIdA === input.relationPropertyId;
-  const itemA = isSideA ? input.itemId : input.targetItemId;
-  const itemB = isSideA ? input.targetItemId : input.itemId;
+/** Normalizes a caller/target pair to the stored item A / item B tuple for the definition's own side. */
+function normalizeRelationSides(
+  reldef: RelationDefinitionRow,
+  relationPropertyId: string,
+  callerItemId: string,
+  targetItemId: string,
+): { itemA: string; itemB: string } {
+  const isSideA = reldef.propertyIdA === relationPropertyId;
+  return isSideA ? { itemA: callerItemId, itemB: targetItemId } : { itemA: targetItemId, itemB: callerItemId };
+}
 
-  await relationsStore.createItemRelation(client, {
-    relationDefinitionId: reldef.id,
+/** Rejects a dangling, soft-deleted, or wrong-database endpoint with `validation_failed` — PostgreSQL foreign keys cannot enforce this because `items` has a partitioned composite primary key. */
+async function assertRelationEndpointValid(client: PoolClient, databaseId: string, itemId: string, field: "callerItemId" | "targetItemId"): Promise<void> {
+  const item = await itemsStore.getItemById(client, databaseId, itemId);
+  if (!item || item.deletedAt) {
+    throw new ValidationError(`Relation endpoint ${itemId} does not exist, is deleted, or is not in database ${databaseId}`, { field });
+  }
+}
+
+async function assertRelationEndpointsValid(client: PoolClient, context: RelationEdgeContext, callerItemId: string, targetItemId: string): Promise<void> {
+  await assertRelationEndpointValid(client, context.property.databaseId, callerItemId, "callerItemId");
+  await assertRelationEndpointValid(client, context.targetDatabaseId, targetItemId, "targetItemId");
+}
+
+/**
+ * The relation-linking logic, factored out for the same reason as `createItemWithClient` above.
+ * Idempotent on the normalized `(relationDefinitionId, itemA, itemB)` tuple: a repeat create
+ * replaces the entire metadata object (never merges), including back to `{}` when the caller
+ * omits it — `relationsStore.createItemRelation`'s `ON CONFLICT ... DO UPDATE` is what makes
+ * this atomic against a concurrent create of the same edge.
+ */
+export async function createRelationWithClient(client: PoolClient, input: CreateRelationInput): Promise<RelationEdge> {
+  const context = await loadRelationEdgeContext(client, input.relationPropertyId);
+  await assertRelationEndpointsValid(client, context, input.callerItemId, input.targetItemId);
+
+  const { itemA, itemB } = normalizeRelationSides(context.reldef, input.relationPropertyId, input.callerItemId, input.targetItemId);
+  const edge = await relationsStore.createItemRelation(client, {
+    relationDefinitionId: context.reldef.id,
     itemA,
     itemB,
     metadata: input.metadata,
   });
-  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: reldef.id, itemA, itemB });
+  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: context.reldef.id, itemA, itemB });
+  return edge;
 }
 
-export interface DeleteRelationInput {
-  relationPropertyId: string;
-  itemId: string;
-  targetItemId: string;
-}
+/** The metadata-replacement counterpart to `createRelationWithClient`: requires an existing normalized edge (endpoints are immutable — moving one is delete plus create), and rejects a missing edge with a `404 not_found`. */
+export async function updateRelationWithClient(client: PoolClient, input: UpdateRelationInput): Promise<RelationEdge> {
+  const context = await loadRelationEdgeContext(client, input.relationPropertyId);
+  await assertRelationEndpointsValid(client, context, input.callerItemId, input.targetItemId);
 
-/** The relation-unlinking counterpart to `createRelationWithClient` above, factored out for the same reason (issue #26: the IMAP adapter's VANISHED/UID-diff handling removes a folder-membership edge inside its own larger sync transaction). */
-export async function deleteRelationWithClient(client: PoolClient, input: DeleteRelationInput): Promise<void> {
-  const property = await propertiesStore.getProperty(client, input.relationPropertyId);
-  if (!property || property.type !== "relation") {
-    throw new ValidationError(`${input.relationPropertyId} is not a relation property`);
+  const { itemA, itemB } = normalizeRelationSides(context.reldef, input.relationPropertyId, input.callerItemId, input.targetItemId);
+  const edge = await relationsStore.updateItemRelationMetadata(client, context.reldef.id, itemA, itemB, input.metadata);
+  if (!edge) {
+    throw new NotFoundError(`Relation edge not found`, {
+      resource: "relationEdge",
+      relationPropertyId: input.relationPropertyId,
+      callerItemId: input.callerItemId,
+      targetItemId: input.targetItemId,
+    });
   }
-  const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, input.relationPropertyId);
-  if (!reldef) throw new ValidationError(`Relation property ${input.relationPropertyId} has no relation definition`);
+  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: context.reldef.id, itemA, itemB });
+  return edge;
+}
 
-  const isSideA = reldef.propertyIdA === input.relationPropertyId;
-  const itemA = isSideA ? input.itemId : input.targetItemId;
-  const itemB = isSideA ? input.targetItemId : input.itemId;
+export type DeleteRelationInput = Omit<CreateRelationInput, "metadata">;
 
-  await relationsStore.deleteItemRelation(client, reldef.id, itemA, itemB);
-  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: reldef.id, itemA, itemB });
+/**
+ * The relation-unlinking counterpart to `createRelationWithClient` above, factored out for the
+ * same reason (issue #26: the IMAP adapter's VANISHED/UID-diff handling removes a
+ * folder-membership edge inside its own larger sync transaction). Idempotent: returns
+ * regardless of whether the edge existed — deliberately skips `assertRelationEndpointsValid`
+ * (unlike create/update), because a real cleanup caller routinely deletes an edge *after* one
+ * of its endpoints was soft-deleted (`inboxTypesStore`'s `deleteInboxTypeWithClient`, and the
+ * Gmail/Graph/IMAP reconcilers dropping folder edges for an already-removed message) — endpoint
+ * validity only matters for creating or moving an edge, never for tearing one down. The
+ * normalized `(relationDefinitionId, itemA, itemB)` lookup in `deleteItemRelation` is safe
+ * regardless of endpoint state.
+ */
+export async function deleteRelationWithClient(client: PoolClient, input: DeleteRelationInput): Promise<void> {
+  const context = await loadRelationEdgeContext(client, input.relationPropertyId);
+  const { itemA, itemB } = normalizeRelationSides(context.reldef, input.relationPropertyId, input.callerItemId, input.targetItemId);
+  await relationsStore.deleteItemRelation(client, context.reldef.id, itemA, itemB);
+  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: context.reldef.id, itemA, itemB });
 }
 
 export function createChokePoint(
@@ -506,22 +591,16 @@ export function createChokePoint(
     },
 
     // ---- relations (data side: linking two items) ----
-    async createRelation(input: CreateRelationInput): Promise<void> {
+    async createRelation(input: CreateRelationInput): Promise<RelationEdge> {
       return withTransaction(pool, (client) => createRelationWithClient(client, input));
     },
 
-    async deleteRelation(input: { relationPropertyId: string; itemId: string; targetItemId: string }): Promise<void> {
-      return withTransaction(pool, async (client) => {
-        const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, input.relationPropertyId);
-        if (!reldef) throw new ValidationError(`Relation property ${input.relationPropertyId} has no relation definition`);
+    async updateRelation(input: UpdateRelationInput): Promise<RelationEdge> {
+      return withTransaction(pool, (client) => updateRelationWithClient(client, input));
+    },
 
-        const isSideA = reldef.propertyIdA === input.relationPropertyId;
-        const itemA = isSideA ? input.itemId : input.targetItemId;
-        const itemB = isSideA ? input.targetItemId : input.itemId;
-
-        await relationsStore.deleteItemRelation(client, reldef.id, itemA, itemB);
-        await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: reldef.id, itemA, itemB });
-      });
+    async deleteRelation(input: DeleteRelationInput): Promise<void> {
+      return withTransaction(pool, (client) => deleteRelationWithClient(client, input));
     },
 
     // ---- items ----

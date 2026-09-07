@@ -369,7 +369,7 @@ describe("Inbox pipeline databases (issue #101)", () => {
       }),
     );
     const sourceInboxProperty = await chokePoint.listProperties(proposalsId).then((props) => props.find((p) => p.key === "sourceInbox")!);
-    await chokePoint.createRelation({ relationPropertyId: sourceInboxProperty.id, itemId: proposal.id, targetItemId: lockedItem.id });
+    await chokePoint.createRelation({ relationPropertyId: sourceInboxProperty.id, callerItemId: proposal.id, targetItemId: lockedItem.id });
 
     await withTransaction(pool, (client) =>
       deleteInboxTypeWithClient(client, { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId, typeItemId: type.id }),
@@ -413,7 +413,7 @@ describe("Inbox pipeline databases (issue #101)", () => {
           properties: { kind: "inbox", fingerprint: `p${i}`, proposal: {}, history: [], status: "pending" },
         }),
       );
-      await chokePoint.createRelation({ relationPropertyId: sourceInboxProperty.id, itemId: pendingProposal.id, targetItemId: unlockedManyProposals.id });
+      await chokePoint.createRelation({ relationPropertyId: sourceInboxProperty.id, callerItemId: pendingProposal.id, targetItemId: unlockedManyProposals.id });
     }
     const lockedItem = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "11:00", type: type.id }),
@@ -427,7 +427,7 @@ describe("Inbox pipeline databases (issue #101)", () => {
         properties: { kind: "inbox", fingerprint: "x", proposal: {}, history: [], status: "confirmed" },
       }),
     );
-    await chokePoint.createRelation({ relationPropertyId: sourceInboxProperty.id, itemId: confirmedProposal.id, targetItemId: lockedItem.id });
+    await chokePoint.createRelation({ relationPropertyId: sourceInboxProperty.id, callerItemId: confirmedProposal.id, targetItemId: lockedItem.id });
 
     const queries = await withTransaction(pool, async (client) => {
       const texts = instrumentQueries(client);

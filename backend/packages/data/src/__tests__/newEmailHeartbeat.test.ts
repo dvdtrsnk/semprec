@@ -106,7 +106,7 @@ describe("newEmail heartbeat (issue #99)", () => {
       });
       // A message with multiple folder memberships (e.g. Gmail labels) — link the rest too.
       for (const folder of folders.slice(1)) {
-        await createRelationWithClient(client, { relationPropertyId: folderProperty.id, itemId: ingestResult.itemId, targetItemId: folder.id });
+        await createRelationWithClient(client, { relationPropertyId: folderProperty.id, callerItemId: ingestResult.itemId, targetItemId: folder.id });
       }
       return ingestResult;
     });

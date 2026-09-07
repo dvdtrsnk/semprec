@@ -122,7 +122,7 @@ export async function ingestAttachments(client: PoolClient, input: IngestAttachm
 
     await createRelationWithClient(client, {
       relationPropertyId: input.attachmentsRelationPropertyId,
-      itemId: input.messageItemId,
+      callerItemId: input.messageItemId,
       targetItemId: fileItem.id,
     });
   }

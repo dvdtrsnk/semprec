@@ -122,6 +122,23 @@ export async function createItemRelation(client: PoolClient, input: CreateItemRe
   return mapItemRelationRow(rows[0]);
 }
 
+/** Full-replacement metadata update for an existing edge; returns `null` if the normalized tuple has no row (never merges JSON). */
+export async function updateItemRelationMetadata(
+  client: PoolClient,
+  relationDefinitionId: string,
+  itemA: string,
+  itemB: string,
+  metadata: Record<string, unknown>,
+): Promise<ItemRelationRow | null> {
+  const { rows } = await client.query(
+    `UPDATE item_relations SET metadata = $4::jsonb
+     WHERE relation_definition_id = $1 AND item_a = $2 AND item_b = $3
+     RETURNING id, relation_definition_id, item_a, item_b, metadata`,
+    [relationDefinitionId, itemA, itemB, JSON.stringify(metadata)],
+  );
+  return rows[0] ? mapItemRelationRow(rows[0]) : null;
+}
+
 export async function deleteItemRelation(
   client: PoolClient,
   relationDefinitionId: string,
