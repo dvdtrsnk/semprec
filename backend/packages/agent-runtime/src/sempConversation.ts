@@ -19,13 +19,12 @@ export type SempTurnResult = { ok: true; message: string | null } | { ok: false;
  */
 export type ReconstructConversationHistory = (pool: Pool, projectItemId: string) => Promise<string | null>;
 
-export const stubReconstructConversationHistory: ReconstructConversationHistory = async () => null;
+const stubReconstructConversationHistory: ReconstructConversationHistory = async () => null;
 
 interface ConversationEntry {
   agentRunId: string;
   session: AgentSession;
   busy: boolean;
-  lastActivityAt: number;
   ttlTimer: ReturnType<typeof setTimeout>;
 }
 
@@ -145,7 +144,6 @@ export class SempConversation {
         agentRunId: run.id,
         session,
         busy: false,
-        lastActivityAt: Date.now(),
         ttlTimer: this.scheduleTtl(),
       };
 
@@ -156,7 +154,6 @@ export class SempConversation {
   }
 
   private touch(entry: ConversationEntry): void {
-    entry.lastActivityAt = Date.now();
     clearTimeout(entry.ttlTimer);
     entry.ttlTimer = this.scheduleTtl();
   }
@@ -184,16 +181,23 @@ export class SempConversation {
    * reschedules another attempt on the same cadence instead of losing track of the entry (which
    * would otherwise leave its `agent_runs` row stuck at `running` forever with nothing left in
    * memory to close it).
+   *
+   * Claims the entry as `busy` synchronously, before its first `await` — the same invariant
+   * `send()`'s own busy check relies on — so a `send()` arriving mid-pause never reuses a
+   * session whose run this is in the middle of finishing as `done`; it observes `busy` and is
+   * rejected instead, same as if a turn were in flight.
    */
   private async pause(): Promise<void> {
     const entry = this.entry;
     if (!entry || entry.busy) return;
+    entry.busy = true;
     try {
       await finishAgentRun(this.pool, entry.agentRunId, "done", null);
       await pushRunStatus(this.pool, entry.agentRunId, "done");
       this.entry = null;
     } catch (err) {
       console.error("SempConversation: failed to close paused run, will retry", err);
+      entry.busy = false;
       entry.ttlTimer = this.scheduleTtl();
     }
   }

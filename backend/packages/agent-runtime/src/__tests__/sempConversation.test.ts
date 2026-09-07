@@ -185,6 +185,36 @@ describe("SempConversation", () => {
     conversation.clear();
   });
 
+  it("rejects a send that arrives while a TTL pause is mid-flight, instead of reusing the session pause() is finishing as done", async () => {
+    const { createAgentSession } = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "first wake" },
+      { kind: "turn_end" },
+    ]);
+    const conversation = new SempConversation(pool, { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID });
+
+    await conversation.send("one");
+
+    // Invoke the TTL handler's private pause() directly rather than waiting out a real TTL:
+    // pause() claims the entry as busy synchronously, before its first `await` (the invariant
+    // the high-severity review finding required), so by the time `send()` below runs — the
+    // very next synchronous statement — it already observes `busy` and is rejected instead of
+    // reusing a session whose run pause() is concurrently finishing as `done`.
+    const pausePromise = (conversation as unknown as { pause(): Promise<void> }).pause();
+    const duringPause = await conversation.send("during pause");
+    expect(duringPause).toEqual({ ok: false, error: SEMP_BUSY_ERROR_MESSAGE });
+
+    await pausePromise;
+
+    const { rows } = await pool.query<{ status: string }>(`SELECT status FROM agent_runs WHERE project_item_id = $1`, [
+      SEMPREC_PROJECT_ITEM_ID,
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("done");
+
+    conversation.clear();
+  });
+
   it("rejects a send that arrives while another is already in flight, without blocking or overwriting it", async () => {
     const { createAgentSession, release } = blockingSession();
     const conversation = new SempConversation(pool, { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID });

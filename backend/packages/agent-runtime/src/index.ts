@@ -6,7 +6,6 @@ export { createDelegateTool, type DelegateTool, type DelegateToolArgs, type Dele
 export {
   SempConversation,
   SEMP_BUSY_ERROR_MESSAGE,
-  stubReconstructConversationHistory,
   type SempConversationOptions,
   type SempTurnResult,
   type ReconstructConversationHistory,
