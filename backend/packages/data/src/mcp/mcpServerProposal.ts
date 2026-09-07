@@ -10,7 +10,7 @@ import { assertValidMcpConnectionConfig } from "./mcpConnectionConfig.js";
  * supplied by a human separately at confirm time (proposalActions.ts), never inside the
  * envelope an agent computes.
  */
-const MCP_CREDENTIAL_FIELD_NAMES: readonly string[] = [
+export const MCP_CREDENTIAL_FIELD_NAMES: readonly string[] = [
   "credential",
   "credentialType",
   "plaintext",

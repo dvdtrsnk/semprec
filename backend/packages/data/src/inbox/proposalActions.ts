@@ -93,14 +93,16 @@ export async function confirmProposalWithClient(
   let resultItemId: string;
   let resultLabel: string;
   if (envelope.entityKind === "database") {
-    const created = await createItemWithClient(client, { databaseId: envelope.target, properties: envelope.properties });
-    resultItemId = created.id;
-    resultLabel = await resolveResultLabel(client, envelope.target, created);
     if (credential) {
       const targetDatabase = await databasesStore.getDatabase(client, envelope.target);
       if (targetDatabase?.ownerModuleId !== MCP_SERVERS_MODULE_ID) {
         throw new ValidationError("A credential may only be supplied when confirming an MCP server proposal", { field: "credential" });
       }
+    }
+    const created = await createItemWithClient(client, { databaseId: envelope.target, properties: envelope.properties });
+    resultItemId = created.id;
+    resultLabel = await resolveResultLabel(client, envelope.target, created);
+    if (credential) {
       await storeCredential(client, { itemId: created.id, credentialType: credential.credentialType, plaintext: credential.plaintext });
     }
   } else {

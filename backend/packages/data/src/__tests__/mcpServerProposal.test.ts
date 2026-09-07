@@ -5,10 +5,11 @@ import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/vie
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
-import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inbox/inboxTickAction.js";
+import { createSemprecTickAction } from "../inbox/inboxTickAction.js";
 import { confirmProposalWithClient, reviseProposalWithClient } from "../inbox/proposalActions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { getDecryptedCredential, hasCredential } from "../credentials/externalCredentialsStore.js";
+import { MCP_CREDENTIAL_FIELD_NAMES } from "../mcp/mcpServerProposal.js";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
@@ -91,7 +92,7 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
     await expect(createMcpProposal({ name: "Bad", connectionConfig: { transport: "stdio" } })).rejects.toThrow(/Invalid MCP server connectionConfig/);
   });
 
-  it.each(["credential", "apiKey", "token", "secret", "password"])("rejects a proposal carrying a credential-shaped field '%s'", async (field) => {
+  it.each(MCP_CREDENTIAL_FIELD_NAMES)("rejects a proposal carrying a credential-shaped field '%s'", async (field) => {
     await expect(createMcpProposal({ name: "Sneaky", [field]: "shh" })).rejects.toThrow(/cannot carry credential field/);
   });
 
