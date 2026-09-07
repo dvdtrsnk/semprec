@@ -270,4 +270,101 @@ describe("DelegationRegistry", () => {
 
     registry.clear();
   });
+
+  it("rejects a malformed targetProjectItemId before touching the database", async () => {
+    const registry = new DelegationRegistry(pool);
+    const supervisorRunId = await newSupervisorRunId();
+    const { createAgentSession } = scriptedSession([{ kind: "turn_start" }, { kind: "message", text: "x" }, { kind: "turn_end" }]);
+
+    const result = await registry.delegate({
+      createAgentSession,
+      supervisorRunId,
+      targetProjectItemId: "not-a-uuid",
+      task: "do it",
+    });
+
+    expect(result).toEqual({ ok: false, error: 'targetProjectItemId "not-a-uuid" is not a well-formed UUID' });
+
+    const { rows } = await pool.query(`SELECT count(*)::int AS n FROM agent_runs WHERE task = 'do it'`);
+    expect(rows[0].n).toBe(0);
+
+    registry.clear();
+  });
+
+  it("closes a brand-new session's agent_runs row as error and does not register it when the first turn throws", async () => {
+    const registry = new DelegationRegistry(pool);
+    const supervisorRunId = await newSupervisorRunId();
+    const targetProjectItemId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const createAgentSession: CreateAgentSession = (): AgentSession => ({
+      async *messages() {
+        yield { kind: "turn_start" };
+        throw new Error("boom");
+      },
+    });
+
+    await expect(
+      registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: "fails" }),
+    ).rejects.toThrow("boom");
+
+    const { rows } = await pool.query<{ status: string; result: string | null }>(
+      `SELECT status, result FROM agent_runs WHERE project_item_id = $1`,
+      [targetProjectItemId],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("error");
+    expect(rows[0].result).toBe("boom");
+
+    // The failed session must not be left registered for reuse — a retry creates a fresh one.
+    const { createAgentSession: retrySession } = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "recovered" },
+      { kind: "turn_end" },
+    ]);
+    const retry = await registry.delegate({
+      createAgentSession: retrySession,
+      supervisorRunId,
+      targetProjectItemId,
+      task: "retry",
+    });
+    expect(retry).toEqual({ ok: true, message: "recovered" });
+
+    registry.clear();
+  });
+
+  it("closes a reused session's agent_runs row as error and drops the entry when a later turn throws", async () => {
+    const registry = new DelegationRegistry(pool);
+    const supervisorRunId = await newSupervisorRunId();
+    const targetProjectItemId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+    let call = 0;
+    const createAgentSession: CreateAgentSession = (): AgentSession => ({
+      async *messages() {
+        yield { kind: "turn_start" };
+        yield { kind: "message", text: "first" };
+        yield { kind: "turn_end" };
+      },
+      async *send() {
+        call++;
+        yield { kind: "turn_start" };
+        throw new Error("second turn boom");
+      },
+    });
+
+    const first = await registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: "one" });
+    expect(first).toEqual({ ok: true, message: "first" });
+
+    await expect(
+      registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: "two" }),
+    ).rejects.toThrow("second turn boom");
+    expect(call).toBe(1);
+
+    const { rows } = await pool.query<{ status: string; result: string | null }>(
+      `SELECT status, result FROM agent_runs WHERE project_item_id = $1`,
+      [targetProjectItemId],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("error");
+    expect(rows[0].result).toBe("second turn boom");
+
+    registry.clear();
+  });
 });

@@ -57,6 +57,7 @@ describe("createDelegateTool", () => {
         yield { kind: "turn_start" };
         await gate;
         yield { kind: "message", text: "done" };
+        yield { kind: "turn_end" };
       },
     });
     const delegate = createDelegateTool(registry, blocking);

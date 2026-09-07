@@ -1,11 +1,13 @@
 import type { Pool } from "pg";
 import { createAgentRun, finishAgentRun } from "@semprec/data";
 import { extractResultSnapshot, pushRunStatus, runAgentTurn } from "./lifecycleAdapter.js";
-import type { AgentSession, CreateAgentSession } from "./types.js";
+import type { AgentMessage, AgentSession, CreateAgentSession } from "./types.js";
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const BUSY_ERROR_MESSAGE = "this project is already handling another request from this run, retry next turn";
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface DelegateInput {
   /** Seam for the real `pi-agent-core` `createAgentSession` (or a fake, in tests). */
@@ -13,7 +15,6 @@ export interface DelegateInput {
   supervisorRunId: string;
   targetProjectItemId: string;
   task: string;
-  systemPromptOverride?: (defaultPrompt: string) => string;
 }
 
 export type DelegateResult = { ok: true; message: string | null } | { ok: false; error: string };
@@ -22,12 +23,23 @@ interface RegistryEntry {
   agentRunId: string;
   session: AgentSession;
   busy: boolean;
+  /** Issue #229 names this as one of the entry's required fields; `ttlTimer` is its live enforcement, this is the observable value behind it. */
   lastActivityAt: number;
   ttlTimer: ReturnType<typeof setTimeout>;
 }
 
 function key(supervisorRunId: string, targetProjectItemId: string): string {
   return `${supervisorRunId}:${targetProjectItemId}`;
+}
+
+/** Best-effort: matches `runAgentSession`'s error handling in `lifecycleAdapter.ts` so a failed turn never leaves an `agent_runs` row stuck at `running` forever. */
+async function failRun(pool: Pool, agentRunId: string, err: unknown): Promise<void> {
+  try {
+    await finishAgentRun(pool, agentRunId, "error", err instanceof Error ? err.message : String(err));
+    await pushRunStatus(pool, agentRunId, "error");
+  } catch (closeErr) {
+    console.error("DelegationRegistry: failed to close errored run", agentRunId, closeErr);
+  }
 }
 
 /**
@@ -66,6 +78,15 @@ export class DelegationRegistry {
   }
 
   async delegate(input: DelegateInput): Promise<DelegateResult> {
+    // `targetProjectItemId` comes from the model's own tool-call arguments — untrusted input
+    // that must not reach `createAgentRun`'s SQL unvalidated. Full authorization (is this
+    // supervisor run actually allowed to reach this project?) belongs to the permission
+    // manifest the not-yet-built composition root (#91) resolves; this is only the format
+    // guard against a malformed/malicious id landing in `agent_runs.project_item_id`.
+    if (!UUID_PATTERN.test(input.targetProjectItemId)) {
+      return { ok: false, error: `targetProjectItemId "${input.targetProjectItemId}" is not a well-formed UUID` };
+    }
+
     const entryKey = key(input.supervisorRunId, input.targetProjectItemId);
     const existing = this.entries.get(entryKey);
 
@@ -82,7 +103,18 @@ export class DelegationRegistry {
         if (!existing.session.send) {
           throw new Error("AgentSession does not support continuation (send) required to reuse a delegated session");
         }
-        const lastMessage = await runAgentTurn(this.pool, existing.agentRunId, existing.session.send(input.task));
+        let lastMessage: AgentMessage | null;
+        try {
+          lastMessage = await runAgentTurn(this.pool, existing.agentRunId, existing.session.send(input.task));
+        } catch (err) {
+          // A broken turn leaves the underlying AgentSession in an unknown state — close the
+          // run as error and drop the entry rather than leaving a busy-cleared but unusable
+          // session in the registry for the next delegation to reuse.
+          this.entries.delete(entryKey);
+          clearTimeout(existing.ttlTimer);
+          await failRun(this.pool, existing.agentRunId, err);
+          throw err;
+        }
         this.touch(entryKey, existing);
         return { ok: true, message: extractResultSnapshot(lastMessage) };
       } finally {
@@ -101,12 +133,15 @@ export class DelegationRegistry {
       });
       await pushRunStatus(this.pool, run.id, "running");
 
-      const session = input.createAgentSession({
-        task: input.task,
-        systemPromptOverride: input.systemPromptOverride,
-      });
+      const session = input.createAgentSession({ task: input.task });
 
-      const lastMessage = await runAgentTurn(this.pool, run.id, session.messages());
+      let lastMessage: AgentMessage | null;
+      try {
+        lastMessage = await runAgentTurn(this.pool, run.id, session.messages());
+      } catch (err) {
+        await failRun(this.pool, run.id, err);
+        throw err;
+      }
 
       const entry: RegistryEntry = {
         agentRunId: run.id,
@@ -130,7 +165,11 @@ export class DelegationRegistry {
   }
 
   private scheduleTtl(entryKey: string): ReturnType<typeof setTimeout> {
-    const timer = setTimeout(() => void this.expire(entryKey), this.ttlMs);
+    const timer = setTimeout(() => {
+      this.expire(entryKey).catch((err) => {
+        console.error("DelegationRegistry: expire failed for", entryKey, err);
+      });
+    }, this.ttlMs);
     // Never keep a process alive solely to fire a TTL sweep.
     timer.unref?.();
     return timer;
@@ -141,12 +180,22 @@ export class DelegationRegistry {
    * and its `agent_runs` row finished as `done`, so `agent_runs` doesn't accumulate rows the
    * in-memory registry has already forgotten about. A `busy` entry's own next `touch()` call
    * reschedules a fresh timer past this fire, so this is a no-op for it.
+   *
+   * The entry is only removed from `entries` once both DB writes succeed — a transient DB
+   * failure here reschedules another attempt on the same cadence instead of losing track of
+   * the entry (which would otherwise leave its `agent_runs` row stuck at `running` forever
+   * with nothing left in memory to close it).
    */
   private async expire(entryKey: string): Promise<void> {
     const entry = this.entries.get(entryKey);
     if (!entry || entry.busy) return;
-    this.entries.delete(entryKey);
-    await finishAgentRun(this.pool, entry.agentRunId, "done", null);
-    await pushRunStatus(this.pool, entry.agentRunId, "done");
+    try {
+      await finishAgentRun(this.pool, entry.agentRunId, "done", null);
+      await pushRunStatus(this.pool, entry.agentRunId, "done");
+      this.entries.delete(entryKey);
+    } catch (err) {
+      console.error("DelegationRegistry: failed to close expired session, will retry", entryKey, err);
+      entry.ttlTimer = this.scheduleTtl(entryKey);
+    }
   }
 }
