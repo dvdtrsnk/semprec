@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { recordTokenGatewayCall } from "@semprec/data";
@@ -44,6 +44,13 @@ describe("createAiUsageRequestListener", () => {
     expect(res.status).toBe(401);
   });
 
+  it("rejects a bearer token of a different length than expected, without throwing", async () => {
+    const res = await fetch(`${baseUrl}/api/ai-usage?from=2026-01-01T00:00:00Z&to=2026-12-30T00:00:00Z`, {
+      headers: { Authorization: "Bearer short" },
+    });
+    expect(res.status).toBe(401);
+  });
+
   it("returns the aggregated usage report for an authenticated request", async () => {
     await recordTokenGatewayCall(pool, {
       provider: "anthropic",
@@ -75,5 +82,26 @@ describe("createAiUsageRequestListener", () => {
   it("returns 404 for an unknown path", async () => {
     const res = await fetch(`${baseUrl}/not-a-real-path`, { headers: { Authorization: `Bearer ${AUTH_TOKEN}` } });
     expect(res.status).toBe(404);
+  });
+
+  it("logs and returns 500 for an unexpected, non-validation error rather than swallowing it", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      const brokenPool = { query: () => Promise.reject(new Error("connection reset")) } as unknown as Pool;
+      server = createServer(createAiUsageRequestListener(brokenPool, { authToken: AUTH_TOKEN }));
+      await new Promise<void>((resolve) => server.listen(0, resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+      baseUrl = `http://127.0.0.1:${address.port}`;
+
+      const res = await fetch(`${baseUrl}/api/ai-usage?from=2026-01-01T00:00:00Z&to=2026-12-30T00:00:00Z`, {
+        headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+      });
+      expect(res.status).toBe(500);
+      expect(errorSpy).toHaveBeenCalledWith("Unexpected error in GET /api/ai-usage:", expect.any(Error));
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

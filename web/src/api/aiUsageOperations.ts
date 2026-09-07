@@ -4,8 +4,12 @@ import { OperationError } from "./genericOperations.js";
 /**
  * The client's own binding for `GET /api/ai-usage` (issue #121). Deliberately not folded into
  * `GenericOperations`/`httpGenericOperations.ts`: those mirror the choke-point's item/view
- * surface one to one, and this endpoint isn't a database view — it's a bespoke aggregate read
- * with its own auth (a stopgap bearer token ahead of the auth-v1 epic, #138-143).
+ * surface one to one, and this endpoint isn't a database view — it's a bespoke aggregate read.
+ *
+ * This client never holds the endpoint's stopgap bearer secret: `Authorization` never appears
+ * in browser-reachable code, so the request goes out as a plain same-origin fetch and whatever
+ * serves this origin (the dev server's proxy in `vite.config.ts`, later a real reverse proxy or
+ * the auth-v1 epic's session) is responsible for attaching or replacing that credential.
  */
 
 export const aiUsageRowSchema = z.object({
@@ -44,8 +48,6 @@ const UNAVAILABLE_STATUSES = new Set([401, 403, 404, 501]);
 
 export interface AiUsageOperationsOptions {
   baseUrl: string;
-  /** The stopgap shared-secret bearer token this endpoint expects (see aiUsageHandler.ts). */
-  authToken: string;
   fetchImpl?: typeof fetch;
 }
 
@@ -62,10 +64,7 @@ export function createAiUsageOperations(options: AiUsageOperationsOptions): AiUs
       const url = `${baseUrl}/ai-usage?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
       let response: Response;
       try {
-        response = await fetchImpl(url, {
-          headers: { Authorization: `Bearer ${options.authToken}` },
-          credentials: "same-origin",
-        });
+        response = await fetchImpl(url, { credentials: "same-origin" });
       } catch (error) {
         throw new OperationError("retryable", error instanceof Error ? error.message : String(error));
       }

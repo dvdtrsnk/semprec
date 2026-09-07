@@ -15,10 +15,9 @@ const viewId = params.get("view") ?? "";
 const page = params.get("page");
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const operations = createHttpGenericOperations({ baseUrl: apiBaseUrl });
-const aiUsageOperations =
-  page === "ai-usage"
-    ? createAiUsageOperations({ baseUrl: apiBaseUrl, authToken: import.meta.env.VITE_SEMPREC_API_TOKEN ?? "" })
-    : undefined;
+// No token here: the endpoint's stopgap bearer secret stays server-side (vite.config.ts's dev
+// proxy attaches it), so this client only ever issues a plain same-origin fetch.
+const aiUsageOperations = page === "ai-usage" ? createAiUsageOperations({ baseUrl: apiBaseUrl }) : undefined;
 
 const container = document.getElementById("root");
 if (!container) throw new Error("Missing #root container");

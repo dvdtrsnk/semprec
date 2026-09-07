@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import { getAiUsageReport, ChokePointError, type Queryable } from "@semprec/data";
 
 export interface AiUsageHandlerOptions {
@@ -16,10 +17,13 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
+/** Constant-time so a network caller can't recover the token byte-by-byte from response timing. */
 function isAuthorized(req: IncomingMessage, authToken: string): boolean {
   const header = req.headers.authorization;
   if (!header || !header.startsWith("Bearer ")) return false;
-  return header.slice("Bearer ".length) === authToken;
+  const provided = Buffer.from(header.slice("Bearer ".length));
+  const expected = Buffer.from(authToken);
+  return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
 /**
@@ -56,6 +60,7 @@ export function createAiUsageRequestListener(pool: Queryable, options: AiUsageHa
         sendJson(res, err.status, { error: err.message, code: err.code, details: err.details });
         return;
       }
+      console.error("Unexpected error in GET /api/ai-usage:", err);
       sendJson(res, 500, { error: "Internal server error" });
     }
   };
