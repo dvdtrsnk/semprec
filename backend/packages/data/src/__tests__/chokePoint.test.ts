@@ -237,18 +237,100 @@ describe("choke-point", () => {
     expect(reloadedInverse?.locked).toBe(true);
   });
 
-  it("creating and updating an item in an archived database is rejected, while the same operations succeed before archiving", async () => {
+  async function expectDatabaseArchived(promise: Promise<unknown>): Promise<void> {
+    try {
+      await promise;
+      expect.unreachable("expected a database_archived ForbiddenError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ForbiddenError);
+      expect((err as ForbiddenError).code).toBe("database_archived");
+    }
+  }
+
+  it("creating and updating an item in an archived database is rejected with database_archived (403), while the same operations succeed before archiving", async () => {
     const db = await makeMoviesDb();
     const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
     await chokePoint.updateItem({ databaseId: db.id, itemId: item.id, propertiesPatch: { title: "Dune Part Two" } });
 
     await chokePoint.archiveDatabase(db.id);
 
-    await expect(chokePoint.createItem({ databaseId: db.id, properties: { title: "Arrival" } })).rejects.toBeInstanceOf(
-      ValidationError,
-    );
-    await expect(
+    await expectDatabaseArchived(chokePoint.createItem({ databaseId: db.id, properties: { title: "Arrival" } }));
+    await expectDatabaseArchived(
       chokePoint.updateItem({ databaseId: db.id, itemId: item.id, propertiesPatch: { title: "Blade Runner" } }),
-    ).rejects.toBeInstanceOf(ValidationError);
+    );
+
+    await chokePoint.restoreDatabase(db.id);
+    const revived = await chokePoint.updateItem({ databaseId: db.id, itemId: item.id, propertiesPatch: { title: "Dune (2021)" } });
+    expect(revived.properties.title).toBe("Dune (2021)");
+  });
+
+  it("soft delete and restore of an item are rejected in an archived database", async () => {
+    const db = await makeMoviesDb();
+    const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
+    await chokePoint.softDeleteItem(db.id, item.id);
+    await chokePoint.restoreItem(db.id, item.id);
+
+    await chokePoint.archiveDatabase(db.id);
+    await expectDatabaseArchived(chokePoint.softDeleteItem(db.id, item.id));
+
+    await chokePoint.restoreDatabase(db.id);
+    await chokePoint.softDeleteItem(db.id, item.id);
+    await chokePoint.archiveDatabase(db.id);
+    await expectDatabaseArchived(chokePoint.restoreItem(db.id, item.id));
+  });
+
+  it("relation mutations are rejected once either side's database is archived, from either side of the pair", async () => {
+    const a = await chokePoint.createDatabase({ name: "A" });
+    const b = await chokePoint.createDatabase({ name: "B" });
+    const { property } = await chokePoint.createRelationProperty({
+      sourceDatabaseId: a.id,
+      key: "bs",
+      name: "Bs",
+      targetDatabaseId: b.id,
+    });
+    const itemA1 = await chokePoint.createItem({ databaseId: a.id, properties: {} });
+    const itemA2 = await chokePoint.createItem({ databaseId: a.id, properties: {} });
+    const itemB = await chokePoint.createItem({ databaseId: b.id, properties: {} });
+    await chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: itemA1.id, targetItemId: itemB.id });
+
+    await chokePoint.archiveDatabase(b.id);
+    await expectDatabaseArchived(
+      chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: itemA2.id, targetItemId: itemB.id }),
+    );
+    await expectDatabaseArchived(
+      chokePoint.updateRelation({ relationPropertyId: property.id, callerItemId: itemA1.id, targetItemId: itemB.id, metadata: { x: 1 } }),
+    );
+    await expectDatabaseArchived(
+      chokePoint.deleteRelation({ relationPropertyId: property.id, callerItemId: itemA1.id, targetItemId: itemB.id }),
+    );
+
+    await chokePoint.restoreDatabase(b.id);
+    await chokePoint.archiveDatabase(a.id);
+    await expectDatabaseArchived(
+      chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: itemA2.id, targetItemId: itemB.id }),
+    );
+    await expectDatabaseArchived(
+      chokePoint.updateRelation({ relationPropertyId: property.id, callerItemId: itemA1.id, targetItemId: itemB.id, metadata: { y: 2 } }),
+    );
+    await expectDatabaseArchived(
+      chokePoint.deleteRelation({ relationPropertyId: property.id, callerItemId: itemA1.id, targetItemId: itemB.id }),
+    );
+  });
+
+  it("an idempotent create replays the pre-archive row without writing, but a new key is rejected once archived", async () => {
+    const db = await makeMoviesDb();
+    const original = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" }, idempotencyKey: "k1" });
+
+    await chokePoint.archiveDatabase(db.id);
+
+    const replay = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune 2" }, idempotencyKey: "k1" });
+    expect(replay.id).toBe(original.id);
+    expect(replay.properties).toEqual({ title: "Dune" });
+
+    await expectDatabaseArchived(chokePoint.createItem({ databaseId: db.id, properties: { title: "Arrival" }, idempotencyKey: "k2" }));
+    await expectDatabaseArchived(chokePoint.createItem({ databaseId: db.id, properties: { title: "Arrival" } }));
+
+    const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [db.id]);
+    expect(rows[0].n).toBe(1);
   });
 });

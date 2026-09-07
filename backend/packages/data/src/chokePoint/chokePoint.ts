@@ -127,13 +127,46 @@ function assertNoComputedKeyCollision(registry: ComputedKeyRegistry, key: string
   }
 }
 
-/** Blocks item writes against a database that has been archived; reads, soft-delete and restore are unaffected. */
+/**
+ * The one reusable archived-database guard: blocks every item/relation mutation against an
+ * archived database with a canonical 403 `database_archived`, while reads (and restoring the
+ * database itself) remain unaffected. Used directly by every mutation below except item
+ * creation, which needs the idempotent-replay carve-out in `assertDatabaseWritableForCreate`.
+ */
 async function assertDatabaseNotArchived(client: PoolClient, databaseId: string): Promise<void> {
   const database = await databasesStore.getDatabase(client, databaseId);
   if (!database) throw new NotFoundError(`Database ${databaseId} not found`);
   if (database.archivedAt) {
-    throw new ValidationError(`Database ${databaseId} is archived and cannot be written to`, { field: "databaseId" });
+    throw new ForbiddenError(`Database ${databaseId} is archived and cannot be written to`, { field: "databaseId" }, "database_archived");
   }
+}
+
+/**
+ * Item creation's own archived-database guard: unlike every other mutation, a create must let
+ * through the one no-write exception the issue carves out — a replay of an idempotency key
+ * that already committed a row before the database was archived returns that existing row
+ * instead of failing, so a retried request doesn't turn a transient error into a permanent
+ * failure. A new key, or a key reserved for this database whose row is somehow missing (see
+ * the same defensive branch in `itemsStore.insertItem`), still gets `database_archived` — only
+ * an exact, already-satisfied replay is spared. Returns the replay row to return verbatim (no
+ * further writes or event emission), or `null` when the database isn't archived at all.
+ */
+async function assertDatabaseWritableForCreate(client: PoolClient, databaseId: string, idempotencyKey: string | undefined): Promise<ItemRow | null> {
+  const database = await databasesStore.getDatabase(client, databaseId);
+  if (!database) throw new NotFoundError(`Database ${databaseId} not found`);
+  if (!database.archivedAt) return null;
+
+  if (idempotencyKey) {
+    const replay = await itemsStore.findIdempotentReplay(client, databaseId, idempotencyKey);
+    if (replay) return replay;
+  }
+  throw new ForbiddenError(`Database ${databaseId} is archived and cannot be written to`, { field: "databaseId" }, "database_archived");
+}
+
+/** Shared by every relation-edge mutation: both the caller's own database and the edge's target database must be unarchived, since an edge write touches an item on each side. */
+async function assertRelationDatabasesNotArchived(client: PoolClient, context: RelationEdgeContext): Promise<void> {
+  await assertDatabaseNotArchived(client, context.property.databaseId);
+  await assertDatabaseNotArchived(client, context.targetDatabaseId);
 }
 
 /** Shared by patch/delete on a view and every write to its `view_items` membership. */
@@ -336,7 +369,9 @@ export interface CreateItemInput {
  * exactly those keys. `createChokePoint(...)`'s `createItem` below is a thin wrapper over this.
  */
 export async function createItemWithClient(client: PoolClient, input: CreateItemInput, options: CreateItemWithClientOptions = {}): Promise<ItemRow> {
-  await assertDatabaseNotArchived(client, input.databaseId);
+  const replay = await assertDatabaseWritableForCreate(client, input.databaseId, input.idempotencyKey);
+  if (replay) return replay;
+
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   assertWritableProperties(properties, Object.keys(input.properties ?? {}), options);
 
@@ -512,6 +547,7 @@ function assertRelationPropertyWritable(property: PropertyRow, context: SystemRe
  */
 export async function createRelationWithClient(client: PoolClient, input: CreateRelationInput, context?: SystemRelationWriteContext): Promise<RelationEdge> {
   const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
+  await assertRelationDatabasesNotArchived(client, edgeContext);
   assertRelationPropertyWritable(edgeContext.property, context);
   await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
 
@@ -529,6 +565,7 @@ export async function createRelationWithClient(client: PoolClient, input: Create
 /** The metadata-replacement counterpart to `createRelationWithClient`: requires an existing normalized edge (endpoints are immutable — moving one is delete plus create), and rejects a missing edge with a `404 not_found`. Same `context` contract as `createRelationWithClient`. */
 export async function updateRelationWithClient(client: PoolClient, input: UpdateRelationInput, context?: SystemRelationWriteContext): Promise<RelationEdge> {
   const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
+  await assertRelationDatabasesNotArchived(client, edgeContext);
   assertRelationPropertyWritable(edgeContext.property, context);
   await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
 
@@ -562,6 +599,7 @@ export type DeleteRelationInput = Omit<CreateRelationInput, "metadata">;
  */
 export async function deleteRelationWithClient(client: PoolClient, input: DeleteRelationInput, context?: SystemRelationWriteContext): Promise<void> {
   const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
+  await assertRelationDatabasesNotArchived(client, edgeContext);
   assertRelationPropertyWritable(edgeContext.property, context);
   const { itemA, itemB } = normalizeRelationSides(edgeContext.reldef, input.relationPropertyId, input.callerItemId, input.targetItemId);
   await relationsStore.deleteItemRelation(client, edgeContext.reldef.id, itemA, itemB);
@@ -736,6 +774,7 @@ export function createChokePoint(
 
     async softDeleteItem(databaseId: string, itemId: string): Promise<ItemRow | null> {
       return withTransaction(pool, async (client) => {
+        await assertDatabaseNotArchived(client, databaseId);
         // A system-module project (issue #24's Projects.systemActive) "can only be
         // deactivated, never deleted" — checked generically on `properties.systemActive`
         // rather than hardcoded to the Projects database, so any future database adopting
@@ -760,6 +799,7 @@ export function createChokePoint(
 
     async restoreItem(databaseId: string, itemId: string): Promise<ItemRow | null> {
       return withTransaction(pool, async (client) => {
+        await assertDatabaseNotArchived(client, databaseId);
         const item = await itemsStore.restoreItem(client, databaseId, itemId);
         if (!item) return null;
         const edges = await relationsStore.listAllRelationsForItem(client, itemId);
