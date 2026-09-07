@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createAgentRun, createChokePoint, getSystemSettingsItemId, seedSystem } from "@semprec/data";
+import { createAgentRun, createChokePoint, getSystemSettingsDatabaseId, getSystemSettingsItemId, seedSystem } from "@semprec/data";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { BudgetExceededError, complete, diarize, embed, transcribe } from "../gateway.js";
 
@@ -12,7 +12,7 @@ async function setBudgets(pool: Pool, budgets: { dailyBudgetUsd?: number | null;
   let databaseId: string;
   try {
     itemId = await getSystemSettingsItemId(client);
-    databaseId = (await client.query<{ database_id: string }>(`SELECT database_id FROM items WHERE id = $1`, [itemId])).rows[0].database_id;
+    databaseId = await getSystemSettingsDatabaseId(client);
   } finally {
     client.release();
   }

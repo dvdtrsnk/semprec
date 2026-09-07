@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { getAiBudgets, getGatewaySpend, recordAudioGatewayCall, recordTokenGatewayCall } from "@semprec/data";
+import { getAiBudgets, getGatewaySpend, getSystemTimezone, recordAudioGatewayCall, recordTokenGatewayCall } from "@semprec/data";
 import type { AudioCallResult, GatewayCallContext, TokenCallResult } from "./types.js";
 
 /** Thrown by `assertWithinBudget` when a non-null daily/monthly cap is already reached. */
@@ -20,7 +20,8 @@ async function assertWithinBudget(client: Pool | PoolClient): Promise<void> {
   const { dailyBudgetUsd, monthlyBudgetUsd } = await getAiBudgets(client);
   if (dailyBudgetUsd === null && monthlyBudgetUsd === null) return;
 
-  const { spentToday, spentMonth } = await getGatewaySpend(client);
+  const timezone = await getSystemTimezone(client);
+  const { spentToday, spentMonth } = await getGatewaySpend(client, timezone);
   if (dailyBudgetUsd !== null && spentToday >= dailyBudgetUsd) {
     throw new BudgetExceededError(`Daily AI budget of $${dailyBudgetUsd} reached (spent $${spentToday} today)`);
   }

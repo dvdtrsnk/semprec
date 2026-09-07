@@ -24,8 +24,12 @@ BEGIN
   ON CONFLICT (database_id, key) DO NOTHING;
 
   UPDATE items
-  SET properties = properties || jsonb_build_object('dailyBudgetUsd', 50, 'monthlyBudgetUsd', NULL::numeric)
+  SET properties = properties || jsonb_build_object('dailyBudgetUsd', 50)
   WHERE database_id = settings_db_id AND NOT (properties ? 'dailyBudgetUsd');
+
+  UPDATE items
+  SET properties = properties || jsonb_build_object('monthlyBudgetUsd', NULL::numeric)
+  WHERE database_id = settings_db_id AND NOT (properties ? 'monthlyBudgetUsd');
 
   UPDATE databases SET schema_locked = true WHERE id = settings_db_id;
 END $$;

@@ -23,8 +23,13 @@ export async function getSystemSettingsItemId(client: PoolClient): Promise<strin
   return rows[0].id;
 }
 
-export async function getSystemTimezone(client: PoolClient): Promise<string> {
-  const databaseId = await getSystemSettingsDatabaseId(client);
+export async function getSystemTimezone(client: Queryable): Promise<string> {
+  const databaseId = await getSystemSettingsDatabaseId(client).catch((err) => {
+    if (err instanceof NotFoundError) return null; // system not seeded yet (e.g. a bare test pool) — fall back to the default below
+    throw err;
+  });
+  if (databaseId === null) return DEFAULT_TIMEZONE;
+
   const { rows } = await client.query<{ properties: { timezone?: string } }>(
     `SELECT properties FROM items WHERE database_id = $1 LIMIT 1`,
     [databaseId],
