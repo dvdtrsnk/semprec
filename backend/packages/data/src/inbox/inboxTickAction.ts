@@ -11,10 +11,10 @@ import { PROCESSING_METHODS, LOCKED_PROPOSAL_STATUSES, type ProcessingMethod } f
 import { computeInboxFingerprint } from "./fingerprint.js";
 import { enqueueJournalInboxRecomputeForInboxItem } from "./journalInboxCompute.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
-
-const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: PROCESSING_PROPOSALS_MODULE_ID };
 import { ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
+
+const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: PROCESSING_PROPOSALS_MODULE_ID };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

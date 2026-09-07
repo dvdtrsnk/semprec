@@ -164,10 +164,10 @@ export async function reconcileGmailAccount(dbClient: PoolClient, gmail: GmailMa
         const folderItemId = otherSide(edge, itemId);
         if (!mappedSet.has(folderItemId)) {
           await deleteRelationWithClient(
-        dbClient,
-        { relationPropertyId: params.folderRelationPropertyId, callerItemId: itemId, targetItemId: folderItemId },
-        EMAILS_RELATION_CONTEXT,
-      );
+            dbClient,
+            { relationPropertyId: params.folderRelationPropertyId, callerItemId: itemId, targetItemId: folderItemId },
+            EMAILS_RELATION_CONTEXT,
+          );
         }
       }
     }

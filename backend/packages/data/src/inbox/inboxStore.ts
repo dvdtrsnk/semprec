@@ -5,12 +5,12 @@ import type { ActionQueueAffinity } from "../scheduler/actions.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
 import { INBOX_MODULE_ID } from "../seed/inboxPipelineKeys.js";
-
-const INBOX_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: INBOX_MODULE_ID };
 import { enqueueJournalInboxRecompute } from "./journalInboxCompute.js";
 import { assertValidTimezone } from "../timezone.js";
 import { ValidationError, NotFoundError } from "../errors.js";
 import type { ItemRow } from "../types.js";
+
+const INBOX_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: INBOX_MODULE_ID };
 
 export interface CreateInboxItemInput {
   inboxDatabaseId: string;

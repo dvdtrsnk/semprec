@@ -4,6 +4,7 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, createRelationWithClient, deleteRelationWithClient, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { insertItem } from "../chokePoint/itemsStore.js";
+import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { ValidationError } from "../errors.js";
 import { MAILBOX_CLIENT_VIEW_TYPE, mailboxClientConfigSchema } from "../views/mailboxClientViewType.js";
@@ -45,12 +46,7 @@ async function relationPropertyId(databaseId: string, key: string): Promise<stri
 
 /** Folders' `mailbox`/Emails' `folder` relations are `owner: 'system'` (seed/seedEmailModule.ts) — writable only through the protected entry point with the module's own context, same as `insertSystemItem` above bypasses the generic create path. */
 async function createSystemRelation(relationPropertyId: string, callerItemId: string, targetItemId: string, ownerProcess: string): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await createRelationWithClient(client, { relationPropertyId, callerItemId, targetItemId }, { ownerProcess });
-  } finally {
-    client.release();
-  }
+  await withTransaction(pool, (client) => createRelationWithClient(client, { relationPropertyId, callerItemId, targetItemId }, { ownerProcess }));
 }
 
 describe("mailbox client view (issue #96)", () => {
@@ -188,16 +184,13 @@ describe("mailbox client view (issue #96)", () => {
       const { emailsId, inboxId, readMessage, unread } = await seedMailbox();
       const emailFolderRelation = await relationPropertyId(emailsId, "folder");
 
-      const client = await pool.connect();
-      try {
-        await deleteRelationWithClient(
+      await withTransaction(pool, (client) =>
+        deleteRelationWithClient(
           client,
           { relationPropertyId: emailFolderRelation, callerItemId: readMessage, targetItemId: inboxId },
           { ownerProcess: EMAILS_MODULE_ID },
-        );
-      } finally {
-        client.release();
-      }
+        ),
+      );
       await chokePoint.softDeleteItem(emailsId, unread);
 
       const inbox = await chokePoint.listItems(emailsId, { filter: { type: "relation_contains", property: "folder", value: inboxId } });

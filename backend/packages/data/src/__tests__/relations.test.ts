@@ -266,262 +266,262 @@ describe("relation edge contract", () => {
   });
 
   describe("relation-definition ownership and protected entry points", () => {
-  async function assertOwnerViolation(promise: Promise<unknown>): Promise<void> {
-    await expect(promise).rejects.toBeInstanceOf(ForbiddenError);
-    try {
-      await promise;
-      expect.unreachable("expected an owner_violation ForbiddenError");
-    } catch (err) {
-      expect((err as ForbiddenError).code).toBe("owner_violation");
+    async function assertOwnerViolation(promise: Promise<unknown>): Promise<void> {
+      await expect(promise).rejects.toBeInstanceOf(ForbiddenError);
+      try {
+        await promise;
+        expect.unreachable("expected an owner_violation ForbiddenError");
+      } catch (err) {
+        expect((err as ForbiddenError).code).toBe("owner_violation");
+      }
     }
-  }
 
-  it("rejects ownerProcess present when owner is 'user', and missing/empty when owner is 'system' — independently per side", async () => {
-    const db = await chokePoint.createDatabase({ name: "Db" });
-    const target = await chokePoint.createDatabase({ name: "Target" });
+    it("rejects ownerProcess present when owner is 'user', and missing/empty when owner is 'system' — independently per side", async () => {
+      const db = await chokePoint.createDatabase({ name: "Db" });
+      const target = await chokePoint.createDatabase({ name: "Target" });
 
-    await withTransaction(pool, async (client) => {
-      await expect(
-        createRelationPropertyWithClient(client, {
+      await withTransaction(pool, async (client) => {
+        await expect(
+          createRelationPropertyWithClient(client, {
+            sourceDatabaseId: db.id,
+            key: "a",
+            name: "A",
+            targetDatabaseId: target.id,
+            owner: "user",
+            ownerProcess: "should-not-be-set",
+          }),
+        ).rejects.toBeInstanceOf(ValidationError);
+
+        await expect(
+          createRelationPropertyWithClient(
+            client,
+            { sourceDatabaseId: db.id, key: "b", name: "B", targetDatabaseId: target.id, owner: "system" },
+            { ownerProcess: "proc" },
+          ),
+        ).rejects.toBeInstanceOf(ValidationError);
+
+        await expect(
+          createRelationPropertyWithClient(
+            client,
+            {
+              sourceDatabaseId: db.id,
+              key: "c",
+              name: "C",
+              targetDatabaseId: target.id,
+              owner: "user",
+              inverse: { key: "cInv", name: "C inverse", owner: "system", ownerProcess: "proc" },
+            },
+            { ownerProcess: "proc" },
+          ),
+        ).resolves.toBeTruthy();
+      });
+    });
+
+    it("a public caller (no context) cannot create an owner:'system' relation property, on either side", async () => {
+      const db = await chokePoint.createDatabase({ name: "Db" });
+      const target = await chokePoint.createDatabase({ name: "Target" });
+
+      await assertOwnerViolation(
+        chokePoint.createRelationProperty({
           sourceDatabaseId: db.id,
-          key: "a",
-          name: "A",
+          key: "sourceSystem",
+          name: "Source system",
+          targetDatabaseId: target.id,
+          owner: "system",
+          ownerProcess: "proc",
+        }),
+      );
+
+      await assertOwnerViolation(
+        chokePoint.createRelationProperty({
+          sourceDatabaseId: db.id,
+          key: "sourceUser",
+          name: "Source user",
           targetDatabaseId: target.id,
           owner: "user",
-          ownerProcess: "should-not-be-set",
+          inverse: { key: "inverseSystem", name: "Inverse system", owner: "system", ownerProcess: "proc" },
         }),
-      ).rejects.toBeInstanceOf(ValidationError);
+      );
+    });
 
-      await expect(
+    it("a protected system caller may create an owner:'system' side only when context.ownerProcess matches that side's declared ownerProcess", async () => {
+      const db = await chokePoint.createDatabase({ name: "Db" });
+      const target = await chokePoint.createDatabase({ name: "Target" });
+
+      await withTransaction(pool, (client) =>
+        assertOwnerViolation(
+          createRelationPropertyWithClient(
+            client,
+            { sourceDatabaseId: db.id, key: "mismatch", name: "Mismatch", targetDatabaseId: target.id, owner: "system", ownerProcess: "owning-process" },
+            { ownerProcess: "some-other-process" },
+          ),
+        ),
+      );
+
+      const { property } = await withTransaction(pool, (client) =>
         createRelationPropertyWithClient(
           client,
-          { sourceDatabaseId: db.id, key: "b", name: "B", targetDatabaseId: target.id, owner: "system" },
-          { ownerProcess: "proc" },
+          { sourceDatabaseId: db.id, key: "match", name: "Match", targetDatabaseId: target.id, owner: "system", ownerProcess: "owning-process" },
+          { ownerProcess: "owning-process" },
         ),
-      ).rejects.toBeInstanceOf(ValidationError);
+      );
+      expect(property.owner).toBe("system");
+      expect(property.ownerProcess).toBe("owning-process");
+    });
 
-      await expect(
+    it("a paired definition persists each side's owner/ownerProcess independently, and only the property named by the caller governs a given edge write", async () => {
+      const source = await chokePoint.createDatabase({ name: "Source" });
+      const target = await chokePoint.createDatabase({ name: "Target" });
+
+      const { property, inverseProperty } = await withTransaction(pool, (client) =>
         createRelationPropertyWithClient(
           client,
           {
-            sourceDatabaseId: db.id,
-            key: "c",
-            name: "C",
+            sourceDatabaseId: source.id,
+            key: "userSide",
+            name: "User side",
             targetDatabaseId: target.id,
             owner: "user",
-            inverse: { key: "cInv", name: "C inverse", owner: "system", ownerProcess: "proc" },
+            inverse: { key: "systemSide", name: "System side", owner: "system", ownerProcess: "the-owning-process" },
           },
-          { ownerProcess: "proc" },
+          { ownerProcess: "the-owning-process" },
         ),
-      ).resolves.toBeTruthy();
-    });
-  });
+      );
+      expect(property.owner).toBe("user");
+      expect(property.ownerProcess).toBeNull();
+      expect(inverseProperty?.owner).toBe("system");
+      expect(inverseProperty?.ownerProcess).toBe("the-owning-process");
 
-  it("a public caller (no context) cannot create an owner:'system' relation property, on either side", async () => {
-    const db = await chokePoint.createDatabase({ name: "Db" });
-    const target = await chokePoint.createDatabase({ name: "Target" });
+      const sourceItem = await chokePoint.createItem({ databaseId: source.id, properties: {} });
+      const targetItem = await chokePoint.createItem({ databaseId: target.id, properties: {} });
 
-    await assertOwnerViolation(
-      chokePoint.createRelationProperty({
-        sourceDatabaseId: db.id,
-        key: "sourceSystem",
-        name: "Source system",
-        targetDatabaseId: target.id,
-        owner: "system",
-        ownerProcess: "proc",
-      }),
-    );
+      // Public caller writing through the user-owned side succeeds with no context.
+      const edge = await chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id });
+      expect(edge.itemA).toBe(sourceItem.id);
 
-    await assertOwnerViolation(
-      chokePoint.createRelationProperty({
-        sourceDatabaseId: db.id,
-        key: "sourceUser",
-        name: "Source user",
-        targetDatabaseId: target.id,
-        owner: "user",
-        inverse: { key: "inverseSystem", name: "Inverse system", owner: "system", ownerProcess: "proc" },
-      }),
-    );
-  });
+      // The very same underlying edge, written through the system-owned inverse side, is rejected for a public caller...
+      await assertOwnerViolation(
+        chokePoint.createRelation({ relationPropertyId: inverseProperty!.id, callerItemId: targetItem.id, targetItemId: sourceItem.id }),
+      );
 
-  it("a protected system caller may create an owner:'system' side only when context.ownerProcess matches that side's declared ownerProcess", async () => {
-    const db = await chokePoint.createDatabase({ name: "Db" });
-    const target = await chokePoint.createDatabase({ name: "Target" });
-
-    await withTransaction(pool, (client) =>
-      assertOwnerViolation(
-        createRelationPropertyWithClient(
-          client,
-          { sourceDatabaseId: db.id, key: "mismatch", name: "Mismatch", targetDatabaseId: target.id, owner: "system", ownerProcess: "owning-process" },
-          { ownerProcess: "some-other-process" },
+      // ...and for a system caller whose context doesn't match...
+      await withTransaction(pool, (client) =>
+        assertOwnerViolation(
+          createRelationWithClient(
+            client,
+            { relationPropertyId: inverseProperty!.id, callerItemId: targetItem.id, targetItemId: sourceItem.id },
+            { ownerProcess: "wrong-process" },
+          ),
         ),
-      ),
-    );
+      );
 
-    const { property } = await withTransaction(pool, (client) =>
-      createRelationPropertyWithClient(
-        client,
-        { sourceDatabaseId: db.id, key: "match", name: "Match", targetDatabaseId: target.id, owner: "system", ownerProcess: "owning-process" },
-        { ownerProcess: "owning-process" },
-      ),
-    );
-    expect(property.owner).toBe("system");
-    expect(property.ownerProcess).toBe("owning-process");
-  });
-
-  it("a paired definition persists each side's owner/ownerProcess independently, and only the property named by the caller governs a given edge write", async () => {
-    const source = await chokePoint.createDatabase({ name: "Source" });
-    const target = await chokePoint.createDatabase({ name: "Target" });
-
-    const { property, inverseProperty } = await withTransaction(pool, (client) =>
-      createRelationPropertyWithClient(
-        client,
-        {
-          sourceDatabaseId: source.id,
-          key: "userSide",
-          name: "User side",
-          targetDatabaseId: target.id,
-          owner: "user",
-          inverse: { key: "systemSide", name: "System side", owner: "system", ownerProcess: "the-owning-process" },
-        },
-        { ownerProcess: "the-owning-process" },
-      ),
-    );
-    expect(property.owner).toBe("user");
-    expect(property.ownerProcess).toBeNull();
-    expect(inverseProperty?.owner).toBe("system");
-    expect(inverseProperty?.ownerProcess).toBe("the-owning-process");
-
-    const sourceItem = await chokePoint.createItem({ databaseId: source.id, properties: {} });
-    const targetItem = await chokePoint.createItem({ databaseId: target.id, properties: {} });
-
-    // Public caller writing through the user-owned side succeeds with no context.
-    const edge = await chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id });
-    expect(edge.itemA).toBe(sourceItem.id);
-
-    // The very same underlying edge, written through the system-owned inverse side, is rejected for a public caller...
-    await assertOwnerViolation(
-      chokePoint.createRelation({ relationPropertyId: inverseProperty!.id, callerItemId: targetItem.id, targetItemId: sourceItem.id }),
-    );
-
-    // ...and for a system caller whose context doesn't match...
-    await withTransaction(pool, (client) =>
-      assertOwnerViolation(
+      // ...but succeeds for the matching system caller.
+      const viaInverse = await withTransaction(pool, (client) =>
         createRelationWithClient(
           client,
-          { relationPropertyId: inverseProperty!.id, callerItemId: targetItem.id, targetItemId: sourceItem.id },
-          { ownerProcess: "wrong-process" },
+          { relationPropertyId: inverseProperty!.id, callerItemId: targetItem.id, targetItemId: sourceItem.id, metadata: { via: "inverse" } },
+          { ownerProcess: "the-owning-process" },
         ),
-      ),
-    );
+      );
+      expect(viaInverse.id).toBe(edge.id);
+      expect(viaInverse.metadata).toEqual({ via: "inverse" });
+    });
 
-    // ...but succeeds for the matching system caller.
-    const viaInverse = await withTransaction(pool, (client) =>
-      createRelationWithClient(
-        client,
-        { relationPropertyId: inverseProperty!.id, callerItemId: targetItem.id, targetItemId: sourceItem.id, metadata: { via: "inverse" } },
-        { ownerProcess: "the-owning-process" },
-      ),
-    );
-    expect(viaInverse.id).toBe(edge.id);
-    expect(viaInverse.metadata).toEqual({ via: "inverse" });
-  });
+    it("update and delete on an owner:'system' edge are rejected for a public caller and for a mismatched system context, and succeed for the matching one", async () => {
+      const source = await chokePoint.createDatabase({ name: "Source2" });
+      const target = await chokePoint.createDatabase({ name: "Target2" });
+      const { property } = await withTransaction(pool, (client) =>
+        createRelationPropertyWithClient(
+          client,
+          { sourceDatabaseId: source.id, key: "systemRel", name: "System rel", targetDatabaseId: target.id, owner: "system", ownerProcess: "owner-a" },
+          { ownerProcess: "owner-a" },
+        ),
+      );
+      const sourceItem = await chokePoint.createItem({ databaseId: source.id, properties: {} });
+      const targetItem = await chokePoint.createItem({ databaseId: target.id, properties: {} });
 
-  it("update and delete on an owner:'system' edge are rejected for a public caller and for a mismatched system context, and succeed for the matching one", async () => {
-    const source = await chokePoint.createDatabase({ name: "Source2" });
-    const target = await chokePoint.createDatabase({ name: "Target2" });
-    const { property } = await withTransaction(pool, (client) =>
-      createRelationPropertyWithClient(
-        client,
-        { sourceDatabaseId: source.id, key: "systemRel", name: "System rel", targetDatabaseId: target.id, owner: "system", ownerProcess: "owner-a" },
-        { ownerProcess: "owner-a" },
-      ),
-    );
-    const sourceItem = await chokePoint.createItem({ databaseId: source.id, properties: {} });
-    const targetItem = await chokePoint.createItem({ databaseId: target.id, properties: {} });
+      await assertOwnerViolation(
+        chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id }),
+      );
 
-    await assertOwnerViolation(
-      chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id }),
-    );
+      await withTransaction(pool, (client) =>
+        createRelationWithClient(
+          client,
+          { relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id, metadata: { v: 1 } },
+          { ownerProcess: "owner-a" },
+        ),
+      );
 
-    await withTransaction(pool, (client) =>
-      createRelationWithClient(
-        client,
-        { relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id, metadata: { v: 1 } },
-        { ownerProcess: "owner-a" },
-      ),
-    );
-
-    await assertOwnerViolation(
-      chokePoint.updateRelation({ relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id, metadata: { v: 2 } }),
-    );
-    await withTransaction(pool, (client) =>
-      assertOwnerViolation(
+      await assertOwnerViolation(
+        chokePoint.updateRelation({ relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id, metadata: { v: 2 } }),
+      );
+      await withTransaction(pool, (client) =>
+        assertOwnerViolation(
+          updateRelationWithClient(
+            client,
+            { relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id, metadata: { v: 2 } },
+            { ownerProcess: "owner-b" },
+          ),
+        ),
+      );
+      const updated = await withTransaction(pool, (client) =>
         updateRelationWithClient(
           client,
           { relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id, metadata: { v: 2 } },
-          { ownerProcess: "owner-b" },
+          { ownerProcess: "owner-a" },
         ),
-      ),
-    );
-    const updated = await withTransaction(pool, (client) =>
-      updateRelationWithClient(
-        client,
-        { relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id, metadata: { v: 2 } },
-        { ownerProcess: "owner-a" },
-      ),
-    );
-    expect(updated.metadata).toEqual({ v: 2 });
+      );
+      expect(updated.metadata).toEqual({ v: 2 });
 
-    await assertOwnerViolation(chokePoint.deleteRelation({ relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id }));
-    await withTransaction(pool, (client) =>
-      assertOwnerViolation(
-        deleteRelationWithClient(client, { relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id }, { ownerProcess: "owner-b" }),
-      ),
-    );
-    await withTransaction(pool, (client) =>
-      deleteRelationWithClient(client, { relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id }, { ownerProcess: "owner-a" }),
-    );
+      await assertOwnerViolation(chokePoint.deleteRelation({ relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id }));
+      await withTransaction(pool, (client) =>
+        assertOwnerViolation(
+          deleteRelationWithClient(client, { relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id }, { ownerProcess: "owner-b" }),
+        ),
+      );
+      await withTransaction(pool, (client) =>
+        deleteRelationWithClient(client, { relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id }, { ownerProcess: "owner-a" }),
+      );
 
-    const { rows } = await pool.query("SELECT count(*)::int AS n FROM item_relations");
-    expect(rows[0].n).toBe(0);
-  });
+      const { rows } = await pool.query("SELECT count(*)::int AS n FROM item_relations");
+      expect(rows[0].n).toBe(0);
+    });
 
-  it("locked: true on a one-way relation property succeeds atomically with no externally visible unlocked schema", async () => {
-    const db = await chokePoint.createDatabase({ name: "OneWay" });
-    const target = await chokePoint.createDatabase({ name: "OneWayTarget" });
+    it("locked: true on a one-way relation property succeeds atomically with no externally visible unlocked schema", async () => {
+      const db = await chokePoint.createDatabase({ name: "OneWay" });
+      const target = await chokePoint.createDatabase({ name: "OneWayTarget" });
 
-    const { property, inverseProperty } = await withTransaction(pool, (client) =>
-      createRelationPropertyWithClient(client, {
-        sourceDatabaseId: db.id,
-        key: "oneWay",
-        name: "One way",
-        targetDatabaseId: target.id,
-        locked: true,
-      }),
-    );
-    expect(inverseProperty).toBeNull();
-    expect(property.locked).toBe(true);
-    const reloaded = await chokePoint.getProperty(property.id);
-    expect(reloaded?.locked).toBe(true);
-  });
+      const { property, inverseProperty } = await withTransaction(pool, (client) =>
+        createRelationPropertyWithClient(client, {
+          sourceDatabaseId: db.id,
+          key: "oneWay",
+          name: "One way",
+          targetDatabaseId: target.id,
+          locked: true,
+        }),
+      );
+      expect(inverseProperty).toBeNull();
+      expect(property.locked).toBe(true);
+      const reloaded = await chokePoint.getProperty(property.id);
+      expect(reloaded?.locked).toBe(true);
+    });
 
-  it("locked relation-property creation locks each side independently — one side locked, the other left unlocked", async () => {
-    const db = await chokePoint.createDatabase({ name: "Paired" });
-    const target = await chokePoint.createDatabase({ name: "PairedTarget" });
+    it("locked relation-property creation locks each side independently — one side locked, the other left unlocked", async () => {
+      const db = await chokePoint.createDatabase({ name: "Paired" });
+      const target = await chokePoint.createDatabase({ name: "PairedTarget" });
 
-    const { property, inverseProperty } = await withTransaction(pool, (client) =>
-      createRelationPropertyWithClient(client, {
-        sourceDatabaseId: db.id,
-        key: "lockedSide",
-        name: "Locked side",
-        targetDatabaseId: target.id,
-        locked: true,
-        inverse: { key: "unlockedSide", name: "Unlocked side", locked: false },
-      }),
-    );
-    expect(property.locked).toBe(true);
-    expect(inverseProperty?.locked).toBe(false);
-  });
+      const { property, inverseProperty } = await withTransaction(pool, (client) =>
+        createRelationPropertyWithClient(client, {
+          sourceDatabaseId: db.id,
+          key: "lockedSide",
+          name: "Locked side",
+          targetDatabaseId: target.id,
+          locked: true,
+          inverse: { key: "unlockedSide", name: "Unlocked side", locked: false },
+        }),
+      );
+      expect(property.locked).toBe(true);
+      expect(inverseProperty?.locked).toBe(false);
+    });
   });
 });

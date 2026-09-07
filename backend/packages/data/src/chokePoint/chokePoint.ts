@@ -154,6 +154,7 @@ export interface RelationPropertySideInput {
   owner?: PropertyOwner;
   /** Required and non-empty exactly when `owner` is `'system'`; must be omitted otherwise. */
   ownerProcess?: string;
+  /** This side's own lock state — never inherited from the source side's `locked` (see `CreateRelationPropertyInput.locked`). Defaults to `false`. */
   locked?: boolean;
 }
 
@@ -166,6 +167,13 @@ export interface CreateRelationPropertyInput {
   owner?: PropertyOwner;
   /** Required and non-empty exactly when `owner` is `'system'`; must be omitted otherwise. */
   ownerProcess?: string;
+  /**
+   * Locks only the source side (`property_id_a`). Each side's lock is independent — set
+   * `inverse.locked` too if the paired property must also be locked. Before this issue,
+   * a single top-level `locked: true` locked both sides of a pair; a caller migrating onto
+   * this shape must now set `inverse.locked: true` explicitly, or the inverse property is
+   * created unlocked.
+   */
   locked?: boolean;
   inverse?: Omit<RelationPropertySideInput, "key" | "name"> & Pick<RelationPropertySideInput, "key" | "name">;
 }

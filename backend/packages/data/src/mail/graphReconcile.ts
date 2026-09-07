@@ -111,10 +111,10 @@ export async function reconcileGraphAccount(dbClient: PoolClient, graph: GraphMa
       for (const edge of edges) {
         const folderItemId = otherSide(edge, meta.itemId);
         await deleteRelationWithClient(
-        dbClient,
-        { relationPropertyId: params.folderRelationPropertyId, callerItemId: meta.itemId, targetItemId: folderItemId },
-        EMAILS_RELATION_CONTEXT,
-      );
+          dbClient,
+          { relationPropertyId: params.folderRelationPropertyId, callerItemId: meta.itemId, targetItemId: folderItemId },
+          EMAILS_RELATION_CONTEXT,
+        );
       }
       continue;
     }
@@ -140,10 +140,10 @@ export async function reconcileGraphAccount(dbClient: PoolClient, graph: GraphMa
       const otherFolderId = otherSide(edge, result.itemId);
       if (otherFolderId !== folderItemId) {
         await deleteRelationWithClient(
-        dbClient,
-        { relationPropertyId: params.folderRelationPropertyId, callerItemId: result.itemId, targetItemId: otherFolderId },
-        EMAILS_RELATION_CONTEXT,
-      );
+          dbClient,
+          { relationPropertyId: params.folderRelationPropertyId, callerItemId: result.itemId, targetItemId: otherFolderId },
+          EMAILS_RELATION_CONTEXT,
+        );
       }
     }
   }
