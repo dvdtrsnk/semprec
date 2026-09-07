@@ -42,6 +42,19 @@ function extractResultSnapshot(lastMessage: AgentMessage | null): string | null 
   return typeof text === "string" ? text : JSON.stringify(lastMessage);
 }
 
+/** Best-effort: a failed NOTIFY must not fail the run it's reporting on. */
+async function pushLiveEvent(client: Pool | PoolClient, agentRunId: string, kind: string, payload: unknown): Promise<void> {
+  try {
+    await publishRealtimeMessage(client, { type: "agent_run_event", agentRunId, kind, payload });
+  } catch (err) {
+    console.error("Failed to publish agent_run_event realtime message", err);
+  }
+}
+
+function pushRunStatus(client: Pool | PoolClient, agentRunId: string, status: "running" | "done" | "error"): Promise<void> {
+  return pushLiveEvent(client, agentRunId, "run_status", { kind: "run_status", status });
+}
+
 /**
  * Runs one agent session end to end, mapping pi-agent-core's lifecycle onto `agent_runs`
  * (`agent_start`/`agent_end`) and the turn-level `agent_run_events` log (everything between).
@@ -57,6 +70,7 @@ export async function runAgentSession(client: Pool | PoolClient, input: RunAgent
     unit: input.unit,
     task: input.task,
   });
+  await pushRunStatus(client, run.id, "running");
 
   const session = input.createAgentSession({
     task: input.task,
@@ -69,19 +83,9 @@ export async function runAgentSession(client: Pool | PoolClient, input: RunAgent
     for await (const message of session.messages()) {
       input.onEvent?.(message);
 
-      try {
-        await publishRealtimeMessage(client, {
-          type: "agent_run_event",
-          agentRunId: run.id,
-          kind: message.kind,
-          payload: message,
-        });
-      } catch (err) {
-        // Best-effort: a failed NOTIFY must not fail the run. A watcher missing a live
-        // update for a persisted kind still catches up from `agent_run_events`; a missed
-        // `message_update` delta is lost, same as a dropped WS frame.
-        console.error("Failed to publish agent_run_event realtime message", err);
-      }
+      // A watcher missing a live update for a persisted kind still catches up from
+      // `agent_run_events`; a missed `message_update` delta is lost, same as a dropped WS frame.
+      await pushLiveEvent(client, run.id, message.kind, message);
 
       if (message.kind === "message_update") continue;
 
@@ -93,9 +97,11 @@ export async function runAgentSession(client: Pool | PoolClient, input: RunAgent
     }
 
     await finishAgentRun(client, run.id, "done", extractResultSnapshot(lastMessage));
+    await pushRunStatus(client, run.id, "done");
   } catch (err) {
     try {
       await finishAgentRun(client, run.id, "error", err instanceof Error ? err.message : String(err));
+      await pushRunStatus(client, run.id, "error");
     } catch {
       // Best-effort: the run is left 'running' if this secondary write fails, but the
       // original session error below is what the caller needs to see, not this one.

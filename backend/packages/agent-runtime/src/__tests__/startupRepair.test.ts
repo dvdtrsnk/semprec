@@ -72,6 +72,23 @@ describe("repairInterruptedRuns", () => {
     expect(rows.map((r: { kind: string }) => r.kind)).toEqual(["tool_use", "tool_result"]);
   });
 
+  it("falls back to a bare synthetic tool_result when the trailing tool_use payload is not a plain object", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "heartbeat", task: "malformed payload" });
+    await pool.query(
+      `INSERT INTO agent_run_events (agent_run_id, kind, payload) VALUES ($1, 'tool_use', $2::jsonb)`,
+      [run.id, JSON.stringify(["not", "an", "object"])],
+    );
+
+    await expect(repairInterruptedRuns(pool)).resolves.toEqual({ repairedRunIds: [run.id] });
+
+    const { rows } = await pool.query<{ kind: string; payload: { error?: boolean } }>(
+      `SELECT kind, payload FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id ASC`,
+      [run.id],
+    );
+    expect(rows.map((r) => r.kind)).toEqual(["tool_use", "tool_result"]);
+    expect(rows[1].payload.error).toBe(true);
+  });
+
   it("does not append a synthetic tool_result when the run has no events at all", async () => {
     const run = await createAgentRun(pool, { triggeredBy: "heartbeat", task: "no events yet" });
 
