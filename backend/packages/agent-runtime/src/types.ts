@@ -13,10 +13,30 @@ export interface AgentMessage {
   [key: string]: unknown;
 }
 
+/**
+ * pi-agent-core's own transcript-tree node shape: `parentId` links each entry back to the one
+ * before it (a linear chain for every conversation this codebase reconstructs, never a real
+ * branch) and `seq` is its position in that chain. #119's reconstruction path is the producer;
+ * `AgentSessionOptions.initialState` is the consumer.
+ */
+export interface ConversationEntry {
+  id: string;
+  parentId: string | null;
+  seq: number;
+  timestamp: number;
+  message: AgentMessage;
+}
+
 export interface AgentSessionOptions {
   task: string;
   /** pi-agent-core's system-prompt override hook: given its default prompt, returns the one to use. */
   systemPromptOverride?: (defaultPrompt: string) => string;
+  /**
+   * Seeds a freshly created session with a prior conversation's reconstructed (and, when
+   * oversized, already-compacted) history, so pi-agent-core resumes with full context instead
+   * of starting cold. Absent on a conversation's very first-ever wake.
+   */
+  initialState?: { messages: ConversationEntry[] };
 }
 
 /**

@@ -109,6 +109,31 @@ export async function listAgentRunsByHeartbeat(client: Pool | PoolClient, heartb
   return rows.map(mapRow);
 }
 
+export interface SessionAgentRunsFilter {
+  projectItemId: string;
+  triggeredBy: TriggeredBy;
+  /** `null` for Semp's own conversation (never delegated); a supervisor run id for a delegated one. */
+  parentRunId: string | null;
+}
+
+/**
+ * Every `unit='session'` run belonging to one dormant conversation, in the order they were
+ * woken — the reconstruction source both Semp's own conversation (#118, `triggered_by='user'`,
+ * `parent_run_id` null) and a delegated one (#229, `triggered_by='supervisor'`, `parent_run_id`
+ * the supervisor run that key's `DelegationRegistry` entry belongs to) walk to rebuild an
+ * `Entry[]` tree for a freshly woken session (#119).
+ */
+export async function listSessionAgentRuns(client: Pool | PoolClient, filter: SessionAgentRunsFilter): Promise<AgentRunRow[]> {
+  const { rows } = await client.query(
+    `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
+     FROM agent_runs
+     WHERE project_item_id = $1 AND unit = 'session' AND triggered_by = $2 AND parent_run_id IS NOT DISTINCT FROM $3
+     ORDER BY started_at ASC`,
+    [filter.projectItemId, filter.triggeredBy, filter.parentRunId],
+  );
+  return rows.map(mapRow);
+}
+
 /**
  * Every run still marked `running` — orphaned after a process restart, since the
  * in-memory session registry that would otherwise be driving them is gone. Startup

@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { assertKnownValue } from "../dbRowValidation.js";
 
-export type AgentRunEventKind = "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status";
+export type AgentRunEventKind = "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status" | "compaction";
 
 const AGENT_RUN_EVENT_KINDS: readonly AgentRunEventKind[] = [
   "turn_start",
@@ -10,6 +10,7 @@ const AGENT_RUN_EVENT_KINDS: readonly AgentRunEventKind[] = [
   "tool_result",
   "turn_end",
   "run_status",
+  "compaction",
 ];
 
 export interface AgentRunEventRow {
@@ -36,7 +37,12 @@ function mapRow(row: {
   };
 }
 
-/** One row per turn_start/message/tool_use/tool_result/turn_end/run_status — never for message_update deltas. */
+/**
+ * One row per turn_start/message/tool_use/tool_result/turn_end/run_status — never for
+ * message_update deltas. 'compaction' is the one kind never written by the turn loop itself:
+ * `@semprec/agent-runtime`'s reconstruction path (#119) inserts it directly, as a checkpoint
+ * of a compacted `Entry[]` continuation.
+ */
 export async function insertAgentRunEvent(
   client: Pool | PoolClient,
   agentRunId: string,
