@@ -49,3 +49,9 @@ export async function getUserById(client: Pool | PoolClient, id: string): Promis
   ]);
   return rows[0] ? mapRow(rows[0]) : null;
 }
+
+/** Backs the setup API's (#233) "no account exists yet" gate — cheaper than a `count(*)` since it can stop at the first row. */
+export async function anyUserExists(client: Pool | PoolClient): Promise<boolean> {
+  const { rows } = await client.query(`SELECT EXISTS(SELECT 1 FROM users) AS "exists"`);
+  return (rows[0] as { exists: boolean }).exists;
+}

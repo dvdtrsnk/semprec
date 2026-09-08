@@ -5,12 +5,21 @@ import { createMcpAgentPageRequestListener } from "./mcpAgentPageHandler.js";
 import { createApprovalRequestsRequestListener } from "./approvalRequestsHandler.js";
 import { createAgentRunRequestListener } from "./agentRunHandler.js";
 import { createAuthRequestListener } from "./authHandler.js";
+import { createSetupRequestListener } from "./setupHandler.js";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("DATABASE_URL is not set");
 
 const authToken = process.env.SEMPREC_API_TOKEN;
 if (!authToken) throw new Error("SEMPREC_API_TOKEN is not set");
+
+// One-time bootstrap secret for `POST /api/setup` (#233): a shared secret file, provisioned by
+// the operations batch this issue's Task calls out of scope, whose contents this process reads
+// into `SETUP_TOKEN`. Required at startup like `SEMPREC_API_TOKEN` above — there is no
+// supported way to run this service without a value, since the setup route's entire safety
+// rests on comparing the caller's token against this one.
+const setupToken = process.env.SETUP_TOKEN;
+if (!setupToken) throw new Error("SETUP_TOKEN is not set");
 
 const rawPort = process.env.PORT ?? "3001";
 const port = Number(rawPort);
@@ -22,6 +31,7 @@ const mcpAgentPageListener = createMcpAgentPageRequestListener(pool, { authToken
 const approvalRequestsListener = createApprovalRequestsRequestListener(pool, { authToken });
 const agentRunListener = createAgentRunRequestListener(pool, { authToken });
 const authListener = createAuthRequestListener(pool);
+const setupListener = createSetupRequestListener(pool, { setupToken });
 
 /** Routes by path prefix; `mcpAgentPageListener` already answers 404 itself for anything else. */
 function dispatch(req: IncomingMessage, res: ServerResponse): void {
@@ -40,6 +50,10 @@ function dispatch(req: IncomingMessage, res: ServerResponse): void {
   }
   if (pathname.startsWith("/api/auth/")) {
     void authListener(req, res);
+    return;
+  }
+  if (pathname === "/api/setup") {
+    void setupListener(req, res);
     return;
   }
   void mcpAgentPageListener(req, res);

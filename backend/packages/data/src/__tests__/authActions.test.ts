@@ -5,9 +5,16 @@ import { hashPassword } from "../auth/passwordHash.js";
 import { createUser } from "../auth/usersStore.js";
 import { getActiveSessionByTokenHash, listSessionsForUser } from "../auth/sessionsStore.js";
 import { countRecentFailedAttempts } from "../auth/loginAttemptsStore.js";
-import { login, verifySessionToken, logout, revokeUserSession } from "../auth/authActions.js";
+import {
+  login,
+  verifySessionToken,
+  logout,
+  revokeUserSession,
+  createAccount,
+  bootstrapFirstAccount,
+} from "../auth/authActions.js";
 import { LOCKOUT_THRESHOLD } from "../auth/loginLockout.js";
-import { UnauthorizedError } from "../errors.js";
+import { NotFoundError, UnauthorizedError, ValidationError } from "../errors.js";
 
 let pool: Pool;
 
@@ -284,6 +291,100 @@ describe("auth actions (issue #140)", () => {
     it("returns false for an unknown session id", async () => {
       const user = await makeUser();
       expect(await revokeUserSession(pool, user.id, "00000000-0000-0000-0000-000000000000")).toBe(false);
+    });
+  });
+
+  describe("createAccount (issue #233)", () => {
+    it("hashes the password and creates a user the caller can immediately log in as", async () => {
+      const account = await createAccount(pool, { email: "New.User@Example.com", password: "s3cret-password" });
+
+      expect(account.email).toBe("new.user@example.com");
+      expect((account as { passwordHash?: unknown }).passwordHash).toBeUndefined();
+      const result = await login(pool, {
+        email: "new.user@example.com",
+        password: "s3cret-password",
+        platform: "web",
+        ip: "1.2.3.4",
+      });
+      expect(result.user.id).toBe(account.id);
+    });
+
+    it("rejects a malformed email", async () => {
+      await expect(createAccount(pool, { email: "not-an-email", password: "s3cret-password" })).rejects.toThrow(
+        ValidationError,
+      );
+    });
+
+    it("rejects a too-short password", async () => {
+      await expect(createAccount(pool, { email: "person@example.com", password: "short" })).rejects.toThrow(
+        ValidationError,
+      );
+    });
+  });
+
+  describe("bootstrapFirstAccount (issue #233)", () => {
+    const SETUP_TOKEN = "correct-setup-token";
+
+    it("creates the account with a matching token against an empty users table", async () => {
+      const account = await bootstrapFirstAccount(pool, SETUP_TOKEN, {
+        email: "owner@example.com",
+        password: "s3cret-password",
+        token: SETUP_TOKEN,
+      });
+      expect(account.email).toBe("owner@example.com");
+
+      const result = await login(pool, {
+        email: "owner@example.com",
+        password: "s3cret-password",
+        platform: "web",
+        ip: "1.2.3.4",
+      });
+      expect(result.user.id).toBe(account.id);
+    });
+
+    it("rejects a wrong token with NotFoundError", async () => {
+      await expect(
+        bootstrapFirstAccount(pool, SETUP_TOKEN, {
+          email: "owner@example.com",
+          password: "s3cret-password",
+          token: "wrong-token",
+        }),
+      ).rejects.toThrow(NotFoundError);
+    });
+
+    it("returns NotFoundError once a user already exists, even with the correct token", async () => {
+      await makeUser();
+      await expect(
+        bootstrapFirstAccount(pool, SETUP_TOKEN, {
+          email: "owner@example.com",
+          password: "s3cret-password",
+          token: SETUP_TOKEN,
+        }),
+      ).rejects.toThrow(NotFoundError);
+    });
+
+    it("permits exactly one winner when two callers race with the correct token", async () => {
+      const results = await Promise.allSettled([
+        bootstrapFirstAccount(pool, SETUP_TOKEN, {
+          email: "first@example.com",
+          password: "s3cret-password",
+          token: SETUP_TOKEN,
+        }),
+        bootstrapFirstAccount(pool, SETUP_TOKEN, {
+          email: "second@example.com",
+          password: "s3cret-password",
+          token: SETUP_TOKEN,
+        }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === "fulfilled");
+      const rejected = results.filter((r) => r.status === "rejected");
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(NotFoundError);
+
+      const { rows } = await pool.query("SELECT count(*)::int AS count FROM users");
+      expect(rows[0].count).toBe(1);
     });
   });
 });
