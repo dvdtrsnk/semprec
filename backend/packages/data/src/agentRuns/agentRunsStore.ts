@@ -99,12 +99,32 @@ export async function getAgentRun(client: Pool | PoolClient, id: string): Promis
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/** The audit trail: run history for a heartbeat is a query over agent_runs, no second run-log table. */
-export async function listAgentRunsByHeartbeat(client: Pool | PoolClient, heartbeatId: string): Promise<AgentRunRow[]> {
+/** The batched form of `getAgentRun` — for resolving a set of runs (e.g. the approval queue's source-run links) in one query instead of one per row. */
+export async function getAgentRunsByIds(client: Pool | PoolClient, ids: string[]): Promise<AgentRunRow[]> {
+  if (ids.length === 0) return [];
   const { rows } = await client.query(
     `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
-     FROM agent_runs WHERE heartbeat_id = $1 ORDER BY started_at DESC`,
-    [heartbeatId],
+     FROM agent_runs WHERE id = ANY($1::uuid[])`,
+    [ids],
+  );
+  return rows.map(mapRow);
+}
+
+/**
+ * The audit trail: run history for a heartbeat is a query over agent_runs, no second
+ * run-log table. `limit`, when given, bounds the result to the most recent N runs
+ * (issue #135's `heartbeat.history`) — omitted, the call returns the full history, as
+ * every caller before that issue relied on.
+ */
+export async function listAgentRunsByHeartbeat(
+  client: Pool | PoolClient,
+  heartbeatId: string,
+  limit?: number,
+): Promise<AgentRunRow[]> {
+  const { rows } = await client.query(
+    `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
+     FROM agent_runs WHERE heartbeat_id = $1 ORDER BY started_at DESC` + (limit !== undefined ? ` LIMIT $2` : ``),
+    limit !== undefined ? [heartbeatId, limit] : [heartbeatId],
   );
   return rows.map(mapRow);
 }

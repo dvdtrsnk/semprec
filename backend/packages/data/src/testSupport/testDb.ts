@@ -8,6 +8,7 @@ const TABLES = [
   "resource_grants",
   "project_mcp_grants",
   "mcp_tool_registrations",
+  "approval_requests",
   "agent_run_events",
   "agent_runs",
   "project_heartbeats",

@@ -5,6 +5,7 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
 import { getProjectMcpGrant, listProjectMcpGrants } from "../mcp/mcpProjectGrantsStore.js";
 import { setProjectMcpGrant } from "../mcp/mcpGrantsAdminStore.js";
+import { NotFoundError } from "../errors.js";
 
 let pool: Pool;
 
@@ -80,6 +81,6 @@ describe("mcpProjectGrantsStore", () => {
   it("rejects a grant referencing a nonexistent tool registration", async () => {
     await expect(
       setProjectMcpGrant(pool, { projectItemId: randomUUID(), mcpToolRegistrationId: randomUUID(), granted: true }),
-    ).rejects.toThrow(/foreign key/i);
+    ).rejects.toThrow(NotFoundError);
   });
 });

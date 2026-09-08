@@ -31,6 +31,7 @@ import {
   noopLegacyRawMimeFetcher,
   type LegacyRawMimeFetcher,
 } from "./migrationJob/mailLegacyEmailMigration.js";
+import { handleApprovalRequestExecuteTask } from "./mcp/approvalRequestExecution.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -159,6 +160,9 @@ export function createCoreTaskList(
         { emailsDatabaseId: requireString(payload, "emailsDatabaseId") },
         legacyRawMimeFetcher,
       );
+    },
+    [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: async (payload) => {
+      await handleApprovalRequestExecuteTask(pool, { approvalRequestId: requireString(payload, "approvalRequestId") });
     },
   };
 }
