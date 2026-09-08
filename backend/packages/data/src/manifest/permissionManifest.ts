@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { heartbeatRuleSchema, type HeartbeatRule } from "../scheduler/rule.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
+import { getGrantedMcpAgentTools, type McpAgentToolProjection } from "../mcp/mcpAgentTools.js";
 
 export interface ManifestProperty {
   key: string;
@@ -56,6 +57,8 @@ export interface PermissionManifest {
   databases: ManifestDatabase[];
   heartbeats: ManifestHeartbeat[];
   capabilities: ManifestCapabilities;
+  /** A project run's granted MCP tools (issue #126) — the manifest's fourth source, alongside databases/heartbeats/capabilities. */
+  agentTools: McpAgentToolProjection[];
 }
 
 /**
@@ -100,5 +103,7 @@ export async function generatePermissionManifest(client: PoolClient, projectItem
     email: { send: { autonomous: projectProperties.emailSendAutonomous === true } },
   };
 
-  return { projectItemId, databases, heartbeats, capabilities };
+  const agentTools = await getGrantedMcpAgentTools(client, projectItemId);
+
+  return { projectItemId, databases, heartbeats, capabilities, agentTools };
 }

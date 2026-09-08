@@ -136,3 +136,5 @@ export type { McpClientHandle, ConnectMcpServerOptions } from "./mcp/mcpConnecti
 export { connectMcpServer } from "./mcp/mcpConnectionFactory.js";
 export type { SyncMcpServerToolsOptions, SyncMcpServerToolsResult } from "./mcp/mcpSync.js";
 export { syncMcpServerTools } from "./mcp/mcpSync.js";
+export type { McpAgentToolProjection } from "./mcp/mcpAgentTools.js";
+export { getGrantedMcpAgentTools } from "./mcp/mcpAgentTools.js";
