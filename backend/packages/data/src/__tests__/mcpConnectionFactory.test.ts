@@ -181,6 +181,38 @@ describe("MCP connection factory (issue #231)", () => {
         await contract.stop();
       }
     });
+
+    it("connects with no credential when none is stored", async () => {
+      const contract = await startHttpContractServer();
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+        const handle = await connectMcpServer(pool, item);
+        try {
+          expect(contract.getHandshakeCount()).toBe(1);
+          expect(contract.getObservedCredential()).toBeNull();
+        } finally {
+          await handle.close();
+        }
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    it("leaves no open socket after a failed connect", async () => {
+      const contract = await startHttpContractServer();
+      const workingUrl = contract.connectionConfig;
+      await contract.stop();
+
+      const item = await createMcpServerItem(workingUrl);
+      let thrown: unknown;
+      try {
+        await connectMcpServer(pool, item);
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(McpConnectionError);
+      expect((thrown as McpConnectionError).reason).toBe("handshake_failed");
+    });
   });
 
   describe("safe error mapping", () => {
