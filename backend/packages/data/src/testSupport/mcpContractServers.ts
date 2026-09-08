@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import http, { type Server as HttpServer } from "node:http";
 import type { Socket } from "node:net";
 import os from "node:os";
@@ -112,7 +112,15 @@ export function startStdioContractServer(initialTools: ContractServerTool[] = DE
     async stop() {
       // Nothing owned by this handle itself runs persistently — the spawned child is the
       // connection factory's to close; `waitForChildExit` (below) is what a test calls after
-      // `handle.close()` to assert that actually happened.
+      // `handle.close()` to assert that actually happened. This does, however, own the two temp
+      // files created above, which otherwise leak into `os.tmpdir()` across every test run.
+      for (const file of [recordFile, toolsFile]) {
+        try {
+          unlinkSync(file);
+        } catch {
+          // Already absent (e.g. the child never spawned, so recordFile was never written) — fine.
+        }
+      }
     },
     async waitForChildExit() {
       await pollUntil(() => {

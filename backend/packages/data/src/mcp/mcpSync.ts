@@ -50,6 +50,26 @@ interface RawListedTool {
   inputSchema: unknown;
 }
 
+/** Guards against a misbehaving server whose `nextCursor` never terminates — comfortably above any real tool catalog. */
+const MAX_LIST_TOOLS_PAGES = 1_000;
+
+/**
+ * `tools/list` may paginate (`nextCursor` in the response) — fetches every page before
+ * validating/materializing anything, so a paginated first page alone never causes
+ * `deactivateMcpToolRegistrationsNotIn` to deactivate tools that only appear on a later page.
+ */
+export async function listAllTools(client: McpClientHandle["client"]): Promise<RawListedTool[]> {
+  const tools: RawListedTool[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_LIST_TOOLS_PAGES; page++) {
+    const result = await client.listTools(cursor ? { cursor } : undefined);
+    tools.push(...result.tools);
+    if (!result.nextCursor) return tools;
+    cursor = result.nextCursor;
+  }
+  throw new ValidationError("MCP server's tools/list response never terminated pagination");
+}
+
 /**
  * The MCP SDK's `Client.listTools()` already parses the response against its own `tools/list`
  * Zod schema (rejecting a structurally malformed response before this ever runs), but that
@@ -115,7 +135,7 @@ export async function syncMcpServerTools(pool: Pool, mcpServerItemId: string, op
   let handle: McpClientHandle | undefined;
   try {
     handle = await connectMcpServer(pool, item, { actorId: options.actorId, purpose: "mcp_tool_sync" });
-    const { tools } = await handle.client.listTools();
+    const tools = await listAllTools(handle.client);
     const parsedTools = validateListedTools(tools);
 
     await withTransaction(pool, async (client) => {
@@ -147,17 +167,23 @@ export async function syncMcpServerTools(pool: Pool, mcpServerItemId: string, op
     return { toolCount: parsedTools.length };
   } catch (err) {
     const syncError = safeSyncErrorMessage(err);
-    await withTransaction(pool, (client) =>
-      updateItemWithClient(
-        client,
-        {
-          databaseId: mcpServersDatabaseId,
-          itemId: mcpServerItemId,
-          propertiesPatch: { syncStatus: "error", lastSynced: new Date().toISOString(), syncError },
-        },
-        { allowedSystemKeys: MCP_SERVER_SYNC_ALLOWED_KEYS },
-      ),
-    );
+    try {
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          {
+            databaseId: mcpServersDatabaseId,
+            itemId: mcpServerItemId,
+            propertiesPatch: { syncStatus: "error", lastSynced: new Date().toISOString(), syncError },
+          },
+          { allowedSystemKeys: MCP_SERVER_SYNC_ALLOWED_KEYS },
+        ),
+      );
+    } catch (recordingErr) {
+      // The original sync failure (`err`, thrown below) is what the caller needs to see — a
+      // secondary failure while merely trying to *record* it must never replace or hide it.
+      console.error("syncMcpServerTools: failed to record syncStatus:'error' after a sync failure", recordingErr);
+    }
     throw err;
   } finally {
     await handle?.close();

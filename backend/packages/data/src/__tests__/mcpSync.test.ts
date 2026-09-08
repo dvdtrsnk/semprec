@@ -14,7 +14,8 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
-import { syncMcpServerTools } from "../mcp/mcpSync.js";
+import { listAllTools, syncMcpServerTools } from "../mcp/mcpSync.js";
+import type { McpClientHandle } from "../mcp/mcpConnectionFactory.js";
 import { listMcpToolRegistrationsForServer } from "../mcp/mcpToolRegistrationsStore.js";
 import { setMcpToolRequiresApproval, setMcpToolRiskClass } from "../mcp/mcpGrantsAdminStore.js";
 import type { McpConnectionConfig } from "../mcp/mcpConnectionConfig.js";
@@ -230,5 +231,47 @@ describe("MCP tool sync (issue #125)", () => {
 
   it("throws NotFoundError for a nonexistent MCP server item", async () => {
     await expect(syncMcpServerTools(pool, "00000000-0000-0000-0000-000000000000")).rejects.toThrow(NotFoundError);
+  });
+});
+
+describe("listAllTools (pagination)", () => {
+  function fakeClient(pages: { tools: { name: string; inputSchema: unknown }[]; nextCursor?: string }[]): McpClientHandle["client"] {
+    const listTools = vi.fn(async (params?: { cursor?: string }) => {
+      const index = params?.cursor ? Number(params.cursor) : 0;
+      const page = pages[index];
+      if (!page) throw new Error(`fakeClient: no page for cursor '${params?.cursor}'`);
+      return page.nextCursor !== undefined ? { tools: page.tools, nextCursor: page.nextCursor } : { tools: page.tools };
+    });
+    return { listTools } as unknown as McpClientHandle["client"];
+  }
+
+  it("follows nextCursor to collect tools across every page before returning", async () => {
+    const client = fakeClient([
+      { tools: [{ name: "a", inputSchema: {} }], nextCursor: "1" },
+      { tools: [{ name: "b", inputSchema: {} }], nextCursor: "2" },
+      { tools: [{ name: "c", inputSchema: {} }] },
+    ]);
+
+    const tools = await listAllTools(client);
+
+    expect(tools.map((t) => t.name)).toEqual(["a", "b", "c"]);
+    expect(client.listTools).toHaveBeenCalledTimes(3);
+  });
+
+  it("stops after a single page when the response has no nextCursor", async () => {
+    const client = fakeClient([{ tools: [{ name: "only", inputSchema: {} }] }]);
+
+    const tools = await listAllTools(client);
+
+    expect(tools.map((t) => t.name)).toEqual(["only"]);
+    expect(client.listTools).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws rather than looping forever against a server whose pagination never terminates", async () => {
+    const client = {
+      listTools: vi.fn(async () => ({ tools: [], nextCursor: "again" })),
+    } as unknown as McpClientHandle["client"];
+
+    await expect(listAllTools(client)).rejects.toThrow(ValidationError);
   });
 });
