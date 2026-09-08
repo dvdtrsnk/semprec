@@ -48,3 +48,16 @@ export class NotFoundError extends ChokePointError {
     this.name = "NotFoundError";
   }
 }
+
+/**
+ * Raised for every login/session-verification failure — bad password, unknown email, missing
+ * token, expired session, revoked session — all with the same generic message. Issue #140's
+ * requirement is a single public 401 contract that never reveals which of those conditions
+ * applied, so callers must not attach a more specific `details` payload here.
+ */
+export class UnauthorizedError extends ChokePointError {
+  constructor(message = "Invalid or missing credentials") {
+    super(401, "unauthorized", message);
+    this.name = "UnauthorizedError";
+  }
+}
