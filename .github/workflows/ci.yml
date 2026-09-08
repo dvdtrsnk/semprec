@@ -29,10 +29,8 @@ jobs:
         with:
           node-version: 22
 
-      # Fast tier only: type checking for the backend workspace plus the web
-      # app's own build and unit tests. The backend integration suite needs a
-      # PostgreSQL instance and takes ~10 minutes serially, so it is gated
-      # separately once #250 lands its ephemeral-PostgreSQL tier.
+      # Backend static checks plus the unit tier; the database-backed tiers are
+      # added to this same job further down.
       - name: Backend — install
         working-directory: backend
         run: pnpm install --frozen-lockfile
@@ -57,6 +55,12 @@ jobs:
       - name: Backend — check migration numbering
         working-directory: backend
         run: pnpm --filter @semprec/data run check-migration-numbering
+
+      # The unit tier provisions nothing (no globalSetup, no TEST_DATABASE_URL) and
+      # runs in ~2s, so it is unconditionally cheap enough to gate every pull request.
+      - name: Backend — unit tests
+        working-directory: backend
+        run: pnpm run test:unit
 
       - name: Web — install
         working-directory: web
