@@ -374,6 +374,46 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     expect(connectCount()).toBe(afterStop);
   });
 
+  it("stop() waits for a discovery pass already in flight rather than returning while it still queries", async () => {
+    const mailboxesId = await databaseIdFor("mailboxes");
+    await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }),
+    );
+
+    let releaseIntervalPass: () => void = () => {};
+    let intervalPassStarted = false;
+    const gate = new Promise<void>((resolve) => (releaseIntervalPass = resolve));
+    const { factory } = recordingFactory(undefined, () => ({
+      start: async () => {
+        // Only the interval-driven pass is gated; start()'s own initial reconcile must not be,
+        // or start() itself would never resolve.
+        if (!intervalPassStarted) return;
+        await gate;
+      },
+    }));
+
+    vi.useFakeTimers();
+    const root = createMailLiveSyncRoot(pool, mailboxesId, factory, { discoveryIntervalMs: 1000 });
+    await root.start();
+
+    intervalPassStarted = true;
+    await vi.advanceTimersByTimeAsync(1000);
+
+    let stopped = false;
+    const stopping = root.stop().then(() => {
+      stopped = true;
+    });
+    // Drain the microtask queue well past the handful of awaits stop() needs for its own
+    // teardown. clearInterval cancels the next tick but not the pass already running, so as
+    // long as that pass is gated stop() must not resolve no matter how long we yield for.
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    releaseIntervalPass();
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
   it("discovers a page of accounts in one transaction, isolating one account's seeding failure via a savepoint", async () => {
     const mailboxesId = await databaseIdFor("mailboxes");
     const a = await withTransaction(pool, (client) =>
