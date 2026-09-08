@@ -10,6 +10,8 @@ import { UtilizationPage } from "./views/aiUsage/UtilizationPage.js";
 import { AgentPage } from "./views/agentPage/AgentPage.js";
 import { ApprovalQueue } from "./views/approvalQueue/ApprovalQueue.js";
 import { AgentRunDetail } from "./views/agentRun/AgentRunDetail.js";
+import { SetupWizard } from "./views/setup/SetupWizard.js";
+import type { SetupOperations } from "./api/setupOperations.js";
 import "./styles/tokens.css";
 import "./styles/app.css";
 
@@ -31,6 +33,11 @@ export interface AgentRunRoute {
   operations: AgentRunOperations;
 }
 
+export interface SetupRoute {
+  token: string;
+  operations: SetupOperations;
+}
+
 export function App({
   viewId,
   operations,
@@ -38,6 +45,7 @@ export function App({
   agentPage,
   approvalQueue,
   agentRun,
+  setup,
   languages = navigator.languages,
 }: {
   viewId: string;
@@ -50,6 +58,8 @@ export function App({
   approvalQueue?: ApprovalQueueRoute;
   /** Present only when the composition root routed to a single agent run's detail (issue #132's source agent-run link) rather than an item/view id. */
   agentRun?: AgentRunRoute;
+  /** Present only when the composition root routed to the first-account setup wizard (issue #234) rather than an item/view id. */
+  setup?: SetupRoute;
   languages?: readonly string[];
 }) {
   let content;
@@ -68,6 +78,8 @@ export function App({
     content = <ApprovalQueue operations={approvalQueue.operations} decidedByUserId={approvalQueue.decidedByUserId} />;
   } else if (agentRun) {
     content = <AgentRunDetail agentRunId={agentRun.agentRunId} operations={agentRun.operations} />;
+  } else if (setup) {
+    content = <SetupWizard token={setup.token} operations={setup.operations} />;
   } else {
     content = <ViewHost viewId={viewId} operations={operations} registry={registry} />;
   }

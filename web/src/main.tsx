@@ -6,6 +6,7 @@ import { createAiUsageOperations } from "./api/aiUsageOperations.js";
 import { createMcpAgentPageOperations } from "./api/mcpAgentPageOperations.js";
 import { createApprovalQueueOperations } from "./api/approvalQueueOperations.js";
 import { createAgentRunOperations } from "./api/agentRunOperations.js";
+import { createSetupOperations } from "./api/setupOperations.js";
 
 /**
  * Composition root: which backend to talk to and which view to open come from the
@@ -16,6 +17,7 @@ import { createAgentRunOperations } from "./api/agentRunOperations.js";
  * detail (issue #132's source agent-run link) instead of an item/view id — none of these are
  * choke-point views, so they don't go through `?view=`. `user` is a stopgap stand-in for a real
  * session (there is no auth/current-user concept in the frontend yet — that's the auth-v1 epic).
+ * `?page=setup&token=<setupToken>` routes to the first-account setup wizard (issue #234).
  */
 const params = new URLSearchParams(window.location.search);
 const viewId = params.get("view") ?? "";
@@ -47,6 +49,13 @@ const agentRun =
         operations: createAgentRunOperations({ baseUrl: apiBaseUrl }),
       }
     : undefined;
+const setup =
+  page === "setup" && params.get("token")
+    ? {
+        token: params.get("token")!,
+        operations: createSetupOperations({ baseUrl: apiBaseUrl }),
+      }
+    : undefined;
 
 const container = document.getElementById("root");
 if (!container) throw new Error("Missing #root container");
@@ -60,6 +69,7 @@ createRoot(container).render(
       agentPage={agentPage}
       approvalQueue={approvalQueue}
       agentRun={agentRun}
+      setup={setup}
     />
   </StrictMode>,
 );
