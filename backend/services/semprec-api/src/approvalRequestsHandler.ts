@@ -6,6 +6,7 @@ import {
   ValidationError,
   getApprovalRequest,
   decideAndEnqueueApprovalRequest,
+  listApprovalRequestsQueue,
 } from "@semprec/data";
 import type { Pool } from "pg";
 
@@ -59,7 +60,8 @@ function isForeignKeyViolation(err: unknown): boolean {
 }
 
 /**
- * The authenticated-user approve/reject surface (issue #131):
+ * The authenticated-user approval surface: the global queue read (issue #132)
+ * `GET /api/approval-requests` and the approve/reject write (issue #131)
  * `PATCH /api/approval-requests/:id`, body `{ decision: "approved" | "rejected",
  * decidedByUserId: string }`.
  *
@@ -72,7 +74,9 @@ function isForeignKeyViolation(err: unknown): boolean {
  * `approvalExecute` job in the same transaction (see `approvalDecisionAction.ts`). A `null`
  * result there means the row was not `pending` (unknown id, or a repeat decision): this handler
  * treats that as a deterministic no-op, returning the request's current stored state with 200
- * rather than an error, and only 404s when the id doesn't exist at all.
+ * rather than an error, and only 404s when the id doesn't exist at all — the client is expected
+ * to render that returned state (possibly already decided by someone else) rather than treat the
+ * no-op as a failure.
  */
 export function createApprovalRequestsRequestListener(pool: Pool, options: ApprovalRequestsHandlerOptions) {
   return async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -84,6 +88,12 @@ export function createApprovalRequestsRequestListener(pool: Pool, options: Appro
     const url = new URL(req.url ?? "/", "http://localhost");
 
     try {
+      if (req.method === "GET" && url.pathname === "/api/approval-requests") {
+        const rows = await withTransaction(pool, (client) => listApprovalRequestsQueue(client));
+        sendJson(res, 200, { rows });
+        return;
+      }
+
       const match = url.pathname.match(APPROVAL_REQUEST_PATH);
       if (!match || req.method !== "PATCH") {
         sendJson(res, 404, { error: "Not found" });

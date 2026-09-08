@@ -26,7 +26,7 @@ function dispatch(req: IncomingMessage, res: ServerResponse): void {
     void aiUsageListener(req, res);
     return;
   }
-  if (pathname.startsWith("/api/approval-requests/")) {
+  if (pathname === "/api/approval-requests" || pathname.startsWith("/api/approval-requests/")) {
     void approvalRequestsListener(req, res);
     return;
   }

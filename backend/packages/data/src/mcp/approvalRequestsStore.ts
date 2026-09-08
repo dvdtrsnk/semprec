@@ -100,6 +100,19 @@ export async function getApprovalRequest(client: Queryable, id: string): Promise
 }
 
 /**
+ * The global approval queue's source list (issue #132): every still-`pending` request across
+ * every project, oldest first — the same FIFO order a human triage list expects. Decided
+ * requests never appear here; a caller that needs one anyway (e.g. rendering the authoritative
+ * outcome of a raced decision) already holds it from the decide response, not from this list.
+ */
+export async function listPendingApprovalRequests(client: Queryable): Promise<ApprovalRequest[]> {
+  const { rows } = await client.query<ApprovalRequestRow>(
+    `SELECT * FROM approval_requests WHERE status = 'pending' ORDER BY requested_at ASC`,
+  );
+  return rows.map(rowToApprovalRequest);
+}
+
+/**
  * The single atomic decision transition (issue #131): `pending` -> `approved`/`rejected`, one
  * `UPDATE ... WHERE status = 'pending'`. Returns `null` when the row doesn't exist or is no
  * longer `pending` — a caller cannot tell those two apart from this call alone (call
