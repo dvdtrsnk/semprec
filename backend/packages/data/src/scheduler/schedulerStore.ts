@@ -266,9 +266,19 @@ export async function recordHeartbeatFailure(client: Pool | PoolClient, id: stri
   await client.query(`UPDATE project_heartbeats SET last_error = $2 WHERE id = $1`, [id, error]);
 }
 
-/** `suffix` is an `itemId` for an `onItemEvent` fire or an `occurrenceId` for a scheduled one (issue #213) — either way, distinct suffixes never collapse onto or replace each other's job. */
+/** `suffix` is an `itemId` for an `onItemEvent` fire; distinct suffixes never collapse onto or replace each other's job. */
 export function heartbeatFireJobKey(heartbeatId: string, suffix?: string): string {
   return suffix ? `heartbeat-fire:${heartbeatId}:${suffix}` : `heartbeat-fire:${heartbeatId}`;
+}
+
+/**
+ * The scheduled-occurrence job key (issue #84's generation protocol, superseding #213's plain
+ * `heartbeat-fire:${heartbeatId}:${occurrenceId}`). Every generation of the same occurrence gets
+ * a distinct key, so reactivating a cancelled or stale-queued occurrence never collapses onto —
+ * or is mistaken for — the job an old, still-finishing handler was enqueued for.
+ */
+export function occurrenceFireJobKey(heartbeatId: string, occurrenceId: string, generation: number): string {
+  return `heartbeat-fire:${heartbeatId}:${occurrenceId}:${generation}`;
 }
 
 /**
@@ -316,27 +326,86 @@ export interface SweptHeartbeat {
   id: string;
 }
 
+export interface OccurrenceInsertResult {
+  occurrenceId: string;
+  generation: number;
+  jobKeyMode: "replace" | "preserve_run_at";
+}
+
 /**
- * Inserts the `queued` occurrence for one due fire (issue #213) with the exact rule the sweep
- * just saw, keyed on `(heartbeat_id, scheduled_for)`. `scheduled_for` is the row's *old*
- * `next_fire_at` — the due time this sweep is firing for, not any newly computed one — so a
- * conflicting insert (defense in depth alongside the sweep's own `FOR UPDATE SKIP LOCKED`) is an
- * idempotent no-op: `null` tells the caller not to enqueue a job or advance the schedule again.
+ * Inserts the `queued` occurrence for one due fire, or reactivates an existing one for the same
+ * `(heartbeat_id, scheduled_for)` (issue #84's generation protocol, superseding #213's plain
+ * conflict-is-always-a-no-op rule). `scheduled_for` is the row's *old* `next_fire_at` — the due
+ * time this sweep is firing for, not any newly computed one.
+ *
+ * A conflicting `cancelled` row means edit-away/edit-back or disable/re-enable recomputed the
+ * schedule back onto a timestamp whose occurrence was already cancelled: reactivate it in place
+ * (new `rule_snapshot`, `status` back to `queued`, cleared `first_started_at`/`last_error`,
+ * incremented `generation`) and treat it like a fresh occurrence.
+ *
+ * A conflicting `queued` row whose `rule_snapshot` no longer matches the rule the sweep just saw
+ * means the still-pending occurrence's snapshot went stale (the rule was edited since it was
+ * queued): replace the snapshot and bump `generation` in place, preserving the occurrence's id and
+ * `queued` status — a concurrently starting handler blocks on this same row lock and, once
+ * released, sees the fresh snapshot.
+ *
+ * Every other conflict (`queued` with a matching snapshot, or `running`/`succeeded`/`failed`) is
+ * an idempotent no-op: `null` tells the caller not to enqueue a job or advance the schedule again.
+ * `running`/`succeeded`/`failed` occurrences are never reactivatable, matching or not.
  */
 async function insertHeartbeatOccurrence(
   client: PoolClient,
   heartbeatId: string,
   scheduledFor: Date,
   ruleSnapshot: AnyHeartbeatRule,
-): Promise<string | null> {
-  const { rows } = await client.query<{ id: string }>(
+): Promise<OccurrenceInsertResult | null> {
+  const snapshotJson = JSON.stringify(ruleSnapshot);
+  const { rows: inserted } = await client.query<{ id: string; generation: number }>(
     `INSERT INTO heartbeat_occurrences (heartbeat_id, scheduled_for, rule_snapshot, status)
      VALUES ($1, $2, $3::jsonb, 'queued')
      ON CONFLICT (heartbeat_id, scheduled_for) DO NOTHING
-     RETURNING id`,
-    [heartbeatId, scheduledFor, JSON.stringify(ruleSnapshot)],
+     RETURNING id, generation`,
+    [heartbeatId, scheduledFor, snapshotJson],
   );
-  return rows[0]?.id ?? null;
+  if (inserted[0]) {
+    return { occurrenceId: inserted[0].id, generation: inserted[0].generation, jobKeyMode: "replace" };
+  }
+
+  // Lock the existing row under the same locks the sweep already holds on the heartbeat, so a
+  // concurrent handler-start (prepareHeartbeatOccurrenceFire's own FOR UPDATE on this row) waits
+  // for whichever reactivation below commits, then re-reads the fresh snapshot/generation.
+  const { rows: existingRows } = await client.query<{ id: string; status: string; snapshot_matches: boolean }>(
+    `SELECT id, status, (rule_snapshot = $3::jsonb) AS snapshot_matches
+     FROM heartbeat_occurrences WHERE heartbeat_id = $1 AND scheduled_for = $2 FOR UPDATE`,
+    [heartbeatId, scheduledFor, snapshotJson],
+  );
+  const existing = existingRows[0];
+  if (!existing) return null; // the conflicting row vanished (heartbeat/occurrence cascade) between the insert and this lock
+
+  if (existing.status === "cancelled") {
+    const { rows } = await client.query<{ generation: number }>(
+      `UPDATE heartbeat_occurrences
+       SET rule_snapshot = $2::jsonb, status = 'queued', first_started_at = NULL, last_error = NULL,
+           generation = generation + 1
+       WHERE id = $1
+       RETURNING generation`,
+      [existing.id, snapshotJson],
+    );
+    return { occurrenceId: existing.id, generation: rows[0].generation, jobKeyMode: "replace" };
+  }
+
+  if (existing.status === "queued" && !existing.snapshot_matches) {
+    const { rows } = await client.query<{ generation: number }>(
+      `UPDATE heartbeat_occurrences
+       SET rule_snapshot = $2::jsonb, last_error = NULL, generation = generation + 1
+       WHERE id = $1
+       RETURNING generation`,
+      [existing.id, snapshotJson],
+    );
+    return { occurrenceId: existing.id, generation: rows[0].generation, jobKeyMode: "preserve_run_at" };
+  }
+
+  return null; // queued-with-matching-snapshot, running, succeeded, or failed: never reactivatable
 }
 
 /**
@@ -384,16 +453,17 @@ export async function sweepDueHeartbeats(
       continue;
     }
 
-    const occurrenceId = await insertHeartbeatOccurrence(client, row.id, row.next_fire_at, rule);
-    if (!occurrenceId) continue; // idempotent no-op: an occurrence for this exact due time already exists
+    const reactivation = await insertHeartbeatOccurrence(client, row.id, row.next_fire_at, rule);
+    if (!reactivation) continue; // idempotent no-op: a non-reactivatable occurrence for this exact due time already exists
+    const { occurrenceId, generation, jobKeyMode } = reactivation;
 
     const nextFireAt = isFloatingRuleKind(rule.kind) ? null : calendarNextFireAt;
     await client.query(`UPDATE project_heartbeats SET next_fire_at = $2 WHERE id = $1`, [row.id, nextFireAt]);
     await enqueueJob(
       client,
       CORE_TASK_NAMES.HEARTBEAT_FIRE,
-      { heartbeatId: row.id, occurrenceId },
-      { jobKey: heartbeatFireJobKey(row.id, occurrenceId), maxAttempts: 3 },
+      { heartbeatId: row.id, occurrenceId, generation },
+      { jobKey: occurrenceFireJobKey(row.id, occurrenceId, generation), maxAttempts: 3, jobKeyMode },
     );
     fired.push({ id: row.id });
   }
@@ -402,19 +472,29 @@ export async function sweepDueHeartbeats(
 
 export type OccurrenceFirePreparation =
   | { outcome: "missing" }
+  | { outcome: "stale" }
   | { outcome: "cancelled" }
   | { outcome: "degraded" }
   | { outcome: "proceed"; heartbeat: HeartbeatRow };
 
 /**
- * The occurrence fire task's "first attempt, lock and decide" step (issue #213). Locks the
- * heartbeat and occurrence row together and compares the heartbeat's *current* `rule` against
- * the occurrence's `rule_snapshot` with plain PostgreSQL `jsonb` equality — never by re-parsing
- * either side, so a disabled heartbeat or one whose rule kind's module went inactive since the
- * sweep still compares correctly. A disabled heartbeat or a rule that no longer matches its
- * snapshot cancels the occurrence and executes nothing; the disable/rule-edit transaction that
- * caused the mismatch already owns recomputing or clearing `next_fire_at`, so this never touches
- * heartbeat scheduling.
+ * The occurrence fire task's "first attempt, lock and decide" step (issue #213, extended by #84's
+ * generation protocol). Locks the heartbeat and occurrence row together.
+ *
+ * The very first check is `generation`: the payload's generation must equal the row's current
+ * generation, or this job was enqueued for a generation that a reactivation (cancelled-occurrence
+ * or stale-queued-snapshot replace, see `insertHeartbeatOccurrence`) has since superseded. A stale
+ * generation is a successful no-op — it never touches status, `rule_snapshot`, or heartbeat
+ * scheduling — so an old handler can only finish or remove its own generation's job, never the
+ * reactivated one.
+ *
+ * With a matching generation, it compares the heartbeat's *current* `rule` against the
+ * occurrence's `rule_snapshot` with plain PostgreSQL `jsonb` equality — never by re-parsing either
+ * side, so a disabled heartbeat or one whose rule kind's module went inactive since the sweep
+ * still compares correctly. A disabled heartbeat or a rule that no longer matches its snapshot
+ * cancels the occurrence and executes nothing; the disable/rule-edit transaction that caused the
+ * mismatch already owns recomputing or clearing `next_fire_at`, so this never touches heartbeat
+ * scheduling.
  *
  * Only a genuine first attempt (`first_started_at` still `NULL`) sets `first_started_at`,
  * `status = 'running'`, `project_heartbeats.last_fired_at`, and — for a floating rule only — the
@@ -429,6 +509,7 @@ export async function prepareHeartbeatOccurrenceFire(
   pool: Pool,
   heartbeatId: string,
   occurrenceId: string,
+  generation: number,
   moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
 ): Promise<OccurrenceFirePreparation> {
   return withTransaction(pool, async (client) => {
@@ -444,11 +525,12 @@ export async function prepareHeartbeatOccurrenceFire(
       last_fired_at: Date | null;
       last_error: string | null;
       first_started_at: Date | null;
+      generation: number;
       rules_match: boolean;
     }>(
       `SELECT h.id, h.project_item_id, h.name, h.rule, h.action_id, h.action_config, h.enabled,
               h.next_fire_at, h.last_fired_at, h.last_error,
-              o.first_started_at, (h.rule = o.rule_snapshot) AS rules_match
+              o.first_started_at, o.generation, (h.rule = o.rule_snapshot) AS rules_match
        FROM heartbeat_occurrences o
        JOIN project_heartbeats h ON h.id = o.heartbeat_id
        WHERE o.id = $1 AND o.heartbeat_id = $2
@@ -457,6 +539,8 @@ export async function prepareHeartbeatOccurrenceFire(
     );
     const row = rows[0];
     if (!row) return { outcome: "missing" }; // heartbeat/occurrence deleted (cascade) since enqueue
+
+    if (row.generation !== generation) return { outcome: "stale" }; // superseded by a reactivation; this job's generation is dead
 
     if (!row.enabled || !row.rules_match) {
       await client.query(`UPDATE heartbeat_occurrences SET status = 'cancelled' WHERE id = $1`, [occurrenceId]);
