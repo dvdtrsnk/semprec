@@ -34,8 +34,9 @@ function legacyMessageId(itemId: string): string {
 function parseAddressText(value: string): MailEnvelopeAddress | undefined {
   const match = value.match(/^(.*)<([^<>]+)>$/);
   if (match) {
-    const name = match[1].trim();
-    const address = match[2].trim();
+    const [, rawName = "", rawAddress = ""] = match;
+    const name = rawName.trim();
+    const address = rawAddress.trim();
     return address ? { name: name || undefined, address } : undefined;
   }
   const trimmed = value.trim();

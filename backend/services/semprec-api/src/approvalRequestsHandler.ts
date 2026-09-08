@@ -79,7 +79,7 @@ function isForeignKeyViolation(err: unknown): boolean {
  * no-op as a failure.
  */
 export function createApprovalRequestsRequestListener(pool: Pool, options: ApprovalRequestsHandlerOptions) {
-  return async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!isAuthorized(req, options.authToken)) {
       sendJson(res, 401, { error: "Unauthorized" });
       return;
@@ -100,7 +100,9 @@ export function createApprovalRequestsRequestListener(pool: Pool, options: Appro
         return;
       }
 
-      const [, approvalRequestId] = match;
+      // Group 1 of the route pattern above is not optional, so a successful match always
+      // captured it; a runtime check here would be unreachable code.
+      const approvalRequestId = match[1]!;
       const body = (await readJsonBody(req)) as { decision?: unknown; decidedByUserId?: unknown };
       if (body.decision !== "approved" && body.decision !== "rejected") {
         sendJson(res, 400, { error: "'decision' must be 'approved' or 'rejected'" });
@@ -151,5 +153,22 @@ export function createApprovalRequestsRequestListener(pool: Pool, options: Appro
       console.error(`Unexpected error in ${req.method} ${url.pathname}:`, err);
       sendJson(res, 500, { error: "Internal server error" });
     }
+  }
+
+  /**
+   * `http.createServer` discards its listener's return value, so an `async` listener turns any
+   * rejection escaping the try/catch above into an unhandled rejection — which Node answers by
+   * exiting the process. Keeping the boundary synchronous confines it to a 500 for the one
+   * request. Same shape as `aiUsageHandler.ts`.
+   */
+  return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
+    handleRequest(req, res).catch((err: unknown) => {
+      console.error("Unhandled error in the request listener:", err);
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+      sendJson(res, 500, { error: "Internal server error" });
+    });
   };
 }

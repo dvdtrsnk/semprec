@@ -117,7 +117,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     await lifecycle.start();
     expect(await pendingMailSyncJobCount("mailbox-1")).toBe(1);
 
-    const conn = connections.get("INBOX")![0];
+    const conn = connections.get("INBOX")![0]!;
     conn.onSignal(); // simulates an EXISTS/EXPUNGE/flags notification observed while idling
     // The signal only ever re-enqueues through the same idempotent jobKey — never a second,
     // parallel job — so the pending count for this account stays at exactly one.
@@ -163,7 +163,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
 
     await lifecycle.start();
     expect(connections.get("INBOX")!.length).toBe(1);
-    const firstConn = connections.get("INBOX")![0];
+    const firstConn = connections.get("INBOX")![0]!;
 
     await vi.advanceTimersByTimeAsync(1001);
     expect(firstConn.closeCalls).toBe(1);
@@ -219,8 +219,8 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     });
 
     await lifecycle.stop();
-    expect(connections.get("INBOX")![0].closed).toBe(true);
-    expect(connections.get("[Gmail]/All Mail")![0].closed).toBe(true);
+    expect(connections.get("INBOX")![0]!.closed).toBe(true);
+    expect(connections.get("[Gmail]/All Mail")![0]!.closed).toBe(true);
   });
 
   it("respects the per-account connection limit, never holding more concurrent IDLE connections than the budget allows", async () => {
@@ -230,7 +230,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
       async resolveFolders() {
         return [{ path: "INBOX" }, { path: "[Gmail]/All Mail" }];
       },
-      async connect(_mailboxItemId, _credential, folderPath, onSignal) {
+      async connect(_mailboxItemId, _credential, _folderPath, onSignal) {
         active++;
         maxActive = Math.max(maxActive, active);
         const conn = new FakeConnection(onSignal);

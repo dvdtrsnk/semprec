@@ -32,7 +32,7 @@ function isAuthorized(req: IncomingMessage, authToken: string): boolean {
  * the wiring-function pattern used by `startRealtimeServer` in `@semprec/realtime`.
  */
 export function createAiUsageRequestListener(pool: Queryable, options: AiUsageHandlerOptions) {
-  return async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
 
     if (req.method !== "GET" || url.pathname !== "/api/ai-usage") {
@@ -63,5 +63,24 @@ export function createAiUsageRequestListener(pool: Queryable, options: AiUsageHa
       console.error("Unexpected error in GET /api/ai-usage:", err);
       sendJson(res, 500, { error: "Internal server error" });
     }
+  }
+
+  /**
+   * `http.createServer` discards its listener's return value, so handing it an `async`
+   * function means any rejection that escapes the try/catch above — a `sendJson` that throws
+   * on an unserializable body, a malformed `authorization` header reaching `Buffer.from` —
+   * becomes an unhandled rejection, which Node turns into a process exit. The whole service
+   * would go down over one bad request. Keeping the boundary synchronous confines it to a
+   * 500 for that request.
+   */
+  return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
+    handleRequest(req, res).catch((err: unknown) => {
+      console.error("Unhandled error in the ai-usage request listener:", err);
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+      sendJson(res, 500, { error: "Internal server error" });
+    });
   };
 }

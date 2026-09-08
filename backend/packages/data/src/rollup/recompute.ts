@@ -140,12 +140,15 @@ export async function backfillRollup(pool: Pool, rollupPropertyId: string): Prom
        ORDER BY id ASC LIMIT $2`,
       cursor ? [rollupProperty.databaseId, pageSize, cursor] : [rollupProperty.databaseId, pageSize],
     );
-    if (rows.length === 0) break;
+    // Annotated because `cursor` is assigned from it below and read by the query above, which
+    // otherwise makes the inference cycle back on itself (TS7022).
+    const lastRow: { id: string } | undefined = rows[rows.length - 1];
+    if (lastRow === undefined) break;
     for (const row of rows) {
       await enqueueRollupRecompute(pool, rollupPropertyId, row.id);
     }
     if (rows.length < pageSize) break;
-    cursor = rows[rows.length - 1].id;
+    cursor = lastRow.id;
   }
 }
 

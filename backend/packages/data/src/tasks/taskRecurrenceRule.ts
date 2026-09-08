@@ -2,6 +2,7 @@ import { z } from "zod";
 
 /** Same weekday vocabulary as scheduler/rule.ts's heartbeat rules — kept as a separate local schema since that one isn't exported, but deliberately identical values. */
 const weekday = z.enum(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]);
+export type Weekday = z.infer<typeof weekday>;
 
 // camelCase `kind` discriminators, matching this codebase's established convention for a
 // stored jsonb rule (scheduler/rule.ts's heartbeat rule kinds are 'dailyTime'/'everyNDays'/

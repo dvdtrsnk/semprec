@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import type { ModuleRegistry } from "@semprec/module-registry";
-import { withTransaction } from "../db/pool.js";
+import { requireSingleRow, withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 
 export type ModuleDataMigrationConverter = (properties: Record<string, unknown>) => Record<string, unknown>;
@@ -41,11 +41,11 @@ export async function runModuleDataMigration(pool: Pool, params: RunModuleDataMi
 
   const client = await pool.connect();
   try {
-    const {
-      rows: [{ locked }],
-    } = await client.query<{ locked: boolean }>("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked", [
-      key,
-    ]);
+    const { rows } = await client.query<{ locked: boolean }>(
+      "SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked",
+      [key],
+    );
+    const { locked } = requireSingleRow(rows, "pg_try_advisory_lock");
     if (!locked) return;
 
     try {
@@ -107,11 +107,9 @@ async function convertInBatches(
         );
       }
 
-      if (rows.length > 0) {
-        await client.query(`UPDATE databases SET migration_cursor = $2 WHERE id = $1`, [
-          databaseId,
-          rows[rows.length - 1].id,
-        ]);
+      const lastRow = rows[rows.length - 1];
+      if (lastRow !== undefined) {
+        await client.query(`UPDATE databases SET migration_cursor = $2 WHERE id = $1`, [databaseId, lastRow.id]);
       }
       return rows.length;
     });

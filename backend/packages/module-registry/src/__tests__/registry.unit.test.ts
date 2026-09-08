@@ -159,7 +159,7 @@ describe("ModuleRegistry projections", () => {
     // Every returned projection object is a narrow, ad-hoc shape — none of them is (or
     // contains) the full ModuleManifest, e.g. no "capabilities"/"agentTools" keys leak
     // into the database projection.
-    expect(Object.keys((await registry.getDatabases())[0])).toEqual(["moduleId", "key", "name"]);
+    expect(Object.keys((await registry.getDatabases())[0]!)).toEqual(["moduleId", "key", "name"]);
   });
 
   it("drops an inactive module from every projection", async () => {

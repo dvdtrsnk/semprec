@@ -146,7 +146,11 @@ export async function changePropertyType(
   await assertPropertySchemaMutable(client, property);
 
   const { rows } = await client.query(
-    `UPDATE properties SET type = $2, migration_status = $3 WHERE id = $1 RETURNING ${PROPERTY_COLUMNS}`,
+    // `migration_dropped_values` is cleared here and only here: a fresh retype starts a new
+    // migration, so whatever a previous retype of this property discarded is no longer its
+    // result. Every other writer only ever sets the flag.
+    `UPDATE properties SET type = $2, migration_status = $3, migration_dropped_values = false
+     WHERE id = $1 RETURNING ${PROPERTY_COLUMNS}`,
     [propertyId, newType, migrationStatus],
   );
   return mapPropertyRow(rows[0]);
@@ -158,6 +162,28 @@ export async function setPropertyMigrationStatus(
   migrationStatus: PropertyRow["migrationStatus"],
 ): Promise<void> {
   await client.query(`UPDATE properties SET migration_status = $2 WHERE id = $1`, [propertyId, migrationStatus]);
+}
+
+/**
+ * Records that a property-type migration discarded an unconvertible value. Idempotent, and
+ * deliberately not reset here — see migration 0026 for why this outlives a single job run.
+ */
+export async function markPropertyMigrationDroppedValues(client: PoolClient, propertyId: string): Promise<void> {
+  await client.query(`UPDATE properties SET migration_dropped_values = true WHERE id = $1`, [propertyId]);
+}
+
+/**
+ * Settles a finished property-type migration on 'partial' or 'done' from the durable
+ * `migration_dropped_values` flag rather than from the calling run's own bookkeeping, so
+ * a retry or an overlapping run cannot downgrade an earlier run's 'partial' to 'done'.
+ */
+export async function settlePropertyMigrationStatus(client: PoolClient, propertyId: string): Promise<void> {
+  await client.query(
+    `UPDATE properties
+     SET migration_status = CASE WHEN migration_dropped_values THEN 'partial' ELSE 'done' END
+     WHERE id = $1`,
+    [propertyId],
+  );
 }
 
 export async function setPropertyLocked(client: PoolClient, propertyId: string, locked: boolean): Promise<void> {

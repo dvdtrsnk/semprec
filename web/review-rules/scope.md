@@ -1,9 +1,9 @@
 # Include
 
-**/_.ts
-\**/_.tsx
-**/_.js
-\**/_.jsx
+**/*.ts
+**/*.tsx
+**/*.js
+**/*.jsx
 **/*.css
 
 # Exclude

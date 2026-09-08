@@ -1,7 +1,12 @@
 import type { Pool, PoolClient } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import type { Queryable } from "../db/pool.js";
-import { getProperty, setPropertyMigrationStatus } from "../chokePoint/propertiesStore.js";
+import {
+  getProperty,
+  markPropertyMigrationDroppedValues,
+  setPropertyMigrationStatus,
+  settlePropertyMigrationStatus,
+} from "../chokePoint/propertiesStore.js";
 import { findDependenciesBySource } from "../rollup/dependencies.js";
 import { enqueueRollupBackfill } from "../rollup/recompute.js";
 import type { PropertyType } from "../types.js";
@@ -93,7 +98,10 @@ export async function enqueuePropertyTypeMigration(
 /**
  * Eagerly, once, immediately converts every item's value for this property to its new
  * type. An unconvertible value is left empty (not overwritten with an error); the
- * database ends up `done` (no failures) or `partial` (some rows left empty).
+ * database ends up `done` (no failures) or `partial` (some rows left empty). That verdict
+ * comes from the property's durable `migration_dropped_values` flag, so a retried or
+ * overlapping run — which necessarily skips the rows an earlier run already dropped —
+ * settles on the same `partial` instead of reporting a clean `done`.
  */
 export async function runPropertyTypeMigrationJob(
   pool: Pool,
@@ -111,7 +119,6 @@ export async function runPropertyTypeMigrationJob(
   }
 
   const needsConversion = fromType !== property.type;
-  let anyFailures = false;
   let cursor: string | null = null;
   const pageSize = 500;
 
@@ -144,7 +151,10 @@ export async function runPropertyTypeMigrationJob(
             [property.databaseId, row.id, property.key, JSON.stringify(converted.value)],
           );
         } else {
-          anyFailures = true;
+          // Marked before the value is discarded, not after: once the key is gone from
+          // `properties` every later pass skips the row, so a crash between the two
+          // statements must leave the migration looking failed rather than clean.
+          await markPropertyMigrationDroppedValues(client, propertyId);
           await client.query(
             `UPDATE items SET properties = properties - $3, updated_at = now() WHERE database_id = $1 AND id = $2`,
             [property.databaseId, row.id, property.key],
@@ -154,13 +164,14 @@ export async function runPropertyTypeMigrationJob(
     } finally {
       client.release();
     }
-    if (rows.length === 0 || rows.length < pageSize) break;
-    cursor = rows[rows.length - 1].id;
+    const lastRow = rows[rows.length - 1];
+    if (lastRow === undefined || rows.length < pageSize) break;
+    cursor = lastRow.id;
   }
 
   const finalClient = await pool.connect();
   try {
-    await setPropertyMigrationStatus(finalClient, propertyId, anyFailures ? "partial" : "done");
+    await settlePropertyMigrationStatus(finalClient, propertyId);
     const dependents = await findDependenciesBySource(finalClient, property.databaseId, property.key);
     for (const dependency of dependents) {
       await enqueueRollupBackfill(finalClient, dependency.rollupPropertyId);

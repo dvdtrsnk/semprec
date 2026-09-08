@@ -56,7 +56,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       );
       const edges = await relationsStore.listRelationsForItem(client, relationDefinition!.id, itemId);
       if (edges.length === 0) return null;
-      const proposalItemId = relationsStore.otherSide(edges[0], itemId);
+      const proposalItemId = relationsStore.otherSide(edges[0]!, itemId);
       return itemsStore.getItemById(client, proposalsId, proposalItemId);
     });
   }

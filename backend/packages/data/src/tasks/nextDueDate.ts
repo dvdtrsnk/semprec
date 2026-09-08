@@ -4,11 +4,14 @@ import type {
   FloatingRecurrenceRule,
   TaskRecurrenceMode,
   TaskRecurrenceRule,
+  Weekday,
 } from "./taskRecurrenceRule.js";
 
-const WEEKDAY_TO_LUXON: Record<string, number> = { mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 7 };
+// Keyed by `Weekday` rather than `string`: the rule schema validates the value against the
+// same seven-name enum, so a total map is the accurate type and the lookup cannot miss.
+const WEEKDAY_TO_LUXON: Record<Weekday, number> = { mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 7 };
 
-function nthWeekdayOfMonth(monthStart: DateTime, weekday: string, n: number): DateTime {
+function nthWeekdayOfMonth(monthStart: DateTime, weekday: Weekday, n: number): DateTime {
   const targetWeekday = WEEKDAY_TO_LUXON[weekday];
   if (n > 0) {
     const firstOfKind = monthStart.plus({ days: (targetWeekday - monthStart.weekday + 7) % 7 });

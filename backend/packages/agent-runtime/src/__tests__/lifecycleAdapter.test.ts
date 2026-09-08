@@ -112,8 +112,8 @@ describe("runAgentSession", () => {
     const { rows } = await pool.query<{ status: string; result: string | null }>(
       "SELECT status, result FROM agent_runs WHERE task = 'fails'",
     );
-    expect(rows[0].status).toBe("error");
-    expect(rows[0].result).toBe("boom");
+    expect(rows[0]!.status).toBe("error");
+    expect(rows[0]!.result).toBe("boom");
   });
 
   it("pushes every message, including message_update deltas, as a live agent_run_event NOTIFY", async () => {

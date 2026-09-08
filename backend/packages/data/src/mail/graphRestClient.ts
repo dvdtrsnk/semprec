@@ -1,5 +1,4 @@
 import { Readable, Transform } from "node:stream";
-import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { GraphChangedMessage, GraphDeltaResult, GraphFolderRef, GraphMailClient } from "./graphReconcile.js";
 import { assertJsonObject, MAX_ATTACHMENT_BYTES, type FetchedMessage } from "./providerTypes.js";
@@ -194,7 +193,7 @@ export class GraphRestClient implements GraphMailClient {
         callback(null, chunk);
       },
     });
-    const source = Readable.fromWeb(response.body as unknown as NodeWebReadableStream<Uint8Array>);
+    const source = Readable.fromWeb(response.body);
     // Plain `.pipe()` does not forward the source's own 'error' event to the destination — a
     // dropped connection mid-transfer would otherwise leave `limiter` (and whatever later
     // consumes it, e.g. blobStorage.ts's `pipeline()`) waiting forever instead of erroring out,

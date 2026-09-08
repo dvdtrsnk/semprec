@@ -93,7 +93,7 @@ export async function runAgentTurn(
     if (message.kind === "message_update") continue;
 
     if (PERSISTED_EVENT_KINDS.has(message.kind)) {
-      await insertAgentRunEvent(client, agentRunId, message.kind as AgentRunEventKind, message);
+      await insertAgentRunEvent(client, agentRunId, message.kind, message);
     }
 
     if (message.kind === "message") lastMessage = message;

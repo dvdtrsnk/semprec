@@ -345,11 +345,11 @@ describe("views", () => {
       }
 
       const firstPage = await chokePoint.queryView(collection.id, { limit: 2 });
-      expect(firstPage.items.map((i) => i.id)).toEqual([items[0].id, items[1].id]);
+      expect(firstPage.items.map((i) => i.id)).toEqual([items[0]!.id, items[1]!.id]);
       expect(firstPage.nextCursor).not.toBeNull();
 
       const secondPage = await chokePoint.queryView(collection.id, { limit: 2, cursor: firstPage.nextCursor! });
-      expect(secondPage.items.map((i) => i.id)).toEqual([items[2].id]);
+      expect(secondPage.items.map((i) => i.id)).toEqual([items[2]!.id]);
       expect(secondPage.nextCursor).toBeNull();
     });
 
@@ -527,7 +527,7 @@ describe("views", () => {
         config: { propertyOrder: ["status", "title"], visibility: { tags: false, due: false } },
       });
       const result = await chokePoint.queryView(view.id);
-      expect(Object.keys(result.items[0].properties)).toEqual(["status", "title"]);
+      expect(Object.keys(result.items[0]!.properties)).toEqual(["status", "title"]);
     });
 
     it("getView returns a NotFoundError from queryView for a missing view", async () => {

@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { requireSingleRow } from "../db/pool.js";
 import { ForbiddenError, NotFoundError } from "../errors.js";
 import type { DatabaseRow } from "../types.js";
 
@@ -71,7 +72,7 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
     `SELECT format('CREATE TABLE %I PARTITION OF items FOR VALUES IN (%L)', $1::text, $2::text) AS ddl`,
     [partitionName, database.id],
   );
-  await client.query(ddlRows[0].ddl);
+  await client.query(requireSingleRow(ddlRows, "partition DDL format()").ddl);
 
   return database;
 }

@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { requireSingleRow } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import type { ViewItemRow } from "../types.js";
 
@@ -49,7 +50,7 @@ export async function addViewItem(
       `SELECT COALESCE(MAX(position), -1) + 1 AS next FROM view_items WHERE view_id = $1`,
       [viewId],
     );
-    pos = rows[0].next;
+    pos = requireSingleRow(rows, "view_items next position").next;
   } else {
     await client.query(`UPDATE view_items SET position = position + 1 WHERE view_id = $1 AND position >= $2`, [
       viewId,

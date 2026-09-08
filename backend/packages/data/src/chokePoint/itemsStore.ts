@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../db/pool.js";
+import { requireSingleRow, type Queryable } from "../db/pool.js";
 import { ConflictError, NotFoundError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 
@@ -68,7 +68,17 @@ export async function insertItem(client: Queryable, input: InsertItemInput): Pro
         `SELECT item_id, database_id FROM idempotency_keys WHERE key = $1`,
         [input.idempotencyKey],
       );
+      // The INSERT above hit ON CONFLICT DO NOTHING, so the conflicting row exists and this
+      // SELECT finds it — unless a concurrent transaction deleted the reservation in between.
       const reserved = rows[0];
+      if (reserved === undefined) {
+        throw new ConflictError(
+          `Idempotency key '${input.idempotencyKey}' was reserved and then removed concurrently`,
+          {
+            key: input.idempotencyKey,
+          },
+        );
+      }
       if (reserved.database_id !== input.databaseId) {
         throw new ConflictError(`Idempotency key '${input.idempotencyKey}' was already used for a different database`, {
           key: input.idempotencyKey,
@@ -231,7 +241,7 @@ export async function countItems(
     `SELECT count(*)::text AS count FROM items WHERE ${conditions.join(" AND ")}`,
     params,
   );
-  return Number(rows[0].count);
+  return Number(requireSingleRow(rows, "items count").count);
 }
 
 /**

@@ -125,7 +125,7 @@ const REVOKE_SESSION_PATH = /^\/api\/auth\/sessions\/([^/]+)\/revoke$/;
  * other channel from the one its platform declared at login.
  */
 export function createAuthRequestListener(pool: Pool) {
-  return async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
 
     try {
@@ -178,7 +178,9 @@ export function createAuthRequestListener(pool: Pool) {
       const revokeMatch = url.pathname.match(REVOKE_SESSION_PATH);
       if (req.method === "POST" && revokeMatch) {
         const identity = await authenticateRequest(pool, req);
-        const [, sessionId] = revokeMatch;
+        // Group 1 of REVOKE_SESSION_PATH is not optional, so a successful match always
+        // captured it; a runtime check here would be unreachable code.
+        const sessionId = revokeMatch[1]!;
         const revoked = await withTransaction(pool, (client) => revokeUserSession(client, identity.user.id, sessionId));
         sendJson(res, 200, { revoked });
         return;
@@ -206,5 +208,22 @@ export function createAuthRequestListener(pool: Pool) {
       console.error(`Unexpected error in ${req.method} ${url.pathname}:`, err);
       sendJson(res, 500, { error: "Internal server error" });
     }
+  }
+
+  /**
+   * `http.createServer` discards its listener's return value, so an `async` listener turns any
+   * rejection escaping the try/catch above into an unhandled rejection — which Node answers by
+   * exiting the process. Keeping the boundary synchronous confines it to a 500 for the one
+   * request. Same shape as `aiUsageHandler.ts`.
+   */
+  return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
+    handleRequest(req, res).catch((err: unknown) => {
+      console.error("Unhandled error in the request listener:", err);
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+      sendJson(res, 500, { error: "Internal server error" });
+    });
   };
 }

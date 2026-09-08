@@ -29,12 +29,12 @@ function scriptedSession(...batches: AgentMessage[][]): {
     initialStates.push(options.initialState);
     return {
       async *messages() {
-        const batch = batches[call++];
+        const batch = batches[call++]!;
         for (const message of batch) yield message;
       },
       async *send(task: string) {
         tasks.push(task);
-        const batch = batches[call++];
+        const batch = batches[call++]!;
         for (const message of batch) yield message;
       },
     };
@@ -90,10 +90,10 @@ describe("SempConversation", () => {
       SEMPREC_PROJECT_ITEM_ID,
     ]);
     expect(rows).toHaveLength(1);
-    expect(rows[0].unit).toBe("session");
-    expect(rows[0].triggered_by).toBe("user");
-    expect(rows[0].parent_run_id).toBeNull();
-    expect(rows[0].status).toBe("running");
+    expect(rows[0]!.unit).toBe("session");
+    expect(rows[0]!.triggered_by).toBe("user");
+    expect(rows[0]!.parent_run_id).toBeNull();
+    expect(rows[0]!.status).toBe("running");
 
     conversation.clear();
   });
@@ -189,10 +189,10 @@ describe("SempConversation", () => {
 
     const { rows: events } = await pool.query<{ kind: string; payload: unknown }>(
       `SELECT kind, payload FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'compaction'`,
-      [runs[0].id],
+      [runs[0]!.id],
     );
     expect(events).toHaveLength(1);
-    expect(events[0].payload).toEqual([priorEntry]);
+    expect(events[0]!.payload).toEqual([priorEntry]);
 
     conversation.clear();
   });
@@ -220,8 +220,8 @@ describe("SempConversation", () => {
       [SEMPREC_PROJECT_ITEM_ID],
     );
     expect(afterTtl).toHaveLength(1);
-    expect(afterTtl[0].status).toBe("done");
-    expect(afterTtl[0].finished_at).not.toBeNull();
+    expect(afterTtl[0]!.status).toBe("done");
+    expect(afterTtl[0]!.finished_at).not.toBeNull();
 
     const second = await conversation.send("two");
     expect(second).toEqual({ ok: true, message: "second wake" });
@@ -255,7 +255,7 @@ describe("SempConversation", () => {
       SEMPREC_PROJECT_ITEM_ID,
     ]);
     expect(rows).toHaveLength(1);
-    expect(rows[0].status).toBe("running");
+    expect(rows[0]!.status).toBe("running");
 
     conversation.clear();
   });
@@ -285,7 +285,7 @@ describe("SempConversation", () => {
       SEMPREC_PROJECT_ITEM_ID,
     ]);
     expect(rows).toHaveLength(1);
-    expect(rows[0].status).toBe("done");
+    expect(rows[0]!.status).toBe("done");
 
     conversation.clear();
   });
@@ -352,8 +352,8 @@ describe("SempConversation", () => {
       [SEMPREC_PROJECT_ITEM_ID],
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0].status).toBe("error");
-    expect(rows[0].result).toBe("boom");
+    expect(rows[0]!.status).toBe("error");
+    expect(rows[0]!.result).toBe("boom");
 
     conversation.clear();
   });
@@ -385,8 +385,8 @@ describe("SempConversation", () => {
       [SEMPREC_PROJECT_ITEM_ID],
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0].status).toBe("error");
-    expect(rows[0].result).toBe("second turn boom");
+    expect(rows[0]!.status).toBe("error");
+    expect(rows[0]!.result).toBe("second turn boom");
 
     conversation.clear();
   });

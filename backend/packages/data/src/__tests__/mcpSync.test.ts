@@ -112,7 +112,7 @@ describe("MCP tool sync (issue #125)", () => {
       try {
         const item = await createMcpServerItem(contract.connectionConfig);
         await syncMcpServerTools(pool, item.id);
-        const [first] = await listMcpToolRegistrationsForServer(pool, item.id);
+        const first = (await listMcpToolRegistrationsForServer(pool, item.id))[0]!;
         await setMcpToolRiskClass(pool, first.id, "high");
         await setMcpToolRequiresApproval(pool, first.id, false);
 
@@ -125,7 +125,7 @@ describe("MCP tool sync (issue #125)", () => {
         ]);
         await syncMcpServerTools(pool, item.id);
 
-        const [resynced] = await listMcpToolRegistrationsForServer(pool, item.id);
+        const resynced = (await listMcpToolRegistrationsForServer(pool, item.id))[0]!;
         expect(resynced.id).toBe(first.id);
         expect(resynced.description).toBe("Updated description");
         expect(resynced.toolSchema).toEqual({ type: "object", properties: { q: { type: "string" } } });
@@ -141,15 +141,15 @@ describe("MCP tool sync (issue #125)", () => {
       try {
         const item = await createMcpServerItem(contract.connectionConfig);
         await syncMcpServerTools(pool, item.id);
-        const [existing] = await listMcpToolRegistrationsForServer(pool, item.id);
+        const existing = (await listMcpToolRegistrationsForServer(pool, item.id))[0]!;
 
         contract.setTools([]);
         await syncMcpServerTools(pool, item.id);
 
         const registrations = await listMcpToolRegistrationsForServer(pool, item.id);
         expect(registrations).toHaveLength(1);
-        expect(registrations[0].id).toBe(existing.id);
-        expect(registrations[0].active).toBe(false);
+        expect(registrations[0]!.id).toBe(existing.id);
+        expect(registrations[0]!.active).toBe(false);
       } finally {
         await contract.stop();
       }
@@ -249,20 +249,24 @@ describe("MCP tool sync (issue #125)", () => {
 });
 
 describe("listAllTools (pagination)", () => {
-  function fakeClient(
-    pages: { tools: { name: string; inputSchema: unknown }[]; nextCursor?: string }[],
-  ): McpClientHandle["client"] {
+  function fakeClient(pages: { tools: { name: string; inputSchema: unknown }[]; nextCursor?: string }[]): {
+    client: McpClientHandle["client"];
+    listTools: ReturnType<typeof vi.fn>;
+  } {
     const listTools = vi.fn(async (params?: { cursor?: string }) => {
       const index = params?.cursor ? Number(params.cursor) : 0;
       const page = pages[index];
       if (!page) throw new Error(`fakeClient: no page for cursor '${params?.cursor}'`);
       return page.nextCursor !== undefined ? { tools: page.tools, nextCursor: page.nextCursor } : { tools: page.tools };
     });
-    return { listTools } as unknown as McpClientHandle["client"];
+    // The mock is handed back alongside the client: reading `client.listTools` off a value
+    // typed as the SDK's `Client` yields an unbound method, which is exactly the mistake
+    // `unbound-method` exists to catch and not something to assert on.
+    return { client: { listTools } as unknown as McpClientHandle["client"], listTools };
   }
 
   it("follows nextCursor to collect tools across every page before returning", async () => {
-    const client = fakeClient([
+    const { client, listTools } = fakeClient([
       { tools: [{ name: "a", inputSchema: {} }], nextCursor: "1" },
       { tools: [{ name: "b", inputSchema: {} }], nextCursor: "2" },
       { tools: [{ name: "c", inputSchema: {} }] },
@@ -271,16 +275,16 @@ describe("listAllTools (pagination)", () => {
     const tools = await listAllTools(client);
 
     expect(tools.map((t) => t.name)).toEqual(["a", "b", "c"]);
-    expect(client.listTools).toHaveBeenCalledTimes(3);
+    expect(listTools).toHaveBeenCalledTimes(3);
   });
 
   it("stops after a single page when the response has no nextCursor", async () => {
-    const client = fakeClient([{ tools: [{ name: "only", inputSchema: {} }] }]);
+    const { client, listTools } = fakeClient([{ tools: [{ name: "only", inputSchema: {} }] }]);
 
     const tools = await listAllTools(client);
 
     expect(tools.map((t) => t.name)).toEqual(["only"]);
-    expect(client.listTools).toHaveBeenCalledTimes(1);
+    expect(listTools).toHaveBeenCalledTimes(1);
   });
 
   it("throws rather than looping forever against a server whose pagination never terminates", async () => {

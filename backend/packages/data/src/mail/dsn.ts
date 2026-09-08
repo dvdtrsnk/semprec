@@ -19,7 +19,7 @@ export function parseContentTypeHeader(
   value: string | undefined | null,
 ): { type: string; params: Record<string, string> } | null {
   if (!value) return null;
-  const [typePart, ...paramParts] = value.split(";").map((s) => s.trim());
+  const [typePart = "", ...paramParts] = value.split(";").map((s) => s.trim());
   const params: Record<string, string> = {};
   for (const part of paramParts) {
     const eq = part.indexOf("=");

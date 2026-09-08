@@ -20,7 +20,7 @@ async function createUser(): Promise<string> {
     `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
     [`${randomUUID()}@example.com`],
   );
-  return rows[0].id;
+  return rows[0]!.id;
 }
 
 async function createPendingRequest(): Promise<string> {

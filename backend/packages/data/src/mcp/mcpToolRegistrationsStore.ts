@@ -1,4 +1,4 @@
-import type { Queryable } from "../db/pool.js";
+import { requireSingleRow, type Queryable } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 
 /**
@@ -99,7 +99,7 @@ export async function upsertMcpToolRegistration(
       input.active ?? true,
     ],
   );
-  return rowToRegistration(rows[0]);
+  return rowToRegistration(requireSingleRow(rows, "mcp_tool_registrations upsert RETURNING"));
 }
 
 export async function getMcpToolRegistration(client: Queryable, id: string): Promise<McpToolRegistration | null> {

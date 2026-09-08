@@ -18,7 +18,7 @@ function sessionCookieFrom(res: Response): string {
   if (!setCookie) throw new Error("expected a Set-Cookie header");
   const match = setCookie.match(new RegExp(`${SESSION_COOKIE_NAME}=([^;]*)`));
   if (!match) throw new Error(`expected a ${SESSION_COOKIE_NAME} cookie`);
-  return match[1];
+  return match[1]!;
 }
 
 describe("createAuthRequestListener", () => {

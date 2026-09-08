@@ -71,7 +71,7 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
       );
       const edges = await relationsStore.listRelationsForItem(client, relationDefinition!.id, itemId);
       if (edges.length === 0) return null;
-      const proposalItemId = relationsStore.otherSide(edges[0], itemId);
+      const proposalItemId = relationsStore.otherSide(edges[0]!, itemId);
       return itemsStore.getItemById(client, proposalsId, proposalItemId);
     });
   }
@@ -103,7 +103,7 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
       const journalDayProperty = await propertiesStore.getPropertyByKey(client, inboxId, "journalDay");
       const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, journalDayProperty!.id);
       const edges = await relationsStore.listRelationsForItem(client, relationDefinition!.id, itemId);
-      return relationsStore.otherSide(edges[0], itemId);
+      return relationsStore.otherSide(edges[0]!, itemId);
     });
   }
 
@@ -194,8 +194,8 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     await drainQueue();
 
     const items = await computedInboxItems(dayId);
-    expect(items![0].type).toMatchObject({ id: type.id, name: "Task", emoji: "☑️" });
-    expect(items![0].status).toBe("proposed");
+    expect(items![0]!.type).toMatchObject({ id: type.id, name: "Task", emoji: "☑️" });
+    expect(items![0]!.status).toBe("proposed");
   });
 
   it("updates the cached status after a proposal is confirmed", async () => {
@@ -219,7 +219,7 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     await drainQueue();
 
     const items = await computedInboxItems(dayId);
-    expect(items![0].status).toBe("confirmed");
+    expect(items![0]!.status).toBe("confirmed");
   });
 
   it("updates the cached status after a proposal is rejected", async () => {
@@ -243,7 +243,7 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     await drainQueue();
 
     const items = await computedInboxItems(dayId);
-    expect(items![0].status).toBe("rejected");
+    expect(items![0]!.status).toBe("rejected");
   });
 
   it("updates the cached status after a proposal is revised", async () => {
@@ -256,7 +256,7 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     const proposal = (await findProposalForItem(item.id))!;
     expect(proposal.properties.status).toBe("needsClarification");
     await drainQueue();
-    expect((await computedInboxItems(dayId))![0].status).toBe("needsClarification");
+    expect((await computedInboxItems(dayId))![0]!.status).toBe("needsClarification");
 
     // The Inbox item itself stands in for a "page" target — revise only needs an existing item id.
     await withTransaction(pool, (client) =>
@@ -270,7 +270,7 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     await drainQueue();
 
     const items = await computedInboxItems(dayId);
-    expect(items![0].status).toBe("proposed");
+    expect(items![0]!.status).toBe("proposed");
   });
 
   it("drops a deleted Inbox item from the cached day list", async () => {
