@@ -109,7 +109,7 @@ describe("itemRelationFilter partition pruning (issue #262)", () => {
       `EXPLAIN (ANALYZE, FORMAT JSON) ${ITEM_RELATION_FILTER_QUERY}`,
       [folderProperty.id, "specialPurpose", emailItemId],
     );
-    const plan = explainRows[0]["QUERY PLAN"][0].Plan;
+    const plan = explainRows[0]!["QUERY PLAN"][0]!.Plan;
     const relationNames = new Set<string>();
     collectExecutedRelationNames(plan, relationNames);
 

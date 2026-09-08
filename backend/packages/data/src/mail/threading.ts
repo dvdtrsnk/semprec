@@ -47,15 +47,19 @@ export async function resolveThreadId(client: Queryable, input: ThreadResolution
   );
   for (const row of descendantRows) if (row.thread_id) foundThreadIds.add(row.thread_id);
 
-  if (foundThreadIds.size === 0) {
+  // No existing thread to join, so this message starts one. Expressed as the destructuring's
+  // empty case below rather than a separate `size === 0` check, so there is exactly one
+  // statement of the condition.
+  //
+  // Otherwise, more than one distinct thread may have been found (e.g. a message that bridges
+  // two previously separate dummy-container threads): merge them all into the first — an
+  // arbitrary but stable choice, since which one "wins" has no product meaning beyond
+  // "one thread."
+  const [target, ...rest] = [...foundThreadIds];
+  if (target === undefined) {
     const thread = await createMailThread(client, input.subjectHint);
     return thread.id;
   }
-
-  // More than one distinct thread found (e.g. a message that bridges two previously
-  // separate dummy-container threads): merge them all into the first — an arbitrary but
-  // stable choice, since which one "wins" has no product meaning beyond "one thread."
-  const [target, ...rest] = [...foundThreadIds];
   for (const other of rest) {
     await reassignThread(client, other, target);
   }

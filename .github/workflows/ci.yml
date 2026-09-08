@@ -29,10 +29,8 @@ jobs:
         with:
           node-version: 22
 
-      # Fast tier only: type checking for the backend workspace plus the web
-      # app's own build and unit tests. The backend integration suite needs a
-      # PostgreSQL instance and takes ~10 minutes serially, so it is gated
-      # separately once #250 lands its ephemeral-PostgreSQL tier.
+      # Backend static checks plus the unit tier; the database-backed tiers are
+      # added to this same job further down.
       - name: Backend — install
         working-directory: backend
         run: pnpm install --frozen-lockfile
@@ -70,6 +68,23 @@ jobs:
       - name: Backend — check migration numbering
         working-directory: backend
         run: pnpm --filter @semprec/data run check-migration-numbering
+
+      # Import-boundary rules (dependency-cruiser.rules.json). Cheap enough (~2s) that
+      # there is no reason for it to be a script nobody runs.
+      - name: Backend — module boundaries
+        working-directory: backend
+        run: pnpm run check:boundaries
+
+      # Both tiers provision their own ephemeral PostgreSQL through
+      # `packages/data/src/testSupport/globalSetup.ts` — no service container needed.
+      # Measured at ~3 minutes together, well inside this job's 20-minute budget.
+      - name: Backend — integration tests
+        working-directory: backend
+        run: pnpm run test:integration
+
+      - name: Backend — e2e tests
+        working-directory: backend
+        run: pnpm run test:e2e
 
       - name: Web — install
         working-directory: web

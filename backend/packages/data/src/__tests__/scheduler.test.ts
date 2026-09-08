@@ -253,9 +253,9 @@ describe("scheduler", () => {
 
     const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
     expect(runs).toHaveLength(1);
-    expect(runs[0].status).toBe("done");
-    expect(runs[0].result).toBe("handled: process the inbox");
-    expect(runs[0].triggeredBy).toBe("heartbeat");
+    expect(runs[0]!.status).toBe("done");
+    expect(runs[0]!.result).toBe("handled: process the inbox");
+    expect(runs[0]!.triggeredBy).toBe("heartbeat");
   });
 
   it("heartbeat.trigger's manual fire attributes the child run's parent_run_id to the invoking run, without touching next_fire_at/last_fired_at", async () => {
@@ -285,8 +285,8 @@ describe("scheduler", () => {
 
     const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
     expect(runs).toHaveLength(1);
-    expect(runs[0].triggeredBy).toBe("heartbeat");
-    expect(runs[0].parentRunId).toBe(invokingRun.id);
+    expect(runs[0]!.triggeredBy).toBe("heartbeat");
+    expect(runs[0]!.parentRunId).toBe(invokingRun.id);
 
     const after = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
     expect(after!.nextFireAt).toBe(before!.nextFireAt);
@@ -465,9 +465,9 @@ describe("scheduler", () => {
       [heartbeat.id],
     );
     expect(cancelledRows).toHaveLength(1);
-    expect(cancelledRows[0].status).toBe("cancelled");
-    expect(cancelledRows[0].generation).toBe(1);
-    const occurrenceId = cancelledRows[0].id;
+    expect(cancelledRows[0]!.status).toBe("cancelled");
+    expect(cancelledRows[0]!.generation).toBe(1);
+    const occurrenceId = cancelledRows[0]!.id;
 
     // Re-enable and force the recomputed schedule back onto the exact same timestamp the
     // cancelled occurrence was for — simulating edit-away/edit-back (or disable/re-enable)
@@ -483,9 +483,9 @@ describe("scheduler", () => {
       [heartbeat.id],
     );
     expect(reactivatedRows).toHaveLength(1); // the same row was reactivated, not a second occurrence
-    expect(reactivatedRows[0].id).toBe(occurrenceId);
-    expect(reactivatedRows[0].generation).toBe(2);
-    expect(reactivatedRows[0].status).toBe("queued");
+    expect(reactivatedRows[0]!.id).toBe(occurrenceId);
+    expect(reactivatedRows[0]!.generation).toBe(2);
+    expect(reactivatedRows[0]!.status).toBe("queued");
 
     // A stale (generation 1) delivery arriving after the reactivation must still be a no-op: it
     // can never consume or cancel the reactivated occurrence.
@@ -495,7 +495,7 @@ describe("scheduler", () => {
     const stillQueued = await pool.query<{ status: string }>("SELECT status FROM heartbeat_occurrences WHERE id = $1", [
       occurrenceId,
     ]);
-    expect(stillQueued.rows[0].status).toBe("queued");
+    expect(stillQueued.rows[0]!.status).toBe("queued");
 
     // The new generation's job (the only one actually enqueued by the reactivating sweep) fires
     // the current, valid rule exactly once.
@@ -506,7 +506,7 @@ describe("scheduler", () => {
       "SELECT status FROM heartbeat_occurrences WHERE id = $1",
       [occurrenceId],
     );
-    expect(finalRows[0].status).toBe("succeeded");
+    expect(finalRows[0]!.status).toBe("succeeded");
   });
 
   it("replaces a queued occurrence's stale rule_snapshot in place (preserving its id/status) when a re-edit recomputes the schedule back onto the same still-pending timestamp, and the new generation fires exactly once", async () => {
@@ -537,10 +537,10 @@ describe("scheduler", () => {
       heartbeat.id,
     ]);
     expect(queuedRows).toHaveLength(1);
-    expect(queuedRows[0].status).toBe("queued");
-    expect(queuedRows[0].generation).toBe(1);
-    expect(queuedRows[0].rule_snapshot).toEqual({ kind: "dailyTime", at: "09:00" });
-    const occurrenceId = queuedRows[0].id;
+    expect(queuedRows[0]!.status).toBe("queued");
+    expect(queuedRows[0]!.generation).toBe(1);
+    expect(queuedRows[0]!.rule_snapshot).toEqual({ kind: "dailyTime", at: "09:00" });
+    const occurrenceId = queuedRows[0]!.id;
 
     // Edit the rule while the occurrence is still queued (handler hasn't started), then force the
     // recomputed schedule back onto the same still-pending timestamp — a narrow race, but one the
@@ -562,10 +562,10 @@ describe("scheduler", () => {
       heartbeat.id,
     ]);
     expect(replacedRows).toHaveLength(1); // preserved occurrence id/status, not a second row
-    expect(replacedRows[0].id).toBe(occurrenceId);
-    expect(replacedRows[0].status).toBe("queued");
-    expect(replacedRows[0].generation).toBe(2);
-    expect(replacedRows[0].rule_snapshot).toEqual({ kind: "dailyTime", at: "10:30" });
+    expect(replacedRows[0]!.id).toBe(occurrenceId);
+    expect(replacedRows[0]!.status).toBe("queued");
+    expect(replacedRows[0]!.generation).toBe(2);
+    expect(replacedRows[0]!.rule_snapshot).toEqual({ kind: "dailyTime", at: "10:30" });
 
     // A concurrently starting handler for the stale (generation 1) job sees the fresh snapshot
     // once it acquires the lock, and simply proceeds as a first attempt for the current rule.
@@ -576,7 +576,7 @@ describe("scheduler", () => {
       "SELECT status FROM heartbeat_occurrences WHERE id = $1",
       [occurrenceId],
     );
-    expect(finalRows[0].status).toBe("succeeded");
+    expect(finalRows[0]!.status).toBe("succeeded");
   });
 
   it("distinct scheduled occurrences for the same heartbeat get distinct job keys", async () => {

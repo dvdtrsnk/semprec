@@ -15,11 +15,11 @@ function scriptedSession(...batches: AgentMessage[][]): {
   let call = 0;
   const createAgentSession: CreateAgentSession = (): AgentSession => ({
     async *messages() {
-      const batch = batches[call++];
+      const batch = batches[call++]!;
       for (const message of batch) yield message;
     },
     async *send() {
-      const batch = batches[call++];
+      const batch = batches[call++]!;
       for (const message of batch) yield message;
     },
   });
@@ -82,10 +82,10 @@ describe("DelegationRegistry", () => {
       [targetProjectItemId],
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0].unit).toBe("session");
-    expect(rows[0].triggered_by).toBe("supervisor");
-    expect(rows[0].parent_run_id).toBe(supervisorRunId);
-    expect(rows[0].status).toBe("running");
+    expect(rows[0]!.unit).toBe("session");
+    expect(rows[0]!.triggered_by).toBe("supervisor");
+    expect(rows[0]!.parent_run_id).toBe(supervisorRunId);
+    expect(rows[0]!.status).toBe("running");
 
     registry.clear();
   });
@@ -234,8 +234,8 @@ describe("DelegationRegistry", () => {
       [targetProjectItemId],
     );
     expect(afterTtl).toHaveLength(1);
-    expect(afterTtl[0].status).toBe("done");
-    expect(afterTtl[0].finished_at).not.toBeNull();
+    expect(afterTtl[0]!.status).toBe("done");
+    expect(afterTtl[0]!.finished_at).not.toBeNull();
 
     const { createAgentSession: secondSession } = scriptedSession([
       { kind: "turn_start" },
@@ -277,7 +277,7 @@ describe("DelegationRegistry", () => {
       targetProjectItemId,
     ]);
     expect(rows).toHaveLength(1);
-    expect(rows[0].status).toBe("running");
+    expect(rows[0]!.status).toBe("running");
 
     registry.clear();
   });
@@ -316,10 +316,10 @@ describe("DelegationRegistry", () => {
 
     const { rows: events } = await pool.query<{ kind: string; payload: unknown }>(
       `SELECT kind, payload FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'compaction'`,
-      [runs[0].id],
+      [runs[0]!.id],
     );
     expect(events).toHaveLength(1);
-    expect(events[0].payload).toEqual([priorEntry]);
+    expect(events[0]!.payload).toEqual([priorEntry]);
 
     registry.clear();
   });
@@ -368,8 +368,8 @@ describe("DelegationRegistry", () => {
       [targetProjectItemId],
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0].status).toBe("error");
-    expect(rows[0].result).toBe("boom");
+    expect(rows[0]!.status).toBe("error");
+    expect(rows[0]!.result).toBe("boom");
 
     // The failed session must not be left registered for reuse — a retry creates a fresh one.
     const { createAgentSession: retrySession } = scriptedSession([
@@ -419,8 +419,8 @@ describe("DelegationRegistry", () => {
       [targetProjectItemId],
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0].status).toBe("error");
-    expect(rows[0].result).toBe("second turn boom");
+    expect(rows[0]!.status).toBe("error");
+    expect(rows[0]!.result).toBe("second turn boom");
 
     registry.clear();
   });
@@ -450,8 +450,8 @@ describe("DelegationRegistry", () => {
       [targetProjectItemId],
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0].status).toBe("error");
-    expect(rows[0].result).toMatch(/does not support continuation/);
+    expect(rows[0]!.status).toBe("error");
+    expect(rows[0]!.result).toMatch(/does not support continuation/);
 
     // The entry must be gone, not left busy=false-but-broken — a fresh delegation succeeds.
     const { createAgentSession: retrySession } = scriptedSession([

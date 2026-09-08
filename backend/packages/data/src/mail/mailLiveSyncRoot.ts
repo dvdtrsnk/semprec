@@ -104,6 +104,10 @@ export function createMailLiveSyncRoot(
   // schedule an interval anyway. Comparing the generation captured at entry against the current
   // one after the await catches that — a `stop()` in between means they no longer match.
   let generation = 0;
+
+  // The discovery pass most recently started by the interval, so `stop()` can wait for it to
+  // finish. Never rejects — the interval callback attaches its own handler before storing it.
+  let inFlightDiscovery: Promise<unknown> = Promise.resolve();
   // Guards against a second `start()` re-running the initial reconcile and scheduling a second
   // interval. Set synchronously at the top of `start()` (no `await` in between the check and the
   // set), so two un-awaited `start()` calls can't both observe it unset.
@@ -202,7 +206,12 @@ export function createMailLiveSyncRoot(
       // one step over), so skip it once superseded.
       if (generation !== myGeneration) return;
       timer = setInterval(() => {
-        reconcileOnce().catch((err) => options.onLifecycleError?.("*", "discover", err));
+        // Kept so `stop()` can await it: `clearInterval` cancels the *next* tick but has no
+        // effect on a pass already running, and a discovery pass holds a pooled connection and
+        // writes `mail_account_sync_state`. Without this, `stop()` resolves while that write is
+        // still in flight — the caller believes the root is idle, then a shutdown closes the
+        // pool underneath it, and a test's `resetDatabase()` TRUNCATE deadlocks against it.
+        inFlightDiscovery = reconcileOnce().catch((err) => options.onLifecycleError?.("*", "discover", err));
       }, discoveryIntervalMs);
       timer.unref?.();
     },
@@ -211,6 +220,7 @@ export function createMailLiveSyncRoot(
       started = false;
       if (timer) clearInterval(timer);
       timer = undefined;
+      await inFlightDiscovery;
       await Promise.all([...hosted].map(([mailboxItemId, entry]) => stopHosted(mailboxItemId, entry)));
     },
   };

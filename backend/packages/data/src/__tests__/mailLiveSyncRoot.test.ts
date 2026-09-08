@@ -66,7 +66,7 @@ function countingConnectPool(target: Pool): { pool: Pool; connectCount: () => nu
       return Reflect.get(t, prop, receiver);
     },
   });
-  return { pool: proxy as unknown as Pool, connectCount: () => count };
+  return { pool: proxy, connectCount: () => count };
 }
 
 /**
@@ -80,7 +80,7 @@ function failingSeedPool(target: Pool, failItemId: string): Pool {
     get(t, prop, receiver) {
       if (prop === "connect") {
         return async (...args: unknown[]) => {
-          const client = (await (t.connect as (...a: unknown[]) => Promise<PoolClient>)(...args)) as PoolClient;
+          const client = await (t.connect as (...a: unknown[]) => Promise<PoolClient>)(...args);
           return new Proxy(client, {
             get(clientTarget, clientProp, clientReceiver) {
               if (clientProp === "query") {
@@ -108,7 +108,7 @@ function failingSeedPool(target: Pool, failItemId: string): Pool {
       return Reflect.get(t, prop, receiver);
     },
   });
-  return proxy as unknown as Pool;
+  return proxy;
 }
 
 describe("mail live-sync composition root (issue #195)", () => {
@@ -374,6 +374,46 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     expect(connectCount()).toBe(afterStop);
   });
 
+  it("stop() waits for a discovery pass already in flight rather than returning while it still queries", async () => {
+    const mailboxesId = await databaseIdFor("mailboxes");
+    await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }),
+    );
+
+    let releaseIntervalPass: () => void = () => {};
+    let intervalPassStarted = false;
+    const gate = new Promise<void>((resolve) => (releaseIntervalPass = resolve));
+    const { factory } = recordingFactory(undefined, () => ({
+      start: async () => {
+        // Only the interval-driven pass is gated; start()'s own initial reconcile must not be,
+        // or start() itself would never resolve.
+        if (!intervalPassStarted) return;
+        await gate;
+      },
+    }));
+
+    vi.useFakeTimers();
+    const root = createMailLiveSyncRoot(pool, mailboxesId, factory, { discoveryIntervalMs: 1000 });
+    await root.start();
+
+    intervalPassStarted = true;
+    await vi.advanceTimersByTimeAsync(1000);
+
+    let stopped = false;
+    const stopping = root.stop().then(() => {
+      stopped = true;
+    });
+    // Drain the microtask queue well past the handful of awaits stop() needs for its own
+    // teardown. clearInterval cancels the next tick but not the pass already running, so as
+    // long as that pass is gated stop() must not resolve no matter how long we yield for.
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    releaseIntervalPass();
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
   it("discovers a page of accounts in one transaction, isolating one account's seeding failure via a savepoint", async () => {
     const mailboxesId = await databaseIdFor("mailboxes");
     const a = await withTransaction(pool, (client) =>
@@ -435,7 +475,7 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
         }
         return Reflect.get(t, prop, receiver);
       },
-    }) as unknown as Pool;
+    });
 
     const { factory, byAccount } = recordingFactory();
     const root = createMailLiveSyncRoot(flakyPool, mailboxesId, factory);

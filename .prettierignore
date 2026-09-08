@@ -5,3 +5,10 @@ coverage/
 pnpm-lock.yaml
 apple/
 .claude/
+
+# The code-review bot parses these as literal glob patterns, but Prettier formats them as
+# Markdown: it escapes `*` to `\*` and reads `*...*` as emphasis, rewriting it to `_..._`.
+# That silently emptied every backend and web pattern in commit 5103dbe, and the bot skipped
+# every file on both platforms for 14 merged pull requests before anyone noticed. `apple/`
+# escaped only because it is ignored above.
+review-rules/

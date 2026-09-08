@@ -44,9 +44,9 @@ describe("permission manifest and drift check", () => {
 
     const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, projectItem.id));
     expect(manifest.databases).toHaveLength(1);
-    expect(manifest.databases[0].databaseId).toBe(owned.id);
-    expect(manifest.databases[0].writable).toBe(true);
-    expect(manifest.databases[0].properties.map((p) => p.key).sort()).toEqual(["note", "rating"]);
+    expect(manifest.databases[0]!.databaseId).toBe(owned.id);
+    expect(manifest.databases[0]!.writable).toBe(true);
+    expect(manifest.databases[0]!.properties.map((p) => p.key).sort()).toEqual(["note", "rating"]);
   });
 
   it("scopes Semprec's own grant to Processing proposals only, per issue #105's grant separation", async () => {

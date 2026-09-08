@@ -55,7 +55,7 @@ describe("repairInterruptedRuns", () => {
     }>(`SELECT kind, payload FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id ASC`, [run.id]);
 
     expect(rows.map((r) => r.kind)).toEqual(["turn_start", "tool_use", "tool_result"]);
-    const synthetic = rows[2].payload;
+    const synthetic = rows[2]!.payload;
     expect(synthetic.tool).toBe("search");
     expect(synthetic.toolCallId).toBe("call-1");
     expect(synthetic.error).toBe(true);
@@ -88,7 +88,7 @@ describe("repairInterruptedRuns", () => {
       [run.id],
     );
     expect(rows.map((r) => r.kind)).toEqual(["tool_use", "tool_result"]);
-    expect(rows[1].payload.error).toBe(true);
+    expect(rows[1]!.payload.error).toBe(true);
   });
 
   it("does not append a synthetic tool_result when the run has no events at all", async () => {

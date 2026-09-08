@@ -142,7 +142,7 @@ describe("pi runtime contract", () => {
     // `@ts-expect-error`.
     function assertCompactRequiresPreparation() {
       // @ts-expect-error compact() requires a CompactionPreparation, not a bare AgentMessage[]
-      lowLevelCompact(messages, {} as never, {} as never, undefined, undefined, undefined, undefined, {} as never);
+      void lowLevelCompact(messages, {} as never, {} as never, undefined, undefined, undefined, undefined, {} as never);
     }
     void assertCompactRequiresPreparation;
   });

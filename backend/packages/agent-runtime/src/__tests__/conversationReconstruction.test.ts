@@ -116,9 +116,9 @@ describe("reconstructConversationHistory", () => {
     // seq is monotonic across both runs, and every entry after the first chains to the one before it.
     expect(result?.entries.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4, 5]);
     for (let i = 1; i < (result?.entries.length ?? 0); i++) {
-      expect(result?.entries[i].parentId).toBe(result?.entries[i - 1].id);
+      expect(result?.entries[i]!.parentId).toBe(result?.entries[i - 1]!.id);
     }
-    expect(result?.entries[0].parentId).toBeNull();
+    expect(result?.entries[0]!.parentId).toBeNull();
   });
 
   it("excludes run_status bookkeeping events from the reconstructed Entry[] tree", async () => {
@@ -139,7 +139,7 @@ describe("reconstructConversationHistory", () => {
     );
 
     expect(result?.entries).toHaveLength(1);
-    expect((result?.entries[0].message as AgentMessage & { text: string }).text).toBe("hi");
+    expect((result?.entries[0]!.message as AgentMessage & { text: string }).text).toBe("hi");
   });
 
   it("preserves tool_use/tool_result pairing and ordering through reconstruction", async () => {
@@ -159,7 +159,8 @@ describe("reconstructConversationHistory", () => {
     );
 
     expect(result?.entries.map((e) => e.message.kind)).toEqual(["tool_use", "tool_result"]);
-    const [use, res] = result!.entries;
+    const use = result!.entries[0]!;
+    const res = result!.entries[1]!;
     expect((use.message as { toolCallId?: string }).toolCallId).toBe("call_1");
     expect((res.message as { toolCallId?: string }).toolCallId).toBe("call_1");
     expect(res.parentId).toBe(use.id);
@@ -183,7 +184,7 @@ describe("reconstructConversationHistory", () => {
 
     expect(result?.compacted).toBe(true);
     expect(result?.entries).toHaveLength(1);
-    expect((result?.entries[0].message as { text?: string }).text).toBe("summary of first/second");
+    expect((result?.entries[0]!.message as { text?: string }).text).toBe("summary of first/second");
   });
 
   it("resumes from a persisted compaction checkpoint instead of re-walking the raw history it replaced", async () => {
@@ -222,7 +223,7 @@ describe("reconstructConversationHistory", () => {
     // came after it in runB survive the walk.
     const texts = result?.entries.map((e) => (e.message as { text?: string }).text);
     expect(texts).toEqual(["compacted summary", "third"]);
-    expect(result?.entries[1].parentId).toBe("checkpoint");
+    expect(result?.entries[1]!.parentId).toBe("checkpoint");
   });
 
   it("restarting the same walk twice over unchanged agent_run_events produces an identical Entry[] tree", async () => {

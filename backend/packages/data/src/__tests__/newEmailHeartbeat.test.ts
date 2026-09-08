@@ -101,7 +101,7 @@ describe("newEmail heartbeat (issue #99)", () => {
         filesDatabaseId: filesId,
         folderRelationPropertyId: folderProperty.id,
         attachmentsRelationPropertyId: attachmentsProperty.id,
-        folderItemId: folders[0].id,
+        folderItemId: folders[0]!.id,
         messageId,
         subject: "Hello",
         envelope: { from: { address: "alice@example.com", name: "Alice" }, to: [{ address: "bob@example.com" }] },

@@ -43,12 +43,17 @@ export function parseHeaderBlock(headerBuffer: Buffer | undefined): Array<{ name
   const lines = headerBuffer.toString("utf8").replace(/\r\n/g, "\n").split("\n");
   const headers: Array<{ name: string; value: string }> = [];
   for (const line of lines) {
-    if (/^[ \t]/.test(line) && headers.length > 0) {
-      headers[headers.length - 1].value += ` ${line.trim()}`;
+    // A leading space or tab continues the previous header's value (RFC 5322 folding).
+    const previous = headers[headers.length - 1];
+    if (/^[ \t]/.test(line) && previous !== undefined) {
+      previous.value += ` ${line.trim()}`;
       continue;
     }
     const match = line.match(/^([^:\s]+):\s*(.*)$/);
-    if (match) headers.push({ name: match[1], value: match[2] });
+    if (match) {
+      const [, name = "", value = ""] = match;
+      headers.push({ name, value });
+    }
   }
   return headers;
 }

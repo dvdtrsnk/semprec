@@ -120,8 +120,8 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
     const jobs = await pendingTickJobs();
     expect(jobs).toHaveLength(1);
-    expect(jobs[0].payload.itemId).toBe(item.id);
-    expect(jobs[0].key.endsWith(`:${item.id}`)).toBe(true);
+    expect(jobs[0]!.payload.itemId).toBe(item.id);
+    expect(jobs[0]!.key.endsWith(`:${item.id}`)).toBe(true);
   });
 
   it("update and delete each enqueue their own item-scoped job, never colliding with create's", async () => {
@@ -216,8 +216,8 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
     const jobs = await pendingTickJobs();
     expect(jobs).toHaveLength(1);
-    expect(jobs[0].payload.itemId).toBe(item.id);
-    expect(jobs[0].queue_name).toBe(SEMPREC_TICK_QUEUE_NAME);
+    expect(jobs[0]!.payload.itemId).toBe(item.id);
+    expect(jobs[0]!.queue_name).toBe(SEMPREC_TICK_QUEUE_NAME);
   });
 
   it("with no queue affinity supplied, the job runs unaffinitized (queue_name is null)", async () => {
@@ -227,7 +227,7 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
     const jobs = await pendingTickJobs();
     expect(jobs).toHaveLength(1);
-    expect(jobs[0].queue_name).toBeNull();
+    expect(jobs[0]!.queue_name).toBeNull();
   });
 
   it("rejects a misconfigured heartbeat instead of silently no-op'ing", async () => {

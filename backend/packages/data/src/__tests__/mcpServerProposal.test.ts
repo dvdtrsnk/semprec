@@ -87,7 +87,7 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
       `SELECT i.id FROM items i WHERE i.database_id = $1 AND i.properties->>'status' = 'needsClarification' ORDER BY i.updated_at DESC LIMIT 1`,
       [proposalsId],
     );
-    const proposalId = rows[0].id;
+    const proposalId = rows[0]!.id;
 
     return withTransaction(pool, (client) =>
       reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposalId, {
@@ -252,7 +252,7 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
     );
     const tasksId = await databaseIdFor("tasks");
     const proposal = await withTransaction(pool, (client) =>
-      reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, rows[0].id, {
+      reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, rows[0]!.id, {
         message: "File under Tasks",
         entityKind: "database",
         target: tasksId,

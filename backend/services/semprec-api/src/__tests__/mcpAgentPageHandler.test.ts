@@ -107,7 +107,7 @@ describe("createMcpAgentPageRequestListener", () => {
       headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
     });
     const body = (await getRes.json()) as { rows: Array<{ granted: boolean }> };
-    expect(body.rows[0].granted).toBe(true);
+    expect(body.rows[0]!.granted).toBe(true);
   });
 
   it("rejects a grant PATCH with a non-boolean 'granted'", async () => {

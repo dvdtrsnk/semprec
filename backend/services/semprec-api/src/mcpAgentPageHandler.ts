@@ -71,7 +71,7 @@ const MCP_TOOL_REGISTRATION_PATH = /^\/api\/mcp-tool-registrations\/([^/]+)$/;
  * on `AiUsageHandlerOptions.authToken` for why this isn't a real session/credential yet.
  */
 export function createMcpAgentPageRequestListener(pool: Pool, options: McpAgentPageHandlerOptions) {
-  return async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!isAuthorized(req, options.authToken)) {
       sendJson(res, 401, { error: "Unauthorized" });
       return;
@@ -82,7 +82,10 @@ export function createMcpAgentPageRequestListener(pool: Pool, options: McpAgentP
     try {
       const grantsMatch = url.pathname.match(MCP_GRANTS_PATH);
       if (grantsMatch) {
-        const [, projectItemId, mcpToolRegistrationId] = grantsMatch;
+        // Group 1 of MCP_GRANTS_PATH is mandatory; group 2 is genuinely optional and the
+        // branches below distinguish on it, so it keeps its `string | undefined` type.
+        const projectItemId = grantsMatch[1]!;
+        const mcpToolRegistrationId = grantsMatch[2];
 
         if (req.method === "GET" && !mcpToolRegistrationId) {
           const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, projectItemId));
@@ -113,7 +116,8 @@ export function createMcpAgentPageRequestListener(pool: Pool, options: McpAgentP
 
       const registrationMatch = url.pathname.match(MCP_TOOL_REGISTRATION_PATH);
       if (registrationMatch && req.method === "PATCH") {
-        const [, mcpToolRegistrationId] = registrationMatch;
+        // Group 1 of MCP_TOOL_REGISTRATION_PATH is not optional — see above.
+        const mcpToolRegistrationId = registrationMatch[1]!;
         const body = (await readJsonBody(req)) as { riskClass?: unknown; requiresApproval?: unknown };
         if (body.riskClass !== undefined && typeof body.riskClass !== "string") {
           sendJson(res, 400, { error: "'riskClass' must be a string" });
@@ -147,5 +151,22 @@ export function createMcpAgentPageRequestListener(pool: Pool, options: McpAgentP
       console.error(`Unexpected error in ${req.method} ${url.pathname}:`, err);
       sendJson(res, 500, { error: "Internal server error" });
     }
+  }
+
+  /**
+   * `http.createServer` discards its listener's return value, so an `async` listener turns any
+   * rejection escaping the try/catch above into an unhandled rejection — which Node answers by
+   * exiting the process. Keeping the boundary synchronous confines it to a 500 for the one
+   * request. Same shape as `aiUsageHandler.ts`.
+   */
+  return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
+    handleRequest(req, res).catch((err: unknown) => {
+      console.error("Unhandled error in the request listener:", err);
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+      sendJson(res, 500, { error: "Internal server error" });
+    });
   };
 }

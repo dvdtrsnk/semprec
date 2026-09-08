@@ -63,7 +63,7 @@ describe("0019_settings_ai_budgets migration", () => {
         `SELECT schema_locked FROM databases WHERE id = $1`,
         [await getSystemSettingsDatabaseId(client2)],
       );
-      expect(dbRows[0].schema_locked).toBe(true);
+      expect(dbRows[0]!.schema_locked).toBe(true);
     } finally {
       client2.release();
     }

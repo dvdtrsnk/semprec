@@ -1,12 +1,12 @@
 # Include
 
-packages/**/\*.ts
-modules/**/_.ts
-services/\**/_.ts
-**/_.sql
-\**/_.json
-**/_.yml
-\**/_.yaml
+packages/**/*.ts
+modules/**/*.ts
+services/**/*.ts
+**/*.sql
+**/*.json
+**/*.yml
+**/*.yaml
 
 # Exclude
 

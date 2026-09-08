@@ -29,7 +29,7 @@ describe("agentRunEventsStore", () => {
 
     expect(listed.map((e) => e.id)).toEqual(inserted.map((e) => e.id));
     expect(listed.map((e) => e.kind)).toEqual(["turn_start", "message", "turn_end"]);
-    expect(listed[1].payload).toEqual({ kind: "message", text: "hi" });
+    expect(listed[1]!.payload).toEqual({ kind: "message", text: "hi" });
     expect(listed.every((e) => e.agentRunId === run.id)).toBe(true);
     expect(listed.every((e) => typeof e.at === "string")).toBe(true);
 
@@ -50,6 +50,6 @@ describe("agentRunEventsStore", () => {
 
     const listedA = await listAgentRunEvents(pool, runA.id);
     expect(listedA).toHaveLength(1);
-    expect(listedA[0].agentRunId).toBe(runA.id);
+    expect(listedA[0]!.agentRunId).toBe(runA.id);
   });
 });

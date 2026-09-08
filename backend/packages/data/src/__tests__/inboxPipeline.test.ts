@@ -215,7 +215,7 @@ describe("Inbox pipeline databases (issue #101)", () => {
 
     const edges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, item.id));
     expect(edges).toHaveLength(1);
-    const journalDayItemId = [edges[0].itemA, edges[0].itemB].find((id) => id !== item.id)!;
+    const journalDayItemId = [edges[0]!.itemA, edges[0]!.itemB].find((id) => id !== item.id)!;
 
     const { rows } = await pool.query("SELECT properties FROM items WHERE id = $1", [journalDayItemId]);
     expect(rows[0].properties).toMatchObject({ type: "day", period: "2026-08-28" });
@@ -233,7 +233,7 @@ describe("Inbox pipeline databases (issue #101)", () => {
     const secondEdges = await withTransaction(pool, (client) =>
       relationsStore.listAllRelationsForItem(client, secondItem.id),
     );
-    const secondJournalDayItemId = [secondEdges[0].itemA, secondEdges[0].itemB].find((id) => id !== secondItem.id)!;
+    const secondJournalDayItemId = [secondEdges[0]!.itemA, secondEdges[0]!.itemB].find((id) => id !== secondItem.id)!;
     expect(secondJournalDayItemId).toBe(journalDayItemId);
 
     const { rows: journalRows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [

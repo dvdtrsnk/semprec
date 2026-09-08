@@ -38,7 +38,7 @@ describe("auth schema (issue #139)", () => {
     const { rows } = await pool.query<{ password_hash: string }>("SELECT password_hash FROM users WHERE id = $1", [
       user.id,
     ]);
-    expect(rows[0].password_hash).not.toContain("hunter2");
+    expect(rows[0]!.password_hash).not.toContain("hunter2");
 
     expect(await getUserByEmail(pool, "a@example.com")).toEqual(user);
     expect(await getUserById(pool, user.id)).toEqual(user);

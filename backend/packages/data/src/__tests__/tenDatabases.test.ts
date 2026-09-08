@@ -82,7 +82,7 @@ describe("ten hardcoded databases (issue #24)", () => {
 
     const edges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, area.id));
     expect(edges).toHaveLength(1);
-    expect([edges[0].itemA, edges[0].itemB]).toContain(project.id);
+    expect([edges[0]!.itemA, edges[0]!.itemB]).toContain(project.id);
   });
 
   it("Projects->Companies is a real relation (fix), not the mock's free-form select", async () => {
@@ -212,7 +212,7 @@ describe("ten hardcoded databases (issue #24)", () => {
     // the new instance carries forward the Project relation
     const newEdges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, next!.id));
     expect(newEdges).toHaveLength(1);
-    expect([newEdges[0].itemA, newEdges[0].itemB]).toContain(project.id);
+    expect([newEdges[0]!.itemA, newEdges[0]!.itemB]).toContain(project.id);
 
     // completing a task with no recurrence is a no-op
     const plain = await chokePoint.createItem({

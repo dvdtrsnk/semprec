@@ -74,7 +74,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       `SELECT id FROM items WHERE database_id = $1 AND properties ->> 'name' = 'Email'`,
       [projectsId],
     );
-    emailProjectId = emailProjectRows[0].id;
+    emailProjectId = emailProjectRows[0]!.id;
 
     mailboxId = await withTransaction(pool, (client) =>
       createItemWithClient(client, {
@@ -127,7 +127,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       `SELECT id FROM items WHERE database_id = $1 AND properties ->> 'specialPurpose' = 'drafts'`,
       [foldersId],
     );
-    return rows[0].id;
+    return rows[0]!.id;
   }
 
   it("email.draft.create writes through the generic item-create path with no authorization check, linked into Drafts", async () => {
@@ -229,7 +229,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     );
 
     expect(smtp.sent).toHaveLength(1);
-    expect(smtp.sent[0].messageId).toBe(result.messageId);
+    expect(smtp.sent[0]!.messageId).toBe(result.messageId);
     expect(result.messageId).toMatch(/^<.+@example\.com>$/);
 
     const meta = await getMailMessageMetaByItemId(pool, draft.id);
@@ -240,7 +240,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
         `SELECT id FROM items WHERE database_id = $1 AND properties ->> 'specialPurpose' = 'sent'`,
         [foldersId],
       )
-    ).rows[0].id;
+    ).rows[0]!.id;
     const { rows: sentRelation } = await pool.query(
       `SELECT 1 FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2) AND (item_a = $3 OR item_b = $3)`,
       [folderRelationPropertyId, draft.id, sentId],
@@ -645,7 +645,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
         `SELECT id FROM items WHERE database_id = $1 AND properties ->> 'specialPurpose' = 'sent'`,
         [foldersId],
       )
-    ).rows[0].id;
+    ).rows[0]!.id;
     const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
     const filesId = await databaseIdFor("files");
 

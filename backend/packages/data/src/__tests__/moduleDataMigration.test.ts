@@ -45,12 +45,12 @@ describe("module data migration", () => {
       "SELECT migration_cursor FROM databases WHERE id = $1",
       [databaseId],
     );
-    return rows[0].migration_cursor;
+    return rows[0]!.migration_cursor;
   }
 
   async function countModuleMigrationRows(): Promise<number> {
     const { rows } = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM module_migrations");
-    return Number(rows[0].count);
+    return Number(rows[0]!.count);
   }
 
   it("converts every item exactly once, batched and id-ordered", async () => {
@@ -102,7 +102,7 @@ describe("module data migration", () => {
     // via the batch's ascending order instead: seed a per-call cursor from itemIds.
     let callIndex = 0;
     const trackedConverter = vi.fn((properties: Record<string, unknown>) => {
-      const itemId = itemIds[callIndex];
+      const itemId = itemIds[callIndex]!;
       callIndex++;
       return crashingConverter(properties, itemId);
     });
@@ -119,12 +119,12 @@ describe("module data migration", () => {
     ).rejects.toThrow("simulated crash");
 
     // Batch 1 committed; batch 2 (including its first item) rolled back entirely; batch 3 never ran.
-    expect(await getProperties(databaseId, itemIds[0])).toMatchObject({ converted: true });
-    expect(await getProperties(databaseId, itemIds[1])).toMatchObject({ converted: true });
-    expect(await getProperties(databaseId, itemIds[2])).not.toHaveProperty("converted");
-    expect(await getProperties(databaseId, itemIds[3])).not.toHaveProperty("converted");
-    expect(await getProperties(databaseId, itemIds[4])).not.toHaveProperty("converted");
-    expect(await getProperties(databaseId, itemIds[5])).not.toHaveProperty("converted");
+    expect(await getProperties(databaseId, itemIds[0]!)).toMatchObject({ converted: true });
+    expect(await getProperties(databaseId, itemIds[1]!)).toMatchObject({ converted: true });
+    expect(await getProperties(databaseId, itemIds[2]!)).not.toHaveProperty("converted");
+    expect(await getProperties(databaseId, itemIds[3]!)).not.toHaveProperty("converted");
+    expect(await getProperties(databaseId, itemIds[4]!)).not.toHaveProperty("converted");
+    expect(await getProperties(databaseId, itemIds[5]!)).not.toHaveProperty("converted");
     expect(await getMigrationCursor(databaseId)).toBe(itemIds[1]);
     expect(await countModuleMigrationRows()).toBe(0);
 

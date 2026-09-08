@@ -110,7 +110,7 @@ describe("auth actions (issue #140)", () => {
       const { rows } = await pool.query<{ email: string }>(
         "SELECT email FROM login_attempts WHERE ip = '5.5.5.5' ORDER BY attempted_at DESC LIMIT 1",
       );
-      expect(rows[0].email).toBe("person@example.com");
+      expect(rows[0]!.email).toBe("person@example.com");
     });
 
     it("rejects a correct password once the threshold of consecutive failures is reached", async () => {

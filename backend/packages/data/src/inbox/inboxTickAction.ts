@@ -431,7 +431,7 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
     // Throws (surfacing as a recorded heartbeat failure + notification, see sweep.ts's
     // createHeartbeatFireTask) rather than silently no-op'ing on a misconfigured heartbeat.
     const config = semprecTickActionConfigSchema.parse(actionConfig);
-    const sourceItemId = context.itemId as string;
+    const sourceItemId = context.itemId;
     await withTransaction(pool, async (client) => {
       const item = await itemsStore.getItemById(client, config.inboxDatabaseId, sourceItemId);
       const existingProposal = await findExistingProposal(client, config, sourceItemId);
