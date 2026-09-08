@@ -1,6 +1,10 @@
 import type { ModuleManifest } from "@semprec/module-registry";
 
-export { createHeartbeatListTool, createHeartbeatHistoryTool } from "../scheduler/heartbeatAgentTools.js";
+export {
+  createHeartbeatListTool,
+  createHeartbeatHistoryTool,
+  createHeartbeatTriggerTool,
+} from "../scheduler/heartbeatAgentTools.js";
 
 /**
  * Retrofit manifest (module-contract issue #226) for the schema/data core: the choke point
@@ -15,6 +19,8 @@ export { createHeartbeatListTool, createHeartbeatHistoryTool } from "../schedule
  * `heartbeat.list`/`heartbeat.history` (issue #135) are its first two agent tools: read-only
  * introspection over `project_heartbeats`/`agent_runs`, scoped exclusively to the calling
  * run's own project, so neither declares a `capability` gate (see `heartbeatAgentTools.ts`).
+ * `heartbeat.trigger` (issue #136) joins them on the same terms — project-scoped availability
+ * only, no `capability` gate and no approval requirement beyond that.
  */
 export const manifest: ModuleManifest = {
   id: "schemaCore",
@@ -27,6 +33,7 @@ export const manifest: ModuleManifest = {
   agentTools: [
     { name: "heartbeat.list", handlerExport: "createHeartbeatListTool" },
     { name: "heartbeat.history", handlerExport: "createHeartbeatHistoryTool" },
+    { name: "heartbeat.trigger", handlerExport: "createHeartbeatTriggerTool" },
   ],
   migrations: ["0001_core_schema.sql"],
 };
