@@ -16,11 +16,11 @@ describe("triage operations", () => {
       },
     };
 
-    const result = await setMessageFlag(operations, { databaseId: EMAILS_DATABASE_ID, propertyKey: "read", value: true }, [
-      "email-1",
-      "email-2",
-      "email-3",
-    ]);
+    const result = await setMessageFlag(
+      operations,
+      { databaseId: EMAILS_DATABASE_ID, propertyKey: "read", value: true },
+      ["email-1", "email-2", "email-3"],
+    );
 
     expect(result.succeeded).toEqual(["email-1", "email-3"]);
     expect(result.failed.map((failure) => failure.messageId)).toEqual(["email-2"]);
@@ -48,24 +48,41 @@ describe("triage operations", () => {
 
     const result = await moveMessages(
       operations,
-      { databaseId: EMAILS_DATABASE_ID, relationKey: "folder", fromFolderId: "folder-inbox", toFolderId: "folder-archive" },
+      {
+        databaseId: EMAILS_DATABASE_ID,
+        relationKey: "folder",
+        fromFolderId: "folder-inbox",
+        toFolderId: "folder-archive",
+      },
       ["email-1"],
     );
 
     expect(result.succeeded).toEqual(["email-1"]);
     expect(calls).toEqual(["link:folder-archive", "unlink:folder-inbox"]);
     expect(backend.relations).toContainEqual({ property: "folder", itemId: "email-1", targetItemId: "folder-archive" });
-    expect(backend.relations).not.toContainEqual({ property: "folder", itemId: "email-1", targetItemId: "folder-inbox" });
+    expect(backend.relations).not.toContainEqual({
+      property: "folder",
+      itemId: "email-1",
+      targetItemId: "folder-inbox",
+    });
   });
 
   it("leaves a message linked to its folder when the unlink half fails", async () => {
     const backend = createMailboxBackend();
     const inner = createFakeOperations(backend);
-    const operations: GenericOperations = { ...inner, unlinkItem: async () => Promise.reject(new OperationError("retryable", "Timed out")) };
+    const operations: GenericOperations = {
+      ...inner,
+      unlinkItem: async () => Promise.reject(new OperationError("retryable", "Timed out")),
+    };
 
     const result = await moveMessages(
       operations,
-      { databaseId: EMAILS_DATABASE_ID, relationKey: "folder", fromFolderId: "folder-inbox", toFolderId: "folder-archive" },
+      {
+        databaseId: EMAILS_DATABASE_ID,
+        relationKey: "folder",
+        fromFolderId: "folder-inbox",
+        toFolderId: "folder-archive",
+      },
       ["email-1"],
     );
 

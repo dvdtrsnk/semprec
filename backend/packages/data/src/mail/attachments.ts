@@ -75,7 +75,10 @@ export interface IngestAttachmentsResult {
   extractedTexts: string[];
 }
 
-export async function ingestAttachments(client: PoolClient, input: IngestAttachmentsInput): Promise<IngestAttachmentsResult> {
+export async function ingestAttachments(
+  client: PoolClient,
+  input: IngestAttachmentsInput,
+): Promise<IngestAttachmentsResult> {
   const extractedTexts: string[] = [];
   for (const attachment of input.attachments) {
     const storageKey = `${input.storageKeyPrefix}/${randomUUID()}-${safeStorageFilename(attachment.filename)}`;
@@ -113,7 +116,15 @@ export async function ingestAttachments(client: PoolClient, input: IngestAttachm
     await client.query(
       `INSERT INTO mail_attachments (message_item_id, blob_id, filename, content_type, content_id, disposition, byte_size)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [input.messageItemId, blob.id, attachment.filename, attachment.contentType, attachment.contentId, attachment.disposition, byteSize],
+      [
+        input.messageItemId,
+        blob.id,
+        attachment.filename,
+        attachment.contentType,
+        attachment.contentId,
+        attachment.disposition,
+        byteSize,
+      ],
     );
 
     const fileItem = await createItemWithClient(client, {

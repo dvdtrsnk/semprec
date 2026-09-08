@@ -119,7 +119,11 @@ function parseConnectionConfig(value: unknown): McpConnectionConfig {
   }
 }
 
-async function resolveCredential(client: Queryable, itemId: string, options: ConnectMcpServerOptions): Promise<string | null> {
+async function resolveCredential(
+  client: Queryable,
+  itemId: string,
+  options: ConnectMcpServerOptions,
+): Promise<string | null> {
   try {
     return await getDecryptedCredential(client, {
       itemId,
@@ -135,7 +139,10 @@ async function resolveCredential(client: Queryable, itemId: string, options: Con
     // (and node's own connection errors) attach a string `.code`; the master-key/decrypt errors
     // thrown by `@semprec/credentials` never do — so that's the signal used to tell them apart.
     if (isLikelyDatabaseError(err)) throw err;
-    throw new McpConnectionError("credential_decryption_failed", "Failed to decrypt the MCP server's stored credential");
+    throw new McpConnectionError(
+      "credential_decryption_failed",
+      "Failed to decrypt the MCP server's stored credential",
+    );
   }
 }
 
@@ -164,7 +171,10 @@ function buildTransport(config: McpConnectionConfig, credential: string | null):
   }
 }
 
-function buildStdioTransport(config: Extract<McpConnectionConfig, { transport: "stdio" }>, credential: string | null): BuiltTransport {
+function buildStdioTransport(
+  config: Extract<McpConnectionConfig, { transport: "stdio" }>,
+  credential: string | null,
+): BuiltTransport {
   // `env: undefined` (not `{}`) when there's nothing to add — `StdioClientTransport` falls back
   // to `getDefaultEnvironment()`'s safe allowlist only when `env` is omitted entirely; passing
   // any other object (even one that only adds the injected credential) silently strips that

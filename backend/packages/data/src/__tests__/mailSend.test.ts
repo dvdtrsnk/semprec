@@ -1,7 +1,12 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createChokePoint, createItemWithClient, createRelationWithClient, type ChokePoint } from "../chokePoint/chokePoint.js";
+import {
+  createChokePoint,
+  createItemWithClient,
+  createRelationWithClient,
+  type ChokePoint,
+} from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { withTransaction } from "../db/pool.js";
@@ -10,7 +15,12 @@ import { generatePermissionManifest } from "../manifest/permissionManifest.js";
 import { createEmailDraft } from "../mail/draft.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
 import { getMailMessageMetaByItemId, getMailMessageMetaByMessageId } from "../mail/mailMessageMetaStore.js";
-import { sendDraftEmail, assertEmailSendAuthorized, noopMailSendAdapterFactory, type SendEmailModuleIds } from "../mail/send.js";
+import {
+  sendDraftEmail,
+  assertEmailSendAuthorized,
+  noopMailSendAdapterFactory,
+  type SendEmailModuleIds,
+} from "../mail/send.js";
 import type { MailSmtpClient, OutgoingMailMessage } from "../mail/smtpClient.js";
 
 let pool: Pool;
@@ -67,7 +77,10 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     emailProjectId = emailProjectRows[0].id;
 
     mailboxId = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "Test", provider: "generic", addresses: "me@example.com" } }),
+      createItemWithClient(client, {
+        databaseId: mailboxesId,
+        properties: { name: "Test", provider: "generic", addresses: "me@example.com" },
+      }),
     ).then((item) => item.id);
 
     await withTransaction(pool, async (client) => {
@@ -94,7 +107,13 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       );
     });
 
-    moduleIds = { emailsDatabaseId: emailsId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId, folderRelationPropertyId, mailboxFolderRelationPropertyId };
+    moduleIds = {
+      emailsDatabaseId: emailsId,
+      foldersDatabaseId: foldersId,
+      mailboxesDatabaseId: mailboxesId,
+      folderRelationPropertyId,
+      mailboxFolderRelationPropertyId,
+    };
 
     await storeCredential(pool, { itemId: mailboxId, credentialType: "app_password", plaintext: "s3cr3t" });
   });
@@ -104,9 +123,10 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
   });
 
   async function draftsFolderId(): Promise<string> {
-    const { rows } = await pool.query<{ id: string }>(`SELECT id FROM items WHERE database_id = $1 AND properties ->> 'specialPurpose' = 'drafts'`, [
-      foldersId,
-    ]);
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM items WHERE database_id = $1 AND properties ->> 'specialPurpose' = 'drafts'`,
+      [foldersId],
+    );
     return rows[0].id;
   }
 
@@ -136,12 +156,18 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
   });
 
   it("rejects a direct write to an owner:'system' Emails property through the generic create path even for drafting", async () => {
-    await expect(chokePoint.createItem({ databaseId: emailsId, properties: { name: "hi" } })).rejects.toMatchObject({ name: "ForbiddenError" });
+    await expect(chokePoint.createItem({ databaseId: emailsId, properties: { name: "hi" } })).rejects.toMatchObject({
+      name: "ForbiddenError",
+    });
   });
 
   it("rejects a direct write to emailSendAutonomous through the generic update path — it isn't even a declared property, only direct DB access can grant it", async () => {
     await expect(
-      chokePoint.updateItem({ databaseId: projectsId, itemId: emailProjectId, propertiesPatch: { emailSendAutonomous: true } }),
+      chokePoint.updateItem({
+        databaseId: projectsId,
+        itemId: emailProjectId,
+        propertiesPatch: { emailSendAutonomous: true },
+      }),
     ).rejects.toMatchObject({ name: "ValidationError" });
     const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, emailProjectId));
     expect(manifest.capabilities.email.send.autonomous).toBe(false);
@@ -154,14 +180,19 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
   it("an ai_agent actor without capabilities.email.send.autonomous is rejected", async () => {
     const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, emailProjectId));
     expect(manifest.capabilities.email.send.autonomous).toBe(false);
-    expect(() => assertEmailSendAuthorized({ type: "ai_agent", manifest })).toThrow(/capabilities.email.send.autonomous/);
+    expect(() => assertEmailSendAuthorized({ type: "ai_agent", manifest })).toThrow(
+      /capabilities.email.send.autonomous/,
+    );
   });
 
   it("an ai_agent actor is authorized once a human grants capabilities.email.send.autonomous", async () => {
     // No generic write path ever sets this (owner: 'system', no declared writer) — a human
     // grants it via direct DB access, exactly as the epic's "project-level authorization
     // decision" describes.
-    await pool.query(`UPDATE items SET properties = properties || '{"emailSendAutonomous": true}'::jsonb WHERE id = $1`, [emailProjectId]);
+    await pool.query(
+      `UPDATE items SET properties = properties || '{"emailSendAutonomous": true}'::jsonb WHERE id = $1`,
+      [emailProjectId],
+    );
     const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, emailProjectId));
     expect(manifest.capabilities.email.send.autonomous).toBe(true);
     expect(() => assertEmailSendAuthorized({ type: "ai_agent", manifest })).not.toThrow();
@@ -204,8 +235,12 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     const meta = await getMailMessageMetaByItemId(pool, draft.id);
     expect(meta?.messageId).toBe(result.messageId);
 
-    const sentId = (await pool.query<{ id: string }>(`SELECT id FROM items WHERE database_id = $1 AND properties ->> 'specialPurpose' = 'sent'`, [foldersId]))
-      .rows[0].id;
+    const sentId = (
+      await pool.query<{ id: string }>(
+        `SELECT id FROM items WHERE database_id = $1 AND properties ->> 'specialPurpose' = 'sent'`,
+        [foldersId],
+      )
+    ).rows[0].id;
     const { rows: sentRelation } = await pool.query(
       `SELECT 1 FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2) AND (item_a = $3 OR item_b = $3)`,
       [folderRelationPropertyId, draft.id, sentId],
@@ -401,7 +436,10 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
   });
 
   it("a granted agent actor sends successfully, exactly like a user", async () => {
-    await pool.query(`UPDATE items SET properties = properties || '{"emailSendAutonomous": true}'::jsonb WHERE id = $1`, [emailProjectId]);
+    await pool.query(
+      `UPDATE items SET properties = properties || '{"emailSendAutonomous": true}'::jsonb WHERE id = $1`,
+      [emailProjectId],
+    );
     const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, emailProjectId));
 
     const draftsId = await draftsFolderId();
@@ -453,7 +491,14 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     await expect(
       sendDraftEmail(
         pool,
-        { mailboxItemId: mailboxId, draftItemId: draft.id, actor: { type: "user" }, from: { address: "me@example.com" }, to: [{ address: "bob@example.com" }], subject: "Hello" },
+        {
+          mailboxItemId: mailboxId,
+          draftItemId: draft.id,
+          actor: { type: "user" },
+          from: { address: "me@example.com" },
+          to: [{ address: "bob@example.com" }],
+          subject: "Hello",
+        },
         moduleIds,
         noopMailSendAdapterFactory,
       ),
@@ -595,8 +640,12 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       { createSmtpClient: async () => smtp },
     );
 
-    const sentId = (await pool.query<{ id: string }>(`SELECT id FROM items WHERE database_id = $1 AND properties ->> 'specialPurpose' = 'sent'`, [foldersId]))
-      .rows[0].id;
+    const sentId = (
+      await pool.query<{ id: string }>(
+        `SELECT id FROM items WHERE database_id = $1 AND properties ->> 'specialPurpose' = 'sent'`,
+        [foldersId],
+      )
+    ).rows[0].id;
     const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
     const filesId = await databaseIdFor("files");
 
@@ -612,7 +661,12 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
         envelope: { from: { address: "me@example.com" }, to: [{ address: "bob@example.com" }] },
         bodyText: "hi bob",
         attachments: [],
-        storage: { async writeStream() { return { byteSize: 0, contentHash: "" }; }, async delete() {} },
+        storage: {
+          async writeStream() {
+            return { byteSize: 0, contentHash: "" };
+          },
+          async delete() {},
+        },
         storageKeyPrefix: "test",
       }),
     );
@@ -620,7 +674,9 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     expect(reconciled.created).toBe(false);
     expect(reconciled.itemId).toBe(draft.id);
 
-    const { rows: itemCount } = await pool.query(`SELECT count(*)::int AS n FROM items WHERE database_id = $1`, [emailsId]);
+    const { rows: itemCount } = await pool.query(`SELECT count(*)::int AS n FROM items WHERE database_id = $1`, [
+      emailsId,
+    ]);
     expect(itemCount[0].n).toBe(1);
 
     const meta = await getMailMessageMetaByMessageId(pool, result.messageId);

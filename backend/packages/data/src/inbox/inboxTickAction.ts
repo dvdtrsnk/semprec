@@ -6,7 +6,12 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import { createItemWithClient, createRelationWithClient, updateItemWithClient, type SystemRelationWriteContext } from "../chokePoint/chokePoint.js";
+import {
+  createItemWithClient,
+  createRelationWithClient,
+  updateItemWithClient,
+  type SystemRelationWriteContext,
+} from "../chokePoint/chokePoint.js";
 import { PROCESSING_METHODS, LOCKED_PROPOSAL_STATUSES, type ProcessingMethod } from "./inboxTypesStore.js";
 import { computeInboxFingerprint } from "./fingerprint.js";
 import { enqueueJournalInboxRecomputeForInboxItem } from "./journalInboxCompute.js";
@@ -16,7 +21,9 @@ import { assertValidMcpServerProposalProperties } from "../mcp/mcpServerProposal
 import { ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 
-const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: PROCESSING_PROPOSALS_MODULE_ID };
+const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = {
+  ownerProcess: PROCESSING_PROPOSALS_MODULE_ID,
+};
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -116,8 +123,16 @@ async function resolveRecognizedType(
  * first — picking `edges[0]` blindly could keep finding the deleted row, "creating" a fresh
  * proposal on every subsequent tick without bound.
  */
-async function findExistingProposal(client: PoolClient, config: SemprecTickActionConfig, sourceItemId: string): Promise<ItemRow | null> {
-  const sourceInboxRelationDefinition = await getRelationDefinitionByKey(client, config.processingProposalsDatabaseId, "sourceInbox");
+async function findExistingProposal(
+  client: PoolClient,
+  config: SemprecTickActionConfig,
+  sourceItemId: string,
+): Promise<ItemRow | null> {
+  const sourceInboxRelationDefinition = await getRelationDefinitionByKey(
+    client,
+    config.processingProposalsDatabaseId,
+    "sourceInbox",
+  );
   if (!sourceInboxRelationDefinition) return null;
 
   const edges = await relationsStore.listRelationsForItem(client, sourceInboxRelationDefinition.id, sourceItemId);
@@ -151,7 +166,10 @@ async function computeProposalEnvelope(
   }
 
   const result = await computeProposal({ sourceItem, type, entityKind });
-  if (!result.target) throw new Error(`Proposal computation for Inbox item ${sourceItem.id} (entityKind 'pageContent') did not return a 'target'`);
+  if (!result.target)
+    throw new Error(
+      `Proposal computation for Inbox item ${sourceItem.id} (entityKind 'pageContent') did not return a 'target'`,
+    );
   return { entityKind, target: result.target, properties: result.properties };
 }
 
@@ -168,7 +186,11 @@ export interface ProposalHistoryEntry {
  * entries; inbox/proposalActions.ts (issue #105) reuses this with `author: 'user'` for
  * confirm/reject/revise's own log entries.
  */
-export function appendHistoryEntry(history: unknown, message: string, author: "ai" | "user" = "ai"): ProposalHistoryEntry[] {
+export function appendHistoryEntry(
+  history: unknown,
+  message: string,
+  author: "ai" | "user" = "ai",
+): ProposalHistoryEntry[] {
   const existing = Array.isArray(history) ? (history as ProposalHistoryEntry[]) : [];
   return [...existing, { author, message, at: new Date().toISOString() }];
 }
@@ -182,16 +204,22 @@ export function appendHistoryEntry(history: unknown, message: string, author: "a
  */
 export async function assertValidProposalEnvelope(client: PoolClient, envelope: ProposalEnvelope): Promise<void> {
   if (envelope.entityKind !== "pageContent" && envelope.entityKind !== "database") {
-    throw new ValidationError(`Proposal envelope has unknown entityKind '${String(envelope.entityKind)}'`, { field: "entityKind" });
+    throw new ValidationError(`Proposal envelope has unknown entityKind '${String(envelope.entityKind)}'`, {
+      field: "entityKind",
+    });
   }
 
   if (envelope.entityKind === "database") {
     if (!UUID_RE.test(envelope.target)) {
-      throw new ValidationError(`Proposal envelope target '${envelope.target}' is not a database id`, { field: "target" });
+      throw new ValidationError(`Proposal envelope target '${envelope.target}' is not a database id`, {
+        field: "target",
+      });
     }
     const targetDatabase = await databasesStore.getDatabase(client, envelope.target);
     if (!targetDatabase || targetDatabase.archivedAt) {
-      throw new ValidationError(`Proposal envelope target '${envelope.target}' is not an existing target database`, { field: "target" });
+      throw new ValidationError(`Proposal envelope target '${envelope.target}' is not an existing target database`, {
+        field: "target",
+      });
     }
     // Issue #105's grant separation, enforced here rather than only declared in the
     // manifest: a user-supplied `revise` builds its envelope from raw request input, so
@@ -200,7 +228,9 @@ export async function assertValidProposalEnvelope(client: PoolClient, envelope: 
     // `permissionManifest.ts`'s `writable: false` for those two databases, since nothing
     // upstream of that choke-point call reads the manifest at all.
     if (targetDatabase.ownerModuleId && SEMPREC_READ_ONLY_MODULE_IDS.includes(targetDatabase.ownerModuleId)) {
-      throw new ValidationError(`Proposal envelope target '${envelope.target}' is not a writable target database`, { field: "target" });
+      throw new ValidationError(`Proposal envelope target '${envelope.target}' is not a writable target database`, {
+        field: "target",
+      });
     }
     // Issue #123: an MCP server's credential never travels through a proposal envelope at
     // all (it is supplied separately by a human at confirm time, see proposalActions.ts) —
@@ -215,7 +245,10 @@ export async function assertValidProposalEnvelope(client: PoolClient, envelope: 
     for (const key of Object.keys(envelope.properties)) {
       const property = byKey.get(key);
       if (!property) {
-        throw new ValidationError(`Proposal properties reference unknown property '${key}' on target database ${targetDatabase.id}`, { field: key });
+        throw new ValidationError(
+          `Proposal properties reference unknown property '${key}' on target database ${targetDatabase.id}`,
+          { field: key },
+        );
       }
       if (property.type === "relation") {
         throw new ValidationError(`Proposal properties cannot set relation property '${key}' directly`, { field: key });
@@ -235,10 +268,14 @@ export async function assertValidProposalEnvelope(client: PoolClient, envelope: 
   }
   const [targetPage] = await itemsStore.getItemsByIds(client, [envelope.target]);
   if (!targetPage) {
-    throw new ValidationError(`Proposal envelope target '${envelope.target}' is not an existing page`, { field: "target" });
+    throw new ValidationError(`Proposal envelope target '${envelope.target}' is not an existing page`, {
+      field: "target",
+    });
   }
   if (typeof envelope.properties.flavour !== "string" || envelope.properties.flavour.length === 0) {
-    throw new ValidationError("Proposal properties for entityKind 'pageContent' must carry a 'flavour' block field", { field: "properties" });
+    throw new ValidationError("Proposal properties for entityKind 'pageContent' must carry a 'flavour' block field", {
+      field: "properties",
+    });
   }
   // `fields`/`children` are read back out of storage and cast at confirm time (issue #105's
   // proposalActions.ts) to build the block-append call — validated here, at the one point
@@ -246,17 +283,33 @@ export async function assertValidProposalEnvelope(client: PoolClient, envelope: 
   // cast is never the first thing to notice a malformed stored value.
   const { fields, children } = envelope.properties;
   if (fields !== undefined && (typeof fields !== "object" || fields === null || Array.isArray(fields))) {
-    throw new ValidationError("Proposal properties 'fields', if present, must be a plain object", { field: "properties" });
+    throw new ValidationError("Proposal properties 'fields', if present, must be a plain object", {
+      field: "properties",
+    });
   }
   if (children !== undefined && (!Array.isArray(children) || !children.every((child) => typeof child === "string"))) {
-    throw new ValidationError("Proposal properties 'children', if present, must be an array of strings", { field: "properties" });
+    throw new ValidationError("Proposal properties 'children', if present, must be an array of strings", {
+      field: "properties",
+    });
   }
 }
 
 /** Links a freshly created Processing proposal back to its source Inbox item via `sourceInbox`. */
-async function linkSourceInboxRelation(client: PoolClient, config: SemprecTickActionConfig, proposalId: string, sourceItemId: string): Promise<void> {
-  const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, config.processingProposalsDatabaseId, "sourceInbox");
-  if (!sourceInboxProperty) throw new Error(`Processing proposals database ${config.processingProposalsDatabaseId} has no 'sourceInbox' relation property`);
+async function linkSourceInboxRelation(
+  client: PoolClient,
+  config: SemprecTickActionConfig,
+  proposalId: string,
+  sourceItemId: string,
+): Promise<void> {
+  const sourceInboxProperty = await propertiesStore.getPropertyByKey(
+    client,
+    config.processingProposalsDatabaseId,
+    "sourceInbox",
+  );
+  if (!sourceInboxProperty)
+    throw new Error(
+      `Processing proposals database ${config.processingProposalsDatabaseId} has no 'sourceInbox' relation property`,
+    );
   await createRelationWithClient(
     client,
     { relationPropertyId: sourceInboxProperty.id, callerItemId: proposalId, targetItemId: sourceItemId },
@@ -308,7 +361,13 @@ async function writeNeedsClarification(
     client,
     {
       databaseId: config.processingProposalsDatabaseId,
-      properties: { kind: "inbox", fingerprint, proposal: null, history: appendHistoryEntry([], message), status: "needsClarification" },
+      properties: {
+        kind: "inbox",
+        fingerprint,
+        proposal: null,
+        history: appendHistoryEntry([], message),
+        status: "needsClarification",
+      },
     },
     { allowedSystemKeys: ["kind", "fingerprint", "proposal", "history", "status"] },
   );
@@ -322,7 +381,11 @@ async function writeNeedsClarification(
  * there is nothing to invalidate. A no-op if already `invalid`, so a source deleted more than
  * once (e.g. soft-deleted, then its delete event re-fires) doesn't spam history.
  */
-async function invalidateProposalForDeletedSource(client: PoolClient, config: SemprecTickActionConfig, existingProposal: ItemRow | null): Promise<void> {
+async function invalidateProposalForDeletedSource(
+  client: PoolClient,
+  config: SemprecTickActionConfig,
+  existingProposal: ItemRow | null,
+): Promise<void> {
   if (!existingProposal) return;
   const status = existingProposal.properties.status;
   if (typeof status === "string" && LOCKED_PROPOSAL_STATUSES.has(status)) return;
@@ -389,7 +452,13 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
 
       const recognized = await resolveRecognizedType(client, config, item);
       if (!recognized) {
-        await writeNeedsClarification(client, config, item.id, existingProposal, "Source item has no recognized type; needs clarification.");
+        await writeNeedsClarification(
+          client,
+          config,
+          item.id,
+          existingProposal,
+          "Source item has no recognized type; needs clarification.",
+        );
         return;
       }
       const { type, processingMethod } = recognized;
@@ -408,7 +477,14 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
           await assertValidProposalEnvelope(client, envelope);
         } catch (err) {
           if (!(err instanceof ValidationError)) throw err;
-          await writeNeedsClarification(client, config, item.id, existingProposal, `Computed proposal failed validation: ${err.message}`, fingerprint);
+          await writeNeedsClarification(
+            client,
+            config,
+            item.id,
+            existingProposal,
+            `Computed proposal failed validation: ${err.message}`,
+            fingerprint,
+          );
           return;
         }
 
@@ -421,7 +497,10 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
               fingerprint,
               proposal: envelope,
               status: "proposed",
-              history: appendHistoryEntry(existingProposal.properties.history, "Revised the proposal after the source item changed."),
+              history: appendHistoryEntry(
+                existingProposal.properties.history,
+                "Revised the proposal after the source item changed.",
+              ),
             },
           },
           { allowedSystemKeys: ["fingerprint", "proposal", "status", "history"] },
@@ -434,7 +513,14 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
         await assertValidProposalEnvelope(client, envelope);
       } catch (err) {
         if (!(err instanceof ValidationError)) throw err;
-        await writeNeedsClarification(client, config, item.id, null, `Computed proposal failed validation: ${err.message}`, fingerprint);
+        await writeNeedsClarification(
+          client,
+          config,
+          item.id,
+          null,
+          `Computed proposal failed validation: ${err.message}`,
+          fingerprint,
+        );
         return;
       }
 

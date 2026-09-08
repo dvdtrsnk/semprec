@@ -40,7 +40,10 @@ export async function getOrCreateDoc(client: Queryable, itemId: string, kind: Do
   const existing = await getDocByItemId(client, itemId);
   if (existing) {
     if (existing.kind !== kind) {
-      throw new ConflictError(`Item ${itemId} already has a '${existing.kind}' doc; cannot also create a '${kind}' doc`, { itemId, kind });
+      throw new ConflictError(
+        `Item ${itemId} already has a '${existing.kind}' doc; cannot also create a '${kind}' doc`,
+        { itemId, kind },
+      );
     }
     return existing;
   }
@@ -54,7 +57,11 @@ export async function getOrCreateDoc(client: Queryable, itemId: string, kind: Do
     emptyDoc.gc = false;
     const state = Buffer.from(Y.encodeStateAsUpdate(emptyDoc));
     const stateVector = Buffer.from(Y.encodeStateVector(emptyDoc));
-    await client.query(`INSERT INTO doc_snapshots (doc_id, state, state_vector) VALUES ($1, $2, $3)`, [rows[0].id, state, stateVector]);
+    await client.query(`INSERT INTO doc_snapshots (doc_id, state, state_vector) VALUES ($1, $2, $3)`, [
+      rows[0].id,
+      state,
+      stateVector,
+    ]);
     return mapDocRow(rows[0]);
   }
 
@@ -63,7 +70,10 @@ export async function getOrCreateDoc(client: Queryable, itemId: string, kind: Do
   // Same check as the `existing` branch above: the race winner may have created a doc of
   // a different kind than this caller asked for.
   if (created.kind !== kind) {
-    throw new ConflictError(`Item ${itemId} already has a '${created.kind}' doc; cannot also create a '${kind}' doc`, { itemId, kind });
+    throw new ConflictError(`Item ${itemId} already has a '${created.kind}' doc; cannot also create a '${kind}' doc`, {
+      itemId,
+      kind,
+    });
   }
   return created;
 }

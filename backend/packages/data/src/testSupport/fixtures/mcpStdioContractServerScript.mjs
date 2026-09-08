@@ -49,7 +49,10 @@ function writeRecord(extra) {
 
 writeRecord({});
 
-const server = new Server({ name: "mcp-contract-stdio", version: "1.0.0" }, { capabilities: { tools: { listChanged: true } } });
+const server = new Server(
+  { name: "mcp-contract-stdio", version: "1.0.0" },
+  { capabilities: { tools: { listChanged: true } } },
+);
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 

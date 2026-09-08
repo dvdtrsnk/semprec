@@ -27,7 +27,9 @@ function normalizeFieldName(name: string): string {
   return name.toLowerCase().replace(/[_-]/g, "");
 }
 
-const NORMALIZED_CREDENTIAL_FIELD_NAMES: ReadonlySet<string> = new Set(MCP_CREDENTIAL_FIELD_NAMES.map(normalizeFieldName));
+const NORMALIZED_CREDENTIAL_FIELD_NAMES: ReadonlySet<string> = new Set(
+  MCP_CREDENTIAL_FIELD_NAMES.map(normalizeFieldName),
+);
 
 /**
  * A `stdio` transport's `env` map is itself a plausible smuggling route for a secret an agent
@@ -42,7 +44,10 @@ function assertNoCredentialShapedEnvKeys(connectionConfig: unknown): void {
   if (typeof env !== "object" || env === null) return;
   for (const key of Object.keys(env)) {
     if (NORMALIZED_CREDENTIAL_FIELD_NAMES.has(normalizeFieldName(key))) {
-      throw new ValidationError(`Proposal properties for an MCP server cannot carry credential field '${key}' in connectionConfig.env`, { field: key });
+      throw new ValidationError(
+        `Proposal properties for an MCP server cannot carry credential field '${key}' in connectionConfig.env`,
+        { field: key },
+      );
     }
   }
 }
@@ -67,7 +72,10 @@ function assertNoCredentialShapedUrlParams(connectionConfig: unknown): void {
   }
   for (const key of parsed.searchParams.keys()) {
     if (NORMALIZED_CREDENTIAL_FIELD_NAMES.has(normalizeFieldName(key))) {
-      throw new ValidationError(`Proposal properties for an MCP server cannot carry credential field '${key}' in connectionConfig.url`, { field: key });
+      throw new ValidationError(
+        `Proposal properties for an MCP server cannot carry credential field '${key}' in connectionConfig.url`,
+        { field: key },
+      );
     }
   }
 }
@@ -84,7 +92,9 @@ function assertNoCredentialShapedUrlParams(connectionConfig: unknown): void {
 export function assertValidMcpServerProposalProperties(properties: Record<string, unknown>): void {
   for (const field of MCP_CREDENTIAL_FIELD_NAMES) {
     if (field in properties) {
-      throw new ValidationError(`Proposal properties for an MCP server cannot carry credential field '${field}'`, { field });
+      throw new ValidationError(`Proposal properties for an MCP server cannot carry credential field '${field}'`, {
+        field,
+      });
     }
   }
   if ("connectionConfig" in properties) {

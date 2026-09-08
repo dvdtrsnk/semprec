@@ -19,7 +19,14 @@ interface PropSpec {
 
 async function createProps(client: PoolClient, databaseId: string, specs: PropSpec[]): Promise<void> {
   for (const spec of specs) {
-    await propertiesStore.createProperty(client, { databaseId, key: spec.key, name: spec.name, type: spec.type, owner: spec.owner, config: spec.config });
+    await propertiesStore.createProperty(client, {
+      databaseId,
+      key: spec.key,
+      name: spec.name,
+      type: spec.type,
+      owner: spec.owner,
+      config: spec.config,
+    });
   }
 }
 
@@ -47,7 +54,10 @@ export interface McpModuleResult {
  * proposal envelope that names one, so this ownership by itself is what keeps sync
  * structurally unreachable from the proposal path without any MCP-specific code there.
  */
-export async function seedMcpModuleInTransaction(client: PoolClient, projectsDatabaseId: string): Promise<McpModuleResult> {
+export async function seedMcpModuleInTransaction(
+  client: PoolClient,
+  projectsDatabaseId: string,
+): Promise<McpModuleResult> {
   const mcpProject = await itemsStore.insertItem(client, {
     databaseId: projectsDatabaseId,
     properties: {

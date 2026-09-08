@@ -90,7 +90,10 @@ export interface UpsertMailMessageMetaInput {
  * of creating a duplicate. `item_id` is the caller's freshly-created (or existing) Email
  * item id either way.
  */
-export async function upsertMailMessageMeta(client: Queryable, input: UpsertMailMessageMetaInput): Promise<MailMessageMetaRow> {
+export async function upsertMailMessageMeta(
+  client: Queryable,
+  input: UpsertMailMessageMetaInput,
+): Promise<MailMessageMetaRow> {
   const { rows } = await client.query(
     `INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope,
                                      delivered_to_address, message_kind, dsn_original_message_id, migration_status)
@@ -120,18 +123,29 @@ export async function upsertMailMessageMeta(client: Queryable, input: UpsertMail
   return mapRow(rows[0]);
 }
 
-export async function getMailMessageMetaByItemId(client: Queryable, itemId: string): Promise<MailMessageMetaRow | null> {
+export async function getMailMessageMetaByItemId(
+  client: Queryable,
+  itemId: string,
+): Promise<MailMessageMetaRow | null> {
   const { rows } = await client.query(`SELECT ${COLUMNS} FROM mail_message_meta WHERE item_id = $1`, [itemId]);
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-export async function getMailMessageMetaByMessageId(client: Queryable, messageId: string): Promise<MailMessageMetaRow | null> {
+export async function getMailMessageMetaByMessageId(
+  client: Queryable,
+  messageId: string,
+): Promise<MailMessageMetaRow | null> {
   const { rows } = await client.query(`SELECT ${COLUMNS} FROM mail_message_meta WHERE message_id = $1`, [messageId]);
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-export async function getMailMessageMetaByProviderMessageId(client: Queryable, providerMessageId: string): Promise<MailMessageMetaRow | null> {
-  const { rows } = await client.query(`SELECT ${COLUMNS} FROM mail_message_meta WHERE provider_message_id = $1`, [providerMessageId]);
+export async function getMailMessageMetaByProviderMessageId(
+  client: Queryable,
+  providerMessageId: string,
+): Promise<MailMessageMetaRow | null> {
+  const { rows } = await client.query(`SELECT ${COLUMNS} FROM mail_message_meta WHERE provider_message_id = $1`, [
+    providerMessageId,
+  ]);
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
@@ -162,7 +176,10 @@ export interface MailThreadRow {
 }
 
 export async function createMailThread(client: Queryable, subjectHint?: string): Promise<MailThreadRow> {
-  const { rows } = await client.query(`INSERT INTO mail_threads (subject_hint) VALUES ($1) RETURNING id, subject_hint`, [subjectHint ?? null]);
+  const { rows } = await client.query(
+    `INSERT INTO mail_threads (subject_hint) VALUES ($1) RETURNING id, subject_hint`,
+    [subjectHint ?? null],
+  );
   return { id: rows[0].id, subjectHint: rows[0].subject_hint };
 }
 

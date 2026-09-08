@@ -33,10 +33,15 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 
 async function createMcpServerItem(connectionConfig: McpConnectionConfig, credential?: string) {
   const item = await withTransaction(pool, (client) =>
-    itemsStore.insertItem(client, { databaseId: mcpServersId, properties: { name: "Contract server", connectionConfig } }),
+    itemsStore.insertItem(client, {
+      databaseId: mcpServersId,
+      properties: { name: "Contract server", connectionConfig },
+    }),
   );
   if (credential !== undefined) {
-    await withTransaction(pool, (client) => storeCredential(client, { itemId: item.id, credentialType: "api_key", plaintext: credential }));
+    await withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: item.id, credentialType: "api_key", plaintext: credential }),
+    );
   }
   return item;
 }
@@ -111,7 +116,13 @@ describe("MCP tool sync (issue #125)", () => {
         await setMcpToolRiskClass(pool, first.id, "high");
         await setMcpToolRequiresApproval(pool, first.id, false);
 
-        contract.setTools([{ name: "search_web", description: "Updated description", inputSchema: { type: "object", properties: { q: { type: "string" } } } }]);
+        contract.setTools([
+          {
+            name: "search_web",
+            description: "Updated description",
+            inputSchema: { type: "object", properties: { q: { type: "string" } } },
+          },
+        ]);
         await syncMcpServerTools(pool, item.id);
 
         const [resynced] = await listMcpToolRegistrationsForServer(pool, item.id);
@@ -150,7 +161,10 @@ describe("MCP tool sync (issue #125)", () => {
         const item = await createMcpServerItem(contract.connectionConfig);
         await syncMcpServerTools(pool, item.id);
 
-        const extended: ContractServerTool[] = [...DEFAULT_CONTRACT_TOOLS, { name: "send_email", description: "Sends an email", inputSchema: { type: "object", properties: {} } }];
+        const extended: ContractServerTool[] = [
+          ...DEFAULT_CONTRACT_TOOLS,
+          { name: "send_email", description: "Sends an email", inputSchema: { type: "object", properties: {} } },
+        ];
         contract.setTools(extended);
         await syncMcpServerTools(pool, item.id);
 
@@ -235,7 +249,9 @@ describe("MCP tool sync (issue #125)", () => {
 });
 
 describe("listAllTools (pagination)", () => {
-  function fakeClient(pages: { tools: { name: string; inputSchema: unknown }[]; nextCursor?: string }[]): McpClientHandle["client"] {
+  function fakeClient(
+    pages: { tools: { name: string; inputSchema: unknown }[]; nextCursor?: string }[],
+  ): McpClientHandle["client"] {
     const listTools = vi.fn(async (params?: { cursor?: string }) => {
       const index = params?.cursor ? Number(params.cursor) : 0;
       const page = pages[index];

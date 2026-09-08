@@ -19,7 +19,7 @@ pnpm build      # typecheck + production build into dist/
 - `src/api/` — the generic operations port (`GenericOperations`) plus its HTTP binding.
   Every view reads through this port and nothing else: no view gets a private read path
   into a module's own tables, and all writes go through the backend choke point. Alongside
-  the generic reads/writes it carries `callOperation`, which invokes a module's *declared*
+  the generic reads/writes it carries `callOperation`, which invokes a module's _declared_
   named operation (`email.send`, …) — the same surface an agent calls, for the actions no
   generic call can express.
 - `src/views/` — the client half of the backend's view-type registry: `viewRegistry.ts`

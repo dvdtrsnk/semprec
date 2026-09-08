@@ -65,7 +65,10 @@ async function request(
 }
 
 export function createHttpGenericOperations(options: HttpGenericOperationsOptions): GenericOperations {
-  const config = { baseUrl: options.baseUrl.replace(/\/$/, ""), fetchImpl: options.fetchImpl ?? globalThis.fetch.bind(globalThis) };
+  const config = {
+    baseUrl: options.baseUrl.replace(/\/$/, ""),
+    fetchImpl: options.fetchImpl ?? globalThis.fetch.bind(globalThis),
+  };
 
   const post = (path: string, body: unknown) => request(config, path, { method: "POST", body: JSON.stringify(body) });
   const id = encodeURIComponent;
@@ -81,12 +84,15 @@ export function createHttpGenericOperations(options: HttpGenericOperationsOption
     },
 
     async countItems(databaseId, listRequest = {}) {
-      return countSchema.parse(await post(`/databases/${encodeURIComponent(databaseId)}/items/count`, listRequest)).count;
+      return countSchema.parse(await post(`/databases/${encodeURIComponent(databaseId)}/items/count`, listRequest))
+        .count;
     },
 
     async getItem(databaseId, itemId) {
       try {
-        return itemSchema.parse(await request(config, `/databases/${encodeURIComponent(databaseId)}/items/${encodeURIComponent(itemId)}`));
+        return itemSchema.parse(
+          await request(config, `/databases/${encodeURIComponent(databaseId)}/items/${encodeURIComponent(itemId)}`),
+        );
       } catch (error) {
         // A missing item is an ordinary outcome of reading a list that has moved on, not a
         // failure state for the whole pane.
@@ -109,7 +115,12 @@ export function createHttpGenericOperations(options: HttpGenericOperationsOption
     },
 
     async linkItem(databaseId, itemId, relationKey, targetItemId) {
-      await request(config, relationPath(databaseId, itemId, relationKey), { method: "POST", body: JSON.stringify({ targetItemId }) }, { discardBody: true });
+      await request(
+        config,
+        relationPath(databaseId, itemId, relationKey),
+        { method: "POST", body: JSON.stringify({ targetItemId }) },
+        { discardBody: true },
+      );
     },
 
     async callOperation(operationId, input) {

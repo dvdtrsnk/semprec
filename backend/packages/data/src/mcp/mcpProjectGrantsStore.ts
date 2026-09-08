@@ -48,7 +48,11 @@ export async function listProjectMcpGrants(client: Queryable, projectItemId: str
   return rows.map(rowToGrant);
 }
 
-export async function getProjectMcpGrant(client: Queryable, projectItemId: string, mcpToolRegistrationId: string): Promise<ProjectMcpGrant | null> {
+export async function getProjectMcpGrant(
+  client: Queryable,
+  projectItemId: string,
+  mcpToolRegistrationId: string,
+): Promise<ProjectMcpGrant | null> {
   const { rows } = await client.query<ProjectMcpGrantRow>(
     `SELECT * FROM project_mcp_grants WHERE project_item_id = $1 AND mcp_tool_registration_id = $2`,
     [projectItemId, mcpToolRegistrationId],

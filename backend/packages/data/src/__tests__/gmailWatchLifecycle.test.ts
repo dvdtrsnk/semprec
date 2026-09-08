@@ -4,7 +4,11 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createItemWithClient } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { ensureMailAccountSyncState, getMailAccountSyncState, recordGmailActivity } from "../mail/mailAccountSyncStateStore.js";
+import {
+  ensureMailAccountSyncState,
+  getMailAccountSyncState,
+  recordGmailActivity,
+} from "../mail/mailAccountSyncStateStore.js";
 import {
   createGmailWatchLifecycleFactory,
   pullErrorBackoffDelayMs,
@@ -24,7 +28,9 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 /** A real Mailbox item — `mail_account_sync_state.item_id` is a foreign key, so a plain string id is rejected. */
 async function createMailboxItem(name: string): Promise<string> {
   const mailboxesId = await databaseIdFor("mailboxes");
-  const item = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name, provider: "gmail" } }));
+  const item = await withTransaction(pool, (client) =>
+    createItemWithClient(client, { databaseId: mailboxesId, properties: { name, provider: "gmail" } }),
+  );
   return item.id;
 }
 
@@ -39,7 +45,10 @@ async function pendingMailSyncJobCount(mailboxItemId: string): Promise<number> {
 }
 
 interface FakeTransportOptions {
-  registerWatch?: (mailboxItemId: string, credential: string) => GmailWatchRegistration | Promise<GmailWatchRegistration>;
+  registerWatch?: (
+    mailboxItemId: string,
+    credential: string,
+  ) => GmailWatchRegistration | Promise<GmailWatchRegistration>;
   /** Returns the notifications for the *next* pull call, or throws to simulate a transient pull failure. Defaults to an empty poll. */
   pullQueue?: Array<GmailPubSubNotification[] | "reject">;
 }

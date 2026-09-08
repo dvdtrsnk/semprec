@@ -123,7 +123,10 @@ export interface SessionAgentRunsFilter {
  * the supervisor run that key's `DelegationRegistry` entry belongs to) walk to rebuild an
  * `Entry[]` tree for a freshly woken session (#119).
  */
-export async function listSessionAgentRuns(client: Pool | PoolClient, filter: SessionAgentRunsFilter): Promise<AgentRunRow[]> {
+export async function listSessionAgentRuns(
+  client: Pool | PoolClient,
+  filter: SessionAgentRunsFilter,
+): Promise<AgentRunRow[]> {
   const { rows } = await client.query(
     `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
      FROM agent_runs

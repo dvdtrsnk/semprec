@@ -102,7 +102,11 @@ export async function insertItem(client: Queryable, input: InsertItemInput): Pro
  * new key as far as this database is concerned), or when the reservation's item row is somehow
  * missing (the same defensive, practically-unreachable case `insertItem` itself guards against).
  */
-export async function findIdempotentReplay(client: Queryable, databaseId: string, idempotencyKey: string): Promise<ItemRow | null> {
+export async function findIdempotentReplay(
+  client: Queryable,
+  databaseId: string,
+  idempotencyKey: string,
+): Promise<ItemRow | null> {
   const { rows } = await client.query<{ item_id: string; database_id: string }>(
     `SELECT item_id, database_id FROM idempotency_keys WHERE key = $1`,
     [idempotencyKey],
@@ -212,7 +216,11 @@ export async function listItems(
  * `listItems` so a count and its list always agree on what "matching" means; used for the
  * per-folder unread counts in issue #96, where the count is needed but the rows are not.
  */
-export async function countItems(client: Queryable, databaseId: string, options: Pick<ListItemsOptions, "includeDeleted" | "buildFilterSql"> = {}): Promise<number> {
+export async function countItems(
+  client: Queryable,
+  databaseId: string,
+  options: Pick<ListItemsOptions, "includeDeleted" | "buildFilterSql"> = {},
+): Promise<number> {
   const conditions = ["database_id = $1"];
   const params: unknown[] = [databaseId];
   if (!options.includeDeleted) conditions.push("deleted_at IS NULL");
@@ -254,7 +262,11 @@ export async function getItemsByIds(client: Queryable, itemIds: string[]): Promi
  * exactly as it would have via `getItemById`, which also never filters on `deleted_at`. Pick
  * `getItemsByIds` instead if the caller actually wants deleted rows excluded.
  */
-export async function getItemsByIdsInDatabaseIncludingDeleted(client: Queryable, databaseId: string, itemIds: string[]): Promise<ItemRow[]> {
+export async function getItemsByIdsInDatabaseIncludingDeleted(
+  client: Queryable,
+  databaseId: string,
+  itemIds: string[],
+): Promise<ItemRow[]> {
   if (itemIds.length === 0) return [];
   const { rows } = await client.query(
     `SELECT id, database_id, properties, computed, updated_at, deleted_at
@@ -284,4 +296,3 @@ export async function writeComputed(
     [databaseId, itemId, key, JSON.stringify(value)],
   );
 }
-

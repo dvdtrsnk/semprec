@@ -2,9 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { toOperationError, type OperationError } from "../../api/genericOperations.js";
 
 export type AsyncResource<T> =
-  | { status: "loading" }
-  | { status: "ready"; value: T }
-  | { status: "failed"; error: OperationError };
+  { status: "loading" } | { status: "ready"; value: T } | { status: "failed"; error: OperationError };
 
 /**
  * One async read, in the loading / ready / failed shape every pane renders from, plus the
@@ -12,7 +10,10 @@ export type AsyncResource<T> =
  * after unmount) is dropped rather than written into state, so switching folders quickly
  * can never leave the slower answer on screen.
  */
-export function useAsyncResource<T>(load: () => Promise<T>, deps: readonly unknown[]): { resource: AsyncResource<T>; reload: () => void } {
+export function useAsyncResource<T>(
+  load: () => Promise<T>,
+  deps: readonly unknown[],
+): { resource: AsyncResource<T>; reload: () => void } {
   const [resource, setResource] = useState<AsyncResource<T>>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
 

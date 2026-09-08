@@ -18,7 +18,9 @@ export async function getSystemSettingsDatabaseId(client: Queryable): Promise<st
 
 export async function getSystemSettingsItemId(client: PoolClient): Promise<string> {
   const databaseId = await getSystemSettingsDatabaseId(client);
-  const { rows } = await client.query<{ id: string }>(`SELECT id FROM items WHERE database_id = $1 LIMIT 1`, [databaseId]);
+  const { rows } = await client.query<{ id: string }>(`SELECT id FROM items WHERE database_id = $1 LIMIT 1`, [
+    databaseId,
+  ]);
   if (!rows[0]) throw new NotFoundError("System settings row has not been seeded");
   return rows[0].id;
 }
@@ -55,10 +57,9 @@ export async function getAiBudgets(client: Queryable): Promise<AiBudgets> {
   });
   if (databaseId === null) return { dailyBudgetUsd: DEFAULT_DAILY_BUDGET_USD, monthlyBudgetUsd: null };
 
-  const { rows } = await client.query<{ properties: { dailyBudgetUsd?: number | null; monthlyBudgetUsd?: number | null } }>(
-    `SELECT properties FROM items WHERE database_id = $1 LIMIT 1`,
-    [databaseId],
-  );
+  const { rows } = await client.query<{
+    properties: { dailyBudgetUsd?: number | null; monthlyBudgetUsd?: number | null };
+  }>(`SELECT properties FROM items WHERE database_id = $1 LIMIT 1`, [databaseId]);
   const properties = rows[0]?.properties ?? {};
   return {
     dailyBudgetUsd: properties.dailyBudgetUsd === undefined ? DEFAULT_DAILY_BUDGET_USD : properties.dailyBudgetUsd,

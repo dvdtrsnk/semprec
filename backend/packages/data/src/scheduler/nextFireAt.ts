@@ -1,5 +1,10 @@
 import { DateTime } from "luxon";
-import { isCoreHeartbeatRuleKind, type AnyHeartbeatRule, type HeartbeatRule, type HeartbeatRuleKindRegistry } from "./rule.js";
+import {
+  isCoreHeartbeatRuleKind,
+  type AnyHeartbeatRule,
+  type HeartbeatRule,
+  type HeartbeatRuleKindRegistry,
+} from "./rule.js";
 
 const WEEKDAY_TO_LUXON: Record<string, number> = { mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 7 };
 
@@ -38,7 +43,9 @@ export function computeNextFireAt(
   if (!isCoreHeartbeatRuleKind(rule.kind)) {
     const handler = moduleRuleKinds.get(rule.kind);
     if (!handler) {
-      throw new Error(`No next-fire calculator registered for heartbeat rule kind "${rule.kind}" (its module may be inactive)`);
+      throw new Error(
+        `No next-fire calculator registered for heartbeat rule kind "${rule.kind}" (its module may be inactive)`,
+      );
     }
     return handler.nextFireAt(rule, timezone, after);
   }

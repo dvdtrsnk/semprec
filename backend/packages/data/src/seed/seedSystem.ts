@@ -77,10 +77,17 @@ export async function seedSystem(
   await moduleRegistry.loadModule(new URL("./systemDatabasesModuleManifest.js", import.meta.url).href);
 
   await withTransaction(pool, async (client) => {
-    const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1`, [SYSTEM_SETTINGS_MODULE_ID]);
+    const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1`, [
+      SYSTEM_SETTINGS_MODULE_ID,
+    ]);
     if ((existingSettings.rowCount ?? 0) > 0) return;
 
-    const tenDatabases = await seedTenDatabasesInTransaction(client, viewTypeRegistry, computedKeyRegistry, moduleRegistry);
+    const tenDatabases = await seedTenDatabasesInTransaction(
+      client,
+      viewTypeRegistry,
+      computedKeyRegistry,
+      moduleRegistry,
+    );
     const projectsDb = tenDatabases.projects;
 
     const semprecProject = await itemsStore.insertItem(client, {
@@ -143,7 +150,12 @@ export async function seedSystem(
 
     await itemsStore.insertItem(client, {
       databaseId: settingsDb.id,
-      properties: { name: "Semp", timezone: DEFAULT_TIMEZONE, dailyBudgetUsd: DEFAULT_DAILY_BUDGET_USD, monthlyBudgetUsd: null },
+      properties: {
+        name: "Semp",
+        timezone: DEFAULT_TIMEZONE,
+        dailyBudgetUsd: DEFAULT_DAILY_BUDGET_USD,
+        monthlyBudgetUsd: null,
+      },
     });
 
     await client.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [settingsDb.id]);
@@ -174,18 +186,38 @@ export async function seedSystem(
     // Books and Movies/TV (issue #25): the second wave, two concrete instantiations of the
     // generic "library module" contract. Runs last: needs Projects/People (from
     // seedTenDatabasesInTransaction above) and the system timezone (settingsDb, just above).
-    await seedLibraryModuleInTransaction(client, projectsDb.id, tenDatabases.people.id, viewTypeRegistry, computedKeyRegistry);
+    await seedLibraryModuleInTransaction(
+      client,
+      projectsDb.id,
+      tenDatabases.people.id,
+      viewTypeRegistry,
+      computedKeyRegistry,
+    );
 
     // Mailboxes/Folders/Emails (issue #26): the IMAP sync core's schema and deterministic
     // People-linking wiring. Order relative to the library module doesn't matter — both only
     // depend on the ten databases above.
-    await seedEmailModuleInTransaction(client, projectsDb.id, tenDatabases.people.id, tenDatabases.files.id, computedKeyRegistry, viewTypeRegistry);
+    await seedEmailModuleInTransaction(
+      client,
+      projectsDb.id,
+      tenDatabases.people.id,
+      tenDatabases.files.id,
+      computedKeyRegistry,
+      viewTypeRegistry,
+    );
 
     // Inbox / Inbox item types / Processing proposals (issue #101): the three databases
     // issue #24's ten hardcoded databases deliberately exclude. Order relative to the
     // library/email modules doesn't matter — only depends on the ten databases (Journal,
     // Transcripts) and the Semprec project item, both already created above.
-    await seedInboxPipelineInTransaction(client, tenDatabases.journal.id, tenDatabases.transcripts.id, semprecProject.id, computedKeyRegistry, viewTypeRegistry);
+    await seedInboxPipelineInTransaction(
+      client,
+      tenDatabases.journal.id,
+      tenDatabases.transcripts.id,
+      semprecProject.id,
+      computedKeyRegistry,
+      viewTypeRegistry,
+    );
 
     // MCP servers (issue #123): a system resource similar to Mailboxes, holding non-secret
     // connection metadata only. Order relative to the other module seeds doesn't matter —

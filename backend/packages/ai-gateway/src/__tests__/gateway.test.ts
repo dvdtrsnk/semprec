@@ -1,12 +1,21 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createAgentRun, createChokePoint, getSystemSettingsDatabaseId, getSystemSettingsItemId, seedSystem } from "@semprec/data";
+import {
+  createAgentRun,
+  createChokePoint,
+  getSystemSettingsDatabaseId,
+  getSystemSettingsItemId,
+  seedSystem,
+} from "@semprec/data";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { BudgetExceededError, complete, diarize, embed, transcribe } from "../gateway.js";
 
 let pool: Pool;
 
-async function setBudgets(pool: Pool, budgets: { dailyBudgetUsd?: number | null; monthlyBudgetUsd?: number | null }): Promise<void> {
+async function setBudgets(
+  pool: Pool,
+  budgets: { dailyBudgetUsd?: number | null; monthlyBudgetUsd?: number | null },
+): Promise<void> {
   const client = await pool.connect();
   let itemId: string;
   let databaseId: string;
@@ -109,7 +118,11 @@ describe("gateway", () => {
       );
 
       await expect(
-        complete(pool, { provider: "anthropic", model: "claude-sonnet-5" }, async () => ({ inputTokens: 1, outputTokens: 1, costUsd: 0.01 })),
+        complete(pool, { provider: "anthropic", model: "claude-sonnet-5" }, async () => ({
+          inputTokens: 1,
+          outputTokens: 1,
+          costUsd: 0.01,
+        })),
       ).rejects.toThrow(BudgetExceededError);
 
       const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
@@ -123,7 +136,11 @@ describe("gateway", () => {
       );
 
       await expect(
-        complete(pool, { provider: "anthropic", model: "claude-sonnet-5" }, async () => ({ inputTokens: 1, outputTokens: 1, costUsd: 0.01 })),
+        complete(pool, { provider: "anthropic", model: "claude-sonnet-5" }, async () => ({
+          inputTokens: 1,
+          outputTokens: 1,
+          costUsd: 0.01,
+        })),
       ).rejects.toThrow(BudgetExceededError);
     });
 

@@ -1,5 +1,10 @@
 import { DateTime } from "luxon";
-import type { FixedRecurrenceRule, FloatingRecurrenceRule, TaskRecurrenceMode, TaskRecurrenceRule } from "./taskRecurrenceRule.js";
+import type {
+  FixedRecurrenceRule,
+  FloatingRecurrenceRule,
+  TaskRecurrenceMode,
+  TaskRecurrenceRule,
+} from "./taskRecurrenceRule.js";
 
 const WEEKDAY_TO_LUXON: Record<string, number> = { mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 7 };
 
@@ -64,7 +69,12 @@ function nextFloatingDate(rule: FloatingRecurrenceRule, reference: DateTime): Da
  * called; the distinction is in how each rule computes forward from that point, not in
  * what the reference point is.
  */
-export function computeNextDueDate(mode: TaskRecurrenceMode, rule: TaskRecurrenceRule, timezone: string, reference: Date): string {
+export function computeNextDueDate(
+  mode: TaskRecurrenceMode,
+  rule: TaskRecurrenceRule,
+  timezone: string,
+  reference: Date,
+): string {
   const referenceDateTime = DateTime.fromJSDate(reference, { zone: timezone }).startOf("day");
   const next =
     mode === "fixed"

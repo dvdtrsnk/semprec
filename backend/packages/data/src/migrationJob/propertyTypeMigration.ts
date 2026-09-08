@@ -40,7 +40,11 @@ export function isConversionSupported(from: PropertyType, to: PropertyType): boo
  * tested without a database. `from === to` always passes the value through unchanged,
  * matching the no-op retype `runPropertyTypeMigrationJob` allows.
  */
-export function convertPropertyValue(from: PropertyType, to: PropertyType, value: unknown): { ok: true; value: unknown } | { ok: false } {
+export function convertPropertyValue(
+  from: PropertyType,
+  to: PropertyType,
+  value: unknown,
+): { ok: true; value: unknown } | { ok: false } {
   if (from === to) return { ok: true, value };
   const converter = CONVERTERS[from]?.[to];
   return converter ? converter(value) : { ok: false };
@@ -73,7 +77,11 @@ export function propertyTypeMigrationJobKey(propertyId: string): string {
 }
 
 /** Must run in the same transaction as the property's `type` column update. */
-export async function enqueuePropertyTypeMigration(client: Queryable, propertyId: string, fromType: PropertyType): Promise<void> {
+export async function enqueuePropertyTypeMigration(
+  client: Queryable,
+  propertyId: string,
+  fromType: PropertyType,
+): Promise<void> {
   await enqueueJob(
     client,
     CORE_TASK_NAMES.PROPERTY_TYPE_MIGRATION,
@@ -87,7 +95,11 @@ export async function enqueuePropertyTypeMigration(client: Queryable, propertyId
  * type. An unconvertible value is left empty (not overwritten with an error); the
  * database ends up `done` (no failures) or `partial` (some rows left empty).
  */
-export async function runPropertyTypeMigrationJob(pool: Pool, propertyId: string, fromType: PropertyType): Promise<void> {
+export async function runPropertyTypeMigrationJob(
+  pool: Pool,
+  propertyId: string,
+  fromType: PropertyType,
+): Promise<void> {
   const bootstrapClient = await pool.connect();
   let property;
   try {
@@ -105,7 +117,7 @@ export async function runPropertyTypeMigrationJob(pool: Pool, propertyId: string
 
   for (;;) {
     const client: PoolClient = await pool.connect();
-    let rows: Array<{ id: string; properties: Record<string, unknown> }> = [];
+    let rows: Array<{ id: string; properties: Record<string, unknown> }>;
     try {
       const result = await client.query(
         `SELECT id, properties FROM items WHERE database_id = $1 ${cursor ? "AND id > $3" : ""}
@@ -133,11 +145,10 @@ export async function runPropertyTypeMigrationJob(pool: Pool, propertyId: string
           );
         } else {
           anyFailures = true;
-          await client.query(`UPDATE items SET properties = properties - $3, updated_at = now() WHERE database_id = $1 AND id = $2`, [
-            property.databaseId,
-            row.id,
-            property.key,
-          ]);
+          await client.query(
+            `UPDATE items SET properties = properties - $3, updated_at = now() WHERE database_id = $1 AND id = $2`,
+            [property.databaseId, row.id, property.key],
+          );
         }
       }
     } finally {

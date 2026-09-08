@@ -3,7 +3,12 @@ import type { Pool } from "pg";
 import { createHash } from "node:crypto";
 import { runOnce } from "@semprec/queue";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createChokePoint, createItemWithClient, createRelationWithClient, type ChokePoint } from "../chokePoint/chokePoint.js";
+import {
+  createChokePoint,
+  createItemWithClient,
+  createRelationWithClient,
+  type ChokePoint,
+} from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { createActionRegistry, CORE_AGENT_RUN_ACTION_ID, coreAgentRunAction } from "../scheduler/actions.js";

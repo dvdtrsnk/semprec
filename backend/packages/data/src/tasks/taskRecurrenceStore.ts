@@ -1,7 +1,12 @@
 import type { PoolClient } from "pg";
 import type { Queryable } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
-import { parseTaskRecurrenceRule, TASK_RECURRENCE_MODES, type TaskRecurrenceMode, type TaskRecurrenceRule } from "./taskRecurrenceRule.js";
+import {
+  parseTaskRecurrenceRule,
+  TASK_RECURRENCE_MODES,
+  type TaskRecurrenceMode,
+  type TaskRecurrenceRule,
+} from "./taskRecurrenceRule.js";
 
 /**
  * Not `types.ts`'s `TaskRecurrenceRow` (which keeps `rule` as a loosely-typed jsonb bag,
@@ -36,7 +41,10 @@ export interface CreateTaskRecurrenceInput {
 }
 
 /** Not item/database state (no `properties`/`owner`), so it is written directly — same pattern as `project_heartbeats` via schedulerStore.ts, not through the choke-point. */
-export async function createTaskRecurrence(client: Queryable, input: CreateTaskRecurrenceInput): Promise<TaskRecurrence> {
+export async function createTaskRecurrence(
+  client: Queryable,
+  input: CreateTaskRecurrenceInput,
+): Promise<TaskRecurrence> {
   const rule = parseTaskRecurrenceRule(input.mode, input.rule);
   const { rows } = await client.query(
     `INSERT INTO task_recurrence (item_id, mode, rule, active) VALUES ($1, $2, $3::jsonb, $4) RETURNING ${COLUMNS}`,
@@ -60,8 +68,15 @@ export async function createTaskRecurrence(client: Queryable, input: CreateTaskR
  */
 export function getTaskRecurrence(client: PoolClient, itemId: string, forUpdate: true): Promise<TaskRecurrence | null>;
 export function getTaskRecurrence(client: Queryable, itemId: string, forUpdate?: false): Promise<TaskRecurrence | null>;
-export async function getTaskRecurrence(client: Queryable, itemId: string, forUpdate = false): Promise<TaskRecurrence | null> {
-  const { rows } = await client.query(`SELECT ${COLUMNS} FROM task_recurrence WHERE item_id = $1${forUpdate ? " FOR UPDATE" : ""}`, [itemId]);
+export async function getTaskRecurrence(
+  client: Queryable,
+  itemId: string,
+  forUpdate = false,
+): Promise<TaskRecurrence | null> {
+  const { rows } = await client.query(
+    `SELECT ${COLUMNS} FROM task_recurrence WHERE item_id = $1${forUpdate ? " FOR UPDATE" : ""}`,
+    [itemId],
+  );
   return rows[0] ? mapRow(rows[0]) : null;
 }
 

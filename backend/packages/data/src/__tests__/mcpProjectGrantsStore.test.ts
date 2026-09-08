@@ -21,17 +21,29 @@ describe("mcpProjectGrantsStore", () => {
 
   it("defaults a new project/tool pair to ungranted", async () => {
     const projectItemId = randomUUID();
-    const registration = await upsertMcpToolRegistration(pool, { mcpServerItemId: randomUUID(), toolName: "search_web", toolSchema: {} });
+    const registration = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: randomUUID(),
+      toolName: "search_web",
+      toolSchema: {},
+    });
 
     expect(await getProjectMcpGrant(pool, projectItemId, registration.id)).toBeNull();
 
-    const grant = await setProjectMcpGrant(pool, { projectItemId, mcpToolRegistrationId: registration.id, granted: false });
+    const grant = await setProjectMcpGrant(pool, {
+      projectItemId,
+      mcpToolRegistrationId: registration.id,
+      granted: false,
+    });
     expect(grant.granted).toBe(false);
   });
 
   it("grants and revokes idempotently on the composite key", async () => {
     const projectItemId = randomUUID();
-    const registration = await upsertMcpToolRegistration(pool, { mcpServerItemId: randomUUID(), toolName: "search_web", toolSchema: {} });
+    const registration = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: randomUUID(),
+      toolName: "search_web",
+      toolSchema: {},
+    });
 
     await setProjectMcpGrant(pool, { projectItemId, mcpToolRegistrationId: registration.id, granted: true });
     const granted = await getProjectMcpGrant(pool, projectItemId, registration.id);
@@ -47,8 +59,16 @@ describe("mcpProjectGrantsStore", () => {
 
   it("lists all of a project's grants", async () => {
     const projectItemId = randomUUID();
-    const toolA = await upsertMcpToolRegistration(pool, { mcpServerItemId: randomUUID(), toolName: "tool_a", toolSchema: {} });
-    const toolB = await upsertMcpToolRegistration(pool, { mcpServerItemId: randomUUID(), toolName: "tool_b", toolSchema: {} });
+    const toolA = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: randomUUID(),
+      toolName: "tool_a",
+      toolSchema: {},
+    });
+    const toolB = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: randomUUID(),
+      toolName: "tool_b",
+      toolSchema: {},
+    });
     await setProjectMcpGrant(pool, { projectItemId, mcpToolRegistrationId: toolA.id, granted: true });
     await setProjectMcpGrant(pool, { projectItemId, mcpToolRegistrationId: toolB.id, granted: false });
 

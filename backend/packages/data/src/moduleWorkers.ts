@@ -72,7 +72,9 @@ export async function deriveDesiredWorkerInstances(
       };
       const id = workerInstanceId(instance);
       if (desired.has(id)) {
-        throw new Error(`Duplicate worker instance id "${id}" for worker "${worker.name}" (module "${worker.moduleId}")`);
+        throw new Error(
+          `Duplicate worker instance id "${id}" for worker "${worker.name}" (module "${worker.moduleId}")`,
+        );
       }
       desired.set(id, instance);
     }

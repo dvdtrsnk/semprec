@@ -91,7 +91,8 @@ export async function getRelationDefinitionsByPropertyIds(
   for (const row of rows) {
     const definition = mapRelationDefinitionRow(row);
     if (requested.has(definition.propertyIdA)) byPropertyId.set(definition.propertyIdA, definition);
-    if (definition.propertyIdB && requested.has(definition.propertyIdB)) byPropertyId.set(definition.propertyIdB, definition);
+    if (definition.propertyIdB && requested.has(definition.propertyIdB))
+      byPropertyId.set(definition.propertyIdB, definition);
   }
   return byPropertyId;
 }
@@ -130,12 +131,15 @@ export async function createItemRelation(client: PoolClient, input: CreateItemRe
     return mapItemRelationRow(rows[0]);
   } catch (err) {
     if (isCardinalityViolation(err)) {
-      throw new CardinalityViolationError(`Relation ${input.relationDefinitionId} (${definition.cardinality}) rejected item_a=${input.itemA}/item_b=${input.itemB}: cardinality violation`, {
-        relationDefinitionId: input.relationDefinitionId,
-        cardinality: definition.cardinality,
-        itemA: input.itemA,
-        itemB: input.itemB,
-      });
+      throw new CardinalityViolationError(
+        `Relation ${input.relationDefinitionId} (${definition.cardinality}) rejected item_a=${input.itemA}/item_b=${input.itemB}: cardinality violation`,
+        {
+          relationDefinitionId: input.relationDefinitionId,
+          cardinality: definition.cardinality,
+          itemA: input.itemA,
+          itemB: input.itemB,
+        },
+      );
     }
     throw err;
   }

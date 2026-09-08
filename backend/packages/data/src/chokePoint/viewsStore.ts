@@ -43,7 +43,10 @@ function validateViewTypeConfig(type: string, config: ViewConfig, viewTypeRegist
   if (definition?.configSchema) {
     const result = definition.configSchema.safeParse(config);
     if (!result.success) {
-      throw new ValidationError(`Invalid config for view type '${type}': ${result.error.message}`, { field: "config", issues: result.error.issues });
+      throw new ValidationError(`Invalid config for view type '${type}': ${result.error.message}`, {
+        field: "config",
+        issues: result.error.issues,
+      });
     }
   }
   definition?.service?.validateConfig?.(config);
@@ -60,22 +63,36 @@ export interface CreateViewInput {
   createdBy?: CreatedBy;
 }
 
-export async function createView(client: PoolClient, input: CreateViewInput, viewTypeRegistry: ViewTypeRegistry): Promise<ViewRow> {
+export async function createView(
+  client: PoolClient,
+  input: CreateViewInput,
+  viewTypeRegistry: ViewTypeRegistry,
+): Promise<ViewRow> {
   const createdBy = input.createdBy ?? "user";
   if (createdBy === "ai_agent" && input.isDefault) {
-    throw new ForbiddenError("is_default cannot be set by an agent, not even on its own view", { field: "isDefault" }, "owner_violation");
+    throw new ForbiddenError(
+      "is_default cannot be set by an agent, not even on its own view",
+      { field: "isDefault" },
+      "owner_violation",
+    );
   }
   if (!isKnownViewType(viewTypeRegistry, input.type)) {
-    throw new ValidationError(`Unknown view type '${input.type}'; register it via the view-type registry first`, { field: "type" });
+    throw new ValidationError(`Unknown view type '${input.type}'; register it via the view-type registry first`, {
+      field: "type",
+    });
   }
   if (input.ownerModuleId && isBuiltinViewType(input.type)) {
-    throw new ValidationError("ownerModuleId may only be set for a custom, module-registered view type", { field: "ownerModuleId" });
+    throw new ValidationError("ownerModuleId may only be set for a custom, module-registered view type", {
+      field: "ownerModuleId",
+    });
   }
 
   const config = parseViewConfig(input.config ?? {});
   const isCurated = config.membership === "manual";
   if (isCurated && input.databaseId) {
-    throw new ValidationError("A curated view (config.membership = 'manual') cannot have a databaseId", { field: "databaseId" });
+    throw new ValidationError("A curated view (config.membership = 'manual') cannot have a databaseId", {
+      field: "databaseId",
+    });
   }
   if (!isCurated && !input.databaseId) {
     throw new ValidationError("A filtered/linked view requires a databaseId", { field: "databaseId" });
@@ -92,7 +109,15 @@ export async function createView(client: PoolClient, input: CreateViewInput, vie
       `INSERT INTO views (database_id, type, name, config, is_default, owner_module_id, created_by)
        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
        RETURNING ${VIEW_COLUMNS}`,
-      [input.databaseId ?? null, input.type, input.name, JSON.stringify(config), input.isDefault ?? false, input.ownerModuleId ?? null, createdBy],
+      [
+        input.databaseId ?? null,
+        input.type,
+        input.name,
+        JSON.stringify(config),
+        input.isDefault ?? false,
+        input.ownerModuleId ?? null,
+        createdBy,
+      ],
     );
     return mapViewRow(rows[0]);
   } catch (err) {
@@ -115,7 +140,9 @@ async function requireView(client: PoolClient, id: string): Promise<ViewRow> {
 }
 
 export async function listViewsByDatabase(client: PoolClient, databaseId: string): Promise<ViewRow[]> {
-  const { rows } = await client.query(`SELECT ${VIEW_COLUMNS} FROM views WHERE database_id = $1 ORDER BY name`, [databaseId]);
+  const { rows } = await client.query(`SELECT ${VIEW_COLUMNS} FROM views WHERE database_id = $1 ORDER BY name`, [
+    databaseId,
+  ]);
   return rows.map(mapViewRow);
 }
 
@@ -132,7 +159,12 @@ export interface PatchViewInput {
   createdBy?: CreatedBy;
 }
 
-export async function patchView(client: PoolClient, id: string, patch: PatchViewInput, viewTypeRegistry: ViewTypeRegistry): Promise<ViewRow> {
+export async function patchView(
+  client: PoolClient,
+  id: string,
+  patch: PatchViewInput,
+  viewTypeRegistry: ViewTypeRegistry,
+): Promise<ViewRow> {
   const view = await requireView(client, id);
 
   let nextConfig: ViewConfig | undefined;
@@ -143,7 +175,9 @@ export async function patchView(client: PoolClient, id: string, patch: PatchView
     const wasCurated = view.databaseId === null;
     const willBeCurated = nextConfig.membership === "manual";
     if (wasCurated !== willBeCurated) {
-      throw new ValidationError("A view cannot switch between curated and filtered/linked via patch", { field: "config.membership" });
+      throw new ValidationError("A view cannot switch between curated and filtered/linked via patch", {
+        field: "config.membership",
+      });
     }
     validateViewTypeConfig(view.type, nextConfig, viewTypeRegistry);
   }
@@ -162,7 +196,10 @@ export async function patchView(client: PoolClient, id: string, patch: PatchView
 
   params.push(id);
   try {
-    const { rows } = await client.query(`UPDATE views SET ${sets.join(", ")} WHERE id = $${params.length} RETURNING ${VIEW_COLUMNS}`, params);
+    const { rows } = await client.query(
+      `UPDATE views SET ${sets.join(", ")} WHERE id = $${params.length} RETURNING ${VIEW_COLUMNS}`,
+      params,
+    );
     return mapViewRow(rows[0]);
   } catch (err) {
     if (isUniqueViolation(err, "views_one_default_per_db")) {

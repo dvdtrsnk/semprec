@@ -71,7 +71,10 @@ export interface UpsertMcpToolRegistrationInput {
 }
 
 /** Creates or refreshes a tool's discovery snapshot. Leaves `requires_approval`/`risk_class` alone on an existing row. */
-export async function upsertMcpToolRegistration(client: Queryable, input: UpsertMcpToolRegistrationInput): Promise<McpToolRegistration> {
+export async function upsertMcpToolRegistration(
+  client: Queryable,
+  input: UpsertMcpToolRegistrationInput,
+): Promise<McpToolRegistration> {
   // `JSON.stringify(undefined)` returns `undefined`, not a string, which `pg` would otherwise
   // bind as SQL NULL — turning a caller bug into an opaque `tool_schema` NOT NULL violation
   // instead of a clear validation error at this module's boundary.
@@ -88,17 +91,28 @@ export async function upsertMcpToolRegistration(client: Queryable, input: Upsert
            active = EXCLUDED.active,
            updated_at = now()
      RETURNING *`,
-    [input.mcpServerItemId, input.toolName, JSON.stringify(input.toolSchema), input.description ?? null, input.active ?? true],
+    [
+      input.mcpServerItemId,
+      input.toolName,
+      JSON.stringify(input.toolSchema),
+      input.description ?? null,
+      input.active ?? true,
+    ],
   );
   return rowToRegistration(rows[0]);
 }
 
 export async function getMcpToolRegistration(client: Queryable, id: string): Promise<McpToolRegistration | null> {
-  const { rows } = await client.query<McpToolRegistrationRow>(`SELECT * FROM mcp_tool_registrations WHERE id = $1`, [id]);
+  const { rows } = await client.query<McpToolRegistrationRow>(`SELECT * FROM mcp_tool_registrations WHERE id = $1`, [
+    id,
+  ]);
   return rows[0] ? rowToRegistration(rows[0]) : null;
 }
 
-export async function listMcpToolRegistrationsForServer(client: Queryable, mcpServerItemId: string): Promise<McpToolRegistration[]> {
+export async function listMcpToolRegistrationsForServer(
+  client: Queryable,
+  mcpServerItemId: string,
+): Promise<McpToolRegistration[]> {
   const { rows } = await client.query<McpToolRegistrationRow>(
     `SELECT * FROM mcp_tool_registrations WHERE mcp_server_item_id = $1 ORDER BY tool_name`,
     [mcpServerItemId],
@@ -115,7 +129,11 @@ export async function listMcpToolRegistrationsForServer(client: Queryable, mcpSe
  * thing when `keptToolNames` is empty (every active row for this server goes inactive), unlike
  * a bare `NOT IN ()`.
  */
-export async function deactivateMcpToolRegistrationsNotIn(client: Queryable, mcpServerItemId: string, keptToolNames: string[]): Promise<void> {
+export async function deactivateMcpToolRegistrationsNotIn(
+  client: Queryable,
+  mcpServerItemId: string,
+  keptToolNames: string[],
+): Promise<void> {
   await client.query(
     `UPDATE mcp_tool_registrations
        SET active = false, updated_at = now()

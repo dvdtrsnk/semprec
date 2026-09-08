@@ -35,7 +35,11 @@ export function createLibraryMetadataTriggerAction(pool: Pool): ActionHandler {
     if (!context.itemId) return; // only meaningful for an onItemEvent fire
     const config = libraryMetadataActionConfigSchema.parse(actionConfig);
     await withTransaction(pool, (client) =>
-      enqueueLibraryMetadataProcessing(client, { itemId: context.itemId as string, databaseId: config.databaseId, config }),
+      enqueueLibraryMetadataProcessing(client, {
+        itemId: context.itemId as string,
+        databaseId: config.databaseId,
+        config,
+      }),
     );
   };
 }

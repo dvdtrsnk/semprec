@@ -29,7 +29,13 @@ function formatUsd(amount: number): string {
   return `$${amount.toFixed(2)}`;
 }
 
-function CostByDayChart({ points, dailyBudgetUsd }: { points: readonly DailyCostPoint[]; dailyBudgetUsd: number | null }) {
+function CostByDayChart({
+  points,
+  dailyBudgetUsd,
+}: {
+  points: readonly DailyCostPoint[];
+  dailyBudgetUsd: number | null;
+}) {
   const width = 600;
   const height = 160;
   const padding = 8;

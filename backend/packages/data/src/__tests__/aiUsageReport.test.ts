@@ -18,7 +18,11 @@ describe("getAiUsageReport", () => {
   });
 
   it("aggregates by provider, model, native unit, and the originating run's unit", async () => {
-    const invocationRun = await createAgentRun(pool, { triggeredBy: "user", task: "invocation task", unit: "invocation" });
+    const invocationRun = await createAgentRun(pool, {
+      triggeredBy: "user",
+      task: "invocation task",
+      unit: "invocation",
+    });
     const sessionRun = await createAgentRun(pool, { triggeredBy: "user", task: "session task", unit: "session" });
 
     await recordTokenGatewayCall(pool, {
@@ -141,7 +145,12 @@ describe("getAiUsageReport", () => {
   });
 
   it("does not count an audio-only day's seconds as tokens in the daily token series", async () => {
-    await recordAudioGatewayCall(pool, { provider: "deepinfra", model: "whisper-large-v3", audioSeconds: 100, costUsd: 0.05 });
+    await recordAudioGatewayCall(pool, {
+      provider: "deepinfra",
+      model: "whisper-large-v3",
+      audioSeconds: 100,
+      costUsd: 0.05,
+    });
 
     const report = await getAiUsageReport(pool, { from: "2026-01-01T00:00:00Z", to: "2026-12-30T00:00:00Z" });
     for (const point of report.dailyTokenUsage) {
@@ -157,6 +166,8 @@ describe("getAiUsageReport", () => {
     await expect(getAiUsageReport(pool, { from: "2000-01-01T00:00:00Z", to: "2030-01-01T00:00:00Z" })).rejects.toThrow(
       "Date range cannot exceed",
     );
-    await expect(getAiUsageReport(pool, { from: "not-a-date", to: "2026-01-01T00:00:00Z" })).rejects.toThrow("is not a valid date");
+    await expect(getAiUsageReport(pool, { from: "not-a-date", to: "2026-01-01T00:00:00Z" })).rejects.toThrow(
+      "is not a valid date",
+    );
   });
 });

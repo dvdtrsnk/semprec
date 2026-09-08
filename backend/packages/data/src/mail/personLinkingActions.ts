@@ -60,8 +60,16 @@ export function createLinkEmailToPeopleAction(pool: Pool): ActionHandler {
       const meta = await getMailMessageMetaByItemId(client, context.itemId as string);
       if (!meta) return;
 
-      const senderProperty = await propertiesStore.getPropertyByKey(client, config.emailsDatabaseId, config.senderPeopleKey);
-      const recipientsProperty = await propertiesStore.getPropertyByKey(client, config.emailsDatabaseId, config.recipientsPeopleKey);
+      const senderProperty = await propertiesStore.getPropertyByKey(
+        client,
+        config.emailsDatabaseId,
+        config.senderPeopleKey,
+      );
+      const recipientsProperty = await propertiesStore.getPropertyByKey(
+        client,
+        config.emailsDatabaseId,
+        config.recipientsPeopleKey,
+      );
 
       if (senderProperty && meta.envelope.from) {
         const personId = await lookupPersonIdByEmail(client, meta.envelope.from.address);
@@ -85,7 +93,11 @@ export function createLinkEmailToPeopleAction(pool: Pool): ActionHandler {
           if (personId) {
             await createRelationWithClient(
               client,
-              { relationPropertyId: recipientsProperty.id, callerItemId: context.itemId as string, targetItemId: personId },
+              {
+                relationPropertyId: recipientsProperty.id,
+                callerItemId: context.itemId as string,
+                targetItemId: personId,
+              },
               EMAILS_RELATION_CONTEXT,
             );
           }

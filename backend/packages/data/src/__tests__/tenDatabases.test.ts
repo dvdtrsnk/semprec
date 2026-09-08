@@ -37,13 +37,27 @@ describe("ten hardcoded databases (issue #24)", () => {
   });
 
   it("seeds all ten databases as system, schema-locked databases with a default system view", async () => {
-    const moduleIds = ["areas", "projects", "tasks", "people", "files", "events", "healthRecords", "companies", "transcripts", "journal"];
+    const moduleIds = [
+      "areas",
+      "projects",
+      "tasks",
+      "people",
+      "files",
+      "events",
+      "healthRecords",
+      "companies",
+      "transcripts",
+      "journal",
+    ];
     for (const moduleId of moduleIds) {
       const databaseId = await databaseIdFor(moduleId);
       const { rows } = await pool.query("SELECT system, schema_locked FROM databases WHERE id = $1", [databaseId]);
       expect(rows[0]).toEqual({ system: true, schema_locked: true });
 
-      const { rows: viewRows } = await pool.query("SELECT type, created_by, is_default FROM views WHERE database_id = $1", [databaseId]);
+      const { rows: viewRows } = await pool.query(
+        "SELECT type, created_by, is_default FROM views WHERE database_id = $1",
+        [databaseId],
+      );
       expect(viewRows).toHaveLength(1);
       expect(viewRows[0].created_by).toBe("system");
       expect(viewRows[0].is_default).toBe(true);
@@ -57,8 +71,14 @@ describe("ten hardcoded databases (issue #24)", () => {
     const area = await chokePoint.createItem({ databaseId: areasId, properties: { name: "Leisure" } });
     const project = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Vacation planning" } });
 
-    const { rows: propRows } = await pool.query("SELECT id FROM properties WHERE database_id = $1 AND key = 'area'", [projectsId]);
-    await chokePoint.createRelation({ relationPropertyId: propRows[0].id, callerItemId: project.id, targetItemId: area.id });
+    const { rows: propRows } = await pool.query("SELECT id FROM properties WHERE database_id = $1 AND key = 'area'", [
+      projectsId,
+    ]);
+    await chokePoint.createRelation({
+      relationPropertyId: propRows[0].id,
+      callerItemId: project.id,
+      targetItemId: area.id,
+    });
 
     const edges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, area.id));
     expect(edges).toHaveLength(1);
@@ -71,24 +91,43 @@ describe("ten hardcoded databases (issue #24)", () => {
     const company = await chokePoint.createItem({ databaseId: companiesId, properties: { name: "MeguMethod" } });
     const project = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Client work" } });
 
-    const { rows: propRows } = await pool.query("SELECT id FROM properties WHERE database_id = $1 AND key = 'company'", [projectsId]);
+    const { rows: propRows } = await pool.query(
+      "SELECT id FROM properties WHERE database_id = $1 AND key = 'company'",
+      [projectsId],
+    );
     expect(propRows).toHaveLength(1);
-    await chokePoint.createRelation({ relationPropertyId: propRows[0].id, callerItemId: project.id, targetItemId: company.id });
+    await chokePoint.createRelation({
+      relationPropertyId: propRows[0].id,
+      callerItemId: project.id,
+      targetItemId: company.id,
+    });
 
     // the inverse ("Companies -> Projects") side exists too and is queryable from the company's item
-    const { rows: inverseProp } = await pool.query("SELECT id FROM properties WHERE database_id = $1 AND key = 'projects'", [companiesId]);
+    const { rows: inverseProp } = await pool.query(
+      "SELECT id FROM properties WHERE database_id = $1 AND key = 'projects'",
+      [companiesId],
+    );
     expect(inverseProp).toHaveLength(1);
-    const allEdges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, company.id));
+    const allEdges = await withTransaction(pool, (client) =>
+      relationsStore.listAllRelationsForItem(client, company.id),
+    );
     expect(allEdges).toHaveLength(1);
   });
 
   it("a systemActive project can be deactivated but not deleted", async () => {
     const projectsId = await databaseIdFor("projects");
-    const systemProject = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Email", systemActive: true } });
+    const systemProject = await chokePoint.createItem({
+      databaseId: projectsId,
+      properties: { name: "Email", systemActive: true },
+    });
 
     await expect(chokePoint.softDeleteItem(projectsId, systemProject.id)).rejects.toThrow(/system-active/);
 
-    const deactivated = await chokePoint.updateItem({ databaseId: projectsId, itemId: systemProject.id, propertiesPatch: { systemActive: false } });
+    const deactivated = await chokePoint.updateItem({
+      databaseId: projectsId,
+      itemId: systemProject.id,
+      propertiesPatch: { systemActive: false },
+    });
     expect(deactivated.properties.systemActive).toBe(false);
     const nowDeletable = await chokePoint.softDeleteItem(projectsId, systemProject.id);
     expect(nowDeletable?.deletedAt).not.toBeNull();
@@ -125,7 +164,10 @@ describe("ten hardcoded databases (issue #24)", () => {
     expect(blob.byteSize).toBe("123456789012");
 
     const filesId = await databaseIdFor("files");
-    const file = await chokePoint.createItem({ databaseId: filesId, properties: { name: "Lease.pdf", file: { blobId: blob.id } } });
+    const file = await chokePoint.createItem({
+      databaseId: filesId,
+      properties: { name: "Lease.pdf", file: { blobId: blob.id } },
+    });
     expect((file.properties as { file: { blobId: string } }).file.blobId).toBe(blob.id);
 
     const fetched = await withTransaction(pool, (client) => getBlob(client, blob.id));
@@ -141,11 +183,22 @@ describe("ten hardcoded databases (issue #24)", () => {
       properties: { name: "Take out trash", status: "notDone", date: "2026-08-24" },
     });
 
-    const { rows: propRows } = await pool.query("SELECT id FROM properties WHERE database_id = $1 AND key = 'project'", [tasksId]);
-    await chokePoint.createRelation({ relationPropertyId: propRows[0].id, callerItemId: task.id, targetItemId: project.id });
+    const { rows: propRows } = await pool.query(
+      "SELECT id FROM properties WHERE database_id = $1 AND key = 'project'",
+      [tasksId],
+    );
+    await chokePoint.createRelation({
+      relationPropertyId: propRows[0].id,
+      callerItemId: task.id,
+      targetItemId: project.id,
+    });
 
     await withTransaction(pool, (client) =>
-      createTaskRecurrence(client, { itemId: task.id, mode: "fixed", rule: { kind: "weekdays", days: ["mon", "fri"] } }),
+      createTaskRecurrence(client, {
+        itemId: task.id,
+        mode: "fixed",
+        rule: { kind: "weekdays", days: ["mon", "fri"] },
+      }),
     );
 
     const next = await advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: task.id, timezone: "Europe/Prague" });
@@ -162,13 +215,24 @@ describe("ten hardcoded databases (issue #24)", () => {
     expect([newEdges[0].itemA, newEdges[0].itemB]).toContain(project.id);
 
     // completing a task with no recurrence is a no-op
-    const plain = await chokePoint.createItem({ databaseId: tasksId, properties: { name: "One-off", status: "notDone" } });
-    const noop = await advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: plain.id, timezone: "Europe/Prague" });
+    const plain = await chokePoint.createItem({
+      databaseId: tasksId,
+      properties: { name: "One-off", status: "notDone" },
+    });
+    const noop = await advanceTaskRecurrence(pool, {
+      databaseId: tasksId,
+      itemId: plain.id,
+      timezone: "Europe/Prague",
+    });
     expect(noop).toBeNull();
 
     // the rolling-model invariant: re-advancing the already-completed original instance is
     // also a no-op (its recurrence was deactivated when the next instance was created)
-    const reAdvanceOriginal = await advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: task.id, timezone: "Europe/Prague" });
+    const reAdvanceOriginal = await advanceTaskRecurrence(pool, {
+      databaseId: tasksId,
+      itemId: task.id,
+      timezone: "Europe/Prague",
+    });
     expect(reAdvanceOriginal).toBeNull();
   });
 
@@ -181,10 +245,21 @@ describe("ten hardcoded databases (issue #24)", () => {
       properties: { name: "Take out trash", status: "notDone", date: "2026-08-24" },
     });
 
-    const { rows: propRows } = await pool.query("SELECT id FROM properties WHERE database_id = $1 AND key = 'project'", [tasksId]);
-    await chokePoint.createRelation({ relationPropertyId: propRows[0].id, callerItemId: task.id, targetItemId: project.id });
+    const { rows: propRows } = await pool.query(
+      "SELECT id FROM properties WHERE database_id = $1 AND key = 'project'",
+      [tasksId],
+    );
+    await chokePoint.createRelation({
+      relationPropertyId: propRows[0].id,
+      callerItemId: task.id,
+      targetItemId: project.id,
+    });
     await withTransaction(pool, (client) =>
-      createTaskRecurrence(client, { itemId: task.id, mode: "fixed", rule: { kind: "weekdays", days: ["mon", "fri"] } }),
+      createTaskRecurrence(client, {
+        itemId: task.id,
+        mode: "fixed",
+        rule: { kind: "weekdays", days: ["mon", "fri"] },
+      }),
     );
 
     await chokePoint.softDeleteItem(projectsId, project.id);
@@ -200,12 +275,24 @@ describe("ten hardcoded databases (issue #24)", () => {
     const tasksId = await databaseIdFor("tasks");
     const eventsId = await databaseIdFor("events");
     const event = await chokePoint.createItem({ databaseId: eventsId, properties: { name: "Standup" } });
-    const task = await chokePoint.createItem({ databaseId: tasksId, properties: { name: "Follow up", status: "notDone" } });
+    const task = await chokePoint.createItem({
+      databaseId: tasksId,
+      properties: { name: "Follow up", status: "notDone" },
+    });
 
-    const { rows: actionItemsProp } = await pool.query("SELECT id FROM properties WHERE database_id = $1 AND key = 'actionItems'", [eventsId]);
-    await chokePoint.createRelation({ relationPropertyId: actionItemsProp[0].id, callerItemId: event.id, targetItemId: task.id });
+    const { rows: actionItemsProp } = await pool.query(
+      "SELECT id FROM properties WHERE database_id = $1 AND key = 'actionItems'",
+      [eventsId],
+    );
+    await chokePoint.createRelation({
+      relationPropertyId: actionItemsProp[0].id,
+      callerItemId: event.id,
+      targetItemId: task.id,
+    });
 
-    await withTransaction(pool, (client) => createTaskRecurrence(client, { itemId: task.id, mode: "floating", rule: { unit: "days", n: 1 } }));
+    await withTransaction(pool, (client) =>
+      createTaskRecurrence(client, { itemId: task.id, mode: "floating", rule: { unit: "days", n: 1 } }),
+    );
     const next = await advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: task.id, timezone: "Europe/Prague" });
 
     // the event keeps its original action-item link (the completed instance stays part of
@@ -217,7 +304,12 @@ describe("ten hardcoded databases (issue #24)", () => {
   });
 
   it("computeNextDueDate: fixed nthWeekday and floating interval rules", () => {
-    const secondTuesday = computeNextDueDate("fixed", { kind: "nthWeekday", n: 2, weekday: "tue" }, "UTC", new Date("2026-08-01T00:00:00Z"));
+    const secondTuesday = computeNextDueDate(
+      "fixed",
+      { kind: "nthWeekday", n: 2, weekday: "tue" },
+      "UTC",
+      new Date("2026-08-01T00:00:00Z"),
+    );
     expect(secondTuesday).toBe("2026-08-11");
 
     const inTwoWeeks = computeNextDueDate("floating", { unit: "weeks", n: 2 }, "UTC", new Date("2026-08-01T00:00:00Z"));
@@ -225,10 +317,20 @@ describe("ten hardcoded databases (issue #24)", () => {
   });
 
   it("computeNextDueDate: fixed monthDates rolls to the next month once the date has passed", () => {
-    const withinMonth = computeNextDueDate("fixed", { kind: "monthDates", dates: [15] }, "UTC", new Date("2026-08-01T00:00:00Z"));
+    const withinMonth = computeNextDueDate(
+      "fixed",
+      { kind: "monthDates", dates: [15] },
+      "UTC",
+      new Date("2026-08-01T00:00:00Z"),
+    );
     expect(withinMonth).toBe("2026-08-15");
 
-    const alreadyPassed = computeNextDueDate("fixed", { kind: "monthDates", dates: [15] }, "UTC", new Date("2026-08-20T00:00:00Z"));
+    const alreadyPassed = computeNextDueDate(
+      "fixed",
+      { kind: "monthDates", dates: [15] },
+      "UTC",
+      new Date("2026-08-20T00:00:00Z"),
+    );
     expect(alreadyPassed).toBe("2026-09-15");
   });
 

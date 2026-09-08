@@ -7,7 +7,11 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
   test: {
-    include: ["packages/*/src/**/*.unit.test.ts", "modules/*/src/**/*.unit.test.ts", "services/*/src/**/*.unit.test.ts"],
+    include: [
+      "packages/*/src/**/*.unit.test.ts",
+      "modules/*/src/**/*.unit.test.ts",
+      "services/*/src/**/*.unit.test.ts",
+    ],
     environment: "node",
   },
 });

@@ -15,7 +15,12 @@ import {
   LIBRARY_METADATA_TRIGGER_ACTION_ID,
   LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID,
 } from "../library/libraryMetadataActions.js";
-import { ensureItemAutomation, getItemAutomation, markItemAutomationDone, setItemAutomationLocked } from "../library/itemAutomationStore.js";
+import {
+  ensureItemAutomation,
+  getItemAutomation,
+  markItemAutomationDone,
+  setItemAutomationLocked,
+} from "../library/itemAutomationStore.js";
 import { enqueueLibraryMetadataProcessing, type LibraryMetadataFetcher } from "../library/libraryMetadataJob.js";
 
 let pool: Pool;
@@ -57,7 +62,18 @@ describe("library module (issue #25)", () => {
 
     expect(books.map((p) => p.key).sort()).toEqual(["author", "cover", "name", "rating", "status"]);
     expect(movies.map((p) => p.key).sort()).toEqual(
-      ["cover", "name", "notes", "rating", "secondaryRating", "sourceUrl", "status", "type", "watchedWith", "year"].sort(),
+      [
+        "cover",
+        "name",
+        "notes",
+        "rating",
+        "secondaryRating",
+        "sourceUrl",
+        "status",
+        "type",
+        "watchedWith",
+        "year",
+      ].sort(),
     );
 
     expect(books.find((p) => p.key === "cover")).toMatchObject({ type: "image", owner: "system" });
@@ -71,7 +87,11 @@ describe("library module (issue #25)", () => {
     expect(booksViews[0].config).toMatchObject({ coverKey: "cover", subtitleKey: "author", statusKey: "status" });
 
     const moviesViews = await chokePoint.listViewsByDatabase(moviesId);
-    expect(moviesViews[0].config).toMatchObject({ coverKey: "cover", subtitleKey: "year", secondaryRatingKey: "secondaryRating" });
+    expect(moviesViews[0].config).toMatchObject({
+      coverKey: "cover",
+      subtitleKey: "year",
+      secondaryRatingKey: "secondaryRating",
+    });
   });
 
   it("rejects writing owner:'system' library fields through the generic create/update path", async () => {
@@ -89,7 +109,10 @@ describe("library module (issue #25)", () => {
   it("creating a library item drives processLibraryMetadata end to end, storing a real blob as the cover", async () => {
     const booksId = await getDatabaseIdByModule("books");
     const registry = libraryRegistry();
-    const item = await chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune", author: "Frank Herbert" } });
+    const item = await chokePoint.createItem({
+      databaseId: booksId,
+      properties: { name: "Dune", author: "Frank Herbert" },
+    });
 
     // `runOnce` drains cascading enqueues within one call: the choke-point's onItemEvent
     // trigger -> heartbeatFire -> our trigger action (seeds item_automation, enqueues the
@@ -164,7 +187,9 @@ describe("library module (issue #25)", () => {
       [LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID, booksId],
     );
     expect(rows).toHaveLength(1);
-    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [rows[0].id]);
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      rows[0].id,
+    ]);
     await withTransaction(pool, (client) => sweepDueHeartbeats(client));
 
     await drainQueue(registry); // heartbeatFire -> retry sweep action -> re-enqueues processLibraryMetadata
@@ -183,7 +208,12 @@ describe("library module (issue #25)", () => {
     const person = await chokePoint.createItem({ databaseId: peopleId, properties: { name: "Alex" } });
 
     const watchedWith = (await chokePoint.listProperties(moviesId)).find((p) => p.key === "watchedWith")!;
-    await chokePoint.createRelation({ relationPropertyId: watchedWith.id, callerItemId: movie.id, targetItemId: person.id, metadata: { rating: 4 } });
+    await chokePoint.createRelation({
+      relationPropertyId: watchedWith.id,
+      callerItemId: movie.id,
+      targetItemId: person.id,
+      metadata: { rating: 4 },
+    });
 
     const { rows } = await pool.query<{ metadata: Record<string, unknown> }>(
       `SELECT metadata FROM item_relations WHERE item_a = $1 OR item_b = $1`,
@@ -212,7 +242,9 @@ describe("library module (issue #25)", () => {
       `SELECT id FROM project_heartbeats WHERE action_id = $1 AND action_config ->> 'databaseId' = $2`,
       [LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID, booksId],
     );
-    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [rows[0].id]);
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      rows[0].id,
+    ]);
     await withTransaction(pool, (client) => sweepDueHeartbeats(client));
 
     let called = false;
@@ -236,7 +268,11 @@ describe("library module (issue #25)", () => {
     // bypassing the retry sweep's exclusion filter entirely.
     let called = false;
     await withTransaction(pool, (client) =>
-      enqueueLibraryMetadataProcessing(client, { itemId: item.id, databaseId: booksId, config: { source: "none", coverKey: "cover" } }),
+      enqueueLibraryMetadataProcessing(client, {
+        itemId: item.id,
+        databaseId: booksId,
+        config: { source: "none", coverKey: "cover" },
+      }),
     );
     await drainQueue(registry, async () => {
       called = true;
