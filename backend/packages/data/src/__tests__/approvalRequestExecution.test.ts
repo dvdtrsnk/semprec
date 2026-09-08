@@ -38,7 +38,7 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 
 async function createUser(): Promise<string> {
   const { rows } = await pool.query<{ id: string }>(`INSERT INTO users DEFAULT VALUES RETURNING id`);
-  return rows[0].id;
+  return rows[0]!.id;
 }
 
 async function createGrantedTool(contractServer: McpContractServer) {
@@ -84,7 +84,7 @@ describe("approval request decide+execute (issue #131)", () => {
   });
 
   it("executes the deferred call once a pending request is approved, recording the outcome", async () => {
-    const contractServer = await startStdioContractServer([SEARCH_TOOL]);
+    const contractServer = startStdioContractServer([SEARCH_TOOL]);
     servers.push(contractServer);
     const { server, registration } = await createGrantedTool(contractServer);
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
@@ -116,7 +116,7 @@ describe("approval request decide+execute (issue #131)", () => {
   });
 
   it("never executes a rejected request", async () => {
-    const contractServer = await startStdioContractServer([SEARCH_TOOL]);
+    const contractServer = startStdioContractServer([SEARCH_TOOL]);
     servers.push(contractServer);
     const { server, registration } = await createGrantedTool(contractServer);
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
@@ -144,7 +144,7 @@ describe("approval request decide+execute (issue #131)", () => {
   });
 
   it("a retried decision does not create a second decision or a second execution", async () => {
-    const contractServer = await startStdioContractServer([SEARCH_TOOL]);
+    const contractServer = startStdioContractServer([SEARCH_TOOL]);
     servers.push(contractServer);
     const { server, registration } = await createGrantedTool(contractServer);
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });

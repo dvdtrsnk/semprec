@@ -264,9 +264,9 @@ describe("heartbeat.list / heartbeat.history / heartbeat.trigger agent tools", (
     expect(outcome.error).toBe(false);
     const jobs = await pendingTriggerJobs(pool);
     expect(jobs).toHaveLength(1);
-    expect(jobs[0].key).toBe(`heartbeat-fire:manual:${heartbeat.id}`);
-    expect(jobs[0].key).not.toBe(`heartbeat-fire:${heartbeat.id}`);
-    expect(jobs[0].payload).toEqual({ heartbeatId: heartbeat.id, triggeredByRunId: callingRun.id });
+    expect(jobs[0]!.key).toBe(`heartbeat-fire:manual:${heartbeat.id}`);
+    expect(jobs[0]!.key).not.toBe(`heartbeat-fire:${heartbeat.id}`);
+    expect(jobs[0]!.payload).toEqual({ heartbeatId: heartbeat.id, triggeredByRunId: callingRun.id });
   });
 
   it("collapses repeated pending manual triggers onto a single job", async () => {
@@ -287,7 +287,7 @@ describe("heartbeat.list / heartbeat.history / heartbeat.trigger agent tools", (
 
     const jobs = await pendingTriggerJobs(pool);
     expect(jobs).toHaveLength(1);
-    expect(jobs[0].payload.triggeredByRunId).toBe(secondRun.id);
+    expect(jobs[0]!.payload.triggeredByRunId).toBe(secondRun.id);
   });
 
   it("does not collapse a pending manual trigger with a pending scheduled fire, or vice versa", async () => {
@@ -308,7 +308,7 @@ describe("heartbeat.list / heartbeat.history / heartbeat.trigger agent tools", (
       [heartbeat.id],
     );
     expect(occurrenceRows).toHaveLength(1);
-    const occurrenceId = occurrenceRows[0].id;
+    const occurrenceId = occurrenceRows[0]!.id;
 
     const callingRun = await createAgentRun(pool, { projectItemId: PROJECT_A, triggeredBy: "user", task: "trigger" });
     const heartbeatTrigger = createHeartbeatTriggerTool(pool);

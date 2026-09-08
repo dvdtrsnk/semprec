@@ -19,7 +19,7 @@ let pool: Pool;
 
 async function createUser(): Promise<string> {
   const { rows } = await pool.query<{ id: string }>(`INSERT INTO users DEFAULT VALUES RETURNING id`);
-  return rows[0].id;
+  return rows[0]!.id;
 }
 
 async function createPendingRequest(): Promise<string> {

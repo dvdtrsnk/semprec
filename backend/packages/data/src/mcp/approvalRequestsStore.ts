@@ -1,4 +1,4 @@
-import type { Queryable } from "../db/pool.js";
+import { requireSingleRow, type Queryable } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 
 export type ApprovalRequestStatus = "pending" | "approved" | "rejected";
@@ -91,7 +91,7 @@ export async function createPendingApprovalRequest(
      RETURNING *`,
     [input.agentRunId, input.toolName, input.riskClass, JSON.stringify(input.payload)],
   );
-  return rowToApprovalRequest(rows[0]);
+  return rowToApprovalRequest(requireSingleRow(rows, "approval_requests insert RETURNING"));
 }
 
 export async function getApprovalRequest(client: Queryable, id: string): Promise<ApprovalRequest | null> {

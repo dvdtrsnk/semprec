@@ -12,7 +12,7 @@ let chokePoint: ChokePoint;
 
 async function createUser(): Promise<string> {
   const { rows } = await pool.query<{ id: string }>(`INSERT INTO users DEFAULT VALUES RETURNING id`);
-  return rows[0].id;
+  return rows[0]!.id;
 }
 
 describe("listApprovalRequestsQueue (issue #132)", () => {
@@ -78,7 +78,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
     const rows = await listApprovalRequestsQueue(pool);
 
     expect(JSON.stringify(rows)).not.toContain("hunter2");
-    expect(rows[0].safeSummary.argKeys).toEqual(["password"]);
+    expect(rows[0]!.safeSummary.argKeys).toEqual(["password"]);
   });
 
   it("returns null project fields for a run with no project (e.g. the supervisor's own run)", async () => {
@@ -88,8 +88,8 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
 
     const rows = await listApprovalRequestsQueue(pool);
 
-    expect(rows[0].projectItemId).toBeNull();
-    expect(rows[0].projectName).toBeNull();
+    expect(rows[0]!.projectItemId).toBeNull();
+    expect(rows[0]!.projectName).toBeNull();
   });
 
   it("orders oldest request first and excludes decided requests", async () => {

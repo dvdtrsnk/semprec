@@ -2,7 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { NotFoundError } from "../errors.js";
 import { getSystemTimezone } from "../systemSettings.js";
-import { withTransaction } from "../db/pool.js";
+import { requireSingleRow, withTransaction } from "../db/pool.js";
 import { computeNextFireAt } from "./nextFireAt.js";
 import {
   isFloatingRuleKind,
@@ -391,7 +391,11 @@ async function insertHeartbeatOccurrence(
        RETURNING generation`,
       [existing.id, snapshotJson],
     );
-    return { occurrenceId: existing.id, generation: rows[0].generation, jobKeyMode: "replace" };
+    return {
+      occurrenceId: existing.id,
+      generation: requireSingleRow(rows, "heartbeat_occurrences reactivate RETURNING").generation,
+      jobKeyMode: "replace",
+    };
   }
 
   if (existing.status === "queued" && !existing.snapshot_matches) {
@@ -402,7 +406,11 @@ async function insertHeartbeatOccurrence(
        RETURNING generation`,
       [existing.id, snapshotJson],
     );
-    return { occurrenceId: existing.id, generation: rows[0].generation, jobKeyMode: "preserve_run_at" };
+    return {
+      occurrenceId: existing.id,
+      generation: requireSingleRow(rows, "heartbeat_occurrences resnapshot RETURNING").generation,
+      jobKeyMode: "preserve_run_at",
+    };
   }
 
   return null; // queued-with-matching-snapshot, running, succeeded, or failed: never reactivatable

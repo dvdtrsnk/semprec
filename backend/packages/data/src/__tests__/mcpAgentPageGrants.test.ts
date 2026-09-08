@@ -78,7 +78,7 @@ describe("listMcpToolGrantsForProject (issue #127)", () => {
 
     const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, projectItemId));
     expect(rows).toHaveLength(1);
-    expect(rows[0].granted).toBe(true);
+    expect(rows[0]!.granted).toBe(true);
   });
 
   it("excludes an inactive registration", async () => {
