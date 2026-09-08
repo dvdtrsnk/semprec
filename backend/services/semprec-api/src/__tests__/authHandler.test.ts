@@ -2,12 +2,13 @@ import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { createUser, hashPassword, type UserRow } from "@semprec/data";
+import { createUser, hashPassword, type PasswordResetMailer, type UserRow } from "@semprec/data";
 import { createAuthRequestListener, SESSION_COOKIE_NAME } from "../authHandler.js";
 
 let pool: Pool;
 
 const PASSWORD = "s3cret-password";
+const APP_BASE_URL = "https://app.example.test";
 
 async function makeUser(email = "person@example.com"): Promise<UserRow> {
   return createUser(pool, { email, passwordHash: await hashPassword(PASSWORD) });
@@ -21,15 +22,37 @@ function sessionCookieFrom(res: Response): string {
   return match[1]!;
 }
 
+interface FakeMailer extends PasswordResetMailer {
+  sent: Array<{ to: string; resetUrl: string }>;
+}
+
+function createFakeMailer(): FakeMailer {
+  const sent: Array<{ to: string; resetUrl: string }> = [];
+  return {
+    sent,
+    async sendPasswordResetEmail(input) {
+      sent.push(input);
+    },
+  };
+}
+
+function tokenFromResetUrl(resetUrl: string): string {
+  const token = new URL(resetUrl).searchParams.get("token");
+  if (!token) throw new Error(`expected a token query param in ${resetUrl}`);
+  return token;
+}
+
 describe("createAuthRequestListener", () => {
   let server: Server;
   let baseUrl: string;
+  let mailer: FakeMailer;
 
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    mailer = createFakeMailer();
 
-    server = createServer(createAuthRequestListener(pool));
+    server = createServer(createAuthRequestListener(pool, { passwordResetMailer: mailer, appBaseUrl: APP_BASE_URL }));
     await new Promise<void>((resolve) => server.listen(0, resolve));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
@@ -247,6 +270,134 @@ describe("createAuthRequestListener", () => {
         headers: { Authorization: `Bearer ${ownerToken}` },
       });
       expect(stillActive.status).toBe(200);
+    });
+  });
+
+  describe("POST /api/auth/password-reset/request", () => {
+    it("emails a signed reset link for a known email and returns ok", async () => {
+      const user = await makeUser();
+
+      const res = await fetch(`${baseUrl}/api/auth/password-reset/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true });
+      expect(mailer.sent).toHaveLength(1);
+      expect(mailer.sent[0]!.to).toBe(user.email);
+      expect(mailer.sent[0]!.resetUrl.startsWith(`${APP_BASE_URL}/reset-password?token=`)).toBe(true);
+    });
+
+    it("returns the identical response for an unknown email, without sending mail", async () => {
+      const user = await makeUser();
+      const known = await fetch(`${baseUrl}/api/auth/password-reset/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email }),
+      });
+      const unknown = await fetch(`${baseUrl}/api/auth/password-reset/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "nobody@example.com" }),
+      });
+
+      expect(unknown.status).toBe(known.status);
+      expect(await unknown.json()).toEqual(await known.json());
+      expect(mailer.sent).toHaveLength(1);
+      expect(mailer.sent[0]!.to).toBe(user.email);
+    });
+
+    it("rejects a missing email", async () => {
+      const res = await fetch(`${baseUrl}/api/auth/password-reset/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe("POST /api/auth/password-reset/consume", () => {
+    async function requestReset(email: string): Promise<string> {
+      await fetch(`${baseUrl}/api/auth/password-reset/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      return tokenFromResetUrl(mailer.sent.at(-1)!.resetUrl);
+    }
+
+    it("changes the password and lets the user log in with the new one", async () => {
+      const user = await makeUser();
+      const token = await requestReset(user.email);
+
+      const res = await fetch(`${baseUrl}/api/auth/password-reset/consume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, newPassword: "a-brand-new-password" }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true });
+
+      const oldPasswordLogin = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "web" }),
+      });
+      expect(oldPasswordLogin.status).toBe(401);
+
+      const newPasswordLogin = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email, password: "a-brand-new-password", platform: "web" }),
+      });
+      expect(newPasswordLogin.status).toBe(200);
+    });
+
+    it("rejects reusing an already-consumed token with a deterministic 'consumed' response", async () => {
+      const user = await makeUser();
+      const token = await requestReset(user.email);
+
+      const first = await fetch(`${baseUrl}/api/auth/password-reset/consume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, newPassword: "first-new-password" }),
+      });
+      expect(first.status).toBe(200);
+
+      const second = await fetch(`${baseUrl}/api/auth/password-reset/consume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, newPassword: "second-new-password" }),
+      });
+      expect(second.status).toBe(400);
+      const body = (await second.json()) as { code: string };
+      expect(body.code).toBe("password_reset_token_consumed");
+    });
+
+    it("rejects an unknown token with a deterministic 'invalid' response", async () => {
+      const res = await fetch(`${baseUrl}/api/auth/password-reset/consume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: "not-a-real-token", newPassword: "whatever-password" }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { code: string };
+      expect(body.code).toBe("password_reset_token_invalid");
+    });
+
+    it("rejects a missing newPassword", async () => {
+      const user = await makeUser();
+      const token = await requestReset(user.email);
+
+      const res = await fetch(`${baseUrl}/api/auth/password-reset/consume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      expect(res.status).toBe(400);
     });
   });
 });

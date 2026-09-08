@@ -8,10 +8,13 @@ import {
   logout,
   verifySessionToken,
   revokeUserSession,
+  requestPasswordReset,
+  resetPassword,
   SESSION_TTL_SECONDS,
   SESSION_PLATFORMS,
   type SessionPlatform,
   type AuthenticatedIdentity,
+  type PasswordResetMailer,
 } from "@semprec/data";
 import type { Pool } from "pg";
 
@@ -98,18 +101,27 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 
 const REVOKE_SESSION_PATH = /^\/api\/auth\/sessions\/([^/]+)\/revoke$/;
 
+export interface AuthRequestListenerOptions {
+  /** Sends the reset link email; issue #142's SMTP path. */
+  passwordResetMailer: PasswordResetMailer;
+  /** Origin the emailed password-reset link is built against, e.g. `https://app.semprec.example`. */
+  appBaseUrl: string;
+}
+
 /**
  * Auth-v1's HTTP surface (issue #140): `POST /api/auth/login`, `POST /api/auth/logout`,
- * `POST /api/auth/sessions/:id/revoke`, and `GET /api/auth/session`. Unlike this package's other
- * handlers, there is no shared-secret `authToken` gate here — `login` is necessarily public, and
- * the other three routes gate on a real session via `authenticateRequest` instead.
+ * `POST /api/auth/sessions/:id/revoke`, `GET /api/auth/session`, and (issue #142)
+ * `POST /api/auth/password-reset/request` / `POST /api/auth/password-reset/consume`. Unlike this
+ * package's other handlers, there is no shared-secret `authToken` gate here — `login` and the
+ * password-reset routes are necessarily public, and the session routes gate on a real session
+ * via `authenticateRequest` instead.
  *
  * `SESSION_COOKIE_NAME` is one of two ways a request can carry its token; the other is
  * `Authorization: Bearer` (native clients, or a web client that prefers not to rely on cookies).
  * `login`'s response always includes the raw token in its JSON body so both kinds of client can
  * use it, and additionally sets it as a cookie so a browser client doesn't have to.
  */
-export function createAuthRequestListener(pool: Pool) {
+export function createAuthRequestListener(pool: Pool, options: AuthRequestListenerOptions) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
 
@@ -143,6 +155,38 @@ export function createAuthRequestListener(pool: Pool) {
           { token: result.token, user: result.user },
           { "Set-Cookie": sessionCookieHeader(result.token, SESSION_TTL_SECONDS) },
         );
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/auth/password-reset/request") {
+        const body = (await readJsonBody(req)) as { email?: unknown };
+        if (typeof body.email !== "string" || body.email.length === 0) {
+          throw new ValidationError("'email' must be a non-empty string");
+        }
+
+        // Always 200 with the same body regardless of whether `email` matched an account —
+        // issue #142's "request responses do not disclose whether an email exists".
+        await requestPasswordReset(pool, options.passwordResetMailer, {
+          email: body.email,
+          appBaseUrl: options.appBaseUrl,
+        });
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/auth/password-reset/consume") {
+        const body = (await readJsonBody(req)) as { token?: unknown; newPassword?: unknown };
+        if (typeof body.token !== "string" || body.token.length === 0) {
+          throw new ValidationError("'token' must be a non-empty string");
+        }
+        if (typeof body.newPassword !== "string" || body.newPassword.length === 0) {
+          throw new ValidationError("'newPassword' must be a non-empty string");
+        }
+
+        await withTransaction(pool, (client) =>
+          resetPassword(client, { token: body.token as string, newPassword: body.newPassword as string }),
+        );
+        sendJson(res, 200, { ok: true });
         return;
       }
 

@@ -61,3 +61,27 @@ export class UnauthorizedError extends ChokePointError {
     this.name = "UnauthorizedError";
   }
 }
+
+const PASSWORD_RESET_TOKEN_ERROR_MESSAGES = {
+  invalid: "Password reset token is invalid",
+  expired: "Password reset token has expired",
+  consumed: "Password reset token has already been used",
+} as const;
+
+export type PasswordResetTokenErrorReason = keyof typeof PASSWORD_RESET_TOKEN_ERROR_MESSAGES;
+
+/**
+ * Raised by `resetPassword` (issue #142) when a presented token doesn't identify a live,
+ * unconsumed, unexpired `password_reset_tokens` row. Unlike `UnauthorizedError`, the issue's
+ * Task explicitly asks for "deterministic invalid/expired/consumed responses" here — so, unlike
+ * login, `reason` (and thus `code`) is allowed to tell the three apart.
+ */
+export class PasswordResetTokenError extends ChokePointError {
+  readonly reason: PasswordResetTokenErrorReason;
+
+  constructor(reason: PasswordResetTokenErrorReason) {
+    super(400, `password_reset_token_${reason}`, PASSWORD_RESET_TOKEN_ERROR_MESSAGES[reason]);
+    this.name = "PasswordResetTokenError";
+    this.reason = reason;
+  }
+}

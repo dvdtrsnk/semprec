@@ -49,3 +49,12 @@ export async function getUserById(client: Pool | PoolClient, id: string): Promis
   ]);
   return rows[0] ? mapRow(rows[0]) : null;
 }
+
+/** Used by `resetPassword` (auth/passwordResetActions.ts) to replace a user's password hash after a reset token is consumed. */
+export async function updateUserPasswordHash(
+  client: Pool | PoolClient,
+  id: string,
+  passwordHash: string,
+): Promise<void> {
+  await client.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [passwordHash, id]);
+}

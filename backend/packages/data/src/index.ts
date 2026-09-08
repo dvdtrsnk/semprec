@@ -139,6 +139,9 @@ export * from "./auth/loginAttemptsStore.js";
 export * from "./auth/emailNormalization.js";
 export * from "./auth/loginLockout.js";
 export * from "./auth/authActions.js";
+export * from "./auth/passwordResetStore.js";
+export * from "./auth/passwordResetMail.js";
+export * from "./auth/passwordResetActions.js";
 
 // `mcpGrantsAdminStore.ts`'s user-only grant/risk-class/approval mutations are deliberately
 // NOT exported here — see that file's header comment (issue #124).
