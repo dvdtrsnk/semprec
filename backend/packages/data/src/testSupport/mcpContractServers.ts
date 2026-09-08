@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import http, { type Server as HttpServer } from "node:http";
 import type { Socket } from "node:net";
 import os from "node:os";
@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { Server as McpServer } from "@modelcontextprotocol/sdk/server/index.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { McpConnectionConfig } from "../mcp/mcpConnectionConfig.js";
 
 /**
@@ -17,7 +18,22 @@ import type { McpConnectionConfig } from "../mcp/mcpConnectionConfig.js";
  * resources so a test can assert cleanup left nothing behind. `mcpConnectionFactory.test.ts`
  * (this issue) and later #125/#128 tests import these rather than each standing up their own
  * fake server, so all three run against identical behavior.
+ *
+ * Each server also answers `tools/list` with a configurable, mutable tool set (issue #125's
+ * sync tests need to reconcile against a changing tool list across repeated syncs) via
+ * `setTools`/`DEFAULT_CONTRACT_TOOLS` below.
  */
+
+export interface ContractServerTool {
+  name: string;
+  description?: string;
+  inputSchema: { type: "object"; properties?: Record<string, unknown>; required?: string[] };
+}
+
+/** What a freshly-started contract server advertises until a test calls `setTools`. */
+export const DEFAULT_CONTRACT_TOOLS: ContractServerTool[] = [
+  { name: "search_web", description: "Searches the web", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
+];
 export interface McpContractServer {
   /** A ready-to-use `mcpServers.connectionConfig` pointing at this running contract server. */
   readonly connectionConfig: McpConnectionConfig;
@@ -25,6 +41,8 @@ export interface McpContractServer {
   getObservedCredential(): string | null;
   /** How many `initialize`/`initialized` handshakes this server has completed. */
   getHandshakeCount(): number;
+  /** Changes what `tools/list` answers on this server's *next* request — takes effect immediately for sse/http, on the next spawned child for stdio. */
+  setTools(tools: ContractServerTool[]): void;
   /** Stops the contract server (and, for stdio, waits briefly for the spawned child to have exited). */
   stop(): Promise<void>;
 }
@@ -61,10 +79,13 @@ export interface StdioContractServer extends McpContractServer {
  * whichever test connects to it. `credentialEnvVar` names the env var that script reports the
  * credential back under (see that file's header comment).
  */
-export function startStdioContractServer(): StdioContractServer {
+export function startStdioContractServer(initialTools: ContractServerTool[] = DEFAULT_CONTRACT_TOOLS): StdioContractServer {
   const recordFile = path.join(os.tmpdir(), `mcp-contract-stdio-${randomUUID()}.json`);
+  const toolsFile = path.join(os.tmpdir(), `mcp-contract-stdio-tools-${randomUUID()}.json`);
   const credentialEnvVar = "MCP_CONTRACT_TEST_CREDENTIAL";
   const scriptPath = fileURLToPath(new URL("./fixtures/mcpStdioContractServerScript.mjs", import.meta.url));
+
+  writeFileSync(toolsFile, JSON.stringify(initialTools));
 
   function readRecord(): { pid: number; handshakeCount: number; credential?: string | null } | null {
     if (!existsSync(recordFile)) return null;
@@ -79,12 +100,15 @@ export function startStdioContractServer(): StdioContractServer {
     connectionConfig: {
       transport: "stdio",
       command: process.execPath,
-      args: [scriptPath, recordFile],
+      args: [scriptPath, recordFile, toolsFile],
       env: { MCP_CONTRACT_CREDENTIAL_ENV_VAR: credentialEnvVar },
       credentialEnvVar,
     },
     getObservedCredential: () => readRecord()?.credential ?? null,
     getHandshakeCount: () => readRecord()?.handshakeCount ?? 0,
+    // Read fresh by each newly-spawned child at startup (see the fixture script) — there's no
+    // shared memory across the process boundary to push this into an already-running child.
+    setTools: (tools) => writeFileSync(toolsFile, JSON.stringify(tools)),
     async stop() {
       // Nothing owned by this handle itself runs persistently — the spawned child is the
       // connection factory's to close; `waitForChildExit` (below) is what a test calls after
@@ -133,10 +157,11 @@ export interface HttpTransportContractServer extends McpContractServer {
 }
 
 /** @deprecated transport (SSEServerTransport itself is deprecated upstream) but still a required contract per issue #231's scope. */
-export async function startSseContractServer(): Promise<HttpTransportContractServer> {
+export async function startSseContractServer(initialTools: ContractServerTool[] = DEFAULT_CONTRACT_TOOLS): Promise<HttpTransportContractServer> {
   let observedCredential: string | null = null;
   let handshakeCount = 0;
   let currentMcpServer: McpServer | undefined;
+  let currentTools = initialTools;
   const transportsBySession = new Map<string, SSEServerTransport>();
 
   const httpServer = http.createServer((req, res) => {
@@ -151,6 +176,9 @@ export async function startSseContractServer(): Promise<HttpTransportContractSer
         transportsBySession.set(transport.sessionId, transport);
         res.on("close", () => transportsBySession.delete(transport.sessionId));
         const mcpServer = new McpServer({ name: "mcp-contract-sse", version: "1.0.0" }, { capabilities: { tools: { listChanged: true } } });
+        // Reads `currentTools` at request time (not capture time), so a test's `setTools` call
+        // takes effect on this already-connected session's very next `tools/list` request.
+        mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: currentTools }));
         mcpServer.oninitialized = () => {
           handshakeCount += 1;
           currentMcpServer = mcpServer;
@@ -182,6 +210,9 @@ export async function startSseContractServer(): Promise<HttpTransportContractSer
     getObservedCredential: () => observedCredential,
     getHandshakeCount: () => handshakeCount,
     hasOpenSockets: () => handle.sockets.size > 0,
+    setTools: (tools) => {
+      currentTools = tools;
+    },
     async triggerToolsListChanged() {
       await currentMcpServer?.sendToolListChanged();
     },
@@ -189,16 +220,18 @@ export async function startSseContractServer(): Promise<HttpTransportContractSer
   };
 }
 
-export async function startHttpContractServer(): Promise<HttpTransportContractServer> {
+export async function startHttpContractServer(initialTools: ContractServerTool[] = DEFAULT_CONTRACT_TOOLS): Promise<HttpTransportContractServer> {
   let observedCredential: string | null = null;
   let handshakeCount = 0;
-
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() });
-  const mcpServer = new McpServer({ name: "mcp-contract-http", version: "1.0.0" }, { capabilities: { tools: { listChanged: true } } });
-  mcpServer.oninitialized = () => {
-    handshakeCount += 1;
-  };
-  await mcpServer.connect(transport);
+  let currentTools = initialTools;
+  let currentMcpServer: McpServer | undefined;
+  // A single `StreamableHTTPServerTransport` instance represents exactly one session (per the
+  // SDK's own stateful-mode contract) — issue #125's sync tests reconnect to the same contract
+  // server repeatedly (sync, mutate tools, sync again), which is a second independent session,
+  // not a resumed one. So this keys a fresh transport (and `McpServer`) per session, the same
+  // `Map<sessionId, transport>` pattern the SDK's own multi-session example uses, mirroring how
+  // the sse contract server above already keys `transportsBySession`.
+  const transportsBySession = new Map<string, StreamableHTTPServerTransport>();
 
   const httpServer = http.createServer((req, res) => {
     // Same rationale as the SSE server above: without this, a thrown/rejected handler leaves
@@ -206,6 +239,40 @@ export async function startHttpContractServer(): Promise<HttpTransportContractSe
     void (async () => {
       const authorization = req.headers.authorization;
       observedCredential = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : null;
+
+      const sessionIdHeader = req.headers["mcp-session-id"];
+      const sessionId = typeof sessionIdHeader === "string" ? sessionIdHeader : undefined;
+      const existing = sessionId ? transportsBySession.get(sessionId) : undefined;
+      if (existing) {
+        await existing.handleRequest(req, res);
+        return;
+      }
+      if (sessionId) {
+        // An unknown/stale session id — the SDK's own multi-session example does the same.
+        res.writeHead(400).end();
+        return;
+      }
+
+      // No session id header: per the streamable-HTTP spec this must be a new `initialize`
+      // request — `handleRequest` itself rejects it with 400 below if it isn't.
+      const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (id: string) => {
+          transportsBySession.set(id, transport);
+        },
+      });
+      transport.onclose = () => {
+        const id = transport.sessionId;
+        if (id) transportsBySession.delete(id);
+      };
+      const mcpServer = new McpServer({ name: "mcp-contract-http", version: "1.0.0" }, { capabilities: { tools: { listChanged: true } } });
+      // Reads `currentTools` at request time, same as the sse server above.
+      mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: currentTools }));
+      mcpServer.oninitialized = () => {
+        handshakeCount += 1;
+        currentMcpServer = mcpServer;
+      };
+      await mcpServer.connect(transport);
       await transport.handleRequest(req, res);
     })().catch(() => {
       if (!res.headersSent) res.writeHead(500);
@@ -220,11 +287,14 @@ export async function startHttpContractServer(): Promise<HttpTransportContractSe
     getObservedCredential: () => observedCredential,
     getHandshakeCount: () => handshakeCount,
     hasOpenSockets: () => handle.sockets.size > 0,
+    setTools: (tools) => {
+      currentTools = tools;
+    },
     async triggerToolsListChanged() {
-      await mcpServer.sendToolListChanged();
+      await currentMcpServer?.sendToolListChanged();
     },
     async stop() {
-      await transport.close();
+      for (const transport of transportsBySession.values()) await transport.close();
       await closeHttpServer(handle);
     },
   };

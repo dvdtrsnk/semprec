@@ -40,12 +40,12 @@ export interface McpModuleResult {
  * `views/*ViewType.ts`'s `validateConfig` already use for a jsonb shape richer than the
  * generic property-type system understands.
  *
- * `syncStatus`/`lastSynced` are `owner: 'system'` — written only by the (later, issue #125)
- * human-triggered "Synchronize tools" action, never by a proposal/confirm write: the choke
- * point's `createItemWithClient` already refuses a caller-supplied value for a system-owned
- * key, and `assertValidProposalEnvelope` (inboxTickAction.ts) already refuses any proposal
- * envelope that names one, so this ownership by itself is what keeps sync structurally
- * unreachable from the proposal path without any MCP-specific code there.
+ * `syncStatus`/`lastSynced`/`syncError` are `owner: 'system'` — written only by the (issue
+ * #125) human-triggered "Synchronize tools" action, never by a proposal/confirm write: the
+ * choke point's `createItemWithClient` already refuses a caller-supplied value for a
+ * system-owned key, and `assertValidProposalEnvelope` (inboxTickAction.ts) already refuses any
+ * proposal envelope that names one, so this ownership by itself is what keeps sync
+ * structurally unreachable from the proposal path without any MCP-specific code there.
  */
 export async function seedMcpModuleInTransaction(client: PoolClient, projectsDatabaseId: string): Promise<McpModuleResult> {
   const mcpProject = await itemsStore.insertItem(client, {
@@ -56,7 +56,7 @@ export async function seedMcpModuleInTransaction(client: PoolClient, projectsDat
       agents:
         "Purpose: host MCP (Model Context Protocol) server connections as a system resource.\n" +
         "Allowed: propose a new MCP server's name and connectionConfig via the standard database proposal/confirm path; a human supplies the credential (if any) and confirms.\n" +
-        "Not allowed: writing connectionConfig fields that carry a credential (rejected outright, never stored on the item), writing syncStatus/lastSynced (owner: 'system', written only by the human-triggered Synchronize tools action), or triggering a sync itself — that action has no agent-reachable path at all.\n" +
+        "Not allowed: writing connectionConfig fields that carry a credential (rejected outright, never stored on the item), writing syncStatus/lastSynced/syncError (owner: 'system', written only by the human-triggered Synchronize tools action), or triggering a sync itself — that action has no agent-reachable path at all.\n" +
         "General instructions: this project exists only to host MCP server items; tool discovery/grants/invocation are later issues.",
     },
   });
@@ -79,6 +79,7 @@ export async function seedMcpModuleInTransaction(client: PoolClient, projectsDat
       config: selectConfig(["ok", "error", "never"]),
     },
     { key: "lastSynced", name: "Last synced", type: "date", owner: "system", config: { includeTime: true } },
+    { key: "syncError", name: "Sync error", type: "text", owner: "system" },
   ]);
 
   await client.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [mcpServers.id]);

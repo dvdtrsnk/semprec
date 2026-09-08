@@ -105,3 +105,21 @@ export async function listMcpToolRegistrationsForServer(client: Queryable, mcpSe
   );
   return rows.map(rowToRegistration);
 }
+
+/**
+ * Sync-facing reconciliation (issue #125): marks inactive every currently-active registration
+ * for this server whose `tool_name` was not among the names a sync pass just upserted — a
+ * tool the server stopped advertising (removed or renamed) loses `active` rather than its row,
+ * preserving its audit identity (and any `risk_class`/`requires_approval` a human already set)
+ * for if/when a tool by that name reappears. `= ANY($2::text[])` (not `IN`) also does the right
+ * thing when `keptToolNames` is empty (every active row for this server goes inactive), unlike
+ * a bare `NOT IN ()`.
+ */
+export async function deactivateMcpToolRegistrationsNotIn(client: Queryable, mcpServerItemId: string, keptToolNames: string[]): Promise<void> {
+  await client.query(
+    `UPDATE mcp_tool_registrations
+       SET active = false, updated_at = now()
+     WHERE mcp_server_item_id = $1 AND active = true AND NOT (tool_name = ANY($2::text[]))`,
+    [mcpServerItemId, keptToolNames],
+  );
+}

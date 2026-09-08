@@ -13,15 +13,23 @@
 // (connect, close, connect again), so this reads back whatever count the previous generation
 // left behind and increments it, rather than a per-process boolean that a second spawn would
 // silently reset to a fresh "1".
+//
+// `argv[3]` (issue #125) names a second file holding this run's `tools/list` answer — read once
+// at startup, since `McpContractServer.setTools` (mcpContractServers.ts) can only rewrite that
+// file before the *next* spawn, not reach into an already-running child.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 const recordFile = process.argv[2];
 if (!recordFile) {
   console.error("mcpStdioContractServerScript: missing record file path argument");
   process.exit(1);
 }
+
+const toolsFile = process.argv[3];
+const tools = toolsFile && existsSync(toolsFile) ? JSON.parse(readFileSync(toolsFile, "utf8")) : [];
 
 function readPreviousHandshakeCount() {
   if (!existsSync(recordFile)) return 0;
@@ -42,6 +50,8 @@ function writeRecord(extra) {
 writeRecord({});
 
 const server = new Server({ name: "mcp-contract-stdio", version: "1.0.0" }, { capabilities: { tools: { listChanged: true } } });
+
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 
 server.oninitialized = () => {
   handshakeCount += 1;
