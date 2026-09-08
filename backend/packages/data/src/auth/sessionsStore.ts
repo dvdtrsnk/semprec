@@ -69,6 +69,20 @@ export async function revokeSession(client: Pool | PoolClient, id: string): Prom
   await client.query(`UPDATE sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`, [id]);
 }
 
+/**
+ * Same revocation as `revokeSession`, scoped to a specific owning user — the guard remote
+ * "revoke that other session" needs so a caller can't revoke a session id they don't own by
+ * guessing it. Returns whether a row was actually revoked, so the caller can tell an unknown or
+ * not-owned id apart from an already-revoked one without a separate lookup.
+ */
+export async function revokeSessionForUser(client: Pool | PoolClient, id: string, userId: string): Promise<boolean> {
+  const result = await client.query(
+    `UPDATE sessions SET revoked_at = now() WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL`,
+    [id, userId],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
 export async function listSessionsForUser(client: Pool | PoolClient, userId: string): Promise<SessionRow[]> {
   const { rows } = await client.query(
     `SELECT ${SELECT_COLUMNS} FROM sessions WHERE user_id = $1 ORDER BY created_at DESC`,
