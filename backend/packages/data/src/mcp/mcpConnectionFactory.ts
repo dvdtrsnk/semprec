@@ -38,16 +38,22 @@ export interface ConnectMcpServerOptions {
   actorId?: string;
   /** Forwarded to `credential_access_log.purpose`. Defaults to `"mcp_connect"`. */
   purpose?: string;
+  /** Overrides how long to wait for the transport to open and the `initialize` handshake to complete (default 15s, mainly for tests). */
+  connectTimeoutMs?: number;
 }
 
 const CLIENT_INFO = { name: "semprec-mcp-client", version: "1.0.0" };
+/** A misbehaving server can accept a TCP/SSE/HTTP connection or spawn cleanly and then never answer `initialize` — `mcpClient.connect()` has no timeout of its own for that, so this factory imposes one. */
+const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 
 /**
  * Connects to the MCP server described by `mcpServerItem.properties.connectionConfig`,
  * decrypting its `external_credentials` secret (if any) only for this connection's use.
- * Rejects a malformed/unsupported `connectionConfig` or a credential decryption failure with
- * `McpConnectionError` before opening any connection; maps a transport connect or handshake
- * failure to the same safe error shape after releasing whatever the transport had opened.
+ * Rejects a malformed/unsupported `connectionConfig` or a genuine credential decryption failure
+ * with `McpConnectionError` before opening any connection; maps a transport connect/handshake
+ * failure (including one that times out — see `DEFAULT_CONNECT_TIMEOUT_MS`) to the same safe
+ * error shape after releasing whatever the transport had opened. A transient DB failure while
+ * resolving the credential propagates as-is rather than being reported as a credential problem.
  */
 export async function connectMcpServer(
   client: Queryable,
@@ -60,7 +66,7 @@ export async function connectMcpServer(
 
   const mcpClient = new Client(CLIENT_INFO, { capabilities: {} });
   try {
-    await mcpClient.connect(transport);
+    await withTimeout(mcpClient.connect(transport), options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS);
   } catch {
     await safeCloseTransport(transport);
     throw new McpConnectionError("handshake_failed", `Failed to connect to MCP server (transport=${config.transport})`);
@@ -73,6 +79,19 @@ export async function connectMcpServer(
     client: mcpClient,
     close: () => mcpClient.close(),
   };
+}
+
+/** Races `promise` against a timer; a timeout leaves `promise` itself unsettled (its eventual result is just never awaited) — the caller is responsible for releasing whatever resource it was opening. */
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer!);
+  }
 }
 
 /** A failed connect can leave the transport partially open; `close()` on it must not itself throw over that. */
@@ -100,9 +119,20 @@ async function resolveCredential(client: Queryable, itemId: string, options: Con
       actorId: options.actorId,
       purpose: options.purpose ?? "mcp_connect",
     });
-  } catch {
+  } catch (err) {
+    // `getDecryptedCredential` can fail for two unrelated reasons: the ciphertext/master key is
+    // genuinely bad (a real credential problem, safe to report via `McpConnectionError`), or one
+    // of its own `client.query` calls hit a transient DB failure (a connectivity/pool problem
+    // that has nothing to do with this credential and shouldn't be misreported as one). `pg`
+    // (and node's own connection errors) attach a string `.code`; the master-key/decrypt errors
+    // thrown by `@semprec/credentials` never do — so that's the signal used to tell them apart.
+    if (isLikelyDatabaseError(err)) throw err;
     throw new McpConnectionError("credential_decryption_failed", "Failed to decrypt the MCP server's stored credential");
   }
+}
+
+function isLikelyDatabaseError(err: unknown): boolean {
+  return typeof err === "object" && err !== null && typeof (err as { code?: unknown }).code === "string";
 }
 
 interface BuiltTransport {

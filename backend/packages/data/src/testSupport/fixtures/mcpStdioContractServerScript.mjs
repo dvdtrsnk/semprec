@@ -6,7 +6,14 @@
 // time including whichever env var the test told it (via `MCP_CONTRACT_CREDENTIAL_ENV_VAR`) to
 // read the injected credential back from — so the test can assert the factory placed the
 // decrypted credential exactly where `connectionConfig.credentialEnvVar` declared.
-import { writeFileSync } from "node:fs";
+//
+// `handshakeCount` (not a boolean) matches `McpContractServer.getHandshakeCount()`'s documented
+// contract of "how many handshakes completed" for the SSE/HTTP servers too: the record file is
+// reused across however many times a test spawns a child against the same `connectionConfig`
+// (connect, close, connect again), so this reads back whatever count the previous generation
+// left behind and increments it, rather than a per-process boolean that a second spawn would
+// silently reset to a fresh "1".
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
@@ -16,18 +23,31 @@ if (!recordFile) {
   process.exit(1);
 }
 
-function writeRecord(record) {
-  writeFileSync(recordFile, JSON.stringify(record));
+function readPreviousHandshakeCount() {
+  if (!existsSync(recordFile)) return 0;
+  try {
+    const previous = JSON.parse(readFileSync(recordFile, "utf8"));
+    return typeof previous.handshakeCount === "number" ? previous.handshakeCount : 0;
+  } catch {
+    return 0;
+  }
 }
 
-writeRecord({ pid: process.pid, initialized: false });
+let handshakeCount = readPreviousHandshakeCount();
+
+function writeRecord(extra) {
+  writeFileSync(recordFile, JSON.stringify({ pid: process.pid, handshakeCount, ...extra }));
+}
+
+writeRecord({});
 
 const server = new Server({ name: "mcp-contract-stdio", version: "1.0.0" }, { capabilities: { tools: { listChanged: true } } });
 
 server.oninitialized = () => {
+  handshakeCount += 1;
   const credentialEnvVar = process.env.MCP_CONTRACT_CREDENTIAL_ENV_VAR;
   const credential = credentialEnvVar ? (process.env[credentialEnvVar] ?? null) : null;
-  writeRecord({ pid: process.pid, initialized: true, credential });
+  writeRecord({ credential });
 };
 
 const transport = new StdioServerTransport();

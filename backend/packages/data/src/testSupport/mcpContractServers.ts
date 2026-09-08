@@ -66,7 +66,7 @@ export function startStdioContractServer(): StdioContractServer {
   const credentialEnvVar = "MCP_CONTRACT_TEST_CREDENTIAL";
   const scriptPath = fileURLToPath(new URL("./fixtures/mcpStdioContractServerScript.mjs", import.meta.url));
 
-  function readRecord(): { pid: number; initialized: boolean; credential?: string | null } | null {
+  function readRecord(): { pid: number; handshakeCount: number; credential?: string | null } | null {
     if (!existsSync(recordFile)) return null;
     try {
       return JSON.parse(readFileSync(recordFile, "utf8"));
@@ -84,7 +84,7 @@ export function startStdioContractServer(): StdioContractServer {
       credentialEnvVar,
     },
     getObservedCredential: () => readRecord()?.credential ?? null,
-    getHandshakeCount: () => (readRecord()?.initialized ? 1 : 0),
+    getHandshakeCount: () => readRecord()?.handshakeCount ?? 0,
     async stop() {
       // Nothing owned by this handle itself runs persistently — the spawned child is the
       // connection factory's to close; `waitForChildExit` (below) is what a test calls after
