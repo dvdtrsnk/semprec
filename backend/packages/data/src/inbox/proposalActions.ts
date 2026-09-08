@@ -1,16 +1,30 @@
 import type { PoolClient } from "pg";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
+import * as databasesStore from "../chokePoint/databasesStore.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/chokePoint.js";
 import { putBlockWithClient } from "../docs/docStore.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
 import { appendHistoryEntry, assertValidProposalEnvelope, type ProposalEntityKind, type ProposalEnvelope } from "./inboxTickAction.js";
 import { enqueueJournalInboxRecomputeForProposal } from "./journalInboxCompute.js";
+import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
+import { storeCredential, type CredentialType } from "../credentials/externalCredentialsStore.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 
 export interface ProposalActionConfig {
   processingProposalsDatabaseId: string;
+}
+
+/**
+ * A logged-in human's separately-supplied secret for an MCP server proposal (issue #123) —
+ * never part of the envelope's `properties`, and only ever accepted by `confirmProposalWithClient`
+ * itself, never `revise` (a chat-driven, AI-visible correction). Optional: not every MCP server
+ * needs a credential (e.g. a local `stdio` command with no auth of its own).
+ */
+export interface ConfirmProposalCredentialInput {
+  credentialType: CredentialType;
+  plaintext: string;
 }
 
 /** Row-locks the proposal (serializing concurrent confirm/reject/revise on the same row) and rejects a missing or soft-deleted one. */
@@ -47,8 +61,24 @@ async function resolveResultLabel(client: PoolClient, databaseId: string, item: 
  * (both in the same transaction here, but a caller retrying after an earlier failed attempt
  * could still see this ordering) overwrites the same block rather than leaving an orphaned
  * duplicate.
+ *
+ * `credential` (issue #123) is the confirming human's separately-supplied secret for an MCP
+ * server proposal — accepted only when `envelope.target` is the `mcpServers` database (a
+ * `ValidationError` otherwise, so a credential can never land against an unrelated target by
+ * mistake), and stored via `storeCredential` in the same transaction as the item create,
+ * immediately before the row is locked `confirmed` below: since `createItemWithClient` and
+ * `storeCredential` both run inside this function's caller-supplied transaction, either both
+ * persist or neither does — a `storeCredential` failure rolls back the item create too,
+ * satisfying "stores server and encrypted credential or neither." Not every server needs one
+ * (e.g. a local `stdio` command with no auth), so a proposal with no `credential` argument at
+ * all is confirmed normally, item-only.
  */
-export async function confirmProposalWithClient(client: PoolClient, config: ProposalActionConfig, proposalId: string): Promise<ItemRow> {
+export async function confirmProposalWithClient(
+  client: PoolClient,
+  config: ProposalActionConfig,
+  proposalId: string,
+  credential?: ConfirmProposalCredentialInput,
+): Promise<ItemRow> {
   const proposal = await lockLiveProposal(client, config.processingProposalsDatabaseId, proposalId);
   const status = proposal.properties.status;
   if (status === "confirmed") return proposal;
@@ -63,9 +93,18 @@ export async function confirmProposalWithClient(client: PoolClient, config: Prop
   let resultItemId: string;
   let resultLabel: string;
   if (envelope.entityKind === "database") {
+    if (credential) {
+      const targetDatabase = await databasesStore.getDatabase(client, envelope.target);
+      if (targetDatabase?.ownerModuleId !== MCP_SERVERS_MODULE_ID) {
+        throw new ValidationError("A credential may only be supplied when confirming an MCP server proposal", { field: "credential" });
+      }
+    }
     const created = await createItemWithClient(client, { databaseId: envelope.target, properties: envelope.properties });
     resultItemId = created.id;
     resultLabel = await resolveResultLabel(client, envelope.target, created);
+    if (credential) {
+      await storeCredential(client, { itemId: created.id, credentialType: credential.credentialType, plaintext: credential.plaintext });
+    }
   } else {
     // Safe to cast without a further runtime check here: `assertValidProposalEnvelope`
     // above already rejects a 'pageContent' envelope whose `flavour` isn't a non-empty

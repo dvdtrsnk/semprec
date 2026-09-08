@@ -19,6 +19,7 @@ import { seedTenDatabasesInTransaction } from "./seedTenDatabases.js";
 import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
 import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
 import { seedInboxPipelineInTransaction } from "./seedInboxPipeline.js";
+import { seedMcpModuleInTransaction } from "./seedMcpModule.js";
 
 export { PROJECTS_MODULE_ID } from "./tenDatabaseKeys.js";
 
@@ -185,5 +186,10 @@ export async function seedSystem(
     // library/email modules doesn't matter — only depends on the ten databases (Journal,
     // Transcripts) and the Semprec project item, both already created above.
     await seedInboxPipelineInTransaction(client, tenDatabases.journal.id, tenDatabases.transcripts.id, semprecProject.id, computedKeyRegistry, viewTypeRegistry);
+
+    // MCP servers (issue #123): a system resource similar to Mailboxes, holding non-secret
+    // connection metadata only. Order relative to the other module seeds doesn't matter —
+    // only depends on the Projects database above.
+    await seedMcpModuleInTransaction(client, projectsDb.id);
   });
 }

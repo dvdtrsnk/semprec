@@ -11,6 +11,8 @@ import { PROCESSING_METHODS, LOCKED_PROPOSAL_STATUSES, type ProcessingMethod } f
 import { computeInboxFingerprint } from "./fingerprint.js";
 import { enqueueJournalInboxRecomputeForInboxItem } from "./journalInboxCompute.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
+import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
+import { assertValidMcpServerProposalProperties } from "../mcp/mcpServerProposal.js";
 import { ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 
@@ -199,6 +201,13 @@ export async function assertValidProposalEnvelope(client: PoolClient, envelope: 
     // upstream of that choke-point call reads the manifest at all.
     if (targetDatabase.ownerModuleId && SEMPREC_READ_ONLY_MODULE_IDS.includes(targetDatabase.ownerModuleId)) {
       throw new ValidationError(`Proposal envelope target '${envelope.target}' is not a writable target database`, { field: "target" });
+    }
+    // Issue #123: an MCP server's credential never travels through a proposal envelope at
+    // all (it is supplied separately by a human at confirm time, see proposalActions.ts) —
+    // enforced here, at the one point every mcpServers-targeted envelope (freshly computed
+    // or user-revised) passes through, on top of the generic per-property checks below.
+    if (targetDatabase.ownerModuleId === MCP_SERVERS_MODULE_ID) {
+      assertValidMcpServerProposalProperties(envelope.properties);
     }
 
     const targetProperties = await propertiesStore.listPropertiesByDatabase(client, targetDatabase.id);
