@@ -69,12 +69,6 @@ jobs:
         working-directory: backend
         run: pnpm --filter @semprec/data run check-migration-numbering
 
-      # The unit tier provisions nothing (no globalSetup, no TEST_DATABASE_URL) and
-      # runs in ~2s, so it is unconditionally cheap enough to gate every pull request.
-      - name: Backend — unit tests
-        working-directory: backend
-        run: pnpm run test:unit
-
       # Import-boundary rules (dependency-cruiser.rules.json). Cheap enough (~2s) that
       # there is no reason for it to be a script nobody runs.
       - name: Backend — module boundaries

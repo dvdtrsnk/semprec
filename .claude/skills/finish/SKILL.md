@@ -158,7 +158,18 @@ must also be resolved before the merge button unblocks.
 5. Check whether `develop` moved while you were iterating
    (`git fetch origin && git log --oneline HEAD..origin/develop`). If it did,
    go back to §2 — `strict: true` means the merge stays blocked otherwise.
-6. Before declaring the round green, confirm no unresolved threads remain:
+6. Confirm the bot actually reviewed something. A green `code-review` does not
+   mean the diff was inspected — if the scope globs match nothing, the run logs
+   `No platforms were reviewed (all skipped or no matching files)` and still
+   reports success. That is exactly how `review-rules/scope.md` corruption went
+   unnoticed for 14 merged PRs (see the note in `.prettierignore`). Check the
+   run log before trusting the check:
+   ```
+   gh run view <review-run-id> --log | grep -E "found platform|reviewed|skipped" | head
+   ```
+   If everything was skipped, the review did not happen — fix the scope rules
+   rather than merging on a check that inspected nothing.
+7. Before declaring the round green, confirm no unresolved threads remain:
    ```
    gh api graphql -f query='{ repository(owner:"dvdtrsnk", name:"semprec") { pullRequest(number: <n>) { reviewThreads(first:100) { nodes { isResolved path } } } } }'
    ```
@@ -166,6 +177,10 @@ must also be resolved before the merge button unblocks.
    silently failed before (see the comment block in
    `.github/workflows/code-review.yml`). If a thread the bot addressed is still
    open, resolve it yourself with a short reply saying what fixed it.
+
+The theme behind both checks: on this repository a green required check has
+more than once meant "nothing ran" rather than "nothing is wrong". Confirm what
+a check actually did before you rely on it.
 
 If it is still red after 4 rounds, stop and hand the remaining findings to the
 user rather than merging around them.
