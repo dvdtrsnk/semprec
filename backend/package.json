@@ -12,13 +12,24 @@
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
-    "check:boundaries": "depcruise --config .dependency-cruiser.cjs --output-type err modules services",
-    "migrate": "pnpm --filter @semprec/data run build && node packages/data/dist/db/runMigrationsCli.js"
+    "check:boundaries": "depcruise --config .dependency-cruiser.cjs --output-type err modules services packages",
+    "check:pi-import-paths": "pnpm --filter @semprec/agent-runtime run check-pi-import-paths",
+    "migrate": "pnpm --filter @semprec/data run build && node packages/data/dist/db/runMigrationsCli.js",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write . --ignore-path ../.prettierignore",
+    "format:check": "prettier --check . --ignore-path ../.prettierignore"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.10.0",
     "dependency-cruiser": "^18.2.0",
+    "eslint": "^10.10.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.12.0",
+    "prettier": "^3.9.6",
     "typescript": "^5.7.2",
+    "typescript-eslint": "^8.70.0",
     "vitest": "^4.1.11"
   }
 }

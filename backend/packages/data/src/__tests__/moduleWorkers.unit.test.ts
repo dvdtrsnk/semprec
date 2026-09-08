@@ -86,7 +86,8 @@ describe("deriveDesiredWorkerInstances", () => {
 
   it("scopes row sources per worker, mixing singleton and per-row workers", async () => {
     const registry = fakeRegistry([mailSyncWorker, singletonWorker]);
-    const getActiveRowIds: WorkerActiveRowIdsSource = async (worker) => (worker.name === "semprec-mailsync" ? ["mailbox-1"] : null);
+    const getActiveRowIds: WorkerActiveRowIdsSource = async (worker) =>
+      worker.name === "semprec-mailsync" ? ["mailbox-1"] : null;
 
     const desired = await deriveDesiredWorkerInstances(registry, getActiveRowIds);
 
@@ -94,7 +95,10 @@ describe("deriveDesiredWorkerInstances", () => {
   });
 });
 
-function fakeSupervisor(): WorkerSupervisorPort & { started: WorkerInstanceIdentity[]; stopped: WorkerInstanceIdentity[] } {
+function fakeSupervisor(): WorkerSupervisorPort & {
+  started: WorkerInstanceIdentity[];
+  stopped: WorkerInstanceIdentity[];
+} {
   const started: WorkerInstanceIdentity[] = [];
   const stopped: WorkerInstanceIdentity[] = [];
   return {

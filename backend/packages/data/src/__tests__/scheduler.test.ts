@@ -8,16 +8,18 @@ import { withTransaction } from "../db/pool.js";
 import {
   createHeartbeat,
   getHeartbeat,
+  occurrenceFireJobKey,
   recomputeAllForTimezoneChange,
   setHeartbeatEnabled,
   sweepDueHeartbeats,
-  triggerOnItemEventHeartbeats,
   updateHeartbeatRule,
 } from "../scheduler/schedulerStore.js";
 import { createActionRegistry, CORE_AGENT_RUN_ACTION_ID, coreAgentRunAction } from "../scheduler/actions.js";
 import { createCoreTaskList } from "../worker.js";
+import { createHeartbeatFireTask } from "../scheduler/sweep.js";
 import { getSystemSettingsItemId } from "../systemSettings.js";
-import { listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
+import { createAgentRun, listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
+import { createHeartbeatTriggerTool } from "../scheduler/heartbeatAgentTools.js";
 import type { HeartbeatRuleKindRegistry } from "../scheduler/rule.js";
 
 let pool: Pool;
@@ -97,8 +99,10 @@ describe("scheduler", () => {
     expect(ran).toBe(1);
   });
 
-  it("sweepDueHeartbeats fires a due heartbeat exactly once and advances next_fire_at", async () => {
+  it("sweepDueHeartbeats fires a due heartbeat exactly once", async () => {
     const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    registry.set("noop", async () => {});
     const heartbeat = await withTransaction(pool, (client) =>
       createHeartbeat(client, {
         projectItemId,
@@ -108,11 +112,14 @@ describe("scheduler", () => {
       }),
     );
     // Force it due "now" (simulating either a normal tick or catch-up after downtime).
-    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [heartbeat.id]);
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
 
     const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
     expect(fired.map((f) => f.id)).toEqual([heartbeat.id]);
 
+    await drainQueue(registry);
     const after = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
     expect(after!.lastFiredAt).not.toBeNull();
     expect(new Date(after!.nextFireAt!).getTime()).toBeGreaterThan(Date.now());
@@ -120,6 +127,65 @@ describe("scheduler", () => {
     // A second sweep right away finds nothing due.
     const fired2 = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
     expect(fired2).toHaveLength(0);
+  });
+
+  it("a floating (interval/everyNDays) heartbeat leaves next_fire_at and last_fired_at unset at sweep time, and schedules its next occurrence from the first attempt's actual start, not enqueue time", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    registry.set("noop", async () => {});
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Every minute-ish",
+        rule: { kind: "interval", minutes: 1 },
+        actionId: "noop",
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+
+    await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    const afterSweep = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    expect(afterSweep!.nextFireAt).toBeNull();
+    expect(afterSweep!.lastFiredAt).toBeNull();
+
+    const beforeFire = Date.now();
+    await drainQueue(registry);
+
+    const afterFire = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    expect(new Date(afterFire!.lastFiredAt!).getTime()).toBeGreaterThanOrEqual(beforeFire);
+    expect(new Date(afterFire!.nextFireAt!).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("a fixed (dailyTime/weekly) heartbeat advances next_fire_at immediately at sweep time, unaffected by queue delay before the fire task actually runs", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    registry.set("noop", async () => {});
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "noop",
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+
+    await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    const afterSweep = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    expect(afterSweep!.nextFireAt).not.toBeNull();
+    expect(afterSweep!.lastFiredAt).toBeNull();
+    const calendarNextFireAt = afterSweep!.nextFireAt;
+
+    await drainQueue(registry);
+
+    const afterFire = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    expect(afterFire!.lastFiredAt).not.toBeNull();
+    // The fire task's own start time never shifts a fixed rule's calendar-anchored schedule.
+    expect(afterFire!.nextFireAt).toBe(calendarNextFireAt);
   });
 
   it("disabling clears the schedule; re-enabling recomputes from now (no catch-up of missed occurrences)", async () => {
@@ -179,7 +245,9 @@ describe("scheduler", () => {
         actionConfig: { task: "process the inbox" },
       }),
     );
-    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [heartbeat.id]);
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
     await withTransaction(pool, (client) => sweepDueHeartbeats(client));
     await drainQueue(registry);
 
@@ -190,8 +258,410 @@ describe("scheduler", () => {
     expect(runs[0].triggeredBy).toBe("heartbeat");
   });
 
+  it("heartbeat.trigger's manual fire attributes the child run's parent_run_id to the invoking run, without touching next_fire_at/last_fired_at", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async ({ task }) => ({ result: `handled: ${task}` })),
+    );
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Process inbox",
+        rule: { kind: "interval", minutes: 5 },
+        actionId: CORE_AGENT_RUN_ACTION_ID,
+        actionConfig: { task: "process the inbox" },
+      }),
+    );
+    const before = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+
+    const invokingRun = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "trigger it" });
+    const heartbeatTrigger = createHeartbeatTriggerTool(pool);
+    const outcome = await heartbeatTrigger(invokingRun.id, { heartbeatId: heartbeat.id });
+    expect(outcome.error).toBe(false);
+
+    await drainQueue(registry);
+
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].triggeredBy).toBe("heartbeat");
+    expect(runs[0].parentRunId).toBe(invokingRun.id);
+
+    const after = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    expect(after!.nextFireAt).toBe(before!.nextFireAt);
+    expect(after!.lastFiredAt).toBe(before!.lastFiredAt);
+  });
+
+  it("an occurrence insert conflicting on (heartbeat_id, scheduled_for) is an idempotent no-op: no second job, no second next_fire_at advance", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "noop",
+      }),
+    );
+    const dueAt = new Date(Date.now() - 60_000);
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = $2 WHERE id = $1", [heartbeat.id, dueAt]);
+
+    // Simulate another sweep (or the sweep's own defense-in-depth guard) having already recorded
+    // the occurrence for this exact due time, without having advanced next_fire_at off of it yet.
+    await pool.query(
+      `INSERT INTO heartbeat_occurrences (heartbeat_id, scheduled_for, rule_snapshot, status)
+       VALUES ($1, $2, $3::jsonb, 'queued')`,
+      [heartbeat.id, dueAt, JSON.stringify(heartbeat.rule)],
+    );
+
+    const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    expect(fired).toHaveLength(0); // conflicting insert returned no id: not treated as newly fired
+
+    const { rows: occurrences } = await pool.query("SELECT id FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
+      heartbeat.id,
+    ]);
+    expect(occurrences).toHaveLength(1); // still exactly one row, not a duplicate
+
+    const after = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    // The no-op branch never reaches the next_fire_at update: still the due time from before this call.
+    expect(new Date(after!.nextFireAt!).getTime()).toBe(dueAt.getTime());
+  });
+
+  it("a retried fire attempt reuses the persisted occurrenceId and first_started_at, and never advances next_fire_at a second time", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Every minute-ish",
+        rule: { kind: "interval", minutes: 1 },
+        actionId: "noop",
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+    const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    expect(fired).toHaveLength(1);
+    const { rows: occRows } = await pool.query("SELECT id FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
+      heartbeat.id,
+    ]);
+    const occurrenceId: string = occRows[0].id;
+
+    const { prepareHeartbeatOccurrenceFire } = await import("../scheduler/schedulerStore.js");
+    const first = await prepareHeartbeatOccurrenceFire(pool, heartbeat.id, occurrenceId, 1);
+    expect(first.outcome).toBe("proceed");
+    const afterFirst = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    const firstNextFireAt = afterFirst!.nextFireAt;
+    const firstLastFiredAt = afterFirst!.lastFiredAt;
+    expect(firstNextFireAt).not.toBeNull();
+    expect(firstLastFiredAt).not.toBeNull();
+
+    // Simulate the job being retried (e.g. the handler threw on the first attempt): the same
+    // occurrenceId is reused, and the "genuine first attempt" branch must not fire again.
+    const retry = await prepareHeartbeatOccurrenceFire(pool, heartbeat.id, occurrenceId, 1);
+    expect(retry.outcome).toBe("proceed");
+    const afterRetry = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    expect(afterRetry!.nextFireAt).toBe(firstNextFireAt);
+    expect(afterRetry!.lastFiredAt).toBe(firstLastFiredAt);
+  });
+
+  it("cancels the occurrence without executing or touching heartbeat scheduling when the heartbeat was disabled after the occurrence was enqueued", async () => {
+    const projectItemId = await getSemprecProjectId();
+    let ran = 0;
+    const registry = createActionRegistry();
+    registry.set("markRan", async () => {
+      ran += 1;
+    });
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "markRan",
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+    await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+
+    await withTransaction(pool, (client) => setHeartbeatEnabled(client, heartbeat.id, false));
+
+    await drainQueue(registry);
+    expect(ran).toBe(0);
+
+    const { rows } = await pool.query("SELECT status FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
+      heartbeat.id,
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("cancelled");
+
+    // Disabling already cleared next_fire_at; the fire task must not have touched it further.
+    const after = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    expect(after!.nextFireAt).toBeNull();
+    expect(after!.lastFiredAt).toBeNull();
+  });
+
+  it("cancels the occurrence without executing when the heartbeat's rule was edited after the occurrence was enqueued", async () => {
+    const projectItemId = await getSemprecProjectId();
+    let ran = 0;
+    const registry = createActionRegistry();
+    registry.set("markRan", async () => {
+      ran += 1;
+    });
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "markRan",
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+    await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+
+    await withTransaction(pool, (client) =>
+      updateHeartbeatRule(client, heartbeat.id, { kind: "dailyTime", at: "10:30" }),
+    );
+
+    await drainQueue(registry);
+    expect(ran).toBe(0);
+
+    const { rows } = await pool.query("SELECT status FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
+      heartbeat.id,
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("cancelled");
+  });
+
+  it("reactivates a cancelled occurrence when disable/re-enable recomputes the schedule back onto its exact timestamp, firing exactly once under the new generation instead of staying cancelled", async () => {
+    const projectItemId = await getSemprecProjectId();
+    let ran = 0;
+    const registry = createActionRegistry();
+    registry.set("markRan", async () => {
+      ran += 1;
+    });
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "markRan",
+      }),
+    );
+    const dueAt = new Date(Date.now() - 60_000);
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = $2 WHERE id = $1", [heartbeat.id, dueAt]);
+    await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+
+    // Disabled before the fire task ran: it cancels the occurrence instead of executing it.
+    await withTransaction(pool, (client) => setHeartbeatEnabled(client, heartbeat.id, false));
+    await drainQueue(registry);
+    expect(ran).toBe(0);
+
+    const { rows: cancelledRows } = await pool.query<{ id: string; generation: number; status: string }>(
+      "SELECT id, generation, status FROM heartbeat_occurrences WHERE heartbeat_id = $1",
+      [heartbeat.id],
+    );
+    expect(cancelledRows).toHaveLength(1);
+    expect(cancelledRows[0].status).toBe("cancelled");
+    expect(cancelledRows[0].generation).toBe(1);
+    const occurrenceId = cancelledRows[0].id;
+
+    // Re-enable and force the recomputed schedule back onto the exact same timestamp the
+    // cancelled occurrence was for — simulating edit-away/edit-back (or disable/re-enable)
+    // landing on the same instant.
+    await withTransaction(pool, (client) => setHeartbeatEnabled(client, heartbeat.id, true));
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = $2 WHERE id = $1", [heartbeat.id, dueAt]);
+
+    const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    expect(fired.map((f) => f.id)).toEqual([heartbeat.id]);
+
+    const { rows: reactivatedRows } = await pool.query<{ id: string; generation: number; status: string }>(
+      "SELECT id, generation, status FROM heartbeat_occurrences WHERE heartbeat_id = $1",
+      [heartbeat.id],
+    );
+    expect(reactivatedRows).toHaveLength(1); // the same row was reactivated, not a second occurrence
+    expect(reactivatedRows[0].id).toBe(occurrenceId);
+    expect(reactivatedRows[0].generation).toBe(2);
+    expect(reactivatedRows[0].status).toBe("queued");
+
+    // A stale (generation 1) delivery arriving after the reactivation must still be a no-op: it
+    // can never consume or cancel the reactivated occurrence.
+    const { prepareHeartbeatOccurrenceFire } = await import("../scheduler/schedulerStore.js");
+    const staleAfterReactivation = await prepareHeartbeatOccurrenceFire(pool, heartbeat.id, occurrenceId, 1);
+    expect(staleAfterReactivation.outcome).toBe("stale");
+    const stillQueued = await pool.query<{ status: string }>("SELECT status FROM heartbeat_occurrences WHERE id = $1", [
+      occurrenceId,
+    ]);
+    expect(stillQueued.rows[0].status).toBe("queued");
+
+    // The new generation's job (the only one actually enqueued by the reactivating sweep) fires
+    // the current, valid rule exactly once.
+    await drainQueue(registry);
+    expect(ran).toBe(1);
+
+    const { rows: finalRows } = await pool.query<{ status: string }>(
+      "SELECT status FROM heartbeat_occurrences WHERE id = $1",
+      [occurrenceId],
+    );
+    expect(finalRows[0].status).toBe("succeeded");
+  });
+
+  it("replaces a queued occurrence's stale rule_snapshot in place (preserving its id/status) when a re-edit recomputes the schedule back onto the same still-pending timestamp, and the new generation fires exactly once", async () => {
+    const projectItemId = await getSemprecProjectId();
+    let ran = 0;
+    const registry = createActionRegistry();
+    registry.set("noop", async () => {
+      ran += 1;
+    });
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "noop",
+      }),
+    );
+    const dueAt = new Date(Date.now() - 60_000);
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = $2 WHERE id = $1", [heartbeat.id, dueAt]);
+    await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+
+    const { rows: queuedRows } = await pool.query<{
+      id: string;
+      generation: number;
+      status: string;
+      rule_snapshot: unknown;
+    }>("SELECT id, generation, status, rule_snapshot FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
+      heartbeat.id,
+    ]);
+    expect(queuedRows).toHaveLength(1);
+    expect(queuedRows[0].status).toBe("queued");
+    expect(queuedRows[0].generation).toBe(1);
+    expect(queuedRows[0].rule_snapshot).toEqual({ kind: "dailyTime", at: "09:00" });
+    const occurrenceId = queuedRows[0].id;
+
+    // Edit the rule while the occurrence is still queued (handler hasn't started), then force the
+    // recomputed schedule back onto the same still-pending timestamp — a narrow race, but one the
+    // unique (heartbeat_id, scheduled_for) index can still surface.
+    await withTransaction(pool, (client) =>
+      updateHeartbeatRule(client, heartbeat.id, { kind: "dailyTime", at: "10:30" }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = $2 WHERE id = $1", [heartbeat.id, dueAt]);
+
+    const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    expect(fired.map((f) => f.id)).toEqual([heartbeat.id]);
+
+    const { rows: replacedRows } = await pool.query<{
+      id: string;
+      generation: number;
+      status: string;
+      rule_snapshot: unknown;
+    }>("SELECT id, generation, status, rule_snapshot FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
+      heartbeat.id,
+    ]);
+    expect(replacedRows).toHaveLength(1); // preserved occurrence id/status, not a second row
+    expect(replacedRows[0].id).toBe(occurrenceId);
+    expect(replacedRows[0].status).toBe("queued");
+    expect(replacedRows[0].generation).toBe(2);
+    expect(replacedRows[0].rule_snapshot).toEqual({ kind: "dailyTime", at: "10:30" });
+
+    // A concurrently starting handler for the stale (generation 1) job sees the fresh snapshot
+    // once it acquires the lock, and simply proceeds as a first attempt for the current rule.
+    await drainQueue(registry);
+    expect(ran).toBe(1);
+
+    const { rows: finalRows } = await pool.query<{ status: string }>(
+      "SELECT status FROM heartbeat_occurrences WHERE id = $1",
+      [occurrenceId],
+    );
+    expect(finalRows[0].status).toBe("succeeded");
+  });
+
+  it("distinct scheduled occurrences for the same heartbeat get distinct job keys", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "noop",
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+    await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+    await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+
+    const { rows: occRows } = await pool.query(
+      "SELECT id, generation FROM heartbeat_occurrences WHERE heartbeat_id = $1 ORDER BY scheduled_for",
+      [heartbeat.id],
+    );
+    expect(occRows).toHaveLength(2);
+    const keys = occRows.map((r) => occurrenceFireJobKey(heartbeat.id, r.id, r.generation));
+    expect(new Set(keys).size).toBe(2);
+  });
+
+  it("two overlapping sweeps still fire a due heartbeat exactly once", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    let ran = 0;
+    registry.set("noop", async () => {
+      ran += 1;
+    });
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Daily",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "noop",
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+
+    // `FOR UPDATE SKIP LOCKED` inside sweepDueHeartbeats means two concurrent sweep transactions
+    // never both select this row: run them concurrently against the same pool to exercise that.
+    const [firedA, firedB] = await Promise.all([
+      withTransaction(pool, (client) => sweepDueHeartbeats(client)),
+      withTransaction(pool, (client) => sweepDueHeartbeats(client)),
+    ]);
+    const totalFired = firedA.length + firedB.length;
+    expect(totalFired).toBe(1);
+
+    const { rows: occRows } = await pool.query("SELECT id FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
+      heartbeat.id,
+    ]);
+    expect(occRows).toHaveLength(1);
+
+    await drainQueue(registry);
+    expect(ran).toBe(1);
+  });
+
+  it("createHeartbeatFireTask rejects a payload carrying zero or more than one of occurrenceId/itemId/triggeredByRunId with validation_failed", async () => {
+    const registry = createActionRegistry();
+    const task = createHeartbeatFireTask(pool, registry);
+    const helpers = { job: { attempts: 1, max_attempts: 3 } } as Parameters<typeof task>[1];
+
+    await expect(task({ heartbeatId: "h1" }, helpers)).rejects.toMatchObject({ code: "validation_failed" });
+    await expect(task({ heartbeatId: "h1", occurrenceId: "o1", itemId: "i1" }, helpers)).rejects.toMatchObject({
+      code: "validation_failed",
+    });
+    await expect(
+      task({ heartbeatId: "h1", occurrenceId: "o1", triggeredByRunId: "r1" }, helpers),
+    ).rejects.toMatchObject({ code: "validation_failed" });
+  });
+
   describe("module-declared heartbeat rule kinds", () => {
-    function fixtureModuleRuleKinds(nextFireAt: (rule: unknown, timezone: string, after: Date) => Date | null): HeartbeatRuleKindRegistry {
+    function fixtureModuleRuleKinds(
+      nextFireAt: (rule: unknown, timezone: string, after: Date) => Date | null,
+    ): HeartbeatRuleKindRegistry {
       return new Map([
         [
           "fixtureModule.onWidgetTick",
@@ -252,13 +722,19 @@ describe("scheduler", () => {
           moduleRuleKinds,
         ),
       );
-      await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [heartbeat.id]);
+      await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+        heartbeat.id,
+      ]);
 
       const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client, moduleRuleKinds));
       expect(fired.map((f) => f.id)).toEqual([heartbeat.id]);
 
+      // A module-declared rule kind is treated like a core fixed rule (only `everyNDays`/
+      // `interval` are floating): the sweep advances next_fire_at via the fixture's own
+      // nextFireAtExport immediately, without waiting for the fire task's first attempt.
       const after = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id, moduleRuleKinds));
-      expect(after!.lastFiredAt).not.toBeNull();
+      expect(after!.nextFireAt).not.toBeNull();
+      expect(after!.lastFiredAt).toBeNull();
     });
 
     it("a heartbeat whose module rule kind became inactive is skipped by the sweep, not dispatched", async () => {
@@ -276,13 +752,17 @@ describe("scheduler", () => {
           moduleRuleKinds,
         ),
       );
-      await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [heartbeat.id]);
+      await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+        heartbeat.id,
+      ]);
 
       // The module is now deactivated: the sweep is run with no module rule kinds registered.
       const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
       expect(fired).toHaveLength(0);
 
-      const { rows } = await pool.query("SELECT last_error, next_fire_at FROM project_heartbeats WHERE id = $1", [heartbeat.id]);
+      const { rows } = await pool.query("SELECT last_error, next_fire_at FROM project_heartbeats WHERE id = $1", [
+        heartbeat.id,
+      ]);
       expect(rows[0].last_error).toMatch(/Unknown heartbeat rule kind/);
       expect(rows[0].next_fire_at).not.toBeNull(); // left due, so reactivating the module lets the next sweep pick it up
     });
@@ -350,7 +830,9 @@ describe("scheduler", () => {
 
       // The module is now deactivated: updateHeartbeatRule is called with no module rule kinds
       // registered, replacing the now-unparseable rule with a working core one.
-      const updated = await withTransaction(pool, (client) => updateHeartbeatRule(client, heartbeat.id, { kind: "dailyTime", at: "09:00" }));
+      const updated = await withTransaction(pool, (client) =>
+        updateHeartbeatRule(client, heartbeat.id, { kind: "dailyTime", at: "09:00" }),
+      );
       expect(updated.rule).toEqual({ kind: "dailyTime", at: "09:00" });
       expect(updated.nextFireAt).not.toBeNull();
     });
@@ -376,7 +858,9 @@ describe("scheduler", () => {
           moduleRuleKinds,
         ),
       );
-      await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [heartbeat.id]);
+      await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+        heartbeat.id,
+      ]);
 
       // Sweep while the module is still active: enqueues the fire job and advances next_fire_at.
       const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client, moduleRuleKinds));
@@ -408,11 +892,15 @@ describe("scheduler", () => {
           moduleRuleKinds,
         ),
       );
-      const before = (await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id, moduleRuleKinds)))!.nextFireAt;
+      const before = (await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id, moduleRuleKinds)))!
+        .nextFireAt;
 
-      await withTransaction(pool, (client) => recomputeAllForTimezoneChange(client, "Pacific/Kiritimati", moduleRuleKinds));
+      await withTransaction(pool, (client) =>
+        recomputeAllForTimezoneChange(client, "Pacific/Kiritimati", moduleRuleKinds),
+      );
 
-      const after = (await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id, moduleRuleKinds)))!.nextFireAt;
+      const after = (await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id, moduleRuleKinds)))!
+        .nextFireAt;
       expect(after).not.toBeNull();
       expect(after).not.toBe(before);
     });
@@ -443,9 +931,13 @@ describe("scheduler", () => {
       const coreBefore = (await withTransaction(pool, (client) => getHeartbeat(client, coreHeartbeat.id)))!.nextFireAt;
 
       // The module is now deactivated: recompute runs with no module rule kinds registered.
-      await expect(withTransaction(pool, (client) => recomputeAllForTimezoneChange(client, "Pacific/Kiritimati"))).resolves.toBeUndefined();
+      await expect(
+        withTransaction(pool, (client) => recomputeAllForTimezoneChange(client, "Pacific/Kiritimati")),
+      ).resolves.toBeUndefined();
 
-      const { rows } = await pool.query("SELECT last_error FROM project_heartbeats WHERE id = $1", [moduleHeartbeat.id]);
+      const { rows } = await pool.query("SELECT last_error FROM project_heartbeats WHERE id = $1", [
+        moduleHeartbeat.id,
+      ]);
       expect(rows[0].last_error).toMatch(/Unknown heartbeat rule kind/);
 
       // The core heartbeat after it in the same batch still gets recomputed.

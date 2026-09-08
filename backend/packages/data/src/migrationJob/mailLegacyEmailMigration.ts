@@ -3,7 +3,12 @@ import { simpleParser, type AddressObject, type StructuredHeader } from "mailpar
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { withTransaction, type Queryable } from "../db/pool.js";
 import { resolveThreadId } from "../mail/threading.js";
-import { getMailMessageMetaByMessageId, upsertMailMessageMeta, type MailEnvelope, type MailEnvelopeAddress } from "../mail/mailMessageMetaStore.js";
+import {
+  getMailMessageMetaByMessageId,
+  upsertMailMessageMeta,
+  type MailEnvelope,
+  type MailEnvelopeAddress,
+} from "../mail/mailMessageMetaStore.js";
 import { isDeliveryStatusReport } from "../mail/dsn.js";
 
 /**
@@ -79,7 +84,11 @@ interface LegacyItemRow {
 async function migrateLegacyItem(client: PoolClient, item: LegacyItemRow, rawMime: Buffer | null): Promise<void> {
   if (rawMime) {
     const parsed = await simpleParser(rawMime);
-    const references = Array.isArray(parsed.references) ? parsed.references : parsed.references ? [parsed.references] : [];
+    const references = Array.isArray(parsed.references)
+      ? parsed.references
+      : parsed.references
+        ? [parsed.references]
+        : [];
     const recoveredMessageId = parsed.messageId ?? null;
     // `upsertMailMessageMeta`'s `ON CONFLICT (message_id)` never changes `item_id` — if the
     // recovered Message-ID already belongs to a *different* item (a live-synced duplicate of
@@ -93,7 +102,9 @@ async function migrateLegacyItem(client: PoolClient, item: LegacyItemRow, rawMim
     const collided = existing !== null && existing.itemId !== item.id;
     const messageId = recoveredMessageId && !collided ? recoveredMessageId : legacyMessageId(item.id);
     const envelope: MailEnvelope = {
-      from: parsed.from?.value[0]?.address ? { name: parsed.from.value[0].name || undefined, address: parsed.from.value[0].address } : undefined,
+      from: parsed.from?.value[0]?.address
+        ? { name: parsed.from.value[0].name || undefined, address: parsed.from.value[0].address }
+        : undefined,
       to: toEnvelopeAddressList(parsed.to),
       cc: toEnvelopeAddressList(parsed.cc),
       bcc: toEnvelopeAddressList(parsed.bcc),
@@ -175,7 +186,7 @@ export async function runMailLegacyEmailMigrationJob(
   const pageSize = 500;
   for (;;) {
     const listClient: PoolClient = await pool.connect();
-    let rows: LegacyItemRow[] = [];
+    let rows: LegacyItemRow[];
     try {
       const result = await listClient.query<LegacyItemRow>(
         `SELECT i.id, i.properties

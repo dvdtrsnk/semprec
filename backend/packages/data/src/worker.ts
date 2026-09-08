@@ -26,7 +26,12 @@ import {
   type MailSyncAdapterFactory,
 } from "./mail/mailSyncJob.js";
 import { LocalFsBlobStorageWriter, type BlobStorageWriter } from "./mail/blobStorage.js";
-import { handleMailLegacyEmailMigrationTask, noopLegacyRawMimeFetcher, type LegacyRawMimeFetcher } from "./migrationJob/mailLegacyEmailMigration.js";
+import {
+  handleMailLegacyEmailMigrationTask,
+  noopLegacyRawMimeFetcher,
+  type LegacyRawMimeFetcher,
+} from "./migrationJob/mailLegacyEmailMigration.js";
+import { handleApprovalRequestExecuteTask } from "./mcp/approvalRequestExecution.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -36,7 +41,8 @@ function requireString(payload: unknown, field: string): string {
 
 function requirePropertyType(payload: unknown, field: string): PropertyType {
   const value = requireString(payload, field);
-  if (!PROPERTY_TYPES.includes(value as PropertyType)) throw new Error(`Job payload field '${field}' is not a known property type`);
+  if (!PROPERTY_TYPES.includes(value as PropertyType))
+    throw new Error(`Job payload field '${field}' is not a known property type`);
   return value as PropertyType;
 }
 
@@ -78,7 +84,9 @@ export function createCoreTaskList(
   libraryMetadataFetcher: LibraryMetadataFetcher = noopLibraryMetadataFetcher,
   mailSyncAdapters: MailSyncAdapterFactory = noopMailSyncAdapterFactory,
   mailModuleIds?: MailModuleIds,
-  mailBlobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(process.env.MAIL_ATTACHMENTS_DIR ?? "/tmp/semprec-mail-attachments"),
+  mailBlobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(
+    process.env.MAIL_ATTACHMENTS_DIR ?? "/tmp/semprec-mail-attachments",
+  ),
   legacyRawMimeFetcher: LegacyRawMimeFetcher = noopLegacyRawMimeFetcher,
   moduleRegistry?: ModuleRegistry,
 ): TaskList {
@@ -88,7 +96,10 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.HEARTBEAT_FIRE]: createHeartbeatFireTask(pool, actionRegistry, moduleRegistry),
     [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: async (payload) => {
-      await handleRollupRecomputeTask(pool, { rollupPropertyId: requireString(payload, "rollupPropertyId"), itemId: requireString(payload, "itemId") });
+      await handleRollupRecomputeTask(pool, {
+        rollupPropertyId: requireString(payload, "rollupPropertyId"),
+        itemId: requireString(payload, "itemId"),
+      });
     },
     [CORE_TASK_NAMES.ROLLUP_RECOMPUTE_FULL]: async (payload) => {
       await handleRollupRecomputeFullTask(pool, { rollupPropertyId: requireString(payload, "rollupPropertyId") });
@@ -114,7 +125,11 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS]: async (payload) => {
       await handleProcessLibraryMetadataTask(
         pool,
-        { itemId: requireString(payload, "itemId"), databaseId: requireString(payload, "databaseId"), config: requireLibraryMetadataConfig(payload) },
+        {
+          itemId: requireString(payload, "itemId"),
+          databaseId: requireString(payload, "databaseId"),
+          config: requireLibraryMetadataConfig(payload),
+        },
         libraryMetadataFetcher,
       );
     },
@@ -122,15 +137,32 @@ export function createCoreTaskList(
       await handleMailAccountSyncSweepTask(pool);
     },
     [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: async (payload) => {
-      if (!mailModuleIds) throw new Error("mailAccountSync job requires createCoreTaskList's mailModuleIds argument to be configured");
-      await handleSyncMailAccountTask(pool, { mailboxItemId: requireString(payload, "mailboxItemId") }, mailSyncAdapters, mailModuleIds, mailBlobStorage);
+      if (!mailModuleIds)
+        throw new Error("mailAccountSync job requires createCoreTaskList's mailModuleIds argument to be configured");
+      await handleSyncMailAccountTask(
+        pool,
+        { mailboxItemId: requireString(payload, "mailboxItemId") },
+        mailSyncAdapters,
+        mailModuleIds,
+        mailBlobStorage,
+      );
     },
     [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: async () => {
-      if (!mailModuleIds) throw new Error("mailSearchReindexSweep job requires createCoreTaskList's mailModuleIds argument to be configured");
+      if (!mailModuleIds)
+        throw new Error(
+          "mailSearchReindexSweep job requires createCoreTaskList's mailModuleIds argument to be configured",
+        );
       await handleMailSearchReindexSweepTask(pool, mailModuleIds.emailsDatabaseId);
     },
     [CORE_TASK_NAMES.MAIL_LEGACY_EMAIL_MIGRATION]: async (payload) => {
-      await handleMailLegacyEmailMigrationTask(pool, { emailsDatabaseId: requireString(payload, "emailsDatabaseId") }, legacyRawMimeFetcher);
+      await handleMailLegacyEmailMigrationTask(
+        pool,
+        { emailsDatabaseId: requireString(payload, "emailsDatabaseId") },
+        legacyRawMimeFetcher,
+      );
+    },
+    [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: async (payload) => {
+      await handleApprovalRequestExecuteTask(pool, { approvalRequestId: requireString(payload, "approvalRequestId") });
     },
   };
 }

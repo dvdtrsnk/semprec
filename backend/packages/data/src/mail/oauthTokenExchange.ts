@@ -42,7 +42,9 @@ export async function refreshAccessToken(input: RefreshAccessTokenInput): Promis
     // token (`invalid_grant`) — a credential problem the user must fix, not a transient/network
     // failure worth silently retrying (issue #26: `sync_status = 'needsReauthorization'`).
     if (response.status === 400 || response.status === 401) {
-      throw new MailReauthorizationRequiredError(`OAuth token refresh rejected the stored refresh token (status ${response.status})`);
+      throw new MailReauthorizationRequiredError(
+        `OAuth token refresh rejected the stored refresh token (status ${response.status})`,
+      );
     }
     throw new Error(`OAuth token refresh failed with status ${response.status}`);
   }

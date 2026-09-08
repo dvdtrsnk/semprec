@@ -1,6 +1,10 @@
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
-import { createItemWithClient, createRelationWithClient, type SystemRelationWriteContext } from "../chokePoint/chokePoint.js";
+import {
+  createItemWithClient,
+  createRelationWithClient,
+  type SystemRelationWriteContext,
+} from "../chokePoint/chokePoint.js";
 import type { ActionQueueAffinity } from "../scheduler/actions.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
@@ -76,12 +80,22 @@ export async function createInboxItemWithClient(client: PoolClient, input: Creat
 
   if (input.type) {
     const typeProperty = await getRelationProperty(client, input.inboxDatabaseId, "type");
-    await createRelationWithClient(client, { relationPropertyId: typeProperty.id, callerItemId: item.id, targetItemId: input.type });
+    await createRelationWithClient(client, {
+      relationPropertyId: typeProperty.id,
+      callerItemId: item.id,
+      targetItemId: input.type,
+    });
   }
 
   const journalDayProperty = await getRelationProperty(client, input.inboxDatabaseId, "journalDay");
   const referenceDate = DateTime.fromISO(input.date, { zone: input.timezone }).toJSDate();
-  const journalDay = await getOrCreateJournalItem(client, input.journalDatabaseId, "day", referenceDate, input.timezone);
+  const journalDay = await getOrCreateJournalItem(
+    client,
+    input.journalDatabaseId,
+    "day",
+    referenceDate,
+    input.timezone,
+  );
   await createRelationWithClient(
     client,
     { relationPropertyId: journalDayProperty.id, callerItemId: item.id, targetItemId: journalDay.id },

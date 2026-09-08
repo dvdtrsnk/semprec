@@ -42,7 +42,9 @@ export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
  */
 export function assertJsonObject(value: unknown, context: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null) {
-    throw new Error(`${context}: expected a JSON object in the response, got ${value === null ? "null" : typeof value}`);
+    throw new Error(
+      `${context}: expected a JSON object in the response, got ${value === null ? "null" : typeof value}`,
+    );
   }
   return value as Record<string, unknown>;
 }

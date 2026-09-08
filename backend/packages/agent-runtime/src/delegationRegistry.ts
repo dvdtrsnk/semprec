@@ -1,5 +1,11 @@
 import type { Pool } from "pg";
 import { createAgentRun, finishAgentRun } from "@semprec/data";
+import type { CompactionAdapter } from "./compaction.js";
+import {
+  persistCompaction,
+  reconstructConversationHistory as reconstructHistoryEntries,
+  type ReconstructedHistory,
+} from "./conversationReconstruction.js";
 import { extractResultSnapshot, pushRunStatus, runAgentTurn } from "./lifecycleAdapter.js";
 import type { AgentMessage, AgentSession, CreateAgentSession } from "./types.js";
 
@@ -9,12 +15,38 @@ export const BUSY_ERROR_MESSAGE = "this project is already handling another requ
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * Wake-time inheritance port for a delegated session, the same job `sempConversation.ts`'s
+ * `ReconstructConversationHistory` does for Semp's own conversation — a delegated one is keyed
+ * by `(supervisorRunId, targetProjectItemId)` rather than a fixed project item id, so this seam
+ * takes both. Defaults to the always-empty stub, matching pre-#119 behavior.
+ */
+export type ReconstructDelegatedHistory = (
+  pool: Pool,
+  targetProjectItemId: string,
+  supervisorRunId: string,
+) => Promise<ReconstructedHistory | null>;
+
+const stubReconstructDelegatedHistory: ReconstructDelegatedHistory = async () => null;
+
+/** #119's real `ReconstructDelegatedHistory`: closes over a `CompactionAdapter` so `DelegateInput` only needs the plain three-arg seam shape every caller (and every existing test) already expects. */
+export function createReconstructDelegatedHistory(compaction: CompactionAdapter): ReconstructDelegatedHistory {
+  return (pool, targetProjectItemId, supervisorRunId) =>
+    reconstructHistoryEntries(
+      pool,
+      { projectItemId: targetProjectItemId, triggeredBy: "supervisor", parentRunId: supervisorRunId },
+      compaction,
+    );
+}
+
 export interface DelegateInput {
   /** Seam for the real `pi-agent-core` `createAgentSession` (or a fake, in tests). */
   createAgentSession: CreateAgentSession;
   supervisorRunId: string;
   targetProjectItemId: string;
   task: string;
+  /** Defaults to the always-empty stub; pass `createReconstructDelegatedHistory(compactionAdapter)` for the real #119 reconstruction. */
+  reconstructHistory?: ReconstructDelegatedHistory;
 }
 
 export type DelegateResult = { ok: true; message: string | null } | { ok: false; error: string };
@@ -125,6 +157,9 @@ export class DelegationRegistry {
 
     this.pendingKeys.add(entryKey);
     try {
+      const reconstruct = input.reconstructHistory ?? stubReconstructDelegatedHistory;
+      const priorHistory = await reconstruct(this.pool, input.targetProjectItemId, input.supervisorRunId);
+
       const run = await createAgentRun(this.pool, {
         projectItemId: input.targetProjectItemId,
         parentRunId: input.supervisorRunId,
@@ -134,7 +169,17 @@ export class DelegationRegistry {
       });
       await pushRunStatus(this.pool, run.id, "running");
 
-      const session = input.createAgentSession({ task: input.task });
+      // The compacted continuation replaces the raw history it was derived from — persisted
+      // here, on the run it seeds, so a later restart's reconstruction resumes from this
+      // checkpoint instead of re-deriving (and potentially re-compacting) it all over again.
+      if (priorHistory?.compacted) {
+        await persistCompaction(this.pool, run.id, priorHistory.entries);
+      }
+
+      const session = input.createAgentSession({
+        task: input.task,
+        initialState: priorHistory ? { messages: priorHistory.entries } : undefined,
+      });
 
       let lastMessage: AgentMessage | null;
       try {

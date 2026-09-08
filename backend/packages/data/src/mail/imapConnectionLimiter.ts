@@ -16,7 +16,9 @@ export function imapConnectionLimitForProvider(provider: string | undefined, con
   if (typeof configuredLimit === "number" && Number.isFinite(configuredLimit) && configuredLimit >= 1) {
     return Math.floor(configuredLimit);
   }
-  return (provider !== undefined ? PROVIDER_IMAP_CONNECTION_LIMITS[provider] : undefined) ?? DEFAULT_IMAP_CONNECTION_LIMIT;
+  return (
+    (provider !== undefined ? PROVIDER_IMAP_CONNECTION_LIMITS[provider] : undefined) ?? DEFAULT_IMAP_CONNECTION_LIMIT
+  );
 }
 
 /**
@@ -33,7 +35,10 @@ const PROVIDER_CONNECTION_LIMIT_BACKOFF_SECONDS: Record<string, number> = {
 const DEFAULT_CONNECTION_LIMIT_BACKOFF_SECONDS = 5 * 60;
 
 export function connectionLimitBackoffSecondsForProvider(provider: string | undefined): number {
-  return (provider !== undefined ? PROVIDER_CONNECTION_LIMIT_BACKOFF_SECONDS[provider] : undefined) ?? DEFAULT_CONNECTION_LIMIT_BACKOFF_SECONDS;
+  return (
+    (provider !== undefined ? PROVIDER_CONNECTION_LIMIT_BACKOFF_SECONDS[provider] : undefined) ??
+    DEFAULT_CONNECTION_LIMIT_BACKOFF_SECONDS
+  );
 }
 
 /**
@@ -111,7 +116,11 @@ class AccountQueue {
         timer: setTimeout(() => {
           const index = this.waiters.indexOf(waiter);
           if (index !== -1) this.waiters.splice(index, 1);
-          reject(new Error(`Timed out after ${ACCOUNT_QUEUE_WAIT_TIMEOUT_MS}ms waiting for an IMAP connection slot for this account`));
+          reject(
+            new Error(
+              `Timed out after ${ACCOUNT_QUEUE_WAIT_TIMEOUT_MS}ms waiting for an IMAP connection slot for this account`,
+            ),
+          );
         }, ACCOUNT_QUEUE_WAIT_TIMEOUT_MS),
       };
       this.waiters.push(waiter);

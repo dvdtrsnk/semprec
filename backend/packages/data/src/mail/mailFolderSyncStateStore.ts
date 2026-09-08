@@ -40,7 +40,10 @@ export async function ensureMailFolderSyncState(client: Queryable, itemId: strin
   return existing;
 }
 
-export async function getMailFolderSyncState(client: Queryable, itemId: string): Promise<MailFolderSyncStateRow | null> {
+export async function getMailFolderSyncState(
+  client: Queryable,
+  itemId: string,
+): Promise<MailFolderSyncStateRow | null> {
   const { rows } = await client.query(`SELECT ${COLUMNS} FROM mail_folder_sync_state WHERE item_id = $1`, [itemId]);
   return rows[0] ? mapRow(rows[0]) : null;
 }
@@ -50,7 +53,11 @@ export async function getMailFolderSyncState(client: Queryable, itemId: string):
  * saying "this folder was rebuilt." Resets `uidnext`/`highestmodseq` so the caller's next
  * pass runs a full reconcile keyed by `Message-ID`, not a blind incremental fetch.
  */
-export async function resetForUidvalidityChange(client: Queryable, itemId: string, newUidvalidity: string): Promise<void> {
+export async function resetForUidvalidityChange(
+  client: Queryable,
+  itemId: string,
+  newUidvalidity: string,
+): Promise<void> {
   await client.query(
     `UPDATE mail_folder_sync_state SET uidvalidity = $2, uidnext = NULL, highestmodseq = NULL, last_error = NULL WHERE item_id = $1`,
     [itemId, newUidvalidity],

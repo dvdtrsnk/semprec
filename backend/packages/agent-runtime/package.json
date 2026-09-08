@@ -6,11 +6,16 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "check-pi-import-paths": "node scripts/check-pi-import-paths.mjs"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "0.85.1",
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
     "@semprec/data": "workspace:*",
     "@semprec/realtime": "workspace:*",
+    "ajv": "^8.20.0",
     "pg": "^8.23.0"
   },
   "devDependencies": {

@@ -9,7 +9,9 @@ export const manifest: ModuleManifest = {
   databases: [{ key: "fixtureUnknownKeyItems", name: "Fixture Unknown Key Items" }],
   capabilities: [],
   agentTools: [],
-  dataMigrations: [{ databaseKey: "notMyDatabase", fromVersion: "1.0.0", toVersion: "2.0.0", converterExport: "convertItem" }],
+  dataMigrations: [
+    { databaseKey: "notMyDatabase", fromVersion: "1.0.0", toVersion: "2.0.0", converterExport: "convertItem" },
+  ],
 };
 
 export function convertItem(properties: Record<string, unknown>): Record<string, unknown> {

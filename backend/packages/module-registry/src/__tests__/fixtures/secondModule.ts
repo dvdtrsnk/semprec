@@ -10,7 +10,9 @@ export const manifest: ModuleManifest = {
   // Deliberately overlaps with goodModule's "fixtureGood.send" to exercise getCapabilities'
   // cross-module deduplication.
   capabilities: ["fixtureGood.send", "fixtureSecond.onlyHere"],
-  agentTools: [{ name: "fixtureSecond.ungranted", handlerExport: "handleUngranted", capability: "fixtureSecond.neverGranted" }],
+  agentTools: [
+    { name: "fixtureSecond.ungranted", handlerExport: "handleUngranted", capability: "fixtureSecond.neverGranted" },
+  ],
 };
 
 export function handleUngranted(): void {}

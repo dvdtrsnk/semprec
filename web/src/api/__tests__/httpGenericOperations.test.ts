@@ -13,11 +13,16 @@ describe("http generic operations", () => {
       baseUrl: "/api",
       fetchImpl: async (input, init) => {
         calls.push({ url: String(input), body: JSON.parse(String(init?.body)) });
-        return jsonResponse({ items: [{ id: "e1", databaseId: "db", properties: { name: "Hi" }, updatedAt: "2026-01-01T00:00:00.000Z" }], nextCursor: null });
+        return jsonResponse({
+          items: [{ id: "e1", databaseId: "db", properties: { name: "Hi" }, updatedAt: "2026-01-01T00:00:00.000Z" }],
+          nextCursor: null,
+        });
       },
     });
 
-    const page = await operations.listItems("db", { filter: { type: "relation_contains", property: "folder", value: "f1" } });
+    const page = await operations.listItems("db", {
+      filter: { type: "relation_contains", property: "folder", value: "f1" },
+    });
 
     expect(calls[0]?.url).toBe("/api/databases/db/items/query");
     expect(calls[0]?.body).toEqual({ filter: { type: "relation_contains", property: "folder", value: "f1" } });
@@ -27,7 +32,9 @@ describe("http generic operations", () => {
 
   it("classifies a forbidden or missing resource as unavailable and a server error as retryable", async () => {
     const withStatus = (status: number) =>
-      createHttpGenericOperations({ baseUrl: "/api", fetchImpl: async () => jsonResponse({}, status) }).countItems("db");
+      createHttpGenericOperations({ baseUrl: "/api", fetchImpl: async () => jsonResponse({}, status) }).countItems(
+        "db",
+      );
 
     await expect(withStatus(403)).rejects.toMatchObject({ kind: "unavailable" });
     await expect(withStatus(500)).rejects.toMatchObject({ kind: "retryable" });
@@ -67,13 +74,22 @@ describe("http generic operations", () => {
       baseUrl: "/api",
       fetchImpl: async (input, init) => {
         calls.push({ url: String(input), method: init?.method, body: JSON.parse(String(init?.body)) });
-        return jsonResponse({ id: "e1", databaseId: "db", properties: { read: true }, updatedAt: "2026-01-01T00:00:00.000Z" });
+        return jsonResponse({
+          id: "e1",
+          databaseId: "db",
+          properties: { read: true },
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        });
       },
     });
 
     const item = await operations.updateItem("db", "e1", { read: true });
 
-    expect(calls[0]).toMatchObject({ url: "/api/databases/db/items/e1", method: "PATCH", body: { properties: { read: true } } });
+    expect(calls[0]).toMatchObject({
+      url: "/api/databases/db/items/e1",
+      method: "PATCH",
+      body: { properties: { read: true } },
+    });
     expect(item.properties.read).toBe(true);
   });
 

@@ -27,7 +27,13 @@ describe("compileFilterNode", () => {
       type: "and",
       nodes: [
         { type: "not", node: { type: "is_empty", property: "title" } },
-        { type: "or", nodes: [{ type: "equals", property: "year", value: 1984 }, { type: "equals", property: "year", value: 1985 }] },
+        {
+          type: "or",
+          nodes: [
+            { type: "equals", property: "year", value: 1984 },
+            { type: "equals", property: "year", value: 1985 },
+          ],
+        },
       ],
     });
 
@@ -49,9 +55,9 @@ describe("compileFilterNode", () => {
 
   it("rejects a filter that references an unknown property", () => {
     const props = properties([["title", { type: "text" }]]);
-    expect(() => compileFilterNode(parseFilterNode({ type: "equals", property: "nope", value: "x" }), props, [])).toThrow(
-      ValidationError,
-    );
+    expect(() =>
+      compileFilterNode(parseFilterNode({ type: "equals", property: "nope", value: "x" }), props, []),
+    ).toThrow(ValidationError);
   });
 
   it("rejects relation_contains against a non-relation property, and equals against a relation property", () => {
@@ -62,15 +68,19 @@ describe("compileFilterNode", () => {
 
     expect(() =>
       compileFilterNode(
-        parseFilterNode({ type: "relation_contains", property: "title", value: "00000000-0000-0000-0000-000000000000" }),
+        parseFilterNode({
+          type: "relation_contains",
+          property: "title",
+          value: "00000000-0000-0000-0000-000000000000",
+        }),
         props,
         [],
       ),
     ).toThrow(ValidationError);
 
-    expect(() => compileFilterNode(parseFilterNode({ type: "equals", property: "tasks", value: "x" }), props, [])).toThrow(
-      ValidationError,
-    );
+    expect(() =>
+      compileFilterNode(parseFilterNode({ type: "equals", property: "tasks", value: "x" }), props, []),
+    ).toThrow(ValidationError);
   });
 
   it("compiles relation_contains to an EXISTS check over item_relations, binding the definition id and target id, never the raw side", () => {
@@ -78,7 +88,11 @@ describe("compileFilterNode", () => {
     const params: unknown[] = [];
     const targetId = "11111111-1111-4111-8111-111111111111";
 
-    const sql = compileFilterNode(parseFilterNode({ type: "relation_contains", property: "tasks", value: targetId }), props, params);
+    const sql = compileFilterNode(
+      parseFilterNode({ type: "relation_contains", property: "tasks", value: targetId }),
+      props,
+      params,
+    );
 
     expect(sql).toBe(
       "EXISTS (SELECT 1 FROM item_relations r WHERE r.relation_definition_id = $1 AND r.item_b = items.id AND r.item_a = $2::uuid)",
@@ -93,7 +107,9 @@ describe("compileFilterNode", () => {
     ]);
 
     const multiSql = compileFilterNode(parseFilterNode({ type: "is_empty", property: "tags" }), props, []);
-    expect(multiSql).toBe("(properties -> $1 IS NULL OR properties -> $1 = 'null'::jsonb OR properties -> $1 = '[]'::jsonb)");
+    expect(multiSql).toBe(
+      "(properties -> $1 IS NULL OR properties -> $1 = 'null'::jsonb OR properties -> $1 = '[]'::jsonb)",
+    );
 
     const scalarSql = compileFilterNode(parseFilterNode({ type: "is_empty", property: "title" }), props, []);
     expect(scalarSql).toBe("(properties ->> $1 IS NULL OR properties ->> $1 = '')");
@@ -108,7 +124,11 @@ describe("compileFilterNode", () => {
     const multiSql = compileFilterNode(parseFilterNode({ type: "in", property: "tags", value: ["a", "b"] }), props, []);
     expect(multiSql).toBe("properties -> $1 ?| $2::text[]");
 
-    const scalarSql = compileFilterNode(parseFilterNode({ type: "in", property: "title", value: ["a", "b"] }), props, []);
+    const scalarSql = compileFilterNode(
+      parseFilterNode({ type: "in", property: "title", value: ["a", "b"] }),
+      props,
+      [],
+    );
     expect(scalarSql).toBe("properties ->> $1 = ANY($2::text[])");
   });
 });

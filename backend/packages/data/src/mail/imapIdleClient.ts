@@ -39,7 +39,11 @@ export interface ImapIdleFlowOptions {
  * module only ever asks for the IDLE-specific options (`maxIdleTime`, `socketTimeout`) to be
  * applied on top of whatever connection options the composition root otherwise supplies.
  */
-export type CreateIdleTunedImapFlowClient = (mailboxItemId: string, credential: string, idleOptions: ImapIdleFlowOptions) => Promise<ImapFlow>;
+export type CreateIdleTunedImapFlowClient = (
+  mailboxItemId: string,
+  credential: string,
+  idleOptions: ImapIdleFlowOptions,
+) => Promise<ImapFlow>;
 
 const SPECIAL_USE_INBOX = "\\Inbox";
 const SPECIAL_USE_ALL = "\\All";
@@ -106,13 +110,18 @@ class ImapFlowIdleConnection implements ImapIdleConnection {
 export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlowClient): ImapIdleTransport {
   return {
     async resolveFolders(mailboxItemId, credential): Promise<ImapIdleFolderTarget[]> {
-      const client = await createClient(mailboxItemId, credential, { maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS, socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS });
+      const client = await createClient(mailboxItemId, credential, {
+        maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
+        socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
+      });
       try {
         await client.connect();
         const list = await client.list();
         const inbox = list.find((f) => f.specialUse === SPECIAL_USE_INBOX);
         const allMail = list.find((f) => f.specialUse === SPECIAL_USE_ALL);
-        const targets = [inbox, allMail].filter((f): f is NonNullable<typeof f> => Boolean(f)).map((f) => ({ path: f.path }));
+        const targets = [inbox, allMail]
+          .filter((f): f is NonNullable<typeof f> => Boolean(f))
+          .map((f) => ({ path: f.path }));
         // A server with neither special-use attribute (plain IMAP without RFC 6154) still has
         // an INBOX by definition — falling back to it keeps this account under some IDLE
         // coverage instead of none.
@@ -123,7 +132,10 @@ export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlo
     },
 
     async connect(mailboxItemId, credential, folderPath, onSignal): Promise<ImapIdleConnection> {
-      const client = await createClient(mailboxItemId, credential, { maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS, socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS });
+      const client = await createClient(mailboxItemId, credential, {
+        maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
+        socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
+      });
       try {
         await client.connect();
         await client.mailboxOpen(folderPath);

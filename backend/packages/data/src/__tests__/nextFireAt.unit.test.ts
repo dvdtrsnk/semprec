@@ -44,7 +44,11 @@ describe("computeNextFireAt", () => {
   });
 
   it("onItemEvent: has no next_fire_at at all", () => {
-    const rule: HeartbeatRule = { kind: "onItemEvent", databaseId: "00000000-0000-0000-0000-000000000000", event: "create" };
+    const rule: HeartbeatRule = {
+      kind: "onItemEvent",
+      databaseId: "00000000-0000-0000-0000-000000000000",
+      event: "create",
+    };
     expect(computeNextFireAt(rule, TZ, new Date())).toBeNull();
   });
 

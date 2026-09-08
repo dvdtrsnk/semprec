@@ -10,6 +10,11 @@ export const manifest: ModuleManifest = {
   capabilities: [],
   agentTools: [],
   dataMigrations: [
-    { databaseKey: "fixtureMissingConverterItems", fromVersion: "1.0.0", toVersion: "2.0.0", converterExport: "doesNotExist" },
+    {
+      databaseKey: "fixtureMissingConverterItems",
+      fromVersion: "1.0.0",
+      toVersion: "2.0.0",
+      converterExport: "doesNotExist",
+    },
   ],
 };

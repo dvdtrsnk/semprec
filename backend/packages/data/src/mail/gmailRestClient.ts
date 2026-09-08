@@ -95,7 +95,9 @@ function classifyGmailAttachmentParts(
 ): ClassifiedAttachment[] {
   const candidates = parts.map((part): ClassifiedAttachment => {
     const dispositionHeader = partHeader(part, "Content-Disposition");
-    const disposition: "attachment" | "inline" = dispositionHeader?.toLowerCase().trim().startsWith("inline") ? "inline" : "attachment";
+    const disposition: "attachment" | "inline" = dispositionHeader?.toLowerCase().trim().startsWith("inline")
+      ? "inline"
+      : "attachment";
     const contentIdHeader = partHeader(part, "Content-ID");
     const contentId = contentIdHeader ? contentIdHeader.replace(/^<|>$/g, "") : null;
     return {
@@ -106,18 +108,23 @@ function classifyGmailAttachmentParts(
       openStream: async () => {
         if (part.body?.data) {
           if ((part.body.size ?? 0) > MAX_ATTACHMENT_BYTES) {
-            throw new Error(`Gmail inline attachment part is ${part.body.size} bytes, over the ${MAX_ATTACHMENT_BYTES}-byte cap`);
+            throw new Error(
+              `Gmail inline attachment part is ${part.body.size} bytes, over the ${MAX_ATTACHMENT_BYTES}-byte cap`,
+            );
           }
           return Readable.from(decodeBase64Url(part.body.data));
         }
-        if (!part.body?.attachmentId) throw new Error("Gmail attachment part has neither inline data nor an attachmentId");
+        if (!part.body?.attachmentId)
+          throw new Error("Gmail attachment part has neither inline data nor an attachmentId");
         return Readable.from(await fetchAttachmentBytes(part.body.attachmentId));
       },
     };
   });
   // Same "inline part actually referenced via cid: in the HTML body is a rendering asset, not
   // a document" rule the other two adapters apply (attachments.ts / imapFlowClient.ts).
-  return candidates.filter((a) => !(a.disposition === "inline" && a.contentId !== null && Boolean(html?.includes(`cid:${a.contentId}`))));
+  return candidates.filter(
+    (a) => !(a.disposition === "inline" && a.contentId !== null && Boolean(html?.includes(`cid:${a.contentId}`))),
+  );
 }
 
 async function toFetchedMessage(
@@ -137,7 +144,10 @@ async function toFetchedMessage(
       : [];
   const toList = (value: typeof parsedHeaders.to): MailEnvelopeAddress[] => {
     const objects = Array.isArray(value) ? value : value ? [value] : [];
-    return objects.flatMap((o) => o.value).filter((a): a is { name: string; address: string } => Boolean(a.address)).map((a) => ({ name: a.name || undefined, address: a.address }));
+    return objects
+      .flatMap((o) => o.value)
+      .filter((a): a is { name: string; address: string } => Boolean(a.address))
+      .map((a) => ({ name: a.name || undefined, address: a.address }));
   };
 
   return {
@@ -149,7 +159,9 @@ async function toFetchedMessage(
     references,
     subject: parsedHeaders.subject,
     envelope: {
-      from: parsedHeaders.from?.value[0]?.address ? { name: parsedHeaders.from.value[0].name || undefined, address: parsedHeaders.from.value[0].address } : undefined,
+      from: parsedHeaders.from?.value[0]?.address
+        ? { name: parsedHeaders.from.value[0].name || undefined, address: parsedHeaders.from.value[0].address }
+        : undefined,
       to: toList(parsedHeaders.to),
       cc: toList(parsedHeaders.cc),
       bcc: toList(parsedHeaders.bcc),
@@ -191,7 +203,8 @@ export class GmailRestClient implements GmailMailClient {
     // `request` returns `{ json: null }` on a 404 (deleted account, suspended domain) — a
     // non-null assertion here would throw an unhelpful "Cannot read properties of null"
     // instead of a message that actually says what happened.
-    if (!json) throw new Error(`Gmail /profile returned status ${status} with no body — account may be deleted or suspended`);
+    if (!json)
+      throw new Error(`Gmail /profile returned status ${status} with no body — account may be deleted or suspended`);
     return json.historyId;
   }
 
@@ -204,12 +217,18 @@ export class GmailRestClient implements GmailMailClient {
     do {
       const query = new URLSearchParams({ startHistoryId, ...(pageToken ? { pageToken } : {}) });
       const { status, json } = await this.request<{
-        history?: Array<{ messagesAdded?: { message: { id: string } }[]; messagesDeleted?: { message: { id: string } }[]; labelsAdded?: { message: { id: string } }[]; labelsRemoved?: { message: { id: string } }[] }>;
+        history?: Array<{
+          messagesAdded?: { message: { id: string } }[];
+          messagesDeleted?: { message: { id: string } }[];
+          labelsAdded?: { message: { id: string } }[];
+          labelsRemoved?: { message: { id: string } }[];
+        }>;
         historyId?: string;
         nextPageToken?: string;
       }>(`/history?${query.toString()}`);
 
-      if (status === 404) return { invalidated: true, newHistoryId: startHistoryId, changedMessageIds: [], removedMessageIds: [] };
+      if (status === 404)
+        return { invalidated: true, newHistoryId: startHistoryId, changedMessageIds: [], removedMessageIds: [] };
 
       for (const entry of json?.history ?? []) {
         for (const m of entry.messagesAdded ?? []) changedIds.add(m.message.id);
@@ -229,7 +248,9 @@ export class GmailRestClient implements GmailMailClient {
     let pageToken: string | undefined;
     do {
       const query = new URLSearchParams({ maxResults: "500", ...(pageToken ? { pageToken } : {}) });
-      const { json } = await this.request<{ messages?: { id: string }[]; nextPageToken?: string }>(`/messages?${query.toString()}`);
+      const { json } = await this.request<{ messages?: { id: string }[]; nextPageToken?: string }>(
+        `/messages?${query.toString()}`,
+      );
       for (const m of json?.messages ?? []) ids.push(m.id);
       pageToken = json?.nextPageToken;
     } while (pageToken);
@@ -237,13 +258,17 @@ export class GmailRestClient implements GmailMailClient {
   }
 
   private async fetchAttachmentBytes(gmailMessageId: string, attachmentId: string): Promise<Buffer> {
-    const { json } = await this.request<{ size: number; data: string }>(`/messages/${gmailMessageId}/attachments/${attachmentId}`);
+    const { json } = await this.request<{ size: number; data: string }>(
+      `/messages/${gmailMessageId}/attachments/${attachmentId}`,
+    );
     if (!json) throw new Error(`Gmail attachment ${attachmentId} on message ${gmailMessageId} not found`);
     // Checked against the API's own reported size *before* decoding — Gmail's real limit is
     // 25MB, well under this, so this only ever binds against a malformed/rogue response, and
     // catching it pre-decode avoids materializing the oversized buffer at all.
     if (json.size > MAX_ATTACHMENT_BYTES) {
-      throw new Error(`Gmail attachment ${attachmentId} on message ${gmailMessageId} is ${json.size} bytes, over the ${MAX_ATTACHMENT_BYTES}-byte cap`);
+      throw new Error(
+        `Gmail attachment ${attachmentId} on message ${gmailMessageId} is ${json.size} bytes, over the ${MAX_ATTACHMENT_BYTES}-byte cap`,
+      );
     }
     return decodeBase64Url(json.data);
   }
@@ -251,9 +276,16 @@ export class GmailRestClient implements GmailMailClient {
   async fetchMessage(id: string): Promise<GmailFetchedMessage | null> {
     // `format=full` (not `format=raw`): structure + headers + small-part bodies, without ever
     // pulling every attachment's bytes into one response — see toFetchedMessage's header note.
-    const { status, json } = await this.request<{ id: string; threadId: string; labelIds?: string[]; payload: GmailPayloadPart }>(`/messages/${id}?format=full`);
+    const { status, json } = await this.request<{
+      id: string;
+      threadId: string;
+      labelIds?: string[];
+      payload: GmailPayloadPart;
+    }>(`/messages/${id}?format=full`);
     if (status === 404 || !json) return null;
-    const message = await toFetchedMessage(json.id, json.payload, (attachmentId) => this.fetchAttachmentBytes(json.id, attachmentId));
+    const message = await toFetchedMessage(json.id, json.payload, (attachmentId) =>
+      this.fetchAttachmentBytes(json.id, attachmentId),
+    );
     return { id: json.id, threadId: json.threadId, labelIds: json.labelIds ?? [], message };
   }
 

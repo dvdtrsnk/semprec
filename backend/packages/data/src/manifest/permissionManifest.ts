@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { heartbeatRuleSchema, type HeartbeatRule } from "../scheduler/rule.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
+import { getGrantedMcpAgentTools, type McpAgentToolProjection } from "../mcp/mcpAgentTools.js";
 
 export interface ManifestProperty {
   key: string;
@@ -56,6 +57,8 @@ export interface PermissionManifest {
   databases: ManifestDatabase[];
   heartbeats: ManifestHeartbeat[];
   capabilities: ManifestCapabilities;
+  /** A project run's granted MCP tools (issue #126) — the manifest's fourth source, alongside databases/heartbeats/capabilities. */
+  agentTools: McpAgentToolProjection[];
 }
 
 /**
@@ -63,8 +66,16 @@ export interface PermissionManifest {
  * indexed queries — not a scan of the whole system). Never persistently cached: this
  * is called fresh at the start of every agent_run.
  */
-export async function generatePermissionManifest(client: PoolClient, projectItemId: string): Promise<PermissionManifest> {
-  const { rows: databaseRows } = await client.query<{ id: string; name: string; schema_locked: boolean; owner_module_id: string | null }>(
+export async function generatePermissionManifest(
+  client: PoolClient,
+  projectItemId: string,
+): Promise<PermissionManifest> {
+  const { rows: databaseRows } = await client.query<{
+    id: string;
+    name: string;
+    schema_locked: boolean;
+    owner_module_id: string | null;
+  }>(
     `SELECT id, name, schema_locked, owner_module_id FROM databases WHERE owner_project_item_id = $1 AND archived_at IS NULL`,
     [projectItemId],
   );
@@ -92,13 +103,16 @@ export async function generatePermissionManifest(client: PoolClient, projectItem
     rule: heartbeatRuleSchema.parse(h.rule),
   }));
 
-  const { rows: projectRows } = await client.query<{ properties: Record<string, unknown> }>(`SELECT properties FROM items WHERE id = $1`, [
-    projectItemId,
-  ]);
+  const { rows: projectRows } = await client.query<{ properties: Record<string, unknown> }>(
+    `SELECT properties FROM items WHERE id = $1`,
+    [projectItemId],
+  );
   const projectProperties = projectRows[0]?.properties ?? {};
   const capabilities: ManifestCapabilities = {
     email: { send: { autonomous: projectProperties.emailSendAutonomous === true } },
   };
 
-  return { projectItemId, databases, heartbeats, capabilities };
+  const agentTools = await getGrantedMcpAgentTools(client, projectItemId);
+
+  return { projectItemId, databases, heartbeats, capabilities, agentTools };
 }

@@ -50,7 +50,9 @@ function header(resource: GraphMessageResource, name: string): string | undefine
 
 /** Every occurrence of a header on this message (`internetMessageHeaders` preserves repeats, unlike `header`'s single-match lookup above) — needed for "highest Delivered-To occurrence" (mail/deliveredTo.ts, issue #93). */
 function headerValues(resource: GraphMessageResource, name: string): string[] {
-  return (resource.internetMessageHeaders ?? []).filter((h) => h.name.toLowerCase() === name.toLowerCase()).map((h) => h.value);
+  return (resource.internetMessageHeaders ?? [])
+    .filter((h) => h.name.toLowerCase() === name.toLowerCase())
+    .map((h) => h.value);
 }
 
 /**
@@ -75,7 +77,9 @@ function classifyGraphAttachments(
     }));
   // Same "inline part actually referenced via cid: in the HTML body is a rendering asset, not
   // a document" rule the other two adapters apply (attachments.ts / imapFlowClient.ts).
-  return candidates.filter((a) => !(a.disposition === "inline" && a.contentId !== null && Boolean(html?.includes(`cid:${a.contentId}`))));
+  return candidates.filter(
+    (a) => !(a.disposition === "inline" && a.contentId !== null && Boolean(html?.includes(`cid:${a.contentId}`))),
+  );
 }
 
 async function toFetchedMessage(
@@ -86,7 +90,11 @@ async function toFetchedMessage(
   const referencesHeader = header(resource, "References");
   const html = resource.body?.contentType === "html" ? resource.body.content : undefined;
   const attachmentMetas = resource.hasAttachments ? await listAttachmentMetadata(resource.id) : [];
-  const attachments = classifyGraphAttachments((attachmentId) => fetchAttachmentStream(resource.id, attachmentId), attachmentMetas, html);
+  const attachments = classifyGraphAttachments(
+    (attachmentId) => fetchAttachmentStream(resource.id, attachmentId),
+    attachmentMetas,
+    html,
+  );
   const contentType = parseContentTypeHeader(header(resource, "Content-Type"));
 
   return {
@@ -130,7 +138,10 @@ export class GraphRestClient implements GraphMailClient {
 
   private async request<T>(url: string): Promise<T> {
     const token = await this.getAccessToken();
-    const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(30_000),
+    });
     if (!response.ok) throw new GraphApiError(response.status);
     const body = assertJsonObject(await response.json(), `Graph API response from ${url}`);
     return body as T;
@@ -173,7 +184,11 @@ export class GraphRestClient implements GraphMailClient {
       transform(chunk: Buffer, _encoding, callback) {
         received += chunk.length;
         if (received > MAX_ATTACHMENT_BYTES) {
-          callback(new Error(`Graph attachment ${attachmentId} on message ${messageId} exceeded the ${MAX_ATTACHMENT_BYTES}-byte cap`));
+          callback(
+            new Error(
+              `Graph attachment ${attachmentId} on message ${messageId} exceeded the ${MAX_ATTACHMENT_BYTES}-byte cap`,
+            ),
+          );
           return;
         }
         callback(null, chunk);
@@ -197,16 +212,24 @@ export class GraphRestClient implements GraphMailClient {
    * node, not a limit expected to ever bind in practice.
    */
   private async listFoldersUnder(url: string, wellKnownIds: Map<string, string>, depth = 0): Promise<GraphFolderRef[]> {
-    if (depth > 50) throw new Error(`Graph mailFolders tree exceeded depth 50 under ${url} — likely a malformed API response`);
+    if (depth > 50)
+      throw new Error(`Graph mailFolders tree exceeded depth 50 under ${url} — likely a malformed API response`);
     const folders: GraphFolderRef[] = [];
     let pageUrl = url;
     while (pageUrl) {
-      const page = await this.request<{ value: { id: string; displayName: string; childFolderCount?: number }[]; ["@odata.nextLink"]?: string }>(pageUrl);
+      const page = await this.request<{
+        value: { id: string; displayName: string; childFolderCount?: number }[];
+        ["@odata.nextLink"]?: string;
+      }>(pageUrl);
       for (const f of page.value) {
         folders.push({ id: f.id, displayName: f.displayName, wellKnownName: wellKnownIds.get(f.id) });
         if (f.childFolderCount && f.childFolderCount > 0) {
           folders.push(
-            ...(await this.listFoldersUnder(`${BASE_URL}/mailFolders/${f.id}/childFolders?$top=999&$select=id,displayName,childFolderCount`, wellKnownIds, depth + 1)),
+            ...(await this.listFoldersUnder(
+              `${BASE_URL}/mailFolders/${f.id}/childFolders?$top=999&$select=id,displayName,childFolderCount`,
+              wellKnownIds,
+              depth + 1,
+            )),
           );
         }
       }
@@ -226,7 +249,10 @@ export class GraphRestClient implements GraphMailClient {
       }
     }
 
-    return this.listFoldersUnder(`${BASE_URL}/mailFolders?$top=999&$select=id,displayName,childFolderCount`, wellKnownIds);
+    return this.listFoldersUnder(
+      `${BASE_URL}/mailFolders?$top=999&$select=id,displayName,childFolderCount`,
+      wellKnownIds,
+    );
   }
 
   async fetchDelta(deltaLink: string | null): Promise<GraphDeltaResult> {
@@ -238,7 +264,11 @@ export class GraphRestClient implements GraphMailClient {
 
     try {
       while (url) {
-        const page = await this.request<{ value: GraphMessageResource[]; ["@odata.nextLink"]?: string; ["@odata.deltaLink"]?: string }>(url);
+        const page = await this.request<{
+          value: GraphMessageResource[];
+          ["@odata.nextLink"]?: string;
+          ["@odata.deltaLink"]?: string;
+        }>(url);
         for (const resource of page.value) {
           if (resource["@removed"]) {
             changes.push({ id: resource.id, removed: true });

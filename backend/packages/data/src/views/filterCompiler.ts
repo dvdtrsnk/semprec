@@ -29,7 +29,9 @@ function isRelationCondition(node: FilterCondition): node is RelationCondition {
  */
 function compileRelationCondition(node: RelationCondition, property: FilterProperty, params: unknown[]): string {
   if (!property.relationDefinitionId || !property.relationSide) {
-    throw new ValidationError(`Relation property '${node.property}' has no relation definition`, { field: node.property });
+    throw new ValidationError(`Relation property '${node.property}' has no relation definition`, {
+      field: node.property,
+    });
   }
   const ownSide = property.relationSide === "a" ? "item_a" : "item_b";
   const targetSide = property.relationSide === "a" ? "item_b" : "item_a";
@@ -125,7 +127,9 @@ function compileCondition(node: FilterCondition, properties: FilterProperties, p
       params.push(node.value);
       // multi_select stores a jsonb array; `in` means "overlaps any of the given values".
       // Every other type stores a scalar; `in` means plain membership.
-      return isMultiSelect ? `${jsonField} ?| $${params.length}::text[]` : `${textField} = ANY($${params.length}::text[])`;
+      return isMultiSelect
+        ? `${jsonField} ?| $${params.length}::text[]`
+        : `${textField} = ANY($${params.length}::text[])`;
     }
   }
 }

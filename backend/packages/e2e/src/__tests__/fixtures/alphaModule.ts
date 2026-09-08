@@ -18,10 +18,14 @@ export const manifest: ModuleManifest = {
   databases: [{ key: "e2eAlphaItems", name: "E2E Alpha Items" }],
   capabilities: [],
   agentTools: [],
-  heartbeatRuleKinds: [{ kind: "e2eAlpha.onTick", schemaExport: "alphaTickRuleSchema", nextFireAtExport: "computeAlphaTickNextFireAt" }],
+  heartbeatRuleKinds: [
+    { kind: "e2eAlpha.onTick", schemaExport: "alphaTickRuleSchema", nextFireAtExport: "computeAlphaTickNextFireAt" },
+  ],
   taskNames: [{ name: "e2eAlpha.ingest", payloadSchemaExport: "ingestPayloadSchema", handlerExport: "handleIngest" }],
   migrations: ["0001_e2e_alpha_marker.sql"],
-  dataMigrations: [{ databaseKey: "e2eAlphaItems", fromVersion: "1.0.0", toVersion: "2.0.0", converterExport: "convertAlphaItem" }],
+  dataMigrations: [
+    { databaseKey: "e2eAlphaItems", fromVersion: "1.0.0", toVersion: "2.0.0", converterExport: "convertAlphaItem" },
+  ],
 };
 
 export interface IngestPayload {
@@ -33,7 +37,12 @@ export interface IngestPayload {
 export const ingestPayloadSchema = {
   parse(raw: unknown): IngestPayload {
     const value = raw as Partial<IngestPayload> | null;
-    if (!value || typeof value.alphaDatabaseId !== "string" || typeof value.betaDatabaseId !== "string" || typeof value.value !== "string") {
+    if (
+      !value ||
+      typeof value.alphaDatabaseId !== "string" ||
+      typeof value.betaDatabaseId !== "string" ||
+      typeof value.value !== "string"
+    ) {
       throw new Error("e2eAlpha.ingest payload must have alphaDatabaseId, betaDatabaseId, and value strings");
     }
     return { alphaDatabaseId: value.alphaDatabaseId, betaDatabaseId: value.betaDatabaseId, value: value.value };

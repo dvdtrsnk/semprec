@@ -9,7 +9,15 @@ import { resolveViewRenderer, type ViewRegistry } from "./viewRegistry.js";
  * registry resolves for it. A view type this client has no renderer for is an `unavailable`
  * state, not a fallback to some other renderer that would misread its config.
  */
-export function ViewHost({ viewId, operations, registry }: { viewId: string; operations: GenericOperations; registry: ViewRegistry }) {
+export function ViewHost({
+  viewId,
+  operations,
+  registry,
+}: {
+  viewId: string;
+  operations: GenericOperations;
+  registry: ViewRegistry;
+}) {
   const t = useTranslate();
   const { resource, reload } = useAsyncResource(() => operations.getView(viewId), [viewId]);
 

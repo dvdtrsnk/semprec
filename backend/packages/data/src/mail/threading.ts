@@ -25,7 +25,9 @@ export interface ThreadResolutionInput {
 }
 
 export async function resolveThreadId(client: Queryable, input: ThreadResolutionInput): Promise<string> {
-  const ancestorIds = [...new Set([input.inReplyTo ?? undefined, ...(input.references ?? [])].filter((v): v is string => Boolean(v)))];
+  const ancestorIds = [
+    ...new Set([input.inReplyTo ?? undefined, ...(input.references ?? [])].filter((v): v is string => Boolean(v))),
+  ];
 
   const foundThreadIds = new Set<string>();
 

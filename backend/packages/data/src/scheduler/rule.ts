@@ -62,12 +62,26 @@ export function isOnItemEventRule(rule: AnyHeartbeatRule): boolean {
 }
 
 /**
+ * Floating by `kind` alone, not by parsed shape — the sweep and the occurrence fire task
+ * (issue #213) both need this before deciding whether a rule needs full parsing/module
+ * dispatch at all: `everyNDays`/`interval` are the only kinds whose `next_fire_at` is computed
+ * from actual execution time rather than the calendar, and both are core-owned, so checking the
+ * raw `kind` string never risks throwing for a module-declared kind.
+ */
+export function isFloatingRuleKind(kind: string): boolean {
+  return kind === "everyNDays" || kind === "interval";
+}
+
+/**
  * Validates a raw rule against core's fixed schema when its `kind` is core-owned, or against
  * the matching entry of `moduleRuleKinds` otherwise — the "union of core and active
  * heartbeatRuleKinds" the scheduler validates against (issue #109). A `kind` that is neither
  * core nor a currently-active module (e.g. its module was deactivated) is rejected.
  */
-export function parseHeartbeatRule(raw: unknown, moduleRuleKinds: HeartbeatRuleKindRegistry = new Map()): AnyHeartbeatRule {
+export function parseHeartbeatRule(
+  raw: unknown,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): AnyHeartbeatRule {
   const kind = (raw as { kind?: unknown } | null)?.kind;
   if (typeof kind !== "string") {
     return heartbeatRuleSchema.parse(raw);
@@ -77,7 +91,9 @@ export function parseHeartbeatRule(raw: unknown, moduleRuleKinds: HeartbeatRuleK
   }
   const handler = moduleRuleKinds.get(kind);
   if (!handler) {
-    throw new Error(`Unknown heartbeat rule kind "${kind}" (not a core kind, and no active module currently registers it)`);
+    throw new Error(
+      `Unknown heartbeat rule kind "${kind}" (not a core kind, and no active module currently registers it)`,
+    );
   }
   const result = handler.schema.safeParse(raw);
   if (!result.success) {

@@ -18,7 +18,17 @@ const SHORTCUTS: Record<string, MailboxShortcut> = {
  * shortcut. That matters directly here: the row selection checkboxes take focus when clicked,
  * and `e` right after ticking a few of them has to archive the selection.
  */
-const NON_TEXT_INPUT_TYPES = new Set(["checkbox", "radio", "button", "submit", "reset", "file", "range", "color", "image"]);
+const NON_TEXT_INPUT_TYPES = new Set([
+  "checkbox",
+  "radio",
+  "button",
+  "submit",
+  "reset",
+  "file",
+  "range",
+  "color",
+  "image",
+]);
 
 /** True for anything the user can type into: text fields and `contenteditable` regions alike. */
 export function isEditableElement(target: EventTarget | null): boolean {
@@ -35,7 +45,9 @@ export function isEditableElement(target: EventTarget | null): boolean {
  * The shortcut a keydown stands for, or `null` when it is not one. A modifier combination is
  * never a shortcut here — `Ctrl+E`/`Cmd+K` belong to the browser and the OS, not to us.
  */
-export function resolveShortcut(event: Pick<KeyboardEvent, "key" | "altKey" | "ctrlKey" | "metaKey" | "shiftKey"> & { target?: EventTarget | null }): MailboxShortcut | null {
+export function resolveShortcut(
+  event: Pick<KeyboardEvent, "key" | "altKey" | "ctrlKey" | "metaKey" | "shiftKey"> & { target?: EventTarget | null },
+): MailboxShortcut | null {
   if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return null;
   if (isEditableElement(event.target ?? null)) return null;
   return SHORTCUTS[event.key.toLowerCase()] ?? null;
