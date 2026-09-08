@@ -16,7 +16,8 @@ import {
 import { createActionRegistry, CORE_AGENT_RUN_ACTION_ID, coreAgentRunAction } from "../scheduler/actions.js";
 import { createCoreTaskList } from "../worker.js";
 import { getSystemSettingsItemId } from "../systemSettings.js";
-import { listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
+import { createAgentRun, listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
+import { createHeartbeatTriggerTool } from "../scheduler/heartbeatAgentTools.js";
 import type { HeartbeatRuleKindRegistry } from "../scheduler/rule.js";
 
 let pool: Pool;
@@ -191,6 +192,41 @@ describe("scheduler", () => {
     expect(runs[0].status).toBe("done");
     expect(runs[0].result).toBe("handled: process the inbox");
     expect(runs[0].triggeredBy).toBe("heartbeat");
+  });
+
+  it("heartbeat.trigger's manual fire attributes the child run's parent_run_id to the invoking run, without touching next_fire_at/last_fired_at", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async ({ task }) => ({ result: `handled: ${task}` })),
+    );
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Process inbox",
+        rule: { kind: "interval", minutes: 5 },
+        actionId: CORE_AGENT_RUN_ACTION_ID,
+        actionConfig: { task: "process the inbox" },
+      }),
+    );
+    const before = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+
+    const invokingRun = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "trigger it" });
+    const heartbeatTrigger = createHeartbeatTriggerTool(pool);
+    const outcome = await heartbeatTrigger(invokingRun.id, { heartbeatId: heartbeat.id });
+    expect(outcome.error).toBe(false);
+
+    await drainQueue(registry);
+
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].triggeredBy).toBe("heartbeat");
+    expect(runs[0].parentRunId).toBe(invokingRun.id);
+
+    const after = await withTransaction(pool, (client) => getHeartbeat(client, heartbeat.id));
+    expect(after!.nextFireAt).toBe(before!.nextFireAt);
+    expect(after!.lastFiredAt).toBe(before!.lastFiredAt);
   });
 
   describe("module-declared heartbeat rule kinds", () => {

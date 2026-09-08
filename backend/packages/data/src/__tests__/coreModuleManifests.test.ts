@@ -34,6 +34,7 @@ describe("core module manifests (module-contract issue #226)", () => {
     expect(await registry.getAgentTools(new Set())).toEqual([
       { moduleId: "schemaCore", name: "heartbeat.list", handlerExport: "createHeartbeatListTool" },
       { moduleId: "schemaCore", name: "heartbeat.history", handlerExport: "createHeartbeatHistoryTool" },
+      { moduleId: "schemaCore", name: "heartbeat.trigger", handlerExport: "createHeartbeatTriggerTool" },
     ]);
     expect(await registry.getMigrations()).toEqual([{ moduleId: "schemaCore", migration: "0001_core_schema.sql" }]);
   });

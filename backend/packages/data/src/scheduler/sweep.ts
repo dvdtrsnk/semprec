@@ -42,7 +42,11 @@ export function createHeartbeatFireTask(pool: Pool, registry: ActionRegistry, mo
     if (rawItemId !== undefined && typeof rawItemId !== "string") {
       throw new Error("heartbeatFire job payload field 'itemId' must be a string when present");
     }
-    const payload = { heartbeatId, itemId: rawItemId };
+    const rawTriggeredByRunId = record?.triggeredByRunId;
+    if (rawTriggeredByRunId !== undefined && typeof rawTriggeredByRunId !== "string") {
+      throw new Error("heartbeatFire job payload field 'triggeredByRunId' must be a string when present");
+    }
+    const payload = { heartbeatId, itemId: rawItemId, triggeredByRunId: rawTriggeredByRunId };
 
     const moduleRuleKinds = await resolveModuleRuleKinds(moduleRegistry);
     const readClient = await pool.connect();
@@ -72,6 +76,7 @@ export function createHeartbeatFireTask(pool: Pool, registry: ActionRegistry, mo
         heartbeatId: heartbeat.id,
         projectItemId: heartbeat.projectItemId,
         itemId: payload.itemId,
+        triggeredByRunId: payload.triggeredByRunId,
       });
       await recordHeartbeatSuccess(pool, heartbeat.id);
     } catch (err) {

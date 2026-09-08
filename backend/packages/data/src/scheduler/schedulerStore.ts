@@ -269,6 +269,17 @@ export function heartbeatFireJobKey(heartbeatId: string, itemId?: string): strin
 }
 
 /**
+ * The manual-trigger dedup key (issue #136's `heartbeat.trigger`) — deliberately distinct from
+ * `heartbeatFireJobKey`'s scheduler key so a pending manual fire can never collapse onto (and
+ * thus silently steal the attribution of) a pending scheduled one, or vice versa. Two manual
+ * triggers for the same heartbeat before the first has started running do collapse onto one
+ * job, same replace semantics as the scheduler key.
+ */
+export function manualHeartbeatFireJobKey(heartbeatId: string): string {
+  return `heartbeat-fire:manual:${heartbeatId}`;
+}
+
+/**
  * The onItemEvent write path: called from the choke-point, in the same transaction as
  * the item write that just happened, for every enabled onItemEvent heartbeat watching
  * this database+event. `next_fire_at` stays NULL for these — they are invisible to the sweep.
