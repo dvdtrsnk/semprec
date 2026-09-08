@@ -163,6 +163,15 @@ export type {
   ApprovalRequest,
   ApprovalRequestPayload,
   ApprovalRequestStatus,
+  ApprovalRequestDecision,
   CreatePendingApprovalRequestInput,
 } from "./mcp/approvalRequestsStore.js";
 export { createPendingApprovalRequest, getApprovalRequest } from "./mcp/approvalRequestsStore.js";
+export type { McpInvokeResult, McpInvokeArgs, McpInvokeOptions } from "./mcp/mcpToolExecution.js";
+export { executeMcpInvocation } from "./mcp/mcpToolExecution.js";
+// `approvalRequestsStore.ts`'s `decideApprovalRequest` is deliberately NOT exported here — see
+// that file's header comment (issue #131), same convention as `mcpGrantsAdminStore.ts`. Only
+// this wrapper (which also enqueues the reserved execution job in the same transaction) is
+// reachable from a route handler.
+export type { DecideApprovalRequestInput } from "./mcp/approvalDecisionAction.js";
+export { decideAndEnqueueApprovalRequest } from "./mcp/approvalDecisionAction.js";

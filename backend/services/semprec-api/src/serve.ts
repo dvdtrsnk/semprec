@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createPool } from "@semprec/data";
 import { createAiUsageRequestListener } from "./aiUsageHandler.js";
 import { createMcpAgentPageRequestListener } from "./mcpAgentPageHandler.js";
+import { createApprovalRequestsRequestListener } from "./approvalRequestsHandler.js";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("DATABASE_URL is not set");
@@ -16,12 +17,17 @@ if (!Number.isInteger(port) || port <= 0) throw new Error(`PORT is not a valid p
 const pool = createPool(connectionString);
 const aiUsageListener = createAiUsageRequestListener(pool, { authToken });
 const mcpAgentPageListener = createMcpAgentPageRequestListener(pool, { authToken });
+const approvalRequestsListener = createApprovalRequestsRequestListener(pool, { authToken });
 
 /** Routes by path prefix; `mcpAgentPageListener` already answers 404 itself for anything else. */
 function dispatch(req: IncomingMessage, res: ServerResponse): void {
   const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
   if (pathname === "/api/ai-usage") {
     void aiUsageListener(req, res);
+    return;
+  }
+  if (pathname.startsWith("/api/approval-requests/")) {
+    void approvalRequestsListener(req, res);
     return;
   }
   void mcpAgentPageListener(req, res);
