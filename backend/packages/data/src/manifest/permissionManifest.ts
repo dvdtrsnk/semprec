@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { heartbeatRuleSchema, type HeartbeatRule } from "../scheduler/rule.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
+import { getGrantedMcpAgentTools, type McpAgentToolProjection } from "../mcp/mcpAgentTools.js";
 
 export interface ManifestProperty {
   key: string;
@@ -51,11 +52,21 @@ export interface ManifestCapabilities {
   email: { send: { autonomous: boolean } };
 }
 
+/**
+ * A project run's available agent tools (issue #126). MCP is the only source implemented so
+ * far — `ModuleAgentToolProjection`'s native module tools (`ModuleRegistry.getAgentTools`)
+ * join this union once a module actually declares one; the native core operation catalog is
+ * explicitly out of scope here. Each variant discriminates on `source` so a consumer can treat
+ * every agent tool the same way regardless of where it came from.
+ */
+export type ManifestAgentTool = McpAgentToolProjection;
+
 export interface PermissionManifest {
   projectItemId: string;
   databases: ManifestDatabase[];
   heartbeats: ManifestHeartbeat[];
   capabilities: ManifestCapabilities;
+  agentTools: ManifestAgentTool[];
 }
 
 /**
@@ -100,5 +111,7 @@ export async function generatePermissionManifest(client: PoolClient, projectItem
     email: { send: { autonomous: projectProperties.emailSendAutonomous === true } },
   };
 
-  return { projectItemId, databases, heartbeats, capabilities };
+  const agentTools = await getGrantedMcpAgentTools(client, projectItemId);
+
+  return { projectItemId, databases, heartbeats, capabilities, agentTools };
 }

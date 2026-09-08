@@ -7,6 +7,9 @@ import { generatePermissionManifest } from "../manifest/permissionManifest.js";
 import { createDriftCheckAction, findOrphanedOwnerProcessProperties } from "../manifest/driftCheck.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import * as itemsStore from "../chokePoint/itemsStore.js";
+import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
+import { setProjectMcpGrant } from "../mcp/mcpGrantsAdminStore.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -63,6 +66,40 @@ describe("permission manifest and drift check", () => {
     // they carry no owner_project_item_id, so they never appear here regardless of `writable`.
     expect(manifest.databases.map((db) => db.name).sort()).not.toContain("Tasks");
     expect(manifest.databases.map((db) => db.name).sort()).not.toContain("Journal");
+  });
+
+  it("includes a project's granted MCP tools as the manifest's fourth source", async () => {
+    const viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry();
+    await seedSystem(pool, viewTypeRegistry);
+
+    const mcpServersId = (await pool.query<{ id: string }>(`SELECT id FROM databases WHERE owner_module_id = 'mcpServers'`)).rows[0]!.id;
+    const server = await withTransaction(pool, (client) =>
+      itemsStore.insertItem(client, { databaseId: mcpServersId, properties: { name: "Server", active: true } }),
+    );
+    const registration = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: server.id,
+      toolName: "search_web",
+      toolSchema: { type: "object" },
+      description: "Search the web",
+    });
+
+    const project = await chokePoint.createDatabase({ name: "Projects" });
+    const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });
+    await setProjectMcpGrant(pool, { projectItemId: projectItem.id, mcpToolRegistrationId: registration.id, granted: true });
+
+    const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, projectItem.id));
+    expect(manifest.agentTools).toEqual([
+      {
+        source: "mcp",
+        mcpServerItemId: server.id,
+        mcpToolRegistrationId: registration.id,
+        name: "search_web",
+        description: "Search the web",
+        schema: { type: "object" },
+        requiresApproval: true,
+        riskClass: "unclassified",
+      },
+    ]);
   });
 
   it("finds owner:'system' properties with no owner_process as orphaned", async () => {
