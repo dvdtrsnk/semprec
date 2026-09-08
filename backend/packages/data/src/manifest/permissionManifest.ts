@@ -52,21 +52,13 @@ export interface ManifestCapabilities {
   email: { send: { autonomous: boolean } };
 }
 
-/**
- * A project run's available agent tools (issue #126). MCP is the only source implemented so
- * far — `ModuleAgentToolProjection`'s native module tools (`ModuleRegistry.getAgentTools`)
- * join this union once a module actually declares one; the native core operation catalog is
- * explicitly out of scope here. Each variant discriminates on `source` so a consumer can treat
- * every agent tool the same way regardless of where it came from.
- */
-export type ManifestAgentTool = McpAgentToolProjection;
-
 export interface PermissionManifest {
   projectItemId: string;
   databases: ManifestDatabase[];
   heartbeats: ManifestHeartbeat[];
   capabilities: ManifestCapabilities;
-  agentTools: ManifestAgentTool[];
+  /** A project run's granted MCP tools (issue #126) — the manifest's fourth source, alongside databases/heartbeats/capabilities. */
+  agentTools: McpAgentToolProjection[];
 }
 
 /**
