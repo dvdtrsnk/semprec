@@ -136,6 +136,8 @@ export * from "./auth/token.js";
 export * from "./auth/usersStore.js";
 export * from "./auth/sessionsStore.js";
 export * from "./auth/loginAttemptsStore.js";
+export * from "./auth/emailNormalization.js";
+export * from "./auth/loginLockout.js";
 export * from "./auth/authActions.js";
 
 // `mcpGrantsAdminStore.ts`'s user-only grant/risk-class/approval mutations are deliberately
