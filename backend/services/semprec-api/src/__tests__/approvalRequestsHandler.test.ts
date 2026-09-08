@@ -3,7 +3,14 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { createViewTypeRegistry, seedSystem, createAgentRun, createPendingApprovalRequest } from "@semprec/data";
+import {
+  createViewTypeRegistry,
+  seedSystem,
+  createAgentRun,
+  createPendingApprovalRequest,
+  createChokePoint,
+  type ChokePoint,
+} from "@semprec/data";
 import { createApprovalRequestsRequestListener } from "../approvalRequestsHandler.js";
 
 const AUTH_TOKEN = "test-token";
@@ -30,9 +37,11 @@ async function createPendingRequest(): Promise<string> {
 describe("createApprovalRequestsRequestListener", () => {
   let server: Server;
   let baseUrl: string;
+  let chokePoint: ChokePoint;
 
   beforeEach(async () => {
     pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
     const viewTypeRegistry = createViewTypeRegistry();
     await resetDatabase(pool);
     await seedSystem(pool, viewTypeRegistry);
@@ -183,5 +192,69 @@ describe("createApprovalRequestsRequestListener", () => {
       body: JSON.stringify({ decision: "approved", decidedByUserId: "x".repeat(2 * 1024 * 1024) }),
     });
     expect(res.status).toBe(413);
+  });
+
+  describe("GET /api/approval-requests (issue #132)", () => {
+    it("rejects a request with no bearer token", async () => {
+      const res = await fetch(`${baseUrl}/api/approval-requests`);
+      expect(res.status).toBe(401);
+    });
+
+    it("returns an empty queue when there are no pending requests", async () => {
+      const res = await fetch(`${baseUrl}/api/approval-requests`, {
+        headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ rows: [] });
+    });
+
+    it("lists a pending request with its source project name and agent-run link", async () => {
+      const projects = await chokePoint.createDatabase({ name: "Projects" });
+      await chokePoint.createProperty({ databaseId: projects.id, key: "name", name: "Name", type: "title" });
+      const projectItem = await chokePoint.createItem({ databaseId: projects.id, properties: { name: "Kitchen" } });
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", projectItemId: projectItem.id });
+      const payload = { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: { to: "a@b.com" } };
+      await createPendingApprovalRequest(pool, {
+        agentRunId: run.id,
+        toolName: "send_email",
+        riskClass: "moderate",
+        payload,
+      });
+
+      const res = await fetch(`${baseUrl}/api/approval-requests`, {
+        headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { rows: Array<Record<string, unknown>> };
+      expect(body.rows).toHaveLength(1);
+      expect(body.rows[0]).toMatchObject({
+        toolName: "send_email",
+        riskClass: "moderate",
+        agentRunId: run.id,
+        projectItemId: projectItem.id,
+        projectName: "Kitchen",
+        safeSummary: {
+          mcpToolRegistrationId: payload.mcpToolRegistrationId,
+          mcpServerItemId: payload.mcpServerItemId,
+          argKeys: ["to"],
+        },
+      });
+      expect(JSON.stringify(body)).not.toContain("a@b.com");
+    });
+
+    it("does not list a decided request", async () => {
+      const id = await createPendingRequest();
+      const userId = await createUser();
+      await fetch(`${baseUrl}/api/approval-requests/${id}`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: "approved", decidedByUserId: userId }),
+      });
+
+      const res = await fetch(`${baseUrl}/api/approval-requests`, {
+        headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+      });
+      expect(await res.json()).toEqual({ rows: [] });
+    });
   });
 });

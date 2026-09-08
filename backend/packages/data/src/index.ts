@@ -8,6 +8,7 @@ export type { CreateItemInput } from "./chokePoint/chokePoint.js";
 export type { CreateDatabaseInput } from "./chokePoint/databasesStore.js";
 export type { CreatePropertyInput } from "./chokePoint/propertiesStore.js";
 export type { ListItemsOptions } from "./chokePoint/itemsStore.js";
+export { getItemsByIds } from "./chokePoint/itemsStore.js";
 export type { CreateViewInput, PatchViewInput } from "./chokePoint/viewsStore.js";
 export * from "./chokePoint/viewTypeRegistry.js";
 export { manifest as schemaCoreModuleManifest } from "./chokePoint/schemaCoreModuleManifest.js";
@@ -166,7 +167,13 @@ export type {
   ApprovalRequestDecision,
   CreatePendingApprovalRequestInput,
 } from "./mcp/approvalRequestsStore.js";
-export { createPendingApprovalRequest, getApprovalRequest } from "./mcp/approvalRequestsStore.js";
+export {
+  createPendingApprovalRequest,
+  getApprovalRequest,
+  listPendingApprovalRequests,
+} from "./mcp/approvalRequestsStore.js";
+export type { ApprovalRequestQueueEntry, ApprovalRequestSafeSummary } from "./mcp/approvalRequestsQueue.js";
+export { listApprovalRequestsQueue } from "./mcp/approvalRequestsQueue.js";
 export type { McpInvokeResult, McpInvokeArgs, McpInvokeOptions } from "./mcp/mcpToolExecution.js";
 export { executeMcpInvocation } from "./mcp/mcpToolExecution.js";
 // `approvalRequestsStore.ts`'s `decideApprovalRequest` is deliberately NOT exported here — see
