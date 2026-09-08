@@ -75,7 +75,7 @@ export async function getFailureStreak(client: Pool | PoolClient, email: string,
        )`,
     [email, ip],
   );
-  const row = rows[0];
+  const row = requireSingleRow(rows, "login_attempts failure streak");
   return {
     count: Number(row.count),
     lastFailedAt: row.last_failed_at ? row.last_failed_at.toISOString() : null,
