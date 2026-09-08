@@ -230,7 +230,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
       async resolveFolders() {
         return [{ path: "INBOX" }, { path: "[Gmail]/All Mail" }];
       },
-      async connect(_mailboxItemId, _credential, folderPath, onSignal) {
+      async connect(_mailboxItemId, _credential, _folderPath, onSignal) {
         active++;
         maxActive = Math.max(maxActive, active);
         const conn = new FakeConnection(onSignal);

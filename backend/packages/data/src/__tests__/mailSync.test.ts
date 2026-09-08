@@ -2585,6 +2585,9 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
     // @ts-expect-error - "\Deleted" is not a WritableImapFlag
     client.setMessageFlag("INBOX", 42, "\\Deleted", true);
   }
+  // Referenced so `noUnusedLocals` keeps the guard above: unlike parameters, a local
+  // declaration gets no leading-underscore exemption from tsc.
+  void _typeAssertion_setMessageFlagRejectsNonCanonicalFlags;
 
   it("isImapConnectionLimitError recognizes a provider's simultaneous-connection BYE, not an ordinary connection failure", () => {
     const gmailBye = Object.assign(new Error("Connection closed"), {
