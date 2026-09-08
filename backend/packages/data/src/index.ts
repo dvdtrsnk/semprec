@@ -134,3 +134,5 @@ export { assertValidMcpConnectionConfig } from "./mcp/mcpConnectionConfig.js";
 export { McpConnectionError, MCP_CONNECTION_ERROR_REASONS, type McpConnectionErrorReason } from "./mcp/mcpConnectionError.js";
 export type { McpClientHandle, ConnectMcpServerOptions } from "./mcp/mcpConnectionFactory.js";
 export { connectMcpServer } from "./mcp/mcpConnectionFactory.js";
+export type { SyncMcpServerToolsOptions, SyncMcpServerToolsResult } from "./mcp/mcpSync.js";
+export { syncMcpServerTools } from "./mcp/mcpSync.js";
