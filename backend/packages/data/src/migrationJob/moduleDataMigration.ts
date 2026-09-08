@@ -43,7 +43,9 @@ export async function runModuleDataMigration(pool: Pool, params: RunModuleDataMi
   try {
     const {
       rows: [{ locked }],
-    } = await client.query<{ locked: boolean }>("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked", [key]);
+    } = await client.query<{ locked: boolean }>("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked", [
+      key,
+    ]);
     if (!locked) return;
 
     try {
@@ -82,7 +84,12 @@ export async function runModuleDataMigration(pool: Pool, params: RunModuleDataMi
  * item and rethrows, so already-committed batches are never replayed and no row is ever
  * left partially converted.
  */
-async function convertInBatches(pool: Pool, databaseId: string, converter: ModuleDataMigrationConverter, pageSize: number): Promise<void> {
+async function convertInBatches(
+  pool: Pool,
+  databaseId: string,
+  converter: ModuleDataMigrationConverter,
+  pageSize: number,
+): Promise<void> {
   for (;;) {
     const rowCount = await withTransaction(pool, async (client) => {
       const cursor = await readCursor(client, databaseId);
@@ -94,15 +101,17 @@ async function convertInBatches(pool: Pool, databaseId: string, converter: Modul
 
       for (const row of rows) {
         const converted = converter(row.properties);
-        await client.query(`UPDATE items SET properties = $3::jsonb, updated_at = now() WHERE database_id = $1 AND id = $2`, [
-          databaseId,
-          row.id,
-          JSON.stringify(converted),
-        ]);
+        await client.query(
+          `UPDATE items SET properties = $3::jsonb, updated_at = now() WHERE database_id = $1 AND id = $2`,
+          [databaseId, row.id, JSON.stringify(converted)],
+        );
       }
 
       if (rows.length > 0) {
-        await client.query(`UPDATE databases SET migration_cursor = $2 WHERE id = $1`, [databaseId, rows[rows.length - 1].id]);
+        await client.query(`UPDATE databases SET migration_cursor = $2 WHERE id = $1`, [
+          databaseId,
+          rows[rows.length - 1].id,
+        ]);
       }
       return rows.length;
     });
@@ -112,9 +121,10 @@ async function convertInBatches(pool: Pool, databaseId: string, converter: Modul
 }
 
 async function readCursor(client: PoolClient, databaseId: string): Promise<string | null> {
-  const { rows } = await client.query<{ migration_cursor: string | null }>(`SELECT migration_cursor FROM databases WHERE id = $1`, [
-    databaseId,
-  ]);
+  const { rows } = await client.query<{ migration_cursor: string | null }>(
+    `SELECT migration_cursor FROM databases WHERE id = $1`,
+    [databaseId],
+  );
   return rows[0]?.migration_cursor ?? null;
 }
 

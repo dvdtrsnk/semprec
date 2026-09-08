@@ -1,7 +1,12 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createChokePoint, createRelationWithClient, deleteRelationWithClient, type ChokePoint } from "../chokePoint/chokePoint.js";
+import {
+  createChokePoint,
+  createRelationWithClient,
+  deleteRelationWithClient,
+  type ChokePoint,
+} from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { insertItem } from "../chokePoint/itemsStore.js";
 import { withTransaction } from "../db/pool.js";
@@ -45,8 +50,15 @@ async function relationPropertyId(databaseId: string, key: string): Promise<stri
 }
 
 /** Folders' `mailbox`/Emails' `folder` relations are `owner: 'system'` (seed/seedEmailModule.ts) — writable only through the protected entry point with the module's own context, same as `insertSystemItem` above bypasses the generic create path. */
-async function createSystemRelation(relationPropertyId: string, callerItemId: string, targetItemId: string, ownerProcess: string): Promise<void> {
-  await withTransaction(pool, (client) => createRelationWithClient(client, { relationPropertyId, callerItemId, targetItemId }, { ownerProcess }));
+async function createSystemRelation(
+  relationPropertyId: string,
+  callerItemId: string,
+  targetItemId: string,
+  ownerProcess: string,
+): Promise<void> {
+  await withTransaction(pool, (client) =>
+    createRelationWithClient(client, { relationPropertyId, callerItemId, targetItemId }, { ownerProcess }),
+  );
 }
 
 describe("mailbox client view (issue #96)", () => {
@@ -125,7 +137,11 @@ describe("mailbox client view (issue #96)", () => {
 
       const mailboxItemId = await insertSystemItem(mailboxesId, { name: "Personal" });
       const inboxId = await insertSystemItem(foldersId, { name: "Inbox", specialPurpose: "inbox", behavior: "folder" });
-      const archiveId = await insertSystemItem(foldersId, { name: "Archive", specialPurpose: "archive", behavior: "folder" });
+      const archiveId = await insertSystemItem(foldersId, {
+        name: "Archive",
+        specialPurpose: "archive",
+        behavior: "folder",
+      });
 
       const folderMailboxRelation = await relationPropertyId(foldersId, "mailbox");
       for (const folderId of [inboxId, archiveId]) {
@@ -144,20 +160,35 @@ describe("mailbox client view (issue #96)", () => {
       const readMessage = await link({ name: "Read inbox message", read: true }, inboxId);
       const archived = await link({ name: "Archived message", read: false }, archiveId);
 
-      return { foldersId, emailsId, mailboxesId, mailboxItemId, inboxId, archiveId, unread, neverFlagged, readMessage, archived };
+      return {
+        foldersId,
+        emailsId,
+        mailboxesId,
+        mailboxItemId,
+        inboxId,
+        archiveId,
+        unread,
+        neverFlagged,
+        readMessage,
+        archived,
+      };
     }
 
     it("lists a folder's messages through the Emails-to-Folders relation", async () => {
       const { emailsId, inboxId, archiveId, archived } = await seedMailbox();
 
-      const inbox = await chokePoint.listItems(emailsId, { filter: { type: "relation_contains", property: "folder", value: inboxId } });
+      const inbox = await chokePoint.listItems(emailsId, {
+        filter: { type: "relation_contains", property: "folder", value: inboxId },
+      });
       expect(inbox.items.map((item) => item.properties.name).sort()).toEqual([
         "Message with no read flag at all",
         "Read inbox message",
         "Unread inbox message",
       ]);
 
-      const archive = await chokePoint.listItems(emailsId, { filter: { type: "relation_contains", property: "folder", value: archiveId } });
+      const archive = await chokePoint.listItems(emailsId, {
+        filter: { type: "relation_contains", property: "folder", value: archiveId },
+      });
       expect(archive.items.map((item) => item.id)).toEqual([archived]);
     });
 
@@ -177,7 +208,11 @@ describe("mailbox client view (issue #96)", () => {
 
       expect(await unreadIn(inboxId)).toBe(2);
       expect(await unreadIn(archiveId)).toBe(1);
-      expect(await chokePoint.countItems(emailsId, { filter: { type: "relation_contains", property: "folder", value: inboxId } })).toBe(3);
+      expect(
+        await chokePoint.countItems(emailsId, {
+          filter: { type: "relation_contains", property: "folder", value: inboxId },
+        }),
+      ).toBe(3);
     });
 
     it("excludes a message once it is unlinked from the folder, and a soft-deleted one always", async () => {
@@ -193,23 +228,27 @@ describe("mailbox client view (issue #96)", () => {
       );
       await chokePoint.softDeleteItem(emailsId, unread);
 
-      const inbox = await chokePoint.listItems(emailsId, { filter: { type: "relation_contains", property: "folder", value: inboxId } });
+      const inbox = await chokePoint.listItems(emailsId, {
+        filter: { type: "relation_contains", property: "folder", value: inboxId },
+      });
       expect(inbox.items.map((item) => item.properties.name)).toEqual(["Message with no read flag at all"]);
     });
 
     it("finds messages not in a folder via relation_not_contains", async () => {
       const { emailsId, inboxId, archived } = await seedMailbox();
 
-      const outside = await chokePoint.listItems(emailsId, { filter: { type: "relation_not_contains", property: "folder", value: inboxId } });
+      const outside = await chokePoint.listItems(emailsId, {
+        filter: { type: "relation_not_contains", property: "folder", value: inboxId },
+      });
       expect(outside.items.map((item) => item.id)).toEqual([archived]);
     });
 
     it("rejects a scalar condition on a relation property and a relation condition on a scalar one", async () => {
       const { emailsId, inboxId } = await seedMailbox();
 
-      await expect(chokePoint.listItems(emailsId, { filter: { type: "equals", property: "folder", value: inboxId } })).rejects.toBeInstanceOf(
-        ValidationError,
-      );
+      await expect(
+        chokePoint.listItems(emailsId, { filter: { type: "equals", property: "folder", value: inboxId } }),
+      ).rejects.toBeInstanceOf(ValidationError);
       await expect(
         chokePoint.listItems(emailsId, { filter: { type: "relation_contains", property: "name", value: inboxId } }),
       ).rejects.toBeInstanceOf(ValidationError);
@@ -219,7 +258,9 @@ describe("mailbox client view (issue #96)", () => {
       const { emailsId } = await seedMailbox();
 
       await expect(
-        chokePoint.listItems(emailsId, { filter: { type: "relation_contains", property: "folder", value: "not-an-item-id" } }),
+        chokePoint.listItems(emailsId, {
+          filter: { type: "relation_contains", property: "folder", value: "not-an-item-id" },
+        }),
       ).rejects.toBeInstanceOf(ValidationError);
     });
 

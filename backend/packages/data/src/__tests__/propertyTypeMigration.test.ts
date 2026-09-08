@@ -85,7 +85,13 @@ describe("property type migration", () => {
 
   it("a locked property cannot be retyped", async () => {
     const db = await chokePoint.createDatabase({ name: "D4" });
-    const prop = await chokePoint.createProperty({ databaseId: db.id, key: "score", name: "Score", type: "text", locked: true });
+    const prop = await chokePoint.createProperty({
+      databaseId: db.id,
+      key: "score",
+      name: "Score",
+      type: "text",
+      locked: true,
+    });
     await expect(chokePoint.changePropertyType(prop.id, "number")).rejects.toThrow();
   });
 });

@@ -7,13 +7,23 @@ import { updateItemWithClient } from "../chokePoint/chokePoint.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
-import { getMailAccountSyncState, listAccountsDueForSync, recordConnectionLimitBackoff, recordSyncError } from "./mailAccountSyncStateStore.js";
+import {
+  getMailAccountSyncState,
+  listAccountsDueForSync,
+  recordConnectionLimitBackoff,
+  recordSyncError,
+} from "./mailAccountSyncStateStore.js";
 import { reconcileImapAccount, type ImapMailClient } from "./imapReconcile.js";
 import { reconcileGmailAccount, type GmailMailClient } from "./gmailReconcile.js";
 import { reconcileGraphAccount, type GraphMailClient } from "./graphReconcile.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import { MailConnectionLimitError, MailReauthorizationRequiredError } from "./providerTypes.js";
-import { connectionLimitBackoffSecondsForProvider, imapConnectionLimitForProvider, sharedImapConnectionLimiter, type ImapConnectionLimiter } from "./imapConnectionLimiter.js";
+import {
+  connectionLimitBackoffSecondsForProvider,
+  imapConnectionLimitForProvider,
+  sharedImapConnectionLimiter,
+  type ImapConnectionLimiter,
+} from "./imapConnectionLimiter.js";
 import { findEmailsMissingSearchIndex, reindexItemSearch } from "./search.js";
 
 /**
@@ -46,7 +56,12 @@ export function mailAccountSyncJobKey(mailboxItemId: string): string {
 }
 
 export async function enqueueMailAccountSync(pool: Pool, mailboxItemId: string): Promise<void> {
-  await enqueueJob(pool, CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC, { mailboxItemId }, { jobKey: mailAccountSyncJobKey(mailboxItemId), maxAttempts: 3 });
+  await enqueueJob(
+    pool,
+    CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC,
+    { mailboxItemId },
+    { jobKey: mailAccountSyncJobKey(mailboxItemId), maxAttempts: 3 },
+  );
 }
 
 /** Periodic sweep (crontab, `CORE_CRONTAB` in worker.ts): enqueues a sync job for every account whose `next_expected_activity_at` is due — the safety-net reconcile that runs regardless of push-notification reliability. */
@@ -70,7 +85,11 @@ export async function handleMailSearchReindexSweepTask(pool: Pool, emailsDatabas
   await withTransaction(pool, async (client) => {
     const missing = await findEmailsMissingSearchIndex(client, emailsDatabaseId);
     for (const item of missing) {
-      await reindexItemSearch(client, { itemId: item.itemId, databaseId: emailsDatabaseId, text: [item.name ?? "", item.body ?? ""].join("\n\n") });
+      await reindexItemSearch(client, {
+        itemId: item.itemId,
+        databaseId: emailsDatabaseId,
+        text: [item.name ?? "", item.body ?? ""].join("\n\n"),
+      });
     }
   });
 }
@@ -141,7 +160,9 @@ export async function handleSyncMailAccountTask(
         getItemById(client, moduleIds.mailboxesDatabaseId, payload.mailboxItemId),
       ]);
       if (!folderProperty || !attachmentsProperty || !mailboxFolderProperty) {
-        throw new Error("Email module schema is missing an expected relation property — was seedEmailModuleInTransaction run?");
+        throw new Error(
+          "Email module schema is missing an expected relation property — was seedEmailModuleInTransaction run?",
+        );
       }
       return { folderProperty, attachmentsProperty, mailboxFolderProperty, mailboxItem };
     });
@@ -157,7 +178,8 @@ export async function handleSyncMailAccountTask(
     mailboxProvider = typeof mailboxItem.properties.provider === "string" ? mailboxItem.properties.provider : undefined;
 
     const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, payload.mailboxItemId));
-    if (!state) throw new Error(`Mailbox ${payload.mailboxItemId} has no mail_account_sync_state row — never connected`);
+    if (!state)
+      throw new Error(`Mailbox ${payload.mailboxItemId} has no mail_account_sync_state row — never connected`);
 
     // Passed `pool` directly, not wrapped in `withTransaction`: each statement
     // (the access-log insert, then the decrypt) commits independently, so a decrypt failure
@@ -171,8 +193,16 @@ export async function handleSyncMailAccountTask(
     // against `SYNC_MODES` when the row is read (mailAccountSyncStateStore.ts's `mapRow`), but
     // spelling out every value here means `credential_access_log.purpose` can never carry
     // anything this file didn't itself write, independent of that upstream guarantee.
-    const syncPurpose: Record<typeof state.syncMode, string> = { imap: "imap_sync", gmail_api: "gmail_api_sync", graph_api: "graph_api_sync" };
-    const credential = await getDecryptedCredential(pool, { itemId: payload.mailboxItemId, actorType: "sync_worker", purpose: syncPurpose[state.syncMode] });
+    const syncPurpose: Record<typeof state.syncMode, string> = {
+      imap: "imap_sync",
+      gmail_api: "gmail_api_sync",
+      graph_api: "graph_api_sync",
+    };
+    const credential = await getDecryptedCredential(pool, {
+      itemId: payload.mailboxItemId,
+      actorType: "sync_worker",
+      purpose: syncPurpose[state.syncMode],
+    });
     if (!credential) throw new Error(`Mailbox ${payload.mailboxItemId} has no stored credential`);
 
     const shared = {
@@ -203,7 +233,11 @@ export async function handleSyncMailAccountTask(
           // the same way the internal `mail_account_sync_state.last_error` columns above already do.
           await updateItemWithClient(
             client,
-            { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "ok" } },
+            {
+              databaseId: moduleIds.mailboxesDatabaseId,
+              itemId: payload.mailboxItemId,
+              propertiesPatch: { syncStatus: "ok" },
+            },
             { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
           );
         }),
@@ -215,7 +249,11 @@ export async function handleSyncMailAccountTask(
         await reconcileGmailAccount(client, gmail, shared);
         await updateItemWithClient(
           client,
-          { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "ok" } },
+          {
+            databaseId: moduleIds.mailboxesDatabaseId,
+            itemId: payload.mailboxItemId,
+            propertiesPatch: { syncStatus: "ok" },
+          },
           { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
         );
       });
@@ -226,7 +264,11 @@ export async function handleSyncMailAccountTask(
         await reconcileGraphAccount(client, graph, shared);
         await updateItemWithClient(
           client,
-          { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "ok" } },
+          {
+            databaseId: moduleIds.mailboxesDatabaseId,
+            itemId: payload.mailboxItemId,
+            propertiesPatch: { syncStatus: "ok" },
+          },
           { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
         );
       });
@@ -256,10 +298,19 @@ export async function handleSyncMailAccountTask(
       // also stacking graphile-worker's own immediate retry on top of it — which would just
       // reopen a connection and likely hit the same limit again before it has cleared.
       await withTransaction(pool, async (client) => {
-        await recordConnectionLimitBackoff(client, payload.mailboxItemId, message, connectionLimitBackoffSecondsForProvider(mailboxProvider));
+        await recordConnectionLimitBackoff(
+          client,
+          payload.mailboxItemId,
+          message,
+          connectionLimitBackoffSecondsForProvider(mailboxProvider),
+        );
         await updateItemWithClient(
           client,
-          { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus: "error" } },
+          {
+            databaseId: moduleIds.mailboxesDatabaseId,
+            itemId: payload.mailboxItemId,
+            propertiesPatch: { syncStatus: "error" },
+          },
           { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
         );
       });

@@ -32,6 +32,7 @@ describe("smoke: choke-point end to end", () => {
         "Inbox",
         "Inbox item types",
         "Journal",
+        "MCP servers",
         "Mailboxes",
         "Movies/TV",
         "People",

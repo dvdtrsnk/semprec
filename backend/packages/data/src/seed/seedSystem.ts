@@ -9,7 +9,7 @@ import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/vie
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { DRIFT_CHECK_ACTION_ID } from "../manifest/driftCheck.js";
 import { MODULE_REGISTRY_CHECK_DRIFT_ACTION_ID } from "../manifest/moduleRegistryDriftCheck.js";
-import { DEFAULT_TIMEZONE, SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
+import { DEFAULT_DAILY_BUDGET_USD, DEFAULT_TIMEZONE, SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { registerTemporalSwitcherViewType } from "../views/temporalSwitcherViewType.js";
 import { registerLibraryGridViewType } from "../views/libraryGridViewType.js";
 import { registerMailboxClientViewType } from "../views/mailboxClientViewType.js";
@@ -19,6 +19,7 @@ import { seedTenDatabasesInTransaction } from "./seedTenDatabases.js";
 import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
 import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
 import { seedInboxPipelineInTransaction } from "./seedInboxPipeline.js";
+import { seedMcpModuleInTransaction } from "./seedMcpModule.js";
 
 export { PROJECTS_MODULE_ID } from "./tenDatabaseKeys.js";
 
@@ -76,10 +77,17 @@ export async function seedSystem(
   await moduleRegistry.loadModule(new URL("./systemDatabasesModuleManifest.js", import.meta.url).href);
 
   await withTransaction(pool, async (client) => {
-    const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1`, [SYSTEM_SETTINGS_MODULE_ID]);
+    const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1`, [
+      SYSTEM_SETTINGS_MODULE_ID,
+    ]);
     if ((existingSettings.rowCount ?? 0) > 0) return;
 
-    const tenDatabases = await seedTenDatabasesInTransaction(client, viewTypeRegistry, computedKeyRegistry, moduleRegistry);
+    const tenDatabases = await seedTenDatabasesInTransaction(
+      client,
+      viewTypeRegistry,
+      computedKeyRegistry,
+      moduleRegistry,
+    );
     const projectsDb = tenDatabases.projects;
 
     const semprecProject = await itemsStore.insertItem(client, {
@@ -121,10 +129,33 @@ export async function seedSystem(
       locked: true,
       owner: "user",
     });
+    // Issue #120's dual budget caps: dailyBudgetUsd starts capped, monthlyBudgetUsd starts
+    // uncapped, and either one going to `null` later means "uncapped" for that window.
+    await propertiesStore.createProperty(client, {
+      databaseId: settingsDb.id,
+      key: "dailyBudgetUsd",
+      name: "Daily AI budget (USD)",
+      type: "number",
+      locked: true,
+      owner: "user",
+    });
+    await propertiesStore.createProperty(client, {
+      databaseId: settingsDb.id,
+      key: "monthlyBudgetUsd",
+      name: "Monthly AI budget (USD)",
+      type: "number",
+      locked: true,
+      owner: "user",
+    });
 
     await itemsStore.insertItem(client, {
       databaseId: settingsDb.id,
-      properties: { name: "Semp", timezone: DEFAULT_TIMEZONE },
+      properties: {
+        name: "Semp",
+        timezone: DEFAULT_TIMEZONE,
+        dailyBudgetUsd: DEFAULT_DAILY_BUDGET_USD,
+        monthlyBudgetUsd: null,
+      },
     });
 
     await client.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [settingsDb.id]);
@@ -155,17 +186,42 @@ export async function seedSystem(
     // Books and Movies/TV (issue #25): the second wave, two concrete instantiations of the
     // generic "library module" contract. Runs last: needs Projects/People (from
     // seedTenDatabasesInTransaction above) and the system timezone (settingsDb, just above).
-    await seedLibraryModuleInTransaction(client, projectsDb.id, tenDatabases.people.id, viewTypeRegistry, computedKeyRegistry);
+    await seedLibraryModuleInTransaction(
+      client,
+      projectsDb.id,
+      tenDatabases.people.id,
+      viewTypeRegistry,
+      computedKeyRegistry,
+    );
 
     // Mailboxes/Folders/Emails (issue #26): the IMAP sync core's schema and deterministic
     // People-linking wiring. Order relative to the library module doesn't matter — both only
     // depend on the ten databases above.
-    await seedEmailModuleInTransaction(client, projectsDb.id, tenDatabases.people.id, tenDatabases.files.id, computedKeyRegistry, viewTypeRegistry);
+    await seedEmailModuleInTransaction(
+      client,
+      projectsDb.id,
+      tenDatabases.people.id,
+      tenDatabases.files.id,
+      computedKeyRegistry,
+      viewTypeRegistry,
+    );
 
     // Inbox / Inbox item types / Processing proposals (issue #101): the three databases
     // issue #24's ten hardcoded databases deliberately exclude. Order relative to the
     // library/email modules doesn't matter — only depends on the ten databases (Journal,
     // Transcripts) and the Semprec project item, both already created above.
-    await seedInboxPipelineInTransaction(client, tenDatabases.journal.id, tenDatabases.transcripts.id, semprecProject.id, computedKeyRegistry, viewTypeRegistry);
+    await seedInboxPipelineInTransaction(
+      client,
+      tenDatabases.journal.id,
+      tenDatabases.transcripts.id,
+      semprecProject.id,
+      computedKeyRegistry,
+      viewTypeRegistry,
+    );
+
+    // MCP servers (issue #123): a system resource similar to Mailboxes, holding non-secret
+    // connection metadata only. Order relative to the other module seeds doesn't matter —
+    // only depends on the Projects database above.
+    await seedMcpModuleInTransaction(client, projectsDb.id);
   });
 }

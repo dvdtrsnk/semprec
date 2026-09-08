@@ -131,7 +131,10 @@ export function createGmailPubSubTransport(options: GmailPubSubClientOptions): G
       const accessToken = await options.getGmailAccessToken(mailboxItemId, credential);
       const json = await jsonRequest(`${GMAIL_BASE_URL}/watch`, accessToken, {
         method: "POST",
-        body: JSON.stringify({ topicName: options.topicName, ...(options.labelIds ? { labelIds: options.labelIds } : {}) }),
+        body: JSON.stringify({
+          topicName: options.topicName,
+          ...(options.labelIds ? { labelIds: options.labelIds } : {}),
+        }),
       });
       if (typeof json.historyId !== "string" || !json.historyId) {
         throw new Error("users.watch response is missing a string historyId");

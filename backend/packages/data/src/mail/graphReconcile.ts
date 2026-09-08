@@ -6,7 +6,11 @@ import { ValidationError } from "../errors.js";
 import { ensureFolderItem } from "./folderDiscovery.js";
 import { ingestEmailMessage } from "./ingest.js";
 import { getMailMessageMetaByProviderMessageId } from "./mailMessageMetaStore.js";
-import { ensureMailAccountSyncState, invalidateGraphDeltaLink, recordGraphActivity } from "./mailAccountSyncStateStore.js";
+import {
+  ensureMailAccountSyncState,
+  invalidateGraphDeltaLink,
+  recordGraphActivity,
+} from "./mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import type { FetchedMessage } from "./providerTypes.js";
 
@@ -76,9 +80,14 @@ export interface ReconcileGraphAccountParams {
  * undone by the same rollback that the re-thrown error triggers. See
  * mailSyncJob.ts's `handleSyncMailAccountTask` for where sync failures actually get recorded.
  */
-export async function reconcileGraphAccount(dbClient: PoolClient, graph: GraphMailClient, params: ReconcileGraphAccountParams): Promise<void> {
+export async function reconcileGraphAccount(
+  dbClient: PoolClient,
+  graph: GraphMailClient,
+  params: ReconcileGraphAccountParams,
+): Promise<void> {
   const relationDefinition = await getRelationDefinitionByPropertyId(dbClient, params.folderRelationPropertyId);
-  if (!relationDefinition) throw new ValidationError(`Folder relation property ${params.folderRelationPropertyId} has no relation definition`);
+  if (!relationDefinition)
+    throw new ValidationError(`Folder relation property ${params.folderRelationPropertyId} has no relation definition`);
 
   const state = await ensureMailAccountSyncState(dbClient, { itemId: params.mailboxItemId, syncMode: "graph_api" });
 
@@ -99,7 +108,11 @@ export async function reconcileGraphAccount(dbClient: PoolClient, graph: GraphMa
 
   let delta = await graph.fetchDelta(state.graphDeltaLink);
   if (delta.invalidated) {
-    await invalidateGraphDeltaLink(dbClient, params.mailboxItemId, "delta 410 Gone / resyncRequired, running full resync");
+    await invalidateGraphDeltaLink(
+      dbClient,
+      params.mailboxItemId,
+      "delta 410 Gone / resyncRequired, running full resync",
+    );
     delta = await graph.fetchDelta(null);
   }
 
@@ -112,7 +125,11 @@ export async function reconcileGraphAccount(dbClient: PoolClient, graph: GraphMa
         const folderItemId = otherSide(edge, meta.itemId);
         await deleteRelationWithClient(
           dbClient,
-          { relationPropertyId: params.folderRelationPropertyId, callerItemId: meta.itemId, targetItemId: folderItemId },
+          {
+            relationPropertyId: params.folderRelationPropertyId,
+            callerItemId: meta.itemId,
+            targetItemId: folderItemId,
+          },
           EMAILS_RELATION_CONTEXT,
         );
       }
@@ -141,7 +158,11 @@ export async function reconcileGraphAccount(dbClient: PoolClient, graph: GraphMa
       if (otherFolderId !== folderItemId) {
         await deleteRelationWithClient(
           dbClient,
-          { relationPropertyId: params.folderRelationPropertyId, callerItemId: result.itemId, targetItemId: otherFolderId },
+          {
+            relationPropertyId: params.folderRelationPropertyId,
+            callerItemId: result.itemId,
+            targetItemId: otherFolderId,
+          },
           EMAILS_RELATION_CONTEXT,
         );
       }

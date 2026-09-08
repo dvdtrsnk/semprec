@@ -1,6 +1,10 @@
 import type { ModuleManifest } from "@semprec/module-registry";
 import { JOURNAL_INBOX_VIEW_TYPE } from "../views/journalInboxViewType.js";
-import { INBOX_ITEM_TYPES_MODULE_ID, INBOX_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
+import {
+  INBOX_ITEM_TYPES_MODULE_ID,
+  INBOX_MODULE_ID,
+  PROCESSING_PROPOSALS_MODULE_ID,
+} from "../seed/inboxPipelineKeys.js";
 import { SEMPREC_TICK_ACTION_ID } from "./inboxTickAction.js";
 
 /**

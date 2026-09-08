@@ -1,3 +1,8 @@
+/* eslint-disable react-refresh/only-export-components -- this module's whole point is to pair
+   the `I18nProvider` component with the plain `createTranslate`/`resolveLocale`/`useTranslate`
+   helpers that use it; splitting them into another file just to satisfy Fast Refresh's
+   single-component-per-file heuristic would scatter a small, cohesive unit for no runtime
+   benefit outside of dev-mode HMR. */
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 import { CATALOGS, DEFAULT_LOCALE, en, type Locale, type MessageKey } from "./messages.js";
 

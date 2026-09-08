@@ -6,7 +6,11 @@ import { ValidationError } from "../errors.js";
 import { ensureFolderItem } from "./folderDiscovery.js";
 import { ingestEmailMessage } from "./ingest.js";
 import { getMailMessageMetaByProviderMessageId } from "./mailMessageMetaStore.js";
-import { ensureMailAccountSyncState, invalidateGmailHistory, recordGmailActivity } from "./mailAccountSyncStateStore.js";
+import {
+  ensureMailAccountSyncState,
+  invalidateGmailHistory,
+  recordGmailActivity,
+} from "./mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import type { FetchedMessage } from "./providerTypes.js";
 
@@ -77,9 +81,14 @@ export interface ReconcileGmailAccountParams {
  * undone by the same rollback that the re-thrown error triggers. See
  * mailSyncJob.ts's `handleSyncMailAccountTask` for where sync failures actually get recorded.
  */
-export async function reconcileGmailAccount(dbClient: PoolClient, gmail: GmailMailClient, params: ReconcileGmailAccountParams): Promise<void> {
+export async function reconcileGmailAccount(
+  dbClient: PoolClient,
+  gmail: GmailMailClient,
+  params: ReconcileGmailAccountParams,
+): Promise<void> {
   const relationDefinition = await getRelationDefinitionByPropertyId(dbClient, params.folderRelationPropertyId);
-  if (!relationDefinition) throw new ValidationError(`Folder relation property ${params.folderRelationPropertyId} has no relation definition`);
+  if (!relationDefinition)
+    throw new ValidationError(`Folder relation property ${params.folderRelationPropertyId} has no relation definition`);
 
   const state = await ensureMailAccountSyncState(dbClient, { itemId: params.mailboxItemId, syncMode: "gmail_api" });
 
@@ -114,7 +123,11 @@ export async function reconcileGmailAccount(dbClient: PoolClient, gmail: GmailMa
   } else {
     const history = await gmail.listHistorySince(state.gmailHistoryId);
     if (history.invalidated) {
-      await invalidateGmailHistory(dbClient, params.mailboxItemId, "history.list: historyId too old, running full resync");
+      await invalidateGmailHistory(
+        dbClient,
+        params.mailboxItemId,
+        "history.list: historyId too old, running full resync",
+      );
       newHistoryId = await gmail.getCurrentHistoryId();
       changedIds = await gmail.listAllMessageIds();
     } else {
@@ -128,7 +141,9 @@ export async function reconcileGmailAccount(dbClient: PoolClient, gmail: GmailMa
     const fetched = await gmail.fetchMessage(id);
     if (!fetched) continue;
 
-    const mappedFolderIds = fetched.labelIds.map((labelId) => folderItemIdByLabel.get(labelId)).filter((v): v is string => Boolean(v));
+    const mappedFolderIds = fetched.labelIds
+      .map((labelId) => folderItemIdByLabel.get(labelId))
+      .filter((v): v is string => Boolean(v));
     let itemId: string | null = null;
     for (const folderItemId of mappedFolderIds) {
       const result = await ingestEmailMessage(dbClient, {

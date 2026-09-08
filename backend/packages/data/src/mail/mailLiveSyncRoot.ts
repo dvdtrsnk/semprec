@@ -127,7 +127,10 @@ export function createMailLiveSyncRoot(
             // only seeds state for an account discovered here for the first time; a user's
             // subsequent manual `setSyncMode` switch is picked up below because we read it back
             // from the row itself, not from `defaultSyncModeForProvider` again.
-            const state = await ensureMailAccountSyncState(client, { itemId: item.id, syncMode: defaultSyncModeForProvider(provider) });
+            const state = await ensureMailAccountSyncState(client, {
+              itemId: item.id,
+              syncMode: defaultSyncModeForProvider(provider),
+            });
             active.set(item.id, state.syncMode);
             await client.query("RELEASE SAVEPOINT discover_account");
           } catch (err) {

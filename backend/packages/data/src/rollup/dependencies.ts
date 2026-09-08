@@ -68,7 +68,10 @@ export async function findDependenciesBySource(
   return rows.map(mapRow);
 }
 
-export async function getRollupDependency(client: PoolClient, rollupPropertyId: string): Promise<RollupDependencyRow | null> {
+export async function getRollupDependency(
+  client: PoolClient,
+  rollupPropertyId: string,
+): Promise<RollupDependencyRow | null> {
   const { rows } = await client.query(
     `SELECT rollup_property_id, relation_definition_id, source_database_id, source_property_key
      FROM rollup_dependencies WHERE rollup_property_id = $1`,

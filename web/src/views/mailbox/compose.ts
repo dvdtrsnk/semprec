@@ -1,5 +1,11 @@
 import { toOperationError, type GenericOperations, type Item } from "../../api/genericOperations.js";
-import { formatAddressList, normalizeAddress, parseAddressList, parseAddressListProperty, type MailAddress } from "./addresses.js";
+import {
+  formatAddressList,
+  normalizeAddress,
+  parseAddressList,
+  parseAddressListProperty,
+  type MailAddress,
+} from "./addresses.js";
 import { createDraft, sendDraft, type DraftPayload, type MessageEnvelope } from "./mailOperations.js";
 
 /**
@@ -109,7 +115,11 @@ export interface ReplyRecipients {
  * through To and Cc. The user's own aliases are dropped, and every address appears once —
  * being both in To and in Cc of the original must not produce two copies.
  */
-export function replyRecipients(envelope: MessageEnvelope["envelope"], mode: ComposeMode, selfAddresses: readonly string[]): ReplyRecipients {
+export function replyRecipients(
+  envelope: MessageEnvelope["envelope"],
+  mode: ComposeMode,
+  selfAddresses: readonly string[],
+): ReplyRecipients {
   const self = new Set(selfAddresses.map(normalizeAddress));
   const used = new Set<string>();
   const take = (addresses: readonly MailAddress[], skipSelf: boolean): MailAddress[] => {
@@ -200,7 +210,9 @@ export function replyCompose(input: ReplyComposeInput): ComposeState {
     // RFC 5322 threading: the reply points at the message it answers and carries its
     // References chain forward, so the thread survives on the recipient's side too.
     inReplyTo: input.envelope.messageId,
-    references: input.envelope.messageId ? [...input.envelope.references, input.envelope.messageId] : input.envelope.references,
+    references: input.envelope.messageId
+      ? [...input.envelope.references, input.envelope.messageId]
+      : input.envelope.references,
   };
 }
 
@@ -213,14 +225,19 @@ export type ComposePayloadResult = { ok: true; payload: DraftPayload } | { ok: f
  * allowed to be incomplete in every way except the sender — which mailbox's Drafts folder it
  * belongs in follows from the alias — while sending additionally needs somewhere to go.
  */
-export function composePayload(state: ComposeState, aliases: readonly AliasOption[], options: { requireRecipients: boolean }): ComposePayloadResult {
+export function composePayload(
+  state: ComposeState,
+  aliases: readonly AliasOption[],
+  options: { requireRecipients: boolean },
+): ComposePayloadResult {
   const alias = findAlias(aliases, state.fromAddress);
   if (!alias) return { ok: false, problem: "noSender" };
 
   const to = parseAddressList(state.to);
   const cc = parseAddressList(state.cc);
   const bcc = parseAddressList(state.bcc);
-  if (options.requireRecipients && to.length + cc.length + bcc.length === 0) return { ok: false, problem: "noRecipients" };
+  if (options.requireRecipients && to.length + cc.length + bcc.length === 0)
+    return { ok: false, problem: "noRecipients" };
 
   return {
     ok: true,
@@ -245,7 +262,11 @@ export function composePayload(state: ComposeState, aliases: readonly AliasOptio
  * stays in the window and goes out with the send, which writes the final content onto that
  * same item (mail/send.ts). The UI says so rather than silently creating a second draft.
  */
-export async function saveComposeDraft(operations: GenericOperations, state: ComposeState, aliases: readonly AliasOption[]): Promise<ComposeState> {
+export async function saveComposeDraft(
+  operations: GenericOperations,
+  state: ComposeState,
+  aliases: readonly AliasOption[],
+): Promise<ComposeState> {
   if (state.draftItemId) return { ...state, status: "editing", error: null };
 
   const result = composePayload(state, aliases, { requireRecipients: false });
@@ -266,7 +287,11 @@ export async function saveComposeDraft(operations: GenericOperations, state: Com
  * grant, SMTP itself), the draft item survives, the window stays open with everything still
  * editable, and the refusal is shown as it was given.
  */
-export async function sendCompose(operations: GenericOperations, state: ComposeState, aliases: readonly AliasOption[]): Promise<ComposeState> {
+export async function sendCompose(
+  operations: GenericOperations,
+  state: ComposeState,
+  aliases: readonly AliasOption[],
+): Promise<ComposeState> {
   const result = composePayload(state, aliases, { requireRecipients: true });
   if (!result.ok) return { ...state, status: "editing", error: { kind: "invalid", problem: result.problem } };
 
@@ -276,6 +301,11 @@ export async function sendCompose(operations: GenericOperations, state: ComposeS
     await sendDraft(operations, draftItemId, result.payload);
     return { ...state, draftItemId, status: "sent", error: null };
   } catch (error) {
-    return { ...state, draftItemId, status: "editing", error: { kind: "failed", message: toOperationError(error).message } };
+    return {
+      ...state,
+      draftItemId,
+      status: "editing",
+      error: { kind: "failed", message: toOperationError(error).message },
+    };
   }
 }

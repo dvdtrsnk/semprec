@@ -85,7 +85,10 @@ export interface IngestEmailMessageResult {
  * to commit together for the onItemEvent person-linking trigger (personLinkingActions.ts) to
  * see a consistent envelope once its enqueued job actually runs.
  */
-export async function ingestEmailMessage(client: PoolClient, input: IngestEmailMessageInput): Promise<IngestEmailMessageResult> {
+export async function ingestEmailMessage(
+  client: PoolClient,
+  input: IngestEmailMessageInput,
+): Promise<IngestEmailMessageResult> {
   const existing = await getMailMessageMetaByMessageId(client, input.messageId);
   let itemId: string;
   let created = false;
@@ -146,7 +149,9 @@ export async function ingestEmailMessage(client: PoolClient, input: IngestEmailM
       // RFC 3464: a DSN's own References/In-Reply-To name the outgoing message it reports on —
       // the same ancestor threading.ts just resolved from, reused here as "the original message"
       // rather than a second parsing rule for the identical header.
-      const dsnOriginalMessageId = input.isDsn ? (input.inReplyTo ?? input.references?.[input.references.length - 1] ?? null) : null;
+      const dsnOriginalMessageId = input.isDsn
+        ? (input.inReplyTo ?? input.references?.[input.references.length - 1] ?? null)
+        : null;
 
       await upsertMailMessageMeta(client, {
         itemId,

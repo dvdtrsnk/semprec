@@ -67,9 +67,15 @@ export function envelopeFromProperties(message: Item): MessageEnvelope {
  * message or replying to it — it falls back to the display text — because the envelope is an
  * enrichment of data the item already carries, not a second source for it.
  */
-export async function loadMessageEnvelope(operations: GenericOperations, databaseId: string, message: Item): Promise<MessageEnvelope> {
+export async function loadMessageEnvelope(
+  operations: GenericOperations,
+  databaseId: string,
+  message: Item,
+): Promise<MessageEnvelope> {
   try {
-    return messageEnvelopeSchema.parse(await operations.callOperation(EMAIL_MESSAGE_ENVELOPE_OPERATION, { databaseId, itemId: message.id }));
+    return messageEnvelopeSchema.parse(
+      await operations.callOperation(EMAIL_MESSAGE_ENVELOPE_OPERATION, { databaseId, itemId: message.id }),
+    );
   } catch {
     return envelopeFromProperties(message);
   }
@@ -92,7 +98,9 @@ const draftCreateResultSchema = z.object({ itemId: z.string() });
 /** Creates the draft item; the module resolves the Emails database and the Drafts folder itself. */
 export async function createDraft(operations: GenericOperations, payload: DraftPayload): Promise<string> {
   try {
-    const result = draftCreateResultSchema.parse(await operations.callOperation(EMAIL_DRAFT_CREATE_OPERATION, { ...payload }));
+    const result = draftCreateResultSchema.parse(
+      await operations.callOperation(EMAIL_DRAFT_CREATE_OPERATION, { ...payload }),
+    );
     return result.itemId;
   } catch (error) {
     throw toOperationError(error);
@@ -104,7 +112,11 @@ const sendResultSchema = z.object({ itemId: z.string(), messageId: z.string() })
 export type SendResult = z.infer<typeof sendResultSchema>;
 
 /** Submits an already-created draft. A rejected send throws; the draft it names stays a draft. */
-export async function sendDraft(operations: GenericOperations, draftItemId: string, payload: DraftPayload): Promise<SendResult> {
+export async function sendDraft(
+  operations: GenericOperations,
+  draftItemId: string,
+  payload: DraftPayload,
+): Promise<SendResult> {
   try {
     return sendResultSchema.parse(await operations.callOperation(EMAIL_SEND_OPERATION, { ...payload, draftItemId }));
   } catch (error) {

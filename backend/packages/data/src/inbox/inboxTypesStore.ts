@@ -3,7 +3,12 @@ import type { Queryable } from "../db/pool.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
-import { createItemWithClient, deleteRelationWithClient, enqueueRollupRecomputeForEdge, updateItemWithClient } from "../chokePoint/chokePoint.js";
+import {
+  createItemWithClient,
+  deleteRelationWithClient,
+  enqueueRollupRecomputeForEdge,
+  updateItemWithClient,
+} from "../chokePoint/chokePoint.js";
 import { triggerOnItemEventHeartbeats } from "../scheduler/schedulerStore.js";
 import { TEN_DATABASE_MODULE_IDS, type TenDatabaseModuleId } from "../seed/tenDatabaseKeys.js";
 import { NotFoundError, ValidationError } from "../errors.js";
@@ -35,21 +40,33 @@ export type ProcessingMethod = (typeof PROCESSING_METHODS)[number];
 function assertValidProcessingConfig(resolvedMethod: unknown, resolvedTarget: unknown): void {
   if (resolvedMethod === undefined || resolvedMethod === null) {
     if (resolvedTarget !== undefined && resolvedTarget !== null) {
-      throw new ValidationError("'targetDatabase' requires 'processingMethod' to be 'database'", { field: "targetDatabase" });
+      throw new ValidationError("'targetDatabase' requires 'processingMethod' to be 'database'", {
+        field: "targetDatabase",
+      });
     }
     return;
   }
   if (!(PROCESSING_METHODS as readonly unknown[]).includes(resolvedMethod)) {
-    throw new ValidationError(`'processingMethod' must be one of ${PROCESSING_METHODS.join(", ")}`, { field: "processingMethod" });
+    throw new ValidationError(`'processingMethod' must be one of ${PROCESSING_METHODS.join(", ")}`, {
+      field: "processingMethod",
+    });
   }
   if (resolvedMethod === "database") {
-    if (typeof resolvedTarget !== "string" || !(TEN_DATABASE_MODULE_IDS as readonly string[]).includes(resolvedTarget)) {
-      throw new ValidationError(`processingMethod 'database' requires 'targetDatabase' to be one of ${TEN_DATABASE_MODULE_IDS.join(", ")}`, {
-        field: "targetDatabase",
-      });
+    if (
+      typeof resolvedTarget !== "string" ||
+      !(TEN_DATABASE_MODULE_IDS as readonly string[]).includes(resolvedTarget)
+    ) {
+      throw new ValidationError(
+        `processingMethod 'database' requires 'targetDatabase' to be one of ${TEN_DATABASE_MODULE_IDS.join(", ")}`,
+        {
+          field: "targetDatabase",
+        },
+      );
     }
   } else if (resolvedTarget !== undefined && resolvedTarget !== null) {
-    throw new ValidationError("processingMethod 'pageContent' must not set 'targetDatabase'", { field: "targetDatabase" });
+    throw new ValidationError("processingMethod 'pageContent' must not set 'targetDatabase'", {
+      field: "targetDatabase",
+    });
   }
 }
 
@@ -95,8 +112,14 @@ export async function updateInboxTypeWithClient(client: PoolClient, input: Updat
   const current = await itemsStore.getItemById(client, input.inboxItemTypesDatabaseId, input.itemId);
   if (!current) throw new NotFoundError(`Inbox item type ${input.itemId} not found`);
 
-  const resolvedMethod = "processingMethod" in input.propertiesPatch ? input.propertiesPatch.processingMethod : current.properties.processingMethod;
-  const resolvedTarget = "targetDatabase" in input.propertiesPatch ? input.propertiesPatch.targetDatabase : current.properties.targetDatabase;
+  const resolvedMethod =
+    "processingMethod" in input.propertiesPatch
+      ? input.propertiesPatch.processingMethod
+      : current.properties.processingMethod;
+  const resolvedTarget =
+    "targetDatabase" in input.propertiesPatch
+      ? input.propertiesPatch.targetDatabase
+      : current.properties.targetDatabase;
   assertValidProcessingConfig(resolvedMethod, resolvedTarget);
 
   return updateItemWithClient(client, {
@@ -131,23 +154,41 @@ export interface DeleteInboxTypeInput {
  * fully processed and historical, so dereferencing it would serve no purpose and would
  * discard the record of what type it actually was.
  */
-export async function deleteInboxTypeWithClient(client: PoolClient, input: DeleteInboxTypeInput): Promise<ItemRow | null> {
+export async function deleteInboxTypeWithClient(
+  client: PoolClient,
+  input: DeleteInboxTypeInput,
+): Promise<ItemRow | null> {
   const typeProperty = await propertiesStore.getPropertyByKey(client, input.inboxDatabaseId, "type");
   if (!typeProperty) throw new NotFoundError(`Inbox database ${input.inboxDatabaseId} has no 'type' relation property`);
   const typeRelationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, typeProperty.id);
   if (!typeRelationDefinition) throw new NotFoundError(`Property '${typeProperty.id}' has no relation definition`);
 
-  const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, input.processingProposalsDatabaseId, "sourceInbox");
-  if (!sourceInboxProperty) throw new NotFoundError(`Processing proposals database ${input.processingProposalsDatabaseId} has no 'sourceInbox' relation property`);
-  const sourceInboxRelationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, sourceInboxProperty.id);
-  if (!sourceInboxRelationDefinition) throw new NotFoundError(`Property '${sourceInboxProperty.id}' has no relation definition`);
+  const sourceInboxProperty = await propertiesStore.getPropertyByKey(
+    client,
+    input.processingProposalsDatabaseId,
+    "sourceInbox",
+  );
+  if (!sourceInboxProperty)
+    throw new NotFoundError(
+      `Processing proposals database ${input.processingProposalsDatabaseId} has no 'sourceInbox' relation property`,
+    );
+  const sourceInboxRelationDefinition = await relationsStore.getRelationDefinitionByPropertyId(
+    client,
+    sourceInboxProperty.id,
+  );
+  if (!sourceInboxRelationDefinition)
+    throw new NotFoundError(`Property '${sourceInboxProperty.id}' has no relation definition`);
 
   const typeEdges = await relationsStore.listRelationsForItem(client, typeRelationDefinition.id, input.typeItemId);
   const inboxItemIds = typeEdges.map((edge) => relationsStore.otherSide(edge, input.typeItemId));
 
   // One query for every referencing Inbox item's proposal edges, instead of one query per
   // Inbox item — the same N+1 `proposalIdsByInboxItem` below then avoids.
-  const proposalEdges = await relationsStore.listRelationsForItems(client, sourceInboxRelationDefinition.id, inboxItemIds);
+  const proposalEdges = await relationsStore.listRelationsForItems(
+    client,
+    sourceInboxRelationDefinition.id,
+    inboxItemIds,
+  );
   const inboxItemIdSet = new Set(inboxItemIds);
   const proposalIdsByInboxItem = new Map<string, string[]>(inboxItemIds.map((inboxItemId) => [inboxItemId, []]));
   const allProposalIds: string[] = [];
@@ -159,17 +200,29 @@ export async function deleteInboxTypeWithClient(client: PoolClient, input: Delet
   }
 
   // One query for every referenced proposal, instead of one `getItemById` per proposal edge.
-  const proposals = await itemsStore.getItemsByIdsInDatabaseIncludingDeleted(client, input.processingProposalsDatabaseId, allProposalIds);
+  const proposals = await itemsStore.getItemsByIdsInDatabaseIncludingDeleted(
+    client,
+    input.processingProposalsDatabaseId,
+    allProposalIds,
+  );
   const proposalById = new Map(proposals.map((proposal) => [proposal.id, proposal]));
 
   for (const inboxItemId of inboxItemIds) {
     const locked = (proposalIdsByInboxItem.get(inboxItemId) ?? []).some((proposalItemId) => {
       const proposal = proposalById.get(proposalItemId);
-      return proposal !== undefined && typeof proposal.properties.status === "string" && LOCKED_PROPOSAL_STATUSES.has(proposal.properties.status);
+      return (
+        proposal !== undefined &&
+        typeof proposal.properties.status === "string" &&
+        LOCKED_PROPOSAL_STATUSES.has(proposal.properties.status)
+      );
     });
     if (locked) continue;
 
-    await deleteRelationWithClient(client, { relationPropertyId: typeProperty.id, callerItemId: inboxItemId, targetItemId: input.typeItemId });
+    await deleteRelationWithClient(client, {
+      relationPropertyId: typeProperty.id,
+      callerItemId: inboxItemId,
+      targetItemId: input.typeItemId,
+    });
   }
 
   const item = await itemsStore.softDeleteItem(client, input.inboxItemTypesDatabaseId, input.typeItemId);
@@ -189,7 +242,10 @@ export async function deleteInboxTypeWithClient(client: PoolClient, input: Delet
  * user-managed content, the same as any other item's `name`. Relations always store `id`,
  * never `emoji` — renaming a type's emoji afterwards cannot break an Inbox item's relation.
  */
-export async function listActiveInboxTypes(client: Queryable, inboxItemTypesDatabaseId: string): Promise<InboxTypeSummary[]> {
+export async function listActiveInboxTypes(
+  client: Queryable,
+  inboxItemTypesDatabaseId: string,
+): Promise<InboxTypeSummary[]> {
   const items: ItemRow[] = [];
   let cursor: string | undefined;
   for (;;) {

@@ -29,7 +29,9 @@ for (const file of files) {
 for (const [ordinal, group] of byOrdinal) {
   if (group.length > 1) {
     console.error(`Migration ordinal ${ordinal} is used by more than one file: ${group.join(", ")}`);
-    console.error(`Rename one of them to the next free ordinal (currently highest: ${[...byOrdinal.keys()].sort((a, b) => Number(a) - Number(b)).at(-1)}).`);
+    console.error(
+      `Rename one of them to the next free ordinal (currently highest: ${[...byOrdinal.keys()].sort((a, b) => Number(a) - Number(b)).at(-1)}).`,
+    );
     process.exitCode = 1;
   }
 }

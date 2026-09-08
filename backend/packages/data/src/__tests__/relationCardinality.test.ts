@@ -50,7 +50,12 @@ describe("relation cardinality enforcement (issue #82)", () => {
     ).rejects.toBeInstanceOf(CardinalityViolationError);
 
     await expect(
-      chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: a1.id, targetItemId: b1.id, metadata: { note: "same edge" } }),
+      chokePoint.createRelation({
+        relationPropertyId: property.id,
+        callerItemId: a1.id,
+        targetItemId: b1.id,
+        metadata: { note: "same edge" },
+      }),
     ).resolves.toBeDefined();
   });
 
@@ -174,9 +179,10 @@ describe("relation cardinality enforcement (issue #82)", () => {
         await clientY.query("ROLLBACK").catch(() => {});
       }
 
-      const { rows } = await pool.query("SELECT count(*)::int AS n FROM item_relations WHERE relation_definition_id = $1", [
-        input.relationDefinitionId,
-      ]);
+      const { rows } = await pool.query(
+        "SELECT count(*)::int AS n FROM item_relations WHERE relation_definition_id = $1",
+        [input.relationDefinitionId],
+      );
       expect(rows[0].n).toBe(1);
     } finally {
       clientX.release();

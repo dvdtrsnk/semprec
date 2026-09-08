@@ -93,13 +93,21 @@ describe("runMigrations", () => {
           expect(tableNames).not.toContain("never_table");
 
           // The failed file is retried, and succeeds once fixed, on the next run.
-          await writeFile(path.join(dir, "0002_fails_partway.sql"), "CREATE TABLE partial_table (id int PRIMARY KEY)", "utf8");
+          await writeFile(
+            path.join(dir, "0002_fails_partway.sql"),
+            "CREATE TABLE partial_table (id int PRIMARY KEY)",
+            "utf8",
+          );
           await runMigrations(pool, dir);
 
           const { rows: appliedAfterRetry } = await pool.query<{ id: string }>(
             "SELECT id FROM schema_migrations ORDER BY id",
           );
-          expect(appliedAfterRetry.map((r) => r.id)).toEqual(["0001_ok.sql", "0002_fails_partway.sql", "0003_never_reached.sql"]);
+          expect(appliedAfterRetry.map((r) => r.id)).toEqual([
+            "0001_ok.sql",
+            "0002_fails_partway.sql",
+            "0003_never_reached.sql",
+          ]);
         });
       },
     );

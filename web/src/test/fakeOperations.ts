@@ -1,4 +1,11 @@
-import { OperationError, type FilterNode, type GenericOperations, type Item, type ListItemsRequest, type View } from "../api/genericOperations.js";
+import {
+  OperationError,
+  type FilterNode,
+  type GenericOperations,
+  type Item,
+  type ListItemsRequest,
+  type View,
+} from "../api/genericOperations.js";
 
 /**
  * An in-memory stand-in for the backend's generic operations, evaluating the same filter
@@ -42,7 +49,14 @@ export interface FakeBackend {
 }
 
 function toItem(item: FakeItem): Item {
-  return { id: item.id, databaseId: item.databaseId, properties: item.properties, computed: {}, updatedAt: "2026-01-01T00:00:00.000Z", deletedAt: null };
+  return {
+    id: item.id,
+    databaseId: item.databaseId,
+    properties: item.properties,
+    computed: {},
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    deletedAt: null,
+  };
 }
 
 function matches(backend: FakeBackend, item: FakeItem, filter: FilterNode | undefined): boolean {
@@ -110,7 +124,9 @@ export function createFakeOperations(backend: FakeBackend): GenericOperations {
     // Edges are keyed by the relation property key alone, exactly as the fake's filter
     // evaluation reads them; the database id only names where the item lives.
     async linkItem(_databaseId, itemId, relationKey, targetItemId) {
-      const exists = backend.relations.some((edge) => edge.property === relationKey && edge.itemId === itemId && edge.targetItemId === targetItemId);
+      const exists = backend.relations.some(
+        (edge) => edge.property === relationKey && edge.itemId === itemId && edge.targetItemId === targetItemId,
+      );
       if (!exists) backend.relations.push({ property: relationKey, itemId, targetItemId });
     },
     async unlinkItem(_databaseId, itemId, relationKey, targetItemId) {
@@ -127,12 +143,22 @@ export function createFakeOperations(backend: FakeBackend): GenericOperations {
 
 /** The mailbox item a folder belongs to, through the Folders-to-Mailboxes relation. */
 function mailboxOfFolder(backend: FakeBackend, folderId: string): string | null {
-  return backend.relations.find((edge) => edge.property === "mailbox" && edge.itemId === folderId)?.targetItemId ?? null;
+  return (
+    backend.relations.find((edge) => edge.property === "mailbox" && edge.itemId === folderId)?.targetItemId ?? null
+  );
 }
 
-function folderWithPurpose(backend: FakeBackend, mail: FakeMailModule, mailboxItemId: string, purpose: string): string | null {
+function folderWithPurpose(
+  backend: FakeBackend,
+  mail: FakeMailModule,
+  mailboxItemId: string,
+  purpose: string,
+): string | null {
   const folder = backend.items.find(
-    (item) => item.databaseId === mail.foldersDatabaseId && item.properties.specialPurpose === purpose && mailboxOfFolder(backend, item.id) === mailboxItemId,
+    (item) =>
+      item.databaseId === mail.foldersDatabaseId &&
+      item.properties.specialPurpose === purpose &&
+      mailboxOfFolder(backend, item.id) === mailboxItemId,
   );
   return folder?.id ?? null;
 }
@@ -144,7 +170,11 @@ function folderWithPurpose(backend: FakeBackend, mail: FakeMailModule, mailboxIt
  * it to Sent, an unregistered From address is refused, and a message with no envelope row
  * simply has none — which is what makes the client's fallback to display text observable.
  */
-async function runMailOperation(backend: FakeBackend, operationId: string, input: Record<string, unknown>): Promise<unknown> {
+async function runMailOperation(
+  backend: FakeBackend,
+  operationId: string,
+  input: Record<string, unknown>,
+): Promise<unknown> {
   const mail = backend.mail;
   if (!mail) throw new OperationError("unavailable", `Operation ${operationId} is not available`, 501);
 
@@ -180,13 +210,22 @@ async function runMailOperation(backend: FakeBackend, operationId: string, input
       .map((entry) => entry.trim().toLowerCase())
       .filter((entry) => entry.length > 0);
     if (!registered.includes((from?.address ?? "").trim().toLowerCase())) {
-      throw new OperationError("unavailable", `From address ${from?.address ?? ""} is not registered for mailbox ${mailboxItemId}`, 403);
+      throw new OperationError(
+        "unavailable",
+        `From address ${from?.address ?? ""} is not registered for mailbox ${mailboxItemId}`,
+        403,
+      );
     }
     const sentFolderId = folderWithPurpose(backend, mail, mailboxItemId, "sent");
     if (!sentFolderId) throw new OperationError("retryable", `Mailbox ${mailboxItemId} has no Sent folder`, 400);
     const draftsFolderId = folderWithPurpose(backend, mail, mailboxItemId, "drafts");
     backend.relations = backend.relations.filter(
-      (edge) => !(edge.property === mail.folderRelationKey && edge.itemId === draftItemId && edge.targetItemId === draftsFolderId),
+      (edge) =>
+        !(
+          edge.property === mail.folderRelationKey &&
+          edge.itemId === draftItemId &&
+          edge.targetItemId === draftsFolderId
+        ),
     );
     backend.relations.push({ property: mail.folderRelationKey, itemId: draftItemId, targetItemId: sentFolderId });
     mail.sent.push({ draftItemId, payload: input });

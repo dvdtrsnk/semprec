@@ -9,10 +9,22 @@ import { assertKnownValue } from "../dbRowValidation.js";
  * one encryption module (`@semprec/credentials`), several narrow accessors over it — this
  * file is the only place in the codebase allowed to call `decryptSecret`.
  */
-export const CREDENTIAL_TYPES = ["oauth2_refresh_token", "app_password", "plain_password", "api_key", "bearer_token"] as const;
+export const CREDENTIAL_TYPES = [
+  "oauth2_refresh_token",
+  "app_password",
+  "plain_password",
+  "api_key",
+  "bearer_token",
+] as const;
 export type CredentialType = (typeof CREDENTIAL_TYPES)[number];
 
-export const CREDENTIAL_ACTOR_TYPES = ["user", "sync_worker", "smtp_send", "mcp_connection_manager", "ai_agent"] as const;
+export const CREDENTIAL_ACTOR_TYPES = [
+  "user",
+  "sync_worker",
+  "smtp_send",
+  "mcp_connection_manager",
+  "ai_agent",
+] as const;
 export type CredentialActorType = (typeof CREDENTIAL_ACTOR_TYPES)[number];
 
 export interface StoreCredentialInput {
@@ -71,12 +83,15 @@ export async function getDecryptedCredential(client: Queryable, input: DecryptCr
   const row = rows[0];
   if (!row) return null;
 
-  await client.query(`INSERT INTO credential_access_log (item_id, actor_type, actor_id, purpose) VALUES ($1, $2, $3, $4)`, [
-    input.itemId,
-    assertKnownValue(CREDENTIAL_ACTOR_TYPES, input.actorType, "credential access actor type"),
-    input.actorId ?? null,
-    input.purpose,
-  ]);
+  await client.query(
+    `INSERT INTO credential_access_log (item_id, actor_type, actor_id, purpose) VALUES ($1, $2, $3, $4)`,
+    [
+      input.itemId,
+      assertKnownValue(CREDENTIAL_ACTOR_TYPES, input.actorType, "credential access actor type"),
+      input.actorId ?? null,
+      input.purpose,
+    ],
+  );
 
   const key = resolveMasterKeyFromEnv(row.key_version);
   return decryptSecret({ ciphertext: row.ciphertext, nonce: row.nonce }, key);

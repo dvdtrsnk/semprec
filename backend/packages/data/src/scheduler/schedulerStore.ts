@@ -3,7 +3,12 @@ import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { NotFoundError } from "../errors.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { computeNextFireAt } from "./nextFireAt.js";
-import { isOnItemEventRule, parseHeartbeatRule, type AnyHeartbeatRule, type HeartbeatRuleKindRegistry } from "./rule.js";
+import {
+  isOnItemEventRule,
+  parseHeartbeatRule,
+  type AnyHeartbeatRule,
+  type HeartbeatRuleKindRegistry,
+} from "./rule.js";
 import type { ActionQueueAffinity } from "./actions.js";
 
 export interface HeartbeatRow {
@@ -58,7 +63,8 @@ function mapRow(
   };
 }
 
-const COLUMNS = "id, project_item_id, name, rule, action_id, action_config, enabled, next_fire_at, last_fired_at, last_error";
+const COLUMNS =
+  "id, project_item_id, name, rule, action_id, action_config, enabled, next_fire_at, last_fired_at, last_error";
 
 export interface CreateHeartbeatInput {
   projectItemId: string;
@@ -76,18 +82,31 @@ export async function createHeartbeat(
 ): Promise<HeartbeatRow> {
   const rule = parseHeartbeatRule(input.rule, moduleRuleKinds);
   const enabled = input.enabled ?? true;
-  const nextFireAt = enabled && !isOnItemEventRule(rule) ? await computeNextFireAtNow(client, rule, moduleRuleKinds) : null;
+  const nextFireAt =
+    enabled && !isOnItemEventRule(rule) ? await computeNextFireAtNow(client, rule, moduleRuleKinds) : null;
 
   const { rows } = await client.query(
     `INSERT INTO project_heartbeats (project_item_id, name, rule, action_id, action_config, enabled, next_fire_at)
      VALUES ($1, $2, $3::jsonb, $4, $5::jsonb, $6, $7)
      RETURNING ${COLUMNS}`,
-    [input.projectItemId, input.name, JSON.stringify(rule), input.actionId, JSON.stringify(input.actionConfig ?? {}), enabled, nextFireAt],
+    [
+      input.projectItemId,
+      input.name,
+      JSON.stringify(rule),
+      input.actionId,
+      JSON.stringify(input.actionConfig ?? {}),
+      enabled,
+      nextFireAt,
+    ],
   );
   return mapRow(rows[0], moduleRuleKinds);
 }
 
-async function computeNextFireAtNow(client: PoolClient, rule: AnyHeartbeatRule, moduleRuleKinds: HeartbeatRuleKindRegistry): Promise<Date | null> {
+async function computeNextFireAtNow(
+  client: PoolClient,
+  rule: AnyHeartbeatRule,
+  moduleRuleKinds: HeartbeatRuleKindRegistry,
+): Promise<Date | null> {
   const timezone = await getSystemTimezone(client);
   return computeNextFireAt(rule, timezone, new Date(), moduleRuleKinds);
 }
@@ -101,7 +120,11 @@ export async function getHeartbeat(
   return rows[0] ? mapRow(rows[0], moduleRuleKinds) : null;
 }
 
-async function requireHeartbeat(client: PoolClient, id: string, moduleRuleKinds: HeartbeatRuleKindRegistry): Promise<HeartbeatRow> {
+async function requireHeartbeat(
+  client: PoolClient,
+  id: string,
+  moduleRuleKinds: HeartbeatRuleKindRegistry,
+): Promise<HeartbeatRow> {
   const heartbeat = await getHeartbeat(client, id, moduleRuleKinds);
   if (!heartbeat) throw new NotFoundError(`Heartbeat ${id} not found`);
   return heartbeat;
@@ -155,10 +178,16 @@ export async function updateHeartbeatRule(
   rawRule: unknown,
   moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
 ): Promise<HeartbeatRow> {
-  const { rows: existingRows } = await client.query<{ enabled: boolean }>(`SELECT enabled FROM project_heartbeats WHERE id = $1`, [id]);
+  const { rows: existingRows } = await client.query<{ enabled: boolean }>(
+    `SELECT enabled FROM project_heartbeats WHERE id = $1`,
+    [id],
+  );
   if (!existingRows[0]) throw new NotFoundError(`Heartbeat ${id} not found`);
   const rule = parseHeartbeatRule(rawRule, moduleRuleKinds);
-  const nextFireAt = existingRows[0].enabled && !isOnItemEventRule(rule) ? await computeNextFireAtNow(client, rule, moduleRuleKinds) : null;
+  const nextFireAt =
+    existingRows[0].enabled && !isOnItemEventRule(rule)
+      ? await computeNextFireAtNow(client, rule, moduleRuleKinds)
+      : null;
 
   const { rows } = await client.query(
     `UPDATE project_heartbeats SET rule = $2::jsonb, next_fire_at = $3 WHERE id = $1 RETURNING ${COLUMNS}`,
@@ -189,7 +218,9 @@ export async function setHeartbeatEnabled(
   // Re-enabling does need the rule: computing next_fire_at requires knowing which calculator
   // (core or module) applies, so this still throws if the owning module is inactive.
   const heartbeat = await requireHeartbeat(client, id, moduleRuleKinds);
-  const nextFireAt = !isOnItemEventRule(heartbeat.rule) ? await computeNextFireAtNow(client, heartbeat.rule, moduleRuleKinds) : null;
+  const nextFireAt = !isOnItemEventRule(heartbeat.rule)
+    ? await computeNextFireAtNow(client, heartbeat.rule, moduleRuleKinds)
+    : null;
 
   const { rows } = await client.query(
     `UPDATE project_heartbeats SET enabled = true, next_fire_at = $2 WHERE id = $1 RETURNING ${COLUMNS}`,
@@ -279,7 +310,10 @@ export interface SweptHeartbeat {
  * down is picked up on the first sweep after restart and fired exactly once, with the
  * same "compute the next occurrence from now" logic as a regular on-time fire.
  */
-export async function sweepDueHeartbeats(client: PoolClient, moduleRuleKinds: HeartbeatRuleKindRegistry = new Map()): Promise<SweptHeartbeat[]> {
+export async function sweepDueHeartbeats(
+  client: PoolClient,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<SweptHeartbeat[]> {
   const { rows } = await client.query<{ id: string; rule: unknown }>(
     `SELECT id, rule FROM project_heartbeats
      WHERE enabled AND next_fire_at IS NOT NULL AND next_fire_at <= now()
@@ -305,8 +339,17 @@ export async function sweepDueHeartbeats(client: PoolClient, moduleRuleKinds: He
       await recordHeartbeatFailure(client, row.id, message);
       continue;
     }
-    await client.query(`UPDATE project_heartbeats SET next_fire_at = $2, last_fired_at = $3 WHERE id = $1`, [row.id, nextFireAt, now]);
-    await enqueueJob(client, CORE_TASK_NAMES.HEARTBEAT_FIRE, { heartbeatId: row.id }, { jobKey: heartbeatFireJobKey(row.id), maxAttempts: 3 });
+    await client.query(`UPDATE project_heartbeats SET next_fire_at = $2, last_fired_at = $3 WHERE id = $1`, [
+      row.id,
+      nextFireAt,
+      now,
+    ]);
+    await enqueueJob(
+      client,
+      CORE_TASK_NAMES.HEARTBEAT_FIRE,
+      { heartbeatId: row.id },
+      { jobKey: heartbeatFireJobKey(row.id), maxAttempts: 3 },
+    );
     fired.push({ id: row.id });
   }
   return fired;
