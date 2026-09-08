@@ -89,7 +89,9 @@ function PendingRow({
         {row.projectName ??
           (row.projectItemId ? t("approvalQueue.row.project.unknown") : t("approvalQueue.row.project.none"))}
         {" · "}
-        {t("approvalQueue.row.agentRun", { id: row.agentRunId })}
+        <a href={`?page=agent-run&id=${encodeURIComponent(row.agentRunId)}`}>
+          {t("approvalQueue.row.agentRun", { id: row.agentRunId })}
+        </a>
       </p>
       <div className="approval-queue__actions">
         <button type="button" disabled={pending} onClick={() => onDecide(row, "approved")}>

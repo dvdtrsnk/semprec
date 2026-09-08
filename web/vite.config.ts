@@ -32,6 +32,14 @@ export default defineConfig({
           });
         },
       },
+      "/api/agent-runs": {
+        target: process.env.SEMPREC_API_URL ?? "http://localhost:3001",
+        configure(proxy) {
+          proxy.on("proxyReq", (proxyReq) => {
+            if (semprecApiToken) proxyReq.setHeader("Authorization", `Bearer ${semprecApiToken}`);
+          });
+        },
+      },
     },
   },
   test: {

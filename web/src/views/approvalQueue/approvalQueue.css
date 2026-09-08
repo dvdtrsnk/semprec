@@ -25,6 +25,10 @@
   color: var(--color-danger);
 }
 
+.approval-queue__id {
+  font-family: var(--font-mono, monospace);
+}
+
 .approval-queue__summary {
   display: flex;
   align-items: baseline;

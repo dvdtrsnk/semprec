@@ -105,7 +105,8 @@ describe("ApprovalQueue (issue #132)", () => {
     expect(screen.getByText("Risk class: high")).toBeInTheDocument();
     expect(screen.getByText("Arguments: to, subject")).toBeInTheDocument();
     expect(screen.getByText("Acme project", { exact: false })).toBeInTheDocument();
-    expect(screen.getByText("Agent run run-1", { exact: false })).toBeInTheDocument();
+    const agentRunLink = screen.getByRole("link", { name: "Agent run run-1" });
+    expect(agentRunLink).toHaveAttribute("href", "?page=agent-run&id=run-1");
   });
 
   it("requests from different projects appear together", async () => {
