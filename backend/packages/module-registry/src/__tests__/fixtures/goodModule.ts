@@ -11,11 +11,30 @@ export const manifest: ModuleManifest = {
   agentTools: [{ name: "fixtureGood.doThing", handlerExport: "handleDoThing", capability: "fixtureGood.send" }],
   viewTypes: ["fixture-good-view"],
   heartbeatActions: ["fixtureGood.heartbeat"],
-  heartbeatRuleKinds: [{ kind: "fixtureGood.onWidgetTick", schemaExport: "widgetTickRuleSchema", nextFireAtExport: "computeWidgetTickNextFireAt" }],
-  taskNames: [{ name: "fixtureGood.processThing", payloadSchemaExport: "processThingPayloadSchema", handlerExport: "handleProcessThing" }],
+  heartbeatRuleKinds: [
+    {
+      kind: "fixtureGood.onWidgetTick",
+      schemaExport: "widgetTickRuleSchema",
+      nextFireAtExport: "computeWidgetTickNextFireAt",
+    },
+  ],
+  taskNames: [
+    {
+      name: "fixtureGood.processThing",
+      payloadSchemaExport: "processThingPayloadSchema",
+      handlerExport: "handleProcessThing",
+    },
+  ],
   workers: [{ name: "fixtureGood.worker", handlerExport: "runWorker" }],
   migrations: ["0001_fixture_good.sql"],
-  dataMigrations: [{ databaseKey: "fixtureGoodItems", fromVersion: "1.0.0", toVersion: "2.0.0", converterExport: "convertFixtureGoodItem" }],
+  dataMigrations: [
+    {
+      databaseKey: "fixtureGoodItems",
+      fromVersion: "1.0.0",
+      toVersion: "2.0.0",
+      converterExport: "convertFixtureGoodItem",
+    },
+  ],
 };
 
 export function handleDoThing(): string {

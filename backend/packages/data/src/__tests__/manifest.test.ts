@@ -72,7 +72,9 @@ describe("permission manifest and drift check", () => {
     const viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry();
     await seedSystem(pool, viewTypeRegistry);
 
-    const mcpServersId = (await pool.query<{ id: string }>(`SELECT id FROM databases WHERE owner_module_id = 'mcpServers'`)).rows[0]!.id;
+    const mcpServersId = (
+      await pool.query<{ id: string }>(`SELECT id FROM databases WHERE owner_module_id = 'mcpServers'`)
+    ).rows[0]!.id;
     const server = await withTransaction(pool, (client) =>
       itemsStore.insertItem(client, { databaseId: mcpServersId, properties: { name: "Server", active: true } }),
     );
@@ -85,7 +87,11 @@ describe("permission manifest and drift check", () => {
 
     const project = await chokePoint.createDatabase({ name: "Projects" });
     const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });
-    await setProjectMcpGrant(pool, { projectItemId: projectItem.id, mcpToolRegistrationId: registration.id, granted: true });
+    await setProjectMcpGrant(pool, {
+      projectItemId: projectItem.id,
+      mcpToolRegistrationId: registration.id,
+      granted: true,
+    });
 
     const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, projectItem.id));
     expect(manifest.agentTools).toEqual([
@@ -105,7 +111,13 @@ describe("permission manifest and drift check", () => {
   it("finds owner:'system' properties with no owner_process as orphaned", async () => {
     const db = await chokePoint.createDatabase({ name: "D" });
     await chokePoint.createProperty({ databaseId: db.id, key: "userField", name: "User field", type: "text" });
-    await chokePoint.createProperty({ databaseId: db.id, key: "orphan", name: "Orphan", type: "text", owner: "system" });
+    await chokePoint.createProperty({
+      databaseId: db.id,
+      key: "orphan",
+      name: "Orphan",
+      type: "text",
+      owner: "system",
+    });
     await chokePoint.createProperty({
       databaseId: db.id,
       key: "owned",
@@ -128,7 +140,13 @@ describe("permission manifest and drift check", () => {
     const project = await chokePoint.createDatabase({ name: "Projects2" });
     const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });
     const db = await chokePoint.createDatabase({ name: "Owned2", ownerProjectItemId: projectItem.id });
-    await chokePoint.createProperty({ databaseId: db.id, key: "orphan", name: "Orphan", type: "text", owner: "system" });
+    await chokePoint.createProperty({
+      databaseId: db.id,
+      key: "orphan",
+      name: "Orphan",
+      type: "text",
+      owner: "system",
+    });
 
     const action = createDriftCheckAction(pool);
     await action({}, { heartbeatId: "hb", projectItemId: projectItem.id });

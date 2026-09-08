@@ -33,8 +33,14 @@ describe("0019_settings_ai_budgets migration", () => {
     try {
       const databaseId = await getSystemSettingsDatabaseId(client);
       await client.query(`UPDATE databases SET schema_locked = false WHERE id = $1`, [databaseId]);
-      await client.query(`DELETE FROM properties WHERE database_id = $1 AND key IN ('dailyBudgetUsd', 'monthlyBudgetUsd')`, [databaseId]);
-      await client.query(`UPDATE items SET properties = properties - 'dailyBudgetUsd' - 'monthlyBudgetUsd' WHERE database_id = $1`, [databaseId]);
+      await client.query(
+        `DELETE FROM properties WHERE database_id = $1 AND key IN ('dailyBudgetUsd', 'monthlyBudgetUsd')`,
+        [databaseId],
+      );
+      await client.query(
+        `UPDATE items SET properties = properties - 'dailyBudgetUsd' - 'monthlyBudgetUsd' WHERE database_id = $1`,
+        [databaseId],
+      );
       await client.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [databaseId]);
     } finally {
       client.release();
@@ -53,16 +59,19 @@ describe("0019_settings_ai_budgets migration", () => {
       );
       expect(rows[0]).toEqual({ type: "number", locked: true, owner: "user" });
 
-      const { rows: dbRows } = await client2.query<{ schema_locked: boolean }>(`SELECT schema_locked FROM databases WHERE id = $1`, [
-        await getSystemSettingsDatabaseId(client2),
-      ]);
+      const { rows: dbRows } = await client2.query<{ schema_locked: boolean }>(
+        `SELECT schema_locked FROM databases WHERE id = $1`,
+        [await getSystemSettingsDatabaseId(client2)],
+      );
       expect(dbRows[0].schema_locked).toBe(true);
     } finally {
       client2.release();
     }
 
     // Idempotent: re-running must not error or disturb a value the user already changed.
-    await pool.query(`UPDATE items SET properties = jsonb_set(properties, '{dailyBudgetUsd}', '10') WHERE database_id = (SELECT id FROM databases WHERE owner_module_id = 'systemSettings')`);
+    await pool.query(
+      `UPDATE items SET properties = jsonb_set(properties, '{dailyBudgetUsd}', '10') WHERE database_id = (SELECT id FROM databases WHERE owner_module_id = 'systemSettings')`,
+    );
     await pool.query(MIGRATION_SQL);
     const client3 = await pool.connect();
     try {

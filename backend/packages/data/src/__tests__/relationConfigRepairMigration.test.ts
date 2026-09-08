@@ -45,7 +45,9 @@ describe("relation-property config repair migration (issue #82)", () => {
     });
 
     // Simulate corruption from before this canonical config existed: both sides' config wiped.
-    await pool.query("UPDATE properties SET config = '{}'::jsonb WHERE id = ANY($1::uuid[])", [[property.id, inverseProperty!.id]]);
+    await pool.query("UPDATE properties SET config = '{}'::jsonb WHERE id = ANY($1::uuid[])", [
+      [property.id, inverseProperty!.id],
+    ]);
 
     await runConfigRepairMigration();
 
@@ -82,7 +84,7 @@ describe("relation-property config repair migration (issue #82)", () => {
   it("aborts with the offending property id when a paired side's stored relationDefinitionId doesn't match its own definition", async () => {
     const source = await chokePoint.createDatabase({ name: "RepairMismatchSource" });
     const target = await chokePoint.createDatabase({ name: "RepairMismatchTarget" });
-    const { property, inverseProperty } = await chokePoint.createRelationProperty({
+    const { property: _property, inverseProperty } = await chokePoint.createRelationProperty({
       sourceDatabaseId: source.id,
       key: "rel",
       name: "Rel",
@@ -90,9 +92,10 @@ describe("relation-property config repair migration (issue #82)", () => {
       inverse: { key: "relInverse", name: "Rel inverse" },
     });
 
-    await pool.query("UPDATE properties SET config = jsonb_set(config, '{relationDefinitionId}', to_jsonb('00000000-0000-0000-0000-000000000000'::text)) WHERE id = $1", [
-      inverseProperty!.id,
-    ]);
+    await pool.query(
+      "UPDATE properties SET config = jsonb_set(config, '{relationDefinitionId}', to_jsonb('00000000-0000-0000-0000-000000000000'::text)) WHERE id = $1",
+      [inverseProperty!.id],
+    );
 
     await expect(runConfigRepairMigration()).rejects.toThrow(new RegExp(inverseProperty!.id));
   });

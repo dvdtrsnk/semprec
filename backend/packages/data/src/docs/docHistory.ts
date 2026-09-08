@@ -19,16 +19,19 @@ export { DEFAULT_HISTORY_RETENTION_MS };
  * checkpoint before `at`" lookup. `loadDocWithClient`'s `FOR UPDATE` locks make that
  * interleaving impossible by serializing this against `compact()` on the same doc.
  */
-export async function squashDocHistory(pool: Pool, docId: string, createdBy: CreatedBy, retentionMs = DEFAULT_HISTORY_RETENTION_MS): Promise<void> {
+export async function squashDocHistory(
+  pool: Pool,
+  docId: string,
+  createdBy: CreatedBy,
+  retentionMs = DEFAULT_HISTORY_RETENTION_MS,
+): Promise<void> {
   await withTransaction(pool, async (client) => {
     const doc = await loadDocWithClient(client, docId);
     const state = Buffer.from(Y.encodeStateAsUpdate(doc));
-    await client.query(`INSERT INTO doc_snapshot_history (doc_id, state, expires_at, created_by) VALUES ($1, $2, now() + $3::interval, $4)`, [
-      docId,
-      state,
-      `${retentionMs} milliseconds`,
-      createdBy,
-    ]);
+    await client.query(
+      `INSERT INTO doc_snapshot_history (doc_id, state, expires_at, created_by) VALUES ($1, $2, now() + $3::interval, $4)`,
+      [docId, state, `${retentionMs} milliseconds`, createdBy],
+    );
   });
 }
 
@@ -38,7 +41,11 @@ export async function squashDocHistory(pool: Pool, docId: string, createdBy: Cre
  * failing (a transient DB error, a corrupted update row) must not abort the sweep for
  * every doc after it in the list, so each is isolated and logged rather than thrown.
  */
-export async function runHistorySquashSweep(pool: Pool, createdBy: CreatedBy = "system", retentionMs = DEFAULT_HISTORY_RETENTION_MS): Promise<number> {
+export async function runHistorySquashSweep(
+  pool: Pool,
+  createdBy: CreatedBy = "system",
+  retentionMs = DEFAULT_HISTORY_RETENTION_MS,
+): Promise<number> {
   const { rows } = await pool.query<{ id: string }>(`SELECT id FROM docs`);
   let succeeded = 0;
   for (const row of rows) {
@@ -105,7 +112,10 @@ export async function openDocVersionAt(pool: Pool, docId: string, at: Date): Pro
     // but a later compaction already swept away the updates between sh1 and `at`" gap.
     // If no compaction later than `at` has touched doc_snapshots, the checkpoint (or
     // lack of one) plus the surviving doc_updates rows above are the full picture.
-    const { rows: snapshotRows } = await client.query<{ updated_at: Date }>(`SELECT updated_at FROM doc_snapshots WHERE doc_id = $1`, [docId]);
+    const { rows: snapshotRows } = await client.query<{ updated_at: Date }>(
+      `SELECT updated_at FROM doc_snapshots WHERE doc_id = $1`,
+      [docId],
+    );
     if (snapshotRows[0] && snapshotRows[0].updated_at > at) {
       throw new ValidationError(
         `Cannot reconstruct doc ${docId} as of ${at.toISOString()}: a compaction after that time has already deleted doc_updates rows (and possibly superseded the checkpoint) that would cover it`,

@@ -26,7 +26,9 @@ describe("getGrantedMcpAgentTools (issue #126)", () => {
     const viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry();
     await resetDatabase(pool);
     await seedSystem(pool, viewTypeRegistry);
-    const database = await withTransaction(pool, (client) => databasesStore.getDatabaseByModuleId(client, "mcpServers"));
+    const database = await withTransaction(pool, (client) =>
+      databasesStore.getDatabaseByModuleId(client, "mcpServers"),
+    );
     if (!database) throw new Error("mcpServers database was not seeded");
     mcpServersId = database.id;
   });
@@ -63,7 +65,11 @@ describe("getGrantedMcpAgentTools (issue #126)", () => {
 
   it("excludes an ungranted tool", async () => {
     const server = await createMcpServerItem(true);
-    const registration = await upsertMcpToolRegistration(pool, { mcpServerItemId: server.id, toolName: "search_web", toolSchema: {} });
+    const registration = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: server.id,
+      toolName: "search_web",
+      toolSchema: {},
+    });
     const projectItemId = randomUUID();
     await setProjectMcpGrant(pool, { projectItemId, mcpToolRegistrationId: registration.id, granted: false });
 
@@ -86,7 +92,11 @@ describe("getGrantedMcpAgentTools (issue #126)", () => {
 
   it("excludes a granted, active-registration tool whose server is inactive", async () => {
     const server = await createMcpServerItem(false);
-    const registration = await upsertMcpToolRegistration(pool, { mcpServerItemId: server.id, toolName: "search_web", toolSchema: {} });
+    const registration = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: server.id,
+      toolName: "search_web",
+      toolSchema: {},
+    });
     const projectItemId = randomUUID();
     await setProjectMcpGrant(pool, { projectItemId, mcpToolRegistrationId: registration.id, granted: true });
 
@@ -95,7 +105,11 @@ describe("getGrantedMcpAgentTools (issue #126)", () => {
 
   it("preserves a human-set requiresApproval/riskClass on the granted projection", async () => {
     const server = await createMcpServerItem(true);
-    const registration = await upsertMcpToolRegistration(pool, { mcpServerItemId: server.id, toolName: "delete_repo", toolSchema: {} });
+    const registration = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: server.id,
+      toolName: "delete_repo",
+      toolSchema: {},
+    });
     await setMcpToolRiskClass(pool, registration.id, "destructive");
     await setMcpToolRequiresApproval(pool, registration.id, true);
     const projectItemId = randomUUID();
@@ -109,8 +123,16 @@ describe("getGrantedMcpAgentTools (issue #126)", () => {
 
   it("lets two projects expose different subsets of the same server", async () => {
     const server = await createMcpServerItem(true);
-    const toolA = await upsertMcpToolRegistration(pool, { mcpServerItemId: server.id, toolName: "tool_a", toolSchema: {} });
-    const toolB = await upsertMcpToolRegistration(pool, { mcpServerItemId: server.id, toolName: "tool_b", toolSchema: {} });
+    const toolA = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: server.id,
+      toolName: "tool_a",
+      toolSchema: {},
+    });
+    const toolB = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: server.id,
+      toolName: "tool_b",
+      toolSchema: {},
+    });
     const projectOne = randomUUID();
     const projectTwo = randomUUID();
     await setProjectMcpGrant(pool, { projectItemId: projectOne, mcpToolRegistrationId: toolA.id, granted: true });

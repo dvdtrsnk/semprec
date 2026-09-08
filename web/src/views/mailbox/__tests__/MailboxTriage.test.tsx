@@ -48,8 +48,16 @@ describe("mailbox triage (issue #97)", () => {
 
       await waitFor(async () => expect(await subjects()).toHaveLength(2));
       expect(await subjects()).not.toContainEqual(expect.stringContaining("Invoice for March"));
-      expect(backend.relations).toContainEqual({ property: "folder", itemId: "email-1", targetItemId: "folder-archive" });
-      expect(backend.relations).not.toContainEqual({ property: "folder", itemId: "email-1", targetItemId: "folder-inbox" });
+      expect(backend.relations).toContainEqual({
+        property: "folder",
+        itemId: "email-1",
+        targetItemId: "folder-archive",
+      });
+      expect(backend.relations).not.toContainEqual({
+        property: "folder",
+        itemId: "email-1",
+        targetItemId: "folder-inbox",
+      });
       // The archived message was unread, so the Inbox is down to one unread and the Archive
       // now has one of its own.
       await waitFor(() => expect(within(folderButton("Inbox")).getByLabelText("1 unread")).toBeInTheDocument());
@@ -80,7 +88,9 @@ describe("mailbox triage (issue #97)", () => {
 
       await user.click(within(await row("Invoice for March")).getByRole("button", { name: "Mark as unread" }));
 
-      await waitFor(async () => expect(within(await row("Invoice for March")).getByLabelText("Unread")).toBeInTheDocument());
+      await waitFor(async () =>
+        expect(within(await row("Invoice for March")).getByLabelText("Unread")).toBeInTheDocument(),
+      );
       expect(backend.items.find((item) => item.id === "email-1")?.properties.read).toBe(false);
       await waitFor(() => expect(within(folderButton("Inbox")).getByLabelText("2 unread")).toBeInTheDocument());
     });
@@ -154,7 +164,11 @@ describe("mailbox triage (issue #97)", () => {
       await user.click(within(toolbar()).getByRole("button", { name: "Archive" }));
 
       await waitFor(async () => expect(await subjects()).toEqual([expect.stringContaining("Lunch?")]));
-      expect(backend.relations).toContainEqual({ property: "folder", itemId: "email-3", targetItemId: "folder-archive" });
+      expect(backend.relations).toContainEqual({
+        property: "folder",
+        itemId: "email-3",
+        targetItemId: "folder-archive",
+      });
       expect(backend.relations).toContainEqual({ property: "folder", itemId: "email-2", targetItemId: "folder-inbox" });
     });
 
@@ -220,8 +234,16 @@ describe("mailbox triage (issue #97)", () => {
       await user.keyboard("e");
 
       await waitFor(async () => expect(await subjects()).toHaveLength(2));
-      expect(backend.relations).toContainEqual({ property: "folder", itemId: "email-1", targetItemId: "folder-archive" });
-      await waitFor(() => expect(within(screen.getByText("Lunch?").closest("li") as HTMLElement).getByRole("button", { name: /Lunch\?/ })).toHaveFocus());
+      expect(backend.relations).toContainEqual({
+        property: "folder",
+        itemId: "email-1",
+        targetItemId: "folder-archive",
+      });
+      await waitFor(() =>
+        expect(
+          within(screen.getByText("Lunch?").closest("li") as HTMLElement).getByRole("button", { name: /Lunch\?/ }),
+        ).toHaveFocus(),
+      );
     });
 
     it("archives the whole selection with e when there is one", async () => {

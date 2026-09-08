@@ -63,13 +63,23 @@ describe("reconstructConversationHistory", () => {
   });
 
   it("walks every prior user/session agent_runs row's events, in order, into one linear Entry[] chain", async () => {
-    const runA = await createAgentRun(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", unit: "session", task: "one" });
+    const runA = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "session",
+      task: "one",
+    });
     await insertAgentRunEvent(pool, runA.id, "turn_start", { kind: "turn_start" });
     await insertAgentRunEvent(pool, runA.id, "message", { kind: "message", text: "first" });
     await insertAgentRunEvent(pool, runA.id, "turn_end", { kind: "turn_end" });
 
     // Not part of this conversation: a different unit, a different trigger, a different project item.
-    const invocation = await createAgentRun(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", unit: "invocation", task: "x" });
+    const invocation = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "invocation",
+      task: "x",
+    });
     await insertAgentRunEvent(pool, invocation.id, "message", { kind: "message", text: "should not appear" });
     const otherProjectItem = await createAgentRun(pool, {
       projectItemId: "77777777-7777-7777-7777-777777777777",
@@ -77,9 +87,17 @@ describe("reconstructConversationHistory", () => {
       unit: "session",
       task: "y",
     });
-    await insertAgentRunEvent(pool, otherProjectItem.id, "message", { kind: "message", text: "should not appear either" });
+    await insertAgentRunEvent(pool, otherProjectItem.id, "message", {
+      kind: "message",
+      text: "should not appear either",
+    });
 
-    const runB = await createAgentRun(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", unit: "session", task: "two" });
+    const runB = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "session",
+      task: "two",
+    });
     await insertAgentRunEvent(pool, runB.id, "turn_start", { kind: "turn_start" });
     await insertAgentRunEvent(pool, runB.id, "message", { kind: "message", text: "second" });
     await insertAgentRunEvent(pool, runB.id, "turn_end", { kind: "turn_end" });
@@ -104,7 +122,12 @@ describe("reconstructConversationHistory", () => {
   });
 
   it("excludes run_status bookkeeping events from the reconstructed Entry[] tree", async () => {
-    const run = await createAgentRun(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", unit: "session", task: "one" });
+    const run = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "session",
+      task: "one",
+    });
     await insertAgentRunEvent(pool, run.id, "run_status", { kind: "run_status", status: "running" });
     await insertAgentRunEvent(pool, run.id, "message", { kind: "message", text: "hi" });
     await insertAgentRunEvent(pool, run.id, "run_status", { kind: "run_status", status: "done" });
@@ -120,7 +143,12 @@ describe("reconstructConversationHistory", () => {
   });
 
   it("preserves tool_use/tool_result pairing and ordering through reconstruction", async () => {
-    const run = await createAgentRun(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", unit: "session", task: "one" });
+    const run = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "session",
+      task: "one",
+    });
     await insertAgentRunEvent(pool, run.id, "tool_use", { kind: "tool_use", toolCallId: "call_1", name: "search" });
     await insertAgentRunEvent(pool, run.id, "tool_result", { kind: "tool_result", toolCallId: "call_1", result: "ok" });
 
@@ -138,7 +166,12 @@ describe("reconstructConversationHistory", () => {
   });
 
   it("compacts an oversized history through prepareCompaction/compact instead of handing the raw Entry[] to the caller", async () => {
-    const run = await createAgentRun(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", unit: "session", task: "one" });
+    const run = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "session",
+      task: "one",
+    });
     await insertAgentRunEvent(pool, run.id, "message", { kind: "message", text: "first" });
     await insertAgentRunEvent(pool, run.id, "message", { kind: "message", text: "second" });
 
@@ -154,11 +187,21 @@ describe("reconstructConversationHistory", () => {
   });
 
   it("resumes from a persisted compaction checkpoint instead of re-walking the raw history it replaced", async () => {
-    const runA = await createAgentRun(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", unit: "session", task: "one" });
+    const runA = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "session",
+      task: "one",
+    });
     await insertAgentRunEvent(pool, runA.id, "message", { kind: "message", text: "first" });
     await insertAgentRunEvent(pool, runA.id, "message", { kind: "message", text: "second" });
 
-    const runB = await createAgentRun(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", unit: "session", task: "two" });
+    const runB = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "session",
+      task: "two",
+    });
     const checkpoint: ConversationEntry = {
       id: "checkpoint",
       parentId: null,
@@ -183,7 +226,12 @@ describe("reconstructConversationHistory", () => {
   });
 
   it("restarting the same walk twice over unchanged agent_run_events produces an identical Entry[] tree", async () => {
-    const run = await createAgentRun(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", unit: "session", task: "one" });
+    const run = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "session",
+      task: "one",
+    });
     await insertAgentRunEvent(pool, run.id, "message", { kind: "message", text: "first" });
     await insertAgentRunEvent(pool, run.id, "message", { kind: "message", text: "second" });
 
@@ -205,7 +253,12 @@ describe("reconstructConversationHistory", () => {
     });
     await insertAgentRunEvent(pool, delegated.id, "message", { kind: "message", text: "delegated turn" });
 
-    const semp = await createAgentRun(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", unit: "session", task: "semp" });
+    const semp = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "session",
+      task: "semp",
+    });
     await insertAgentRunEvent(pool, semp.id, "message", { kind: "message", text: "semp turn" });
 
     const delegatedResult = await reconstructConversationHistory(
@@ -224,42 +277,78 @@ describe("reconstructConversationHistory", () => {
   });
 
   it("rejects a stored event payload that is not a valid AgentMessage instead of silently reconstructing it", async () => {
-    const run = await createAgentRun(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", unit: "session", task: "one" });
+    const run = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "session",
+      task: "one",
+    });
     await pool.query(`INSERT INTO agent_run_events (agent_run_id, kind, payload) VALUES ($1, 'message', $2::jsonb)`, [
       run.id,
       JSON.stringify(["not", "a", "message"]),
     ]);
 
     await expect(
-      reconstructConversationHistory(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", parentRunId: null }, noopCompaction),
+      reconstructConversationHistory(
+        pool,
+        { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", parentRunId: null },
+        noopCompaction,
+      ),
     ).rejects.toThrow(/not a valid AgentMessage/);
   });
 
   it("rejects a persisted 'compaction' checkpoint whose payload is not a valid ConversationEntry[]", async () => {
-    const run = await createAgentRun(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", unit: "session", task: "one" });
+    const run = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "session",
+      task: "one",
+    });
     await insertAgentRunEvent(pool, run.id, "compaction", [{ id: "bad", seq: "not-a-number" }]);
 
     await expect(
-      reconstructConversationHistory(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", parentRunId: null }, noopCompaction),
+      reconstructConversationHistory(
+        pool,
+        { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", parentRunId: null },
+        noopCompaction,
+      ),
     ).rejects.toThrow(/not a valid ConversationEntry\[\]/);
   });
 
   it("rejects a reconstructed history with an unmatched trailing tool_use", async () => {
-    const run = await createAgentRun(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", unit: "session", task: "one" });
+    const run = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "session",
+      task: "one",
+    });
     await insertAgentRunEvent(pool, run.id, "tool_use", { kind: "tool_use", toolCallId: "call_1", name: "search" });
 
     await expect(
-      reconstructConversationHistory(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", parentRunId: null }, noopCompaction),
+      reconstructConversationHistory(
+        pool,
+        { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", parentRunId: null },
+        noopCompaction,
+      ),
     ).rejects.toThrow(/unmatched tool_use/);
   });
 
   it("rejects a reconstructed history with a tool_result whose toolCallId doesn't match the pending tool_use", async () => {
-    const run = await createAgentRun(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", unit: "session", task: "one" });
+    const run = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "session",
+      task: "one",
+    });
     await insertAgentRunEvent(pool, run.id, "tool_use", { kind: "tool_use", toolCallId: "call_1", name: "search" });
     await insertAgentRunEvent(pool, run.id, "tool_result", { kind: "tool_result", toolCallId: "call_2", result: "ok" });
 
     await expect(
-      reconstructConversationHistory(pool, { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", parentRunId: null }, noopCompaction),
+      reconstructConversationHistory(
+        pool,
+        { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user", parentRunId: null },
+        noopCompaction,
+      ),
     ).rejects.toThrow(/does not match the pending tool_use call/);
   });
 });

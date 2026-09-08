@@ -121,7 +121,11 @@ function safeSyncErrorMessage(err: unknown): string {
  * message and leaves `mcp_tool_registrations` exactly as it was — prior registrations remain
  * authoritative. The connection is always closed, on both the success and failure path.
  */
-export async function syncMcpServerTools(pool: Pool, mcpServerItemId: string, options: SyncMcpServerToolsOptions = {}): Promise<SyncMcpServerToolsResult> {
+export async function syncMcpServerTools(
+  pool: Pool,
+  mcpServerItemId: string,
+  options: SyncMcpServerToolsOptions = {},
+): Promise<SyncMcpServerToolsResult> {
   const { mcpServersDatabaseId, item } = await withTransaction(pool, async (client) => {
     const database = await databasesStore.getDatabaseByModuleId(client, MCP_SERVERS_MODULE_ID);
     if (!database) throw new Error("mcpServers database not seeded — was seedMcpModuleInTransaction run?");

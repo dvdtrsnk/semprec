@@ -1,5 +1,9 @@
 import type { PoolClient } from "pg";
-import { createItemWithClient, createRelationWithClient, type SystemRelationWriteContext } from "../chokePoint/chokePoint.js";
+import {
+  createItemWithClient,
+  createRelationWithClient,
+  type SystemRelationWriteContext,
+} from "../chokePoint/chokePoint.js";
 import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 
 const FOLDERS_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: FOLDERS_MODULE_ID };
@@ -39,7 +43,12 @@ export async function ensureFolderItem(client: PoolClient, input: EnsureFolderIt
     client,
     {
       databaseId: input.foldersDatabaseId,
-      properties: { name: input.name, behavior: input.behavior, specialPurpose: input.specialPurpose, providerId: input.providerId },
+      properties: {
+        name: input.name,
+        behavior: input.behavior,
+        specialPurpose: input.specialPurpose,
+        providerId: input.providerId,
+      },
     },
     { allowedSystemKeys: FOLDER_ALLOWED_SYSTEM_KEYS },
   );
@@ -65,7 +74,10 @@ export interface FindFolderBySpecialPurposeInput {
  * Sent/Drafts folder's `providerId` is provider-specific information only a real sync pass can
  * supply, so there is nothing sensible to create here.
  */
-export async function findFolderBySpecialPurpose(client: PoolClient, input: FindFolderBySpecialPurposeInput): Promise<string | null> {
+export async function findFolderBySpecialPurpose(
+  client: PoolClient,
+  input: FindFolderBySpecialPurposeInput,
+): Promise<string | null> {
   const { rows } = await client.query<{ id: string }>(
     `SELECT i.id FROM items i
      JOIN item_relations r ON (r.item_a = i.id OR r.item_b = i.id)

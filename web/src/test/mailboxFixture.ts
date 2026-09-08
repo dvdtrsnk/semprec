@@ -38,27 +38,64 @@ export function createMailboxBackend(): FakeBackend {
   return {
     views: [mailboxView],
     items: [
-      { id: MAILBOX_ITEM_ID, databaseId: MAILBOXES_DATABASE_ID, properties: { name: "Personal", addresses: `${PRIMARY_ADDRESS}\n${ALIAS_ADDRESS}` } },
+      {
+        id: MAILBOX_ITEM_ID,
+        databaseId: MAILBOXES_DATABASE_ID,
+        properties: { name: "Personal", addresses: `${PRIMARY_ADDRESS}\n${ALIAS_ADDRESS}` },
+      },
       { id: "folder-inbox", databaseId: FOLDERS_DATABASE_ID, properties: { name: "Inbox", specialPurpose: "inbox" } },
-      { id: "folder-archive", databaseId: FOLDERS_DATABASE_ID, properties: { name: "Archive", specialPurpose: "archive" } },
+      {
+        id: "folder-archive",
+        databaseId: FOLDERS_DATABASE_ID,
+        properties: { name: "Archive", specialPurpose: "archive" },
+      },
       { id: "folder-trash", databaseId: FOLDERS_DATABASE_ID, properties: { name: "Trash", specialPurpose: "trash" } },
-      { id: "folder-drafts", databaseId: FOLDERS_DATABASE_ID, properties: { name: "Drafts", specialPurpose: "drafts" } },
+      {
+        id: "folder-drafts",
+        databaseId: FOLDERS_DATABASE_ID,
+        properties: { name: "Drafts", specialPurpose: "drafts" },
+      },
       { id: "folder-sent", databaseId: FOLDERS_DATABASE_ID, properties: { name: "Sent", specialPurpose: "sent" } },
-      { id: "folder-other-account", databaseId: FOLDERS_DATABASE_ID, properties: { name: "Work inbox", specialPurpose: "inbox" } },
+      {
+        id: "folder-other-account",
+        databaseId: FOLDERS_DATABASE_ID,
+        properties: { name: "Work inbox", specialPurpose: "inbox" },
+      },
       {
         id: "email-1",
         databaseId: EMAILS_DATABASE_ID,
-        properties: { name: "Invoice for March", sender: "billing@example.com", recipients: "me@example.com", body: "Attached.", date: "2026-03-02T10:00:00.000Z", read: false },
+        properties: {
+          name: "Invoice for March",
+          sender: "billing@example.com",
+          recipients: "me@example.com",
+          body: "Attached.",
+          date: "2026-03-02T10:00:00.000Z",
+          read: false,
+        },
       },
       {
         id: "email-2",
         databaseId: EMAILS_DATABASE_ID,
-        properties: { name: "Lunch?", sender: "friend@example.com", recipients: "me@example.com", body: "Thursday?", date: "2026-03-01T10:00:00.000Z" },
+        properties: {
+          name: "Lunch?",
+          sender: "friend@example.com",
+          recipients: "me@example.com",
+          body: "Thursday?",
+          date: "2026-03-01T10:00:00.000Z",
+        },
       },
       {
         id: "email-3",
         databaseId: EMAILS_DATABASE_ID,
-        properties: { name: "Newsletter", sender: "news@example.com", recipients: "me@example.com", body: "Read on.", date: "2026-02-27T10:00:00.000Z", read: true, flagged: true },
+        properties: {
+          name: "Newsletter",
+          sender: "news@example.com",
+          recipients: "me@example.com",
+          body: "Read on.",
+          date: "2026-02-27T10:00:00.000Z",
+          read: true,
+          flagged: true,
+        },
       },
     ],
     relations: [

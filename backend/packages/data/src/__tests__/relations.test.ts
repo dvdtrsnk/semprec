@@ -72,14 +72,28 @@ describe("relation edge contract", () => {
   it("omitted create metadata means {} and replaces existing metadata with {}", async () => {
     const { assignedTo, task, person } = await makeParticipantsAndTasks();
 
-    await chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id, metadata: { role: "owner" } });
-    const repeat = await chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id });
+    await chokePoint.createRelation({
+      relationPropertyId: assignedTo.id,
+      callerItemId: task.id,
+      targetItemId: person.id,
+      metadata: { role: "owner" },
+    });
+    const repeat = await chokePoint.createRelation({
+      relationPropertyId: assignedTo.id,
+      callerItemId: task.id,
+      targetItemId: person.id,
+    });
     expect(repeat.metadata).toEqual({});
   });
 
   it("update requires an existing edge and replaces metadata in full, never merging", async () => {
     const { assignedTo, task, person } = await makeParticipantsAndTasks();
-    await chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id, metadata: { role: "owner", note: "x" } });
+    await chokePoint.createRelation({
+      relationPropertyId: assignedTo.id,
+      callerItemId: task.id,
+      targetItemId: person.id,
+      metadata: { role: "owner", note: "x" },
+    });
 
     const updated = await chokePoint.updateRelation({
       relationPropertyId: assignedTo.id,
@@ -92,11 +106,21 @@ describe("relation edge contract", () => {
 
   it("update on an edge whose endpoint was soft-deleted since creation is a validation_failed, not a 404 — unlike delete, which stays idempotent", async () => {
     const { participants, assignedTo, task, person } = await makeParticipantsAndTasks();
-    await chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id, metadata: { role: "owner" } });
+    await chokePoint.createRelation({
+      relationPropertyId: assignedTo.id,
+      callerItemId: task.id,
+      targetItemId: person.id,
+      metadata: { role: "owner" },
+    });
     await chokePoint.softDeleteItem(participants.id, person.id);
 
     await expect(
-      chokePoint.updateRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id, metadata: { role: "reviewer" } }),
+      chokePoint.updateRelation({
+        relationPropertyId: assignedTo.id,
+        callerItemId: task.id,
+        targetItemId: person.id,
+        metadata: { role: "reviewer" },
+      }),
     ).rejects.toBeInstanceOf(ValidationError);
   });
 
@@ -104,7 +128,12 @@ describe("relation edge contract", () => {
     const { assignedTo, task, person } = await makeParticipantsAndTasks();
 
     try {
-      await chokePoint.updateRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id, metadata: { role: "owner" } });
+      await chokePoint.updateRelation({
+        relationPropertyId: assignedTo.id,
+        callerItemId: task.id,
+        targetItemId: person.id,
+        metadata: { role: "owner" },
+      });
       expect.unreachable("expected a NotFoundError");
     } catch (err) {
       expect(err).toBeInstanceOf(NotFoundError);
@@ -120,14 +149,33 @@ describe("relation edge contract", () => {
   it("endpoints are immutable: moving an edge is delete plus create, not an in-place move", async () => {
     const { assignedTo, tasks, task, person } = await makeParticipantsAndTasks();
     const otherTask = await chokePoint.createItem({ databaseId: tasks.id, properties: {} });
-    await chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id, metadata: { role: "owner" } });
+    await chokePoint.createRelation({
+      relationPropertyId: assignedTo.id,
+      callerItemId: task.id,
+      targetItemId: person.id,
+      metadata: { role: "owner" },
+    });
 
     await expect(
-      chokePoint.updateRelation({ relationPropertyId: assignedTo.id, callerItemId: otherTask.id, targetItemId: person.id, metadata: { role: "owner" } }),
+      chokePoint.updateRelation({
+        relationPropertyId: assignedTo.id,
+        callerItemId: otherTask.id,
+        targetItemId: person.id,
+        metadata: { role: "owner" },
+      }),
     ).rejects.toBeInstanceOf(NotFoundError);
 
-    await chokePoint.deleteRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id });
-    const moved = await chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: otherTask.id, targetItemId: person.id, metadata: { role: "owner" } });
+    await chokePoint.deleteRelation({
+      relationPropertyId: assignedTo.id,
+      callerItemId: task.id,
+      targetItemId: person.id,
+    });
+    const moved = await chokePoint.createRelation({
+      relationPropertyId: assignedTo.id,
+      callerItemId: otherTask.id,
+      targetItemId: person.id,
+      metadata: { role: "owner" },
+    });
     expect(moved.itemA).toBe(otherTask.id);
     expect(moved.itemB).toBe(person.id);
   });
@@ -135,8 +183,18 @@ describe("relation edge contract", () => {
   it("a call through the inverse property_id_b returns the same normalized edge as the equivalent call through property_id_a", async () => {
     const { assignedTo, assignedTasks, task, person } = await makeParticipantsAndTasks();
 
-    const viaA = await chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id, metadata: { role: "owner" } });
-    const viaB = await chokePoint.createRelation({ relationPropertyId: assignedTasks.id, callerItemId: person.id, targetItemId: task.id, metadata: { role: "owner" } });
+    const viaA = await chokePoint.createRelation({
+      relationPropertyId: assignedTo.id,
+      callerItemId: task.id,
+      targetItemId: person.id,
+      metadata: { role: "owner" },
+    });
+    const viaB = await chokePoint.createRelation({
+      relationPropertyId: assignedTasks.id,
+      callerItemId: person.id,
+      targetItemId: task.id,
+      metadata: { role: "owner" },
+    });
 
     expect(viaB.id).toBe(viaA.id);
     expect(viaB.itemA).toBe(viaA.itemA);
@@ -145,7 +203,12 @@ describe("relation edge contract", () => {
 
   it("update through the inverse property_id_b updates the same edge created through property_id_a", async () => {
     const { assignedTo, assignedTasks, task, person } = await makeParticipantsAndTasks();
-    const created = await chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id, metadata: { role: "owner" } });
+    const created = await chokePoint.createRelation({
+      relationPropertyId: assignedTo.id,
+      callerItemId: task.id,
+      targetItemId: person.id,
+      metadata: { role: "owner" },
+    });
 
     const updated = await chokePoint.updateRelation({
       relationPropertyId: assignedTasks.id,
@@ -164,7 +227,12 @@ describe("relation edge contract", () => {
     const { assignedTasks, task, person } = await makeParticipantsAndTasks();
 
     try {
-      await chokePoint.updateRelation({ relationPropertyId: assignedTasks.id, callerItemId: person.id, targetItemId: task.id, metadata: { role: "owner" } });
+      await chokePoint.updateRelation({
+        relationPropertyId: assignedTasks.id,
+        callerItemId: person.id,
+        targetItemId: task.id,
+        metadata: { role: "owner" },
+      });
       expect.unreachable("expected a NotFoundError");
     } catch (err) {
       expect(err).toBeInstanceOf(NotFoundError);
@@ -179,9 +247,17 @@ describe("relation edge contract", () => {
 
   it("delete through the inverse property_id_b removes the same edge created through property_id_a", async () => {
     const { assignedTo, assignedTasks, task, person } = await makeParticipantsAndTasks();
-    await chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id });
+    await chokePoint.createRelation({
+      relationPropertyId: assignedTo.id,
+      callerItemId: task.id,
+      targetItemId: person.id,
+    });
 
-    await chokePoint.deleteRelation({ relationPropertyId: assignedTasks.id, callerItemId: person.id, targetItemId: task.id });
+    await chokePoint.deleteRelation({
+      relationPropertyId: assignedTasks.id,
+      callerItemId: person.id,
+      targetItemId: task.id,
+    });
 
     const { rows } = await pool.query("SELECT count(*)::int AS n FROM item_relations");
     expect(rows[0].n).toBe(0);
@@ -189,11 +265,23 @@ describe("relation edge contract", () => {
 
   it("delete is idempotent and returns void whether or not the edge existed", async () => {
     const { assignedTo, task, person } = await makeParticipantsAndTasks();
-    await expect(chokePoint.deleteRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id })).resolves.toBeUndefined();
+    await expect(
+      chokePoint.deleteRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id }),
+    ).resolves.toBeUndefined();
 
-    await chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id });
-    await chokePoint.deleteRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id });
-    await expect(chokePoint.deleteRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id })).resolves.toBeUndefined();
+    await chokePoint.createRelation({
+      relationPropertyId: assignedTo.id,
+      callerItemId: task.id,
+      targetItemId: person.id,
+    });
+    await chokePoint.deleteRelation({
+      relationPropertyId: assignedTo.id,
+      callerItemId: task.id,
+      targetItemId: person.id,
+    });
+    await expect(
+      chokePoint.deleteRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id }),
+    ).resolves.toBeUndefined();
 
     const { rows } = await pool.query("SELECT count(*)::int AS n FROM item_relations");
     expect(rows[0].n).toBe(0);
@@ -201,13 +289,19 @@ describe("relation edge contract", () => {
 
   it("delete stays idempotent for a dangling edge whose endpoint was soft-deleted after the edge was created", async () => {
     const { participants, assignedTo, task, person } = await makeParticipantsAndTasks();
-    await chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id });
+    await chokePoint.createRelation({
+      relationPropertyId: assignedTo.id,
+      callerItemId: task.id,
+      targetItemId: person.id,
+    });
     await chokePoint.softDeleteItem(participants.id, person.id);
 
     // Cleanup callers (e.g. inboxTypesStore's deleteInboxTypeWithClient, the Gmail/Graph/IMAP
     // reconcilers) routinely delete an edge whose endpoint was already soft-deleted — this must
     // never fail validation, only create/update endpoint validity.
-    await expect(chokePoint.deleteRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id })).resolves.toBeUndefined();
+    await expect(
+      chokePoint.deleteRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id }),
+    ).resolves.toBeUndefined();
 
     const { rows } = await pool.query("SELECT count(*)::int AS n FROM item_relations");
     expect(rows[0].n).toBe(0);
@@ -217,7 +311,11 @@ describe("relation edge contract", () => {
     const { assignedTo, person } = await makeParticipantsAndTasks();
     const missingTaskId = "00000000-0000-0000-0000-000000000000";
     await expect(
-      chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: missingTaskId, targetItemId: person.id }),
+      chokePoint.createRelation({
+        relationPropertyId: assignedTo.id,
+        callerItemId: missingTaskId,
+        targetItemId: person.id,
+      }),
     ).rejects.toBeInstanceOf(ValidationError);
   });
 
@@ -225,7 +323,11 @@ describe("relation edge contract", () => {
     const { assignedTo, task } = await makeParticipantsAndTasks();
     const missingPersonId = "00000000-0000-0000-0000-000000000000";
     await expect(
-      chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: missingPersonId }),
+      chokePoint.createRelation({
+        relationPropertyId: assignedTo.id,
+        callerItemId: task.id,
+        targetItemId: missingPersonId,
+      }),
     ).rejects.toBeInstanceOf(ValidationError);
   });
 
@@ -251,13 +353,22 @@ describe("relation edge contract", () => {
     const otherDb = await chokePoint.createDatabase({ name: "Unrelated" });
     const otherItem = await chokePoint.createItem({ databaseId: otherDb.id, properties: {} });
     await expect(
-      chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: otherItem.id }),
+      chokePoint.createRelation({
+        relationPropertyId: assignedTo.id,
+        callerItemId: task.id,
+        targetItemId: otherItem.id,
+      }),
     ).rejects.toBeInstanceOf(ValidationError);
   });
 
   it("rejects a relation property whose config is missing a valid relationDefinitionId/targetDatabaseId", async () => {
     const db = await chokePoint.createDatabase({ name: "BrokenRel" });
-    const broken = await chokePoint.createProperty({ databaseId: db.id, key: "broken", name: "Broken", type: "relation" });
+    const broken = await chokePoint.createProperty({
+      databaseId: db.id,
+      key: "broken",
+      name: "Broken",
+      type: "relation",
+    });
     const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
 
     await expect(
@@ -352,7 +463,14 @@ describe("relation edge contract", () => {
         assertOwnerViolation(
           createRelationPropertyWithClient(
             client,
-            { sourceDatabaseId: db.id, key: "mismatch", name: "Mismatch", targetDatabaseId: target.id, owner: "system", ownerProcess: "owning-process" },
+            {
+              sourceDatabaseId: db.id,
+              key: "mismatch",
+              name: "Mismatch",
+              targetDatabaseId: target.id,
+              owner: "system",
+              ownerProcess: "owning-process",
+            },
             { ownerProcess: "some-other-process" },
           ),
         ),
@@ -361,7 +479,14 @@ describe("relation edge contract", () => {
       const { property } = await withTransaction(pool, (client) =>
         createRelationPropertyWithClient(
           client,
-          { sourceDatabaseId: db.id, key: "match", name: "Match", targetDatabaseId: target.id, owner: "system", ownerProcess: "owning-process" },
+          {
+            sourceDatabaseId: db.id,
+            key: "match",
+            name: "Match",
+            targetDatabaseId: target.id,
+            owner: "system",
+            ownerProcess: "owning-process",
+          },
           { ownerProcess: "owning-process" },
         ),
       );
@@ -396,12 +521,20 @@ describe("relation edge contract", () => {
       const targetItem = await chokePoint.createItem({ databaseId: target.id, properties: {} });
 
       // Public caller writing through the user-owned side succeeds with no context.
-      const edge = await chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id });
+      const edge = await chokePoint.createRelation({
+        relationPropertyId: property.id,
+        callerItemId: sourceItem.id,
+        targetItemId: targetItem.id,
+      });
       expect(edge.itemA).toBe(sourceItem.id);
 
       // The very same underlying edge, written through the system-owned inverse side, is rejected for a public caller...
       await assertOwnerViolation(
-        chokePoint.createRelation({ relationPropertyId: inverseProperty!.id, callerItemId: targetItem.id, targetItemId: sourceItem.id }),
+        chokePoint.createRelation({
+          relationPropertyId: inverseProperty!.id,
+          callerItemId: targetItem.id,
+          targetItemId: sourceItem.id,
+        }),
       );
 
       // ...and for a system caller whose context doesn't match...
@@ -419,7 +552,12 @@ describe("relation edge contract", () => {
       const viaInverse = await withTransaction(pool, (client) =>
         createRelationWithClient(
           client,
-          { relationPropertyId: inverseProperty!.id, callerItemId: targetItem.id, targetItemId: sourceItem.id, metadata: { via: "inverse" } },
+          {
+            relationPropertyId: inverseProperty!.id,
+            callerItemId: targetItem.id,
+            targetItemId: sourceItem.id,
+            metadata: { via: "inverse" },
+          },
           { ownerProcess: "the-owning-process" },
         ),
       );
@@ -433,7 +571,14 @@ describe("relation edge contract", () => {
       const { property } = await withTransaction(pool, (client) =>
         createRelationPropertyWithClient(
           client,
-          { sourceDatabaseId: source.id, key: "systemRel", name: "System rel", targetDatabaseId: target.id, owner: "system", ownerProcess: "owner-a" },
+          {
+            sourceDatabaseId: source.id,
+            key: "systemRel",
+            name: "System rel",
+            targetDatabaseId: target.id,
+            owner: "system",
+            ownerProcess: "owner-a",
+          },
           { ownerProcess: "owner-a" },
         ),
       );
@@ -441,25 +586,44 @@ describe("relation edge contract", () => {
       const targetItem = await chokePoint.createItem({ databaseId: target.id, properties: {} });
 
       await assertOwnerViolation(
-        chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id }),
+        chokePoint.createRelation({
+          relationPropertyId: property.id,
+          callerItemId: sourceItem.id,
+          targetItemId: targetItem.id,
+        }),
       );
 
       await withTransaction(pool, (client) =>
         createRelationWithClient(
           client,
-          { relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id, metadata: { v: 1 } },
+          {
+            relationPropertyId: property.id,
+            callerItemId: sourceItem.id,
+            targetItemId: targetItem.id,
+            metadata: { v: 1 },
+          },
           { ownerProcess: "owner-a" },
         ),
       );
 
       await assertOwnerViolation(
-        chokePoint.updateRelation({ relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id, metadata: { v: 2 } }),
+        chokePoint.updateRelation({
+          relationPropertyId: property.id,
+          callerItemId: sourceItem.id,
+          targetItemId: targetItem.id,
+          metadata: { v: 2 },
+        }),
       );
       await withTransaction(pool, (client) =>
         assertOwnerViolation(
           updateRelationWithClient(
             client,
-            { relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id, metadata: { v: 2 } },
+            {
+              relationPropertyId: property.id,
+              callerItemId: sourceItem.id,
+              targetItemId: targetItem.id,
+              metadata: { v: 2 },
+            },
             { ownerProcess: "owner-b" },
           ),
         ),
@@ -467,20 +631,39 @@ describe("relation edge contract", () => {
       const updated = await withTransaction(pool, (client) =>
         updateRelationWithClient(
           client,
-          { relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id, metadata: { v: 2 } },
+          {
+            relationPropertyId: property.id,
+            callerItemId: sourceItem.id,
+            targetItemId: targetItem.id,
+            metadata: { v: 2 },
+          },
           { ownerProcess: "owner-a" },
         ),
       );
       expect(updated.metadata).toEqual({ v: 2 });
 
-      await assertOwnerViolation(chokePoint.deleteRelation({ relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id }));
+      await assertOwnerViolation(
+        chokePoint.deleteRelation({
+          relationPropertyId: property.id,
+          callerItemId: sourceItem.id,
+          targetItemId: targetItem.id,
+        }),
+      );
       await withTransaction(pool, (client) =>
         assertOwnerViolation(
-          deleteRelationWithClient(client, { relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id }, { ownerProcess: "owner-b" }),
+          deleteRelationWithClient(
+            client,
+            { relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id },
+            { ownerProcess: "owner-b" },
+          ),
         ),
       );
       await withTransaction(pool, (client) =>
-        deleteRelationWithClient(client, { relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id }, { ownerProcess: "owner-a" }),
+        deleteRelationWithClient(
+          client,
+          { relationPropertyId: property.id, callerItemId: sourceItem.id, targetItemId: targetItem.id },
+          { ownerProcess: "owner-a" },
+        ),
       );
 
       const { rows } = await pool.query("SELECT count(*)::int AS n FROM item_relations");

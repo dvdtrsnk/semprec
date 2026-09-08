@@ -56,7 +56,6 @@ async function createProps(client: PoolClient, databaseId: string, specs: PropSp
   }
 }
 
-
 /**
  * Creates the ten hardcoded databases (issue #24), their fixed properties, the real
  * relations between them (including the bidirectional ones and the three mock-inconsistency
@@ -91,7 +90,13 @@ export async function seedTenDatabasesInTransaction(
   await createProps(client, projects.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "pinned", name: "Pinned", type: "checkbox", owner: "user" },
-    { key: "status", name: "Status", type: "select", owner: "user", config: selectConfig(["inProgress", "done", "archived", "longTerm"]) },
+    {
+      key: "status",
+      name: "Status",
+      type: "select",
+      owner: "user",
+      config: selectConfig(["inProgress", "done", "archived", "longTerm"]),
+    },
     { key: "date", name: "Date", type: "date", owner: "user" },
     { key: "color", name: "Color", type: "color", owner: "user" },
     // A 4-section equivalent of an AGENT.md; `sections` names the fixed structure a client
@@ -112,7 +117,13 @@ export async function seedTenDatabasesInTransaction(
   const tasks = await createDb(client, "Tasks", TASKS_MODULE_ID);
   await createProps(client, tasks.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
-    { key: "status", name: "Status", type: "select", owner: "user", config: selectConfig(["notDone", "done", "wontDo"]) },
+    {
+      key: "status",
+      name: "Status",
+      type: "select",
+      owner: "user",
+      config: selectConfig(["notDone", "done", "wontDo"]),
+    },
     { key: "date", name: "Date", type: "date", owner: "user" },
     { key: "timeFrom", name: "Time from", type: "time", owner: "user" },
     { key: "timeTo", name: "Time to", type: "time", owner: "user" },
@@ -163,7 +174,13 @@ export async function seedTenDatabasesInTransaction(
     // Stays text, not a relation to People: also covers pets, which don't and shouldn't
     // exist in the People database.
     { key: "subject", name: "Subject", type: "text", owner: "user" },
-    { key: "type", name: "Type", type: "select", owner: "user", config: selectConfig(["health", "condition", "symptom"]) },
+    {
+      key: "type",
+      name: "Type",
+      type: "select",
+      owner: "user",
+      config: selectConfig(["health", "condition", "symptom"]),
+    },
     {
       key: "tags",
       name: "Tags",
@@ -288,7 +305,13 @@ export async function seedTenDatabasesInTransaction(
   // `one_to_many`'s "item_b gets at most one edge" would wrongly cap each Area to one File,
   // and there's no inverse to swap this source/target pairing onto — same reasoning as
   // Emails.attachments/Inbox.type.
-  await relate({ sourceDatabaseId: files.id, key: "area", name: "Area", targetDatabaseId: areas.id, cardinality: "many_to_many" });
+  await relate({
+    sourceDatabaseId: files.id,
+    key: "area",
+    name: "Area",
+    targetDatabaseId: areas.id,
+    cardinality: "many_to_many",
+  });
   // Files -> Projects (hub backlink).
   await relate({
     sourceDatabaseId: files.id,
@@ -328,7 +351,13 @@ export async function seedTenDatabasesInTransaction(
     inverse: { key: "project", name: "Project" },
   });
   // Events -> People: one-directional only (People's own relation list doesn't name Events).
-  await relate({ sourceDatabaseId: events.id, key: "people", name: "People", targetDatabaseId: people.id, cardinality: "many_to_many" });
+  await relate({
+    sourceDatabaseId: events.id,
+    key: "people",
+    name: "People",
+    targetDatabaseId: people.id,
+    cardinality: "many_to_many",
+  });
   // Events <-> Transcripts: explicit bidirectional 1:1.
   await relate({
     sourceDatabaseId: events.id,
@@ -377,7 +406,13 @@ export async function seedTenDatabasesInTransaction(
   // Journal -> Areas: optional, nullable, one-directional; no default value (issue's fix — the
   // mock hardwired every entry to a single "Osobní" area, which this issue explicitly rejects).
   // `many_to_many`, not `one_to_many` (issue #82) — same reasoning as Files.area above.
-  await relate({ sourceDatabaseId: journal.id, key: "area", name: "Area", targetDatabaseId: areas.id, cardinality: "many_to_many" });
+  await relate({
+    sourceDatabaseId: journal.id,
+    key: "area",
+    name: "Area",
+    targetDatabaseId: areas.id,
+    cardinality: "many_to_many",
+  });
 
   // ---- phase 3: lock every schema now that it's fully built (system DBs are not user-editable) ----
   const all: TenDatabases = {

@@ -57,7 +57,11 @@ interface FakeTransportOptions {
   onConnect?: (folderPath: string, attemptNumber: number) => FakeConnection | "reject";
 }
 
-function createFakeTransport(options: FakeTransportOptions = {}): { transport: ImapIdleTransport; connections: Map<string, FakeConnection[]>; connectAttempts: Map<string, number> } {
+function createFakeTransport(options: FakeTransportOptions = {}): {
+  transport: ImapIdleTransport;
+  connections: Map<string, FakeConnection[]>;
+  connectAttempts: Map<string, number>;
+} {
   const connections = new Map<string, FakeConnection[]>();
   const connectAttempts = new Map<string, number>();
   const transport: ImapIdleTransport = {
@@ -199,7 +203,9 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
   });
 
   it("stop() closes every open connection and waits for every folder loop to finish before returning", async () => {
-    const { transport, connections } = createFakeTransport({ folders: [{ path: "INBOX" }, { path: "[Gmail]/All Mail" }] });
+    const { transport, connections } = createFakeTransport({
+      folders: [{ path: "INBOX" }, { path: "[Gmail]/All Mail" }],
+    });
     const factory = createBoundedImapIdleLifecycleFactory(pool, transport, {
       getCredential: async () => "app-password",
       getConnectionLimit: () => 5,

@@ -76,18 +76,25 @@ export interface EnsureMailAccountSyncStateInput {
 }
 
 /** Idempotent: creates the row on first sync, otherwise a no-op — `syncMode` on an existing row is changed only via `setSyncMode` (an explicit user switch), never silently overwritten here. */
-export async function ensureMailAccountSyncState(client: Queryable, input: EnsureMailAccountSyncStateInput): Promise<MailAccountSyncStateRow> {
+export async function ensureMailAccountSyncState(
+  client: Queryable,
+  input: EnsureMailAccountSyncStateInput,
+): Promise<MailAccountSyncStateRow> {
   const inserted = await client.query(
     `INSERT INTO mail_account_sync_state (item_id, sync_mode) VALUES ($1, $2) ON CONFLICT (item_id) DO NOTHING RETURNING ${COLUMNS}`,
     [input.itemId, input.syncMode],
   );
   if (inserted.rows[0]) return mapRow(inserted.rows[0]);
   const existing = await getMailAccountSyncState(client, input.itemId);
-  if (!existing) throw new Error(`mail_account_sync_state row for item ${input.itemId} vanished after a no-op conflict`);
+  if (!existing)
+    throw new Error(`mail_account_sync_state row for item ${input.itemId} vanished after a no-op conflict`);
   return existing;
 }
 
-export async function getMailAccountSyncState(client: Queryable, itemId: string): Promise<MailAccountSyncStateRow | null> {
+export async function getMailAccountSyncState(
+  client: Queryable,
+  itemId: string,
+): Promise<MailAccountSyncStateRow | null> {
   const { rows } = await client.query(`SELECT ${COLUMNS} FROM mail_account_sync_state WHERE item_id = $1`, [itemId]);
   return rows[0] ? mapRow(rows[0]) : null;
 }
@@ -98,7 +105,10 @@ export async function setSyncMode(client: Queryable, itemId: string, syncMode: S
 
 /** Clears `gmail_history_id` back to NULL — the reaction to a `history.list` 404 (issue #26: "history older than what the API retains"), forcing the next sync to run a full resync of All Mail. */
 export async function invalidateGmailHistory(client: Queryable, itemId: string, reason: string): Promise<void> {
-  await client.query(`UPDATE mail_account_sync_state SET gmail_history_id = NULL, last_error = $2 WHERE item_id = $1`, [itemId, reason]);
+  await client.query(`UPDATE mail_account_sync_state SET gmail_history_id = NULL, last_error = $2 WHERE item_id = $1`, [
+    itemId,
+    reason,
+  ]);
 }
 
 export interface RecordGmailActivityInput {
@@ -134,7 +144,11 @@ export interface RecordGmailWatchRegistrationInput {
  * issue #26 — the only other writer of this column) has actually observed, skipping any change
  * that arrived in the gap between the two.
  */
-export async function recordGmailWatchRegistration(client: Queryable, itemId: string, input: RecordGmailWatchRegistrationInput): Promise<void> {
+export async function recordGmailWatchRegistration(
+  client: Queryable,
+  itemId: string,
+  input: RecordGmailWatchRegistrationInput,
+): Promise<void> {
   await client.query(
     `UPDATE mail_account_sync_state
      SET gmail_watch_expires_at = $2, gmail_history_id = COALESCE(gmail_history_id, $3)
@@ -145,7 +159,10 @@ export async function recordGmailWatchRegistration(client: Queryable, itemId: st
 
 /** The reaction to a Graph `deltaLink` 410 Gone / `resyncRequired` — analogous to `invalidateGmailHistory`, clearing `graph_delta_link` back to NULL so the next sync runs a full resync instead of resuming from a stale token. */
 export async function invalidateGraphDeltaLink(client: Queryable, itemId: string, reason: string): Promise<void> {
-  await client.query(`UPDATE mail_account_sync_state SET graph_delta_link = NULL, last_error = $2 WHERE item_id = $1`, [itemId, reason]);
+  await client.query(`UPDATE mail_account_sync_state SET graph_delta_link = NULL, last_error = $2 WHERE item_id = $1`, [
+    itemId,
+    reason,
+  ]);
 }
 
 export interface RecordGraphActivityInput {
@@ -164,7 +181,13 @@ export async function recordGraphActivity(client: Queryable, input: RecordGraphA
          graph_subscription_expires_at = COALESCE($4, graph_subscription_expires_at),
          last_error = NULL, last_activity_at = now(), next_expected_activity_at = $5
      WHERE item_id = $1`,
-    [input.itemId, input.deltaLink, input.subscriptionId ?? null, input.subscriptionExpiresAt ?? null, input.nextExpectedActivityAt],
+    [
+      input.itemId,
+      input.deltaLink,
+      input.subscriptionId ?? null,
+      input.subscriptionExpiresAt ?? null,
+      input.nextExpectedActivityAt,
+    ],
   );
 }
 
@@ -204,7 +227,12 @@ export async function recordSyncError(client: Queryable, itemId: string, error: 
  * instead of rethrowing after calling this, so the next attempt comes only from the sweep
  * reading `next_expected_activity_at` below, not also from graphile-worker's own retry.
  */
-export async function recordConnectionLimitBackoff(client: Queryable, itemId: string, error: string, delaySeconds: number): Promise<void> {
+export async function recordConnectionLimitBackoff(
+  client: Queryable,
+  itemId: string,
+  error: string,
+  delaySeconds: number,
+): Promise<void> {
   await client.query(
     `UPDATE mail_account_sync_state
      SET last_error = $2, last_activity_at = now(), next_expected_activity_at = now() + make_interval(secs => $3)

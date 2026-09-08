@@ -45,7 +45,10 @@ describe("convertPropertyValue", () => {
   });
 
   it("date -> text: passes a string value through, rejects a non-string", () => {
-    expect(convertPropertyValue("date", "text", "2024-01-15T00:00:00.000Z")).toEqual({ ok: true, value: "2024-01-15T00:00:00.000Z" });
+    expect(convertPropertyValue("date", "text", "2024-01-15T00:00:00.000Z")).toEqual({
+      ok: true,
+      value: "2024-01-15T00:00:00.000Z",
+    });
     expect(convertPropertyValue("date", "text", 123)).toEqual({ ok: false });
   });
 

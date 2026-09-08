@@ -5,7 +5,13 @@ import { withTransaction } from "../db/pool.js";
 import { updateItemWithClient } from "../chokePoint/chokePoint.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createBlob, type CreateBlobInput } from "../blobs/blobsStore.js";
-import { ensureItemAutomation, getItemAutomation, lockItemAutomation, markItemAutomationDone, markItemAutomationError } from "./itemAutomationStore.js";
+import {
+  ensureItemAutomation,
+  getItemAutomation,
+  lockItemAutomation,
+  markItemAutomationDone,
+  markItemAutomationError,
+} from "./itemAutomationStore.js";
 import type { ItemRow } from "../types.js";
 
 /**
@@ -37,7 +43,10 @@ export interface LibraryMetadataFetchResult {
  * so the default (see worker.ts) is a no-op that finds nothing — a legitimate, non-error
  * outcome for "no source wired up yet," not a failure to retry.
  */
-export type LibraryMetadataFetcher = (item: ItemRow, config: LibraryMetadataJobConfig) => Promise<LibraryMetadataFetchResult>;
+export type LibraryMetadataFetcher = (
+  item: ItemRow,
+  config: LibraryMetadataJobConfig,
+) => Promise<LibraryMetadataFetchResult>;
 
 export const noopLibraryMetadataFetcher: LibraryMetadataFetcher = async () => ({});
 
@@ -57,7 +66,10 @@ export interface EnqueueLibraryMetadataInput {
  * item, just created) and from the daily retry sweep action (many items, already existing
  * `item_automation` rows) — `ensureItemAutomation`'s no-op-on-conflict behavior covers both.
  */
-export async function enqueueLibraryMetadataProcessing(client: PoolClient, input: EnqueueLibraryMetadataInput): Promise<void> {
+export async function enqueueLibraryMetadataProcessing(
+  client: PoolClient,
+  input: EnqueueLibraryMetadataInput,
+): Promise<void> {
   await ensureItemAutomation(client, input.itemId);
   await enqueueJob(
     client,
@@ -83,13 +95,20 @@ export interface ProcessLibraryMetadataPayload {
  * own retry/backoff (`max_attempts: 3` on this job) takes over; on the final failed
  * attempt the row is left in 'error', picked up again by the next daily retry sweep.
  */
-export async function handleProcessLibraryMetadataTask(pool: Pool, payload: ProcessLibraryMetadataPayload, fetcher: LibraryMetadataFetcher): Promise<void> {
+export async function handleProcessLibraryMetadataTask(
+  pool: Pool,
+  payload: ProcessLibraryMetadataPayload,
+  fetcher: LibraryMetadataFetcher,
+): Promise<void> {
   const readClient = await pool.connect();
   let automation;
   let item: ItemRow | null;
   try {
     automation = await getItemAutomation(readClient, payload.itemId);
-    item = automation?.status === "locked" ? null : await itemsStore.getItemById(readClient, payload.databaseId, payload.itemId);
+    item =
+      automation?.status === "locked"
+        ? null
+        : await itemsStore.getItemById(readClient, payload.databaseId, payload.itemId);
   } finally {
     readClient.release();
   }
@@ -131,7 +150,11 @@ export async function handleProcessLibraryMetadataTask(pool: Pool, payload: Proc
       }
 
       if (Object.keys(patch).length > 0) {
-        await updateItemWithClient(client, { databaseId: payload.databaseId, itemId: payload.itemId, propertiesPatch: patch }, { allowedSystemKeys });
+        await updateItemWithClient(
+          client,
+          { databaseId: payload.databaseId, itemId: payload.itemId, propertiesPatch: patch },
+          { allowedSystemKeys },
+        );
       }
       await markItemAutomationDone(client, payload.itemId);
     });

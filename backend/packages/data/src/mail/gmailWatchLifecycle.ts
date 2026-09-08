@@ -171,7 +171,9 @@ export function createGmailWatchLifecycleFactory(
           }
         }
         if (ackIds.length > 0) {
-          await transport.acknowledge(account.mailboxItemId, ackIds).catch((err) => options.onError?.(account.mailboxItemId, "pull", err));
+          await transport
+            .acknowledge(account.mailboxItemId, ackIds)
+            .catch((err) => options.onError?.(account.mailboxItemId, "pull", err));
         }
       }
     }

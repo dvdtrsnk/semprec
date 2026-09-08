@@ -62,7 +62,9 @@ function isConversationEntry(value: unknown): value is ConversationEntry {
 /** Same rationale as {@link parseStoredAgentMessage}, for a `'compaction'` checkpoint's payload. */
 function parseCompactionPayload(payload: unknown, agentRunId: string): ConversationEntry[] {
   if (!Array.isArray(payload) || !payload.every(isConversationEntry)) {
-    throw new Error(`agent_run_events 'compaction' row for run ${agentRunId} has a payload that is not a valid ConversationEntry[]`);
+    throw new Error(
+      `agent_run_events 'compaction' row for run ${agentRunId} has a payload that is not a valid ConversationEntry[]`,
+    );
   }
   return payload;
 }
@@ -96,7 +98,9 @@ function validateProtocolInvariants(entries: ConversationEntry[]): void {
     }
   }
   if (pendingToolCallIds.length > 0) {
-    throw new Error(`reconstructed history has ${pendingToolCallIds.length} unmatched tool_use call(s): ${pendingToolCallIds.join(", ")}`);
+    throw new Error(
+      `reconstructed history has ${pendingToolCallIds.length} unmatched tool_use call(s): ${pendingToolCallIds.join(", ")}`,
+    );
   }
 }
 

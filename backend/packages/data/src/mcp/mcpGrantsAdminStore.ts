@@ -1,6 +1,10 @@
 import type { Queryable } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
-import { rowToRegistration, type McpToolRegistration, type McpToolRegistrationRow } from "./mcpToolRegistrationsStore.js";
+import {
+  rowToRegistration,
+  type McpToolRegistration,
+  type McpToolRegistrationRow,
+} from "./mcpToolRegistrationsStore.js";
 import { rowToGrant, type ProjectMcpGrant, type ProjectMcpGrantRow } from "./mcpProjectGrantsStore.js";
 
 /**
@@ -22,7 +26,11 @@ import { rowToGrant, type ProjectMcpGrant, type ProjectMcpGrantRow } from "./mcp
  */
 
 /** User-only mutation: sets a tool's risk classification. */
-export async function setMcpToolRiskClass(client: Queryable, id: string, riskClass: string): Promise<McpToolRegistration> {
+export async function setMcpToolRiskClass(
+  client: Queryable,
+  id: string,
+  riskClass: string,
+): Promise<McpToolRegistration> {
   const { rows } = await client.query<McpToolRegistrationRow>(
     `UPDATE mcp_tool_registrations SET risk_class = $2, updated_at = now() WHERE id = $1 RETURNING *`,
     [id, riskClass],
@@ -33,7 +41,11 @@ export async function setMcpToolRiskClass(client: Queryable, id: string, riskCla
 }
 
 /** User-only mutation: toggles whether invoking this tool requires approval. */
-export async function setMcpToolRequiresApproval(client: Queryable, id: string, requiresApproval: boolean): Promise<McpToolRegistration> {
+export async function setMcpToolRequiresApproval(
+  client: Queryable,
+  id: string,
+  requiresApproval: boolean,
+): Promise<McpToolRegistration> {
   const { rows } = await client.query<McpToolRegistrationRow>(
     `UPDATE mcp_tool_registrations SET requires_approval = $2, updated_at = now() WHERE id = $1 RETURNING *`,
     [id, requiresApproval],

@@ -19,7 +19,10 @@ export function setViewport(isNarrow: boolean): void {
   }));
 }
 
-export function renderMailbox(operations: GenericOperations, options: { view?: View; locale?: "cs" | "en" } = {}): RenderResult {
+export function renderMailbox(
+  operations: GenericOperations,
+  options: { view?: View; locale?: "cs" | "en" } = {},
+): RenderResult {
   return render(
     <I18nProvider locale={options.locale ?? "en"}>
       <MailboxClient view={options.view ?? mailboxView} operations={operations} />

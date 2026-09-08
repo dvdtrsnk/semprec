@@ -23,7 +23,11 @@ export function App({
 }) {
   return (
     <I18nProvider locale={resolveLocale(languages)}>
-      {aiUsageOperations ? <UtilizationPage operations={aiUsageOperations} /> : <ViewHost viewId={viewId} operations={operations} registry={registry} />}
+      {aiUsageOperations ? (
+        <UtilizationPage operations={aiUsageOperations} />
+      ) : (
+        <ViewHost viewId={viewId} operations={operations} registry={registry} />
+      )}
     </I18nProvider>
   );
 }

@@ -65,7 +65,8 @@ export interface AiUsageReport {
 function assertBoundedRange(from: string, to: string): { fromDate: Date; toDate: Date } {
   const fromDate = new Date(from);
   const toDate = new Date(to);
-  if (Number.isNaN(fromDate.getTime())) throw new ValidationError(`'from' is not a valid date: ${from}`, { field: "from" });
+  if (Number.isNaN(fromDate.getTime()))
+    throw new ValidationError(`'from' is not a valid date: ${from}`, { field: "from" });
   if (Number.isNaN(toDate.getTime())) throw new ValidationError(`'to' is not a valid date: ${to}`, { field: "to" });
   if (toDate <= fromDate) throw new ValidationError("'to' must be after 'from'", { field: "to" });
   const rangeDays = (toDate.getTime() - fromDate.getTime()) / 86_400_000;

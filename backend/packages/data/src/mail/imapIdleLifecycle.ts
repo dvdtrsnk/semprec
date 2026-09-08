@@ -52,7 +52,12 @@ export interface ImapIdleTransport {
    * the connection itself could not be established — the caller applies bounded reconnect
    * backoff in that case.
    */
-  connect(mailboxItemId: string, credential: string, folderPath: string, onSignal: () => void): Promise<ImapIdleConnection>;
+  connect(
+    mailboxItemId: string,
+    credential: string,
+    folderPath: string,
+    onSignal: () => void,
+  ): Promise<ImapIdleConnection>;
 }
 
 /**
@@ -137,13 +142,18 @@ export function createBoundedImapIdleLifecycleFactory(
      * actually open, the same budget `mailSyncJob.ts`'s reconcile passes already share
      * (issue #196: "under account connection budget about 15").
      */
-    async function runOneIdleRound(folderPath: string, credential: string): Promise<{ kind: "stop" } | { kind: "recycled" } | { kind: "ended"; err: unknown }> {
+    async function runOneIdleRound(
+      folderPath: string,
+      credential: string,
+    ): Promise<{ kind: "stop" } | { kind: "recycled" } | { kind: "ended"; err: unknown }> {
       const connection = await transport.connect(account.mailboxItemId, credential, folderPath, () => {
         // The only effect a signal is ever allowed to have (issue #196: "No direct Email
         // mutation in callback") — the existing idempotent, per-account-deduplicated reconcile
         // path, same one the periodic sweep and the account-discovery restart already use, so
         // a signal can never race ahead of it into a second, parallel ingestion path.
-        enqueueMailAccountSync(pool, account.mailboxItemId).catch((err) => options.onError?.(account.mailboxItemId, folderPath, err));
+        enqueueMailAccountSync(pool, account.mailboxItemId).catch((err) =>
+          options.onError?.(account.mailboxItemId, folderPath, err),
+        );
       });
       const outcome = await Promise.race([
         connection.waitForEnd().then((err): { kind: "ended"; err: unknown } => ({ kind: "ended", err })),

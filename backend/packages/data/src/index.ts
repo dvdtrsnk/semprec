@@ -91,7 +91,12 @@ export * from "./realtimeHook.js";
 
 export { createDocStore, type DocStore, type DocVersion } from "./docs/docStore.js";
 export type { BlockInput, BlockData } from "./docs/blocks.js";
-export { CANVAS_ELEMENT_TYPES, type CanvasElementType, type CanvasElementInput, type CanvasElementData } from "./docs/canvas.js";
+export {
+  CANVAS_ELEMENT_TYPES,
+  type CanvasElementType,
+  type CanvasElementInput,
+  type CanvasElementData,
+} from "./docs/canvas.js";
 export {
   loadDoc as loadYDoc,
   mutateDoc as mutateYDoc,
@@ -126,12 +131,20 @@ export { manifest as inboxPipelineModuleManifest } from "./inbox/inboxModuleMani
 // `mcpGrantsAdminStore.ts`'s user-only grant/risk-class/approval mutations are deliberately
 // NOT exported here — see that file's header comment (issue #124).
 export type { McpToolRegistration, UpsertMcpToolRegistrationInput } from "./mcp/mcpToolRegistrationsStore.js";
-export { upsertMcpToolRegistration, getMcpToolRegistration, listMcpToolRegistrationsForServer } from "./mcp/mcpToolRegistrationsStore.js";
+export {
+  upsertMcpToolRegistration,
+  getMcpToolRegistration,
+  listMcpToolRegistrationsForServer,
+} from "./mcp/mcpToolRegistrationsStore.js";
 export type { ProjectMcpGrant } from "./mcp/mcpProjectGrantsStore.js";
 export { listProjectMcpGrants, getProjectMcpGrant } from "./mcp/mcpProjectGrantsStore.js";
 export type { McpConnectionConfig } from "./mcp/mcpConnectionConfig.js";
 export { assertValidMcpConnectionConfig } from "./mcp/mcpConnectionConfig.js";
-export { McpConnectionError, MCP_CONNECTION_ERROR_REASONS, type McpConnectionErrorReason } from "./mcp/mcpConnectionError.js";
+export {
+  McpConnectionError,
+  MCP_CONNECTION_ERROR_REASONS,
+  type McpConnectionErrorReason,
+} from "./mcp/mcpConnectionError.js";
 export type { McpClientHandle, ConnectMcpServerOptions } from "./mcp/mcpConnectionFactory.js";
 export { connectMcpServer } from "./mcp/mcpConnectionFactory.js";
 export type { SyncMcpServerToolsOptions, SyncMcpServerToolsResult } from "./mcp/mcpSync.js";
