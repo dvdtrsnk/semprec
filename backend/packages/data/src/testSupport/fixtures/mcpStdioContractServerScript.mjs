@@ -20,7 +20,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 const recordFile = process.argv[2];
 if (!recordFile) {
@@ -42,9 +42,14 @@ function readPreviousHandshakeCount() {
 }
 
 let handshakeCount = readPreviousHandshakeCount();
+// Kept alongside `handshakeCount` as module state (not read back from the record file) because
+// `writeRecord` below always rewrites the whole file — every write must resupply whatever isn't
+// changing this time, same as `credential` already had to.
+let credential = null;
+let lastToolCall = null;
 
 function writeRecord(extra) {
-  writeFileSync(recordFile, JSON.stringify({ pid: process.pid, handshakeCount, ...extra }));
+  writeFileSync(recordFile, JSON.stringify({ pid: process.pid, handshakeCount, credential, lastToolCall, ...extra }));
 }
 
 writeRecord({});
@@ -56,11 +61,24 @@ const server = new Server(
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 
+// Same deterministic `tools/call` contract as the sse/http servers (mcpContractServers.ts) —
+// duplicated here rather than imported, since this file runs as a standalone child process.
+const FORCE_ERROR_ARG = "__forceError";
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const callArguments = request.params.arguments ?? {};
+  lastToolCall = { name: request.params.name, arguments: callArguments };
+  writeRecord({});
+  if (callArguments[FORCE_ERROR_ARG] === true) {
+    return { isError: true, content: [{ type: "text", text: "contract-server-forced-error" }] };
+  }
+  return { content: [{ type: "text", text: JSON.stringify({ name: request.params.name, arguments: callArguments }) }] };
+});
+
 server.oninitialized = () => {
   handshakeCount += 1;
   const credentialEnvVar = process.env.MCP_CONTRACT_CREDENTIAL_ENV_VAR;
-  const credential = credentialEnvVar ? (process.env[credentialEnvVar] ?? null) : null;
-  writeRecord({ credential });
+  credential = credentialEnvVar ? (process.env[credentialEnvVar] ?? null) : null;
+  writeRecord({});
 };
 
 const transport = new StdioServerTransport();

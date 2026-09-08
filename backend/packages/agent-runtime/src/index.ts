@@ -26,3 +26,15 @@ export {
 } from "./sempConversation.js";
 export type { CompactionAdapter, CompactionSettings, PreparedCompaction } from "./compaction.js";
 export type { ReconstructedHistory } from "./conversationReconstruction.js";
+export {
+  createMcpInvokeTool,
+  resolveMcpInvocation,
+  executeMcpInvocation,
+  type McpInvokeTool,
+  type McpInvokeArgs,
+  type McpInvokeResult,
+  type McpInvokeOptions,
+  type McpInvocationResolution,
+  type ResolvedMcpInvocation,
+  type RejectedMcpInvocation,
+} from "./mcpInvokeTool.js";

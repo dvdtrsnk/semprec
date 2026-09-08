@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { Server as McpServer } from "@modelcontextprotocol/sdk/server/index.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { McpConnectionConfig } from "../mcp/mcpConnectionConfig.js";
 
 /**
@@ -22,6 +22,12 @@ import type { McpConnectionConfig } from "../mcp/mcpConnectionConfig.js";
  * Each server also answers `tools/list` with a configurable, mutable tool set (issue #125's
  * sync tests need to reconcile against a changing tool list across repeated syncs) via
  * `setTools`/`DEFAULT_CONTRACT_TOOLS` below.
+ *
+ * Each server also answers `tools/call` (issue #128) with the same deterministic, assertable
+ * contract: echoing back `{ name, arguments }` as its result's only text content, unless the
+ * call's arguments include `__forceError: true`, in which case it answers with `isError: true`
+ * instead — this is how #128's tests exercise both the success and MCP-level-error result path
+ * identically across all three transports. `getLastToolCall()` records the most recent call.
  */
 
 export interface ContractServerTool {
@@ -38,6 +44,11 @@ export const DEFAULT_CONTRACT_TOOLS: ContractServerTool[] = [
     inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
   },
 ];
+export interface ContractToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
 export interface McpContractServer {
   /** A ready-to-use `mcpServers.connectionConfig` pointing at this running contract server. */
   readonly connectionConfig: McpConnectionConfig;
@@ -47,8 +58,20 @@ export interface McpContractServer {
   getHandshakeCount(): number;
   /** Changes what `tools/list` answers on this server's *next* request — takes effect immediately for sse/http, on the next spawned child for stdio. */
   setTools(tools: ContractServerTool[]): void;
+  /** The most recent `tools/call` this server received, or `null` if none yet. */
+  getLastToolCall(): ContractToolCall | null;
   /** Stops the contract server (and, for stdio, waits briefly for the spawned child to have exited). */
   stop(): Promise<void>;
+}
+
+/** Shared `tools/call` contract every server below answers identically — see this file's header comment. */
+const FORCE_ERROR_ARG = "__forceError";
+function handleContractToolCall(name: string, args: Record<string, unknown> | undefined) {
+  const callArguments = args ?? {};
+  if (callArguments[FORCE_ERROR_ARG] === true) {
+    return { isError: true, content: [{ type: "text" as const, text: "contract-server-forced-error" }] };
+  }
+  return { content: [{ type: "text" as const, text: JSON.stringify({ name, arguments: callArguments }) }] };
 }
 
 const CONNECT_POLL_INTERVAL_MS = 20;
@@ -93,7 +116,12 @@ export function startStdioContractServer(
 
   writeFileSync(toolsFile, JSON.stringify(initialTools));
 
-  function readRecord(): { pid: number; handshakeCount: number; credential?: string | null } | null {
+  function readRecord(): {
+    pid: number;
+    handshakeCount: number;
+    credential?: string | null;
+    lastToolCall?: ContractToolCall | null;
+  } | null {
     if (!existsSync(recordFile)) return null;
     try {
       return JSON.parse(readFileSync(recordFile, "utf8"));
@@ -112,6 +140,7 @@ export function startStdioContractServer(
     },
     getObservedCredential: () => readRecord()?.credential ?? null,
     getHandshakeCount: () => readRecord()?.handshakeCount ?? 0,
+    getLastToolCall: () => readRecord()?.lastToolCall ?? null,
     // Read fresh by each newly-spawned child at startup (see the fixture script) — there's no
     // shared memory across the process boundary to push this into an already-running child.
     setTools: (tools) => writeFileSync(toolsFile, JSON.stringify(tools)),
@@ -178,6 +207,7 @@ export async function startSseContractServer(
   let handshakeCount = 0;
   let currentMcpServer: McpServer | undefined;
   let currentTools = initialTools;
+  let lastToolCall: ContractToolCall | null = null;
   const transportsBySession = new Map<string, SSEServerTransport>();
 
   const httpServer = http.createServer((req, res) => {
@@ -198,6 +228,10 @@ export async function startSseContractServer(
         // Reads `currentTools` at request time (not capture time), so a test's `setTools` call
         // takes effect on this already-connected session's very next `tools/list` request.
         mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: currentTools }));
+        mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
+          lastToolCall = { name: request.params.name, arguments: request.params.arguments ?? {} };
+          return handleContractToolCall(request.params.name, request.params.arguments);
+        });
         mcpServer.oninitialized = () => {
           handshakeCount += 1;
           currentMcpServer = mcpServer;
@@ -232,6 +266,7 @@ export async function startSseContractServer(
     setTools: (tools) => {
       currentTools = tools;
     },
+    getLastToolCall: () => lastToolCall,
     async triggerToolsListChanged() {
       await currentMcpServer?.sendToolListChanged();
     },
@@ -246,6 +281,7 @@ export async function startHttpContractServer(
   let handshakeCount = 0;
   let currentTools = initialTools;
   let currentMcpServer: McpServer | undefined;
+  let lastToolCall: ContractToolCall | null = null;
   // A single `StreamableHTTPServerTransport` instance represents exactly one session (per the
   // SDK's own stateful-mode contract) — issue #125's sync tests reconnect to the same contract
   // server repeatedly (sync, mutate tools, sync again), which is a second independent session,
@@ -292,6 +328,10 @@ export async function startHttpContractServer(
       );
       // Reads `currentTools` at request time, same as the sse server above.
       mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: currentTools }));
+      mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
+        lastToolCall = { name: request.params.name, arguments: request.params.arguments ?? {} };
+        return handleContractToolCall(request.params.name, request.params.arguments);
+      });
       mcpServer.oninitialized = () => {
         handshakeCount += 1;
         currentMcpServer = mcpServer;
@@ -314,6 +354,7 @@ export async function startHttpContractServer(
     setTools: (tools) => {
       currentTools = tools;
     },
+    getLastToolCall: () => lastToolCall,
     async triggerToolsListChanged() {
       await currentMcpServer?.sendToolListChanged();
     },
