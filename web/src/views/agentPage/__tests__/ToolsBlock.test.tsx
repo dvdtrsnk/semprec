@@ -133,6 +133,61 @@ describe("ToolsBlock (issue #127)", () => {
     expect(screen.getByRole("checkbox", { name: "search_docs" })).toBeInTheDocument();
   });
 
+  it("round-trips a riskClass select change to the exact registration", async () => {
+    const reclassifyMcpTool = vi.fn(async (input: { mcpToolRegistrationId: string; riskClass?: string; requiresApproval?: boolean }) => ({
+      riskClass: input.riskClass ?? "low",
+      requiresApproval: input.requiresApproval ?? false,
+    }));
+    renderBlock(
+      stubOperations({
+        listMcpToolGrants: vi.fn(async () => [makeRow()]),
+        reclassifyMcpTool,
+      }),
+    );
+
+    await screen.findByRole("checkbox", { name: "search_docs" });
+    const select = screen.getByRole("combobox");
+    await userEvent.selectOptions(select, "high");
+
+    expect(reclassifyMcpTool).toHaveBeenCalledWith({ mcpToolRegistrationId: "reg-1", riskClass: "high" });
+  });
+
+  it("round-trips a requiresApproval checkbox change to the exact registration", async () => {
+    const reclassifyMcpTool = vi.fn(async (input: { mcpToolRegistrationId: string; riskClass?: string; requiresApproval?: boolean }) => ({
+      riskClass: input.riskClass ?? "low",
+      requiresApproval: input.requiresApproval ?? false,
+    }));
+    renderBlock(
+      stubOperations({
+        listMcpToolGrants: vi.fn(async () => [makeRow()]),
+        reclassifyMcpTool,
+      }),
+    );
+
+    const requiresApprovalCheckbox = await screen.findByRole("checkbox", { name: "Requires approval" });
+    await userEvent.click(requiresApprovalCheckbox);
+
+    expect(reclassifyMcpTool).toHaveBeenCalledWith({ mcpToolRegistrationId: "reg-1", requiresApproval: true });
+  });
+
+  it("shows a per-row mutation error when reclassifyMcpTool fails, without discarding the row", async () => {
+    const reclassifyMcpTool = vi.fn(async () => {
+      throw new Error("reclassify failed");
+    });
+    renderBlock(
+      stubOperations({
+        listMcpToolGrants: vi.fn(async () => [makeRow()]),
+        reclassifyMcpTool,
+      }),
+    );
+
+    const requiresApprovalCheckbox = await screen.findByRole("checkbox", { name: "Requires approval" });
+    await userEvent.click(requiresApprovalCheckbox);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not save: reclassify failed");
+    expect(screen.getByRole("checkbox", { name: "search_docs" })).toBeInTheDocument();
+  });
+
   it("keeps existing rows visible and shows a refreshing indicator during a background reload", async () => {
     let releaseSecondLoad!: () => void;
     let secondLoadCalled = false;

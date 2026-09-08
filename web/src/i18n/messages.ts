@@ -93,6 +93,12 @@ export const en = {
   "agentPage.tools.riskClass": "Risk class",
   "agentPage.tools.requiresApproval": "Requires approval",
   "agentPage.tools.mutationError": "Could not save: {message}",
+  "agentPage.title": "Agent",
+  "agentPage.notFound": "This project could not be found",
+  "agentPage.guidance.title": "Guidance",
+  "agentPage.guidance.empty": "No guidance has been set for this project yet",
+  "agentPage.heartbeats.title": "Heartbeats",
+  "agentPage.heartbeats.unavailable": "Heartbeats are not yet available on this page",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -188,6 +194,12 @@ export const cs: Messages = {
   "agentPage.tools.riskClass": "Riziková třída",
   "agentPage.tools.requiresApproval": "Vyžaduje schválení",
   "agentPage.tools.mutationError": "Nepodařilo se uložit: {message}",
+  "agentPage.title": "Agent",
+  "agentPage.notFound": "Tento projekt se nepodařilo najít",
+  "agentPage.guidance.title": "Pokyny",
+  "agentPage.guidance.empty": "Pro tento projekt zatím nejsou nastaveny žádné pokyny",
+  "agentPage.heartbeats.title": "Heartbeaty",
+  "agentPage.heartbeats.unavailable": "Heartbeaty na této stránce zatím nejsou k dispozici",
 };
 
 export const CATALOGS = { cs, en } as const;

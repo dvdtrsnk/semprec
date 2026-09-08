@@ -92,6 +92,10 @@ body {
   text-align: left;
 }
 
+.agent-page__guidance-text {
+  white-space: pre-wrap;
+}
+
 .agent-tools__server {
   margin: var(--space-3) 0;
 }
