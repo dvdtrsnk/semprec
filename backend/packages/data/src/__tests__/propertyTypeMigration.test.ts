@@ -77,6 +77,24 @@ describe("property type migration", () => {
     expect((await chokePoint.getItem(db.id, bad.id))?.properties).not.toHaveProperty("score");
   });
 
+  it("a replayed run of an already-partial migration still reports 'partial'", async () => {
+    const db = await chokePoint.createDatabase({ name: "D6" });
+    const prop = await chokePoint.createProperty({ databaseId: db.id, key: "score", name: "Score", type: "text" });
+    await chokePoint.createItem({ databaseId: db.id, properties: { score: "42" } });
+    await chokePoint.createItem({ databaseId: db.id, properties: { score: "not a number" } });
+
+    await chokePoint.changePropertyType(prop.id, "number");
+    await runPropertyTypeMigrationJob(pool, prop.id, "text");
+    expect((await chokePoint.getProperty(prop.id))!.migrationStatus).toBe("partial");
+
+    // Exactly what graphile-worker does after a crash that happened between the row pass and
+    // the status write. The replay sees no unconvertible values left to drop — the first run
+    // already removed that key — so it must take the verdict from the migration's durable
+    // state instead of from its own (empty) bookkeeping.
+    await runPropertyTypeMigrationJob(pool, prop.id, "text");
+    expect((await chokePoint.getProperty(prop.id))!.migrationStatus).toBe("partial");
+  });
+
   it("rejects a retype with no defined conversion path", async () => {
     const db = await chokePoint.createDatabase({ name: "D3" });
     const prop = await chokePoint.createProperty({ databaseId: db.id, key: "opt", name: "Opt", type: "select" });
