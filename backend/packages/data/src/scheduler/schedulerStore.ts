@@ -108,6 +108,42 @@ async function requireHeartbeat(client: PoolClient, id: string, moduleRuleKinds:
 }
 
 /**
+ * All of a project's heartbeats, agent-triggered and deterministic alike (issue #135's
+ * `heartbeat.list`) — a rule whose kind's module was deactivated still lists (matching
+ * `setHeartbeatEnabled`'s disable path) rather than failing the whole call for one bad row.
+ */
+export async function listHeartbeatsByProject(
+  client: Pool | PoolClient,
+  projectItemId: string,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<HeartbeatRow[]> {
+  const { rows } = await client.query(
+    `SELECT ${COLUMNS} FROM project_heartbeats WHERE project_item_id = $1 ORDER BY created_at ASC`,
+    [projectItemId],
+  );
+  return rows.map((row) => mapRow(row, moduleRuleKinds, { tolerateUnknownRuleKind: true }));
+}
+
+/**
+ * Scoped lookup for `heartbeat.history`'s ownership check: a single `WHERE` on both
+ * `id` and `project_item_id`, so a `heartbeatId` that exists but belongs to another
+ * project produces the exact same empty result as an unknown id (issue #135's "cross-project
+ * ids are indistinguishable from unknown ids") — never a two-step exists-then-owns check.
+ */
+export async function getHeartbeatForProject(
+  client: Pool | PoolClient,
+  projectItemId: string,
+  heartbeatId: string,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<HeartbeatRow | null> {
+  const { rows } = await client.query(`SELECT ${COLUMNS} FROM project_heartbeats WHERE id = $1 AND project_item_id = $2`, [
+    heartbeatId,
+    projectItemId,
+  ]);
+  return rows[0] ? mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true }) : null;
+}
+
+/**
  * Recomputes next_fire_at using the same pure function as the sweep — deterministic at write
  * time. Only the row's `enabled` flag is needed from the *current* state — never its current
  * rule — so replacing a heartbeat whose existing rule kind's module was deactivated (e.g. to
