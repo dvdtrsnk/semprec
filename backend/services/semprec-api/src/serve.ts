@@ -4,6 +4,7 @@ import { createAiUsageRequestListener } from "./aiUsageHandler.js";
 import { createMcpAgentPageRequestListener } from "./mcpAgentPageHandler.js";
 import { createApprovalRequestsRequestListener } from "./approvalRequestsHandler.js";
 import { createAgentRunRequestListener } from "./agentRunHandler.js";
+import { createAuthRequestListener } from "./authHandler.js";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("DATABASE_URL is not set");
@@ -20,6 +21,7 @@ const aiUsageListener = createAiUsageRequestListener(pool, { authToken });
 const mcpAgentPageListener = createMcpAgentPageRequestListener(pool, { authToken });
 const approvalRequestsListener = createApprovalRequestsRequestListener(pool, { authToken });
 const agentRunListener = createAgentRunRequestListener(pool, { authToken });
+const authListener = createAuthRequestListener(pool);
 
 /** Routes by path prefix; `mcpAgentPageListener` already answers 404 itself for anything else. */
 function dispatch(req: IncomingMessage, res: ServerResponse): void {
@@ -34,6 +36,10 @@ function dispatch(req: IncomingMessage, res: ServerResponse): void {
   }
   if (pathname.startsWith("/api/agent-runs/")) {
     void agentRunListener(req, res);
+    return;
+  }
+  if (pathname.startsWith("/api/auth/")) {
+    void authListener(req, res);
     return;
   }
   void mcpAgentPageListener(req, res);
