@@ -11,7 +11,9 @@ import {
   revokeSessionForUser,
   touchSessionLastSeen,
 } from "./sessionsStore.js";
-import { recordLoginAttempt } from "./loginAttemptsStore.js";
+import { recordLoginAttempt, getFailureStreak } from "./loginAttemptsStore.js";
+import { normalizeEmail } from "./emailNormalization.js";
+import { lockoutDurationSeconds } from "./loginLockout.js";
 import type { SessionPlatform, SessionRow, UserRow } from "./types.js";
 
 /** How long a freshly-issued session stays valid without further activity. */
@@ -49,17 +51,36 @@ export interface LoginResult {
 /**
  * Verifies email/password, creates one new session row, and returns its opaque token — the
  * token is generated fresh per call and never persisted anywhere but this return value; only its
- * hash is stored. Every attempt (success or failure) is recorded via `recordLoginAttempt` for
- * #141's throttling to consume later; this issue does not itself enforce any throttling.
- * Throws `UnauthorizedError` for every failure reason (unknown email, wrong password) with the
- * same message, per #140's "don't reveal which condition applied" requirement.
+ * hash is stored. Every attempt (success or failure) is recorded via `recordLoginAttempt` with
+ * the normalized email (see `normalizeEmail`), which is also the identity `getFailureStreak`'s
+ * lockout scoping keys on.
+ *
+ * Before password verification (#232's Task), an email+IP pair with an active exponential
+ * lockout is rejected outright — including a correct password — without ever calling
+ * `verifyPassword`; the rejection is itself recorded as a failed attempt, which is what makes
+ * the lockout continue to grow if the caller keeps retrying through it. A success resets the
+ * streak implicitly: `getFailureStreak` only counts failures since the pair's last success.
+ *
+ * Throws `UnauthorizedError` for every failure reason (unknown email, wrong password, active
+ * lockout) with the same message, per #140's "don't reveal which condition applied" requirement.
  */
 export async function login(client: Pool | PoolClient, input: LoginInput): Promise<LoginResult> {
-  const user = await getUserByEmail(client, input.email);
+  const email = normalizeEmail(input.email);
+
+  const streak = await getFailureStreak(client, email, input.ip);
+  if (streak.lastFailedAt) {
+    const lockedUntil = new Date(streak.lastFailedAt).getTime() + lockoutDurationSeconds(streak.count) * 1000;
+    if (Date.now() < lockedUntil) {
+      await recordLoginAttempt(client, { email, ip: input.ip, succeeded: false });
+      throw new UnauthorizedError();
+    }
+  }
+
+  const user = await getUserByEmail(client, email);
   const passwordOk = await verifyPassword(user ? user.passwordHash : await dummyPasswordHash, input.password);
 
   if (!user || !passwordOk) {
-    await recordLoginAttempt(client, { email: input.email, ip: input.ip, succeeded: false });
+    await recordLoginAttempt(client, { email, ip: input.ip, succeeded: false });
     throw new UnauthorizedError();
   }
 
@@ -72,7 +93,7 @@ export async function login(client: Pool | PoolClient, input: LoginInput): Promi
     expiresAt,
     userAgent: input.userAgent,
   });
-  await recordLoginAttempt(client, { email: input.email, ip: input.ip, succeeded: true });
+  await recordLoginAttempt(client, { email, ip: input.ip, succeeded: true });
 
   return { token, session, user: toPublicUser(user) };
 }

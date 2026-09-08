@@ -50,3 +50,33 @@ export async function countRecentFailedAttempts(
   );
   return Number(rows[0].count);
 }
+
+export interface FailureStreak {
+  /** Consecutive failed attempts for this email+IP pair since their last success (or ever, if there is none). */
+  count: number;
+  /** When the most recent of those failures happened; `null` when `count` is 0. */
+  lastFailedAt: string | null;
+}
+
+/**
+ * The signal #232's exponential lockout is built on: unlike `countRecentFailedAttempts`'s fixed
+ * time window, this counts back only to the pair's last *success*, so a lockout naturally lifts
+ * as soon as a login succeeds instead of lingering until an unrelated window expires.
+ */
+export async function getFailureStreak(client: Pool | PoolClient, email: string, ip: string): Promise<FailureStreak> {
+  const { rows } = await client.query<{ count: string; last_failed_at: Date | null }>(
+    `SELECT count(*) AS count, max(attempted_at) AS last_failed_at
+     FROM login_attempts
+     WHERE email = $1 AND ip = $2 AND succeeded = false
+       AND attempted_at > COALESCE(
+         (SELECT max(attempted_at) FROM login_attempts WHERE email = $1 AND ip = $2 AND succeeded = true),
+         '-infinity'
+       )`,
+    [email, ip],
+  );
+  const row = rows[0];
+  return {
+    count: Number(row.count),
+    lastFailedAt: row.last_failed_at ? row.last_failed_at.toISOString() : null,
+  };
+}
