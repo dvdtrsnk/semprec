@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { requireSingleRow } from "../db/pool.js";
 import type { LoginAttemptRow } from "./types.js";
 
 function mapRow(row: {
@@ -48,5 +49,5 @@ export async function countRecentFailedAttempts(
      WHERE email = $1 AND ip = $2 AND succeeded = false AND attempted_at > now() - make_interval(secs => $3)`,
     [email, ip, windowSeconds],
   );
-  return Number(rows[0].count);
+  return Number(requireSingleRow(rows, "login_attempts failure count").count);
 }
