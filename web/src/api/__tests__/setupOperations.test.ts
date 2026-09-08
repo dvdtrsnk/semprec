@@ -66,6 +66,17 @@ describe("setup operations", () => {
     ).rejects.toMatchObject({ kind: "retryable", status: 400, message: "'password' must be at least 8 characters" });
   });
 
+  it("classifies a malformed success envelope (e.g. a bare null body) as retryable instead of throwing an unhandled TypeError", async () => {
+    const operations = createSetupOperations({
+      baseUrl: "/api",
+      fetchImpl: async () => jsonResponse(null),
+    });
+
+    await expect(
+      operations.setupAccount({ token: "t", email: "a@example.com", password: "password123" }),
+    ).rejects.toMatchObject({ kind: "retryable" });
+  });
+
   it("classifies a transport failure as retryable", async () => {
     const operations = createSetupOperations({
       baseUrl: "/api",

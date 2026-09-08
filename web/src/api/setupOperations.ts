@@ -22,6 +22,8 @@ const publicUserSchema = z.object({
 
 export type SetupPublicUser = z.infer<typeof publicUserSchema>;
 
+const setupResponseSchema = z.object({ user: publicUserSchema });
+
 export interface SetupAccountInput {
   token: string;
   email: string;
@@ -71,8 +73,8 @@ export function createSetupOperations(options: SetupOperationsOptions): SetupOpe
       }
 
       try {
-        const body = (await response.json()) as { user?: unknown };
-        return publicUserSchema.parse(body.user);
+        const body: unknown = await response.json();
+        return setupResponseSchema.parse(body).user;
       } catch (error) {
         throw new OperationError("retryable", error instanceof Error ? error.message : String(error));
       }
