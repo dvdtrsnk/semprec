@@ -67,7 +67,10 @@ export function isOnItemEventRule(rule: AnyHeartbeatRule): boolean {
  * heartbeatRuleKinds" the scheduler validates against (issue #109). A `kind` that is neither
  * core nor a currently-active module (e.g. its module was deactivated) is rejected.
  */
-export function parseHeartbeatRule(raw: unknown, moduleRuleKinds: HeartbeatRuleKindRegistry = new Map()): AnyHeartbeatRule {
+export function parseHeartbeatRule(
+  raw: unknown,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): AnyHeartbeatRule {
   const kind = (raw as { kind?: unknown } | null)?.kind;
   if (typeof kind !== "string") {
     return heartbeatRuleSchema.parse(raw);
@@ -77,7 +80,9 @@ export function parseHeartbeatRule(raw: unknown, moduleRuleKinds: HeartbeatRuleK
   }
   const handler = moduleRuleKinds.get(kind);
   if (!handler) {
-    throw new Error(`Unknown heartbeat rule kind "${kind}" (not a core kind, and no active module currently registers it)`);
+    throw new Error(
+      `Unknown heartbeat rule kind "${kind}" (not a core kind, and no active module currently registers it)`,
+    );
   }
   const result = handler.schema.safeParse(raw);
   if (!result.success) {

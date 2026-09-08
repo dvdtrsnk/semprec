@@ -22,7 +22,9 @@ describe("ModuleRegistry.loadModule", () => {
 
   it("rejects a module referencing a missing handler export", async () => {
     const registry = new ModuleRegistry(alwaysActive);
-    await expect(registry.loadModule(fixturePath("missingExportModule.js"))).rejects.toThrow(/missing export "doesNotExist"/);
+    await expect(registry.loadModule(fixturePath("missingExportModule.js"))).rejects.toThrow(
+      /missing export "doesNotExist"/,
+    );
   });
 
   it("rejects a heartbeat rule kind whose schemaExport isn't schema-shaped (no safeParse)", async () => {
@@ -36,31 +38,41 @@ describe("ModuleRegistry.loadModule", () => {
   it("rejects a duplicate module id", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     await registry.loadModule(fixturePath("goodModule.js"));
-    await expect(registry.loadModule(fixturePath("duplicateIdModule.js"))).rejects.toThrow(/Duplicate module id "fixture-good"/);
+    await expect(registry.loadModule(fixturePath("duplicateIdModule.js"))).rejects.toThrow(
+      /Duplicate module id "fixture-good"/,
+    );
   });
 
   it("rejects a duplicate database key across modules", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     await registry.loadModule(fixturePath("goodModule.js"));
-    await expect(registry.loadModule(fixturePath("duplicateDatabaseKeyModule.js"))).rejects.toThrow(/Duplicate database key "fixtureGoodItems"/);
+    await expect(registry.loadModule(fixturePath("duplicateDatabaseKeyModule.js"))).rejects.toThrow(
+      /Duplicate database key "fixtureGoodItems"/,
+    );
   });
 
   it("rejects a duplicate agent tool name across modules", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     await registry.loadModule(fixturePath("goodModule.js"));
-    await expect(registry.loadModule(fixturePath("duplicateAgentToolNameModule.js"))).rejects.toThrow(/Duplicate agent tool name "fixtureGood.doThing"/);
+    await expect(registry.loadModule(fixturePath("duplicateAgentToolNameModule.js"))).rejects.toThrow(
+      /Duplicate agent tool name "fixtureGood.doThing"/,
+    );
   });
 
   it("rejects a duplicate task name across modules", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     await registry.loadModule(fixturePath("goodModule.js"));
-    await expect(registry.loadModule(fixturePath("duplicateTaskNameModule.js"))).rejects.toThrow(/Duplicate task name "fixtureGood.processThing"/);
+    await expect(registry.loadModule(fixturePath("duplicateTaskNameModule.js"))).rejects.toThrow(
+      /Duplicate task name "fixtureGood.processThing"/,
+    );
   });
 
   it("rejects a duplicate worker name across modules", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     await registry.loadModule(fixturePath("goodModule.js"));
-    await expect(registry.loadModule(fixturePath("duplicateWorkerNameModule.js"))).rejects.toThrow(/Duplicate worker name "fixtureGood.worker"/);
+    await expect(registry.loadModule(fixturePath("duplicateWorkerNameModule.js"))).rejects.toThrow(
+      /Duplicate worker name "fixtureGood.worker"/,
+    );
   });
 
   it("never partially claims identifiers from a module that ultimately fails to load", async () => {
@@ -69,7 +81,9 @@ describe("ModuleRegistry.loadModule", () => {
 
     // Collides on its second database key ("fixtureGoodItems"); its first key
     // ("fixturePartialFirst") must not be left claimed even though it was checked first.
-    await expect(registry.loadModule(fixturePath("partialCollisionModule.js"))).rejects.toThrow(/Duplicate database key "fixtureGoodItems"/);
+    await expect(registry.loadModule(fixturePath("partialCollisionModule.js"))).rejects.toThrow(
+      /Duplicate database key "fixtureGoodItems"/,
+    );
     expect(registry.listModuleIds()).toEqual(["fixture-good"]);
 
     // A later, unrelated module reusing that same key must succeed — it was never
@@ -87,7 +101,9 @@ describe("ModuleRegistry.loadModule", () => {
   });
 
   it("rejects a heartbeat rule kind colliding with a core-reserved rule kind", async () => {
-    const registry = new ModuleRegistry(alwaysActive, { reservedHeartbeatRuleKinds: new Set(["dailyTime", "weekly", "everyNDays", "interval", "onItemEvent"]) });
+    const registry = new ModuleRegistry(alwaysActive, {
+      reservedHeartbeatRuleKinds: new Set(["dailyTime", "weekly", "everyNDays", "interval", "onItemEvent"]),
+    });
     await expect(registry.loadModule(fixturePath("reservedHeartbeatRuleKindModule.js"))).rejects.toThrow(
       /heartbeat rule kind "dailyTime" loading .* collides with a core-reserved heartbeat rule kind/,
     );
@@ -96,7 +112,9 @@ describe("ModuleRegistry.loadModule", () => {
 });
 
 describe("ModuleRegistry projections", () => {
-  async function loadBoth(getActiveModuleIds: () => ReadonlySet<string> | Promise<ReadonlySet<string>>): Promise<ModuleRegistry> {
+  async function loadBoth(
+    getActiveModuleIds: () => ReadonlySet<string> | Promise<ReadonlySet<string>>,
+  ): Promise<ModuleRegistry> {
     const registry = new ModuleRegistry(getActiveModuleIds);
     await registry.loadModule(fixturePath("goodModule.js"));
     await registry.loadModule(fixturePath("secondModule.js"));
@@ -115,13 +133,24 @@ describe("ModuleRegistry projections", () => {
     expect(await registry.getHeartbeatRuleKinds()).toEqual(["fixtureGood.onWidgetTick"]);
     expect(await registry.getMigrations()).toEqual([{ moduleId: "fixture-good", migration: "0001_fixture_good.sql" }]);
     expect(await registry.getDataMigrations()).toEqual([
-      { moduleId: "fixture-good", databaseKey: "fixtureGoodItems", fromVersion: "1.0.0", toVersion: "2.0.0", converterExport: "convertFixtureGoodItem" },
+      {
+        moduleId: "fixture-good",
+        databaseKey: "fixtureGoodItems",
+        fromVersion: "1.0.0",
+        toVersion: "2.0.0",
+        converterExport: "convertFixtureGoodItem",
+      },
     ]);
     expect(await registry.getSystemProjectModuleIds()).toEqual(["fixture-good"]);
 
     const tasks = await registry.getTasks();
     expect(tasks).toEqual([
-      { moduleId: "fixture-good", name: "fixtureGood.processThing", payloadSchemaExport: "processThingPayloadSchema", handlerExport: "handleProcessThing" },
+      {
+        moduleId: "fixture-good",
+        name: "fixtureGood.processThing",
+        payloadSchemaExport: "processThingPayloadSchema",
+        handlerExport: "handleProcessThing",
+      },
     ]);
 
     const workers = await registry.getWorkers();
@@ -136,7 +165,9 @@ describe("ModuleRegistry projections", () => {
   it("drops an inactive module from every projection", async () => {
     const registry = await loadBoth(() => new Set(["fixture-second"]));
 
-    expect(await registry.getDatabases()).toEqual([{ moduleId: "fixture-second", key: "fixtureSecondItems", name: "Fixture Second Items" }]);
+    expect(await registry.getDatabases()).toEqual([
+      { moduleId: "fixture-second", key: "fixtureSecondItems", name: "Fixture Second Items" },
+    ]);
     expect(await registry.getViewTypes()).toEqual([]);
     expect(await registry.getSystemProjectModuleIds()).toEqual([]);
     expect(await registry.listActiveModuleIds()).toEqual(["fixture-second"]);
@@ -166,7 +197,9 @@ describe("ModuleRegistry projections", () => {
 
     expect(await registry.getDatabases()).toEqual([]);
     active = new Set(["fixture-good"]);
-    expect(await registry.getDatabases()).toEqual([{ moduleId: "fixture-good", key: "fixtureGoodItems", name: "Fixture Good Items" }]);
+    expect(await registry.getDatabases()).toEqual([
+      { moduleId: "fixture-good", key: "fixtureGoodItems", name: "Fixture Good Items" },
+    ]);
   });
 
   it("resolves task definitions to their actual imported schema/handler, active modules only", async () => {

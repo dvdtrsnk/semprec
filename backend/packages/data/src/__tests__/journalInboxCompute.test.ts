@@ -12,7 +12,11 @@ import { withTransaction } from "../db/pool.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inbox/inboxTickAction.js";
-import { confirmProposalWithClient, rejectProposalWithClient, reviseProposalWithClient } from "../inbox/proposalActions.js";
+import {
+  confirmProposalWithClient,
+  rejectProposalWithClient,
+  reviseProposalWithClient,
+} from "../inbox/proposalActions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
@@ -61,7 +65,10 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
   async function findProposalForItem(itemId: string) {
     return withTransaction(pool, async (client) => {
       const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
-      const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, sourceInboxProperty!.id);
+      const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(
+        client,
+        sourceInboxProperty!.id,
+      );
       const edges = await relationsStore.listRelationsForItem(client, relationDefinition!.id, itemId);
       if (edges.length === 0) return null;
       const proposalItemId = relationsStore.otherSide(edges[0], itemId);
@@ -112,11 +119,20 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     expect(definition!.configSchema!.safeParse({ inboxDatabaseId: inboxId }).success).toBe(false);
     const item = await captureItem("Buy milk");
     const dayId = await journalDayIdFor(item.id);
-    expect(definition!.configSchema!.safeParse({ inboxDatabaseId: inboxId, journalDayItemId: dayId }).success).toBe(true);
+    expect(definition!.configSchema!.safeParse({ inboxDatabaseId: inboxId, journalDayItemId: dayId }).success).toBe(
+      true,
+    );
   });
 
   it("declares its computed key so a colliding regular property is refused", async () => {
-    await expect(chokePoint.createProperty({ databaseId: journalId, key: JOURNAL_INBOX_COMPUTED_KEY, name: "Inbox items", type: "text" })).rejects.toThrow();
+    await expect(
+      chokePoint.createProperty({
+        databaseId: journalId,
+        key: JOURNAL_INBOX_COMPUTED_KEY,
+        name: "Inbox items",
+        type: "text",
+      }),
+    ).rejects.toThrow();
   });
 
   it("caches the day's Inbox items after capture", async () => {
@@ -127,7 +143,14 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
 
     const items = await computedInboxItems(dayId);
     expect(items).toHaveLength(1);
-    expect(items![0]).toMatchObject({ id: item.id, date: "2026-08-28", time: "09:00", text: "Buy milk", type: null, status: null });
+    expect(items![0]).toMatchObject({
+      id: item.id,
+      date: "2026-08-28",
+      time: "09:00",
+      text: "Buy milk",
+      type: null,
+      status: null,
+    });
   });
 
   it("only lists the items related to the matching day", async () => {
@@ -156,7 +179,13 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
 
   it("includes the item's type once it is recognized, after a tick", async () => {
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
     );
     const item = await captureItem("Buy milk", type.id);
     const dayId = await journalDayIdFor(item.id);
@@ -171,14 +200,22 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
 
   it("updates the cached status after a proposal is confirmed", async () => {
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
     );
     const item = await captureItem("Buy milk", type.id);
     const dayId = await journalDayIdFor(item.id);
     await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
 
     const proposal = (await findProposalForItem(item.id))!;
-    await withTransaction(pool, (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id));
+    await withTransaction(pool, (client) =>
+      confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+    );
     await drainQueue();
 
     const items = await computedInboxItems(dayId);
@@ -187,7 +224,12 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
 
   it("updates the cached status after a proposal is rejected", async () => {
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Thought", emoji: "💭", processingMethod: "pageContent" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Thought",
+        emoji: "💭",
+        processingMethod: "pageContent",
+      }),
     );
     const item = await captureItem("A thought", type.id);
     const dayId = await journalDayIdFor(item.id);
@@ -195,7 +237,9 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     await runTick(item.id, async () => ({ target: type.id, properties: { flavour: "paragraph" } }));
 
     const proposal = (await findProposalForItem(item.id))!;
-    await withTransaction(pool, (client) => rejectProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id));
+    await withTransaction(pool, (client) =>
+      rejectProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+    );
     await drainQueue();
 
     const items = await computedInboxItems(dayId);

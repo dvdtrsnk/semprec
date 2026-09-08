@@ -35,13 +35,27 @@ describe("moduleRegistry.checkDrift", () => {
   it("finds heartbeat action ids with no matching active action", async () => {
     const projectItemId = await createProjectItem();
     await withTransaction(pool, (client) =>
-      createHeartbeat(client, { projectItemId, name: "Known", rule: { kind: "dailyTime", at: "01:00" }, actionId: "core.known", enabled: false }),
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Known",
+        rule: { kind: "dailyTime", at: "01:00" },
+        actionId: "core.known",
+        enabled: false,
+      }),
     );
     await withTransaction(pool, (client) =>
-      createHeartbeat(client, { projectItemId, name: "Unknown", rule: { kind: "dailyTime", at: "02:00" }, actionId: "core.unknown", enabled: false }),
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Unknown",
+        rule: { kind: "dailyTime", at: "02:00" },
+        actionId: "core.unknown",
+        enabled: false,
+      }),
     );
 
-    const unknown = await withTransaction(pool, (client) => findUnknownHeartbeatActionIds(client, new Set(["core.known"])));
+    const unknown = await withTransaction(pool, (client) =>
+      findUnknownHeartbeatActionIds(client, new Set(["core.known"])),
+    );
     expect(unknown).toEqual(["core.unknown"]);
   });
 
@@ -65,14 +79,22 @@ describe("moduleRegistry.checkDrift", () => {
       ownerProcess: "core.unknown",
     });
 
-    const orphaned = await withTransaction(pool, (client) => findOrphanedOwnerProcessIds(client, new Set(["core.known"])));
+    const orphaned = await withTransaction(pool, (client) =>
+      findOrphanedOwnerProcessIds(client, new Set(["core.known"])),
+    );
     expect(orphaned).toEqual(["core.unknown"]);
   });
 
   it("publishes a finding for each drift kind and resolves it once repaired", async () => {
     const projectItemId = await createProjectItem();
     await withTransaction(pool, (client) =>
-      createHeartbeat(client, { projectItemId, name: "Unknown", rule: { kind: "dailyTime", at: "02:00" }, actionId: "core.unknown", enabled: false }),
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Unknown",
+        rule: { kind: "dailyTime", at: "02:00" },
+        actionId: "core.unknown",
+        enabled: false,
+      }),
     );
     const db = await chokePoint.createDatabase({ name: "D" });
     await chokePoint.createProperty({
@@ -114,7 +136,13 @@ describe("moduleRegistry.checkDrift", () => {
   it("concurrent runs do not create duplicate active findings", async () => {
     const projectItemId = await createProjectItem();
     await withTransaction(pool, (client) =>
-      createHeartbeat(client, { projectItemId, name: "Unknown", rule: { kind: "dailyTime", at: "02:00" }, actionId: "core.unknown", enabled: false }),
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Unknown",
+        rule: { kind: "dailyTime", at: "02:00" },
+        actionId: "core.unknown",
+        enabled: false,
+      }),
     );
 
     const action = createModuleRegistryDriftCheckAction(pool, {
@@ -122,7 +150,10 @@ describe("moduleRegistry.checkDrift", () => {
       activeProcessIds: new Set(),
     });
 
-    await Promise.all([action({}, { heartbeatId: "hb", projectItemId }), action({}, { heartbeatId: "hb", projectItemId })]);
+    await Promise.all([
+      action({}, { heartbeatId: "hb", projectItemId }),
+      action({}, { heartbeatId: "hb", projectItemId }),
+    ]);
 
     const { rows } = await pool.query(`SELECT id FROM notifications WHERE kind = $1 AND resolved_at IS NULL`, [
       UNKNOWN_HEARTBEAT_ACTION_FINDING_KIND,

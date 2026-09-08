@@ -31,7 +31,7 @@ import {
 
 // Never actually invoked below — these tests only cover construction, not a run —
 // so a minimal stand-in cast to `StreamFn` is enough.
-const noopStreamFn = (async function* () {}) as unknown as StreamFn;
+const noopStreamFn = async function* () {} as unknown as StreamFn;
 
 // `node:child_process`'s ESM namespace is non-configurable, so `vi.spyOn` on it
 // directly is not possible under vitest's module loader. `vi.mock` with a factory

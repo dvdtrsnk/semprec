@@ -7,11 +7,17 @@ const weekday = z.enum(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]);
 // stored jsonb rule (scheduler/rule.ts's heartbeat rule kinds are 'dailyTime'/'everyNDays'/
 // etc) rather than the issue's illustrative DDL comment, which sketched snake_case values.
 const weekdaysRule = z.object({ kind: z.literal("weekdays"), days: z.array(weekday).min(1) });
-const monthDatesRule = z.object({ kind: z.literal("monthDates"), dates: z.array(z.number().int().min(1).max(31)).min(1) });
+const monthDatesRule = z.object({
+  kind: z.literal("monthDates"),
+  dates: z.array(z.number().int().min(1).max(31)).min(1),
+});
 const nthWeekdayRule = z.object({
   kind: z.literal("nthWeekday"),
   // n:-1 means "the last given weekday in the month"; 0 is not a valid ordinal.
-  n: z.number().int().refine((v) => v !== 0, "n must not be 0"),
+  n: z
+    .number()
+    .int()
+    .refine((v) => v !== 0, "n must not be 0"),
   weekday,
 });
 

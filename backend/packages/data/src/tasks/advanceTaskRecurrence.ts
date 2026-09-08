@@ -4,7 +4,12 @@ import { NotFoundError } from "../errors.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
-import { createItemWithClient, createRelationWithClient, updateItemWithClient, type SystemRelationWriteContext } from "../chokePoint/chokePoint.js";
+import {
+  createItemWithClient,
+  createRelationWithClient,
+  updateItemWithClient,
+  type SystemRelationWriteContext,
+} from "../chokePoint/chokePoint.js";
 import { assertValidTimezone } from "../timezone.js";
 import type { ItemRow } from "../types.js";
 import { computeNextDueDate } from "./nextDueDate.js";
@@ -71,7 +76,11 @@ export async function advanceTaskRecurrence(pool: Pool, input: AdvanceTaskRecurr
 
     await copyRelationEdges(client, input.itemId, newItem.id);
 
-    await updateItemWithClient(client, { databaseId: input.databaseId, itemId: input.itemId, propertiesPatch: { status: "done" } });
+    await updateItemWithClient(client, {
+      databaseId: input.databaseId,
+      itemId: input.itemId,
+      propertiesPatch: { status: "done" },
+    });
 
     return newItem;
   });
@@ -111,7 +120,12 @@ async function copyRelationEdges(client: PoolClient, fromItemId: string, toItemI
     const newItemB = edge.itemB === fromItemId ? toItemId : edge.itemB;
     await createRelationWithClient(
       client,
-      { relationPropertyId: reldef.propertyIdA, callerItemId: newItemA, targetItemId: newItemB, metadata: edge.metadata },
+      {
+        relationPropertyId: reldef.propertyIdA,
+        callerItemId: newItemA,
+        targetItemId: newItemB,
+        metadata: edge.metadata,
+      },
       TASKS_RELATION_CONTEXT,
     );
   }

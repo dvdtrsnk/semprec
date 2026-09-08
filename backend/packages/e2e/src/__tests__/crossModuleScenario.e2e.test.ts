@@ -124,16 +124,24 @@ describe("e2e: cross-module scenario (module-contract issue #114)", () => {
 
   it("drift-checks live owner_process state across both modules, resolving once the owning module is active again", async () => {
     const db = await chokePoint.createDatabase({ name: "Alpha", ownerModuleId: "e2eAlphaItems" });
-    await chokePoint.createProperty({ databaseId: db.id, key: "managedByAlpha", name: "Managed", type: "text", owner: "system", ownerProcess: "e2e-alpha" });
+    await chokePoint.createProperty({
+      databaseId: db.id,
+      key: "managedByAlpha",
+      name: "Managed",
+      type: "text",
+      owner: "system",
+      ownerProcess: "e2e-alpha",
+    });
 
     const action = createModuleRegistryDriftCheckAction(pool, {
       activeHeartbeatActionIds: new Set(),
       activeProcessIds: new Set(["e2e-alpha", "e2e-beta"]),
     });
     await action({}, { heartbeatId: "hb", projectItemId: "unused" });
-    const { rows: whileActive } = await pool.query(`SELECT id FROM notifications WHERE kind = $1 AND resolved_at IS NULL`, [
-      ORPHANED_OWNER_PROCESS_FINDING_KIND,
-    ]);
+    const { rows: whileActive } = await pool.query(
+      `SELECT id FROM notifications WHERE kind = $1 AND resolved_at IS NULL`,
+      [ORPHANED_OWNER_PROCESS_FINDING_KIND],
+    );
     expect(whileActive).toHaveLength(0);
 
     // "e2e-alpha" is deactivated: its own property's owner_process is now orphaned.

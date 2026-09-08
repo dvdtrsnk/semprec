@@ -2,7 +2,11 @@ import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
-import { createRelationPropertyWithClient, type CreateRelationPropertyInput, type SystemRelationWriteContext } from "../chokePoint/chokePoint.js";
+import {
+  createRelationPropertyWithClient,
+  type CreateRelationPropertyInput,
+  type SystemRelationWriteContext,
+} from "../chokePoint/chokePoint.js";
 import type { ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
@@ -26,13 +30,25 @@ interface PropSpec {
   config?: Record<string, unknown>;
 }
 
-async function createDb(client: PoolClient, name: string, ownerModuleId: string, ownerProjectItemId: string): Promise<DatabaseRow> {
+async function createDb(
+  client: PoolClient,
+  name: string,
+  ownerModuleId: string,
+  ownerProjectItemId: string,
+): Promise<DatabaseRow> {
   return databasesStore.createDatabase(client, { name, system: true, ownerModuleId, ownerProjectItemId });
 }
 
 async function createProps(client: PoolClient, databaseId: string, specs: PropSpec[]): Promise<void> {
   for (const spec of specs) {
-    await propertiesStore.createProperty(client, { databaseId, key: spec.key, name: spec.name, type: spec.type, owner: spec.owner, config: spec.config });
+    await propertiesStore.createProperty(client, {
+      databaseId,
+      key: spec.key,
+      name: spec.name,
+      type: spec.type,
+      owner: spec.owner,
+      config: spec.config,
+    });
   }
 }
 
@@ -64,7 +80,10 @@ export async function seedInboxPipelineInTransaction(
   computedKeyRegistry: ComputedKeyRegistry,
   viewTypeRegistry: ViewTypeRegistry,
 ): Promise<InboxPipelineDatabases> {
-  const relate = (input: CreateRelationPropertyInput, context?: SystemRelationWriteContext): Promise<{ property: unknown; inverseProperty: unknown }> =>
+  const relate = (
+    input: CreateRelationPropertyInput,
+    context?: SystemRelationWriteContext,
+  ): Promise<{ property: unknown; inverseProperty: unknown }> =>
     createRelationPropertyWithClient(client, input, context, computedKeyRegistry);
 
   // Issue #106: declares the Journal day cache key ahead of any writes, and registers
@@ -75,7 +94,12 @@ export async function seedInboxPipelineInTransaction(
 
   const inbox = await createDb(client, "Inbox", INBOX_MODULE_ID, semprecProjectItemId);
   const inboxItemTypes = await createDb(client, "Inbox item types", INBOX_ITEM_TYPES_MODULE_ID, semprecProjectItemId);
-  const processingProposals = await createDb(client, "Processing proposals", PROCESSING_PROPOSALS_MODULE_ID, semprecProjectItemId);
+  const processingProposals = await createDb(
+    client,
+    "Processing proposals",
+    PROCESSING_PROPOSALS_MODULE_ID,
+    semprecProjectItemId,
+  );
 
   // Both mandatory: the client always supplies date/time, and the server never derives
   // them as "today" — offline capture on a phone and delayed batch submission after a
@@ -98,14 +122,26 @@ export async function seedInboxPipelineInTransaction(
     // validation ("database" requires targetDatabase, "pageContent" rejects it) is
     // enforced in inbox/inboxTypesStore.ts, not here — same reason inboxStore.ts enforces
     // date/time itself: the schema engine has no generic cross-field validation concept.
-    { key: "processingMethod", name: "Processing method", type: "select", owner: "user", config: selectConfig([...PROCESSING_METHODS]) },
+    {
+      key: "processingMethod",
+      name: "Processing method",
+      type: "select",
+      owner: "user",
+      config: selectConfig([...PROCESSING_METHODS]),
+    },
     // Deliberately not a `relation` property: a relation's target database is fixed at
     // creation time (chokePoint.ts's `createRelationPropertyWithClient`), but this must be
     // able to point at any one of the ten hardcoded databases (issue #24) — the same reason
     // Processing proposals' `resultItemId` above is `text`, not `relation`. Stores the
     // target's canonical `owner_module_id` key (e.g. 'tasks', 'events'); which project/page
     // within it is a runtime, content-driven decision (issue #100), never stored here.
-    { key: "targetDatabase", name: "Target database", type: "select", owner: "user", config: selectConfig([...TEN_DATABASE_MODULE_IDS]) },
+    {
+      key: "targetDatabase",
+      name: "Target database",
+      type: "select",
+      owner: "user",
+      config: selectConfig([...TEN_DATABASE_MODULE_IDS]),
+    },
   ]);
 
   await createProps(client, processingProposals.id, [
@@ -136,7 +172,14 @@ export async function seedInboxPipelineInTransaction(
   // one Inbox item. With no inverse to swap this source/target pairing onto (Inbox item types'
   // schema has no reciprocal property here), `one_to_many` can never correctly enforce this
   // relation, same as Emails.attachments.
-  await relate({ sourceDatabaseId: inbox.id, key: "type", name: "Type", targetDatabaseId: inboxItemTypes.id, cardinality: "many_to_many", owner: "user" });
+  await relate({
+    sourceDatabaseId: inbox.id,
+    key: "type",
+    name: "Type",
+    targetDatabaseId: inboxItemTypes.id,
+    cardinality: "many_to_many",
+    owner: "user",
+  });
 
   // Inbox -> Journal ("journalDay"): system-owned, resolved at write time through the
   // existing lazy Journal-day mechanism (journal/journalStore.ts's `getOrCreateJournalItem`,
@@ -202,15 +245,25 @@ export async function seedInboxPipelineInTransaction(
       name: `Inbox tick (${event})`,
       rule: { kind: "onItemEvent", databaseId: inbox.id, event },
       actionId: SEMPREC_TICK_ACTION_ID,
-      actionConfig: { inboxDatabaseId: inbox.id, inboxItemTypesDatabaseId: inboxItemTypes.id, processingProposalsDatabaseId: processingProposals.id },
+      actionConfig: {
+        inboxDatabaseId: inbox.id,
+        inboxItemTypesDatabaseId: inboxItemTypes.id,
+        processingProposalsDatabaseId: processingProposals.id,
+      },
     });
   }
 
   const all: InboxPipelineDatabases = { inbox, inboxItemTypes, processingProposals };
-  await client.query(`UPDATE databases SET schema_locked = true WHERE id = ANY($1::uuid[])`, [[inbox.id, inboxItemTypes.id, processingProposals.id]]);
+  await client.query(`UPDATE databases SET schema_locked = true WHERE id = ANY($1::uuid[])`, [
+    [inbox.id, inboxItemTypes.id, processingProposals.id],
+  ]);
 
   for (const database of Object.values(all)) {
-    await viewsStore.createView(client, { databaseId: database.id, type: "table", name: database.name, isDefault: true, createdBy: "system" }, viewTypeRegistry);
+    await viewsStore.createView(
+      client,
+      { databaseId: database.id, type: "table", name: database.name, isDefault: true, createdBy: "system" },
+      viewTypeRegistry,
+    );
   }
 
   return all;

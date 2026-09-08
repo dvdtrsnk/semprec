@@ -190,8 +190,16 @@ function MessageRow({
         ) : null}
       </button>
       <span className="message-list__actions">
-        {archiveFolderId ? action(t("mailbox.actions.archive"), () => onTriage([message.id], { kind: "move", toFolderId: archiveFolderId })) : null}
-        {trashFolderId ? action(t("mailbox.actions.delete"), () => onTriage([message.id], { kind: "move", toFolderId: trashFolderId })) : null}
+        {archiveFolderId
+          ? action(t("mailbox.actions.archive"), () =>
+              onTriage([message.id], { kind: "move", toFolderId: archiveFolderId }),
+            )
+          : null}
+        {trashFolderId
+          ? action(t("mailbox.actions.delete"), () =>
+              onTriage([message.id], { kind: "move", toFolderId: trashFolderId }),
+            )
+          : null}
         {action(t(read ? "mailbox.actions.markUnread" : "mailbox.actions.markRead"), () =>
           onTriage([message.id], { kind: "flag", propertyKey: config.readPropertyKey, value: !read }),
         )}
@@ -235,12 +243,24 @@ function SelectionToolbar({
       <span className="selection-toolbar__count" role="status">
         {t("mailbox.selection.count", { count: selectedIds.length })}
       </span>
-      {archiveFolderId ? action(t("mailbox.actions.archive"), () => onTriage(ids, { kind: "move", toFolderId: archiveFolderId })) : null}
-      {trashFolderId ? action(t("mailbox.actions.delete"), () => onTriage(ids, { kind: "move", toFolderId: trashFolderId })) : null}
-      {action(t("mailbox.actions.markRead"), () => onTriage(ids, { kind: "flag", propertyKey: config.readPropertyKey, value: true }))}
-      {action(t("mailbox.actions.markUnread"), () => onTriage(ids, { kind: "flag", propertyKey: config.readPropertyKey, value: false }))}
-      {action(t("mailbox.actions.flag"), () => onTriage(ids, { kind: "flag", propertyKey: config.flaggedPropertyKey, value: true }))}
-      {action(t("mailbox.actions.unflag"), () => onTriage(ids, { kind: "flag", propertyKey: config.flaggedPropertyKey, value: false }))}
+      {archiveFolderId
+        ? action(t("mailbox.actions.archive"), () => onTriage(ids, { kind: "move", toFolderId: archiveFolderId }))
+        : null}
+      {trashFolderId
+        ? action(t("mailbox.actions.delete"), () => onTriage(ids, { kind: "move", toFolderId: trashFolderId }))
+        : null}
+      {action(t("mailbox.actions.markRead"), () =>
+        onTriage(ids, { kind: "flag", propertyKey: config.readPropertyKey, value: true }),
+      )}
+      {action(t("mailbox.actions.markUnread"), () =>
+        onTriage(ids, { kind: "flag", propertyKey: config.readPropertyKey, value: false }),
+      )}
+      {action(t("mailbox.actions.flag"), () =>
+        onTriage(ids, { kind: "flag", propertyKey: config.flaggedPropertyKey, value: true }),
+      )}
+      {action(t("mailbox.actions.unflag"), () =>
+        onTriage(ids, { kind: "flag", propertyKey: config.flaggedPropertyKey, value: false }),
+      )}
       {action(t("mailbox.selection.clear"), onClear)}
     </div>
   );
@@ -267,7 +287,15 @@ interface ReadingPaneProps {
  * built from; a message the mail module has no envelope row for still replies, from what its
  * display fields say (see mailOperations.ts).
  */
-function ReadingPane({ operations, databaseId, messageId, aliases, reply, onStartReply, composeHandlers }: ReadingPaneProps) {
+function ReadingPane({
+  operations,
+  databaseId,
+  messageId,
+  aliases,
+  reply,
+  onStartReply,
+  composeHandlers,
+}: ReadingPaneProps) {
   const t = useTranslate();
   const { resource, reload } = useAsyncResource(async () => {
     if (!messageId) return null;
@@ -351,7 +379,13 @@ function MessagesPane({
   return (
     <>
       {selectedIds.length > 0 ? (
-        <SelectionToolbar config={config} targets={targets} selectedIds={selectedIds} onTriage={onTriage} onClear={onClearSelection} />
+        <SelectionToolbar
+          config={config}
+          targets={targets}
+          selectedIds={selectedIds}
+          onTriage={onTriage}
+          onClear={onClearSelection}
+        />
       ) : null}
       {failure ? (
         <p className="message-list__failure" role="alert">
@@ -386,7 +420,15 @@ function MessagesPane({
   );
 }
 
-function MailboxPanes({ config, operations, databaseId }: { config: MailboxConfig; operations: GenericOperations; databaseId: string }) {
+function MailboxPanes({
+  config,
+  operations,
+  databaseId,
+}: {
+  config: MailboxConfig;
+  operations: GenericOperations;
+  databaseId: string;
+}) {
   const t = useTranslate();
   const isNarrow = useIsNarrow();
   const [folderId, setFolderId] = useState<string | null>(null);
@@ -407,7 +449,9 @@ function MailboxPanes({ config, operations, databaseId }: { config: MailboxConfi
     const folders = sortFolders(page.items);
     // Unread counts are the same generic count operation, once per folder — the sidebar
     // never asks for a mailbox-specific aggregate endpoint.
-    const counts = await Promise.all(folders.map((folder) => operations.countItems(databaseId, { filter: unreadFilter(config, folder.id) })));
+    const counts = await Promise.all(
+      folders.map((folder) => operations.countItems(databaseId, { filter: unreadFilter(config, folder.id) })),
+    );
     const unreadCounts: Record<string, number> = {};
     folders.forEach((folder, index) => {
       unreadCounts[folder.id] = counts[index] ?? 0;
@@ -417,14 +461,15 @@ function MailboxPanes({ config, operations, databaseId }: { config: MailboxConfi
     return { folders, unreadCounts, mailboxes, folderMailbox };
   }, [config, databaseId]);
 
-  const { resource: messagesResource, reload: reloadMessages } = useAsyncResource<Item[]>(
-    async () => {
-      if (!folderId) return [];
-      const page = await operations.listItems(databaseId, { filter: folderFilter(config, folderId), sort: messageSort(config), limit: 50 });
-      return page.items;
-    },
-    [databaseId, folderId, config],
-  );
+  const { resource: messagesResource, reload: reloadMessages } = useAsyncResource<Item[]>(async () => {
+    if (!folderId) return [];
+    const page = await operations.listItems(databaseId, {
+      filter: folderFilter(config, folderId),
+      sort: messageSort(config),
+      limit: 50,
+    });
+    return page.items;
+  }, [databaseId, folderId, config]);
 
   // A completed triage is applied to what is already on screen rather than re-read: a
   // refetch would unmount the rows mid-action and drop the keyboard cursor's focus with
@@ -435,7 +480,10 @@ function MailboxPanes({ config, operations, databaseId }: { config: MailboxConfi
   useEffect(() => setTriagedMessages(null), [messagesResource]);
   useEffect(() => setUnreadDeltas({}), [resource]);
 
-  const messages = triagedMessages ?? (messagesResource.status === "ready" ? messagesResource.value : []);
+  const messages = useMemo(
+    () => triagedMessages ?? (messagesResource.status === "ready" ? messagesResource.value : []),
+    [triagedMessages, messagesResource],
+  );
   const unreadCounts = useMemo(() => {
     const base = resource.status === "ready" ? resource.value.unreadCounts : {};
     const entries = Object.entries(unreadDeltas);
@@ -445,8 +493,11 @@ function MailboxPanes({ config, operations, databaseId }: { config: MailboxConfi
     return merged;
   }, [resource, unreadDeltas]);
 
-  const folders = resource.status === "ready" ? resource.value.folders : [];
-  const aliases = useMemo<AliasOption[]>(() => aliasOptions(resource.status === "ready" ? resource.value.mailboxes : []), [resource]);
+  const folders = useMemo(() => (resource.status === "ready" ? resource.value.folders : []), [resource]);
+  const aliases = useMemo<AliasOption[]>(
+    () => aliasOptions(resource.status === "ready" ? resource.value.mailboxes : []),
+    [resource],
+  );
   // The account whose folder is open — the From default for a new message written from here.
   const contextMailboxItemId = useMemo(() => {
     if (resource.status !== "ready" || !folderId) return config.mailboxItemId ?? null;
@@ -489,8 +540,21 @@ function MailboxPanes({ config, operations, databaseId }: { config: MailboxConfi
 
       const result: TriageResult =
         action.kind === "flag"
-          ? await setMessageFlag(operations, { databaseId, propertyKey: action.propertyKey, value: action.value }, messageIds)
-          : await moveMessages(operations, { databaseId, relationKey: config.folderRelationKey, fromFolderId: folderId, toFolderId: action.toFolderId }, messageIds);
+          ? await setMessageFlag(
+              operations,
+              { databaseId, propertyKey: action.propertyKey, value: action.value },
+              messageIds,
+            )
+          : await moveMessages(
+              operations,
+              {
+                databaseId,
+                relationKey: config.folderRelationKey,
+                fromFolderId: folderId,
+                toFolderId: action.toFolderId,
+              },
+              messageIds,
+            );
 
       const succeeded = new Set(result.succeeded);
       const unreadMoved = countUnread(messages, result.succeeded, config.readPropertyKey);
@@ -503,14 +567,22 @@ function MailboxPanes({ config, operations, databaseId }: { config: MailboxConfi
         });
 
       if (action.kind === "move") {
-        setCursorId((current) => nextCursorAfterRemoval(messages.map((message) => message.id), current, result.succeeded));
+        setCursorId((current) =>
+          nextCursorAfterRemoval(
+            messages.map((message) => message.id),
+            current,
+            result.succeeded,
+          ),
+        );
         setTriagedMessages(messages.filter((message) => !succeeded.has(message.id)));
         setMessageId((current) => (current && succeeded.has(current) ? null : current));
         addUnreadDelta({ [folderId]: -unreadMoved, [action.toFolderId]: unreadMoved });
       } else {
         setTriagedMessages(
           messages.map((message) =>
-            succeeded.has(message.id) ? { ...message, properties: { ...message.properties, [action.propertyKey]: action.value } } : message,
+            succeeded.has(message.id)
+              ? { ...message, properties: { ...message.properties, [action.propertyKey]: action.value } }
+              : message,
           ),
         );
         if (action.propertyKey === config.readPropertyKey) {
@@ -532,7 +604,10 @@ function MailboxPanes({ config, operations, databaseId }: { config: MailboxConfi
 
   // What a shortcut acts on: the selection when there is one, otherwise the message under the
   // cursor — never anything the user has not pointed at one way or the other.
-  const keyboardTargets = useCallback(() => (selectedIds.length > 0 ? [...selectedIds] : cursorId ? [cursorId] : []), [selectedIds, cursorId]);
+  const keyboardTargets = useCallback(
+    () => (selectedIds.length > 0 ? [...selectedIds] : cursorId ? [cursorId] : []),
+    [selectedIds, cursorId],
+  );
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -567,7 +642,9 @@ function MailboxPanes({ config, operations, databaseId }: { config: MailboxConfi
   }, []);
 
   const toggleSelected = useCallback((toggledId: string) => {
-    setSelectedIds((current) => (current.includes(toggledId) ? current.filter((id) => id !== toggledId) : [...current, toggledId]));
+    setSelectedIds((current) =>
+      current.includes(toggledId) ? current.filter((id) => id !== toggledId) : [...current, toggledId],
+    );
   }, []);
 
   const pane: Pane = activePane({ folderId, messageId });
@@ -597,7 +674,10 @@ function MailboxPanes({ config, operations, databaseId }: { config: MailboxConfi
   const runCompose = useCallback(
     async (state: ComposeState, action: "save" | "send", apply: (next: ComposeState) => void) => {
       apply({ ...state, status: action === "save" ? "saving" : "sending", error: null });
-      const next = action === "save" ? await saveComposeDraft(operations, state, aliases) : await sendCompose(operations, state, aliases);
+      const next =
+        action === "save"
+          ? await saveComposeDraft(operations, state, aliases)
+          : await sendCompose(operations, state, aliases);
       apply(next);
     },
     [operations, aliases],
@@ -642,12 +722,21 @@ function MailboxPanes({ config, operations, databaseId }: { config: MailboxConfi
     (mode: Exclude<ComposeMode, "new">, message: Item, envelope: MessageEnvelope) => {
       const sender = envelope.envelope.from ? formatAddress(envelope.envelope.from) : (text(message, "sender") ?? "");
       setReplies((current) => {
-        const derived = replyCompose({ mode, message, envelope, aliases, contextMailboxItemId, attribution: t("mailbox.compose.attribution", { sender }) });
+        const derived = replyCompose({
+          mode,
+          message,
+          envelope,
+          aliases,
+          contextMailboxItemId,
+          attribution: t("mailbox.compose.attribution", { sender }),
+        });
         const existing = current[message.id];
         // Switching between Reply and Reply to all on a message already being answered is a
         // change of who it goes to, and nothing else: the body, the subject, the chosen alias
         // and the draft the content may already be saved as all stay exactly as they are.
-        const next = existing ? { ...existing, mode, to: derived.to, cc: derived.cc, showCopies: existing.showCopies || derived.showCopies } : derived;
+        const next = existing
+          ? { ...existing, mode, to: derived.to, cc: derived.cc, showCopies: existing.showCopies || derived.showCopies }
+          : derived;
         return { ...current, [message.id]: next };
       });
     },
@@ -684,7 +773,12 @@ function MailboxPanes({ config, operations, databaseId }: { config: MailboxConfi
           {resource.status === "loading" ? <LoadingState /> : null}
           {resource.status === "failed" ? <ErrorState error={resource.error} onRetry={reload} /> : null}
           {resource.status === "ready" ? (
-            <FolderList folders={resource.value.folders} unreadCounts={unreadCounts} selectedFolderId={folderId} onSelect={selectFolder} />
+            <FolderList
+              folders={resource.value.folders}
+              unreadCounts={unreadCounts}
+              selectedFolderId={folderId}
+              onSelect={selectFolder}
+            />
           ) : null}
         </section>
       ) : null}

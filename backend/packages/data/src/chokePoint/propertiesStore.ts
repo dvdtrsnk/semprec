@@ -5,7 +5,13 @@ import { assertKnownValue } from "../dbRowValidation.js";
 import { getDatabase } from "./databasesStore.js";
 
 const PROPERTY_OWNERS: readonly PropertyOwner[] = ["user", "system"];
-const MIGRATION_STATUSES: readonly PropertyRow["migrationStatus"][] = ["stable", "pending", "running", "done", "partial"];
+const MIGRATION_STATUSES: readonly PropertyRow["migrationStatus"][] = [
+  "stable",
+  "pending",
+  "running",
+  "done",
+  "partial",
+];
 
 function mapPropertyRow(row: {
   id: string;
@@ -40,18 +46,23 @@ export async function getProperty(client: PoolClient, propertyId: string): Promi
   return rows[0] ? mapPropertyRow(rows[0]) : null;
 }
 
-export async function getPropertyByKey(client: PoolClient, databaseId: string, key: string): Promise<PropertyRow | null> {
-  const { rows } = await client.query(`SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = $1 AND key = $2`, [
-    databaseId,
-    key,
-  ]);
+export async function getPropertyByKey(
+  client: PoolClient,
+  databaseId: string,
+  key: string,
+): Promise<PropertyRow | null> {
+  const { rows } = await client.query(
+    `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = $1 AND key = $2`,
+    [databaseId, key],
+  );
   return rows[0] ? mapPropertyRow(rows[0]) : null;
 }
 
 export async function listPropertiesByDatabase(client: PoolClient, databaseId: string): Promise<PropertyRow[]> {
-  const { rows } = await client.query(`SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = $1 ORDER BY key`, [
-    databaseId,
-  ]);
+  const { rows } = await client.query(
+    `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = $1 ORDER BY key`,
+    [databaseId],
+  );
   return rows.map(mapPropertyRow);
 }
 
@@ -161,10 +172,10 @@ export async function updatePropertyConfig(
   const property = await requireProperty(client, propertyId);
   await assertPropertySchemaMutable(client, property);
 
-  const { rows } = await client.query(`UPDATE properties SET config = $2::jsonb WHERE id = $1 RETURNING ${PROPERTY_COLUMNS}`, [
-    propertyId,
-    JSON.stringify(config),
-  ]);
+  const { rows } = await client.query(
+    `UPDATE properties SET config = $2::jsonb WHERE id = $1 RETURNING ${PROPERTY_COLUMNS}`,
+    [propertyId, JSON.stringify(config)],
+  );
   return mapPropertyRow(rows[0]);
 }
 

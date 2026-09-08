@@ -6,7 +6,11 @@ import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { writeComputed } from "../chokePoint/itemsStore.js";
 import { notifyInvalidation } from "../realtimeHook.js";
-import { INBOX_MODULE_ID, INBOX_ITEM_TYPES_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
+import {
+  INBOX_MODULE_ID,
+  INBOX_ITEM_TYPES_MODULE_ID,
+  PROCESSING_PROPOSALS_MODULE_ID,
+} from "../seed/inboxPipelineKeys.js";
 import { JOURNAL_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import type { DatabaseRow } from "../types.js";
 
@@ -47,7 +51,11 @@ async function resolveInboxPipelineDatabases(client: PoolClient): Promise<InboxP
 }
 
 /** The Journal day item id a given Inbox item's `journalDay` relation edge points at, or null if unresolved. */
-async function resolveJournalDayItemId(client: PoolClient, inboxDatabaseId: string, inboxItemId: string): Promise<string | null> {
+async function resolveJournalDayItemId(
+  client: PoolClient,
+  inboxDatabaseId: string,
+  inboxItemId: string,
+): Promise<string | null> {
   const journalDayProperty = await propertiesStore.getPropertyByKey(client, inboxDatabaseId, "journalDay");
   if (!journalDayProperty) return null;
   const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, journalDayProperty.id);
@@ -58,8 +66,16 @@ async function resolveJournalDayItemId(client: PoolClient, inboxDatabaseId: stri
 }
 
 /** The Inbox item id a given Processing proposal's `sourceInbox` relation edge points at, or null (e.g. a `kind: 'transcript'` proposal has none). */
-async function resolveSourceInboxItemId(client: PoolClient, processingProposalsDatabaseId: string, proposalId: string): Promise<string | null> {
-  const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, processingProposalsDatabaseId, "sourceInbox");
+async function resolveSourceInboxItemId(
+  client: PoolClient,
+  processingProposalsDatabaseId: string,
+  proposalId: string,
+): Promise<string | null> {
+  const sourceInboxProperty = await propertiesStore.getPropertyByKey(
+    client,
+    processingProposalsDatabaseId,
+    "sourceInbox",
+  );
   if (!sourceInboxProperty) return null;
   const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, sourceInboxProperty.id);
   if (!relationDefinition) return null;
@@ -69,10 +85,17 @@ async function resolveSourceInboxItemId(client: PoolClient, processingProposalsD
 }
 
 /** Builds the display-ready Inbox-item list for one Journal day, querying Inbox purely through its `journalDay` relation (issue #106). */
-async function computeJournalInboxItems(client: PoolClient, databases: InboxPipelineDatabases, journalDayItemId: string): Promise<JournalInboxItemSummary[]> {
+async function computeJournalInboxItems(
+  client: PoolClient,
+  databases: InboxPipelineDatabases,
+  journalDayItemId: string,
+): Promise<JournalInboxItemSummary[]> {
   const journalDayProperty = await propertiesStore.getPropertyByKey(client, databases.inbox.id, "journalDay");
   if (!journalDayProperty) return [];
-  const journalDayRelationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, journalDayProperty.id);
+  const journalDayRelationDefinition = await relationsStore.getRelationDefinitionByPropertyId(
+    client,
+    journalDayProperty.id,
+  );
   if (!journalDayRelationDefinition) return [];
 
   const dayEdges = await relationsStore.listRelationsForItem(client, journalDayRelationDefinition.id, journalDayItemId);
@@ -83,10 +106,18 @@ async function computeJournalInboxItems(client: PoolClient, databases: InboxPipe
   const items = await itemsStore.getItemsByIds(client, inboxItemIds);
 
   const typeProperty = await propertiesStore.getPropertyByKey(client, databases.inbox.id, "type");
-  const typeRelationDefinition = typeProperty ? await relationsStore.getRelationDefinitionByPropertyId(client, typeProperty.id) : null;
+  const typeRelationDefinition = typeProperty
+    ? await relationsStore.getRelationDefinitionByPropertyId(client, typeProperty.id)
+    : null;
 
-  const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, databases.processingProposals.id, "sourceInbox");
-  const sourceInboxRelationDefinition = sourceInboxProperty ? await relationsStore.getRelationDefinitionByPropertyId(client, sourceInboxProperty.id) : null;
+  const sourceInboxProperty = await propertiesStore.getPropertyByKey(
+    client,
+    databases.processingProposals.id,
+    "sourceInbox",
+  );
+  const sourceInboxRelationDefinition = sourceInboxProperty
+    ? await relationsStore.getRelationDefinitionByPropertyId(client, sourceInboxProperty.id)
+    : null;
 
   const summaries: JournalInboxItemSummary[] = [];
   for (const item of items) {
@@ -95,7 +126,11 @@ async function computeJournalInboxItems(client: PoolClient, databases: InboxPipe
       const edges = await relationsStore.listRelationsForItem(client, typeRelationDefinition.id, item.id);
       const edge = edges[0];
       if (edge) {
-        const typeItem = await itemsStore.getItemById(client, databases.inboxItemTypes.id, relationsStore.otherSide(edge, item.id));
+        const typeItem = await itemsStore.getItemById(
+          client,
+          databases.inboxItemTypes.id,
+          relationsStore.otherSide(edge, item.id),
+        );
         if (typeItem && !typeItem.deletedAt) {
           type = {
             id: typeItem.id,
@@ -110,7 +145,11 @@ async function computeJournalInboxItems(client: PoolClient, databases: InboxPipe
     if (sourceInboxRelationDefinition) {
       const edges = await relationsStore.listRelationsForItem(client, sourceInboxRelationDefinition.id, item.id);
       for (const edge of edges) {
-        const proposal = await itemsStore.getItemById(client, databases.processingProposals.id, relationsStore.otherSide(edge, item.id));
+        const proposal = await itemsStore.getItemById(
+          client,
+          databases.processingProposals.id,
+          relationsStore.otherSide(edge, item.id),
+        );
         if (proposal && !proposal.deletedAt) {
           status = typeof proposal.properties.status === "string" ? proposal.properties.status : null;
           break;
@@ -180,6 +219,9 @@ export async function recomputeJournalInboxDay(pool: Pool, journalDayItemId: str
   }
 }
 
-export async function handleJournalInboxRecomputeTask(pool: Pool, payload: { journalDayItemId: string }): Promise<void> {
+export async function handleJournalInboxRecomputeTask(
+  pool: Pool,
+  payload: { journalDayItemId: string },
+): Promise<void> {
   await recomputeJournalInboxDay(pool, payload.journalDayItemId);
 }

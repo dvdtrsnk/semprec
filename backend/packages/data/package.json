@@ -7,13 +7,15 @@
   "types": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./testSupport": "./src/testSupport/testDb.ts"
+    "./testSupport": "./src/testSupport/testDb.ts",
+    "./testSupport/mcpContractServers": "./src/testSupport/mcpContractServers.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && cp -r src/db/migrations dist/db/migrations",
     "check-migration-numbering": "node scripts/check-migration-numbering.mjs"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@semprec/credentials": "workspace:*",
     "@semprec/module-registry": "workspace:*",
     "@semprec/queue": "workspace:*",

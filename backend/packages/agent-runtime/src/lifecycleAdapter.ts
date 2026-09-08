@@ -43,7 +43,12 @@ export function extractResultSnapshot(lastMessage: AgentMessage | null): string 
 }
 
 /** Best-effort: a failed NOTIFY must not fail the run it's reporting on. */
-export async function pushLiveEvent(client: Pool | PoolClient, agentRunId: string, kind: string, payload: unknown): Promise<void> {
+export async function pushLiveEvent(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  kind: string,
+  payload: unknown,
+): Promise<void> {
   try {
     await publishRealtimeMessage(client, { type: "agent_run_event", agentRunId, kind, payload });
   } catch (err) {
@@ -51,7 +56,11 @@ export async function pushLiveEvent(client: Pool | PoolClient, agentRunId: strin
   }
 }
 
-export function pushRunStatus(client: Pool | PoolClient, agentRunId: string, status: "running" | "done" | "error"): Promise<void> {
+export function pushRunStatus(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  status: "running" | "done" | "error",
+): Promise<void> {
   return pushLiveEvent(client, agentRunId, "run_status", { kind: "run_status", status });
 }
 

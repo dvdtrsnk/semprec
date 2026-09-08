@@ -9,7 +9,9 @@ export const manifest: ModuleManifest = {
   databases: [],
   capabilities: [],
   agentTools: [],
-  heartbeatRuleKinds: [{ kind: "fixtureMalformed.onTick", schemaExport: "notASchema", nextFireAtExport: "computeNextFireAt" }],
+  heartbeatRuleKinds: [
+    { kind: "fixtureMalformed.onTick", schemaExport: "notASchema", nextFireAtExport: "computeNextFireAt" },
+  ],
 };
 
 // Exists, but isn't schema-shaped (no `safeParse`) — loadModule must reject this at load time,

@@ -41,9 +41,10 @@ describe("module data migration", () => {
   }
 
   async function getMigrationCursor(databaseId: string): Promise<string | null> {
-    const { rows } = await pool.query<{ migration_cursor: string | null }>("SELECT migration_cursor FROM databases WHERE id = $1", [
-      databaseId,
-    ]);
+    const { rows } = await pool.query<{ migration_cursor: string | null }>(
+      "SELECT migration_cursor FROM databases WHERE id = $1",
+      [databaseId],
+    );
     return rows[0].migration_cursor;
   }
 
@@ -149,7 +150,13 @@ describe("module data migration", () => {
     const { databaseId } = await seedDatabaseWithItems(2);
     const converter = vi.fn((properties: Record<string, unknown>) => ({ ...properties, converted: true }));
 
-    const params = { moduleId: MODULE_ID, databaseKey: DATABASE_KEY, fromVersion: FROM_VERSION, toVersion: TO_VERSION, converter };
+    const params = {
+      moduleId: MODULE_ID,
+      databaseKey: DATABASE_KEY,
+      fromVersion: FROM_VERSION,
+      toVersion: TO_VERSION,
+      converter,
+    };
     await runModuleDataMigration(pool, params);
     expect(converter).toHaveBeenCalledTimes(2);
 
@@ -166,7 +173,14 @@ describe("module data migration", () => {
       timesConverted: (typeof properties.timesConverted === "number" ? properties.timesConverted : 0) + 1,
     });
 
-    const params = { moduleId: MODULE_ID, databaseKey: DATABASE_KEY, fromVersion: FROM_VERSION, toVersion: TO_VERSION, converter, pageSize: 3 };
+    const params = {
+      moduleId: MODULE_ID,
+      databaseKey: DATABASE_KEY,
+      fromVersion: FROM_VERSION,
+      toVersion: TO_VERSION,
+      converter,
+      pageSize: 3,
+    };
     await Promise.all([runModuleDataMigration(pool, params), runModuleDataMigration(pool, params)]);
 
     expect(await countModuleMigrationRows()).toBe(1);

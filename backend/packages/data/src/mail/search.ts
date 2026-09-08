@@ -36,7 +36,11 @@ export interface FindEmailsMissingSearchIndexResult {
  * from the normal path can't happen; this only needs to cover a direct-DB write skipping that
  * call entirely.
  */
-export async function findEmailsMissingSearchIndex(client: Queryable, emailsDatabaseId: string, limit = 200): Promise<FindEmailsMissingSearchIndexResult[]> {
+export async function findEmailsMissingSearchIndex(
+  client: Queryable,
+  emailsDatabaseId: string,
+  limit = 200,
+): Promise<FindEmailsMissingSearchIndexResult[]> {
   const { rows } = await client.query<{ id: string; properties: { name?: string; body?: string } }>(
     `SELECT i.id, i.properties FROM items i
      LEFT JOIN item_search_index s ON s.item_id = i.id AND s.database_id = i.database_id

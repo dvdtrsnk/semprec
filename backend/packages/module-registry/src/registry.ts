@@ -149,7 +149,9 @@ export class ModuleRegistry {
     }
     const existingIdForName = this.moduleIdByName.get(manifest.name);
     if (existingIdForName !== undefined) {
-      throw new Error(`Duplicate module name "${manifest.name}" loading "${path}" (already used by module "${existingIdForName}")`);
+      throw new Error(
+        `Duplicate module name "${manifest.name}" loading "${path}" (already used by module "${existingIdForName}")`,
+      );
     }
 
     this.assertExportsExist(path, manifest, imported);
@@ -214,7 +216,12 @@ export class ModuleRegistry {
     return imported[exportName];
   }
 
-  private requireFunctionExport(imported: Record<string, unknown>, exportName: string, path: string, context: string): void {
+  private requireFunctionExport(
+    imported: Record<string, unknown>,
+    exportName: string,
+    path: string,
+    context: string,
+  ): void {
     const value = this.requireExport(imported, exportName, path, context);
     if (typeof value !== "function") {
       throw new Error(`Module at "${path}" ${context} export "${exportName}" is not a function`);
@@ -227,10 +234,21 @@ export class ModuleRegistry {
    * fails startup loudly instead of surfacing as a confusing `TypeError` deep inside
    * `parseHeartbeatRule` the first time a rule of that kind is actually validated.
    */
-  private requireSchemaExport(imported: Record<string, unknown>, exportName: string, path: string, context: string): void {
+  private requireSchemaExport(
+    imported: Record<string, unknown>,
+    exportName: string,
+    path: string,
+    context: string,
+  ): void {
     const value = this.requireExport(imported, exportName, path, context);
-    if (typeof value !== "object" || value === null || typeof (value as { safeParse?: unknown }).safeParse !== "function") {
-      throw new Error(`Module at "${path}" ${context} export "${exportName}" is not a schema (missing a "safeParse" method)`);
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      typeof (value as { safeParse?: unknown }).safeParse !== "function"
+    ) {
+      throw new Error(
+        `Module at "${path}" ${context} export "${exportName}" is not a schema (missing a "safeParse" method)`,
+      );
     }
   }
 
@@ -243,14 +261,22 @@ export class ModuleRegistry {
   private claimCrossModuleIdentifiers(path: string, manifest: ModuleManifest): void {
     const claims: Array<{ owners: Map<string, string>; key: string; label: string; reserved?: ReadonlySet<string> }> = [
       ...manifest.databases.map((db) => ({ owners: this.databaseKeyOwners, key: db.key, label: "database key" })),
-      ...manifest.agentTools.map((tool) => ({ owners: this.agentToolNameOwners, key: tool.name, label: "agent tool name" })),
+      ...manifest.agentTools.map((tool) => ({
+        owners: this.agentToolNameOwners,
+        key: tool.name,
+        label: "agent tool name",
+      })),
       ...(manifest.taskNames ?? []).map((task) => ({
         owners: this.taskNameOwners,
         key: task.name,
         label: "task name",
         reserved: this.reservedTaskNames,
       })),
-      ...(manifest.workers ?? []).map((worker) => ({ owners: this.workerNameOwners, key: worker.name, label: "worker name" })),
+      ...(manifest.workers ?? []).map((worker) => ({
+        owners: this.workerNameOwners,
+        key: worker.name,
+        label: "worker name",
+      })),
       ...(manifest.heartbeatRuleKinds ?? []).map((ruleKind) => ({
         owners: this.heartbeatRuleKindOwners,
         key: ruleKind.kind,
@@ -364,7 +390,9 @@ export class ModuleRegistry {
 
   async getTasks(): Promise<ModuleTaskProjection[]> {
     const active = await this.getActiveModules();
-    return active.flatMap((loaded) => (loaded.manifest.taskNames ?? []).map((task) => ({ moduleId: loaded.manifest.id, ...task })));
+    return active.flatMap((loaded) =>
+      (loaded.manifest.taskNames ?? []).map((task) => ({ moduleId: loaded.manifest.id, ...task })),
+    );
   }
 
   /**
@@ -385,18 +413,25 @@ export class ModuleRegistry {
 
   async getWorkers(): Promise<ModuleWorkerProjection[]> {
     const active = await this.getActiveModules();
-    return active.flatMap((loaded) => (loaded.manifest.workers ?? []).map((worker) => ({ moduleId: loaded.manifest.id, ...worker })));
+    return active.flatMap((loaded) =>
+      (loaded.manifest.workers ?? []).map((worker) => ({ moduleId: loaded.manifest.id, ...worker })),
+    );
   }
 
   async getMigrations(): Promise<ModuleMigrationProjection[]> {
     const active = await this.getActiveModules();
-    return active.flatMap((loaded) => (loaded.manifest.migrations ?? []).map((migration) => ({ moduleId: loaded.manifest.id, migration })));
+    return active.flatMap((loaded) =>
+      (loaded.manifest.migrations ?? []).map((migration) => ({ moduleId: loaded.manifest.id, migration })),
+    );
   }
 
   async getDataMigrations(): Promise<ModuleDataMigrationProjection[]> {
     const active = await this.getActiveModules();
     return active.flatMap((loaded) =>
-      (loaded.manifest.dataMigrations ?? []).map((dataMigration) => ({ moduleId: loaded.manifest.id, ...dataMigration })),
+      (loaded.manifest.dataMigrations ?? []).map((dataMigration) => ({
+        moduleId: loaded.manifest.id,
+        ...dataMigration,
+      })),
     );
   }
 

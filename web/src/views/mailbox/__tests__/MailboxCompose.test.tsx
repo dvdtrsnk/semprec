@@ -164,7 +164,11 @@ describe("mailbox compose (issue #98)", () => {
       await userEvent.click(within(composeWindow()).getByRole("button", { name: "Save draft" }));
 
       await waitFor(() => expect(backend.mail?.drafts).toEqual(["draft-1"]));
-      expect(backend.relations).toContainEqual({ property: "folder", itemId: "draft-1", targetItemId: "folder-drafts" });
+      expect(backend.relations).toContainEqual({
+        property: "folder",
+        itemId: "draft-1",
+        targetItemId: "folder-drafts",
+      });
       // Create-only draft surface: the window says the draft exists rather than saving a second one.
       expect(within(composeWindow()).getByRole("button", { name: "Save draft" })).toBeDisabled();
     });
@@ -189,7 +193,11 @@ describe("mailbox compose (issue #98)", () => {
       expect(sent?.payload.inReplyTo).toBe("<invoice-1@example.com>");
       expect(sent?.payload.references).toEqual(["<thread-root@example.com>", "<invoice-1@example.com>"]);
       // The draft it was sent from now lives in Sent, and the reply form is gone.
-      expect(backend.relations).toContainEqual({ property: "folder", itemId: sent?.draftItemId, targetItemId: "folder-sent" });
+      expect(backend.relations).toContainEqual({
+        property: "folder",
+        itemId: sent?.draftItemId,
+        targetItemId: "folder-sent",
+      });
       await waitFor(() => expect(screen.queryByRole("region", { name: "Reply to all" })).toBeNull());
     });
 

@@ -99,12 +99,51 @@ export async function getAgentRun(client: Pool | PoolClient, id: string): Promis
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
+/** The batched form of `getAgentRun` — for resolving a set of runs (e.g. the approval queue's source-run links) in one query instead of one per row. */
+export async function getAgentRunsByIds(client: Pool | PoolClient, ids: string[]): Promise<AgentRunRow[]> {
+  if (ids.length === 0) return [];
+  const { rows } = await client.query(
+    `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
+     FROM agent_runs WHERE id = ANY($1::uuid[])`,
+    [ids],
+  );
+  return rows.map(mapRow);
+}
+
 /** The audit trail: run history for a heartbeat is a query over agent_runs, no second run-log table. */
 export async function listAgentRunsByHeartbeat(client: Pool | PoolClient, heartbeatId: string): Promise<AgentRunRow[]> {
   const { rows } = await client.query(
     `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
      FROM agent_runs WHERE heartbeat_id = $1 ORDER BY started_at DESC`,
     [heartbeatId],
+  );
+  return rows.map(mapRow);
+}
+
+export interface SessionAgentRunsFilter {
+  projectItemId: string;
+  triggeredBy: TriggeredBy;
+  /** `null` for Semp's own conversation (never delegated); a supervisor run id for a delegated one. */
+  parentRunId: string | null;
+}
+
+/**
+ * Every `unit='session'` run belonging to one dormant conversation, in the order they were
+ * woken — the reconstruction source both Semp's own conversation (#118, `triggered_by='user'`,
+ * `parent_run_id` null) and a delegated one (#229, `triggered_by='supervisor'`, `parent_run_id`
+ * the supervisor run that key's `DelegationRegistry` entry belongs to) walk to rebuild an
+ * `Entry[]` tree for a freshly woken session (#119).
+ */
+export async function listSessionAgentRuns(
+  client: Pool | PoolClient,
+  filter: SessionAgentRunsFilter,
+): Promise<AgentRunRow[]> {
+  const { rows } = await client.query(
+    `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
+     FROM agent_runs
+     WHERE project_item_id = $1 AND unit = 'session' AND triggered_by = $2 AND parent_run_id IS NOT DISTINCT FROM $3
+     ORDER BY wake_seq ASC`,
+    [filter.projectItemId, filter.triggeredBy, filter.parentRunId],
   );
   return rows.map(mapRow);
 }

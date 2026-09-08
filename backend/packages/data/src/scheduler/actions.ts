@@ -30,7 +30,11 @@ export function createActionQueueAffinity(): ActionQueueAffinity {
   return new Map();
 }
 
-export type RunAgentFn = (input: { agentRunId: string; projectItemId: string; task: string }) => Promise<{ result?: string } | void>;
+export type RunAgentFn = (input: {
+  agentRunId: string;
+  projectItemId: string;
+  task: string;
+}) => Promise<{ result?: string } | void>;
 
 /**
  * `core.agentRun`: "run the agent owning the project with the task from action_config.task."

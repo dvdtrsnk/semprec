@@ -16,7 +16,10 @@ interface PendingUpdateRow {
 }
 
 async function loadSnapshotForUpdate(client: PoolClient, docId: string): Promise<Buffer | null> {
-  const { rows } = await client.query<{ state: Buffer }>(`SELECT state FROM doc_snapshots WHERE doc_id = $1 FOR UPDATE`, [docId]);
+  const { rows } = await client.query<{ state: Buffer }>(
+    `SELECT state FROM doc_snapshots WHERE doc_id = $1 FOR UPDATE`,
+    [docId],
+  );
   return rows[0]?.state ?? null;
 }
 
@@ -52,13 +55,15 @@ async function compact(client: PoolClient, docId: string, doc: Y.Doc, mergedUpda
      ON CONFLICT (doc_id) DO UPDATE SET state = EXCLUDED.state, state_vector = EXCLUDED.state_vector, updated_at = now()`,
     [docId, state, stateVector],
   );
-  await client.query(`INSERT INTO doc_snapshot_history (doc_id, state, expires_at, created_by) VALUES ($1, $2, now() + $3::interval, 'system')`, [
-    docId,
-    state,
-    `${DEFAULT_HISTORY_RETENTION_MS} milliseconds`,
-  ]);
+  await client.query(
+    `INSERT INTO doc_snapshot_history (doc_id, state, expires_at, created_by) VALUES ($1, $2, now() + $3::interval, 'system')`,
+    [docId, state, `${DEFAULT_HISTORY_RETENTION_MS} milliseconds`],
+  );
   if (mergedUpdateIds.length > 0) {
-    await client.query(`DELETE FROM doc_updates WHERE doc_id = $1 AND id = ANY($2::bigint[])`, [docId, mergedUpdateIds]);
+    await client.query(`DELETE FROM doc_updates WHERE doc_id = $1 AND id = ANY($2::bigint[])`, [
+      docId,
+      mergedUpdateIds,
+    ]);
   }
 }
 
@@ -79,7 +84,11 @@ async function compact(client: PoolClient, docId: string, doc: Y.Doc, mergedUpda
  * captures a state that a concurrently-running compaction has already made stale by
  * the time the squash's own checkpoint gets its (later) timestamp.
  */
-export async function loadDocWithClient(client: PoolClient, docId: string, compactionThreshold = DEFAULT_COMPACTION_THRESHOLD): Promise<Y.Doc> {
+export async function loadDocWithClient(
+  client: PoolClient,
+  docId: string,
+  compactionThreshold = DEFAULT_COMPACTION_THRESHOLD,
+): Promise<Y.Doc> {
   const snapshot = await loadSnapshotForUpdate(client, docId);
   const pendingUpdates = await loadPendingUpdatesForUpdate(client, docId);
 
@@ -99,7 +108,11 @@ export async function loadDocWithClient(client: PoolClient, docId: string, compa
   return doc;
 }
 
-export async function loadDoc(pool: Pool, docId: string, compactionThreshold = DEFAULT_COMPACTION_THRESHOLD): Promise<Y.Doc> {
+export async function loadDoc(
+  pool: Pool,
+  docId: string,
+  compactionThreshold = DEFAULT_COMPACTION_THRESHOLD,
+): Promise<Y.Doc> {
   return withTransaction(pool, (client) => loadDocWithClient(client, docId, compactionThreshold));
 }
 
@@ -110,9 +123,18 @@ export async function loadDoc(pool: Pool, docId: string, compactionThreshold = D
  * immediately would let a subscriber observe a `doc_updates` row that a later failure in
  * that same transaction then rolls back.
  */
-async function appendDocUpdateWithClient(client: PoolClient, docId: string, update: Uint8Array, createdBy: CreatedBy): Promise<void> {
+async function appendDocUpdateWithClient(
+  client: PoolClient,
+  docId: string,
+  update: Uint8Array,
+  createdBy: CreatedBy,
+): Promise<void> {
   const updateBuffer = Buffer.from(update);
-  await client.query(`INSERT INTO doc_updates (doc_id, update, created_by) VALUES ($1, $2, $3)`, [docId, updateBuffer, createdBy]);
+  await client.query(`INSERT INTO doc_updates (doc_id, update, created_by) VALUES ($1, $2, $3)`, [
+    docId,
+    updateBuffer,
+    createdBy,
+  ]);
   runAfterCommit(client, () => notifyDocUpdate({ docId, update: updateBuffer.toString("base64"), createdBy }));
 }
 
@@ -156,7 +178,13 @@ export async function mutateDocWithClient<T>(
   return result;
 }
 
-export async function mutateDoc<T>(pool: Pool, docId: string, origin: CreatedBy, fn: (doc: Y.Doc) => T, compactionThreshold = DEFAULT_COMPACTION_THRESHOLD): Promise<T> {
+export async function mutateDoc<T>(
+  pool: Pool,
+  docId: string,
+  origin: CreatedBy,
+  fn: (doc: Y.Doc) => T,
+  compactionThreshold = DEFAULT_COMPACTION_THRESHOLD,
+): Promise<T> {
   return withTransaction(pool, (client) => mutateDocWithClient(client, docId, origin, fn, compactionThreshold));
 }
 
@@ -167,7 +195,10 @@ export async function mutateDoc<T>(pool: Pool, docId: string, origin: CreatedBy,
  * reaches the rest of the over-threshold docs, so each is isolated and logged.
  */
 export async function runCompactionSweep(pool: Pool, threshold = DEFAULT_COMPACTION_THRESHOLD): Promise<number> {
-  const { rows } = await pool.query<{ doc_id: string }>(`SELECT doc_id FROM doc_updates GROUP BY doc_id HAVING count(*) >= $1`, [threshold]);
+  const { rows } = await pool.query<{ doc_id: string }>(
+    `SELECT doc_id FROM doc_updates GROUP BY doc_id HAVING count(*) >= $1`,
+    [threshold],
+  );
   let succeeded = 0;
   for (const row of rows) {
     try {

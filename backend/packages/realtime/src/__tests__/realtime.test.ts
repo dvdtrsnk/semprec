@@ -34,7 +34,11 @@ describe("realtime", () => {
     notifyDocUpdate({ docId: "doc-1", update: "AAA=", createdBy: "ai_agent" });
 
     const notification = await received;
-    expect(JSON.parse(notification.payload ?? "{}")).toMatchObject({ type: "doc_update", docId: "doc-1", createdBy: "ai_agent" });
+    expect(JSON.parse(notification.payload ?? "{}")).toMatchObject({
+      type: "doc_update",
+      docId: "doc-1",
+      createdBy: "ai_agent",
+    });
 
     listenClient.release(true);
     setInvalidationHook(() => {});
@@ -73,10 +77,20 @@ describe("realtime", () => {
         client.once("message", (data) => resolve(data.toString()));
       });
 
-      await publishRealtimeMessage(pool, { type: "item_invalidation", databaseId: "db-1", itemId: "item-1", key: "status" });
+      await publishRealtimeMessage(pool, {
+        type: "item_invalidation",
+        databaseId: "db-1",
+        itemId: "item-1",
+        key: "status",
+      });
 
       const message = await received;
-      expect(JSON.parse(message)).toEqual({ type: "item_invalidation", databaseId: "db-1", itemId: "item-1", key: "status" });
+      expect(JSON.parse(message)).toEqual({
+        type: "item_invalidation",
+        databaseId: "db-1",
+        itemId: "item-1",
+        key: "status",
+      });
 
       client.close();
     });

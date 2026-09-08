@@ -16,9 +16,39 @@ export interface SanitizeMailHtmlOptions {
 }
 
 const ALLOWED_TAGS = [
-  "a", "b", "strong", "i", "em", "u", "s", "strike", "p", "br", "hr", "div", "span",
-  "ul", "ol", "li", "blockquote", "pre", "code", "h1", "h2", "h3", "h4", "h5", "h6",
-  "table", "thead", "tbody", "tr", "th", "td", "img", "font",
+  "a",
+  "b",
+  "strong",
+  "i",
+  "em",
+  "u",
+  "s",
+  "strike",
+  "p",
+  "br",
+  "hr",
+  "div",
+  "span",
+  "ul",
+  "ol",
+  "li",
+  "blockquote",
+  "pre",
+  "code",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "table",
+  "thead",
+  "tbody",
+  "tr",
+  "th",
+  "td",
+  "img",
+  "font",
 ];
 
 /**
@@ -42,7 +72,11 @@ const ALLOWED_STYLES = {
     // parens — an unbounded `.*` here would (and, in an earlier version of this file, did)
     // let a second `url(...)` function ride along inside a value that still matches
     // start-to-end (e.g. `rgb(0,0,0) url(...)`), since `.` also matches `)` and `(`.
-    color: [/^#[0-9a-f]{3,6}$/i, /^rgba?\(\s*\d{1,3}%?(\s*,\s*\d{1,3}%?){2}(\s*,\s*(0|1|0?\.\d+))?\s*\)$/i, new RegExp(`^(${CSS_COLOR_KEYWORDS})$`, "i")],
+    color: [
+      /^#[0-9a-f]{3,6}$/i,
+      /^rgba?\(\s*\d{1,3}%?(\s*,\s*\d{1,3}%?){2}(\s*,\s*(0|1|0?\.\d+))?\s*\)$/i,
+      new RegExp(`^(${CSS_COLOR_KEYWORDS})$`, "i"),
+    ],
     "text-align": [/^(left|right|center|justify)$/],
     "font-weight": [/^(normal|bold|bolder|lighter|[1-9]00)$/],
     "font-style": [/^(normal|italic|oblique)$/],

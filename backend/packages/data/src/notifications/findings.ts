@@ -27,7 +27,11 @@ export async function publishFinding(client: PoolClient, input: PublishFindingIn
  * runs: a second caller finds zero matching rows left to update, so there is no conflict to
  * resolve.
  */
-export async function resolveFindingsNotIn(client: PoolClient, kind: string, stillActiveDedupeKeys: ReadonlySet<string>): Promise<void> {
+export async function resolveFindingsNotIn(
+  client: PoolClient,
+  kind: string,
+  stillActiveDedupeKeys: ReadonlySet<string>,
+): Promise<void> {
   await client.query(
     `UPDATE notifications
      SET resolved_at = now()

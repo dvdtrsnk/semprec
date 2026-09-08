@@ -4,7 +4,11 @@ import { TEN_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
 import { BUILTIN_VIEW_TYPES } from "../chokePoint/viewTypeRegistry.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../seed/libraryModuleKeys.js";
 import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
-import { INBOX_ITEM_TYPES_MODULE_ID, INBOX_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
+import {
+  INBOX_ITEM_TYPES_MODULE_ID,
+  INBOX_MODULE_ID,
+  PROCESSING_PROPOSALS_MODULE_ID,
+} from "../seed/inboxPipelineKeys.js";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
 import { LIBRARY_GRID_VIEW_TYPE } from "../views/libraryGridViewType.js";
 import { MAILBOX_CLIENT_VIEW_TYPE } from "../views/mailboxClientViewType.js";
@@ -66,7 +70,13 @@ describe("all module manifests loaded together (module-contract issue #115)", ()
     );
 
     expect((await registry.getViewTypes()).sort()).toEqual(
-      [...BUILTIN_VIEW_TYPES, TEMPORAL_SWITCHER_VIEW_TYPE, LIBRARY_GRID_VIEW_TYPE, MAILBOX_CLIENT_VIEW_TYPE, JOURNAL_INBOX_VIEW_TYPE].sort(),
+      [
+        ...BUILTIN_VIEW_TYPES,
+        TEMPORAL_SWITCHER_VIEW_TYPE,
+        LIBRARY_GRID_VIEW_TYPE,
+        MAILBOX_CLIENT_VIEW_TYPE,
+        JOURNAL_INBOX_VIEW_TYPE,
+      ].sort(),
     );
   });
 
@@ -77,7 +87,9 @@ describe("all module manifests loaded together (module-contract issue #115)", ()
     const databaseKeys = (await registry.getDatabases()).map((db) => db.key);
     expect(databaseKeys).not.toContain(BOOKS_MODULE_ID);
     expect(databaseKeys).not.toContain(MOVIES_MODULE_ID);
-    expect(databaseKeys).toEqual(expect.arrayContaining([...TEN_DATABASE_MODULE_IDS, EMAILS_MODULE_ID, INBOX_MODULE_ID]));
+    expect(databaseKeys).toEqual(
+      expect.arrayContaining([...TEN_DATABASE_MODULE_IDS, EMAILS_MODULE_ID, INBOX_MODULE_ID]),
+    );
 
     expect(await registry.getViewTypes()).not.toContain(LIBRARY_GRID_VIEW_TYPE);
     expect(await registry.getMigrations()).not.toContainEqual(expect.objectContaining({ moduleId: "library" }));

@@ -4,7 +4,7 @@
 // snippet) instead of the packages' documented public entry points. pi has not
 // published stable internal APIs, so an internal import can break on any pi patch
 // release without a version bump surfacing it.
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 

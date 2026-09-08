@@ -41,13 +41,20 @@ describe("views", () => {
 
     it("rejects an unknown view type", async () => {
       const db = await makeTasksDb();
-      await expect(chokePoint.createView({ databaseId: db.id, type: "mailbox-client", name: "Inbox" })).rejects.toBeInstanceOf(ValidationError);
+      await expect(
+        chokePoint.createView({ databaseId: db.id, type: "mailbox-client", name: "Inbox" }),
+      ).rejects.toBeInstanceOf(ValidationError);
     });
 
     it("accepts a custom view type once registered, and rejects ownerModuleId on a built-in type", async () => {
       const db = await makeTasksDb();
       registerViewType(viewTypeRegistry, "mailbox-client", {});
-      const view = await chokePoint.createView({ databaseId: db.id, type: "mailbox-client", name: "Inbox", ownerModuleId: "emails" });
+      const view = await chokePoint.createView({
+        databaseId: db.id,
+        type: "mailbox-client",
+        name: "Inbox",
+        ownerModuleId: "emails",
+      });
       expect(view.type).toBe("mailbox-client");
       expect(view.ownerModuleId).toBe("emails");
 
@@ -57,7 +64,11 @@ describe("views", () => {
     });
 
     it("a curated view has no databaseId and requires config.membership = 'manual'", async () => {
-      const view = await chokePoint.createView({ type: "list", name: "My Collection", config: { membership: "manual" } });
+      const view = await chokePoint.createView({
+        type: "list",
+        name: "My Collection",
+        config: { membership: "manual" },
+      });
       expect(view.databaseId).toBeNull();
 
       await expect(chokePoint.createView({ type: "list", name: "Bad" })).rejects.toBeInstanceOf(ValidationError);
@@ -70,16 +81,29 @@ describe("views", () => {
     it("only one default view per database — a second is a conflict", async () => {
       const db = await makeTasksDb();
       await chokePoint.createView({ databaseId: db.id, type: "table", name: "A", isDefault: true });
-      await expect(chokePoint.createView({ databaseId: db.id, type: "board", name: "B", isDefault: true })).rejects.toBeInstanceOf(ConflictError);
+      await expect(
+        chokePoint.createView({ databaseId: db.id, type: "board", name: "B", isDefault: true }),
+      ).rejects.toBeInstanceOf(ConflictError);
     });
 
     it("an agent may create a view freely, but never with isDefault: true", async () => {
       const db = await makeTasksDb();
-      const view = await chokePoint.createView({ databaseId: db.id, type: "table", name: "Agent view", createdBy: "ai_agent" });
+      const view = await chokePoint.createView({
+        databaseId: db.id,
+        type: "table",
+        name: "Agent view",
+        createdBy: "ai_agent",
+      });
       expect(view.createdBy).toBe("ai_agent");
 
       await expect(
-        chokePoint.createView({ databaseId: db.id, type: "board", name: "Agent default", createdBy: "ai_agent", isDefault: true }),
+        chokePoint.createView({
+          databaseId: db.id,
+          type: "board",
+          name: "Agent default",
+          createdBy: "ai_agent",
+          isDefault: true,
+        }),
       ).rejects.toBeInstanceOf(ForbiddenError);
     });
 
@@ -107,7 +131,12 @@ describe("views", () => {
 
     it("an agent can patch its own view", async () => {
       const db = await makeTasksDb();
-      const view = await chokePoint.createView({ databaseId: db.id, type: "table", name: "Agent view", createdBy: "ai_agent" });
+      const view = await chokePoint.createView({
+        databaseId: db.id,
+        type: "table",
+        name: "Agent view",
+        createdBy: "ai_agent",
+      });
       const patched = await chokePoint.patchView({ id: view.id, actor: "ai_agent", name: "Renamed by agent" });
       expect(patched.name).toBe("Renamed by agent");
       expect(patched.createdBy).toBe("ai_agent");
@@ -115,33 +144,59 @@ describe("views", () => {
 
     it("a user's patch to an agent's view adopts it (ai_agent -> user), one-way", async () => {
       const db = await makeTasksDb();
-      const view = await chokePoint.createView({ databaseId: db.id, type: "table", name: "Agent view", createdBy: "ai_agent" });
+      const view = await chokePoint.createView({
+        databaseId: db.id,
+        type: "table",
+        name: "Agent view",
+        createdBy: "ai_agent",
+      });
       const adopted = await chokePoint.patchView({ id: view.id, actor: "user", name: "Now mine" });
       expect(adopted.createdBy).toBe("user");
 
       // Reverse direction never happens: an agent write now fails since it's no longer its own view.
-      await expect(chokePoint.patchView({ id: view.id, actor: "ai_agent", name: "Steal back" })).rejects.toBeInstanceOf(ForbiddenError);
+      await expect(chokePoint.patchView({ id: view.id, actor: "ai_agent", name: "Steal back" })).rejects.toBeInstanceOf(
+        ForbiddenError,
+      );
     });
 
     it("a user's write to a system view never flips created_by", async () => {
       const db = await makeTasksDb();
-      const view = await chokePoint.createView({ databaseId: db.id, type: "table", name: "System view", createdBy: "system" });
+      const view = await chokePoint.createView({
+        databaseId: db.id,
+        type: "table",
+        name: "System view",
+        createdBy: "system",
+      });
       const patched = await chokePoint.patchView({ id: view.id, actor: "user", name: "Edited" });
       expect(patched.createdBy).toBe("system");
     });
 
     it("an agent may never set is_default via patch, even on its own view", async () => {
       const db = await makeTasksDb();
-      const view = await chokePoint.createView({ databaseId: db.id, type: "table", name: "Agent view", createdBy: "ai_agent" });
-      await expect(chokePoint.patchView({ id: view.id, actor: "ai_agent", isDefault: true })).rejects.toBeInstanceOf(ForbiddenError);
+      const view = await chokePoint.createView({
+        databaseId: db.id,
+        type: "table",
+        name: "Agent view",
+        createdBy: "ai_agent",
+      });
+      await expect(chokePoint.patchView({ id: view.id, actor: "ai_agent", isDefault: true })).rejects.toBeInstanceOf(
+        ForbiddenError,
+      );
     });
 
     it("an agent cannot delete a user's view but can delete its own", async () => {
       const db = await makeTasksDb();
       const userView = await chokePoint.createView({ databaseId: db.id, type: "table", name: "User view" });
-      await expect(chokePoint.deleteView({ id: userView.id, actor: "ai_agent" })).rejects.toBeInstanceOf(ForbiddenError);
+      await expect(chokePoint.deleteView({ id: userView.id, actor: "ai_agent" })).rejects.toBeInstanceOf(
+        ForbiddenError,
+      );
 
-      const agentView = await chokePoint.createView({ databaseId: db.id, type: "table", name: "Agent view", createdBy: "ai_agent" });
+      const agentView = await chokePoint.createView({
+        databaseId: db.id,
+        type: "table",
+        name: "Agent view",
+        createdBy: "ai_agent",
+      });
       await chokePoint.deleteView({ id: agentView.id, actor: "ai_agent" });
       expect(await chokePoint.getView(agentView.id)).toBeNull();
     });
@@ -185,7 +240,11 @@ describe("views", () => {
         chokePoint.addViewItem({ viewId: filtered.id, itemId: item1.id, actor: "user" }),
       ).rejects.toBeInstanceOf(ValidationError);
 
-      const curated = await chokePoint.createView({ type: "list", name: "Collection", config: { membership: "manual" } });
+      const curated = await chokePoint.createView({
+        type: "list",
+        name: "Collection",
+        config: { membership: "manual" },
+      });
       await chokePoint.addViewItem({ viewId: curated.id, itemId: item1.id, actor: "user" });
       await chokePoint.addViewItem({ viewId: curated.id, itemId: item2.id, actor: "user" });
       const members = await chokePoint.listViewItems(curated.id);
@@ -204,7 +263,11 @@ describe("views", () => {
       const item1 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "One" } });
       const item2 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Two" } });
       const item3 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Three" } });
-      const curated = await chokePoint.createView({ type: "list", name: "Collection", config: { membership: "manual" } });
+      const curated = await chokePoint.createView({
+        type: "list",
+        name: "Collection",
+        config: { membership: "manual" },
+      });
       await chokePoint.addViewItem({ viewId: curated.id, itemId: item1.id, actor: "user" });
       await chokePoint.addViewItem({ viewId: curated.id, itemId: item2.id, actor: "user" });
 
@@ -218,7 +281,11 @@ describe("views", () => {
       const db = await makeTasksDb();
       const item1 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "One" } });
       const item2 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Two" } });
-      const curated = await chokePoint.createView({ type: "list", name: "Collection", config: { membership: "manual" } });
+      const curated = await chokePoint.createView({
+        type: "list",
+        name: "Collection",
+        config: { membership: "manual" },
+      });
       await chokePoint.addViewItem({ viewId: curated.id, itemId: item1.id, actor: "user" });
       await chokePoint.addViewItem({ viewId: curated.id, itemId: item2.id, actor: "user" });
 
@@ -232,7 +299,11 @@ describe("views", () => {
         const db = await makeTasksDb();
         return chokePoint.createItem({ databaseId: db.id, properties: { title: "X" } });
       })();
-      const userCollection = await chokePoint.createView({ type: "list", name: "Mine", config: { membership: "manual" } });
+      const userCollection = await chokePoint.createView({
+        type: "list",
+        name: "Mine",
+        config: { membership: "manual" },
+      });
       await expect(
         chokePoint.addViewItem({ viewId: userCollection.id, itemId: item.id, actor: "ai_agent" }),
       ).rejects.toBeInstanceOf(ForbiddenError);
@@ -295,7 +366,11 @@ describe("views", () => {
         const item2 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Two" } });
         const item3 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Three" } });
         const item4 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Four" } });
-        const curated = await chokePoint.createView({ type: "list", name: "Collection", config: { membership: "manual" } });
+        const curated = await chokePoint.createView({
+          type: "list",
+          name: "Collection",
+          config: { membership: "manual" },
+        });
         await chokePoint.addViewItem({ viewId: curated.id, itemId: item1.id, actor: "user" });
         await chokePoint.addViewItem({ viewId: curated.id, itemId: item2.id, actor: "user" });
         await chokePoint.addViewItem({ viewId: curated.id, itemId: item3.id, actor: "user" });
@@ -315,8 +390,14 @@ describe("views", () => {
 
   describe("queryView: filter/sort/visibility push-down", () => {
     async function seedTasks(db: { id: string }, chokePointRef: ChokePoint) {
-      const done = await chokePointRef.createItem({ databaseId: db.id, properties: { title: "Ship it", status: "done", tags: ["urgent", "backend"] } });
-      const todo = await chokePointRef.createItem({ databaseId: db.id, properties: { title: "Write docs", status: "todo", tags: ["docs"] } });
+      const done = await chokePointRef.createItem({
+        databaseId: db.id,
+        properties: { title: "Ship it", status: "done", tags: ["urgent", "backend"] },
+      });
+      const todo = await chokePointRef.createItem({
+        databaseId: db.id,
+        properties: { title: "Write docs", status: "todo", tags: ["docs"] },
+      });
       const inProgress = await chokePointRef.createItem({
         databaseId: db.id,
         properties: { title: "Refactor", status: "in_progress", tags: ["backend"] },
@@ -353,7 +434,10 @@ describe("views", () => {
     it("'is_empty'/'is_not_empty' on a multi_select property check for an empty array, not an empty string", async () => {
       const db = await makeTasksDb();
       await seedTasks(db, chokePoint); // none have empty tags
-      const untagged = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Untagged", status: "todo", tags: [] } });
+      const untagged = await chokePoint.createItem({
+        databaseId: db.id,
+        properties: { title: "Untagged", status: "todo", tags: [] },
+      });
 
       const emptyView = await chokePoint.createView({
         databaseId: db.id,

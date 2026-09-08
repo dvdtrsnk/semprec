@@ -32,7 +32,12 @@ function buildSortSpecs(config: ViewConfig): SortSpec[] {
   return config.groupBy ? [{ property: config.groupBy, direction: "asc" as const }, ...specs] : specs;
 }
 
-async function queryFilteredView(client: PoolClient, databaseId: string, config: ViewConfig, options: QueryViewOptions): Promise<QueryViewResult> {
+async function queryFilteredView(
+  client: PoolClient,
+  databaseId: string,
+  config: ViewConfig,
+  options: QueryViewOptions,
+): Promise<QueryViewResult> {
   const filterNode = config.filter;
   const properties = await listPropertiesByDatabase(client, databaseId);
   const propertyTypes = new Map(properties.map((p) => [p.key, p.type]));
@@ -57,7 +62,11 @@ async function queryFilteredView(client: PoolClient, databaseId: string, config:
  * so `propertyOrder`/`visibility` — which assume one shared property schema — are not
  * applied here; items are returned with their full, unprojected properties.
  */
-async function queryCuratedView(client: PoolClient, view: ViewRow, options: QueryViewOptions): Promise<QueryViewResult> {
+async function queryCuratedView(
+  client: PoolClient,
+  view: ViewRow,
+  options: QueryViewOptions,
+): Promise<QueryViewResult> {
   const limit = Math.min(options.limit ?? 50, 200);
   const all = await viewItemsStore.listViewItems(client, view.id);
   let cursorPosition: number | undefined;
@@ -74,12 +83,23 @@ async function queryCuratedView(client: PoolClient, view: ViewRow, options: Quer
   const hasMore = afterCursor.length > limit;
   const page = afterCursor.slice(0, limit);
 
-  const itemsById = new Map((await getItemsByIds(client, page.map((m) => m.itemId))).map((item) => [item.id, item]));
+  const itemsById = new Map(
+    (
+      await getItemsByIds(
+        client,
+        page.map((m) => m.itemId),
+      )
+    ).map((item) => [item.id, item]),
+  );
   const items = page.map((m) => itemsById.get(m.itemId)).filter((item): item is ItemRow => item !== undefined);
   return { items, nextCursor: hasMore ? String(page[page.length - 1].position) : null };
 }
 
-export async function queryView(client: PoolClient, viewId: string, options: QueryViewOptions = {}): Promise<QueryViewResult> {
+export async function queryView(
+  client: PoolClient,
+  viewId: string,
+  options: QueryViewOptions = {},
+): Promise<QueryViewResult> {
   const view = await viewsStore.getView(client, viewId);
   if (!view) throw new NotFoundError(`View ${viewId} not found`);
 

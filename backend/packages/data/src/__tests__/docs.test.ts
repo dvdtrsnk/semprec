@@ -58,9 +58,9 @@ describe("docs (CRDT layer)", () => {
     it("an item can carry at most one doc — creating a doc of a different kind conflicts", async () => {
       const item = await makeItem();
       await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "user");
-      await expect(docStore.putCanvasElement(item.id, { id: "e1", type: "shape", xywh: [0, 0, 10, 10], index: "a0" }, "user")).rejects.toBeInstanceOf(
-        ConflictError,
-      );
+      await expect(
+        docStore.putCanvasElement(item.id, { id: "e1", type: "shape", xywh: [0, 0, 10, 10], index: "a0" }, "user"),
+      ).rejects.toBeInstanceOf(ConflictError);
     });
   });
 
@@ -86,7 +86,11 @@ describe("docs (CRDT layer)", () => {
 
     it("a caller-supplied field cannot overwrite the reserved sys: identity fields", async () => {
       const item = await makeItem();
-      await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph", fields: { "sys:id": "spoofed", "sys:flavour": "spoofed" } }, "user");
+      await docStore.putBlock(
+        item.id,
+        { id: "b1", flavour: "paragraph", fields: { "sys:id": "spoofed", "sys:flavour": "spoofed" } },
+        "user",
+      );
       const b1 = await docStore.getBlock(item.id, "b1");
       expect(b1).toMatchObject({ "sys:id": "b1", "sys:flavour": "paragraph" });
     });
@@ -114,7 +118,11 @@ describe("docs (CRDT layer)", () => {
 
     it("a caller-supplied field cannot overwrite the required id/type fields", async () => {
       const item = await makeItem();
-      await docStore.putCanvasElement(item.id, { id: "e1", type: "shape", xywh: [0, 0, 1, 1], index: "a0", fields: { id: "spoofed", type: "text" } }, "user");
+      await docStore.putCanvasElement(
+        item.id,
+        { id: "e1", type: "shape", xywh: [0, 0, 1, 1], index: "a0", fields: { id: "spoofed", type: "text" } },
+        "user",
+      );
       const el = await docStore.getCanvasElement(item.id, "e1");
       expect(el).toMatchObject({ id: "e1", type: "shape" });
     });
@@ -126,7 +134,10 @@ describe("docs (CRDT layer)", () => {
       await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "ai_agent");
 
       const doc = await docStore.getDoc(item.id);
-      const { rows } = await pool.query<{ created_by: string }>(`SELECT created_by FROM doc_updates WHERE doc_id = $1`, [doc?.id]);
+      const { rows } = await pool.query<{ created_by: string }>(
+        `SELECT created_by FROM doc_updates WHERE doc_id = $1`,
+        [doc?.id],
+      );
       expect(rows).toHaveLength(1);
       expect(rows[0].created_by).toBe("ai_agent");
     });
@@ -201,15 +212,22 @@ describe("docs (CRDT layer)", () => {
         const update = captureUpdate(scratch, () => {
           scratch.getMap("blocks").set(`b${i}`, new Y.Map());
         });
-        await pool.query(`INSERT INTO doc_updates (doc_id, update, created_by) VALUES ($1, $2, 'user')`, [doc.id, Buffer.from(update)]);
+        await pool.query(`INSERT INTO doc_updates (doc_id, update, created_by) VALUES ($1, $2, 'user')`, [
+          doc.id,
+          Buffer.from(update),
+        ]);
       }
 
-      const { rows: pendingBefore } = await pool.query(`SELECT count(*)::int AS n FROM doc_updates WHERE doc_id = $1`, [doc.id]);
+      const { rows: pendingBefore } = await pool.query(`SELECT count(*)::int AS n FROM doc_updates WHERE doc_id = $1`, [
+        doc.id,
+      ]);
       expect(pendingBefore[0].n).toBe(threshold + 1); // the seed write, plus these
 
       const reloaded = await loadDoc(pool, doc.id, threshold);
 
-      const { rows: pendingAfter } = await pool.query(`SELECT count(*)::int AS n FROM doc_updates WHERE doc_id = $1`, [doc.id]);
+      const { rows: pendingAfter } = await pool.query(`SELECT count(*)::int AS n FROM doc_updates WHERE doc_id = $1`, [
+        doc.id,
+      ]);
       expect(pendingAfter[0].n).toBe(0);
 
       const { rows: snapshotRows } = await pool.query(`SELECT state FROM doc_snapshots WHERE doc_id = $1`, [doc.id]);
@@ -240,13 +258,17 @@ describe("docs (CRDT layer)", () => {
         );
       }
 
-      const { rows: beforeSweep } = await pool.query(`SELECT count(*)::int AS n FROM doc_updates WHERE doc_id = $1`, [doc.id]);
+      const { rows: beforeSweep } = await pool.query(`SELECT count(*)::int AS n FROM doc_updates WHERE doc_id = $1`, [
+        doc.id,
+      ]);
       expect(beforeSweep[0].n).toBe(threshold + 1); // the seed write, plus these
 
       const compactedCount = await runCompactionSweep(pool, threshold);
       expect(compactedCount).toBeGreaterThanOrEqual(1);
 
-      const { rows: afterSweep } = await pool.query(`SELECT count(*)::int AS n FROM doc_updates WHERE doc_id = $1`, [doc.id]);
+      const { rows: afterSweep } = await pool.query(`SELECT count(*)::int AS n FROM doc_updates WHERE doc_id = $1`, [
+        doc.id,
+      ]);
       expect(afterSweep[0].n).toBe(0);
     });
 
@@ -257,7 +279,10 @@ describe("docs (CRDT layer)", () => {
       const doc = await docStore.getDoc(item.id);
       if (!doc) throw new Error("doc not created");
 
-      const { rows: beforeCompaction } = await pool.query(`SELECT count(*)::int AS n FROM doc_snapshot_history WHERE doc_id = $1`, [doc.id]);
+      const { rows: beforeCompaction } = await pool.query(
+        `SELECT count(*)::int AS n FROM doc_snapshot_history WHERE doc_id = $1`,
+        [doc.id],
+      );
       expect(beforeCompaction[0].n).toBe(0); // no periodic squash has run yet
 
       const scratch = new Y.Doc();
@@ -266,7 +291,10 @@ describe("docs (CRDT layer)", () => {
         const update = captureUpdate(scratch, () => {
           scratch.getMap("blocks").set(`b${i}`, new Y.Map());
         });
-        await pool.query(`INSERT INTO doc_updates (doc_id, update, created_by) VALUES ($1, $2, 'user')`, [doc.id, Buffer.from(update)]);
+        await pool.query(`INSERT INTO doc_updates (doc_id, update, created_by) VALUES ($1, $2, 'user')`, [
+          doc.id,
+          Buffer.from(update),
+        ]);
       }
 
       await loadDoc(pool, doc.id, threshold); // crosses the threshold, triggers compact()
@@ -329,12 +357,18 @@ describe("docs (CRDT layer)", () => {
       if (!doc) throw new Error("doc not created");
 
       await squashDocHistory(pool, doc.id, "system", 0); // expires immediately
-      const { rows: before } = await pool.query(`SELECT count(*)::int AS n FROM doc_snapshot_history WHERE doc_id = $1`, [doc.id]);
+      const { rows: before } = await pool.query(
+        `SELECT count(*)::int AS n FROM doc_snapshot_history WHERE doc_id = $1`,
+        [doc.id],
+      );
       expect(before[0].n).toBe(1);
 
       const removed = await cleanupExpiredDocHistory(pool);
       expect(removed).toBeGreaterThanOrEqual(1);
-      const { rows: after } = await pool.query(`SELECT count(*)::int AS n FROM doc_snapshot_history WHERE doc_id = $1`, [doc.id]);
+      const { rows: after } = await pool.query(
+        `SELECT count(*)::int AS n FROM doc_snapshot_history WHERE doc_id = $1`,
+        [doc.id],
+      );
       expect(after[0].n).toBe(0);
     });
 
