@@ -55,3 +55,12 @@ export async function anyUserExists(client: Pool | PoolClient): Promise<boolean>
   const { rows } = await client.query(`SELECT EXISTS(SELECT 1 FROM users) AS "exists"`);
   return (rows[0] as { exists: boolean }).exists;
 }
+
+/** Used by `resetPassword` (auth/passwordResetActions.ts) to replace a user's password hash after a reset token is consumed. */
+export async function updateUserPasswordHash(
+  client: Pool | PoolClient,
+  id: string,
+  passwordHash: string,
+): Promise<void> {
+  await client.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [passwordHash, id]);
+}

@@ -249,10 +249,16 @@ importers:
       '@semprec/data':
         specifier: workspace:*
         version: link:../../packages/data
+      nodemailer:
+        specifier: ^9.0.6
+        version: 9.0.6
       pg:
         specifier: ^8.23.0
         version: 8.23.0
     devDependencies:
+      '@types/nodemailer':
+        specifier: ^8.0.1
+        version: 8.0.1
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1
