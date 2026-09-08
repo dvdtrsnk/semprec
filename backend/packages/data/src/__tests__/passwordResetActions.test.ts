@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { withTransaction } from "../db/pool.js";
 import { hashPassword, verifyPassword } from "../auth/passwordHash.js";
 import { createUser, getUserByEmail } from "../auth/usersStore.js";
 import { createSession, getActiveSessionByTokenHash } from "../auth/sessionsStore.js";
@@ -36,6 +37,11 @@ function tokenFromUrl(resetUrl: string): string {
   const token = new URL(resetUrl).searchParams.get("token");
   if (!token) throw new Error(`expected a token in ${resetUrl}`);
   return token;
+}
+
+/** `resetPassword` requires a `PoolClient` (a caller-managed transaction) — this mirrors the HTTP handler's `withTransaction` wrapping. */
+function resetPasswordInTransaction(testPool: Pool, input: Parameters<typeof resetPassword>[1]): Promise<void> {
+  return withTransaction(testPool, (client) => resetPassword(client, input));
 }
 
 describe("password reset actions (issue #142)", () => {
@@ -131,7 +137,7 @@ describe("password reset actions (issue #142)", () => {
       const user = await makeUser();
       const token = await requestAndGetToken(user.email);
 
-      await resetPassword(pool, { token, newPassword: "a-brand-new-password" });
+      await resetPasswordInTransaction(pool, { token, newPassword: "a-brand-new-password" });
 
       const updated = await getUserByEmail(pool, user.email);
       expect(updated).not.toBeNull();
@@ -143,9 +149,11 @@ describe("password reset actions (issue #142)", () => {
       const user = await makeUser();
       const token = await requestAndGetToken(user.email);
 
-      await resetPassword(pool, { token, newPassword: "first-new-password" });
+      await resetPasswordInTransaction(pool, { token, newPassword: "first-new-password" });
 
-      const err = await resetPassword(pool, { token, newPassword: "second-new-password" }).catch((e: unknown) => e);
+      const err = await resetPasswordInTransaction(pool, { token, newPassword: "second-new-password" }).catch(
+        (e: unknown) => e,
+      );
       expect(err).toBeInstanceOf(PasswordResetTokenError);
       expect((err as PasswordResetTokenError).reason).toBe("consumed");
 
@@ -155,9 +163,10 @@ describe("password reset actions (issue #142)", () => {
     });
 
     it("rejects a token that was never issued with an 'invalid' reason", async () => {
-      const err = await resetPassword(pool, { token: "not-a-real-token", newPassword: "whatever-password" }).catch(
-        (e: unknown) => e,
-      );
+      const err = await resetPasswordInTransaction(pool, {
+        token: "not-a-real-token",
+        newPassword: "whatever-password",
+      }).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(PasswordResetTokenError);
       expect((err as PasswordResetTokenError).reason).toBe("invalid");
     });
@@ -169,7 +178,9 @@ describe("password reset actions (issue #142)", () => {
         user.id,
       ]);
 
-      const err = await resetPassword(pool, { token, newPassword: "whatever-password" }).catch((e: unknown) => e);
+      const err = await resetPasswordInTransaction(pool, { token, newPassword: "whatever-password" }).catch(
+        (e: unknown) => e,
+      );
       expect(err).toBeInstanceOf(PasswordResetTokenError);
       expect((err as PasswordResetTokenError).reason).toBe("expired");
 
@@ -189,7 +200,7 @@ describe("password reset actions (issue #142)", () => {
       expect(await getActiveSessionByTokenHash(pool, tokenHash)).not.toBeNull();
 
       const token = await requestAndGetToken(user.email);
-      await resetPassword(pool, { token, newPassword: "a-brand-new-password" });
+      await resetPasswordInTransaction(pool, { token, newPassword: "a-brand-new-password" });
 
       expect(await getActiveSessionByTokenHash(pool, tokenHash)).toBeNull();
     });

@@ -108,8 +108,14 @@ export interface ResetPasswordInput {
  * write. Password reset is the recovery path for a compromised account, so a session an attacker
  * held before the reset must not outlive it — without this, that session would keep working for
  * its full `SESSION_TTL_SECONDS` regardless of the password change.
+ *
+ * Takes a `PoolClient`, not `Pool | PoolClient`, on purpose: consuming the token, writing the new
+ * password hash, and revoking sessions is only atomic — "consumed but the password never
+ * changed" can't happen — inside one caller-managed transaction. A bare `Pool` would auto-commit
+ * each statement independently, so the signature forces every caller (the HTTP handler already
+ * wraps this in `withTransaction`) to supply one.
  */
-export async function resetPassword(client: Pool | PoolClient, input: ResetPasswordInput): Promise<void> {
+export async function resetPassword(client: PoolClient, input: ResetPasswordInput): Promise<void> {
   const tokenHash = hashToken(input.token);
 
   const consumed = await consumePasswordResetToken(client, tokenHash);
