@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
-import { createHeartbeat, sweepDueHeartbeats } from "../scheduler/schedulerStore.js";
+import { createHeartbeat, occurrenceFireJobKey, sweepDueHeartbeats } from "../scheduler/schedulerStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -316,7 +316,7 @@ describe("heartbeat.list / heartbeat.history / heartbeat.trigger agent tools", (
 
     const jobs = await pendingTriggerJobs(pool);
     expect(jobs.map((j) => j.key).sort()).toEqual(
-      [`heartbeat-fire:${heartbeat.id}:${occurrenceId}`, `heartbeat-fire:manual:${heartbeat.id}`].sort(),
+      [occurrenceFireJobKey(heartbeat.id, occurrenceId, 1), `heartbeat-fire:manual:${heartbeat.id}`].sort(),
     );
   });
 

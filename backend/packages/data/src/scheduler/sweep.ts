@@ -53,6 +53,12 @@ export function createHeartbeatFireTask(pool: Pool, registry: ActionRegistry, mo
     if (rawOccurrenceId !== undefined && typeof rawOccurrenceId !== "string") {
       throw new Error("heartbeatFire job payload field 'occurrenceId' must be a string when present");
     }
+    const rawGeneration = record?.generation;
+    if (rawOccurrenceId !== undefined && typeof rawGeneration !== "number") {
+      throw new ValidationError(
+        "heartbeatFire job payload field 'generation' must be a number when 'occurrenceId' is present",
+      );
+    }
     const rawItemId = record?.itemId;
     if (rawItemId !== undefined && typeof rawItemId !== "string") {
       throw new Error("heartbeatFire job payload field 'itemId' must be a string when present");
@@ -70,6 +76,7 @@ export function createHeartbeatFireTask(pool: Pool, registry: ActionRegistry, mo
     const payload = {
       heartbeatId,
       occurrenceId: rawOccurrenceId,
+      generation: rawGeneration as number | undefined,
       itemId: rawItemId,
       triggeredByRunId: rawTriggeredByRunId,
     };
@@ -77,7 +84,15 @@ export function createHeartbeatFireTask(pool: Pool, registry: ActionRegistry, mo
     const moduleRuleKinds = await resolveModuleRuleKinds(moduleRegistry);
 
     if (payload.occurrenceId !== undefined) {
-      await runScheduledOccurrenceFire(pool, registry, moduleRuleKinds, heartbeatId, payload.occurrenceId, helpers);
+      await runScheduledOccurrenceFire(
+        pool,
+        registry,
+        moduleRuleKinds,
+        heartbeatId,
+        payload.occurrenceId,
+        payload.generation!,
+        helpers,
+      );
       return;
     }
 
@@ -128,10 +143,11 @@ export function createHeartbeatFireTask(pool: Pool, registry: ActionRegistry, mo
 }
 
 /**
- * The `occurrenceId` branch of `createHeartbeatFireTask` (issue #213): a sweep-driven fire for
- * `dailyTime`/`weekly`/`interval`/`everyNDays`. `prepareHeartbeatOccurrenceFire` does the
- * locking, snapshot comparison, and (on a genuine first attempt) the scheduling-state update, all
- * before this ever calls the action handler.
+ * The `occurrenceId` branch of `createHeartbeatFireTask` (issue #213, extended by #84's
+ * generation protocol): a sweep-driven fire for `dailyTime`/`weekly`/`interval`/`everyNDays`.
+ * `prepareHeartbeatOccurrenceFire` does the locking, generation check, snapshot comparison, and
+ * (on a genuine first attempt) the scheduling-state update, all before this ever calls the action
+ * handler.
  */
 async function runScheduledOccurrenceFire(
   pool: Pool,
@@ -139,11 +155,13 @@ async function runScheduledOccurrenceFire(
   moduleRuleKinds: HeartbeatRuleKindRegistry,
   heartbeatId: string,
   occurrenceId: string,
+  generation: number,
   helpers: { job: { attempts: number; max_attempts: number } },
 ): Promise<void> {
-  const prep = await prepareHeartbeatOccurrenceFire(pool, heartbeatId, occurrenceId, moduleRuleKinds);
-  // "missing": deleted since enqueue; "cancelled": disabled or stale snapshot; "degraded": rule
-  // kind's module went inactive (failure already recorded) — none of these execute the handler.
+  const prep = await prepareHeartbeatOccurrenceFire(pool, heartbeatId, occurrenceId, generation, moduleRuleKinds);
+  // "missing": deleted since enqueue; "stale": superseded by a reactivation; "cancelled": disabled
+  // or stale snapshot; "degraded": rule kind's module went inactive (failure already recorded) —
+  // none of these execute the handler.
   if (prep.outcome !== "proceed") return;
 
   const heartbeat = prep.heartbeat;
