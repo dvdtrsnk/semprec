@@ -1,0 +1,54 @@
+#!/usr/bin/env node
+// Minimal MCP stdio contract server (issue #231): spawned by `StdioClientTransport` as a real
+// child process, so it can only report what it observed back to the test process via a file on
+// disk (there's no shared memory across the process boundary). `argv[2]` names that file. It
+// writes its own pid immediately, then again once `initialize`/`initialized` completes, this
+// time including whichever env var the test told it (via `MCP_CONTRACT_CREDENTIAL_ENV_VAR`) to
+// read the injected credential back from — so the test can assert the factory placed the
+// decrypted credential exactly where `connectionConfig.credentialEnvVar` declared.
+//
+// `handshakeCount` (not a boolean) matches `McpContractServer.getHandshakeCount()`'s documented
+// contract of "how many handshakes completed" for the SSE/HTTP servers too: the record file is
+// reused across however many times a test spawns a child against the same `connectionConfig`
+// (connect, close, connect again), so this reads back whatever count the previous generation
+// left behind and increments it, rather than a per-process boolean that a second spawn would
+// silently reset to a fresh "1".
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+
+const recordFile = process.argv[2];
+if (!recordFile) {
+  console.error("mcpStdioContractServerScript: missing record file path argument");
+  process.exit(1);
+}
+
+function readPreviousHandshakeCount() {
+  if (!existsSync(recordFile)) return 0;
+  try {
+    const previous = JSON.parse(readFileSync(recordFile, "utf8"));
+    return typeof previous.handshakeCount === "number" ? previous.handshakeCount : 0;
+  } catch {
+    return 0;
+  }
+}
+
+let handshakeCount = readPreviousHandshakeCount();
+
+function writeRecord(extra) {
+  writeFileSync(recordFile, JSON.stringify({ pid: process.pid, handshakeCount, ...extra }));
+}
+
+writeRecord({});
+
+const server = new Server({ name: "mcp-contract-stdio", version: "1.0.0" }, { capabilities: { tools: { listChanged: true } } });
+
+server.oninitialized = () => {
+  handshakeCount += 1;
+  const credentialEnvVar = process.env.MCP_CONTRACT_CREDENTIAL_ENV_VAR;
+  const credential = credentialEnvVar ? (process.env[credentialEnvVar] ?? null) : null;
+  writeRecord({ credential });
+};
+
+const transport = new StdioServerTransport();
+await server.connect(transport);
