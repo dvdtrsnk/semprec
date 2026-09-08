@@ -46,3 +46,12 @@ export interface LoginAttemptRow {
   succeeded: boolean;
   attemptedAt: string;
 }
+
+export interface PasswordResetTokenRow {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  createdAt: string;
+  expiresAt: string;
+  consumedAt: string | null;
+}
