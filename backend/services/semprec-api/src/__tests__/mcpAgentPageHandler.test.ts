@@ -121,6 +121,15 @@ describe("createMcpAgentPageRequestListener", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects a PATCH whose body exceeds the maximum allowed size", async () => {
+    const res = await fetch(`${baseUrl}/api/projects/${randomUUID()}/mcp-grants/${randomUUID()}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ granted: true, padding: "x".repeat(2 * 1024 * 1024) }),
+    });
+    expect(res.status).toBe(413);
+  });
+
   it("reclassifies a registration's riskClass and requiresApproval through PATCH", async () => {
     const server1 = await createMcpServerItem("Server", true);
     const registration = await upsertMcpToolRegistration(pool, { mcpServerItemId: server1.id, toolName: "tool", toolSchema: {} });

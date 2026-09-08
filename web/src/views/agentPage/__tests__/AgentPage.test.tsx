@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "../../../i18n/index.js";
 import type { GenericOperations, Item } from "../../../api/genericOperations.js";
 import { OperationError } from "../../../api/genericOperations.js";
@@ -72,6 +73,11 @@ describe("AgentPage (issue #127)", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("transport down");
     expect(getItem).toHaveBeenCalledWith(DATABASE_ID, PROJECT_ID);
+
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    await screen.findByText("Demo project");
+    expect(getItem).toHaveBeenCalledTimes(2);
   });
 
   it("shows a not-found state when the project item does not exist", async () => {

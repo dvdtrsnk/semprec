@@ -152,7 +152,7 @@ export function ToolsBlock({ projectItemId, operations }: { projectItemId: strin
       try {
         await run();
         setMutations((prev) => ({ ...prev, [row.mcpToolRegistrationId]: { pending: false, error: null } }));
-        refresh();
+        void refresh();
       } catch (error) {
         const message = toOperationError(error).message;
         setMutations((prev) => ({ ...prev, [row.mcpToolRegistrationId]: { pending: false, error: message } }));

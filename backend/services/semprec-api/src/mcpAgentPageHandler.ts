@@ -23,9 +23,19 @@ function isAuthorized(req: IncomingMessage, authToken: string): boolean {
   return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
+const MAX_BODY_BYTES = 1 * 1024 * 1024;
+
+class PayloadTooLargeError extends Error {}
+
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
+  let size = 0;
+  for await (const chunk of req) {
+    const buf = chunk as Buffer;
+    size += buf.length;
+    if (size > MAX_BODY_BYTES) throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
+    chunks.push(buf);
+  }
   if (chunks.length === 0) return {};
   try {
     return JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -115,6 +125,10 @@ export function createMcpAgentPageRequestListener(pool: Pool, options: McpAgentP
 
       sendJson(res, 404, { error: "Not found" });
     } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        sendJson(res, 413, { error: err.message });
+        return;
+      }
       if (err instanceof ChokePointError) {
         sendJson(res, err.status, { error: err.message, code: err.code, details: err.details });
         return;
