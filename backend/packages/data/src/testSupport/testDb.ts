@@ -6,6 +6,8 @@ const TABLES = [
   "notifications",
   "rollup_dependencies",
   "resource_grants",
+  "project_mcp_grants",
+  "mcp_tool_registrations",
   "agent_run_events",
   "agent_runs",
   "project_heartbeats",

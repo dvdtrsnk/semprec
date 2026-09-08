@@ -122,3 +122,6 @@ export * from "./views/temporalSwitcherViewType.js";
 
 export * from "./inbox/inboxTickAction.js";
 export { manifest as inboxPipelineModuleManifest } from "./inbox/inboxModuleManifest.js";
+
+export * from "./mcp/mcpToolRegistrationsStore.js";
+export * from "./mcp/mcpProjectGrantsStore.js";
