@@ -156,8 +156,11 @@ interface BuiltTransport {
    * Runs once `mcpClient.connect(transport)` has succeeded, to scrub any plain, JSON-serializable
    * copy of the credential the transport kept for itself — see `buildStdioTransport`'s comment
    * for why this is safe to do only *after* a successful connect.
+   *
+   * A property rather than a method: `connectMcpServer` destructures it off the result and
+   * calls it standalone, so it must never depend on a `this` binding.
    */
-  afterConnect?(): void;
+  afterConnect?: () => void;
 }
 
 function buildTransport(config: McpConnectionConfig, credential: string | null): BuiltTransport {

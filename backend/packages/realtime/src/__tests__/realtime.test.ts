@@ -1,13 +1,24 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeEach, describe, expect, it, afterEach } from "vitest";
 import { Pool } from "pg";
-import { WebSocket, WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { setDocUpdateHook, setInvalidationHook, notifyDocUpdate } from "@semprec/data";
 import { publishRealtimeMessage } from "../pgNotifyPublisher.js";
 import { wireRealtimeHooks } from "../wireHooks.js";
 import { startRealtimeServer, type RealtimeServer } from "../wsServer.js";
 
 let pool: Pool;
+
+/**
+ * `ws` hands a message over as `Buffer | ArrayBuffer | Buffer[]`, and the array case is a
+ * fragmented frame — its default `toString()` joins the fragments with commas instead of
+ * concatenating them, which would corrupt the JSON these tests parse.
+ */
+function messageText(data: RawData): string {
+  if (Array.isArray(data)) return Buffer.concat(data).toString("utf8");
+  if (Buffer.isBuffer(data)) return data.toString("utf8");
+  return Buffer.from(data).toString("utf8");
+}
 
 describe("realtime", () => {
   beforeEach(() => {
@@ -74,7 +85,7 @@ describe("realtime", () => {
       });
 
       const received = new Promise<string>((resolve) => {
-        client.once("message", (data) => resolve(data.toString()));
+        client.once("message", (data) => resolve(messageText(data)));
       });
 
       await publishRealtimeMessage(pool, {

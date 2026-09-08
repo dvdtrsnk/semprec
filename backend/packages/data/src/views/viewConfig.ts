@@ -36,7 +36,7 @@ export function parseViewConfig(raw: unknown): ViewConfig {
       issues: result.error.issues,
     });
   }
-  return result.data as ViewConfig;
+  return result.data;
 }
 
 /** Projects an item's properties per the view's `visibility`/`propertyOrder` — hides, then reorders (named keys first, in order given, then any remainder). */

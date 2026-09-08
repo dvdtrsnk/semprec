@@ -66,7 +66,7 @@ function countingConnectPool(target: Pool): { pool: Pool; connectCount: () => nu
       return Reflect.get(t, prop, receiver);
     },
   });
-  return { pool: proxy as unknown as Pool, connectCount: () => count };
+  return { pool: proxy, connectCount: () => count };
 }
 
 /**
@@ -80,7 +80,7 @@ function failingSeedPool(target: Pool, failItemId: string): Pool {
     get(t, prop, receiver) {
       if (prop === "connect") {
         return async (...args: unknown[]) => {
-          const client = (await (t.connect as (...a: unknown[]) => Promise<PoolClient>)(...args)) as PoolClient;
+          const client = await (t.connect as (...a: unknown[]) => Promise<PoolClient>)(...args);
           return new Proxy(client, {
             get(clientTarget, clientProp, clientReceiver) {
               if (clientProp === "query") {
@@ -108,7 +108,7 @@ function failingSeedPool(target: Pool, failItemId: string): Pool {
       return Reflect.get(t, prop, receiver);
     },
   });
-  return proxy as unknown as Pool;
+  return proxy;
 }
 
 describe("mail live-sync composition root (issue #195)", () => {
@@ -435,7 +435,7 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
         }
         return Reflect.get(t, prop, receiver);
       },
-    }) as unknown as Pool;
+    });
 
     const { factory, byAccount } = recordingFactory();
     const root = createMailLiveSyncRoot(flakyPool, mailboxesId, factory);

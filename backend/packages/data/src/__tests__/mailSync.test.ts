@@ -2473,12 +2473,12 @@ describe("legacy Emails migration (issue #93)", () => {
       if (!originalQueryByClient.has(client)) {
         originalQueryByClient.set(client, client.query.bind(client));
         const originalQuery = originalQueryByClient.get(client)!;
-        (client as unknown as { query: unknown }).query = ((...queryArgs: unknown[]) => {
+        (client as unknown as { query: unknown }).query = (...queryArgs: unknown[]) => {
           const text =
             typeof queryArgs[0] === "string" ? queryArgs[0] : (queryArgs[0] as { text?: string } | undefined)?.text;
           if (text === "BEGIN" || text === "COMMIT") log.push(text);
           return (originalQuery as (...a: unknown[]) => unknown)(...queryArgs);
-        }) as typeof client.query;
+        };
       }
       return client;
     }
@@ -2583,7 +2583,7 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
   // `string`, this `@ts-expect-error` becomes unused and `tsc`/`pnpm -r run build` fails.
   function _typeAssertion_setMessageFlagRejectsNonCanonicalFlags(client: ImapFlowMailClient): void {
     // @ts-expect-error - "\Deleted" is not a WritableImapFlag
-    client.setMessageFlag("INBOX", 42, "\\Deleted", true);
+    void client.setMessageFlag("INBOX", 42, "\\Deleted", true);
   }
   // Referenced so `noUnusedLocals` keeps the guard above: unlike parameters, a local
   // declaration gets no leading-underscore exemption from tsc.

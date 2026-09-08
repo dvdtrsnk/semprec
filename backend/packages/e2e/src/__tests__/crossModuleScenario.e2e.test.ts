@@ -97,11 +97,11 @@ describe("e2e: cross-module scenario (module-contract issue #114)", () => {
 
     const alphaItems = await chokePoint.listItems(alphaDb.id, {});
     expect(alphaItems.items).toHaveLength(1);
-    expect(alphaItems.items[0]!.properties).toEqual({ value: "hello" });
+    expect(alphaItems.items[0].properties).toEqual({ value: "hello" });
 
     const betaItems = await chokePoint.listItems(betaDb.id, {});
     expect(betaItems.items).toHaveLength(1);
-    expect(betaItems.items[0]!.properties).toEqual({ sourceItemId: alphaItems.items[0]!.id });
+    expect(betaItems.items[0].properties).toEqual({ sourceItemId: alphaItems.items[0].id });
   });
 
   it("runs one module's declared data migration without touching the other module's database", async () => {

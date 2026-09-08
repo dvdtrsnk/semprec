@@ -54,7 +54,7 @@ describe("permission manifest and drift check", () => {
     await seedSystem(pool, viewTypeRegistry);
 
     const { rows } = await pool.query<{ id: string }>(`SELECT id FROM items WHERE properties ->> 'name' = 'Semprec'`);
-    const semprecProjectItemId = rows[0]!.id;
+    const semprecProjectItemId = rows[0].id;
 
     const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, semprecProjectItemId));
 
@@ -74,7 +74,7 @@ describe("permission manifest and drift check", () => {
 
     const mcpServersId = (
       await pool.query<{ id: string }>(`SELECT id FROM databases WHERE owner_module_id = 'mcpServers'`)
-    ).rows[0]!.id;
+    ).rows[0].id;
     const server = await withTransaction(pool, (client) =>
       itemsStore.insertItem(client, { databaseId: mcpServersId, properties: { name: "Server", active: true } }),
     );
