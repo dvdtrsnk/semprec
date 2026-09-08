@@ -37,10 +37,20 @@ describe("heartbeat.list / heartbeat.history agent tools", () => {
 
   it("heartbeat.list returns only the calling run's own project's heartbeats", async () => {
     const ownHeartbeat = await withTransaction(pool, (client) =>
-      createHeartbeat(client, { projectItemId: PROJECT_A, name: "Process Inbox", rule: { kind: "dailyTime", at: "09:00" }, actionId: "core.agentRun" }),
+      createHeartbeat(client, {
+        projectItemId: PROJECT_A,
+        name: "Process Inbox",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "core.agentRun",
+      }),
     );
     await withTransaction(pool, (client) =>
-      createHeartbeat(client, { projectItemId: PROJECT_B, name: "Someone else's heartbeat", rule: { kind: "dailyTime", at: "10:00" }, actionId: "core.agentRun" }),
+      createHeartbeat(client, {
+        projectItemId: PROJECT_B,
+        name: "Someone else's heartbeat",
+        rule: { kind: "dailyTime", at: "10:00" },
+        actionId: "core.agentRun",
+      }),
     );
     const run = await createAgentRun(pool, { projectItemId: PROJECT_A, triggeredBy: "user", task: "check heartbeats" });
 
@@ -49,7 +59,13 @@ describe("heartbeat.list / heartbeat.history agent tools", () => {
     const entries = parseResult<HeartbeatListEntry[]>(outcome);
 
     expect(entries).toEqual([
-      { id: ownHeartbeat.id, name: "Process Inbox", rule: { kind: "dailyTime", at: "09:00" }, enabled: true, lastFiredAt: null },
+      {
+        id: ownHeartbeat.id,
+        name: "Process Inbox",
+        rule: { kind: "dailyTime", at: "09:00" },
+        enabled: true,
+        lastFiredAt: null,
+      },
     ]);
   });
 
@@ -64,14 +80,36 @@ describe("heartbeat.list / heartbeat.history agent tools", () => {
 
   it("heartbeat.history returns bounded status/timestamps/result records for an owned heartbeat, most recent first", async () => {
     const heartbeat = await withTransaction(pool, (client) =>
-      createHeartbeat(client, { projectItemId: PROJECT_A, name: "Process Inbox", rule: { kind: "dailyTime", at: "09:00" }, actionId: "core.agentRun" }),
+      createHeartbeat(client, {
+        projectItemId: PROJECT_A,
+        name: "Process Inbox",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "core.agentRun",
+      }),
     );
-    const olderRun = await createAgentRun(pool, { projectItemId: PROJECT_A, heartbeatId: heartbeat.id, triggeredBy: "heartbeat", task: "t1" });
-    await pool.query("UPDATE agent_runs SET status = 'done', result = 'ok-1', started_at = now() - interval '1 hour' WHERE id = $1", [olderRun.id]);
-    const newerRun = await createAgentRun(pool, { projectItemId: PROJECT_A, heartbeatId: heartbeat.id, triggeredBy: "heartbeat", task: "t2" });
+    const olderRun = await createAgentRun(pool, {
+      projectItemId: PROJECT_A,
+      heartbeatId: heartbeat.id,
+      triggeredBy: "heartbeat",
+      task: "t1",
+    });
+    await pool.query(
+      "UPDATE agent_runs SET status = 'done', result = 'ok-1', started_at = now() - interval '1 hour' WHERE id = $1",
+      [olderRun.id],
+    );
+    const newerRun = await createAgentRun(pool, {
+      projectItemId: PROJECT_A,
+      heartbeatId: heartbeat.id,
+      triggeredBy: "heartbeat",
+      task: "t2",
+    });
     await pool.query("UPDATE agent_runs SET status = 'error', result = 'boom' WHERE id = $1", [newerRun.id]);
 
-    const callingRun = await createAgentRun(pool, { projectItemId: PROJECT_A, triggeredBy: "user", task: "check history" });
+    const callingRun = await createAgentRun(pool, {
+      projectItemId: PROJECT_A,
+      triggeredBy: "user",
+      task: "check history",
+    });
     const heartbeatHistory = createHeartbeatHistoryTool(pool);
     const outcome = await heartbeatHistory(callingRun.id, { heartbeatId: heartbeat.id });
     const entries = parseResult<HeartbeatHistoryEntry[]>(outcome);
@@ -90,9 +128,18 @@ describe("heartbeat.list / heartbeat.history agent tools", () => {
         actionId: "semprec.tick",
       }),
     );
-    const eventRun = await createAgentRun(pool, { projectItemId: PROJECT_A, heartbeatId: heartbeat.id, triggeredBy: "heartbeat", task: "process item" });
+    const eventRun = await createAgentRun(pool, {
+      projectItemId: PROJECT_A,
+      heartbeatId: heartbeat.id,
+      triggeredBy: "heartbeat",
+      task: "process item",
+    });
 
-    const callingRun = await createAgentRun(pool, { projectItemId: PROJECT_A, triggeredBy: "user", task: "check history" });
+    const callingRun = await createAgentRun(pool, {
+      projectItemId: PROJECT_A,
+      triggeredBy: "user",
+      task: "check history",
+    });
     const heartbeatHistory = createHeartbeatHistoryTool(pool);
     const outcome = await heartbeatHistory(callingRun.id, { heartbeatId: heartbeat.id });
     const entries = parseResult<HeartbeatHistoryEntry[]>(outcome);
@@ -102,9 +149,18 @@ describe("heartbeat.list / heartbeat.history agent tools", () => {
 
   it("a deterministic action's heartbeat has no history rows to report", async () => {
     const heartbeat = await withTransaction(pool, (client) =>
-      createHeartbeat(client, { projectItemId: PROJECT_A, name: "Manifest drift check", rule: { kind: "dailyTime", at: "03:00" }, actionId: "core.driftCheck" }),
+      createHeartbeat(client, {
+        projectItemId: PROJECT_A,
+        name: "Manifest drift check",
+        rule: { kind: "dailyTime", at: "03:00" },
+        actionId: "core.driftCheck",
+      }),
     );
-    const callingRun = await createAgentRun(pool, { projectItemId: PROJECT_A, triggeredBy: "user", task: "check history" });
+    const callingRun = await createAgentRun(pool, {
+      projectItemId: PROJECT_A,
+      triggeredBy: "user",
+      task: "check history",
+    });
 
     const heartbeatHistory = createHeartbeatHistoryTool(pool);
     const outcome = await heartbeatHistory(callingRun.id, { heartbeatId: heartbeat.id });
@@ -114,9 +170,18 @@ describe("heartbeat.list / heartbeat.history agent tools", () => {
 
   it("treats an unknown heartbeatId and one belonging to another project identically", async () => {
     const otherProjectHeartbeat = await withTransaction(pool, (client) =>
-      createHeartbeat(client, { projectItemId: PROJECT_B, name: "Not yours", rule: { kind: "dailyTime", at: "09:00" }, actionId: "core.agentRun" }),
+      createHeartbeat(client, {
+        projectItemId: PROJECT_B,
+        name: "Not yours",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "core.agentRun",
+      }),
     );
-    const callingRun = await createAgentRun(pool, { projectItemId: PROJECT_A, triggeredBy: "user", task: "check history" });
+    const callingRun = await createAgentRun(pool, {
+      projectItemId: PROJECT_A,
+      triggeredBy: "user",
+      task: "check history",
+    });
     const heartbeatHistory = createHeartbeatHistoryTool(pool);
 
     const unknownHeartbeatId = "44444444-4444-4444-8444-444444444444";
@@ -125,23 +190,42 @@ describe("heartbeat.list / heartbeat.history agent tools", () => {
 
     expect(unknownOutcome.error).toBe(true);
     expect(crossProjectOutcome.error).toBe(true);
-    expect(crossProjectOutcome.result).toBe(unknownOutcome.result.replace(unknownHeartbeatId, otherProjectHeartbeat.id));
+    expect(crossProjectOutcome.result).toBe(
+      unknownOutcome.result.replace(unknownHeartbeatId, otherProjectHeartbeat.id),
+    );
   });
 
   it("applies the default limit and rejects a limit past the bounded maximum", async () => {
     const heartbeat = await withTransaction(pool, (client) =>
-      createHeartbeat(client, { projectItemId: PROJECT_A, name: "Process Inbox", rule: { kind: "dailyTime", at: "09:00" }, actionId: "core.agentRun" }),
+      createHeartbeat(client, {
+        projectItemId: PROJECT_A,
+        name: "Process Inbox",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "core.agentRun",
+      }),
     );
     for (let i = 0; i < HEARTBEAT_HISTORY_DEFAULT_LIMIT + 5; i++) {
-      await createAgentRun(pool, { projectItemId: PROJECT_A, heartbeatId: heartbeat.id, triggeredBy: "heartbeat", task: `t${i}` });
+      await createAgentRun(pool, {
+        projectItemId: PROJECT_A,
+        heartbeatId: heartbeat.id,
+        triggeredBy: "heartbeat",
+        task: `t${i}`,
+      });
     }
-    const callingRun = await createAgentRun(pool, { projectItemId: PROJECT_A, triggeredBy: "user", task: "check history" });
+    const callingRun = await createAgentRun(pool, {
+      projectItemId: PROJECT_A,
+      triggeredBy: "user",
+      task: "check history",
+    });
     const heartbeatHistory = createHeartbeatHistoryTool(pool);
 
     const defaulted = await heartbeatHistory(callingRun.id, { heartbeatId: heartbeat.id });
     expect(parseResult<HeartbeatHistoryEntry[]>(defaulted)).toHaveLength(HEARTBEAT_HISTORY_DEFAULT_LIMIT);
 
-    const overMax = await heartbeatHistory(callingRun.id, { heartbeatId: heartbeat.id, limit: HEARTBEAT_HISTORY_MAX_LIMIT + 1 });
+    const overMax = await heartbeatHistory(callingRun.id, {
+      heartbeatId: heartbeat.id,
+      limit: HEARTBEAT_HISTORY_MAX_LIMIT + 1,
+    });
     expect(overMax.error).toBe(true);
   });
 });

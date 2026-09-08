@@ -58,7 +58,10 @@ async function resolveCallingProjectItemId(pool: Pool, currentRunId: string): Pr
  * `agent_run.project_item_id` of `currentRunId`, so an agent cannot, by construction, list or
  * inspect another project's heartbeats — only delegation to a run in that project can.
  */
-export function createHeartbeatListTool(pool: Pool, moduleRuleKinds: HeartbeatRuleKindRegistry = new Map()): HeartbeatListTool {
+export function createHeartbeatListTool(
+  pool: Pool,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): HeartbeatListTool {
   return async function heartbeatList(currentRunId, rawArgs) {
     const parsedArgs = heartbeatListArgsSchema.safeParse(rawArgs ?? {});
     if (!parsedArgs.success) {
@@ -94,7 +97,10 @@ export function createHeartbeatListTool(pool: Pool, moduleRuleKinds: HeartbeatRu
  * heartbeat action that never started an agent run naturally returns an empty list, not an
  * error — there is no second run-log table for it to miss.
  */
-export function createHeartbeatHistoryTool(pool: Pool, moduleRuleKinds: HeartbeatRuleKindRegistry = new Map()): HeartbeatHistoryTool {
+export function createHeartbeatHistoryTool(
+  pool: Pool,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): HeartbeatHistoryTool {
   return async function heartbeatHistory(currentRunId, rawArgs) {
     const parsedArgs = heartbeatHistoryArgsSchema.safeParse(rawArgs);
     if (!parsedArgs.success) {

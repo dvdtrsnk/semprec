@@ -159,10 +159,10 @@ export async function getHeartbeatForProject(
   heartbeatId: string,
   moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
 ): Promise<HeartbeatRow | null> {
-  const { rows } = await client.query(`SELECT ${COLUMNS} FROM project_heartbeats WHERE id = $1 AND project_item_id = $2`, [
-    heartbeatId,
-    projectItemId,
-  ]);
+  const { rows } = await client.query(
+    `SELECT ${COLUMNS} FROM project_heartbeats WHERE id = $1 AND project_item_id = $2`,
+    [heartbeatId, projectItemId],
+  );
   return rows[0] ? mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true }) : null;
 }
 

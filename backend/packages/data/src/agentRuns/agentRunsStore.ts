@@ -116,7 +116,11 @@ export async function getAgentRunsByIds(client: Pool | PoolClient, ids: string[]
  * (issue #135's `heartbeat.history`) — omitted, the call returns the full history, as
  * every caller before that issue relied on.
  */
-export async function listAgentRunsByHeartbeat(client: Pool | PoolClient, heartbeatId: string, limit?: number): Promise<AgentRunRow[]> {
+export async function listAgentRunsByHeartbeat(
+  client: Pool | PoolClient,
+  heartbeatId: string,
+  limit?: number,
+): Promise<AgentRunRow[]> {
   const { rows } = await client.query(
     `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
      FROM agent_runs WHERE heartbeat_id = $1 ORDER BY started_at DESC` + (limit !== undefined ? ` LIMIT $2` : ``),
