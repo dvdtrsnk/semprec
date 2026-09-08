@@ -44,9 +44,8 @@ export async function getUserByEmail(client: Pool | PoolClient, email: string): 
 }
 
 export async function getUserById(client: Pool | PoolClient, id: string): Promise<UserRow | null> {
-  const { rows } = await client.query(
-    `SELECT id, email, password_hash, locale, created_at FROM users WHERE id = $1`,
-    [id],
-  );
+  const { rows } = await client.query(`SELECT id, email, password_hash, locale, created_at FROM users WHERE id = $1`, [
+    id,
+  ]);
   return rows[0] ? mapRow(rows[0]) : null;
 }

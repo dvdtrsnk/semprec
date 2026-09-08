@@ -26,7 +26,8 @@ function mapRow(row: {
   };
 }
 
-const SELECT_COLUMNS = "id, user_id, token_hash, platform, created_at, last_seen_at, expires_at, user_agent, revoked_at";
+const SELECT_COLUMNS =
+  "id, user_id, token_hash, platform, created_at, last_seen_at, expires_at, user_agent, revoked_at";
 
 export interface CreateSessionInput {
   userId: string;
@@ -48,7 +49,10 @@ export async function createSession(client: Pool | PoolClient, input: CreateSess
 }
 
 /** A session is "active" when it is neither revoked nor past its expiry — the two independent ways a token stops working. */
-export async function getActiveSessionByTokenHash(client: Pool | PoolClient, tokenHash: string): Promise<SessionRow | null> {
+export async function getActiveSessionByTokenHash(
+  client: Pool | PoolClient,
+  tokenHash: string,
+): Promise<SessionRow | null> {
   const { rows } = await client.query(
     `SELECT ${SELECT_COLUMNS} FROM sessions
      WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now()`,

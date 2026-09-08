@@ -4,7 +4,12 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { generateOpaqueToken } from "../auth/token.js";
 import { createUser, getUserByEmail, getUserById } from "../auth/usersStore.js";
-import { createSession, getActiveSessionByTokenHash, listSessionsForUser, revokeSession } from "../auth/sessionsStore.js";
+import {
+  createSession,
+  getActiveSessionByTokenHash,
+  listSessionsForUser,
+  revokeSession,
+} from "../auth/sessionsStore.js";
 import { countRecentFailedAttempts, recordLoginAttempt } from "../auth/loginAttemptsStore.js";
 
 let pool: Pool;
@@ -30,7 +35,9 @@ describe("auth schema (issue #139)", () => {
     expect(user.passwordHash).toMatch(/^\$argon2id\$/);
     expect(user.passwordHash).not.toContain("hunter2");
 
-    const { rows } = await pool.query<{ password_hash: string }>("SELECT password_hash FROM users WHERE id = $1", [user.id]);
+    const { rows } = await pool.query<{ password_hash: string }>("SELECT password_hash FROM users WHERE id = $1", [
+      user.id,
+    ]);
     expect(rows[0].password_hash).not.toContain("hunter2");
 
     expect(await getUserByEmail(pool, "a@example.com")).toEqual(user);
@@ -39,9 +46,9 @@ describe("auth schema (issue #139)", () => {
 
   it("rejects a duplicate email", async () => {
     await createUser(pool, { email: "dup@example.com", passwordHash: await hashPassword("first") });
-    await expect(createUser(pool, { email: "dup@example.com", passwordHash: await hashPassword("second") })).rejects.toThrow(
-      /duplicate key|unique/i,
-    );
+    await expect(
+      createUser(pool, { email: "dup@example.com", passwordHash: await hashPassword("second") }),
+    ).rejects.toThrow(/duplicate key|unique/i);
   });
 
   it("lets one user hold two live sessions at once, one per device", async () => {

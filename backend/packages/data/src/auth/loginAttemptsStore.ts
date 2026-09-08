@@ -1,7 +1,13 @@
 import type { Pool, PoolClient } from "pg";
 import type { LoginAttemptRow } from "./types.js";
 
-function mapRow(row: { id: string; email: string; ip: string; succeeded: boolean; attempted_at: Date }): LoginAttemptRow {
+function mapRow(row: {
+  id: string;
+  email: string;
+  ip: string;
+  succeeded: boolean;
+  attempted_at: Date;
+}): LoginAttemptRow {
   return {
     id: row.id,
     email: row.email,
@@ -18,7 +24,10 @@ export interface RecordLoginAttemptInput {
 }
 
 /** No FK to `users`: an attempt against an email that doesn't exist is still recorded, for throttling and audit alike. */
-export async function recordLoginAttempt(client: Pool | PoolClient, input: RecordLoginAttemptInput): Promise<LoginAttemptRow> {
+export async function recordLoginAttempt(
+  client: Pool | PoolClient,
+  input: RecordLoginAttemptInput,
+): Promise<LoginAttemptRow> {
   const { rows } = await client.query(
     `INSERT INTO login_attempts (email, ip, succeeded) VALUES ($1, $2, $3)
      RETURNING id, email, ip, succeeded, attempted_at`,
