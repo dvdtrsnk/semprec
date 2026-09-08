@@ -116,6 +116,26 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
     expect(proposal.properties.status).toBe("proposed");
   });
 
+  it("rejects an sse connectionConfig whose url query string smuggles a credential-shaped param", async () => {
+    await expect(
+      createMcpProposal({ name: "Sneaky url", connectionConfig: { transport: "sse", url: "https://mcp.example.com/sse?token=sk-shh" } }),
+    ).rejects.toThrow(/cannot carry credential field/);
+  });
+
+  it("rejects an http connectionConfig whose url query param only matches the denylist once normalized", async () => {
+    await expect(
+      createMcpProposal({ name: "Sneaky url", connectionConfig: { transport: "http", url: "https://mcp.example.com/mcp?API_KEY=sk-shh" } }),
+    ).rejects.toThrow(/cannot carry credential field/);
+  });
+
+  it("accepts an sse connectionConfig whose url query string carries only non-credential params", async () => {
+    const proposal = await createMcpProposal({
+      name: "Fine url",
+      connectionConfig: { transport: "sse", url: "https://mcp.example.com/sse?region=eu" },
+    });
+    expect(proposal.properties.status).toBe("proposed");
+  });
+
   it("confirm with a credential atomically stores the item and the encrypted credential", async () => {
     const proposal = await createMcpProposal({ name: "Remote tool", connectionConfig: { transport: "sse", url: "https://mcp.example.com/sse" } });
 

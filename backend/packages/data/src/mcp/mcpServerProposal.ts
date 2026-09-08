@@ -48,6 +48,31 @@ function assertNoCredentialShapedEnvKeys(connectionConfig: unknown): void {
 }
 
 /**
+ * An `sse`/`http` transport's `url` is just as plausible a smuggling route as `stdio`'s `env` —
+ * a query string like `?token=sk-...` passes both the top-level denylist (no such property key)
+ * and the Zod schema (any well-formed URL is valid), and would otherwise land verbatim in
+ * `items.properties.connectionConfig.url`. `url` may not even be a syntactically valid absolute
+ * URL yet at this point (that's `assertValidMcpConnectionConfig`'s job, run right after this);
+ * `new URL` failing here just means there's nothing query-string-shaped to inspect.
+ */
+function assertNoCredentialShapedUrlParams(connectionConfig: unknown): void {
+  if (typeof connectionConfig !== "object" || connectionConfig === null) return;
+  const url = (connectionConfig as { url?: unknown }).url;
+  if (typeof url !== "string") return;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return;
+  }
+  for (const key of parsed.searchParams.keys()) {
+    if (NORMALIZED_CREDENTIAL_FIELD_NAMES.has(normalizeFieldName(key))) {
+      throw new ValidationError(`Proposal properties for an MCP server cannot carry credential field '${key}' in connectionConfig.url`, { field: key });
+    }
+  }
+}
+
+/**
  * Extra validation `assertValidProposalEnvelope` (inboxTickAction.ts) runs for a `database`
  * envelope whose target is the `mcpServers` system database, on top of the generic
  * unknown-key/relation/rollup/system-owner checks it already applies to every target: reject
@@ -64,6 +89,7 @@ export function assertValidMcpServerProposalProperties(properties: Record<string
   }
   if ("connectionConfig" in properties) {
     assertNoCredentialShapedEnvKeys(properties.connectionConfig);
+    assertNoCredentialShapedUrlParams(properties.connectionConfig);
     assertValidMcpConnectionConfig(properties.connectionConfig);
   }
 }
