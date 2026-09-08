@@ -88,7 +88,10 @@ describe("MCP invoke adapter (issue #128)", () => {
       const invoke = createMcpInvokeTool(pool, projectItemId, registration.id);
       const result = await invoke({ query: "semprec" });
 
-      expect(result).toEqual({ error: false, result: JSON.stringify({ name: "search_web", arguments: { query: "semprec" } }) });
+      expect(result).toEqual({
+        error: false,
+        result: JSON.stringify({ name: "search_web", arguments: { query: "semprec" } }),
+      });
       expect(contractServer.getLastToolCall()).toEqual({ name: "search_web", arguments: { query: "semprec" } });
     });
 

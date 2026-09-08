@@ -62,13 +62,18 @@ describe("resolveGrantedMcpTool (issue #128)", () => {
       toolSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
       requiresApproval: true,
       riskClass: "unclassified",
-      serverItem: { id: server.id, properties: { name: "Server", active: true, connectionConfig: { transport: "stdio", command: "echo" } } },
+      serverItem: {
+        id: server.id,
+        properties: { name: "Server", active: true, connectionConfig: { transport: "stdio", command: "echo" } },
+      },
     });
   });
 
   it("returns null for an unknown registration id", async () => {
     const projectItemId = randomUUID();
-    expect(await withTransaction(pool, (client) => resolveGrantedMcpTool(client, projectItemId, randomUUID()))).toBeNull();
+    expect(
+      await withTransaction(pool, (client) => resolveGrantedMcpTool(client, projectItemId, randomUUID())),
+    ).toBeNull();
   });
 
   it("returns null when the tool was never granted to this project", async () => {
