@@ -81,8 +81,16 @@ export async function connectMcpServer(
   };
 }
 
-/** Races `promise` against a timer; a timeout leaves `promise` itself unsettled (its eventual result is just never awaited) — the caller is responsible for releasing whatever resource it was opening. */
+/**
+ * Races `promise` against a timer; a timeout leaves `promise` itself unsettled (its eventual
+ * result is just never awaited) — the caller is responsible for releasing whatever resource it
+ * was opening. `promise.catch(() => {})` below is not the value raced against — it exists only
+ * to give `promise`'s eventual rejection a handler, since closing the transport after a timeout
+ * (the caller's very next step) makes the original `connect()` reject with nothing else
+ * listening, which without this would crash the process as an unhandled rejection.
+ */
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  promise.catch(() => {});
   let timer: NodeJS.Timeout;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);

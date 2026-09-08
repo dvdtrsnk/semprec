@@ -140,6 +140,8 @@ export async function startSseContractServer(): Promise<HttpTransportContractSer
   const transportsBySession = new Map<string, SSEServerTransport>();
 
   const httpServer = http.createServer((req, res) => {
+    // A thrown/rejected handler must still end the response — otherwise a bug here surfaces as
+    // the test's client hanging until its own timeout, rather than as a clear server-side error.
     void (async () => {
       const authorization = req.headers.authorization;
       observedCredential = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : null;
@@ -167,7 +169,10 @@ export async function startSseContractServer(): Promise<HttpTransportContractSer
         return;
       }
       res.writeHead(404).end();
-    })();
+    })().catch(() => {
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    });
   });
 
   const handle = await listenOnEphemeralPort(httpServer);
@@ -196,11 +201,16 @@ export async function startHttpContractServer(): Promise<HttpTransportContractSe
   await mcpServer.connect(transport);
 
   const httpServer = http.createServer((req, res) => {
+    // Same rationale as the SSE server above: without this, a thrown/rejected handler leaves
+    // the test's client hanging instead of surfacing a clear server-side error.
     void (async () => {
       const authorization = req.headers.authorization;
       observedCredential = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : null;
       await transport.handleRequest(req, res);
-    })();
+    })().catch(() => {
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    });
   });
 
   const handle = await listenOnEphemeralPort(httpServer);
