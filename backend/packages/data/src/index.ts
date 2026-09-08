@@ -129,3 +129,8 @@ export type { McpToolRegistration, UpsertMcpToolRegistrationInput } from "./mcp/
 export { upsertMcpToolRegistration, getMcpToolRegistration, listMcpToolRegistrationsForServer } from "./mcp/mcpToolRegistrationsStore.js";
 export type { ProjectMcpGrant } from "./mcp/mcpProjectGrantsStore.js";
 export { listProjectMcpGrants, getProjectMcpGrant } from "./mcp/mcpProjectGrantsStore.js";
+export type { McpConnectionConfig } from "./mcp/mcpConnectionConfig.js";
+export { assertValidMcpConnectionConfig } from "./mcp/mcpConnectionConfig.js";
+export { McpConnectionError, MCP_CONNECTION_ERROR_REASONS, type McpConnectionErrorReason } from "./mcp/mcpConnectionError.js";
+export type { McpClientHandle, ConnectMcpServerOptions } from "./mcp/mcpConnectionFactory.js";
+export { connectMcpServer } from "./mcp/mcpConnectionFactory.js";

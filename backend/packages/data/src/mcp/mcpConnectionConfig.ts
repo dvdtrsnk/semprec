@@ -13,6 +13,15 @@ const stdioConnectionConfig = z.object({
   command: z.string().min(1),
   args: z.array(z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),
+  /**
+   * Names the child process env var the connection factory (issue #231) should inject the
+   * server's decrypted `external_credentials` secret under, e.g. `"API_KEY"` — declares only
+   * a variable *name*, never a value, so it carries nothing `mcpServerProposal.ts`'s
+   * credential-shaped-field denylist needs to reject. Omit when the server takes no
+   * credential; the factory injects nothing when this is absent even if a credential happens
+   * to be stored.
+   */
+  credentialEnvVar: z.string().min(1).optional(),
 });
 
 const sseConnectionConfig = z.object({

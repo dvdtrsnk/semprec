@@ -1,0 +1,183 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import type { OAuthClientMetadata, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { Queryable } from "../db/pool.js";
+import type { ItemRow } from "../types.js";
+import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
+import { assertValidMcpConnectionConfig, type McpConnectionConfig } from "./mcpConnectionConfig.js";
+import { McpConnectionError } from "./mcpConnectionError.js";
+
+/**
+ * The single MCP client connection factory (issue #231): opens a connection for a stored
+ * `mcpServers` item's `stdio`/`sse`/`http` `connectionConfig`, completes the `initialize`
+ * handshake, and hands back a connected client plus an explicit `close()`. Both the
+ * human-triggered "Synchronize tools" action (#125, `tools/list`) and the outbound MCP-invoke
+ * adapter in `semprec-agents` (#128, `tools/call`) import this rather than re-implementing
+ * transport handling — see the issue's Task section.
+ *
+ * Registers no handler for `notifications/tools/list_changed` (no `listChanged` option is
+ * passed to `Client`'s constructor) — a server that emits it has no observable effect here or
+ * anywhere downstream, per the issue's "structural non-reactivity" acceptance criterion.
+ *
+ * Callers must use try/finally: `const handle = await connectMcpServer(...); try { ... }
+ * finally { await handle.close(); }`. A failed connect/handshake already releases whatever
+ * transport it opened before rethrowing, but a successful connect's cleanup is the caller's
+ * responsibility once it's done with the client.
+ */
+export interface McpClientHandle {
+  readonly client: Client;
+  close(): Promise<void>;
+}
+
+export interface ConnectMcpServerOptions {
+  /** Forwarded to `credential_access_log.actor_id` (see `getDecryptedCredential`). */
+  actorId?: string;
+  /** Forwarded to `credential_access_log.purpose`. Defaults to `"mcp_connect"`. */
+  purpose?: string;
+}
+
+const CLIENT_INFO = { name: "semprec-mcp-client", version: "1.0.0" };
+
+/**
+ * Connects to the MCP server described by `mcpServerItem.properties.connectionConfig`,
+ * decrypting its `external_credentials` secret (if any) only for this connection's use.
+ * Rejects a malformed/unsupported `connectionConfig` or a credential decryption failure with
+ * `McpConnectionError` before opening any connection; maps a transport connect or handshake
+ * failure to the same safe error shape after releasing whatever the transport had opened.
+ */
+export async function connectMcpServer(
+  client: Queryable,
+  mcpServerItem: Pick<ItemRow, "id" | "properties">,
+  options: ConnectMcpServerOptions = {},
+): Promise<McpClientHandle> {
+  const config = parseConnectionConfig(mcpServerItem.properties.connectionConfig);
+  const credential = await resolveCredential(client, mcpServerItem.id, options);
+  const { transport, afterConnect } = buildTransport(config, credential);
+
+  const mcpClient = new Client(CLIENT_INFO, { capabilities: {} });
+  try {
+    await mcpClient.connect(transport);
+  } catch {
+    await safeCloseTransport(transport);
+    throw new McpConnectionError("handshake_failed", `Failed to connect to MCP server (transport=${config.transport})`);
+  }
+  // The transport has already used the credential to spawn/authenticate; scrub any copy it kept
+  // as a plain, JSON-serializable property so `handle.client`'s serializable state never carries it.
+  afterConnect?.();
+
+  return {
+    client: mcpClient,
+    close: () => mcpClient.close(),
+  };
+}
+
+/** A failed connect can leave the transport partially open; `close()` on it must not itself throw over that. */
+async function safeCloseTransport(transport: Transport): Promise<void> {
+  try {
+    await transport.close();
+  } catch {
+    // best-effort cleanup after an already-failed connect; nothing further to report
+  }
+}
+
+function parseConnectionConfig(value: unknown): McpConnectionConfig {
+  try {
+    return assertValidMcpConnectionConfig(value);
+  } catch {
+    throw new McpConnectionError("invalid_config", "MCP server has an invalid or unsupported connectionConfig");
+  }
+}
+
+async function resolveCredential(client: Queryable, itemId: string, options: ConnectMcpServerOptions): Promise<string | null> {
+  try {
+    return await getDecryptedCredential(client, {
+      itemId,
+      actorType: "mcp_connection_manager",
+      actorId: options.actorId,
+      purpose: options.purpose ?? "mcp_connect",
+    });
+  } catch {
+    throw new McpConnectionError("credential_decryption_failed", "Failed to decrypt the MCP server's stored credential");
+  }
+}
+
+interface BuiltTransport {
+  readonly transport: Transport;
+  /**
+   * Runs once `mcpClient.connect(transport)` has succeeded, to scrub any plain, JSON-serializable
+   * copy of the credential the transport kept for itself — see `buildStdioTransport`'s comment
+   * for why this is safe to do only *after* a successful connect.
+   */
+  afterConnect?(): void;
+}
+
+function buildTransport(config: McpConnectionConfig, credential: string | null): BuiltTransport {
+  switch (config.transport) {
+    case "stdio":
+      return buildStdioTransport(config, credential);
+    case "sse":
+      return { transport: new SSEClientTransport(new URL(config.url), authProviderOptions(credential)) };
+    case "http":
+      return { transport: new StreamableHTTPClientTransport(new URL(config.url), authProviderOptions(credential)) };
+  }
+}
+
+function buildStdioTransport(config: Extract<McpConnectionConfig, { transport: "stdio" }>, credential: string | null): BuiltTransport {
+  // `env: undefined` (not `{}`) when there's nothing to add — `StdioClientTransport` falls back
+  // to `getDefaultEnvironment()`'s safe allowlist only when `env` is omitted entirely; passing
+  // an empty object here would silently strip that default environment from the child process.
+  const credentialEnvVar = config.credentialEnvVar;
+  let env: Record<string, string> | undefined = config.env ? { ...config.env } : undefined;
+  const injectsCredential = credential !== null && credentialEnvVar !== undefined;
+  if (injectsCredential) {
+    env = { ...env, [credentialEnvVar]: credential };
+  }
+  const transport = new StdioClientTransport({ command: config.command, args: config.args, env });
+  // `StdioClientTransport` retains this exact `env` object as `_serverParams.env`, but it only
+  // *reads* from it synchronously while spawning the child (inside `connect()`, above) — the
+  // spawned process already has its own copy of the credential in its real environment by the
+  // time `connect()` resolves. Deleting the key here afterward only removes it from this
+  // JS-side record, so it can no longer be found by inspecting `handle.client`.
+  const afterConnect = injectsCredential ? () => delete env![credentialEnvVar] : undefined;
+  return { transport, afterConnect };
+}
+
+/**
+ * Bearer-token `OAuthClientProvider` for a stored non-interactive credential (issue #231's
+ * sse/http case): the SDK's transports call `tokens()` fresh on every request rather than
+ * reading `Authorization` off a stored `requestInit`, so the credential only ever lives inside
+ * this closure — never as a plain property of the transport, the provider, or anything else
+ * reachable from the returned client. The other `OAuthClientProvider` methods exist only to
+ * satisfy the interface: none of them run unless the server challenges with 401/403, which a
+ * server authenticating a pre-shared credential this way never does.
+ */
+function createBearerAuthProvider(credential: string): OAuthClientProvider {
+  const tokens: OAuthTokens = { access_token: credential, token_type: "bearer" };
+  const notSupported = (what: string) => () => {
+    throw new Error(`MCP connection factory: ${what} is not supported for a stored bearer credential`);
+  };
+  return {
+    get redirectUrl(): string | undefined {
+      return undefined;
+    },
+    get clientMetadata(): OAuthClientMetadata {
+      return { redirect_uris: [] };
+    },
+    clientInformation: () => undefined,
+    tokens: () => tokens,
+    saveTokens: () => {},
+    redirectToAuthorization: notSupported("interactive OAuth authorization"),
+    saveCodeVerifier: () => {},
+    codeVerifier: notSupported("a PKCE code verifier"),
+  };
+}
+
+/** `undefined` (not a provider with no tokens) when there's no credential, so a credential-less server sees no `Authorization` header at all. */
+function authProviderOptions(credential: string | null): { authProvider: OAuthClientProvider } | undefined {
+  if (credential === null) return undefined;
+  return { authProvider: createBearerAuthProvider(credential) };
+}
