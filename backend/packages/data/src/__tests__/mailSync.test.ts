@@ -1,7 +1,12 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createChokePoint, createItemWithClient, createRelationWithClient, type ChokePoint } from "../chokePoint/chokePoint.js";
+import {
+  createChokePoint,
+  createItemWithClient,
+  createRelationWithClient,
+  type ChokePoint,
+} from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { withTransaction } from "../db/pool.js";
@@ -33,11 +38,25 @@ import { storeCredential, getDecryptedCredential } from "../credentials/external
 import { reconcileImapAccount, type ImapFetchedMessage, type ImapMailClient } from "../mail/imapReconcile.js";
 import { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
 import { reconcileGraphAccount, type GraphMailClient } from "../mail/graphReconcile.js";
-import { handleMailSearchReindexSweepTask, handleSyncMailAccountTask, type MailSyncAdapterFactory } from "../mail/mailSyncJob.js";
-import { ensureMailAccountSyncState, getMailAccountSyncState, defaultSyncModeForProvider } from "../mail/mailAccountSyncStateStore.js";
+import {
+  handleMailSearchReindexSweepTask,
+  handleSyncMailAccountTask,
+  type MailSyncAdapterFactory,
+} from "../mail/mailSyncJob.js";
+import {
+  ensureMailAccountSyncState,
+  getMailAccountSyncState,
+  defaultSyncModeForProvider,
+} from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { MailConnectionLimitError, MailReauthorizationRequiredError } from "../mail/providerTypes.js";
-import { walkBodyStructure, parseHeaderBlock, headerValues, ImapFlowMailClient, isImapConnectionLimitError } from "../mail/imapFlowClient.js";
+import {
+  walkBodyStructure,
+  parseHeaderBlock,
+  headerValues,
+  ImapFlowMailClient,
+  isImapConnectionLimitError,
+} from "../mail/imapFlowClient.js";
 import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG, messageFlagProperties } from "../mail/messageFlags.js";
 import type { ImapFlow } from "imapflow";
@@ -59,7 +78,8 @@ function buildMinimalPdf(text: string): Buffer {
   const objects: string[] = [];
   objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
   objects[2] = "<< /Type /Pages /Kids [3 0 R] /Count 1 >>";
-  objects[3] = "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /MediaBox [0 0 300 300] /Contents 5 0 R >>";
+  objects[3] =
+    "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /MediaBox [0 0 300 300] /Contents 5 0 R >>";
   objects[4] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
   const stream = `BT /F1 24 Tf 20 100 Td (${text}) Tj ET`;
   objects[5] = `<< /Length ${Buffer.byteLength(stream, "latin1")} >>\nstream\n${stream}\nendstream`;
@@ -115,11 +135,25 @@ describe("email module seed (issue #26)", () => {
     const emailsId = await databaseIdFor("emails");
 
     const mailboxProps = await chokePoint.listProperties(mailboxesId);
-    expect(mailboxProps.map((p) => p.key).sort()).toEqual(["addresses", "connectionLimit", "folders", "name", "provider", "syncStatus"]);
+    expect(mailboxProps.map((p) => p.key).sort()).toEqual([
+      "addresses",
+      "connectionLimit",
+      "folders",
+      "name",
+      "provider",
+      "syncStatus",
+    ]);
     expect(mailboxProps.find((p) => p.key === "syncStatus")).toMatchObject({ owner: "system", type: "select" });
 
     const folderProps = await chokePoint.listProperties(foldersId);
-    expect(folderProps.map((p) => p.key).sort()).toEqual(["behavior", "emails", "mailbox", "name", "providerId", "specialPurpose"]);
+    expect(folderProps.map((p) => p.key).sort()).toEqual([
+      "behavior",
+      "emails",
+      "mailbox",
+      "name",
+      "providerId",
+      "specialPurpose",
+    ]);
 
     const emailProps = await chokePoint.listProperties(emailsId);
     expect(emailProps.map((p) => p.key).sort()).toEqual([
@@ -150,7 +184,9 @@ describe("email module seed (issue #26)", () => {
 
   it("rejects a direct write to an owner:'system' Emails property through the generic create path", async () => {
     const emailsId = await databaseIdFor("emails");
-    await expect(chokePoint.createItem({ databaseId: emailsId, properties: { name: "hi", sender: "x@example.com" } })).rejects.toMatchObject({
+    await expect(
+      chokePoint.createItem({ databaseId: emailsId, properties: { name: "hi", sender: "x@example.com" } }),
+    ).rejects.toMatchObject({
       name: "ForbiddenError",
     });
   });
@@ -166,8 +202,13 @@ describe("person <-> email address linking (issue #26)", () => {
 
   it("reindexes person_email_index from People.emails and rejects a second person claiming the same address", async () => {
     const peopleId = await databaseIdFor("people");
-    const alice = await chokePoint.createItem({ databaseId: peopleId, properties: { name: "Alice", emails: "alice@example.com\nalice.w@example.com" } });
-    await withTransaction(pool, (client) => reindexPersonEmails(client, alice.id, ["alice@example.com", "alice.w@example.com"]));
+    const alice = await chokePoint.createItem({
+      databaseId: peopleId,
+      properties: { name: "Alice", emails: "alice@example.com\nalice.w@example.com" },
+    });
+    await withTransaction(pool, (client) =>
+      reindexPersonEmails(client, alice.id, ["alice@example.com", "alice.w@example.com"]),
+    );
 
     expect(await withTransaction(pool, (client) => lookupPersonIdByEmail(client, "ALICE@Example.com "))).toBe(alice.id);
 
@@ -192,7 +233,10 @@ describe("person <-> email address linking (issue #26)", () => {
     const filesId = await databaseIdFor("files");
     const mailboxesId = await databaseIdFor("mailboxes");
 
-    const alice = await chokePoint.createItem({ databaseId: peopleId, properties: { name: "Alice", emails: "alice@example.com" } });
+    const alice = await chokePoint.createItem({
+      databaseId: peopleId,
+      properties: { name: "Alice", emails: "alice@example.com" },
+    });
     await drainQueue(); // onItemEvent 'create' on People -> reindex action
 
     const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
@@ -239,9 +283,10 @@ describe("person <-> email address linking (issue #26)", () => {
     expect(email?.properties.name).toBe("Hello");
 
     const senderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "senderPeople")!;
-    const { rows } = await pool.query(`SELECT item_a, item_b FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1)`, [
-      senderProperty.id,
-    ]);
+    const { rows } = await pool.query(
+      `SELECT item_a, item_b FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1)`,
+      [senderProperty.id],
+    );
     expect(rows.some((r) => r.item_a === alice.id || r.item_b === alice.id)).toBe(true);
   });
 });
@@ -259,10 +304,13 @@ describe("conversation threading (issue #26)", () => {
   });
 
   it("threads a reply onto its parent's thread", async () => {
-    const parentThreadId = await withTransaction(pool, (client) => resolveThreadId(client, { messageId: "<parent@x>" }));
-    await pool.query(`INSERT INTO mail_message_meta (item_id, message_id, thread_id, envelope) VALUES (gen_random_uuid(), '<parent@x>', $1, '{}')`, [
-      parentThreadId,
-    ]);
+    const parentThreadId = await withTransaction(pool, (client) =>
+      resolveThreadId(client, { messageId: "<parent@x>" }),
+    );
+    await pool.query(
+      `INSERT INTO mail_message_meta (item_id, message_id, thread_id, envelope) VALUES (gen_random_uuid(), '<parent@x>', $1, '{}')`,
+      [parentThreadId],
+    );
 
     const replyThreadId = await withTransaction(pool, (client) =>
       resolveThreadId(client, { messageId: "<reply@x>", inReplyTo: "<parent@x>", references: ["<parent@x>"] }),
@@ -271,24 +319,36 @@ describe("conversation threading (issue #26)", () => {
   });
 
   it("self-heals: a message arriving after its reply joins the reply's thread instead of staying separate", async () => {
-    const replyThreadId = await withTransaction(pool, (client) => resolveThreadId(client, { messageId: "<reply@x>", inReplyTo: "<late-parent@x>" }));
+    const replyThreadId = await withTransaction(pool, (client) =>
+      resolveThreadId(client, { messageId: "<reply@x>", inReplyTo: "<late-parent@x>" }),
+    );
     await pool.query(
       `INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, thread_id, envelope) VALUES (gen_random_uuid(), '<reply@x>', '<late-parent@x>', $1, '{}')`,
       [replyThreadId],
     );
 
-    const parentThreadId = await withTransaction(pool, (client) => resolveThreadId(client, { messageId: "<late-parent@x>" }));
+    const parentThreadId = await withTransaction(pool, (client) =>
+      resolveThreadId(client, { messageId: "<late-parent@x>" }),
+    );
     expect(parentThreadId).toBe(replyThreadId);
   });
 
   it("merging two threads deletes the losing thread's now-empty mail_threads row", async () => {
     const threadAId = await withTransaction(pool, (client) => resolveThreadId(client, { messageId: "<a1@x>" }));
-    await pool.query(`INSERT INTO mail_message_meta (item_id, message_id, thread_id, envelope) VALUES (gen_random_uuid(), '<a1@x>', $1, '{}')`, [threadAId]);
+    await pool.query(
+      `INSERT INTO mail_message_meta (item_id, message_id, thread_id, envelope) VALUES (gen_random_uuid(), '<a1@x>', $1, '{}')`,
+      [threadAId],
+    );
 
     const threadBId = await withTransaction(pool, (client) => resolveThreadId(client, { messageId: "<b1@x>" }));
-    await pool.query(`INSERT INTO mail_message_meta (item_id, message_id, thread_id, envelope) VALUES (gen_random_uuid(), '<b1@x>', $1, '{}')`, [threadBId]);
+    await pool.query(
+      `INSERT INTO mail_message_meta (item_id, message_id, thread_id, envelope) VALUES (gen_random_uuid(), '<b1@x>', $1, '{}')`,
+      [threadBId],
+    );
 
-    const { rows: before } = await pool.query(`SELECT count(*) FROM mail_threads WHERE id = ANY($1::uuid[])`, [[threadAId, threadBId]]);
+    const { rows: before } = await pool.query(`SELECT count(*) FROM mail_threads WHERE id = ANY($1::uuid[])`, [
+      [threadAId, threadBId],
+    ]);
     expect(before[0].count).toBe("2");
 
     // Bridges the two previously-separate threads: both are found as ancestors, so this
@@ -298,7 +358,9 @@ describe("conversation threading (issue #26)", () => {
     );
     expect([threadAId, threadBId]).toContain(mergedThreadId);
 
-    const { rows: after } = await pool.query(`SELECT count(*) FROM mail_threads WHERE id = ANY($1::uuid[])`, [[threadAId, threadBId]]);
+    const { rows: after } = await pool.query(`SELECT count(*) FROM mail_threads WHERE id = ANY($1::uuid[])`, [
+      [threadAId, threadBId],
+    ]);
     expect(after[0].count).toBe("1"); // the losing thread's row is gone, not just unreferenced
   });
 });
@@ -318,7 +380,11 @@ describe("message ingest dedup (issue #26)", () => {
     const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
     const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
     const folder = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+      createItemWithClient(
+        client,
+        { databaseId: foldersId, properties: { name: "INBOX" } },
+        { allowedSystemKeys: ["name"] },
+      ),
     );
 
     const input = {
@@ -359,7 +425,11 @@ describe("provider_message_id uniqueness convergence (issue #204)", () => {
     const filesId = await databaseIdFor("files");
     const properties = await chokePoint.listProperties(emailsId);
     const folder = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+      createItemWithClient(
+        client,
+        { databaseId: foldersId, properties: { name: "INBOX" } },
+        { allowedSystemKeys: ["name"] },
+      ),
     );
     return {
       emailsDatabaseId: emailsId,
@@ -388,10 +458,14 @@ describe("provider_message_id uniqueness convergence (issue #204)", () => {
     expect(resultA.itemId).toBe(resultB.itemId);
     expect([resultA.created, resultB.created].sort()).toEqual([false, true]);
 
-    const { rows } = await pool.query(`SELECT count(*) FROM mail_message_meta WHERE provider_message_id = $1`, ["provider-race-1"]);
+    const { rows } = await pool.query(`SELECT count(*) FROM mail_message_meta WHERE provider_message_id = $1`, [
+      "provider-race-1",
+    ]);
     expect(Number(rows[0].count)).toBe(1);
 
-    const { rows: itemRows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [inputA.emailsDatabaseId]);
+    const { rows: itemRows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [
+      inputA.emailsDatabaseId,
+    ]);
     expect(Number(itemRows[0].count)).toBe(1);
   });
 
@@ -401,7 +475,9 @@ describe("provider_message_id uniqueness convergence (issue #204)", () => {
     const sharedProviderId = "provider-fill-1";
 
     await withTransaction(pool, (client) => upsertMailMessageMeta(client, { itemId, messageId, envelope: {} }));
-    await withTransaction(pool, (client) => upsertMailMessageMeta(client, { itemId, messageId, envelope: {}, providerMessageId: sharedProviderId }));
+    await withTransaction(pool, (client) =>
+      upsertMailMessageMeta(client, { itemId, messageId, envelope: {}, providerMessageId: sharedProviderId }),
+    );
 
     const meta = await getMailMessageMetaByItemId(pool, itemId);
     expect(meta?.providerMessageId).toBe(sharedProviderId);
@@ -430,7 +506,11 @@ describe("mailbox triage flags (issue #97)", () => {
     const filesId = await databaseIdFor("files");
     const properties = await chokePoint.listProperties(emailsId);
     const folder = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+      createItemWithClient(
+        client,
+        { databaseId: foldersId, properties: { name: "INBOX" } },
+        { allowedSystemKeys: ["name"] },
+      ),
     );
     return {
       emailsDatabaseId: emailsId,
@@ -485,7 +565,11 @@ describe("mailbox triage flags (issue #97)", () => {
     expect(updated.properties).toMatchObject({ read: true, flagged: true });
 
     await expect(
-      chokePoint.updateItem({ databaseId: input.emailsDatabaseId, itemId, propertiesPatch: { sender: "spoofed@example.com" } }),
+      chokePoint.updateItem({
+        databaseId: input.emailsDatabaseId,
+        itemId,
+        propertiesPatch: { sender: "spoofed@example.com" },
+      }),
     ).rejects.toMatchObject({ name: "ForbiddenError" });
   });
 });
@@ -515,7 +599,11 @@ describe("attachment ingest (issue #26)", () => {
     const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
     const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
     const folder = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+      createItemWithClient(
+        client,
+        { databaseId: foldersId, properties: { name: "INBOX" } },
+        { allowedSystemKeys: ["name"] },
+      ),
     );
 
     const sameBytes = Buffer.from("invoice-bytes");
@@ -534,12 +622,18 @@ describe("attachment ingest (issue #26)", () => {
       }),
     );
 
-    const { rows: attachmentRows } = await pool.query(`SELECT filename, blob_id, byte_size FROM mail_attachments WHERE message_item_id = $1`, [result.itemId]);
+    const { rows: attachmentRows } = await pool.query(
+      `SELECT filename, blob_id, byte_size FROM mail_attachments WHERE message_item_id = $1`,
+      [result.itemId],
+    );
     expect(attachmentRows).toHaveLength(2);
     expect(new Set(attachmentRows.map((r) => r.blob_id)).size).toBe(1); // same content hash -> one blob
     expect(attachmentRows.every((r) => Number(r.byte_size) === sameBytes.length)).toBe(true);
 
-    const { rows: fileItemRows } = await pool.query(`SELECT properties->>'name' AS name FROM items WHERE database_id = $1 ORDER BY 1`, [filesId]);
+    const { rows: fileItemRows } = await pool.query(
+      `SELECT properties->>'name' AS name FROM items WHERE database_id = $1 ORDER BY 1`,
+      [filesId],
+    );
     expect(fileItemRows.map((r) => r.name)).toEqual(["invoice-copy.pdf", "invoice.pdf"]);
 
     const { rows: relationRows } = await pool.query(
@@ -556,7 +650,11 @@ describe("attachment ingest (issue #26)", () => {
     const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
     const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
     const folder = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+      createItemWithClient(
+        client,
+        { databaseId: foldersId, properties: { name: "INBOX" } },
+        { allowedSystemKeys: ["name"] },
+      ),
     );
 
     // A minimal but structurally valid one-page PDF, with a correct xref table (real byte
@@ -603,10 +701,21 @@ describe("IMAP BODYSTRUCTURE walking (issue #26)", () => {
           type: "multipart/mixed",
           childNodes: [
             { part: "1.1", type: "text/html" },
-            { part: "1.2", type: "application/pdf", disposition: "attachment", dispositionParameters: { filename: "invoice.pdf" } },
+            {
+              part: "1.2",
+              type: "application/pdf",
+              disposition: "attachment",
+              dispositionParameters: { filename: "invoice.pdf" },
+            },
           ],
         },
-        { part: "2", type: "image/png", disposition: "inline", id: "<logo123>", dispositionParameters: { filename: "logo.png" } },
+        {
+          part: "2",
+          type: "image/png",
+          disposition: "inline",
+          id: "<logo123>",
+          dispositionParameters: { filename: "logo.png" },
+        },
       ],
     };
 
@@ -657,14 +766,18 @@ describe("HTML sanitization (issue #26)", () => {
   });
 
   it("strips a CSS background-image url from an inline style attribute (a tracking pixel by another door)", () => {
-    const sanitized = sanitizeMailHtml('<div style="background-image:url(https://tracker.example/pixel.gif); color: red">hi</div>');
+    const sanitized = sanitizeMailHtml(
+      '<div style="background-image:url(https://tracker.example/pixel.gif); color: red">hi</div>',
+    );
     expect(sanitized).not.toContain("tracker.example");
     expect(sanitized).not.toContain("url(");
     expect(sanitized).toContain("color:red");
   });
 
   it("rejects a url() smuggled inside an otherwise-allowed color: rgb(...) value", () => {
-    const sanitized = sanitizeMailHtml('<div style="color: rgb(0,0,0) url(https://tracker.example/pixel.gif)">hi</div>');
+    const sanitized = sanitizeMailHtml(
+      '<div style="color: rgb(0,0,0) url(https://tracker.example/pixel.gif)">hi</div>',
+    );
     expect(sanitized).not.toContain("tracker.example");
     expect(sanitized).not.toContain("url(");
   });
@@ -675,7 +788,9 @@ describe("HTML sanitization (issue #26)", () => {
   });
 
   it("strips a <style> block wholesale, including any url() it carries", () => {
-    const sanitized = sanitizeMailHtml("<style>body { background: url(https://tracker.example/pixel.gif); }</style><p>hi</p>");
+    const sanitized = sanitizeMailHtml(
+      "<style>body { background: url(https://tracker.example/pixel.gif); }</style><p>hi</p>",
+    );
     expect(sanitized).not.toContain("tracker.example");
     expect(sanitized).toContain("hi");
   });
@@ -692,12 +807,18 @@ describe("full-text search over Emails (issue #26)", () => {
   it("indexes and finds a message by content", async () => {
     const emailsId = await databaseIdFor("emails");
     const itemId = randomUUID();
-    await withTransaction(pool, (client) => reindexItemSearch(client, { itemId, databaseId: emailsId, text: "Invoice for consulting services" }));
+    await withTransaction(pool, (client) =>
+      reindexItemSearch(client, { itemId, databaseId: emailsId, text: "Invoice for consulting services" }),
+    );
 
-    const results = await withTransaction(pool, (client) => searchItems(client, { databaseId: emailsId, query: "invoice" }));
+    const results = await withTransaction(pool, (client) =>
+      searchItems(client, { databaseId: emailsId, query: "invoice" }),
+    );
     expect(results.map((r) => r.itemId)).toContain(itemId);
 
-    const noResults = await withTransaction(pool, (client) => searchItems(client, { databaseId: emailsId, query: "nonexistentword" }));
+    const noResults = await withTransaction(pool, (client) =>
+      searchItems(client, { databaseId: emailsId, query: "nonexistentword" }),
+    );
     expect(noResults.map((r) => r.itemId)).not.toContain(itemId);
   });
 
@@ -705,13 +826,21 @@ describe("full-text search over Emails (issue #26)", () => {
     const emailsId = await databaseIdFor("emails");
     const olderId = randomUUID();
     const newerId = randomUUID();
-    await withTransaction(pool, (client) => reindexItemSearch(client, { itemId: olderId, databaseId: emailsId, text: "quarterly report" }));
-    await withTransaction(pool, (client) => reindexItemSearch(client, { itemId: newerId, databaseId: emailsId, text: "quarterly report" }));
+    await withTransaction(pool, (client) =>
+      reindexItemSearch(client, { itemId: olderId, databaseId: emailsId, text: "quarterly report" }),
+    );
+    await withTransaction(pool, (client) =>
+      reindexItemSearch(client, { itemId: newerId, databaseId: emailsId, text: "quarterly report" }),
+    );
     // Backdate the older row directly — both reindexItemSearch calls above ran within the same
     // instant, so without this the recency blend would have nothing to actually distinguish.
-    await pool.query(`UPDATE item_search_index SET updated_at = now() - interval '90 days' WHERE item_id = $1`, [olderId]);
+    await pool.query(`UPDATE item_search_index SET updated_at = now() - interval '90 days' WHERE item_id = $1`, [
+      olderId,
+    ]);
 
-    const results = await withTransaction(pool, (client) => searchItems(client, { databaseId: emailsId, query: "quarterly report" }));
+    const results = await withTransaction(pool, (client) =>
+      searchItems(client, { databaseId: emailsId, query: "quarterly report" }),
+    );
     const olderIndex = results.findIndex((r) => r.itemId === olderId);
     const newerIndex = results.findIndex((r) => r.itemId === newerId);
     expect(newerIndex).toBeGreaterThanOrEqual(0);
@@ -720,7 +849,9 @@ describe("full-text search over Emails (issue #26)", () => {
 
   describe("Gmail-style search operators", () => {
     it("parseMailSearchQuery splits operators from free text", () => {
-      expect(parseMailSearchQuery("invoice from:alice@x.com has:attachment before:2026-01-01 after:2025-01-01")).toEqual({
+      expect(
+        parseMailSearchQuery("invoice from:alice@x.com has:attachment before:2026-01-01 after:2025-01-01"),
+      ).toEqual({
         freeText: "invoice",
         from: "alice@x.com",
         hasAttachment: true,
@@ -737,7 +868,11 @@ describe("full-text search over Emails (issue #26)", () => {
       const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
       const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
       const folder = await withTransaction(pool, (client) =>
-        createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+        createItemWithClient(
+          client,
+          { databaseId: foldersId, properties: { name: "INBOX" } },
+          { allowedSystemKeys: ["name"] },
+        ),
       );
 
       const fromAlice = await withTransaction(pool, (client) =>
@@ -821,13 +956,17 @@ describe("credentials (issue #26)", () => {
       createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
     );
 
-    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+    await withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+    );
     const decrypted = await withTransaction(pool, (client) =>
       getDecryptedCredential(client, { itemId: mailbox.id, actorType: "sync_worker", purpose: "imap_sync" }),
     );
     expect(decrypted).toBe("s3cr3t");
 
-    const { rows } = await pool.query(`SELECT actor_type, purpose FROM credential_access_log WHERE item_id = $1`, [mailbox.id]);
+    const { rows } = await pool.query(`SELECT actor_type, purpose FROM credential_access_log WHERE item_id = $1`, [
+      mailbox.id,
+    ]);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ actor_type: "sync_worker", purpose: "imap_sync" });
   });
@@ -860,7 +999,6 @@ describe("IMAP reconcile core (issue #26)", () => {
     await seedSystem(pool);
   });
 
-
   function fakeImapClient(overrides: Partial<ImapMailClient> = {}): ImapMailClient {
     return {
       getCapabilities: async () => new Set(["CONDSTORE", "QRESYNC"]),
@@ -869,11 +1007,21 @@ describe("IMAP reconcile core (issue #26)", () => {
       fetchMessagesSince: async (): Promise<ImapFetchedMessage[]> => [
         {
           uid: 1,
-          message: { messageId: "<one@x>", envelope: { from: { address: "a@x.com" } }, subject: "First", attachments: [] },
+          message: {
+            messageId: "<one@x>",
+            envelope: { from: { address: "a@x.com" } },
+            subject: "First",
+            attachments: [],
+          },
         },
         {
           uid: 2,
-          message: { messageId: "<two@x>", envelope: { from: { address: "b@x.com" } }, subject: "Second", attachments: [] },
+          message: {
+            messageId: "<two@x>",
+            envelope: { from: { address: "b@x.com" } },
+            subject: "Second",
+            attachments: [],
+          },
         },
       ],
       fetchVanishedSince: async () => [],
@@ -913,7 +1061,10 @@ describe("IMAP reconcile core (issue #26)", () => {
     expect(folderRows).toHaveLength(1);
     expect(folderRows[0].properties.specialPurpose).toBe("inbox");
 
-    const { rows: emailRows } = await pool.query(`SELECT properties FROM items WHERE database_id = $1 ORDER BY properties->>'name'`, [emailsId]);
+    const { rows: emailRows } = await pool.query(
+      `SELECT properties FROM items WHERE database_id = $1 ORDER BY properties->>'name'`,
+      [emailsId],
+    );
     expect(emailRows.map((r) => r.properties.name)).toEqual(["First", "Second"]);
   });
 
@@ -967,7 +1118,9 @@ describe("IMAP reconcile core (issue #26)", () => {
     const folderProps = await chokePoint.listProperties(foldersId);
     const folderRelationPropertyId = emailProps.find((p) => p.key === "folder")!.id;
 
-    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+    );
     const params = {
       mailboxItemId: mailbox.id,
       emailsDatabaseId: emailsId,
@@ -981,14 +1134,34 @@ describe("IMAP reconcile core (issue #26)", () => {
     };
 
     const firstPassImap = fakeImapClient({
-      fetchMessagesSince: async () => [{ uid: 5, message: { messageId: "<survivor@x>", envelope: { from: { address: "a@x.com" } }, subject: "Survivor", attachments: [] } }],
+      fetchMessagesSince: async () => [
+        {
+          uid: 5,
+          message: {
+            messageId: "<survivor@x>",
+            envelope: { from: { address: "a@x.com" } },
+            subject: "Survivor",
+            attachments: [],
+          },
+        },
+      ],
     });
     await withTransaction(pool, (client) => reconcileImapAccount(client, firstPassImap, params));
 
     const secondPassImap = fakeImapClient({
       selectFolder: async () => ({ uidvalidity: 999, uidnext: 2, highestModSeq: 1 }),
       // Server rebuilt the folder (UIDVALIDITY changed) — the same message now has UID 1, not 5.
-      fetchMessagesSince: async () => [{ uid: 1, message: { messageId: "<survivor@x>", envelope: { from: { address: "a@x.com" } }, subject: "Survivor", attachments: [] } }],
+      fetchMessagesSince: async () => [
+        {
+          uid: 1,
+          message: {
+            messageId: "<survivor@x>",
+            envelope: { from: { address: "a@x.com" } },
+            subject: "Survivor",
+            attachments: [],
+          },
+        },
+      ],
     });
     await withTransaction(pool, (client) => reconcileImapAccount(client, secondPassImap, params));
 
@@ -1050,7 +1223,9 @@ describe("IMAP reconcile core (issue #26)", () => {
     const emailProps = await chokePoint.listProperties(emailsId);
     const folderProps = await chokePoint.listProperties(foldersId);
 
-    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+    );
     const params = {
       mailboxItemId: mailbox.id,
       emailsDatabaseId: emailsId,
@@ -1082,11 +1257,18 @@ describe("IMAP reconcile core (issue #26)", () => {
     });
     await withTransaction(pool, (client) => reconcileImapAccount(client, gmailImap, params));
 
-    const { rows: folderRows } = await pool.query(`SELECT properties FROM items WHERE database_id = $1 ORDER BY properties->>'providerId'`, [foldersId]);
+    const { rows: folderRows } = await pool.query(
+      `SELECT properties FROM items WHERE database_id = $1 ORDER BY properties->>'providerId'`,
+      [foldersId],
+    );
     // All Mail (the physical folder synced) plus the two labels.
     expect(folderRows.map((r) => r.properties.providerId).sort()).toEqual(["Work", "[Gmail]/All Mail", "\\Inbox"]);
-    expect(folderRows.find((r) => r.properties.providerId === "\\Inbox")).toMatchObject({ properties: { behavior: "label", specialPurpose: "inbox" } });
-    expect(folderRows.find((r) => r.properties.providerId === "Work")).toMatchObject({ properties: { behavior: "label", specialPurpose: "none" } });
+    expect(folderRows.find((r) => r.properties.providerId === "\\Inbox")).toMatchObject({
+      properties: { behavior: "label", specialPurpose: "inbox" },
+    });
+    expect(folderRows.find((r) => r.properties.providerId === "Work")).toMatchObject({
+      properties: { behavior: "label", specialPurpose: "none" },
+    });
 
     const emailItemId = (await pool.query(`SELECT id FROM items WHERE database_id = $1`, [emailsId])).rows[0].id;
     const { rows: edgeCount } = await pool.query(
@@ -1138,7 +1320,12 @@ describe("Gmail reconcile core (issue #26)", () => {
   function fakeGmailClient(overrides: Partial<GmailMailClient> = {}): GmailMailClient {
     return {
       getCurrentHistoryId: async () => "100",
-      listHistorySince: async () => ({ invalidated: false, newHistoryId: "101", changedMessageIds: [], removedMessageIds: [] }),
+      listHistorySince: async () => ({
+        invalidated: false,
+        newHistoryId: "101",
+        changedMessageIds: [],
+        removedMessageIds: [],
+      }),
       listAllMessageIds: async () => ["m1"],
       fetchMessage: async (id) => ({
         id,
@@ -1158,7 +1345,9 @@ describe("Gmail reconcile core (issue #26)", () => {
     const mailboxesId = await databaseIdFor("mailboxes");
     const emailProps = await chokePoint.listProperties(emailsId);
     const folderProps = await chokePoint.listProperties(foldersId);
-    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+    );
     return {
       mailboxItemId: mailbox.id,
       emailsDatabaseId: emailsId,
@@ -1188,7 +1377,12 @@ describe("Gmail reconcile core (issue #26)", () => {
 
     let fullResyncCallCount = 0;
     const secondClient = fakeGmailClient({
-      listHistorySince: async () => ({ invalidated: true, newHistoryId: "100", changedMessageIds: [], removedMessageIds: [] }),
+      listHistorySince: async () => ({
+        invalidated: true,
+        newHistoryId: "100",
+        changedMessageIds: [],
+        removedMessageIds: [],
+      }),
       listAllMessageIds: async () => {
         fullResyncCallCount++;
         return ["m2"];
@@ -1198,7 +1392,12 @@ describe("Gmail reconcile core (issue #26)", () => {
         id,
         threadId: "t2",
         labelIds: ["INBOX"],
-        message: { messageId: `<${id}@x>`, envelope: { from: { address: "b@x.com" } }, subject: "Second", attachments: [] },
+        message: {
+          messageId: `<${id}@x>`,
+          envelope: { from: { address: "b@x.com" } },
+          subject: "Second",
+          attachments: [],
+        },
       }),
     });
     await withTransaction(pool, (client) => reconcileGmailAccount(client, secondClient, params));
@@ -1230,7 +1429,12 @@ describe("Graph reconcile core (issue #26)", () => {
             id: "m1",
             parentFolderId: "f1",
             removed: false,
-            message: { messageId: "<m1@x>", envelope: { from: { address: "a@x.com" } }, subject: "Hi", attachments: [] },
+            message: {
+              messageId: "<m1@x>",
+              envelope: { from: { address: "a@x.com" } },
+              subject: "Hi",
+              attachments: [],
+            },
           },
         ],
       }),
@@ -1245,7 +1449,9 @@ describe("Graph reconcile core (issue #26)", () => {
     const mailboxesId = await databaseIdFor("mailboxes");
     const emailProps = await chokePoint.listProperties(emailsId);
     const folderProps = await chokePoint.listProperties(foldersId);
-    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+    );
     return {
       mailboxItemId: mailbox.id,
       emailsDatabaseId: emailsId,
@@ -1288,7 +1494,12 @@ describe("Graph reconcile core (issue #26)", () => {
               id: "m2",
               parentFolderId: "f1",
               removed: false,
-              message: { messageId: "<m2@x>", envelope: { from: { address: "b@x.com" } }, subject: "Second", attachments: [] },
+              message: {
+                messageId: "<m2@x>",
+                envelope: { from: { address: "b@x.com" } },
+                subject: "Second",
+                attachments: [],
+              },
             },
           ],
         };
@@ -1318,9 +1529,15 @@ describe("mail sync job error handling (issue #26)", () => {
     const filesId = await databaseIdFor("files");
     const mailboxesId = await databaseIdFor("mailboxes");
 
-    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
-    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
-    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+    );
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    await withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+    );
 
     const failingImap: ImapMailClient = {
       getCapabilities: async () => new Set(),
@@ -1341,7 +1558,12 @@ describe("mail sync job error handling (issue #26)", () => {
         pool,
         { mailboxItemId: mailbox.id },
         adapters,
-        { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+        {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          foldersDatabaseId: foldersId,
+          mailboxesDatabaseId: mailboxesId,
+        },
         noopStorage,
       ),
     ).rejects.toThrow("connection refused");
@@ -1358,7 +1580,9 @@ describe("mail sync job error handling (issue #26)", () => {
 
     // The user-visible Mailbox.syncStatus (distinct from the internal mail_account_sync_state
     // bookkeeping above) also reflects the failure — this is what the mailbox UI would show.
-    const item = await withTransaction(pool, (client) => client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]));
+    const item = await withTransaction(pool, (client) =>
+      client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]),
+    );
     expect(item.rows[0].properties.syncStatus).toBe("error");
   });
 
@@ -1368,9 +1592,15 @@ describe("mail sync job error handling (issue #26)", () => {
     const filesId = await databaseIdFor("files");
     const mailboxesId = await databaseIdFor("mailboxes");
 
-    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
-    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
-    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+    );
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    await withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+    );
 
     const writtenKeys: string[] = [];
     const deletedKeys: string[] = [];
@@ -1390,7 +1620,12 @@ describe("mail sync job error handling (issue #26)", () => {
       },
     };
 
-    const moduleIds = { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId };
+    const moduleIds = {
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      foldersDatabaseId: foldersId,
+      mailboxesDatabaseId: mailboxesId,
+    };
 
     // A brand-new folder's very first reconcile pass never even looks at
     // fetchVanishedSince/fetchAllUids (imapReconcile.ts: nothing to diff against yet) — a
@@ -1405,7 +1640,13 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchAllUids: async () => [],
       setMessageFlag: async () => {},
     };
-    await handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, { createImapClient: async () => passOneImap }, moduleIds, trackingStorage);
+    await handleSyncMailAccountTask(
+      pool,
+      { mailboxItemId: mailbox.id },
+      { createImapClient: async () => passOneImap },
+      moduleIds,
+      trackingStorage,
+    );
 
     const failingAfterAttachmentImap: ImapMailClient = {
       getCapabilities: async () => new Set(),
@@ -1442,9 +1683,9 @@ describe("mail sync job error handling (issue #26)", () => {
 
     const adapters: MailSyncAdapterFactory = { createImapClient: async () => failingAfterAttachmentImap };
 
-    await expect(handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, adapters, moduleIds, trackingStorage)).rejects.toThrow(
-      "boom after the attachment was already written",
-    );
+    await expect(
+      handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, adapters, moduleIds, trackingStorage),
+    ).rejects.toThrow("boom after the attachment was already written");
 
     expect(writtenKeys).toHaveLength(1);
     expect(deletedKeys).toEqual(writtenKeys);
@@ -1459,9 +1700,15 @@ describe("mail sync job error handling (issue #26)", () => {
     const filesId = await databaseIdFor("files");
     const mailboxesId = await databaseIdFor("mailboxes");
 
-    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
-    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
-    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+    );
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    await withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+    );
 
     const emptyImap: ImapMailClient = {
       getCapabilities: async () => new Set(),
@@ -1478,11 +1725,18 @@ describe("mail sync job error handling (issue #26)", () => {
       pool,
       { mailboxItemId: mailbox.id },
       adapters,
-      { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+      {
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        foldersDatabaseId: foldersId,
+        mailboxesDatabaseId: mailboxesId,
+      },
       noopStorage,
     );
 
-    const item = await withTransaction(pool, (client) => client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]));
+    const item = await withTransaction(pool, (client) =>
+      client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]),
+    );
     expect(item.rows[0].properties.syncStatus).toBe("ok");
   });
 
@@ -1492,9 +1746,15 @@ describe("mail sync job error handling (issue #26)", () => {
     const filesId = await databaseIdFor("files");
     const mailboxesId = await databaseIdFor("mailboxes");
 
-    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
-    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
-    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+    );
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    await withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+    );
 
     const adapters: MailSyncAdapterFactory = {
       createImapClient: async () => {
@@ -1507,12 +1767,19 @@ describe("mail sync job error handling (issue #26)", () => {
         pool,
         { mailboxItemId: mailbox.id },
         adapters,
-        { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+        {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          foldersDatabaseId: foldersId,
+          mailboxesDatabaseId: mailboxesId,
+        },
         noopStorage,
       ),
     ).rejects.toThrow("refresh token revoked");
 
-    const item = await withTransaction(pool, (client) => client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]));
+    const item = await withTransaction(pool, (client) =>
+      client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]),
+    );
     expect(item.rows[0].properties.syncStatus).toBe("needsReauthorization");
   });
 
@@ -1522,8 +1789,12 @@ describe("mail sync job error handling (issue #26)", () => {
     const filesId = await databaseIdFor("files");
     const mailboxesId = await databaseIdFor("mailboxes");
 
-    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
-    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+    );
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
     // Deliberately no storeCredential call: handleSyncMailAccountTask's own "no stored
     // credential" throw fires before the reconcile transaction ever opens, exercising the same
     // code path a real decrypt failure would.
@@ -1533,12 +1804,19 @@ describe("mail sync job error handling (issue #26)", () => {
         pool,
         { mailboxItemId: mailbox.id },
         {},
-        { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+        {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          foldersDatabaseId: foldersId,
+          mailboxesDatabaseId: mailboxesId,
+        },
         noopStorage,
       ),
     ).rejects.toThrow("has no stored credential");
 
-    const item = await withTransaction(pool, (client) => client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]));
+    const item = await withTransaction(pool, (client) =>
+      client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]),
+    );
     expect(item.rows[0].properties.syncStatus).toBe("error");
   });
 
@@ -1548,9 +1826,15 @@ describe("mail sync job error handling (issue #26)", () => {
     const filesId = await databaseIdFor("files");
     const mailboxesId = await databaseIdFor("mailboxes");
 
-    const mailbox = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }));
-    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
-    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+    );
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    await withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+    );
 
     await chokePoint.softDeleteItem(mailboxesId, mailbox.id);
 
@@ -1572,7 +1856,12 @@ describe("mail sync job error handling (issue #26)", () => {
         pool,
         { mailboxItemId: mailbox.id },
         adapters,
-        { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+        {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          foldersDatabaseId: foldersId,
+          mailboxesDatabaseId: mailboxesId,
+        },
         noopStorage,
       ),
     ).resolves.toBeUndefined();
@@ -1602,7 +1891,12 @@ describe("mail sync job error handling (issue #26)", () => {
         pool,
         { mailboxItemId: "00000000-0000-0000-0000-000000000000" },
         adapters,
-        { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+        {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          foldersDatabaseId: foldersId,
+          mailboxesDatabaseId: mailboxesId,
+        },
         noopStorage,
       ),
     ).resolves.toBeUndefined();
@@ -1614,9 +1908,12 @@ describe("mail sync job error handling (issue #26)", () => {
 describe("IMAP raw header parsing (issue #93)", () => {
   it("preserves every occurrence of a repeated header, in the message's own top-to-bottom order", () => {
     const buffer = Buffer.from(
-      ["Delivered-To: newest@example.com", "Delivered-To: oldest@example.com", "X-Original-To: xo@example.com", "References: <a@x> <b@x>"].join(
-        "\r\n",
-      ) + "\r\n",
+      [
+        "Delivered-To: newest@example.com",
+        "Delivered-To: oldest@example.com",
+        "X-Original-To: xo@example.com",
+        "References: <a@x> <b@x>",
+      ].join("\r\n") + "\r\n",
     );
     const headers = parseHeaderBlock(buffer);
     expect(headerValues(headers, "delivered-to")).toEqual(["newest@example.com", "oldest@example.com"]);
@@ -1626,7 +1923,9 @@ describe("IMAP raw header parsing (issue #93)", () => {
   });
 
   it("unfolds a continuation line (leading whitespace) onto the previous header's value instead of starting a new one", () => {
-    const buffer = Buffer.from(["Envelope-To: someone", "  @example.com", "Delivered-To: me@example.com"].join("\r\n") + "\r\n");
+    const buffer = Buffer.from(
+      ["Envelope-To: someone", "  @example.com", "Delivered-To: me@example.com"].join("\r\n") + "\r\n",
+    );
     const headers = parseHeaderBlock(buffer);
     expect(headerValues(headers, "envelope-to")).toEqual(["someone @example.com"]);
     expect(headerValues(headers, "delivered-to")).toEqual(["me@example.com"]);
@@ -1642,7 +1941,11 @@ describe("IMAP raw header parsing (issue #93)", () => {
 describe("deliveredToAddress precedence (issue #93)", () => {
   it("prefers the highest (first) Delivered-To occurrence over everything else", () => {
     const result = resolveDeliveredToAddress({
-      candidates: { deliveredToHeaders: ["newest@example.com", "oldest@example.com"], xOriginalTo: "xo@example.com", envelopeTo: "et@example.com" },
+      candidates: {
+        deliveredToHeaders: ["newest@example.com", "oldest@example.com"],
+        xOriginalTo: "xo@example.com",
+        envelopeTo: "et@example.com",
+      },
       structuredTo: [{ address: "to@example.com" }],
       structuredCc: [],
       mailboxAliases: ["alias@example.com"],
@@ -1701,7 +2004,12 @@ describe("deliveredToAddress precedence (issue #93)", () => {
   });
 
   it("returns undefined when there are no header candidates and no registered aliases", () => {
-    const result = resolveDeliveredToAddress({ candidates: { deliveredToHeaders: [] }, structuredTo: [], structuredCc: [], mailboxAliases: [] });
+    const result = resolveDeliveredToAddress({
+      candidates: { deliveredToHeaders: [] },
+      structuredTo: [],
+      structuredCc: [],
+      mailboxAliases: [],
+    });
     expect(result).toBeUndefined();
   });
 });
@@ -1721,7 +2029,11 @@ describe("deliveredToAddress persisted at ingest (issue #93)", () => {
     const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
     const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
     const folder = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+      createItemWithClient(
+        client,
+        { databaseId: foldersId, properties: { name: "INBOX" } },
+        { allowedSystemKeys: ["name"] },
+      ),
     );
 
     const result = await withTransaction(pool, (client) =>
@@ -1752,7 +2064,11 @@ describe("deliveredToAddress persisted at ingest (issue #93)", () => {
     const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
     const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
     const folder = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+      createItemWithClient(
+        client,
+        { databaseId: foldersId, properties: { name: "INBOX" } },
+        { allowedSystemKeys: ["name"] },
+      ),
     );
 
     const result = await withTransaction(pool, (client) =>
@@ -1807,7 +2123,11 @@ describe("DSN/bounce detection (issue #93)", () => {
     const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
     const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
     const folder = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+      createItemWithClient(
+        client,
+        { databaseId: foldersId, properties: { name: "INBOX" } },
+        { allowedSystemKeys: ["name"] },
+      ),
     );
 
     const outgoing = await withTransaction(pool, (client) =>
@@ -1889,7 +2209,9 @@ describe("person <-> email linkage determinism (issue #93)", () => {
     const peopleId = await databaseIdFor("people");
     const alice = await chokePoint.createItem({ databaseId: peopleId, properties: { name: "Alice" } });
 
-    await withTransaction(pool, (client) => reindexPersonEmails(client, alice.id, ["  Alice@Example.com ", "ALICE@EXAMPLE.COM"]));
+    await withTransaction(pool, (client) =>
+      reindexPersonEmails(client, alice.id, ["  Alice@Example.com ", "ALICE@EXAMPLE.COM"]),
+    );
     // Both variants normalize to the same address — this must not attempt to claim it twice
     // (email PRIMARY KEY would reject a literal duplicate insert) and must resolve identically
     // regardless of how a later lookup happens to be cased.
@@ -1913,7 +2235,11 @@ describe("legacy Emails migration (issue #93)", () => {
   /** Creates an Emails item the way pre-issue-93 legacy data would exist: through the raw item-creation path, bypassing `ingestEmailMessage` entirely, so it has no `mail_message_meta` row at all — the exact "legacy" condition the migration job looks for. */
   async function createLegacyEmailItem(emailsId: string, properties: Record<string, unknown>): Promise<string> {
     const item = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: emailsId, properties }, { allowedSystemKeys: ["name", "sender", "recipients", "body", "date"] }),
+      createItemWithClient(
+        client,
+        { databaseId: emailsId, properties },
+        { allowedSystemKeys: ["name", "sender", "recipients", "body", "date"] },
+      ),
     );
     return item.id;
   }
@@ -1943,7 +2269,11 @@ describe("legacy Emails migration (issue #93)", () => {
 
   it("parses raw MIME when the injected fetcher has it, marking migrationStatus 'done' and recovering real threading headers", async () => {
     const emailsId = await databaseIdFor("emails");
-    const legacyItemId = await createLegacyEmailItem(emailsId, { name: "Old subject", sender: "alice@example.com", recipients: "bob@example.com" });
+    const legacyItemId = await createLegacyEmailItem(emailsId, {
+      name: "Old subject",
+      sender: "alice@example.com",
+      recipients: "bob@example.com",
+    });
 
     const rawMime = Buffer.from(
       [
@@ -1974,7 +2304,11 @@ describe("legacy Emails migration (issue #93)", () => {
 
   it("classifies a DSN recovered from raw MIME as messageKind 'dsn', linked to its original message, not an ordinary reply", async () => {
     const emailsId = await databaseIdFor("emails");
-    const legacyItemId = await createLegacyEmailItem(emailsId, { name: "Undelivered Mail Returned to Sender", sender: "mailer-daemon@example.com", recipients: "" });
+    const legacyItemId = await createLegacyEmailItem(emailsId, {
+      name: "Undelivered Mail Returned to Sender",
+      sender: "mailer-daemon@example.com",
+      recipients: "",
+    });
 
     const rawMime = Buffer.from(
       [
@@ -2010,7 +2344,11 @@ describe("legacy Emails migration (issue #93)", () => {
     const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
     const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
     const folder = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: foldersId, properties: { name: "INBOX" } }, { allowedSystemKeys: ["name"] }),
+      createItemWithClient(
+        client,
+        { databaseId: foldersId, properties: { name: "INBOX" } },
+        { allowedSystemKeys: ["name"] },
+      ),
     );
 
     // A live-synced item already owns this exact Message-ID — plausible for pre-#26 legacy
@@ -2030,9 +2368,21 @@ describe("legacy Emails migration (issue #93)", () => {
       }),
     );
 
-    const legacyItemId = await createLegacyEmailItem(emailsId, { name: "Old subject", sender: "alice@example.com", recipients: "bob@example.com" });
+    const legacyItemId = await createLegacyEmailItem(emailsId, {
+      name: "Old subject",
+      sender: "alice@example.com",
+      recipients: "bob@example.com",
+    });
     const rawMime = Buffer.from(
-      ["From: Alice <alice@example.com>", "To: Bob <bob@example.com>", "Subject: Hi", "Message-ID: <dup1@example.com>", "", "Hello", ""].join("\r\n"),
+      [
+        "From: Alice <alice@example.com>",
+        "To: Bob <bob@example.com>",
+        "Subject: Hi",
+        "Message-ID: <dup1@example.com>",
+        "",
+        "Hello",
+        "",
+      ].join("\r\n"),
     );
     const fetchRawMime: LegacyRawMimeFetcher = async (itemId) => (itemId === legacyItemId ? rawMime : null);
 
@@ -2057,7 +2407,11 @@ describe("legacy Emails migration (issue #93)", () => {
 
   it("is resumable: re-running the job after a partial completion never reprocesses an already-migrated row", async () => {
     const emailsId = await databaseIdFor("emails");
-    const legacyItemId = await createLegacyEmailItem(emailsId, { name: "Old subject", sender: "alice@example.com", recipients: "bob@example.com" });
+    const legacyItemId = await createLegacyEmailItem(emailsId, {
+      name: "Old subject",
+      sender: "alice@example.com",
+      recipients: "bob@example.com",
+    });
 
     await runMailLegacyEmailMigrationJob(pool, emailsId);
     const firstPassMeta = await withTransaction(pool, (client) => getMailMessageMetaByItemId(client, legacyItemId));
@@ -2074,10 +2428,16 @@ describe("legacy Emails migration (issue #93)", () => {
 
   it("is queueable via enqueueMailLegacyEmailMigration/runOnce, with a stable per-database jobKey", async () => {
     const emailsId = await databaseIdFor("emails");
-    const legacyItemId = await createLegacyEmailItem(emailsId, { name: "Old subject", sender: "alice@example.com", recipients: "" });
+    const legacyItemId = await createLegacyEmailItem(emailsId, {
+      name: "Old subject",
+      sender: "alice@example.com",
+      recipients: "",
+    });
 
     await withTransaction(pool, (client) => enqueueMailLegacyEmailMigration(client, emailsId));
-    const { rows: jobRows } = await pool.query(`SELECT key FROM graphile_worker._private_jobs WHERE key = $1`, [mailLegacyEmailMigrationJobKey(emailsId)]);
+    const { rows: jobRows } = await pool.query(`SELECT key FROM graphile_worker._private_jobs WHERE key = $1`, [
+      mailLegacyEmailMigrationJobKey(emailsId),
+    ]);
     expect(jobRows).toHaveLength(1);
 
     await drainQueue();
@@ -2088,8 +2448,16 @@ describe("legacy Emails migration (issue #93)", () => {
 
   it("fetches an item's raw MIME before opening that item's transaction, not from inside it (issue #267)", async () => {
     const emailsId = await databaseIdFor("emails");
-    const legacyItemId1 = await createLegacyEmailItem(emailsId, { name: "First", sender: "a@example.com", recipients: "" });
-    const legacyItemId2 = await createLegacyEmailItem(emailsId, { name: "Second", sender: "b@example.com", recipients: "" });
+    const legacyItemId1 = await createLegacyEmailItem(emailsId, {
+      name: "First",
+      sender: "a@example.com",
+      recipients: "",
+    });
+    const legacyItemId2 = await createLegacyEmailItem(emailsId, {
+      name: "Second",
+      sender: "b@example.com",
+      recipients: "",
+    });
 
     // No pool-wrapper precedent exists in `backend/` to copy, and `withTransaction` is typed
     // against `pg.Pool` — a `Proxy` over the real pool lets `connect()` be intercepted while
@@ -2106,7 +2474,8 @@ describe("legacy Emails migration (issue #93)", () => {
         originalQueryByClient.set(client, client.query.bind(client));
         const originalQuery = originalQueryByClient.get(client)!;
         (client as unknown as { query: unknown }).query = ((...queryArgs: unknown[]) => {
-          const text = typeof queryArgs[0] === "string" ? queryArgs[0] : (queryArgs[0] as { text?: string } | undefined)?.text;
+          const text =
+            typeof queryArgs[0] === "string" ? queryArgs[0] : (queryArgs[0] as { text?: string } | undefined)?.text;
           if (text === "BEGIN" || text === "COMMIT") log.push(text);
           return (originalQuery as (...a: unknown[]) => unknown)(...queryArgs);
         }) as typeof client.query;
@@ -2127,7 +2496,9 @@ describe("legacy Emails migration (issue #93)", () => {
 
     await runMailLegacyEmailMigrationJob(recordingPool, emailsId, fetchRawMime);
 
-    expect(log.filter((entry) => entry.startsWith("fetch:")).sort()).toEqual([`fetch:${legacyItemId1}`, `fetch:${legacyItemId2}`].sort());
+    expect(log.filter((entry) => entry.startsWith("fetch:")).sort()).toEqual(
+      [`fetch:${legacyItemId1}`, `fetch:${legacyItemId2}`].sort(),
+    );
     const beginIndices = log.reduce<number[]>((acc, entry, index) => (entry === "BEGIN" ? [...acc, index] : acc), []);
     expect(beginIndices.length).toBeGreaterThanOrEqual(2);
     // Every transaction's BEGIN is immediately preceded by that item's fetch marker — proving
@@ -2216,7 +2587,10 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
   }
 
   it("isImapConnectionLimitError recognizes a provider's simultaneous-connection BYE, not an ordinary connection failure", () => {
-    const gmailBye = Object.assign(new Error("Connection closed"), { code: "ClosedAfterConnectText", reason: "Too many simultaneous connections." });
+    const gmailBye = Object.assign(new Error("Connection closed"), {
+      code: "ClosedAfterConnectText",
+      reason: "Too many simultaneous connections.",
+    });
     const genericPhrase = new Error("Login failed: too many concurrent connections for this account");
     const unrelated = new Error("ECONNREFUSED");
 
@@ -2229,7 +2603,10 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
   it("does not misclassify a TLS/other pre-auth closure as a connection-limit rejection just because it shares imapflow's ClosedAfterConnectTLS code", () => {
     // imapflow assigns this same code to *any* pre-auth server closure (cert failures, a
     // suspended account, maintenance) — only the reason text, not the code alone, may decide this.
-    const tlsFailure = Object.assign(new Error("TLS handshake error"), { code: "ClosedAfterConnectTLS", reason: "TLS certificate error" });
+    const tlsFailure = Object.assign(new Error("TLS handshake error"), {
+      code: "ClosedAfterConnectTLS",
+      reason: "TLS certificate error",
+    });
     expect(isImapConnectionLimitError(tlsFailure)).toBe(false);
   });
 });
@@ -2379,10 +2756,18 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     // Pre-seeded to 'ok' (not left unset) so the assertion below actually proves the status
     // gets updated on this path, rather than merely being indistinguishable from "never touched".
     const mailbox = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M", provider: "gmail", syncStatus: "ok" } }, { allowedSystemKeys: ["syncStatus"] }),
+      createItemWithClient(
+        client,
+        { databaseId: mailboxesId, properties: { name: "M", provider: "gmail", syncStatus: "ok" } },
+        { allowedSystemKeys: ["syncStatus"] },
+      ),
     );
-    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
-    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    await withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+    );
 
     const adapters: MailSyncAdapterFactory = {
       createImapClient: async () => {
@@ -2397,7 +2782,12 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       pool,
       { mailboxItemId: mailbox.id },
       adapters,
-      { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+      {
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        foldersDatabaseId: foldersId,
+        mailboxesDatabaseId: mailboxesId,
+      },
       noopStorage,
     );
 
@@ -2410,7 +2800,9 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
 
     // Mail genuinely isn't syncing right now, so syncStatus reflects that like any other
     // failure — it clears back to 'ok' the same way, via the next successful pass.
-    const item = await withTransaction(pool, (client) => client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]));
+    const item = await withTransaction(pool, (client) =>
+      client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]),
+    );
     expect(item.rows[0].properties.syncStatus).toBe("error");
   });
 
@@ -2423,8 +2815,12 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     const mailbox = await withTransaction(pool, (client) =>
       createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M", provider: "gmail" } }),
     );
-    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
-    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    await withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+    );
 
     const emptyImap: ImapMailClient = {
       getCapabilities: async () => new Set(),
@@ -2448,7 +2844,12 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       pool,
       { mailboxItemId: mailbox.id },
       { createImapClient: async () => emptyImap },
-      { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+      {
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        foldersDatabaseId: foldersId,
+        mailboxesDatabaseId: mailboxesId,
+      },
       noopStorage,
       recordingLimiter,
     );
@@ -2463,10 +2864,17 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     const mailboxesId = await databaseIdFor("mailboxes");
 
     const mailbox = await withTransaction(pool, (client) =>
-      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M", provider: "gmail", connectionLimit: 1 } }),
+      createItemWithClient(client, {
+        databaseId: mailboxesId,
+        properties: { name: "M", provider: "gmail", connectionLimit: 1 },
+      }),
     );
-    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
-    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    await withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+    );
 
     const emptyImap: ImapMailClient = {
       getCapabilities: async () => new Set(),
@@ -2490,7 +2898,12 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       pool,
       { mailboxItemId: mailbox.id },
       { createImapClient: async () => emptyImap },
-      { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId },
+      {
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        foldersDatabaseId: foldersId,
+        mailboxesDatabaseId: mailboxesId,
+      },
       noopStorage,
       recordingLimiter,
     );
@@ -2503,7 +2916,12 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     const foldersId = await databaseIdFor("folders");
     const filesId = await databaseIdFor("files");
     const mailboxesId = await databaseIdFor("mailboxes");
-    const moduleIds = { emailsDatabaseId: emailsId, filesDatabaseId: filesId, foldersDatabaseId: foldersId, mailboxesDatabaseId: mailboxesId };
+    const moduleIds = {
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      foldersDatabaseId: foldersId,
+      mailboxesDatabaseId: mailboxesId,
+    };
 
     // connectionLimit: 1 forces genuine contention between two concurrent passes for this
     // account — at the default limit of 2 (imapConnectionLimitForProvider) they never wait and
@@ -2511,8 +2929,12 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     const mailbox = await withTransaction(pool, (client) =>
       createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M", connectionLimit: 1 } }),
     );
-    await withTransaction(pool, (client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
-    await withTransaction(pool, (client) => storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }));
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    await withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+    );
 
     // A real (not fake/recording) limiter — the point of this test is genuine queueing.
     const limiter = createImapConnectionLimiter();
@@ -2549,13 +2971,27 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
 
     // The first pass takes the account's only slot and holds it (blocked inside `selectFolder`,
     // with its write transaction's connection checked out) until `releaseFirst()` is called.
-    const firstPass = handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, { createImapClient: async () => blockingImap }, moduleIds, noopStorage, limiter);
+    const firstPass = handleSyncMailAccountTask(
+      pool,
+      { mailboxItemId: mailbox.id },
+      { createImapClient: async () => blockingImap },
+      moduleIds,
+      noopStorage,
+      limiter,
+    );
     await firstStarted;
 
     const checkedOut = () => pool.totalCount - pool.idleCount;
     const baseline = checkedOut();
 
-    const secondPass = handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, { createImapClient: async () => emptyImap }, moduleIds, noopStorage, limiter);
+    const secondPass = handleSyncMailAccountTask(
+      pool,
+      { mailboxItemId: mailbox.id },
+      { createImapClient: async () => emptyImap },
+      moduleIds,
+      noopStorage,
+      limiter,
+    );
 
     // Waits until the second pass's own credential fetch (which happens before it ever calls
     // the limiter) has been logged — proof it has run its prologue/credential work and is now

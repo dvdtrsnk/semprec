@@ -60,7 +60,11 @@ export const ITEM_RELATION_FILTER_QUERY = `
  * within the same ingest transaction (mail/ingest.ts), so it would not yet exist if this were
  * checked at `triggerOnItemEventHeartbeats` time.
  */
-export async function passesItemRelationFilter(pool: Pool, itemId: string, filter: ItemRelationFilterConfig): Promise<boolean> {
+export async function passesItemRelationFilter(
+  pool: Pool,
+  itemId: string,
+  filter: ItemRelationFilterConfig,
+): Promise<boolean> {
   const { rows } = await pool.query<{ value: string | null }>(ITEM_RELATION_FILTER_QUERY, [
     filter.relationPropertyId,
     filter.property,

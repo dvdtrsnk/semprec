@@ -31,16 +31,24 @@ export interface ViewConfig {
 export function parseViewConfig(raw: unknown): ViewConfig {
   const result = viewConfigSchema.safeParse(raw);
   if (!result.success) {
-    throw new ValidationError(`Invalid view config: ${result.error.message}`, { field: "config", issues: result.error.issues });
+    throw new ValidationError(`Invalid view config: ${result.error.message}`, {
+      field: "config",
+      issues: result.error.issues,
+    });
   }
   return result.data as ViewConfig;
 }
 
 /** Projects an item's properties per the view's `visibility`/`propertyOrder` — hides, then reorders (named keys first, in order given, then any remainder). */
 export function projectProperties(properties: Record<string, unknown>, config: ViewConfig): Record<string, unknown> {
-  const visible = config.visibility ? Object.keys(properties).filter((key) => config.visibility?.[key] !== false) : Object.keys(properties);
+  const visible = config.visibility
+    ? Object.keys(properties).filter((key) => config.visibility?.[key] !== false)
+    : Object.keys(properties);
   const ordered = config.propertyOrder
-    ? [...config.propertyOrder.filter((key) => visible.includes(key)), ...visible.filter((key) => !config.propertyOrder?.includes(key))]
+    ? [
+        ...config.propertyOrder.filter((key) => visible.includes(key)),
+        ...visible.filter((key) => !config.propertyOrder?.includes(key)),
+      ]
     : visible;
 
   const result: Record<string, unknown> = {};

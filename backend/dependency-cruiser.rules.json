@@ -25,12 +25,12 @@
     {
       "name": "no-agent-runtime-provider-internals",
       "severity": "error",
-      "comment": "DIP boundary (issue #137): agent-runtime depends only on the CreateAgentSession/AgentSession port it declares in types.ts, never on pi-agent-core's or a model provider's own package directly — that seam is filled by the composition root, not imported here.",
+      "comment": "DIP boundary (issue #137): agent-runtime depends only on the CreateAgentSession/AgentSession/CompactionAdapter/PiProviderRegistry ports it declares itself, never on the pinned pi-agent-core packages or a model provider's own package directly. src/__tests__/ is exempt: issue #134's piRuntimeContract.unit.test.ts is the one sanctioned direct import, pinning the exact shape those ports are written against.",
       "from": {
-        "path": "^packages/agent-runtime/src/"
+        "path": "^packages/agent-runtime/src/(?!__tests__/)"
       },
       "to": {
-        "path": "node_modules/(pi-agent-core|@anthropic-ai)/"
+        "path": "node_modules/(@earendil-works/pi-|@anthropic-ai/)"
       }
     }
   ]

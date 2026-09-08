@@ -20,7 +20,10 @@ export interface TriageResult {
   failed: TriageFailure[];
 }
 
-async function perMessage(messageIds: readonly string[], run: (messageId: string) => Promise<void>): Promise<TriageResult> {
+async function perMessage(
+  messageIds: readonly string[],
+  run: (messageId: string) => Promise<void>,
+): Promise<TriageResult> {
   const result: TriageResult = { succeeded: [], failed: [] };
   // Sequential on purpose: a bulk action is a handful of messages, and running them in order
   // keeps the reported failures in the order the user sees the rows in.
@@ -42,7 +45,11 @@ export interface SetFlagInput {
 }
 
 /** Read state and flag state both go through here — they differ only in which property key they patch. */
-export function setMessageFlag(operations: GenericOperations, input: SetFlagInput, messageIds: readonly string[]): Promise<TriageResult> {
+export function setMessageFlag(
+  operations: GenericOperations,
+  input: SetFlagInput,
+  messageIds: readonly string[],
+): Promise<TriageResult> {
   return perMessage(messageIds, async (messageId) => {
     await operations.updateItem(input.databaseId, messageId, { [input.propertyKey]: input.value });
   });
@@ -60,7 +67,11 @@ export interface MoveMessagesInput {
  * is written before the unlink: if the second call fails, the message is in both folders —
  * visibly recoverable — whereas the other order could leave it in no folder at all.
  */
-export function moveMessages(operations: GenericOperations, input: MoveMessagesInput, messageIds: readonly string[]): Promise<TriageResult> {
+export function moveMessages(
+  operations: GenericOperations,
+  input: MoveMessagesInput,
+  messageIds: readonly string[],
+): Promise<TriageResult> {
   return perMessage(messageIds, async (messageId) => {
     await operations.linkItem(input.databaseId, messageId, input.relationKey, input.toFolderId);
     if (input.toFolderId !== input.fromFolderId) {
@@ -75,7 +86,11 @@ export function moveMessages(operations: GenericOperations, input: MoveMessagesI
  * the way triage needs — archiving the message under the cursor leaves the cursor on the
  * next message, so the same key archives message after message without the user re-aiming.
  */
-export function nextCursorAfterRemoval(orderedIds: readonly string[], cursorId: string | null, removedIds: readonly string[]): string | null {
+export function nextCursorAfterRemoval(
+  orderedIds: readonly string[],
+  cursorId: string | null,
+  removedIds: readonly string[],
+): string | null {
   const removed = new Set(removedIds);
   if (!cursorId || !removed.has(cursorId)) return cursorId;
   const index = orderedIds.indexOf(cursorId);

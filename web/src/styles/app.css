@@ -44,3 +44,114 @@ body {
 .button:hover {
   background: var(--color-surface-raised);
 }
+
+.ai-usage__chart {
+  width: 100%;
+  height: auto;
+  max-height: 200px;
+}
+
+.ai-usage__bar {
+  fill: var(--color-accent);
+}
+
+.ai-usage__bar--exceeded {
+  fill: var(--color-danger);
+}
+
+.ai-usage__budget-line {
+  stroke: var(--color-text-muted);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+
+.ai-usage__bar--input-tokens {
+  fill: var(--color-accent);
+}
+
+.ai-usage__bar--output-tokens {
+  fill: var(--color-accent-strong, var(--color-accent));
+}
+
+.ai-usage__budgets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin: var(--space-2) 0;
+}
+
+.ai-usage__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.ai-usage__table th,
+.ai-usage__table td {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  text-align: left;
+}
+
+.agent-page__guidance-text {
+  white-space: pre-wrap;
+}
+
+.agent-tools__server {
+  margin: var(--space-3) 0;
+}
+
+.agent-tools__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.agent-tools__row {
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.agent-tools__checkbox {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+.agent-tools__description {
+  margin: var(--space-1) 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.agent-tools__classification {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+  font-size: var(--font-size-sm);
+}
+
+.agent-tools__row-error {
+  margin: var(--space-1) 0 0;
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+}
+
+.agent-tools__refreshing {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.agent-tools__badge {
+  margin-left: var(--space-2);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-1);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.agent-tools__badge--offline {
+  color: var(--color-danger);
+  background: var(--color-surface-raised);
+}

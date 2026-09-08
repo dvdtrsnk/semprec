@@ -1,5 +1,11 @@
 import type { Pool } from "pg";
 import { createAgentRun, finishAgentRun } from "@semprec/data";
+import type { CompactionAdapter } from "./compaction.js";
+import {
+  persistCompaction,
+  reconstructConversationHistory as reconstructHistoryEntries,
+  type ReconstructedHistory,
+} from "./conversationReconstruction.js";
 import { extractResultSnapshot, pushRunStatus, runAgentTurn } from "./lifecycleAdapter.js";
 import type { AgentMessage, AgentSession, CreateAgentSession } from "./types.js";
 
@@ -11,17 +17,28 @@ export type SempTurnResult = { ok: true; message: string | null } | { ok: false;
 
 /**
  * Wake-time inheritance port: given the pool and Semp's own project item id, returns prior
- * conversation context to seed a freshly woken session's task with, or null when there is none
- * to inherit. #119 fills this in with the full reconstruction — enumerating this conversation's
- * prior `agent_runs` rows (every row with `triggered_by='user'`, `unit='session'`, and this
- * `projectItemId`, in order) and a context-size check. This part's stub always returns null,
- * which is also exactly the very first-ever wake's behavior.
+ * conversation context to seed a freshly woken session's `initialState.messages` with, or null
+ * when there is none to inherit (a conversation's very first-ever wake). #119's real
+ * implementation, `createReconstructConversationHistory`, enumerates this conversation's prior
+ * `agent_runs` rows (every row with `triggered_by='user'`, `unit='session'`, and this
+ * `projectItemId`, in order), folds their `agent_run_events` into an `Entry[]` tree, and
+ * compacts it when oversized. Options without a `compaction` adapter fall back to a stub that
+ * always returns null, matching the pre-#119 behavior.
  */
-export type ReconstructConversationHistory = (pool: Pool, projectItemId: string) => Promise<string | null>;
+export type ReconstructConversationHistory = (
+  pool: Pool,
+  projectItemId: string,
+) => Promise<ReconstructedHistory | null>;
 
 const stubReconstructConversationHistory: ReconstructConversationHistory = async () => null;
 
-interface ConversationEntry {
+/** #119's real `ReconstructConversationHistory`: closes over a `CompactionAdapter` so `SempConversationOptions` only needs the plain two-arg seam shape every caller (and every existing test) already expects. */
+export function createReconstructConversationHistory(compaction: CompactionAdapter): ReconstructConversationHistory {
+  return (pool, projectItemId) =>
+    reconstructHistoryEntries(pool, { projectItemId, triggeredBy: "user", parentRunId: null }, compaction);
+}
+
+interface ConversationRegistryEntry {
   agentRunId: string;
   session: AgentSession;
   busy: boolean;
@@ -43,7 +60,7 @@ export interface SempConversationOptions {
   createAgentSession: CreateAgentSession;
   /** Semprec's own project item id — `agent_runs.project_item_id` for every wake run. */
   projectItemId: string;
-  /** Defaults to the always-empty stub; #119 supplies the real reconstruction. */
+  /** Defaults to the always-empty stub; pass `createReconstructConversationHistory(compactionAdapter)` for the real #119 reconstruction. */
   reconstructHistory?: ReconstructConversationHistory;
 }
 
@@ -63,7 +80,7 @@ export interface SempConversationOptions {
  * per-caller key to multiplex over — only one in-memory session at a time.
  */
 export class SempConversation {
-  private entry: ConversationEntry | null = null;
+  private entry: ConversationRegistryEntry | null = null;
   /** Set for the span of a brand-new wake, before it has an entry to be `busy` on its own behalf. */
   private waking = false;
 
@@ -96,7 +113,9 @@ export class SempConversation {
         let lastMessage: AgentMessage | null;
         try {
           if (!entry.session.send) {
-            throw new Error("AgentSession does not support continuation (send) required to continue Semp's conversation");
+            throw new Error(
+              "AgentSession does not support continuation (send) required to continue Semp's conversation",
+            );
           }
           lastMessage = await runAgentTurn(this.pool, entry.agentRunId, entry.session.send(task));
         } catch (err) {
@@ -120,17 +139,26 @@ export class SempConversation {
     try {
       const reconstruct = this.options.reconstructHistory ?? stubReconstructConversationHistory;
       const priorHistory = await reconstruct(this.pool, this.options.projectItemId);
-      const wakeTask = priorHistory ? `${priorHistory}\n\n${task}` : task;
 
       const run = await createAgentRun(this.pool, {
         projectItemId: this.options.projectItemId,
         triggeredBy: "user",
         unit: "session",
-        task: wakeTask,
+        task,
       });
       await pushRunStatus(this.pool, run.id, "running");
 
-      const session = this.options.createAgentSession({ task: wakeTask });
+      // The compacted continuation replaces the raw history it was derived from — persisted
+      // here, on the run it seeds, so a later restart's reconstruction resumes from this
+      // checkpoint instead of re-deriving (and potentially re-compacting) it all over again.
+      if (priorHistory?.compacted) {
+        await persistCompaction(this.pool, run.id, priorHistory.entries);
+      }
+
+      const session = this.options.createAgentSession({
+        task,
+        initialState: priorHistory ? { messages: priorHistory.entries } : undefined,
+      });
 
       let lastMessage: AgentMessage | null;
       try {
@@ -153,7 +181,7 @@ export class SempConversation {
     }
   }
 
-  private touch(entry: ConversationEntry): void {
+  private touch(entry: ConversationRegistryEntry): void {
     clearTimeout(entry.ttlTimer);
     entry.ttlTimer = this.scheduleTtl();
   }

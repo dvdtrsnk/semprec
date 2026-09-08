@@ -16,7 +16,11 @@ export function rollupRecomputeFullJobKey(rollupPropertyId: string): string {
 }
 
 /** Enqueues a single-cell recompute; must be called in the same transaction as the triggering write. */
-export async function enqueueRollupRecompute(client: Queryable, rollupPropertyId: string, itemId: string): Promise<void> {
+export async function enqueueRollupRecompute(
+  client: Queryable,
+  rollupPropertyId: string,
+  itemId: string,
+): Promise<void> {
   await enqueueJob(
     client,
     CORE_TASK_NAMES.ROLLUP_RECOMPUTE,
@@ -40,9 +44,14 @@ function aggregationSql(aggregation: RollupAggregation): { select: string } {
     case "count":
       return { select: "count(*)::int" };
     case "count_filled":
-      return { select: "count(*) FILTER (WHERE t.properties ? $3 AND t.properties -> $3 IS DISTINCT FROM 'null'::jsonb)::int" };
+      return {
+        select: "count(*) FILTER (WHERE t.properties ? $3 AND t.properties -> $3 IS DISTINCT FROM 'null'::jsonb)::int",
+      };
     case "count_empty":
-      return { select: "count(*) FILTER (WHERE NOT (t.properties ? $3) OR t.properties -> $3 IS NOT DISTINCT FROM 'null'::jsonb)::int" };
+      return {
+        select:
+          "count(*) FILTER (WHERE NOT (t.properties ? $3) OR t.properties -> $3 IS NOT DISTINCT FROM 'null'::jsonb)::int",
+      };
     case "percent_filled":
       return {
         select:
@@ -140,7 +149,10 @@ export async function backfillRollup(pool: Pool, rollupPropertyId: string): Prom
   }
 }
 
-export async function handleRollupRecomputeTask(pool: Pool, payload: { rollupPropertyId: string; itemId: string }): Promise<void> {
+export async function handleRollupRecomputeTask(
+  pool: Pool,
+  payload: { rollupPropertyId: string; itemId: string },
+): Promise<void> {
   await recomputeRollupCell(pool, payload.rollupPropertyId, payload.itemId);
 }
 

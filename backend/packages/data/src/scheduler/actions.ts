@@ -7,6 +7,8 @@ export interface ActionContext {
   projectItemId: string;
   /** set for a rule fired via onItemEvent */
   itemId?: string;
+  /** the run id from `heartbeat.trigger`'s payload (issue #136) — the agent run that manually fired this heartbeat, becoming the new run's `parent_run_id`. Unset for a scheduler-fired (sweep or onItemEvent) run. */
+  triggeredByRunId?: string;
 }
 
 export type ActionHandler = (actionConfig: Record<string, unknown>, context: ActionContext) => Promise<void>;
@@ -30,7 +32,11 @@ export function createActionQueueAffinity(): ActionQueueAffinity {
   return new Map();
 }
 
-export type RunAgentFn = (input: { agentRunId: string; projectItemId: string; task: string }) => Promise<{ result?: string } | void>;
+export type RunAgentFn = (input: {
+  agentRunId: string;
+  projectItemId: string;
+  task: string;
+}) => Promise<{ result?: string } | void>;
 
 /**
  * `core.agentRun`: "run the agent owning the project with the task from action_config.task."
@@ -54,6 +60,7 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
     const task = typeof actionConfig.task === "string" ? actionConfig.task : "";
     const run = await createAgentRun(pool, {
       projectItemId: context.projectItemId,
+      parentRunId: context.triggeredByRunId ?? null,
       heartbeatId: context.heartbeatId,
       triggeredBy: "heartbeat",
       task,

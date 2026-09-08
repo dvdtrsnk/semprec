@@ -23,7 +23,11 @@ export interface ReindexPersonEmailsResult {
  * `email PRIMARY KEY` on `person_email_index` is what makes "owned by a different Person" a
  * real, enforced fact here rather than a race-prone read-then-write.
  */
-export async function reindexPersonEmails(client: Queryable, personItemId: string, addresses: string[]): Promise<ReindexPersonEmailsResult> {
+export async function reindexPersonEmails(
+  client: Queryable,
+  personItemId: string,
+  addresses: string[],
+): Promise<ReindexPersonEmailsResult> {
   const normalized = [...new Set(addresses.map(normalizeEmailAddress).filter((a) => a.length > 0))];
 
   const { rows: existing } = await client.query<{ email: string; item_id: string }>(
@@ -33,7 +37,10 @@ export async function reindexPersonEmails(client: Queryable, personItemId: strin
   const ownedByOther = new Set(existing.filter((row) => row.item_id !== personItemId).map((row) => row.email));
   const toClaim = normalized.filter((email) => !ownedByOther.has(email));
 
-  await client.query(`DELETE FROM person_email_index WHERE item_id = $1 AND email != ALL($2::text[])`, [personItemId, normalized]);
+  await client.query(`DELETE FROM person_email_index WHERE item_id = $1 AND email != ALL($2::text[])`, [
+    personItemId,
+    normalized,
+  ]);
 
   if (toClaim.length > 0) {
     await client.query(

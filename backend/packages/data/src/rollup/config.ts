@@ -29,7 +29,9 @@ const NO_TARGET: ReadonlySet<RollupAggregation> = new Set(["count"]);
 export function parseRollupConfig(raw: Record<string, unknown>): RollupConfig {
   const { relationPropertyKey, targetPropertyKey, aggregation } = raw;
   if (typeof relationPropertyKey !== "string" || !relationPropertyKey) {
-    throw new ValidationError("rollup config.relationPropertyKey must be a non-empty string", { field: "relationPropertyKey" });
+    throw new ValidationError("rollup config.relationPropertyKey must be a non-empty string", {
+      field: "relationPropertyKey",
+    });
   }
   if (typeof aggregation !== "string" || !ROLLUP_AGGREGATIONS.includes(aggregation as RollupAggregation)) {
     throw new ValidationError(`rollup config.aggregation must be one of ${ROLLUP_AGGREGATIONS.join(", ")}`, {
@@ -79,9 +81,12 @@ export function validateRollupConfig(
 
   const relationProperty = sameDatabaseProperties.find((p) => p.key === config.relationPropertyKey);
   if (!relationProperty || relationProperty.type !== "relation") {
-    throw new ValidationError(`relationPropertyKey '${config.relationPropertyKey}' must be a relation property of the same database`, {
-      field: "relationPropertyKey",
-    });
+    throw new ValidationError(
+      `relationPropertyKey '${config.relationPropertyKey}' must be a relation property of the same database`,
+      {
+        field: "relationPropertyKey",
+      },
+    );
   }
 
   if (NO_TARGET.has(config.aggregation)) {
@@ -89,18 +94,26 @@ export function validateRollupConfig(
   }
 
   if (!config.targetPropertyKey) {
-    throw new ValidationError(`aggregation '${config.aggregation}' requires targetPropertyKey`, { field: "targetPropertyKey" });
+    throw new ValidationError(`aggregation '${config.aggregation}' requires targetPropertyKey`, {
+      field: "targetPropertyKey",
+    });
   }
   const targetProperty = targetDatabaseProperties.find((p) => p.key === config.targetPropertyKey);
   if (!targetProperty) {
-    throw new ValidationError(`targetPropertyKey '${config.targetPropertyKey}' not found in the relation's target database`, {
-      field: "targetPropertyKey",
-    });
+    throw new ValidationError(
+      `targetPropertyKey '${config.targetPropertyKey}' not found in the relation's target database`,
+      {
+        field: "targetPropertyKey",
+      },
+    );
   }
   if (targetProperty.type === "rollup" || targetProperty.type === "relation") {
-    throw new ValidationError("targetPropertyKey must not itself be a rollup or relation property (no transitive chains)", {
-      field: "targetPropertyKey",
-    });
+    throw new ValidationError(
+      "targetPropertyKey must not itself be a rollup or relation property (no transitive chains)",
+      {
+        field: "targetPropertyKey",
+      },
+    );
   }
   assertTargetTypeCompatible(config.aggregation, targetProperty.type);
 
@@ -110,7 +123,9 @@ export function validateRollupConfig(
 /** Used by mirror-lifecycle validation when a *different* rollup's target property is being retyped. */
 export function assertAggregationCompatibleWithType(aggregation: RollupAggregation, newType: PropertyType): void {
   if (newType === "rollup" || newType === "relation") {
-    throw new ValidationError("a rollup's targetPropertyKey cannot be retyped to rollup or relation", { field: "type" });
+    throw new ValidationError("a rollup's targetPropertyKey cannot be retyped to rollup or relation", {
+      field: "type",
+    });
   }
   assertTargetTypeCompatible(aggregation, newType);
 }

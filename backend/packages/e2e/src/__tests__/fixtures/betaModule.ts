@@ -12,7 +12,9 @@ export const manifest: ModuleManifest = {
   databases: [{ key: "e2eBetaItems", name: "E2E Beta Items" }],
   capabilities: [],
   agentTools: [],
-  heartbeatRuleKinds: [{ kind: "e2eBeta.onTick", schemaExport: "betaTickRuleSchema", nextFireAtExport: "computeBetaTickNextFireAt" }],
+  heartbeatRuleKinds: [
+    { kind: "e2eBeta.onTick", schemaExport: "betaTickRuleSchema", nextFireAtExport: "computeBetaTickNextFireAt" },
+  ],
   taskNames: [{ name: "e2eBeta.relay", payloadSchemaExport: "relayPayloadSchema", handlerExport: "handleRelay" }],
   migrations: ["0001_e2e_beta_marker.sql"],
 };
@@ -35,7 +37,10 @@ export const relayPayloadSchema = {
 /** Records the linked item alpha's task relayed to it via the choke point — proof the cross-module hop actually landed. */
 export async function handleRelay(payload: RelayPayload, helpers: JobHelpers): Promise<void> {
   await helpers.withPgClient((client) =>
-    createItemWithClient(client, { databaseId: payload.betaDatabaseId, properties: { sourceItemId: payload.sourceItemId } }),
+    createItemWithClient(client, {
+      databaseId: payload.betaDatabaseId,
+      properties: { sourceItemId: payload.sourceItemId },
+    }),
   );
 }
 

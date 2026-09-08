@@ -26,7 +26,9 @@ describe("checkModuleBoundaries", () => {
 
   it("rejects a module reaching into a service's internals", async () => {
     const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
-    const violation = violations.find((v: BoundaryViolation) => v.importer === "modules/beta/src/badCrossCategoryImport.ts");
+    const violation = violations.find(
+      (v: BoundaryViolation) => v.importer === "modules/beta/src/badCrossCategoryImport.ts",
+    );
 
     expect(violation?.imported).toBe("services/svcA/src/internal.ts");
     expect(violation?.rules).toContain("no-module-service-internal-cross-import");

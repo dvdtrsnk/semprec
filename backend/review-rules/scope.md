@@ -1,13 +1,15 @@
 # Include
-packages/**/*.ts
-modules/**/*.ts
-services/**/*.ts
-**/*.sql
-**/*.json
-**/*.yml
-**/*.yaml
+
+packages/**/\*.ts
+modules/**/_.ts
+services/\**/_.ts
+**/_.sql
+\**/_.json
+**/_.yml
+\**/_.yaml
 
 # Exclude
+
 **/node_modules/**
 **/dist/**
 **/build/**

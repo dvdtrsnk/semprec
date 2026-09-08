@@ -12,7 +12,10 @@ import { openDocVersionAt, squashDocHistory } from "./docHistory.js";
 
 function assertKind(doc: DocRow, expected: DocKind): void {
   if (doc.kind !== expected) {
-    throw new ValidationError(`Doc for item ${doc.itemId} is '${doc.kind}', not '${expected}'`, { itemId: doc.itemId, kind: doc.kind });
+    throw new ValidationError(`Doc for item ${doc.itemId} is '${doc.kind}', not '${expected}'`, {
+      itemId: doc.itemId,
+      kind: doc.kind,
+    });
   }
 }
 
@@ -22,7 +25,12 @@ function assertKind(doc: DocRow, expected: DocKind): void {
  * (issue #105's proposal confirm: the block append and the Processing proposal's
  * `confirmed` lock must both land, or neither does).
  */
-export async function putBlockWithClient(client: PoolClient, itemId: string, block: BlockInput, origin: CreatedBy): Promise<void> {
+export async function putBlockWithClient(
+  client: PoolClient,
+  itemId: string,
+  block: BlockInput,
+  origin: CreatedBy,
+): Promise<void> {
   const doc = await docsStore.getOrCreateDoc(client, itemId, "page");
   await mutateDocWithClient(client, doc.id, origin, (ydoc) => blocks.putBlock(ydoc, block));
 }

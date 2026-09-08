@@ -70,7 +70,10 @@ export const filterNodeSchema: z.ZodType<FilterNode> = z.lazy(() =>
 export function parseFilterNode(raw: unknown): FilterNode {
   const result = filterNodeSchema.safeParse(raw);
   if (!result.success) {
-    throw new ValidationError(`Invalid filter tree: ${result.error.message}`, { field: "filter", issues: result.error.issues });
+    throw new ValidationError(`Invalid filter tree: ${result.error.message}`, {
+      field: "filter",
+      issues: result.error.issues,
+    });
   }
   return result.data;
 }

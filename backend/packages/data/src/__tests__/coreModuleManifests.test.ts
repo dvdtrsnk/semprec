@@ -25,13 +25,17 @@ const SYSTEM_DATABASES_PATH = manifestPath("seed/systemDatabasesModuleManifest.j
 const alwaysActive: () => ReadonlySet<string> = () => new Set(["schemaCore", "views", "docs", "systemDatabases"]);
 
 describe("core module manifests (module-contract issue #226)", () => {
-  it("loads the schema/data core manifest and declares no databases or agent tools", async () => {
+  it("loads the schema/data core manifest and declares no databases, plus its ungated heartbeat agent tools", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     const moduleId = await registry.loadModule(SCHEMA_CORE_PATH);
 
     expect(moduleId).toBe("schemaCore");
     expect(await registry.getDatabases()).toEqual([]);
-    expect(await registry.getAgentTools(new Set())).toEqual([]);
+    expect(await registry.getAgentTools(new Set())).toEqual([
+      { moduleId: "schemaCore", name: "heartbeat.list", handlerExport: "createHeartbeatListTool" },
+      { moduleId: "schemaCore", name: "heartbeat.history", handlerExport: "createHeartbeatHistoryTool" },
+      { moduleId: "schemaCore", name: "heartbeat.trigger", handlerExport: "createHeartbeatTriggerTool" },
+    ]);
     expect(await registry.getMigrations()).toEqual([{ moduleId: "schemaCore", migration: "0001_core_schema.sql" }]);
   });
 

@@ -30,7 +30,10 @@ export function parseAddress(raw: string): MailAddress | null {
   if (trimmed.length === 0) return null;
   const match = trimmed.match(ANGLE_ADDRESS);
   if (!match) return { address: trimmed };
-  const name = (match[1] ?? "").trim().replace(/^"(.*)"$/, "$1").trim();
+  const name = (match[1] ?? "")
+    .trim()
+    .replace(/^"(.*)"$/, "$1")
+    .trim();
   const address = (match[2] ?? "").trim();
   if (address.length === 0) return null;
   return name.length > 0 ? { name, address } : { address };

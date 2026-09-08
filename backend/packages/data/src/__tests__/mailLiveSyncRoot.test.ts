@@ -86,7 +86,12 @@ function failingSeedPool(target: Pool, failItemId: string): Pool {
               if (clientProp === "query") {
                 return (...queryArgs: unknown[]) => {
                   const [text, params] = queryArgs as [string, unknown[] | undefined];
-                  if (typeof text === "string" && text.includes("INSERT INTO mail_account_sync_state") && Array.isArray(params) && params[0] === failItemId) {
+                  if (
+                    typeof text === "string" &&
+                    text.includes("INSERT INTO mail_account_sync_state") &&
+                    Array.isArray(params) &&
+                    params[0] === failItemId
+                  ) {
                     return (clientTarget.query as (...a: unknown[]) => unknown)(
                       "INSERT INTO mail_account_sync_state (item_id, sync_mode, this_column_does_not_exist) VALUES ($1, $2, 'x')",
                       params,
@@ -120,8 +125,12 @@ describe("mail live-sync composition root (issue #195)", () => {
 
   it("starts exactly one lifecycle per active account, seeding its sync state", async () => {
     const mailboxesId = await databaseIdFor("mailboxes");
-    const a = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "gmail" } }));
-    const b = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "B", provider: "imap" } }));
+    const a = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "gmail" } }),
+    );
+    const b = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "B", provider: "imap" } }),
+    );
 
     const { factory, byAccount } = recordingFactory();
     const root = createMailLiveSyncRoot(pool, mailboxesId, factory);
@@ -147,8 +156,12 @@ describe("mail live-sync composition root (issue #195)", () => {
 
   it("stops a lifecycle when its account is deactivated (soft-deleted), leaving the others running", async () => {
     const mailboxesId = await databaseIdFor("mailboxes");
-    const a = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }));
-    const b = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "B", provider: "generic" } }));
+    const a = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }),
+    );
+    const b = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "B", provider: "generic" } }),
+    );
 
     const { factory, byAccount } = recordingFactory();
     const root = createMailLiveSyncRoot(pool, mailboxesId, factory);
@@ -170,7 +183,9 @@ describe("mail live-sync composition root (issue #195)", () => {
 
   it("restarting the composition root restores state instead of resetting it and does not duplicate a watcher", async () => {
     const mailboxesId = await databaseIdFor("mailboxes");
-    const a = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }));
+    const a = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }),
+    );
 
     const first = recordingFactory();
     const rootOne = createMailLiveSyncRoot(pool, mailboxesId, first.factory);
@@ -194,8 +209,12 @@ describe("mail live-sync composition root (issue #195)", () => {
 
   it("isolates one account's lifecycle failure from the others", async () => {
     const mailboxesId = await databaseIdFor("mailboxes");
-    const a = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }));
-    const b = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "B", provider: "generic" } }));
+    const a = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }),
+    );
+    const b = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "B", provider: "generic" } }),
+    );
 
     const errors: Array<{ mailboxItemId: string; phase: string }> = [];
     const { factory, byAccount } = recordingFactory(undefined, (account) =>
@@ -226,7 +245,9 @@ describe("mail live-sync composition root (issue #195)", () => {
 
   it("restarts a lifecycle when the account's sync mode changes instead of hosting two at once", async () => {
     const mailboxesId = await databaseIdFor("mailboxes");
-    const a = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }));
+    const a = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }),
+    );
 
     const { factory, byAccount } = recordingFactory();
     const root = createMailLiveSyncRoot(pool, mailboxesId, factory);
@@ -234,7 +255,9 @@ describe("mail live-sync composition root (issue #195)", () => {
     expect(byAccount.get(a.id)?.starts).toBe(1);
     const firstLifecycle = byAccount.get(a.id)!;
 
-    await withTransaction(pool, (client) => client.query("UPDATE mail_account_sync_state SET sync_mode = 'gmail_api' WHERE item_id = $1", [a.id]));
+    await withTransaction(pool, (client) =>
+      client.query("UPDATE mail_account_sync_state SET sync_mode = 'gmail_api' WHERE item_id = $1", [a.id]),
+    );
     await root.reconcileOnce();
 
     expect(firstLifecycle.stops).toBe(1);
@@ -258,7 +281,9 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
 
   it("calling start() twice sequentially schedules only one interval, and a single stop() leaves none firing", async () => {
     const mailboxesId = await databaseIdFor("mailboxes");
-    await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }));
+    await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }),
+    );
 
     const { factory } = recordingFactory();
     const { pool: countingPool, connectCount } = countingConnectPool(pool);
@@ -282,7 +307,9 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
 
   it("calling start() twice without awaiting the first schedules only one interval", async () => {
     const mailboxesId = await databaseIdFor("mailboxes");
-    await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }));
+    await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }),
+    );
 
     const { factory } = recordingFactory();
     const { pool: countingPool, connectCount } = countingConnectPool(pool);
@@ -306,7 +333,9 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
 
   it("stop() during start()'s initial reconcile leaves no interval scheduled once start() resumes, including start()->stop()->start()", async () => {
     const mailboxesId = await databaseIdFor("mailboxes");
-    await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }));
+    await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }),
+    );
 
     let releaseFirstReconcile: () => void = () => {};
     const gate = new Promise<void>((resolve) => (releaseFirstReconcile = resolve));
@@ -347,9 +376,15 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
 
   it("discovers a page of accounts in one transaction, isolating one account's seeding failure via a savepoint", async () => {
     const mailboxesId = await databaseIdFor("mailboxes");
-    const a = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }));
-    const b = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "B", provider: "generic" } }));
-    const c = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "C", provider: "generic" } }));
+    const a = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }),
+    );
+    const b = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "B", provider: "generic" } }),
+    );
+    const c = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "C", provider: "generic" } }),
+    );
 
     const { pool: countingPool, connectCount } = countingConnectPool(failingSeedPool(pool, b.id));
 
@@ -384,7 +419,9 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
 
   it("resets the started guard when start()'s initial reconcile throws, so a later start() is not a permanent no-op", async () => {
     const mailboxesId = await databaseIdFor("mailboxes");
-    const a = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }));
+    const a = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }),
+    );
 
     let connectCalls = 0;
     const flakyPool = new Proxy(pool, {

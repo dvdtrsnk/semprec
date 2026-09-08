@@ -31,6 +31,9 @@ export const CORE_TASK_NAMES = {
   MAIL_LEGACY_EMAIL_MIGRATION: "mailLegacyEmailMigration",
   // Issue #106: recomputes one Journal day item's cached `items.computed` Inbox-item list.
   JOURNAL_INBOX_RECOMPUTE: "journalInboxRecompute",
+  // Issue #131: the reserved execution job an approval decision enqueues once (and only once)
+  // a pending `approval_requests` row is atomically decided `approved`.
+  APPROVAL_REQUEST_EXECUTE: "approvalExecute",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 

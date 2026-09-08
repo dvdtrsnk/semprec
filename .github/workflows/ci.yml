@@ -37,9 +37,30 @@ jobs:
         working-directory: backend
         run: pnpm install --frozen-lockfile
 
+      - name: Backend — lint
+        working-directory: backend
+        run: pnpm run lint
+
+      - name: Backend — format check
+        working-directory: backend
+        run: pnpm run format:check
+
       - name: Backend — build
         working-directory: backend
         run: pnpm -r run build
+
+      # No PostgreSQL needed: the unit tier (including the pi-runtime contract suite
+      # in packages/agent-runtime) never imports anything that touches a real database.
+      - name: Backend — test:unit
+        working-directory: backend
+        run: pnpm run test:unit
+
+      # Guards the pi-runtime contract suite's premise: production code (and the
+      # suite itself) may only reach pi through its documented package-root exports,
+      # never an internal or example path that pi could change without a version bump.
+      - name: Backend — check pi import paths
+        working-directory: backend
+        run: pnpm run check:pi-import-paths
 
       # Catches two independently-created branches each picking the same
       # next migration ordinal (e.g. two branches both adding 0011_*.sql).
@@ -53,6 +74,14 @@ jobs:
       - name: Web — install
         working-directory: web
         run: pnpm install --frozen-lockfile
+
+      - name: Web — lint
+        working-directory: web
+        run: pnpm run lint
+
+      - name: Web — format check
+        working-directory: web
+        run: pnpm run format:check
 
       - name: Web — build
         working-directory: web

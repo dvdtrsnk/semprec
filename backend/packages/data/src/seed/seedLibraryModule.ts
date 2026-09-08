@@ -8,8 +8,15 @@ import type { ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { registerLibraryGridViewType, LIBRARY_GRID_VIEW_TYPE } from "../views/libraryGridViewType.js";
-import { LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID, LIBRARY_METADATA_TRIGGER_ACTION_ID } from "../library/libraryMetadataActions.js";
-import { BOOKS_LIBRARY_CONTRACT, MOVIES_LIBRARY_CONTRACT, type LibraryModuleContract } from "../library/libraryModuleContract.js";
+import {
+  LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID,
+  LIBRARY_METADATA_TRIGGER_ACTION_ID,
+} from "../library/libraryMetadataActions.js";
+import {
+  BOOKS_LIBRARY_CONTRACT,
+  MOVIES_LIBRARY_CONTRACT,
+  type LibraryModuleContract,
+} from "../library/libraryModuleContract.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./libraryModuleKeys.js";
 
@@ -25,13 +32,25 @@ interface PropSpec {
   config?: Record<string, unknown>;
 }
 
-async function createDb(client: PoolClient, name: string, ownerModuleId: string, ownerProjectItemId: string): Promise<DatabaseRow> {
+async function createDb(
+  client: PoolClient,
+  name: string,
+  ownerModuleId: string,
+  ownerProjectItemId: string,
+): Promise<DatabaseRow> {
   return databasesStore.createDatabase(client, { name, system: true, ownerModuleId, ownerProjectItemId });
 }
 
 async function createProps(client: PoolClient, databaseId: string, specs: PropSpec[]): Promise<void> {
   for (const spec of specs) {
-    await propertiesStore.createProperty(client, { databaseId, key: spec.key, name: spec.name, type: spec.type, owner: spec.owner, config: spec.config });
+    await propertiesStore.createProperty(client, {
+      databaseId,
+      key: spec.key,
+      name: spec.name,
+      type: spec.type,
+      owner: spec.owner,
+      config: spec.config,
+    });
   }
 }
 
@@ -73,7 +92,8 @@ export async function seedLibraryModuleInTransaction(
 ): Promise<LibraryModuleResult> {
   registerLibraryGridViewType(viewTypeRegistry);
 
-  const relate = (input: CreateRelationPropertyInput) => createRelationPropertyWithClient(client, input, undefined, computedKeyRegistry);
+  const relate = (input: CreateRelationPropertyInput) =>
+    createRelationPropertyWithClient(client, input, undefined, computedKeyRegistry);
 
   const booksProject = await itemsStore.insertItem(client, {
     databaseId: projectsDatabaseId,
@@ -94,7 +114,13 @@ export async function seedLibraryModuleInTransaction(
     // { blobId } over the shared `blobs` table (0004_ten_databases.sql) — coverKey.
     { key: "cover", name: "Cover", type: "image", owner: "system" },
     { key: "rating", name: "Rating", type: "number", owner: "user" },
-    { key: "status", name: "Status", type: "select", owner: "user", config: selectConfig(["toRead", "reading", "read"]) },
+    {
+      key: "status",
+      name: "Status",
+      type: "select",
+      owner: "user",
+      config: selectConfig(["toRead", "reading", "read"]),
+    },
   ]);
 
   const moviesProject = await itemsStore.insertItem(client, {
@@ -121,7 +147,13 @@ export async function seedLibraryModuleInTransaction(
     { key: "rating", name: "Rating", type: "number", owner: "user" },
     { key: "secondaryRating", name: "Critics' rating", type: "number", owner: "system" },
     { key: "sourceUrl", name: "Source", type: "url", owner: "system" },
-    { key: "status", name: "Status", type: "select", owner: "user", config: selectConfig(["planned", "watching", "watched"]) },
+    {
+      key: "status",
+      name: "Status",
+      type: "select",
+      owner: "user",
+      config: selectConfig(["planned", "watching", "watched"]),
+    },
     // In-progress series stay free text here — no dedicated season/episode structure (out of scope).
     { key: "notes", name: "Notes", type: "longText", owner: "user" },
   ]);
@@ -139,7 +171,12 @@ export async function seedLibraryModuleInTransaction(
 
   await client.query(`UPDATE databases SET schema_locked = true WHERE id = ANY($1::uuid[])`, [[books.id, movies.id]]);
 
-  const instances: Array<{ database: DatabaseRow; contract: LibraryModuleContract; name: string; projectItemId: string }> = [
+  const instances: Array<{
+    database: DatabaseRow;
+    contract: LibraryModuleContract;
+    name: string;
+    projectItemId: string;
+  }> = [
     { database: books, contract: BOOKS_LIBRARY_CONTRACT, name: "Books", projectItemId: booksProject.id },
     { database: movies, contract: MOVIES_LIBRARY_CONTRACT, name: "Movies/TV", projectItemId: moviesProject.id },
   ];
@@ -147,7 +184,14 @@ export async function seedLibraryModuleInTransaction(
   for (const { database, contract, name, projectItemId } of instances) {
     await viewsStore.createView(
       client,
-      { databaseId: database.id, type: LIBRARY_GRID_VIEW_TYPE, name, isDefault: true, createdBy: "system", config: { ...contract } },
+      {
+        databaseId: database.id,
+        type: LIBRARY_GRID_VIEW_TYPE,
+        name,
+        isDefault: true,
+        createdBy: "system",
+        config: { ...contract },
+      },
       viewTypeRegistry,
     );
 

@@ -3,7 +3,12 @@ import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { NotFoundError } from "../errors.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { computeNextFireAt } from "./nextFireAt.js";
-import { isOnItemEventRule, parseHeartbeatRule, type AnyHeartbeatRule, type HeartbeatRuleKindRegistry } from "./rule.js";
+import {
+  isOnItemEventRule,
+  parseHeartbeatRule,
+  type AnyHeartbeatRule,
+  type HeartbeatRuleKindRegistry,
+} from "./rule.js";
 import type { ActionQueueAffinity } from "./actions.js";
 
 export interface HeartbeatRow {
@@ -58,7 +63,8 @@ function mapRow(
   };
 }
 
-const COLUMNS = "id, project_item_id, name, rule, action_id, action_config, enabled, next_fire_at, last_fired_at, last_error";
+const COLUMNS =
+  "id, project_item_id, name, rule, action_id, action_config, enabled, next_fire_at, last_fired_at, last_error";
 
 export interface CreateHeartbeatInput {
   projectItemId: string;
@@ -76,18 +82,31 @@ export async function createHeartbeat(
 ): Promise<HeartbeatRow> {
   const rule = parseHeartbeatRule(input.rule, moduleRuleKinds);
   const enabled = input.enabled ?? true;
-  const nextFireAt = enabled && !isOnItemEventRule(rule) ? await computeNextFireAtNow(client, rule, moduleRuleKinds) : null;
+  const nextFireAt =
+    enabled && !isOnItemEventRule(rule) ? await computeNextFireAtNow(client, rule, moduleRuleKinds) : null;
 
   const { rows } = await client.query(
     `INSERT INTO project_heartbeats (project_item_id, name, rule, action_id, action_config, enabled, next_fire_at)
      VALUES ($1, $2, $3::jsonb, $4, $5::jsonb, $6, $7)
      RETURNING ${COLUMNS}`,
-    [input.projectItemId, input.name, JSON.stringify(rule), input.actionId, JSON.stringify(input.actionConfig ?? {}), enabled, nextFireAt],
+    [
+      input.projectItemId,
+      input.name,
+      JSON.stringify(rule),
+      input.actionId,
+      JSON.stringify(input.actionConfig ?? {}),
+      enabled,
+      nextFireAt,
+    ],
   );
   return mapRow(rows[0], moduleRuleKinds);
 }
 
-async function computeNextFireAtNow(client: PoolClient, rule: AnyHeartbeatRule, moduleRuleKinds: HeartbeatRuleKindRegistry): Promise<Date | null> {
+async function computeNextFireAtNow(
+  client: PoolClient,
+  rule: AnyHeartbeatRule,
+  moduleRuleKinds: HeartbeatRuleKindRegistry,
+): Promise<Date | null> {
   const timezone = await getSystemTimezone(client);
   return computeNextFireAt(rule, timezone, new Date(), moduleRuleKinds);
 }
@@ -101,10 +120,50 @@ export async function getHeartbeat(
   return rows[0] ? mapRow(rows[0], moduleRuleKinds) : null;
 }
 
-async function requireHeartbeat(client: PoolClient, id: string, moduleRuleKinds: HeartbeatRuleKindRegistry): Promise<HeartbeatRow> {
+async function requireHeartbeat(
+  client: PoolClient,
+  id: string,
+  moduleRuleKinds: HeartbeatRuleKindRegistry,
+): Promise<HeartbeatRow> {
   const heartbeat = await getHeartbeat(client, id, moduleRuleKinds);
   if (!heartbeat) throw new NotFoundError(`Heartbeat ${id} not found`);
   return heartbeat;
+}
+
+/**
+ * All of a project's heartbeats, agent-triggered and deterministic alike (issue #135's
+ * `heartbeat.list`) — a rule whose kind's module was deactivated still lists (matching
+ * `setHeartbeatEnabled`'s disable path) rather than failing the whole call for one bad row.
+ */
+export async function listHeartbeatsByProject(
+  client: Pool | PoolClient,
+  projectItemId: string,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<HeartbeatRow[]> {
+  const { rows } = await client.query(
+    `SELECT ${COLUMNS} FROM project_heartbeats WHERE project_item_id = $1 ORDER BY created_at ASC`,
+    [projectItemId],
+  );
+  return rows.map((row) => mapRow(row, moduleRuleKinds, { tolerateUnknownRuleKind: true }));
+}
+
+/**
+ * Scoped lookup for `heartbeat.history`'s ownership check: a single `WHERE` on both
+ * `id` and `project_item_id`, so a `heartbeatId` that exists but belongs to another
+ * project produces the exact same empty result as an unknown id (issue #135's "cross-project
+ * ids are indistinguishable from unknown ids") — never a two-step exists-then-owns check.
+ */
+export async function getHeartbeatForProject(
+  client: Pool | PoolClient,
+  projectItemId: string,
+  heartbeatId: string,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<HeartbeatRow | null> {
+  const { rows } = await client.query(
+    `SELECT ${COLUMNS} FROM project_heartbeats WHERE id = $1 AND project_item_id = $2`,
+    [heartbeatId, projectItemId],
+  );
+  return rows[0] ? mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true }) : null;
 }
 
 /**
@@ -119,10 +178,16 @@ export async function updateHeartbeatRule(
   rawRule: unknown,
   moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
 ): Promise<HeartbeatRow> {
-  const { rows: existingRows } = await client.query<{ enabled: boolean }>(`SELECT enabled FROM project_heartbeats WHERE id = $1`, [id]);
+  const { rows: existingRows } = await client.query<{ enabled: boolean }>(
+    `SELECT enabled FROM project_heartbeats WHERE id = $1`,
+    [id],
+  );
   if (!existingRows[0]) throw new NotFoundError(`Heartbeat ${id} not found`);
   const rule = parseHeartbeatRule(rawRule, moduleRuleKinds);
-  const nextFireAt = existingRows[0].enabled && !isOnItemEventRule(rule) ? await computeNextFireAtNow(client, rule, moduleRuleKinds) : null;
+  const nextFireAt =
+    existingRows[0].enabled && !isOnItemEventRule(rule)
+      ? await computeNextFireAtNow(client, rule, moduleRuleKinds)
+      : null;
 
   const { rows } = await client.query(
     `UPDATE project_heartbeats SET rule = $2::jsonb, next_fire_at = $3 WHERE id = $1 RETURNING ${COLUMNS}`,
@@ -153,7 +218,9 @@ export async function setHeartbeatEnabled(
   // Re-enabling does need the rule: computing next_fire_at requires knowing which calculator
   // (core or module) applies, so this still throws if the owning module is inactive.
   const heartbeat = await requireHeartbeat(client, id, moduleRuleKinds);
-  const nextFireAt = !isOnItemEventRule(heartbeat.rule) ? await computeNextFireAtNow(client, heartbeat.rule, moduleRuleKinds) : null;
+  const nextFireAt = !isOnItemEventRule(heartbeat.rule)
+    ? await computeNextFireAtNow(client, heartbeat.rule, moduleRuleKinds)
+    : null;
 
   const { rows } = await client.query(
     `UPDATE project_heartbeats SET enabled = true, next_fire_at = $2 WHERE id = $1 RETURNING ${COLUMNS}`,
@@ -202,6 +269,17 @@ export function heartbeatFireJobKey(heartbeatId: string, itemId?: string): strin
 }
 
 /**
+ * The manual-trigger dedup key (issue #136's `heartbeat.trigger`) — deliberately distinct from
+ * `heartbeatFireJobKey`'s scheduler key so a pending manual fire can never collapse onto (and
+ * thus silently steal the attribution of) a pending scheduled one, or vice versa. Two manual
+ * triggers for the same heartbeat before the first has started running do collapse onto one
+ * job, same replace semantics as the scheduler key.
+ */
+export function manualHeartbeatFireJobKey(heartbeatId: string): string {
+  return `heartbeat-fire:manual:${heartbeatId}`;
+}
+
+/**
  * The onItemEvent write path: called from the choke-point, in the same transaction as
  * the item write that just happened, for every enabled onItemEvent heartbeat watching
  * this database+event. `next_fire_at` stays NULL for these — they are invisible to the sweep.
@@ -243,7 +321,10 @@ export interface SweptHeartbeat {
  * down is picked up on the first sweep after restart and fired exactly once, with the
  * same "compute the next occurrence from now" logic as a regular on-time fire.
  */
-export async function sweepDueHeartbeats(client: PoolClient, moduleRuleKinds: HeartbeatRuleKindRegistry = new Map()): Promise<SweptHeartbeat[]> {
+export async function sweepDueHeartbeats(
+  client: PoolClient,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<SweptHeartbeat[]> {
   const { rows } = await client.query<{ id: string; rule: unknown }>(
     `SELECT id, rule FROM project_heartbeats
      WHERE enabled AND next_fire_at IS NOT NULL AND next_fire_at <= now()
@@ -269,8 +350,17 @@ export async function sweepDueHeartbeats(client: PoolClient, moduleRuleKinds: He
       await recordHeartbeatFailure(client, row.id, message);
       continue;
     }
-    await client.query(`UPDATE project_heartbeats SET next_fire_at = $2, last_fired_at = $3 WHERE id = $1`, [row.id, nextFireAt, now]);
-    await enqueueJob(client, CORE_TASK_NAMES.HEARTBEAT_FIRE, { heartbeatId: row.id }, { jobKey: heartbeatFireJobKey(row.id), maxAttempts: 3 });
+    await client.query(`UPDATE project_heartbeats SET next_fire_at = $2, last_fired_at = $3 WHERE id = $1`, [
+      row.id,
+      nextFireAt,
+      now,
+    ]);
+    await enqueueJob(
+      client,
+      CORE_TASK_NAMES.HEARTBEAT_FIRE,
+      { heartbeatId: row.id },
+      { jobKey: heartbeatFireJobKey(row.id), maxAttempts: 3 },
+    );
     fired.push({ id: row.id });
   }
   return fired;
