@@ -43,7 +43,7 @@ export function parseRollupConfig(raw: Record<string, unknown>): RollupConfig {
   }
   return {
     relationPropertyKey,
-    targetPropertyKey: targetPropertyKey,
+    targetPropertyKey,
     aggregation: aggregation as RollupAggregation,
   };
 }
