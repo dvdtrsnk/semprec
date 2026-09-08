@@ -95,9 +95,11 @@ describe("ToolsBlock (issue #127)", () => {
   });
 
   it("round-trips a checkbox toggle to the exact project/tool pair", async () => {
-    const setMcpToolGrant = vi.fn(async (input: { projectItemId: string; mcpToolRegistrationId: string; granted: boolean }) => ({
-      granted: input.granted,
-    }));
+    const setMcpToolGrant = vi.fn(
+      async (input: { projectItemId: string; mcpToolRegistrationId: string; granted: boolean }) => ({
+        granted: input.granted,
+      }),
+    );
     renderBlock(
       stubOperations({
         listMcpToolGrants: vi.fn(async () => [makeRow()]),
@@ -134,10 +136,12 @@ describe("ToolsBlock (issue #127)", () => {
   });
 
   it("round-trips a riskClass select change to the exact registration", async () => {
-    const reclassifyMcpTool = vi.fn(async (input: { mcpToolRegistrationId: string; riskClass?: string; requiresApproval?: boolean }) => ({
-      riskClass: input.riskClass ?? "low",
-      requiresApproval: input.requiresApproval ?? false,
-    }));
+    const reclassifyMcpTool = vi.fn(
+      async (input: { mcpToolRegistrationId: string; riskClass?: string; requiresApproval?: boolean }) => ({
+        riskClass: input.riskClass ?? "low",
+        requiresApproval: input.requiresApproval ?? false,
+      }),
+    );
     renderBlock(
       stubOperations({
         listMcpToolGrants: vi.fn(async () => [makeRow()]),
@@ -153,10 +157,12 @@ describe("ToolsBlock (issue #127)", () => {
   });
 
   it("round-trips a requiresApproval checkbox change to the exact registration", async () => {
-    const reclassifyMcpTool = vi.fn(async (input: { mcpToolRegistrationId: string; riskClass?: string; requiresApproval?: boolean }) => ({
-      riskClass: input.riskClass ?? "low",
-      requiresApproval: input.requiresApproval ?? false,
-    }));
+    const reclassifyMcpTool = vi.fn(
+      async (input: { mcpToolRegistrationId: string; riskClass?: string; requiresApproval?: boolean }) => ({
+        riskClass: input.riskClass ?? "low",
+        requiresApproval: input.requiresApproval ?? false,
+      }),
+    );
     renderBlock(
       stubOperations({
         listMcpToolGrants: vi.fn(async () => [makeRow()]),

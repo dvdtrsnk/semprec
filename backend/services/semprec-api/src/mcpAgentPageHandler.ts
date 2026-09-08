@@ -1,6 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { withTransaction, ChokePointError, ValidationError, listMcpToolGrantsForProject, reclassifyMcpTool, setProjectMcpGrantForAgentPage } from "@semprec/data";
+import {
+  withTransaction,
+  ChokePointError,
+  ValidationError,
+  listMcpToolGrantsForProject,
+  reclassifyMcpTool,
+  setProjectMcpGrantForAgentPage,
+} from "@semprec/data";
 import type { Pool } from "pg";
 
 export interface McpAgentPageHandlerOptions {
@@ -90,7 +97,11 @@ export function createMcpAgentPageRequestListener(pool: Pool, options: McpAgentP
             return;
           }
           const grant = await withTransaction(pool, (client) =>
-            setProjectMcpGrantForAgentPage(client, { projectItemId, mcpToolRegistrationId, granted: body.granted as boolean }),
+            setProjectMcpGrantForAgentPage(client, {
+              projectItemId,
+              mcpToolRegistrationId,
+              granted: body.granted as boolean,
+            }),
           );
           sendJson(res, 200, grant);
           return;

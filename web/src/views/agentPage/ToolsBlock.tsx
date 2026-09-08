@@ -44,13 +44,16 @@ function useMcpToolGrants(operations: McpAgentPageOperations, projectItemId: str
       }
       try {
         const rows = await operations.listMcpToolGrants(projectItemId);
-        if (mounted.current && generation === loadGeneration.current) setResource({ status: "ready", rows, refreshing: false });
+        if (mounted.current && generation === loadGeneration.current)
+          setResource({ status: "ready", rows, refreshing: false });
       } catch (error) {
         if (!mounted.current || generation !== loadGeneration.current) return;
         setResource((prev) =>
           // A failed background refresh doesn't discard rows already on screen — only a
           // failed *initial* load (nothing to show yet) becomes the full error state.
-          prev.status === "ready" ? { ...prev, refreshing: false } : { status: "failed", error: toOperationError(error) },
+          prev.status === "ready"
+            ? { ...prev, refreshing: false }
+            : { status: "failed", error: toOperationError(error) },
         );
       }
     },
@@ -68,7 +71,9 @@ function useMcpToolGrants(operations: McpAgentPageOperations, projectItemId: str
 function ServerOnlineBadge({ online }: { online: boolean }) {
   const t = useTranslate();
   if (online) return null;
-  return <span className="agent-tools__badge agent-tools__badge--offline">{t("agentPage.tools.transportOffline")}</span>;
+  return (
+    <span className="agent-tools__badge agent-tools__badge--offline">{t("agentPage.tools.transportOffline")}</span>
+  );
 }
 
 function ToolRow({
@@ -100,7 +105,11 @@ function ToolRow({
       <div className="agent-tools__classification">
         <label>
           {t("agentPage.tools.riskClass")}
-          <select value={row.riskClass} disabled={pending} onChange={(event) => onReclassify(row, { riskClass: event.target.value })}>
+          <select
+            value={row.riskClass}
+            disabled={pending}
+            onChange={(event) => onReclassify(row, { riskClass: event.target.value })}
+          >
             {[row.riskClass, "unclassified", "low", "moderate", "high", "destructive"]
               .filter((value, index, all) => all.indexOf(value) === index)
               .map((value) => (
@@ -141,7 +150,13 @@ function ToolRow({
  * mutation surfaces an inline per-row error instead of reverting anything, since nothing was
  * changed optimistically to revert.
  */
-export function ToolsBlock({ projectItemId, operations }: { projectItemId: string; operations: McpAgentPageOperations }) {
+export function ToolsBlock({
+  projectItemId,
+  operations,
+}: {
+  projectItemId: string;
+  operations: McpAgentPageOperations;
+}) {
   const t = useTranslate();
   const { resource, reload, refresh } = useMcpToolGrants(operations, projectItemId);
   const [mutations, setMutations] = useState<Record<string, RowMutationState>>({});
@@ -163,13 +178,21 @@ export function ToolsBlock({ projectItemId, operations }: { projectItemId: strin
 
   const onToggleGrant = useCallback(
     (row: McpToolGrant, granted: boolean) =>
-      withMutation(row, () => operations.setMcpToolGrant({ projectItemId, mcpToolRegistrationId: row.mcpToolRegistrationId, granted }).then(() => undefined)),
+      withMutation(row, () =>
+        operations
+          .setMcpToolGrant({ projectItemId, mcpToolRegistrationId: row.mcpToolRegistrationId, granted })
+          .then(() => undefined),
+      ),
     [operations, projectItemId, withMutation],
   );
 
   const onReclassify = useCallback(
     (row: McpToolGrant, patch: { riskClass?: string; requiresApproval?: boolean }) =>
-      withMutation(row, () => operations.reclassifyMcpTool({ mcpToolRegistrationId: row.mcpToolRegistrationId, ...patch }).then(() => undefined)),
+      withMutation(row, () =>
+        operations
+          .reclassifyMcpTool({ mcpToolRegistrationId: row.mcpToolRegistrationId, ...patch })
+          .then(() => undefined),
+      ),
     [operations, withMutation],
   );
 

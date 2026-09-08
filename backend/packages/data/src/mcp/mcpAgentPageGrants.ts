@@ -2,7 +2,12 @@ import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { ValidationError } from "../errors.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
-import { setMcpToolRequiresApproval, setMcpToolRiskClass, setProjectMcpGrant, type SetProjectMcpGrantInput } from "./mcpGrantsAdminStore.js";
+import {
+  setMcpToolRequiresApproval,
+  setMcpToolRiskClass,
+  setProjectMcpGrant,
+  type SetProjectMcpGrantInput,
+} from "./mcpGrantsAdminStore.js";
 import type { McpToolRegistration } from "./mcpToolRegistrationsStore.js";
 import type { ProjectMcpGrant } from "./mcpProjectGrantsStore.js";
 
@@ -44,7 +49,10 @@ interface McpToolGrantForProjectRow {
   granted: boolean;
 }
 
-export async function listMcpToolGrantsForProject(client: PoolClient, projectItemId: string): Promise<McpToolGrantForProject[]> {
+export async function listMcpToolGrantsForProject(
+  client: PoolClient,
+  projectItemId: string,
+): Promise<McpToolGrantForProject[]> {
   const mcpServersDatabase = await databasesStore.getDatabaseByModuleId(client, MCP_SERVERS_MODULE_ID);
   if (!mcpServersDatabase) return [];
 
@@ -81,7 +89,10 @@ export async function listMcpToolGrantsForProject(client: PoolClient, projectIte
  * the raw admin functions themselves stay off that surface, so `agent-runtime` still has no
  * importable path to them.
  */
-export async function setProjectMcpGrantForAgentPage(client: PoolClient, input: SetProjectMcpGrantInput): Promise<ProjectMcpGrant> {
+export async function setProjectMcpGrantForAgentPage(
+  client: PoolClient,
+  input: SetProjectMcpGrantInput,
+): Promise<ProjectMcpGrant> {
   return setProjectMcpGrant(client, input);
 }
 
@@ -92,7 +103,10 @@ export interface ReclassifyMcpToolInput {
 }
 
 /** Applies whichever of `riskClass`/`requiresApproval` the caller supplied; at least one is required. */
-export async function reclassifyMcpTool(client: PoolClient, input: ReclassifyMcpToolInput): Promise<McpToolRegistration> {
+export async function reclassifyMcpTool(
+  client: PoolClient,
+  input: ReclassifyMcpToolInput,
+): Promise<McpToolRegistration> {
   if (input.riskClass === undefined && input.requiresApproval === undefined) {
     throw new ValidationError("reclassifyMcpTool requires at least one of 'riskClass' or 'requiresApproval'");
   }

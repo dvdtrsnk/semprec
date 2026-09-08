@@ -9,13 +9,19 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
-import { listMcpToolGrantsForProject, reclassifyMcpTool, setProjectMcpGrantForAgentPage } from "../mcp/mcpAgentPageGrants.js";
+import {
+  listMcpToolGrantsForProject,
+  reclassifyMcpTool,
+  setProjectMcpGrantForAgentPage,
+} from "../mcp/mcpAgentPageGrants.js";
 
 let pool: Pool;
 let mcpServersId: string;
 
 async function createMcpServerItem(name: string, active: boolean) {
-  return withTransaction(pool, (client) => itemsStore.insertItem(client, { databaseId: mcpServersId, properties: { name, active } }));
+  return withTransaction(pool, (client) =>
+    itemsStore.insertItem(client, { databaseId: mcpServersId, properties: { name, active } }),
+  );
 }
 
 describe("listMcpToolGrantsForProject (issue #127)", () => {
@@ -24,7 +30,9 @@ describe("listMcpToolGrantsForProject (issue #127)", () => {
     const viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry();
     await resetDatabase(pool);
     await seedSystem(pool, viewTypeRegistry);
-    const database = await withTransaction(pool, (client) => databasesStore.getDatabaseByModuleId(client, "mcpServers"));
+    const database = await withTransaction(pool, (client) =>
+      databasesStore.getDatabaseByModuleId(client, "mcpServers"),
+    );
     if (!database) throw new Error("mcpServers database was not seeded");
     mcpServersId = database.id;
   });
@@ -57,7 +65,11 @@ describe("listMcpToolGrantsForProject (issue #127)", () => {
 
   it("reflects a project's granted state once set", async () => {
     const server = await createMcpServerItem("Server", true);
-    const registration = await upsertMcpToolRegistration(pool, { mcpServerItemId: server.id, toolName: "tool", toolSchema: {} });
+    const registration = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: server.id,
+      toolName: "tool",
+      toolSchema: {},
+    });
     const projectItemId = randomUUID();
 
     await withTransaction(pool, (client) =>
@@ -71,7 +83,12 @@ describe("listMcpToolGrantsForProject (issue #127)", () => {
 
   it("excludes an inactive registration", async () => {
     const server = await createMcpServerItem("Server", true);
-    await upsertMcpToolRegistration(pool, { mcpServerItemId: server.id, toolName: "tool", toolSchema: {}, active: false });
+    await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: server.id,
+      toolName: "tool",
+      toolSchema: {},
+      active: false,
+    });
 
     const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, randomUUID()));
     expect(rows).toEqual([]);
@@ -79,19 +96,29 @@ describe("listMcpToolGrantsForProject (issue #127)", () => {
 
   it("includes an active registration on an inactive (offline) server, flagged as such", async () => {
     const server = await createMcpServerItem("Offline server", false);
-    const registration = await upsertMcpToolRegistration(pool, { mcpServerItemId: server.id, toolName: "tool", toolSchema: {} });
+    const registration = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: server.id,
+      toolName: "tool",
+      toolSchema: {},
+    });
 
     const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, randomUUID()));
-    expect(rows).toEqual([
-      expect.objectContaining({ mcpToolRegistrationId: registration.id, mcpServerOnline: false }),
-    ]);
+    expect(rows).toEqual([expect.objectContaining({ mcpToolRegistrationId: registration.id, mcpServerOnline: false })]);
   });
 
   it("lists tools from every server in the system, not just ones a caller might think 'belong' to the project", async () => {
     const serverA = await createMcpServerItem("A", true);
     const serverB = await createMcpServerItem("B", true);
-    const toolA = await upsertMcpToolRegistration(pool, { mcpServerItemId: serverA.id, toolName: "tool_a", toolSchema: {} });
-    const toolB = await upsertMcpToolRegistration(pool, { mcpServerItemId: serverB.id, toolName: "tool_b", toolSchema: {} });
+    const toolA = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: serverA.id,
+      toolName: "tool_a",
+      toolSchema: {},
+    });
+    const toolB = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: serverB.id,
+      toolName: "tool_b",
+      toolSchema: {},
+    });
 
     const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, randomUUID()));
     expect(rows.map((r) => r.mcpToolRegistrationId).sort()).toEqual([toolA.id, toolB.id].sort());
@@ -104,14 +131,20 @@ describe("setProjectMcpGrantForAgentPage / reclassifyMcpTool (issue #127)", () =
     const viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry();
     await resetDatabase(pool);
     await seedSystem(pool, viewTypeRegistry);
-    const database = await withTransaction(pool, (client) => databasesStore.getDatabaseByModuleId(client, "mcpServers"));
+    const database = await withTransaction(pool, (client) =>
+      databasesStore.getDatabaseByModuleId(client, "mcpServers"),
+    );
     if (!database) throw new Error("mcpServers database was not seeded");
     mcpServersId = database.id;
   });
 
   it("round-trips a grant toggle for the exact project/tool pair", async () => {
     const server = await createMcpServerItem("Server", true);
-    const registration = await upsertMcpToolRegistration(pool, { mcpServerItemId: server.id, toolName: "tool", toolSchema: {} });
+    const registration = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: server.id,
+      toolName: "tool",
+      toolSchema: {},
+    });
     const projectItemId = randomUUID();
 
     const grant = await withTransaction(pool, (client) =>
@@ -128,14 +161,22 @@ describe("setProjectMcpGrantForAgentPage / reclassifyMcpTool (issue #127)", () =
   it("propagates NotFoundError when granting an unknown registration id", async () => {
     await expect(
       withTransaction(pool, (client) =>
-        setProjectMcpGrantForAgentPage(client, { projectItemId: randomUUID(), mcpToolRegistrationId: randomUUID(), granted: true }),
+        setProjectMcpGrantForAgentPage(client, {
+          projectItemId: randomUUID(),
+          mcpToolRegistrationId: randomUUID(),
+          granted: true,
+        }),
       ),
     ).rejects.toThrow(NotFoundError);
   });
 
   it("reclassifies riskClass and requiresApproval independently", async () => {
     const server = await createMcpServerItem("Server", true);
-    const registration = await upsertMcpToolRegistration(pool, { mcpServerItemId: server.id, toolName: "tool", toolSchema: {} });
+    const registration = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: server.id,
+      toolName: "tool",
+      toolSchema: {},
+    });
 
     const afterRisk = await withTransaction(pool, (client) =>
       reclassifyMcpTool(client, { mcpToolRegistrationId: registration.id, riskClass: "destructive" }),
@@ -152,7 +193,11 @@ describe("setProjectMcpGrantForAgentPage / reclassifyMcpTool (issue #127)", () =
 
   it("applies both fields when both are supplied", async () => {
     const server = await createMcpServerItem("Server", true);
-    const registration = await upsertMcpToolRegistration(pool, { mcpServerItemId: server.id, toolName: "tool", toolSchema: {} });
+    const registration = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: server.id,
+      toolName: "tool",
+      toolSchema: {},
+    });
 
     const result = await withTransaction(pool, (client) =>
       reclassifyMcpTool(client, { mcpToolRegistrationId: registration.id, riskClass: "high", requiresApproval: false }),
@@ -162,14 +207,16 @@ describe("setProjectMcpGrantForAgentPage / reclassifyMcpTool (issue #127)", () =
   });
 
   it("rejects a call with neither field set", async () => {
-    await expect(withTransaction(pool, (client) => reclassifyMcpTool(client, { mcpToolRegistrationId: randomUUID() }))).rejects.toThrow(
-      ValidationError,
-    );
+    await expect(
+      withTransaction(pool, (client) => reclassifyMcpTool(client, { mcpToolRegistrationId: randomUUID() })),
+    ).rejects.toThrow(ValidationError);
   });
 
   it("propagates NotFoundError for an unknown registration id", async () => {
     await expect(
-      withTransaction(pool, (client) => reclassifyMcpTool(client, { mcpToolRegistrationId: randomUUID(), riskClass: "high" })),
+      withTransaction(pool, (client) =>
+        reclassifyMcpTool(client, { mcpToolRegistrationId: randomUUID(), riskClass: "high" }),
+      ),
     ).rejects.toThrow(NotFoundError);
   });
 

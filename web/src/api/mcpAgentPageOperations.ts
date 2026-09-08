@@ -103,11 +103,14 @@ export function createMcpAgentPageOperations(options: McpAgentPageOperationsOpti
     },
 
     async setMcpToolGrant(input) {
-      const body = await request(`/projects/${encodeURIComponent(input.projectItemId)}/mcp-grants/${encodeURIComponent(input.mcpToolRegistrationId)}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ granted: input.granted }),
-      });
+      const body = await request(
+        `/projects/${encodeURIComponent(input.projectItemId)}/mcp-grants/${encodeURIComponent(input.mcpToolRegistrationId)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ granted: input.granted }),
+        },
+      );
       return projectMcpGrantSchema.parse(body);
     },
 

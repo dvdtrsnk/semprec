@@ -36,7 +36,10 @@ function stubMcpOperations(): McpAgentPageOperations {
   };
 }
 
-function renderPage(getItem: GenericOperations["getItem"], mcpOperations: McpAgentPageOperations = stubMcpOperations()) {
+function renderPage(
+  getItem: GenericOperations["getItem"],
+  mcpOperations: McpAgentPageOperations = stubMcpOperations(),
+) {
   return render(
     <I18nProvider locale="en">
       <AgentPage
@@ -90,7 +93,9 @@ describe("AgentPage (issue #127)", () => {
     renderPage(async () => makeItem({ agents: "Purpose: do the thing.\nAllowed: read data." }));
 
     await screen.findByText("Demo project");
-    expect(screen.getByText((_, element) => element?.textContent === "Purpose: do the thing.\nAllowed: read data.")).toBeInTheDocument();
+    expect(
+      screen.getByText((_, element) => element?.textContent === "Purpose: do the thing.\nAllowed: read data."),
+    ).toBeInTheDocument();
   });
 
   it("shows an empty guidance state when the project has no agents text yet", async () => {

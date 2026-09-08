@@ -3,7 +3,13 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { createViewTypeRegistry, seedSystem, withTransaction, createItemWithClient, upsertMcpToolRegistration } from "@semprec/data";
+import {
+  createViewTypeRegistry,
+  seedSystem,
+  withTransaction,
+  createItemWithClient,
+  upsertMcpToolRegistration,
+} from "@semprec/data";
 import { createMcpAgentPageRequestListener } from "../mcpAgentPageHandler.js";
 
 const AUTH_TOKEN = "test-token";
@@ -12,7 +18,9 @@ let pool: Pool;
 let mcpServersId: string;
 
 async function createMcpServerItem(name: string, active: boolean) {
-  return withTransaction(pool, (client) => createItemWithClient(client, { databaseId: mcpServersId, properties: { name, active } }));
+  return withTransaction(pool, (client) =>
+    createItemWithClient(client, { databaseId: mcpServersId, properties: { name, active } }),
+  );
 }
 
 describe("createMcpAgentPageRequestListener", () => {
@@ -49,7 +57,9 @@ describe("createMcpAgentPageRequestListener", () => {
   });
 
   it("rejects a request with the wrong bearer token", async () => {
-    const res = await fetch(`${baseUrl}/api/projects/${randomUUID()}/mcp-grants`, { headers: { Authorization: "Bearer wrong" } });
+    const res = await fetch(`${baseUrl}/api/projects/${randomUUID()}/mcp-grants`, {
+      headers: { Authorization: "Bearer wrong" },
+    });
     expect(res.status).toBe(401);
   });
 
@@ -60,7 +70,11 @@ describe("createMcpAgentPageRequestListener", () => {
 
   it("lists an active registration, unchecked by default, for a project", async () => {
     const server1 = await createMcpServerItem("Server", true);
-    const registration = await upsertMcpToolRegistration(pool, { mcpServerItemId: server1.id, toolName: "tool", toolSchema: {} });
+    const registration = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: server1.id,
+      toolName: "tool",
+      toolSchema: {},
+    });
     const projectItemId = randomUUID();
 
     const res = await fetch(`${baseUrl}/api/projects/${projectItemId}/mcp-grants`, {
@@ -68,14 +82,16 @@ describe("createMcpAgentPageRequestListener", () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { rows: unknown[] };
-    expect(body.rows).toEqual([
-      expect.objectContaining({ mcpToolRegistrationId: registration.id, granted: false }),
-    ]);
+    expect(body.rows).toEqual([expect.objectContaining({ mcpToolRegistrationId: registration.id, granted: false })]);
   });
 
   it("round-trips a grant toggle through PATCH", async () => {
     const server1 = await createMcpServerItem("Server", true);
-    const registration = await upsertMcpToolRegistration(pool, { mcpServerItemId: server1.id, toolName: "tool", toolSchema: {} });
+    const registration = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: server1.id,
+      toolName: "tool",
+      toolSchema: {},
+    });
     const projectItemId = randomUUID();
 
     const patchRes = await fetch(`${baseUrl}/api/projects/${projectItemId}/mcp-grants/${registration.id}`, {
@@ -132,7 +148,11 @@ describe("createMcpAgentPageRequestListener", () => {
 
   it("reclassifies a registration's riskClass and requiresApproval through PATCH", async () => {
     const server1 = await createMcpServerItem("Server", true);
-    const registration = await upsertMcpToolRegistration(pool, { mcpServerItemId: server1.id, toolName: "tool", toolSchema: {} });
+    const registration = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId: server1.id,
+      toolName: "tool",
+      toolSchema: {},
+    });
 
     const res = await fetch(`${baseUrl}/api/mcp-tool-registrations/${registration.id}`, {
       method: "PATCH",
