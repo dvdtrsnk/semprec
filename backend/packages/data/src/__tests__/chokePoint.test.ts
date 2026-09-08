@@ -38,12 +38,16 @@ describe("choke-point", () => {
     const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Arrival" } });
     expect(item.properties).toEqual({ title: "Arrival" });
 
-    await expect(chokePoint.createItem({ databaseId: db.id, properties: { nope: 1 } })).rejects.toBeInstanceOf(ValidationError);
+    await expect(chokePoint.createItem({ databaseId: db.id, properties: { nope: 1 } })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
   });
 
   it("rejects writing an owner:'system' property from the generic path", async () => {
     const db = await makeMoviesDb();
-    await expect(chokePoint.createItem({ databaseId: db.id, properties: { rating: 9 } })).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(chokePoint.createItem({ databaseId: db.id, properties: { rating: 9 } })).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
 
     const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Arrival" } });
     await expect(
@@ -53,8 +57,16 @@ describe("choke-point", () => {
 
   it("honors an Idempotency-Key: a repeat create returns the original row", async () => {
     const db = await makeMoviesDb();
-    const first = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" }, idempotencyKey: "k1" });
-    const second = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune 2" }, idempotencyKey: "k1" });
+    const first = await chokePoint.createItem({
+      databaseId: db.id,
+      properties: { title: "Dune" },
+      idempotencyKey: "k1",
+    });
+    const second = await chokePoint.createItem({
+      databaseId: db.id,
+      properties: { title: "Dune 2" },
+      idempotencyKey: "k1",
+    });
     expect(second.id).toBe(first.id);
     expect(second.properties).toEqual({ title: "Dune" });
 
@@ -87,7 +99,12 @@ describe("choke-point", () => {
   it("a rollup-typed property key is rejected with computed_readonly (403), not a generic validation error", async () => {
     const db = await chokePoint.createDatabase({ name: "P" });
     const target = await chokePoint.createDatabase({ name: "T" });
-    const { property: relation } = await chokePoint.createRelationProperty({ sourceDatabaseId: db.id, key: "tasks", name: "Tasks", targetDatabaseId: target.id });
+    const { property: relation } = await chokePoint.createRelationProperty({
+      sourceDatabaseId: db.id,
+      key: "tasks",
+      name: "Tasks",
+      targetDatabaseId: target.id,
+    });
     const rollup = await chokePoint.createProperty({
       databaseId: db.id,
       key: "count",
@@ -142,7 +159,13 @@ describe("choke-point", () => {
 
   it("a locked property cannot be deleted", async () => {
     const db = await chokePoint.createDatabase({ name: "Db" });
-    const lockedProp = await chokePoint.createProperty({ databaseId: db.id, key: "x", name: "X", type: "text", locked: true });
+    const lockedProp = await chokePoint.createProperty({
+      databaseId: db.id,
+      key: "x",
+      name: "X",
+      type: "text",
+      locked: true,
+    });
     await expect(chokePoint.deleteProperty(lockedProp.id)).rejects.toBeInstanceOf(ForbiddenError);
   });
 
@@ -170,7 +193,12 @@ describe("choke-point", () => {
     const bogusTargetId = randomUUID();
 
     await expect(
-      chokePoint.createRelationProperty({ sourceDatabaseId: db.id, key: "tasks", name: "Tasks", targetDatabaseId: bogusTargetId }),
+      chokePoint.createRelationProperty({
+        sourceDatabaseId: db.id,
+        key: "tasks",
+        name: "Tasks",
+        targetDatabaseId: bogusTargetId,
+      }),
     ).rejects.toBeInstanceOf(ValidationError);
 
     const properties = await chokePoint.listProperties(db.id);
@@ -260,7 +288,11 @@ describe("choke-point", () => {
     );
 
     await chokePoint.restoreDatabase(db.id);
-    const revived = await chokePoint.updateItem({ databaseId: db.id, itemId: item.id, propertiesPatch: { title: "Dune (2021)" } });
+    const revived = await chokePoint.updateItem({
+      databaseId: db.id,
+      itemId: item.id,
+      propertiesPatch: { title: "Dune (2021)" },
+    });
     expect(revived.properties.title).toBe("Dune (2021)");
   });
 
@@ -291,14 +323,23 @@ describe("choke-point", () => {
     const itemA1 = await chokePoint.createItem({ databaseId: a.id, properties: {} });
     const itemA2 = await chokePoint.createItem({ databaseId: a.id, properties: {} });
     const itemB = await chokePoint.createItem({ databaseId: b.id, properties: {} });
-    await chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: itemA1.id, targetItemId: itemB.id });
+    await chokePoint.createRelation({
+      relationPropertyId: property.id,
+      callerItemId: itemA1.id,
+      targetItemId: itemB.id,
+    });
 
     await chokePoint.archiveDatabase(b.id);
     await expectDatabaseArchived(
       chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: itemA2.id, targetItemId: itemB.id }),
     );
     await expectDatabaseArchived(
-      chokePoint.updateRelation({ relationPropertyId: property.id, callerItemId: itemA1.id, targetItemId: itemB.id, metadata: { x: 1 } }),
+      chokePoint.updateRelation({
+        relationPropertyId: property.id,
+        callerItemId: itemA1.id,
+        targetItemId: itemB.id,
+        metadata: { x: 1 },
+      }),
     );
     await expectDatabaseArchived(
       chokePoint.deleteRelation({ relationPropertyId: property.id, callerItemId: itemA1.id, targetItemId: itemB.id }),
@@ -310,7 +351,12 @@ describe("choke-point", () => {
       chokePoint.createRelation({ relationPropertyId: property.id, callerItemId: itemA2.id, targetItemId: itemB.id }),
     );
     await expectDatabaseArchived(
-      chokePoint.updateRelation({ relationPropertyId: property.id, callerItemId: itemA1.id, targetItemId: itemB.id, metadata: { y: 2 } }),
+      chokePoint.updateRelation({
+        relationPropertyId: property.id,
+        callerItemId: itemA1.id,
+        targetItemId: itemB.id,
+        metadata: { y: 2 },
+      }),
     );
     await expectDatabaseArchived(
       chokePoint.deleteRelation({ relationPropertyId: property.id, callerItemId: itemA1.id, targetItemId: itemB.id }),
@@ -319,15 +365,25 @@ describe("choke-point", () => {
 
   it("an idempotent create replays the pre-archive row without writing, but a new key is rejected once archived", async () => {
     const db = await makeMoviesDb();
-    const original = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" }, idempotencyKey: "k1" });
+    const original = await chokePoint.createItem({
+      databaseId: db.id,
+      properties: { title: "Dune" },
+      idempotencyKey: "k1",
+    });
 
     await chokePoint.archiveDatabase(db.id);
 
-    const replay = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune 2" }, idempotencyKey: "k1" });
+    const replay = await chokePoint.createItem({
+      databaseId: db.id,
+      properties: { title: "Dune 2" },
+      idempotencyKey: "k1",
+    });
     expect(replay.id).toBe(original.id);
     expect(replay.properties).toEqual({ title: "Dune" });
 
-    await expectDatabaseArchived(chokePoint.createItem({ databaseId: db.id, properties: { title: "Arrival" }, idempotencyKey: "k2" }));
+    await expectDatabaseArchived(
+      chokePoint.createItem({ databaseId: db.id, properties: { title: "Arrival" }, idempotencyKey: "k2" }),
+    );
     await expectDatabaseArchived(chokePoint.createItem({ databaseId: db.id, properties: { title: "Arrival" } }));
 
     const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [db.id]);

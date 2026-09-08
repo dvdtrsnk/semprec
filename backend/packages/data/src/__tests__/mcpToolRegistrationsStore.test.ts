@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { getMcpToolRegistration, listMcpToolRegistrationsForServer, upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
+import {
+  getMcpToolRegistration,
+  listMcpToolRegistrationsForServer,
+  upsertMcpToolRegistration,
+} from "../mcp/mcpToolRegistrationsStore.js";
 import { setMcpToolRequiresApproval, setMcpToolRiskClass } from "../mcp/mcpGrantsAdminStore.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 
@@ -40,10 +44,10 @@ describe("mcpToolRegistrationsStore", () => {
     await upsertMcpToolRegistration(pool, { mcpServerItemId, toolName: "search_web", toolSchema: {} });
 
     await expect(
-      pool.query(`INSERT INTO mcp_tool_registrations (mcp_server_item_id, tool_name, tool_schema) VALUES ($1, $2, '{}'::jsonb)`, [
-        mcpServerItemId,
-        "search_web",
-      ]),
+      pool.query(
+        `INSERT INTO mcp_tool_registrations (mcp_server_item_id, tool_name, tool_schema) VALUES ($1, $2, '{}'::jsonb)`,
+        [mcpServerItemId, "search_web"],
+      ),
     ).rejects.toThrow(/duplicate key|unique constraint/i);
   });
 
@@ -55,7 +59,11 @@ describe("mcpToolRegistrationsStore", () => {
 
   it("re-syncing a tool's schema snapshot leaves risk_class/requires_approval untouched", async () => {
     const mcpServerItemId = randomUUID();
-    const created = await upsertMcpToolRegistration(pool, { mcpServerItemId, toolName: "search_web", toolSchema: { v: 1 } });
+    const created = await upsertMcpToolRegistration(pool, {
+      mcpServerItemId,
+      toolName: "search_web",
+      toolSchema: { v: 1 },
+    });
     await setMcpToolRiskClass(pool, created.id, "high");
     await setMcpToolRequiresApproval(pool, created.id, false);
 

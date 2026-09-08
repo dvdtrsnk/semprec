@@ -1,7 +1,8 @@
 import type { Pool, PoolClient } from "pg";
 import { assertKnownValue } from "../dbRowValidation.js";
 
-export type AgentRunEventKind = "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status" | "compaction";
+export type AgentRunEventKind =
+  "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status" | "compaction";
 
 const AGENT_RUN_EVENT_KINDS: readonly AgentRunEventKind[] = [
   "turn_start",
@@ -21,13 +22,7 @@ export interface AgentRunEventRow {
   at: string;
 }
 
-function mapRow(row: {
-  id: string;
-  agent_run_id: string;
-  kind: string;
-  payload: unknown;
-  at: Date;
-}): AgentRunEventRow {
+function mapRow(row: { id: string; agent_run_id: string; kind: string; payload: unknown; at: Date }): AgentRunEventRow {
   return {
     id: row.id,
     agentRunId: row.agent_run_id,
@@ -73,7 +68,10 @@ export async function listAgentRunEvents(client: Pool | PoolClient, agentRunId: 
  * `(agent_run_id, id)` so a caller grouping by run still sees each run's own events in
  * monotonic order.
  */
-export async function listAgentRunEventsByRunIds(client: Pool | PoolClient, agentRunIds: string[]): Promise<AgentRunEventRow[]> {
+export async function listAgentRunEventsByRunIds(
+  client: Pool | PoolClient,
+  agentRunIds: string[],
+): Promise<AgentRunEventRow[]> {
   if (agentRunIds.length === 0) return [];
   const { rows } = await client.query(
     `SELECT id, agent_run_id, kind, payload, at FROM agent_run_events WHERE agent_run_id = ANY($1) ORDER BY agent_run_id, id ASC`,

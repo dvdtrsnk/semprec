@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { formatAddressList, parseAddressList } from "../addresses.js";
-import { aliasOptions, composePayload, defaultFromAddress, newCompose, replyRecipients, replySubject, type AliasOption } from "../compose.js";
+import {
+  aliasOptions,
+  composePayload,
+  defaultFromAddress,
+  newCompose,
+  replyRecipients,
+  replySubject,
+  type AliasOption,
+} from "../compose.js";
 import type { MessageEnvelope } from "../mailOperations.js";
 
 const aliases: AliasOption[] = [
@@ -27,11 +35,16 @@ describe("compose recipients (issue #98)", () => {
   });
 
   it("drops a repeated address, however it is written", () => {
-    expect(parseAddressList("Ada <ada@example.com>\nADA@example.com")).toEqual([{ name: "Ada", address: "ada@example.com" }]);
+    expect(parseAddressList("Ada <ada@example.com>\nADA@example.com")).toEqual([
+      { name: "Ada", address: "ada@example.com" },
+    ]);
   });
 
   it("replies to the sender alone", () => {
-    expect(replyRecipients(envelope, "reply", selfAddresses)).toEqual({ to: [{ name: "Ada", address: "ada@example.com" }], cc: [] });
+    expect(replyRecipients(envelope, "reply", selfAddresses)).toEqual({
+      to: [{ name: "Ada", address: "ada@example.com" }],
+      cc: [],
+    });
   });
 
   it("replies to all from the structured envelope, dropping the user's own aliases and repeated addresses", () => {
@@ -42,7 +55,12 @@ describe("compose recipients (issue #98)", () => {
   });
 
   it("answers the recipients of a message the user sent themselves, not the user", () => {
-    const own: MessageEnvelope["envelope"] = { from: { address: "me@example.com" }, to: [{ address: "ada@example.com" }], cc: [], bcc: [] };
+    const own: MessageEnvelope["envelope"] = {
+      from: { address: "me@example.com" },
+      to: [{ address: "ada@example.com" }],
+      cc: [],
+      bcc: [],
+    };
     expect(replyRecipients(own, "reply", selfAddresses)).toEqual({ to: [{ address: "ada@example.com" }], cc: [] });
   });
 
@@ -55,7 +73,14 @@ describe("compose recipients (issue #98)", () => {
 describe("compose sender (issue #98)", () => {
   it("reads the registered aliases off the mailboxes, keeping their order", () => {
     const options = aliasOptions([
-      { id: "mailbox-personal", databaseId: "db", properties: { name: "Personal", addresses: "me@example.com\nalias@example.com" }, computed: {}, updatedAt: "", deletedAt: null },
+      {
+        id: "mailbox-personal",
+        databaseId: "db",
+        properties: { name: "Personal", addresses: "me@example.com\nalias@example.com" },
+        computed: {},
+        updatedAt: "",
+        deletedAt: null,
+      },
     ]);
     expect(options).toEqual([
       { address: "me@example.com", mailboxItemId: "mailbox-personal", mailboxName: "Personal" },
@@ -64,11 +89,19 @@ describe("compose sender (issue #98)", () => {
   });
 
   it("defaults to the alias the replied-to message was delivered to", () => {
-    expect(defaultFromAddress({ aliases, deliveredToAddress: "ALIAS@example.com", contextMailboxItemId: "mailbox-work" })).toBe("alias@example.com");
+    expect(
+      defaultFromAddress({ aliases, deliveredToAddress: "ALIAS@example.com", contextMailboxItemId: "mailbox-work" }),
+    ).toBe("alias@example.com");
   });
 
   it("falls back to the account context when the delivered-to alias is not one of the registered ones", () => {
-    expect(defaultFromAddress({ aliases, deliveredToAddress: "someone@elsewhere.test", contextMailboxItemId: "mailbox-work" })).toBe("work@example.com");
+    expect(
+      defaultFromAddress({
+        aliases,
+        deliveredToAddress: "someone@elsewhere.test",
+        contextMailboxItemId: "mailbox-work",
+      }),
+    ).toBe("work@example.com");
   });
 
   it("falls back to the primary address when there is no context either", () => {
@@ -103,7 +136,11 @@ describe("compose payload (issue #98)", () => {
   });
 
   it("refuses an address that is not a registered alias", () => {
-    expect(composePayload({ ...newCompose("nobody@example.com"), to: "ada@example.com" }, aliases, { requireRecipients: true })).toEqual({
+    expect(
+      composePayload({ ...newCompose("nobody@example.com"), to: "ada@example.com" }, aliases, {
+        requireRecipients: true,
+      }),
+    ).toEqual({
       ok: false,
       problem: "noSender",
     });

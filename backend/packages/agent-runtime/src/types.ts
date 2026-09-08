@@ -1,11 +1,5 @@
 export type AgentMessageKind =
-  | "turn_start"
-  | "message"
-  | "tool_use"
-  | "tool_result"
-  | "turn_end"
-  | "run_status"
-  | "message_update";
+  "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status" | "message_update";
 
 /** The full pi-agent-core message shape, persisted verbatim into `agent_run_events.payload`. */
 export interface AgentMessage {

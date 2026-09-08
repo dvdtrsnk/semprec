@@ -160,7 +160,10 @@ describe("runAgentSession", () => {
       "run_status",
     ]);
     expect(pushed.every((m) => m.type === "agent_run_event")).toBe(true);
-    expect(pushed.find((m) => m.kind === "message_update")?.payload).toEqual({ kind: "message_update", text: "partial" });
+    expect(pushed.find((m) => m.kind === "message_update")?.payload).toEqual({
+      kind: "message_update",
+      text: "partial",
+    });
     expect(pushed[0].payload).toEqual({ kind: "run_status", status: "running" });
     expect(pushed[5].payload).toEqual({ kind: "run_status", status: "done" });
 

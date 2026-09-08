@@ -25,13 +25,17 @@ export type SempTurnResult = { ok: true; message: string | null } | { ok: false;
  * compacts it when oversized. Options without a `compaction` adapter fall back to a stub that
  * always returns null, matching the pre-#119 behavior.
  */
-export type ReconstructConversationHistory = (pool: Pool, projectItemId: string) => Promise<ReconstructedHistory | null>;
+export type ReconstructConversationHistory = (
+  pool: Pool,
+  projectItemId: string,
+) => Promise<ReconstructedHistory | null>;
 
 const stubReconstructConversationHistory: ReconstructConversationHistory = async () => null;
 
 /** #119's real `ReconstructConversationHistory`: closes over a `CompactionAdapter` so `SempConversationOptions` only needs the plain two-arg seam shape every caller (and every existing test) already expects. */
 export function createReconstructConversationHistory(compaction: CompactionAdapter): ReconstructConversationHistory {
-  return (pool, projectItemId) => reconstructHistoryEntries(pool, { projectItemId, triggeredBy: "user", parentRunId: null }, compaction);
+  return (pool, projectItemId) =>
+    reconstructHistoryEntries(pool, { projectItemId, triggeredBy: "user", parentRunId: null }, compaction);
 }
 
 interface ConversationRegistryEntry {
@@ -109,7 +113,9 @@ export class SempConversation {
         let lastMessage: AgentMessage | null;
         try {
           if (!entry.session.send) {
-            throw new Error("AgentSession does not support continuation (send) required to continue Semp's conversation");
+            throw new Error(
+              "AgentSession does not support continuation (send) required to continue Semp's conversation",
+            );
           }
           lastMessage = await runAgentTurn(this.pool, entry.agentRunId, entry.session.send(task));
         } catch (err) {

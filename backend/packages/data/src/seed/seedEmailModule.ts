@@ -2,14 +2,21 @@ import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
-import { createRelationPropertyWithClient, type CreateRelationPropertyInput, type SystemRelationWriteContext } from "../chokePoint/chokePoint.js";
+import {
+  createRelationPropertyWithClient,
+  type CreateRelationPropertyInput,
+  type SystemRelationWriteContext,
+} from "../chokePoint/chokePoint.js";
 import type { ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { CORE_AGENT_RUN_ACTION_ID } from "../scheduler/actions.js";
 import { MAILBOX_CLIENT_VIEW_TYPE, registerMailboxClientViewType } from "../views/mailboxClientViewType.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
-import { MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID, MAIL_REINDEX_PERSON_EMAILS_ACTION_ID } from "../mail/personLinkingActions.js";
+import {
+  MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID,
+  MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
+} from "../mail/personLinkingActions.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID } from "./emailModuleKeys.js";
 
@@ -25,13 +32,25 @@ interface PropSpec {
   config?: Record<string, unknown>;
 }
 
-async function createDb(client: PoolClient, name: string, ownerModuleId: string, ownerProjectItemId: string): Promise<DatabaseRow> {
+async function createDb(
+  client: PoolClient,
+  name: string,
+  ownerModuleId: string,
+  ownerProjectItemId: string,
+): Promise<DatabaseRow> {
   return databasesStore.createDatabase(client, { name, system: true, ownerModuleId, ownerProjectItemId });
 }
 
 async function createProps(client: PoolClient, databaseId: string, specs: PropSpec[]): Promise<void> {
   for (const spec of specs) {
-    await propertiesStore.createProperty(client, { databaseId, key: spec.key, name: spec.name, type: spec.type, owner: spec.owner, config: spec.config });
+    await propertiesStore.createProperty(client, {
+      databaseId,
+      key: spec.key,
+      name: spec.name,
+      type: spec.type,
+      owner: spec.owner,
+      config: spec.config,
+    });
   }
 }
 
@@ -95,7 +114,13 @@ export async function seedEmailModuleInTransaction(
   const mailboxes = await createDb(client, "Mailboxes", MAILBOXES_MODULE_ID, emailProject.id);
   await createProps(client, mailboxes.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
-    { key: "provider", name: "Provider", type: "select", owner: "user", config: selectConfig(["gmail", "outlook", "icloud", "generic"]) },
+    {
+      key: "provider",
+      name: "Provider",
+      type: "select",
+      owner: "user",
+      config: selectConfig(["gmail", "outlook", "icloud", "generic"]),
+    },
     { key: "addresses", name: "Addresses", type: "longText", owner: "user" },
     // Overrides the sync worker's provider-derived default IMAP simultaneous-connection cap
     // (imapConnectionLimiter.ts) — unset by default, since most accounts should just take the
@@ -196,17 +221,41 @@ export async function seedEmailModuleInTransaction(
   // have many item_b edges — one email, many attachment files — while each Files item
   // (item_b), freshly created per attachment, is used by exactly one email.
   const attachmentsRelation = await relate(
-    { sourceDatabaseId: emails.id, key: "attachments", name: "Attachments", targetDatabaseId: filesDatabaseId, cardinality: "one_to_many", owner: "system", ownerProcess: EMAILS_MODULE_ID },
+    {
+      sourceDatabaseId: emails.id,
+      key: "attachments",
+      name: "Attachments",
+      targetDatabaseId: filesDatabaseId,
+      cardinality: "one_to_many",
+      owner: "system",
+      ownerProcess: EMAILS_MODULE_ID,
+    },
     emailsContext,
   );
   // People's schema is likewise already locked — both People-facing relations below are
   // one-directional for the same reason.
   await relate(
-    { sourceDatabaseId: emails.id, key: "senderPeople", name: "Sender", targetDatabaseId: peopleDatabaseId, cardinality: "one_to_many", owner: "system", ownerProcess: EMAILS_MODULE_ID },
+    {
+      sourceDatabaseId: emails.id,
+      key: "senderPeople",
+      name: "Sender",
+      targetDatabaseId: peopleDatabaseId,
+      cardinality: "one_to_many",
+      owner: "system",
+      ownerProcess: EMAILS_MODULE_ID,
+    },
     emailsContext,
   );
   await relate(
-    { sourceDatabaseId: emails.id, key: "recipientsPeople", name: "Recipients", targetDatabaseId: peopleDatabaseId, cardinality: "many_to_many", owner: "system", ownerProcess: EMAILS_MODULE_ID },
+    {
+      sourceDatabaseId: emails.id,
+      key: "recipientsPeople",
+      name: "Recipients",
+      targetDatabaseId: peopleDatabaseId,
+      cardinality: "many_to_many",
+      owner: "system",
+      ownerProcess: EMAILS_MODULE_ID,
+    },
     emailsContext,
   );
 
@@ -233,7 +282,9 @@ export async function seedEmailModuleInTransaction(
     viewTypeRegistry,
   );
 
-  await client.query(`UPDATE databases SET schema_locked = true WHERE id = ANY($1::uuid[])`, [[mailboxes.id, folders.id, emails.id]]);
+  await client.query(`UPDATE databases SET schema_locked = true WHERE id = ANY($1::uuid[])`, [
+    [mailboxes.id, folders.id, emails.id],
+  ]);
 
   // People.emails (issue #26 is its sole owner) — direct store call against the raw client,
   // the same "code-level migration with direct DB access" exception seedSystem.ts documents
@@ -266,7 +317,11 @@ export async function seedEmailModuleInTransaction(
     name: "Link Emails to People",
     rule: { kind: "onItemEvent", databaseId: emails.id, event: "create" },
     actionId: MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID,
-    actionConfig: { emailsDatabaseId: emails.id, senderPeopleKey: "senderPeople", recipientsPeopleKey: "recipientsPeople" },
+    actionConfig: {
+      emailsDatabaseId: emails.id,
+      senderPeopleKey: "senderPeople",
+      recipientsPeopleKey: "recipientsPeople",
+    },
   });
   // issue #99: a new Inbox message should nudge the owning project's agent — dispatched through
   // the same core.agentRun action any other project heartbeat uses (no mail-specific scheduler),

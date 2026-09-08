@@ -2,7 +2,11 @@ import { EmptyState, ErrorState, LoadingState } from "../../components/StateView
 import { useTranslate, type MessageKey } from "../../i18n/index.js";
 import type { ViewRendererProps } from "../viewRegistry.js";
 import { useAsyncResource } from "../mailbox/useAsyncResource.js";
-import { journalInboxItemListSchema, parseJournalInboxConfig, type JournalInboxItemSummary } from "./journalInboxConfig.js";
+import {
+  journalInboxItemListSchema,
+  parseJournalInboxConfig,
+  type JournalInboxItemSummary,
+} from "./journalInboxConfig.js";
 
 /** The backend's opaque `clientComponent` id for this view type (see journalInboxViewType.ts). */
 export const JOURNAL_INBOX_LIST_COMPONENT = "journalInboxList";

@@ -29,6 +29,9 @@ export function registerViewRenderer(registry: ViewRegistry, clientComponent: st
  * view type — the two are registered together, so a view type whose registration predates
  * (or omits) a `clientComponent` still resolves.
  */
-export function resolveViewRenderer(registry: ViewRegistry, view: Pick<View, "type" | "clientComponent">): ViewRenderer | undefined {
+export function resolveViewRenderer(
+  registry: ViewRegistry,
+  view: Pick<View, "type" | "clientComponent">,
+): ViewRenderer | undefined {
   return (view.clientComponent ? registry.get(view.clientComponent) : undefined) ?? registry.get(view.type);
 }

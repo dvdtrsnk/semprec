@@ -5,7 +5,12 @@ import * as databasesStore from "../chokePoint/databasesStore.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/chokePoint.js";
 import { putBlockWithClient } from "../docs/docStore.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
-import { appendHistoryEntry, assertValidProposalEnvelope, type ProposalEntityKind, type ProposalEnvelope } from "./inboxTickAction.js";
+import {
+  appendHistoryEntry,
+  assertValidProposalEnvelope,
+  type ProposalEntityKind,
+  type ProposalEnvelope,
+} from "./inboxTickAction.js";
 import { enqueueJournalInboxRecomputeForProposal } from "./journalInboxCompute.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { storeCredential, type CredentialType } from "../credentials/externalCredentialsStore.js";
@@ -96,21 +101,34 @@ export async function confirmProposalWithClient(
     if (credential) {
       const targetDatabase = await databasesStore.getDatabase(client, envelope.target);
       if (targetDatabase?.ownerModuleId !== MCP_SERVERS_MODULE_ID) {
-        throw new ValidationError("A credential may only be supplied when confirming an MCP server proposal", { field: "credential" });
+        throw new ValidationError("A credential may only be supplied when confirming an MCP server proposal", {
+          field: "credential",
+        });
       }
     }
-    const created = await createItemWithClient(client, { databaseId: envelope.target, properties: envelope.properties });
+    const created = await createItemWithClient(client, {
+      databaseId: envelope.target,
+      properties: envelope.properties,
+    });
     resultItemId = created.id;
     resultLabel = await resolveResultLabel(client, envelope.target, created);
     if (credential) {
-      await storeCredential(client, { itemId: created.id, credentialType: credential.credentialType, plaintext: credential.plaintext });
+      await storeCredential(client, {
+        itemId: created.id,
+        credentialType: credential.credentialType,
+        plaintext: credential.plaintext,
+      });
     }
   } else {
     // Safe to cast without a further runtime check here: `assertValidProposalEnvelope`
     // above already rejects a 'pageContent' envelope whose `flavour` isn't a non-empty
     // string, or whose `fields`/`children` (if present) aren't a plain object / string
     // array respectively.
-    const { flavour, fields, children } = envelope.properties as { flavour: string; fields?: Record<string, unknown>; children?: string[] };
+    const { flavour, fields, children } = envelope.properties as {
+      flavour: string;
+      fields?: Record<string, unknown>;
+      children?: string[];
+    };
     await putBlockWithClient(client, envelope.target, { id: proposal.id, flavour, fields, children }, "ai_agent");
     const [targetPage] = await itemsStore.getItemsByIds(client, [envelope.target]);
     resultItemId = envelope.target;
@@ -144,7 +162,12 @@ export async function confirmProposalWithClient(
  * returned as-is); rejecting a `confirmed` proposal is refused, since its destination write
  * already happened and rejecting now could not undo it.
  */
-export async function rejectProposalWithClient(client: PoolClient, config: ProposalActionConfig, proposalId: string, message?: string): Promise<ItemRow> {
+export async function rejectProposalWithClient(
+  client: PoolClient,
+  config: ProposalActionConfig,
+  proposalId: string,
+  message?: string,
+): Promise<ItemRow> {
   const proposal = await lockLiveProposal(client, config.processingProposalsDatabaseId, proposalId);
   const status = proposal.properties.status;
   if (status === "rejected") return proposal;
@@ -185,14 +208,23 @@ export interface ReviseProposalInput {
  * from `needsClarification`/`invalid` as well as `proposed`, since a user resolving one of
  * those into a valid envelope is exactly how a proposal is meant to leave that state.
  */
-export async function reviseProposalWithClient(client: PoolClient, config: ProposalActionConfig, proposalId: string, input: ReviseProposalInput): Promise<ItemRow> {
+export async function reviseProposalWithClient(
+  client: PoolClient,
+  config: ProposalActionConfig,
+  proposalId: string,
+  input: ReviseProposalInput,
+): Promise<ItemRow> {
   const proposal = await lockLiveProposal(client, config.processingProposalsDatabaseId, proposalId);
   const status = proposal.properties.status;
   if (typeof status === "string" && LOCKED_PROPOSAL_STATUSES.has(status)) {
     throw new ValidationError(`Cannot revise a locked proposal (status '${status}')`, { field: "status" });
   }
 
-  const envelope: ProposalEnvelope = { entityKind: input.entityKind, target: input.target, properties: input.properties };
+  const envelope: ProposalEnvelope = {
+    entityKind: input.entityKind,
+    target: input.target,
+    properties: input.properties,
+  };
   await assertValidProposalEnvelope(client, envelope);
 
   const updated = await updateItemWithClient(

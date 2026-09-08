@@ -32,7 +32,11 @@ export interface ContractServerTool {
 
 /** What a freshly-started contract server advertises until a test calls `setTools`. */
 export const DEFAULT_CONTRACT_TOOLS: ContractServerTool[] = [
-  { name: "search_web", description: "Searches the web", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
+  {
+    name: "search_web",
+    description: "Searches the web",
+    inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+  },
 ];
 export interface McpContractServer {
   /** A ready-to-use `mcpServers.connectionConfig` pointing at this running contract server. */
@@ -79,7 +83,9 @@ export interface StdioContractServer extends McpContractServer {
  * whichever test connects to it. `credentialEnvVar` names the env var that script reports the
  * credential back under (see that file's header comment).
  */
-export function startStdioContractServer(initialTools: ContractServerTool[] = DEFAULT_CONTRACT_TOOLS): StdioContractServer {
+export function startStdioContractServer(
+  initialTools: ContractServerTool[] = DEFAULT_CONTRACT_TOOLS,
+): StdioContractServer {
   const recordFile = path.join(os.tmpdir(), `mcp-contract-stdio-${randomUUID()}.json`);
   const toolsFile = path.join(os.tmpdir(), `mcp-contract-stdio-tools-${randomUUID()}.json`);
   const credentialEnvVar = "MCP_CONTRACT_TEST_CREDENTIAL";
@@ -165,7 +171,9 @@ export interface HttpTransportContractServer extends McpContractServer {
 }
 
 /** @deprecated transport (SSEServerTransport itself is deprecated upstream) but still a required contract per issue #231's scope. */
-export async function startSseContractServer(initialTools: ContractServerTool[] = DEFAULT_CONTRACT_TOOLS): Promise<HttpTransportContractServer> {
+export async function startSseContractServer(
+  initialTools: ContractServerTool[] = DEFAULT_CONTRACT_TOOLS,
+): Promise<HttpTransportContractServer> {
   let observedCredential: string | null = null;
   let handshakeCount = 0;
   let currentMcpServer: McpServer | undefined;
@@ -183,7 +191,10 @@ export async function startSseContractServer(initialTools: ContractServerTool[] 
         const transport = new SSEServerTransport("/messages", res);
         transportsBySession.set(transport.sessionId, transport);
         res.on("close", () => transportsBySession.delete(transport.sessionId));
-        const mcpServer = new McpServer({ name: "mcp-contract-sse", version: "1.0.0" }, { capabilities: { tools: { listChanged: true } } });
+        const mcpServer = new McpServer(
+          { name: "mcp-contract-sse", version: "1.0.0" },
+          { capabilities: { tools: { listChanged: true } } },
+        );
         // Reads `currentTools` at request time (not capture time), so a test's `setTools` call
         // takes effect on this already-connected session's very next `tools/list` request.
         mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: currentTools }));
@@ -228,7 +239,9 @@ export async function startSseContractServer(initialTools: ContractServerTool[] 
   };
 }
 
-export async function startHttpContractServer(initialTools: ContractServerTool[] = DEFAULT_CONTRACT_TOOLS): Promise<HttpTransportContractServer> {
+export async function startHttpContractServer(
+  initialTools: ContractServerTool[] = DEFAULT_CONTRACT_TOOLS,
+): Promise<HttpTransportContractServer> {
   let observedCredential: string | null = null;
   let handshakeCount = 0;
   let currentTools = initialTools;
@@ -273,7 +286,10 @@ export async function startHttpContractServer(initialTools: ContractServerTool[]
         const id = transport.sessionId;
         if (id) transportsBySession.delete(id);
       };
-      const mcpServer = new McpServer({ name: "mcp-contract-http", version: "1.0.0" }, { capabilities: { tools: { listChanged: true } } });
+      const mcpServer = new McpServer(
+        { name: "mcp-contract-http", version: "1.0.0" },
+        { capabilities: { tools: { listChanged: true } } },
+      );
       // Reads `currentTools` at request time, same as the sse server above.
       mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: currentTools }));
       mcpServer.oninitialized = () => {

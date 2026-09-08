@@ -42,8 +42,7 @@ export async function checkModuleBoundaries(
     {},
     undefined,
   );
-  const output: ICruiseResult =
-    typeof result.output === "string" ? JSON.parse(result.output) : result.output;
+  const output: ICruiseResult = typeof result.output === "string" ? JSON.parse(result.output) : result.output;
   const violations: BoundaryViolation[] = [];
   for (const module of output.modules) {
     for (const dependency of module.dependencies) {

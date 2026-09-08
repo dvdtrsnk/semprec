@@ -38,7 +38,10 @@ describe("MailboxClient", () => {
         expect.stringContaining("Lunch?"),
         expect.stringContaining("Newsletter"),
       ]);
-      expect(within(folders as HTMLElement).getByRole("button", { name: /Inbox/ })).toHaveAttribute("aria-current", "true");
+      expect(within(folders as HTMLElement).getByRole("button", { name: /Inbox/ })).toHaveAttribute(
+        "aria-current",
+        "true",
+      );
     });
 
     it("shows the unread count per folder, counting a message with no read flag as unread", async () => {

@@ -32,7 +32,11 @@ const stubReconstructDelegatedHistory: ReconstructDelegatedHistory = async () =>
 /** #119's real `ReconstructDelegatedHistory`: closes over a `CompactionAdapter` so `DelegateInput` only needs the plain three-arg seam shape every caller (and every existing test) already expects. */
 export function createReconstructDelegatedHistory(compaction: CompactionAdapter): ReconstructDelegatedHistory {
   return (pool, targetProjectItemId, supervisorRunId) =>
-    reconstructHistoryEntries(pool, { projectItemId: targetProjectItemId, triggeredBy: "supervisor", parentRunId: supervisorRunId }, compaction);
+    reconstructHistoryEntries(
+      pool,
+      { projectItemId: targetProjectItemId, triggeredBy: "supervisor", parentRunId: supervisorRunId },
+      compaction,
+    );
 }
 
 export interface DelegateInput {

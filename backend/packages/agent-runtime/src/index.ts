@@ -10,7 +10,12 @@ export {
   type DelegateResult,
   type ReconstructDelegatedHistory,
 } from "./delegationRegistry.js";
-export { createDelegateTool, type DelegateTool, type DelegateToolArgs, type DelegateToolResult } from "./delegateTool.js";
+export {
+  createDelegateTool,
+  type DelegateTool,
+  type DelegateToolArgs,
+  type DelegateToolResult,
+} from "./delegateTool.js";
 export {
   SempConversation,
   SEMP_BUSY_ERROR_MESSAGE,

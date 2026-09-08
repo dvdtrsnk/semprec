@@ -46,7 +46,10 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
   async function findProposalForItem(itemId: string) {
     return withTransaction(pool, async (client) => {
       const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
-      const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, sourceInboxProperty!.id);
+      const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(
+        client,
+        sourceInboxProperty!.id,
+      );
       const edges = await relationsStore.listRelationsForItem(client, relationDefinition!.id, itemId);
       if (edges.length === 0) return null;
       const proposalItemId = relationsStore.otherSide(edges[0], itemId);
@@ -64,7 +67,13 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
 
   it("creates exactly one proposed row with the generic envelope and correct fingerprint for a 'database' type", async () => {
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
     );
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
@@ -108,7 +117,12 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
 
   it("uses the injected function's target for a 'pageContent' type", async () => {
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Thought", emoji: "💭", processingMethod: "pageContent" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Thought",
+        emoji: "💭",
+        processingMethod: "pageContent",
+      }),
     );
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
@@ -138,7 +152,13 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
 
   it("an unchanged fingerprint makes no AI call and no proposal write", async () => {
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
     );
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
@@ -164,7 +184,13 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
 
   it("an edit that changes the fingerprint revises the same row rather than creating a second one", async () => {
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
     );
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
@@ -181,7 +207,11 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     const first = await findProposalForItem(item.id);
 
     await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, { databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "Buy milk and eggs" } }),
+      itemsStore.updateItemProperties(client, {
+        databaseId: inboxId,
+        itemId: item.id,
+        propertiesPatch: { text: "Buy milk and eggs" },
+      }),
     );
 
     await runTick(item.id, async () => ({ properties: { name: "Buy milk and eggs" } }));
@@ -189,7 +219,11 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
 
     expect(revised!.id).toBe(first!.id);
     expect(revised!.properties.fingerprint).toBe(sha256Of("☑️", "Buy milk and eggs"));
-    expect(revised!.properties.proposal).toEqual({ entityKind: "database", target: await databaseIdFor("tasks"), properties: { name: "Buy milk and eggs" } });
+    expect(revised!.properties.proposal).toEqual({
+      entityKind: "database",
+      target: await databaseIdFor("tasks"),
+      properties: { name: "Buy milk and eggs" },
+    });
     expect(revised!.properties.history).toHaveLength(2);
 
     const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [proposalsId]);
@@ -198,7 +232,13 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
 
   it("a confirmed or rejected proposal is never modified by a later tick, even when the source changes", async () => {
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
     );
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
@@ -214,9 +254,19 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
     const proposal = await findProposalForItem(item.id);
 
-    await withTransaction(pool, (client) => itemsStore.updateItemProperties(client, { databaseId: proposalsId, itemId: proposal!.id, propertiesPatch: { status: "confirmed" } }));
     await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, { databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "Something totally different" } }),
+      itemsStore.updateItemProperties(client, {
+        databaseId: proposalsId,
+        itemId: proposal!.id,
+        propertiesPatch: { status: "confirmed" },
+      }),
+    );
+    await withTransaction(pool, (client) =>
+      itemsStore.updateItemProperties(client, {
+        databaseId: inboxId,
+        itemId: item.id,
+        propertiesPatch: { text: "Something totally different" },
+      }),
     );
 
     await runTick(item.id, async () => {
@@ -230,7 +280,13 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
 
   it("a soft-deleted existing proposal is treated as absent — a later tick creates a fresh one instead of throwing", async () => {
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
     );
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
@@ -261,11 +317,17 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     // to the live replacement. A further tick must find the live one regardless of which edge
     // comes back first from the relation lookup — reviving it rather than creating a third row.
     await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, { databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "Buy milk and eggs" } }),
+      itemsStore.updateItemProperties(client, {
+        databaseId: inboxId,
+        itemId: item.id,
+        propertiesPatch: { text: "Buy milk and eggs" },
+      }),
     );
     await runTick(item.id, async () => ({ properties: { name: "Buy milk and eggs" } }));
 
-    const { rows: afterThirdTick } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [proposalsId]);
+    const { rows: afterThirdTick } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+      proposalsId,
+    ]);
     expect(afterThirdTick[0].n).toBe(2);
 
     const { rows: liveRows } = await pool.query(
@@ -278,7 +340,14 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
 
   it("an item with no type is marked needsClarification, not silently skipped (issue #104)", async () => {
     const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "09:00", text: "no type" }),
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        text: "no type",
+      }),
     );
 
     await runTick(item.id, async () => {
@@ -295,7 +364,14 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
 
   it("a repeated tick on the same untyped item stays needsClarification without a second history entry", async () => {
     const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "09:00", text: "no type" }),
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        text: "no type",
+      }),
     );
 
     const throwing: ComputeSemprecProposalFn = async () => {
@@ -311,7 +387,13 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
 
   it("never writes a row into any database other than processingProposals", async () => {
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
     );
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
@@ -326,11 +408,15 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     );
 
     const tasksDbId = await databaseIdFor("tasks");
-    const { rows: before } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [tasksDbId]);
+    const { rows: before } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+      tasksDbId,
+    ]);
 
     await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
 
-    const { rows: after } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [tasksDbId]);
+    const { rows: after } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+      tasksDbId,
+    ]);
     expect(after[0].n).toBe(before[0].n);
   });
 });
@@ -355,7 +441,10 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
   async function findProposalForItem(itemId: string) {
     return withTransaction(pool, async (client) => {
       const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
-      const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, sourceInboxProperty!.id);
+      const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(
+        client,
+        sourceInboxProperty!.id,
+      );
       const edges = await relationsStore.listRelationsForItem(client, relationDefinition!.id, itemId);
       if (edges.length === 0) return null;
       const proposalItemId = relationsStore.otherSide(edges[0], itemId);
@@ -373,7 +462,13 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
 
   async function createTypedItem(text: string) {
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
     );
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
@@ -393,7 +488,12 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     const { type, item } = await createTypedItem("Buy milk");
 
     await withTransaction(pool, (client) =>
-      deleteInboxTypeWithClient(client, { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId, typeItemId: type.id }),
+      deleteInboxTypeWithClient(client, {
+        inboxDatabaseId: inboxId,
+        inboxItemTypesDatabaseId: typesId,
+        processingProposalsDatabaseId: proposalsId,
+        typeItemId: type.id,
+      }),
     );
 
     await runTick(item.id, async () => {
@@ -408,7 +508,14 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
 
   it("an item that gains a recognized type after needsClarification transitions to proposed on the next tick", async () => {
     const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "09:00", text: "Buy milk" }),
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        text: "Buy milk",
+      }),
     );
 
     await runTick(item.id, async () => {
@@ -419,11 +526,21 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     expect(needsClarification!.properties.fingerprint).toBeNull();
 
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
     );
     await withTransaction(pool, async (client) => {
       const typeProperty = await propertiesStore.getPropertyByKey(client, inboxId, "type");
-      await createRelationWithClient(client, { relationPropertyId: typeProperty!.id, callerItemId: item.id, targetItemId: type.id });
+      await createRelationWithClient(client, {
+        relationPropertyId: typeProperty!.id,
+        callerItemId: item.id,
+        targetItemId: type.id,
+      });
     });
 
     await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
@@ -432,7 +549,11 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     expect(proposed!.id).toBe(needsClarification!.id);
     expect(proposed!.properties.status).toBe("proposed");
     expect(proposed!.properties.fingerprint).toBe(sha256Of("☑️", "Buy milk"));
-    expect(proposed!.properties.proposal).toEqual({ entityKind: "database", target: await databaseIdFor("tasks"), properties: { name: "Buy milk" } });
+    expect(proposed!.properties.proposal).toEqual({
+      entityKind: "database",
+      target: await databaseIdFor("tasks"),
+      properties: { name: "Buy milk" },
+    });
     expect(proposed!.properties.history).toHaveLength(2);
   });
 
@@ -459,7 +580,11 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
     const proposal = await findProposalForItem(item.id);
     await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, { databaseId: proposalsId, itemId: proposal!.id, propertiesPatch: { status: "confirmed" } }),
+      itemsStore.updateItemProperties(client, {
+        databaseId: proposalsId,
+        itemId: proposal!.id,
+        propertiesPatch: { status: "confirmed" },
+      }),
     );
 
     await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, item.id));
@@ -476,7 +601,11 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
     const proposal = await findProposalForItem(item.id);
     await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, { databaseId: proposalsId, itemId: proposal!.id, propertiesPatch: { status: "rejected" } }),
+      itemsStore.updateItemProperties(client, {
+        databaseId: proposalsId,
+        itemId: proposal!.id,
+        propertiesPatch: { status: "rejected" },
+      }),
     );
     const historyLengthBeforeDelete = (proposal!.properties.history as unknown[]).length;
 
@@ -511,7 +640,9 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     expect(proposal!.properties.proposal).toBeNull();
     expect(proposal!.properties.history).toHaveLength(1);
 
-    const { rows: taskRows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [await databaseIdFor("tasks")]);
+    const { rows: taskRows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+      await databaseIdFor("tasks"),
+    ]);
     expect(taskRows[0].n).toBe(0);
   });
 
@@ -526,7 +657,12 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
 
   it("a pageContent envelope whose target is not an existing item fails validation", async () => {
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Thought", emoji: "💭", processingMethod: "pageContent" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Thought",
+        emoji: "💭",
+        processingMethod: "pageContent",
+      }),
     );
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
@@ -540,7 +676,10 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
       }),
     );
 
-    await runTick(item.id, async () => ({ target: "00000000-0000-0000-0000-000000000000", properties: { flavour: "paragraph" } }));
+    await runTick(item.id, async () => ({
+      target: "00000000-0000-0000-0000-000000000000",
+      properties: { flavour: "paragraph" },
+    }));
 
     const proposal = await findProposalForItem(item.id);
     expect(proposal!.properties.status).toBe("needsClarification");
@@ -548,7 +687,12 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
 
   it("a pageContent envelope missing block content (flavour) fails validation", async () => {
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Thought", emoji: "💭", processingMethod: "pageContent" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Thought",
+        emoji: "💭",
+        processingMethod: "pageContent",
+      }),
     );
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
@@ -570,7 +714,12 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
 
   it("a pageContent envelope whose 'fields' is not a plain object fails validation (issue #105 review fix)", async () => {
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Thought", emoji: "💭", processingMethod: "pageContent" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Thought",
+        emoji: "💭",
+        processingMethod: "pageContent",
+      }),
     );
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
@@ -584,7 +733,10 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
       }),
     );
 
-    await runTick(item.id, async () => ({ target: type.id, properties: { flavour: "paragraph", fields: "not an object" } }));
+    await runTick(item.id, async () => ({
+      target: type.id,
+      properties: { flavour: "paragraph", fields: "not an object" },
+    }));
 
     const proposal = await findProposalForItem(item.id);
     expect(proposal!.properties.status).toBe("needsClarification");
@@ -592,7 +744,12 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
 
   it("a pageContent envelope whose 'children' is not an array of strings fails validation (issue #105 review fix)", async () => {
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Thought", emoji: "💭", processingMethod: "pageContent" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Thought",
+        emoji: "💭",
+        processingMethod: "pageContent",
+      }),
     );
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
@@ -606,7 +763,10 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
       }),
     );
 
-    await runTick(item.id, async () => ({ target: type.id, properties: { flavour: "paragraph", children: [1, 2, 3] } }));
+    await runTick(item.id, async () => ({
+      target: type.id,
+      properties: { flavour: "paragraph", children: [1, 2, 3] },
+    }));
 
     const proposal = await findProposalForItem(item.id);
     expect(proposal!.properties.status).toBe("needsClarification");

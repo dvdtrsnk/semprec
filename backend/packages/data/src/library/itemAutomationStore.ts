@@ -13,7 +13,13 @@ export interface ItemAutomationRow {
   lastAttemptAt: string | null;
 }
 
-function mapRow(row: { item_id: string; status: string; error: string | null; attempts: number; last_attempt_at: Date | null }): ItemAutomationRow {
+function mapRow(row: {
+  item_id: string;
+  status: string;
+  error: string | null;
+  attempts: number;
+  last_attempt_at: Date | null;
+}): ItemAutomationRow {
   return {
     itemId: row.item_id,
     status: assertKnownValue(ITEM_AUTOMATION_STATUSES, row.status, "item automation status"),
@@ -31,9 +37,10 @@ const COLUMNS = "item_id, status, error, attempts, last_attempt_at";
  * already-resolved row back to 'pending'.
  */
 export async function ensureItemAutomation(client: PoolClient, itemId: string): Promise<ItemAutomationRow> {
-  const inserted = await client.query(`INSERT INTO item_automation (item_id) VALUES ($1) ON CONFLICT (item_id) DO NOTHING RETURNING ${COLUMNS}`, [
-    itemId,
-  ]);
+  const inserted = await client.query(
+    `INSERT INTO item_automation (item_id) VALUES ($1) ON CONFLICT (item_id) DO NOTHING RETURNING ${COLUMNS}`,
+    [itemId],
+  );
   if (inserted.rows[0]) return mapRow(inserted.rows[0]);
 
   const existing = await getItemAutomation(client, itemId);
@@ -54,7 +61,10 @@ export async function lockItemAutomation(client: PoolClient, itemId: string): Pr
 
 /** A `locked` row is never touched by the heartbeat, on success or failure — the WHERE guards both write paths below. */
 export async function markItemAutomationDone(client: PoolClient, itemId: string): Promise<void> {
-  await client.query(`UPDATE item_automation SET status = 'done', error = NULL WHERE item_id = $1 AND status != 'locked'`, [itemId]);
+  await client.query(
+    `UPDATE item_automation SET status = 'done', error = NULL WHERE item_id = $1 AND status != 'locked'`,
+    [itemId],
+  );
 }
 
 /** `attempts` is a cumulative counter across the whole history (including across daily retry batches), not reset per batch. */
@@ -74,7 +84,11 @@ export async function markItemAutomationError(client: PoolClient, itemId: string
  * (locking an already-locked row, or unlocking a row that isn't locked) returns the row
  * unchanged instead of erroring.
  */
-export async function setItemAutomationLocked(client: PoolClient, itemId: string, locked: boolean): Promise<ItemAutomationRow> {
+export async function setItemAutomationLocked(
+  client: PoolClient,
+  itemId: string,
+  locked: boolean,
+): Promise<ItemAutomationRow> {
   const { rows } = await client.query(
     `UPDATE item_automation SET status = $2 WHERE item_id = $1 AND status ${locked ? "!=" : "="} 'locked' RETURNING ${COLUMNS}`,
     [itemId, locked ? "locked" : "pending"],
@@ -95,7 +109,10 @@ export async function setItemAutomationLocked(client: PoolClient, itemId: string
  * soft-deleted item: retrying metadata for something the user deleted would just fail (or
  * silently no-op) forever, spending a fresh 3-attempt batch every day for nothing.
  */
-export async function listErroredItemAutomationForDatabases(client: PoolClient, databaseIds: string[]): Promise<ItemAutomationRow[]> {
+export async function listErroredItemAutomationForDatabases(
+  client: PoolClient,
+  databaseIds: string[],
+): Promise<ItemAutomationRow[]> {
   if (databaseIds.length === 0) return [];
   const { rows } = await client.query(
     `SELECT ia.item_id, ia.status, ia.error, ia.attempts, ia.last_attempt_at

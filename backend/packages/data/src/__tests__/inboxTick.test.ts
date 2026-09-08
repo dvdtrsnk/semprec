@@ -233,13 +233,17 @@ describe("Inbox item event dispatch (issue #103)", () => {
   it("rejects a misconfigured heartbeat instead of silently no-op'ing", async () => {
     const handler = createSemprecTickAction(pool, unusedComputeProposal);
     await expect(handler({}, { heartbeatId: "hb", projectItemId: "proj", itemId: "item" })).rejects.toThrow();
-    await expect(handler({ inboxDatabaseId: "not-a-uuid" }, { heartbeatId: "hb", projectItemId: "proj", itemId: "item" })).rejects.toThrow();
+    await expect(
+      handler({ inboxDatabaseId: "not-a-uuid" }, { heartbeatId: "hb", projectItemId: "proj", itemId: "item" }),
+    ).rejects.toThrow();
   });
 
   it("capturingTickRegistry's handler rejects a malformed actionConfig exactly like production", async () => {
     const handler = capturingTickRegistry([]).get(SEMPREC_TICK_ACTION_ID)!;
     await expect(handler({}, { heartbeatId: "hb", projectItemId: "proj", itemId: "item" })).rejects.toThrow();
-    await expect(handler({ inboxDatabaseId: "not-a-uuid" }, { heartbeatId: "hb", projectItemId: "proj", itemId: "item" })).rejects.toThrow();
+    await expect(
+      handler({ inboxDatabaseId: "not-a-uuid" }, { heartbeatId: "hb", projectItemId: "proj", itemId: "item" }),
+    ).rejects.toThrow();
   });
 
   it("routes the update and soft-delete paths' heartbeat-fire jobs to the same queue affinity as create", async () => {
@@ -259,7 +263,11 @@ describe("Inbox item event dispatch (issue #103)", () => {
       }),
     );
 
-    await affinitizedChokePoint.updateItem({ databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "edited" } });
+    await affinitizedChokePoint.updateItem({
+      databaseId: inboxId,
+      itemId: item.id,
+      propertiesPatch: { text: "edited" },
+    });
     const afterUpdate = await pendingTickJobs();
     expect(afterUpdate).toHaveLength(2); // create's pending job plus update's
     expect(afterUpdate.every((j) => j.queue_name === SEMPREC_TICK_QUEUE_NAME)).toBe(true);

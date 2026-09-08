@@ -52,7 +52,12 @@ function ComposeFields({ state, aliases, onChange, onSave, onSend, onClose }: Co
         {/* A plain dropdown over the registered aliases — the same list the backend's send
             path validates the From address against, so an address it would reject is not
             offerable here in the first place. */}
-        <select id={field("from")} value={state.fromAddress} disabled={busy} onChange={(event) => onChange({ fromAddress: event.target.value })}>
+        <select
+          id={field("from")}
+          value={state.fromAddress}
+          disabled={busy}
+          onChange={(event) => onChange({ fromAddress: event.target.value })}
+        >
           {aliases.map((alias) => (
             <option key={alias.address} value={alias.address}>
               {`${alias.address} (${alias.mailboxName})`}
@@ -63,34 +68,69 @@ function ComposeFields({ state, aliases, onChange, onSave, onSend, onClose }: Co
 
       <div className="compose__field">
         <label htmlFor={field("to")}>{t("mailbox.compose.to")}</label>
-        <input id={field("to")} type="text" value={state.to} disabled={busy} onChange={(event) => onChange({ to: event.target.value })} />
+        <input
+          id={field("to")}
+          type="text"
+          value={state.to}
+          disabled={busy}
+          onChange={(event) => onChange({ to: event.target.value })}
+        />
       </div>
 
       {state.showCopies ? (
         <>
           <div className="compose__field">
             <label htmlFor={field("cc")}>{t("mailbox.compose.cc")}</label>
-            <input id={field("cc")} type="text" value={state.cc} disabled={busy} onChange={(event) => onChange({ cc: event.target.value })} />
+            <input
+              id={field("cc")}
+              type="text"
+              value={state.cc}
+              disabled={busy}
+              onChange={(event) => onChange({ cc: event.target.value })}
+            />
           </div>
           <div className="compose__field">
             <label htmlFor={field("bcc")}>{t("mailbox.compose.bcc")}</label>
-            <input id={field("bcc")} type="text" value={state.bcc} disabled={busy} onChange={(event) => onChange({ bcc: event.target.value })} />
+            <input
+              id={field("bcc")}
+              type="text"
+              value={state.bcc}
+              disabled={busy}
+              onChange={(event) => onChange({ bcc: event.target.value })}
+            />
           </div>
         </>
       ) : (
-        <button type="button" className="button compose__copies" disabled={busy} onClick={() => onChange({ showCopies: true })}>
+        <button
+          type="button"
+          className="button compose__copies"
+          disabled={busy}
+          onClick={() => onChange({ showCopies: true })}
+        >
           {t("mailbox.compose.showCopies")}
         </button>
       )}
 
       <div className="compose__field">
         <label htmlFor={field("subject")}>{t("mailbox.compose.subject")}</label>
-        <input id={field("subject")} type="text" value={state.subject} disabled={busy} onChange={(event) => onChange({ subject: event.target.value })} />
+        <input
+          id={field("subject")}
+          type="text"
+          value={state.subject}
+          disabled={busy}
+          onChange={(event) => onChange({ subject: event.target.value })}
+        />
       </div>
 
       <div className="compose__field compose__field--body">
         <label htmlFor={field("body")}>{t("mailbox.compose.body")}</label>
-        <textarea id={field("body")} rows={10} value={state.body} disabled={busy} onChange={(event) => onChange({ body: event.target.value })} />
+        <textarea
+          id={field("body")}
+          rows={10}
+          value={state.body}
+          disabled={busy}
+          onChange={(event) => onChange({ body: event.target.value })}
+        />
       </div>
 
       {state.error ? <ComposeErrorMessage error={state.error} /> : null}

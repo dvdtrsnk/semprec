@@ -10,7 +10,12 @@ import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { ValidationError } from "../errors.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
-import { createInboxTypeWithClient, deleteInboxTypeWithClient, listActiveInboxTypes, updateInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
+import {
+  createInboxTypeWithClient,
+  deleteInboxTypeWithClient,
+  listActiveInboxTypes,
+  updateInboxTypeWithClient,
+} from "../inbox/inboxTypesStore.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -57,7 +62,10 @@ describe("Inbox pipeline databases (issue #101)", () => {
       const { rows } = await pool.query("SELECT system, schema_locked FROM databases WHERE id = $1", [databaseId]);
       expect(rows[0]).toEqual({ system: true, schema_locked: true });
 
-      const { rows: viewRows } = await pool.query("SELECT type, created_by, is_default FROM views WHERE database_id = $1", [databaseId]);
+      const { rows: viewRows } = await pool.query(
+        "SELECT type, created_by, is_default FROM views WHERE database_id = $1",
+        [databaseId],
+      );
       expect(viewRows).toHaveLength(1);
       expect(viewRows[0]).toMatchObject({ type: "table", created_by: "system", is_default: true });
     }
@@ -71,8 +79,18 @@ describe("Inbox pipeline databases (issue #101)", () => {
     expect(inboxProps.find((p) => p.key === "journalDay")).toMatchObject({ type: "relation", owner: "system" });
 
     const typeProps = await chokePoint.listProperties(typesId);
-    expect(typeProps.map((p) => p.key).sort()).toEqual(["emoji", "name", "processingMethod", "status", "targetDatabase"]);
-    expect(typeProps.find((p) => p.key === "status")).toMatchObject({ type: "select", owner: "user", config: { options: ["active", "archived"] } });
+    expect(typeProps.map((p) => p.key).sort()).toEqual([
+      "emoji",
+      "name",
+      "processingMethod",
+      "status",
+      "targetDatabase",
+    ]);
+    expect(typeProps.find((p) => p.key === "status")).toMatchObject({
+      type: "select",
+      owner: "user",
+      config: { options: ["active", "archived"] },
+    });
     expect(typeProps.find((p) => p.key === "processingMethod")).toMatchObject({
       type: "select",
       owner: "user",
@@ -95,11 +113,18 @@ describe("Inbox pipeline databases (issue #101)", () => {
       "sourceTranscript",
       "status",
     ]);
-    expect(proposalProps.find((p) => p.key === "kind")).toMatchObject({ type: "select", owner: "system", config: { options: ["inbox", "transcript"] } });
+    expect(proposalProps.find((p) => p.key === "kind")).toMatchObject({
+      type: "select",
+      owner: "system",
+      config: { options: ["inbox", "transcript"] },
+    });
     expect(proposalProps.find((p) => p.key === "proposal")).toMatchObject({ type: "json", owner: "system" });
     expect(proposalProps.find((p) => p.key === "history")).toMatchObject({ type: "json", owner: "system" });
     expect(proposalProps.find((p) => p.key === "sourceInbox")).toMatchObject({ type: "relation", owner: "system" });
-    expect(proposalProps.find((p) => p.key === "sourceTranscript")).toMatchObject({ type: "relation", owner: "system" });
+    expect(proposalProps.find((p) => p.key === "sourceTranscript")).toMatchObject({
+      type: "relation",
+      owner: "system",
+    });
     expect(proposalProps.find((p) => p.key === "status")).toMatchObject({
       type: "select",
       owner: "system",
@@ -110,7 +135,9 @@ describe("Inbox pipeline databases (issue #101)", () => {
   it("re-running the seed is idempotent — no duplicate databases/properties", async () => {
     await seedSystem(pool, viewTypeRegistry); // second run, same process's registry
     for (const moduleId of ["inbox", "inboxItemTypes", "processingProposals"]) {
-      const { rows } = await pool.query("SELECT count(*)::int AS n FROM databases WHERE owner_module_id = $1", [moduleId]);
+      const { rows } = await pool.query("SELECT count(*)::int AS n FROM databases WHERE owner_module_id = $1", [
+        moduleId,
+      ]);
       expect(rows[0].n).toBe(1);
     }
   });
@@ -121,13 +148,25 @@ describe("Inbox pipeline databases (issue #101)", () => {
 
     await expect(
       withTransaction(pool, (client) =>
-        createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "", time: "14:30" }),
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: inboxId,
+          journalDatabaseId: journalId,
+          timezone: "Europe/Prague",
+          date: "",
+          time: "14:30",
+        }),
       ),
     ).rejects.toBeInstanceOf(ValidationError);
 
     await expect(
       withTransaction(pool, (client) =>
-        createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "" }),
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: inboxId,
+          journalDatabaseId: journalId,
+          timezone: "Europe/Prague",
+          date: "2026-08-28",
+          time: "",
+        }),
       ),
     ).rejects.toBeInstanceOf(ValidationError);
   });
@@ -138,13 +177,23 @@ describe("Inbox pipeline databases (issue #101)", () => {
 
     await expect(
       withTransaction(pool, (client) =>
-        createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "not-a-date", time: "14:30" }),
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: inboxId,
+          journalDatabaseId: journalId,
+          timezone: "Europe/Prague",
+          date: "not-a-date",
+          time: "14:30",
+        }),
       ),
     ).rejects.toBeInstanceOf(ValidationError);
 
-    const { rows: inboxRows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [inboxId]);
+    const { rows: inboxRows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+      inboxId,
+    ]);
     expect(inboxRows[0].n).toBe(0);
-    const { rows: journalRows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [journalId]);
+    const { rows: journalRows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+      journalId,
+    ]);
     expect(journalRows[0].n).toBe(0);
   });
 
@@ -173,13 +222,23 @@ describe("Inbox pipeline databases (issue #101)", () => {
 
     // A second Inbox item on the same day reuses the same Journal day item (lazy, idempotent).
     const secondItem = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "08:00" }),
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "08:00",
+      }),
     );
-    const secondEdges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, secondItem.id));
+    const secondEdges = await withTransaction(pool, (client) =>
+      relationsStore.listAllRelationsForItem(client, secondItem.id),
+    );
     const secondJournalDayItemId = [secondEdges[0].itemA, secondEdges[0].itemB].find((id) => id !== secondItem.id)!;
     expect(secondJournalDayItemId).toBe(journalDayItemId);
 
-    const { rows: journalRows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [journalId]);
+    const { rows: journalRows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+      journalId,
+    ]);
     expect(journalRows[0].n).toBe(1);
   });
 
@@ -188,7 +247,13 @@ describe("Inbox pipeline databases (issue #101)", () => {
     const journalId = await databaseIdFor("journal");
 
     const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "09:00" }),
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+      }),
     );
     expect(item.properties.type).toBeUndefined();
   });
@@ -198,7 +263,10 @@ describe("Inbox pipeline databases (issue #101)", () => {
     const typesId = await databaseIdFor("inboxItemTypes");
     const journalId = await databaseIdFor("journal");
 
-    const type = await chokePoint.createItem({ databaseId: typesId, properties: { name: "Task", emoji: "☑️", status: "active" } });
+    const type = await chokePoint.createItem({
+      databaseId: typesId,
+      properties: { name: "Task", emoji: "☑️", status: "active" },
+    });
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
@@ -213,13 +281,19 @@ describe("Inbox pipeline databases (issue #101)", () => {
     await chokePoint.updateItem({ databaseId: typesId, itemId: type.id, propertiesPatch: { emoji: "🆕" } });
 
     const edges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, type.id));
-    const linkedInboxItemId = edges.map((e) => [e.itemA, e.itemB]).flat().find((id) => id === item.id);
+    const linkedInboxItemId = edges
+      .map((e) => [e.itemA, e.itemB])
+      .flat()
+      .find((id) => id === item.id);
     expect(linkedInboxItemId).toBe(item.id);
   });
 
   it("GET /api/inbox-types equivalent: lists only active types as { id, emoji, label }, never by emoji", async () => {
     const typesId = await databaseIdFor("inboxItemTypes");
-    const active = await chokePoint.createItem({ databaseId: typesId, properties: { name: "Task", emoji: "☑️", status: "active" } });
+    const active = await chokePoint.createItem({
+      databaseId: typesId,
+      properties: { name: "Task", emoji: "☑️", status: "active" },
+    });
     await chokePoint.createItem({ databaseId: typesId, properties: { name: "Old", emoji: "🗑️", status: "archived" } });
 
     const types = await withTransaction(pool, (client) => listActiveInboxTypes(client, typesId));
@@ -250,12 +324,23 @@ describe("Inbox pipeline databases (issue #101)", () => {
     const typesId = await databaseIdFor("inboxItemTypes");
 
     const task = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
     );
     expect(task.properties).toMatchObject({ processingMethod: "database", targetDatabase: "tasks" });
 
     const thought = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Thought", emoji: "💭", processingMethod: "pageContent" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Thought",
+        emoji: "💭",
+        processingMethod: "pageContent",
+      }),
     );
     expect(thought.properties.processingMethod).toBe("pageContent");
     expect(thought.properties.targetDatabase).toBeUndefined();
@@ -266,7 +351,12 @@ describe("Inbox pipeline databases (issue #101)", () => {
 
     await expect(
       withTransaction(pool, (client) =>
-        createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database" }),
+        createInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          name: "Task",
+          emoji: "☑️",
+          processingMethod: "database",
+        }),
       ),
     ).rejects.toBeInstanceOf(ValidationError);
 
@@ -315,19 +405,33 @@ describe("Inbox pipeline databases (issue #101)", () => {
   it("update: judges the patch against the resulting whole, not the patch in isolation", async () => {
     const typesId = await databaseIdFor("inboxItemTypes");
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
     );
 
     // Patching targetDatabase alone is valid: the existing processingMethod is already 'database'.
     const updated = await withTransaction(pool, (client) =>
-      updateInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, itemId: type.id, propertiesPatch: { targetDatabase: "events" } }),
+      updateInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        itemId: type.id,
+        propertiesPatch: { targetDatabase: "events" },
+      }),
     );
     expect(updated.properties.targetDatabase).toBe("events");
 
     // Switching to 'pageContent' without explicitly clearing targetDatabase is rejected.
     await expect(
       withTransaction(pool, (client) =>
-        updateInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, itemId: type.id, propertiesPatch: { processingMethod: "pageContent" } }),
+        updateInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          itemId: type.id,
+          propertiesPatch: { processingMethod: "pageContent" },
+        }),
       ),
     ).rejects.toBeInstanceOf(ValidationError);
 
@@ -350,14 +454,34 @@ describe("Inbox pipeline databases (issue #101)", () => {
     const journalId = await databaseIdFor("journal");
 
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
     );
 
     const unlockedItem = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "09:00", type: type.id }),
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        type: type.id,
+      }),
     );
     const lockedItem = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "10:00", type: type.id }),
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "10:00",
+        type: type.id,
+      }),
     );
 
     // A confirmed Processing proposal card locks its source Inbox item. `kind`/`status` are
@@ -369,7 +493,9 @@ describe("Inbox pipeline databases (issue #101)", () => {
         properties: { kind: "inbox", fingerprint: "x", proposal: {}, history: [], status: "confirmed" },
       }),
     );
-    const sourceInboxProperty = await chokePoint.listProperties(proposalsId).then((props) => props.find((p) => p.key === "sourceInbox")!);
+    const sourceInboxProperty = await chokePoint
+      .listProperties(proposalsId)
+      .then((props) => props.find((p) => p.key === "sourceInbox")!);
     await withTransaction(pool, (client) =>
       createRelationWithClient(
         client,
@@ -379,16 +505,25 @@ describe("Inbox pipeline databases (issue #101)", () => {
     );
 
     await withTransaction(pool, (client) =>
-      deleteInboxTypeWithClient(client, { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId, typeItemId: type.id }),
+      deleteInboxTypeWithClient(client, {
+        inboxDatabaseId: inboxId,
+        inboxItemTypesDatabaseId: typesId,
+        processingProposalsDatabaseId: proposalsId,
+        typeItemId: type.id,
+      }),
     );
 
     const { rows: typeRow } = await pool.query("SELECT deleted_at FROM items WHERE id = $1", [type.id]);
     expect(typeRow[0].deleted_at).not.toBeNull();
 
-    const unlockedEdges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, unlockedItem.id));
+    const unlockedEdges = await withTransaction(pool, (client) =>
+      relationsStore.listAllRelationsForItem(client, unlockedItem.id),
+    );
     expect(unlockedEdges.some((e) => e.itemA === type.id || e.itemB === type.id)).toBe(false);
 
-    const lockedEdges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, lockedItem.id));
+    const lockedEdges = await withTransaction(pool, (client) =>
+      relationsStore.listAllRelationsForItem(client, lockedItem.id),
+    );
     expect(lockedEdges.some((e) => e.itemA === type.id || e.itemB === type.id)).toBe(true);
   });
 
@@ -399,19 +534,41 @@ describe("Inbox pipeline databases (issue #101)", () => {
     const journalId = await databaseIdFor("journal");
 
     const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" }),
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
     );
-    const sourceInboxProperty = await chokePoint.listProperties(proposalsId).then((props) => props.find((p) => p.key === "sourceInbox")!);
+    const sourceInboxProperty = await chokePoint
+      .listProperties(proposalsId)
+      .then((props) => props.find((p) => p.key === "sourceInbox")!);
 
     // Three referencing Inbox items with an uneven number of proposals each: one unlocked
     // with none, one unlocked with several non-locking proposals (proving the lock lookup's
     // query count doesn't grow with proposals per item), and one locked by a confirmed
     // proposal — whose `type` edge must survive the delete.
     const unlockedNoProposals = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "09:00", type: type.id }),
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        type: type.id,
+      }),
     );
     const unlockedManyProposals = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "10:00", type: type.id }),
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "10:00",
+        type: type.id,
+      }),
     );
     for (let i = 0; i < 3; i++) {
       const pendingProposal = await withTransaction(pool, (client) =>
@@ -423,13 +580,24 @@ describe("Inbox pipeline databases (issue #101)", () => {
       await withTransaction(pool, (client) =>
         createRelationWithClient(
           client,
-          { relationPropertyId: sourceInboxProperty.id, callerItemId: pendingProposal.id, targetItemId: unlockedManyProposals.id },
+          {
+            relationPropertyId: sourceInboxProperty.id,
+            callerItemId: pendingProposal.id,
+            targetItemId: unlockedManyProposals.id,
+          },
           { ownerProcess: PROCESSING_PROPOSALS_MODULE_ID },
         ),
       );
     }
     const lockedItem = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, { inboxDatabaseId: inboxId, journalDatabaseId: journalId, timezone: "Europe/Prague", date: "2026-08-28", time: "11:00", type: type.id }),
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "11:00",
+        type: type.id,
+      }),
     );
     // A confirmed Processing proposal card locks its source Inbox item. `kind`/`status` are
     // owner:'system' (written only by the not-yet-implemented confirm flow, issue #105), so
@@ -450,7 +618,12 @@ describe("Inbox pipeline databases (issue #101)", () => {
 
     const queries = await withTransaction(pool, async (client) => {
       const texts = instrumentQueries(client);
-      await deleteInboxTypeWithClient(client, { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId, typeItemId: type.id });
+      await deleteInboxTypeWithClient(client, {
+        inboxDatabaseId: inboxId,
+        inboxItemTypesDatabaseId: typesId,
+        processingProposalsDatabaseId: proposalsId,
+        typeItemId: type.id,
+      });
       return texts;
     });
 
@@ -458,7 +631,9 @@ describe("Inbox pipeline databases (issue #101)", () => {
     // regardless of how many referencing Inbox items exist or how many proposals any of them
     // has — not asserting on the overall query total, which still grows with the number of
     // unlocked items via one `deleteRelationWithClient` call each.
-    const bulkRelationsLookups = queries.filter((sql) => sql.includes("item_a = ANY($2::uuid[]) OR item_b = ANY($2::uuid[])"));
+    const bulkRelationsLookups = queries.filter((sql) =>
+      sql.includes("item_a = ANY($2::uuid[]) OR item_b = ANY($2::uuid[])"),
+    );
     const bulkItemsLookups = queries.filter((sql) => sql.includes("database_id = $1 AND id = ANY($2::uuid[])"));
     expect(bulkRelationsLookups).toHaveLength(1);
     expect(bulkItemsLookups).toHaveLength(1);
@@ -471,16 +646,24 @@ describe("Inbox pipeline databases (issue #101)", () => {
     // locked item's surviving edge, issued after the soft-delete `UPDATE`.
     const softDeleteIndex = queries.findIndex((sql) => sql.includes("UPDATE items SET deleted_at = now()"));
     expect(softDeleteIndex).toBeGreaterThanOrEqual(0);
-    const dependencyLookupsAfterSoftDelete = queries.slice(softDeleteIndex + 1).filter((sql) => sql.includes("FROM rollup_dependencies"));
+    const dependencyLookupsAfterSoftDelete = queries
+      .slice(softDeleteIndex + 1)
+      .filter((sql) => sql.includes("FROM rollup_dependencies"));
     expect(dependencyLookupsAfterSoftDelete).toHaveLength(1);
 
-    const unlockedNoProposalsEdges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, unlockedNoProposals.id));
+    const unlockedNoProposalsEdges = await withTransaction(pool, (client) =>
+      relationsStore.listAllRelationsForItem(client, unlockedNoProposals.id),
+    );
     expect(unlockedNoProposalsEdges.some((e) => e.itemA === type.id || e.itemB === type.id)).toBe(false);
 
-    const unlockedManyProposalsEdges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, unlockedManyProposals.id));
+    const unlockedManyProposalsEdges = await withTransaction(pool, (client) =>
+      relationsStore.listAllRelationsForItem(client, unlockedManyProposals.id),
+    );
     expect(unlockedManyProposalsEdges.some((e) => e.itemA === type.id || e.itemB === type.id)).toBe(false);
 
-    const lockedEdges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, lockedItem.id));
+    const lockedEdges = await withTransaction(pool, (client) =>
+      relationsStore.listAllRelationsForItem(client, lockedItem.id),
+    );
     expect(lockedEdges.some((e) => e.itemA === type.id || e.itemB === type.id)).toBe(true);
   });
 });

@@ -2,16 +2,25 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { SEMP_BUSY_ERROR_MESSAGE, SempConversation } from "../sempConversation.js";
-import type { AgentMessage, AgentSession, AgentSessionOptions, ConversationEntry, CreateAgentSession } from "../types.js";
+import type {
+  AgentMessage,
+  AgentSession,
+  AgentSessionOptions,
+  ConversationEntry,
+  CreateAgentSession,
+} from "../types.js";
 
 let pool: Pool;
 
 const SEMPREC_PROJECT_ITEM_ID = "99999999-9999-9999-9999-999999999999";
 
 /** A session whose `messages()`/`send()` yield exactly the given batch, one call each. */
-function scriptedSession(
-  ...batches: AgentMessage[][]
-): { createAgentSession: CreateAgentSession; callCount: () => number; tasks: string[]; initialStates: Array<AgentSessionOptions["initialState"]> } {
+function scriptedSession(...batches: AgentMessage[][]): {
+  createAgentSession: CreateAgentSession;
+  callCount: () => number;
+  tasks: string[];
+  initialStates: Array<AgentSessionOptions["initialState"]>;
+} {
   let call = 0;
   const tasks: string[] = [];
   const initialStates: Array<AgentSessionOptions["initialState"]> = [];
@@ -72,10 +81,14 @@ describe("SempConversation", () => {
 
     expect(result).toEqual({ ok: true, message: "hello there" });
 
-    const { rows } = await pool.query<{ unit: string; triggered_by: string; parent_run_id: string | null; status: string }>(
-      `SELECT unit, triggered_by, parent_run_id, status FROM agent_runs WHERE project_item_id = $1`,
-      [SEMPREC_PROJECT_ITEM_ID],
-    );
+    const { rows } = await pool.query<{
+      unit: string;
+      triggered_by: string;
+      parent_run_id: string | null;
+      status: string;
+    }>(`SELECT unit, triggered_by, parent_run_id, status FROM agent_runs WHERE project_item_id = $1`, [
+      SEMPREC_PROJECT_ITEM_ID,
+    ]);
     expect(rows).toHaveLength(1);
     expect(rows[0].unit).toBe("session");
     expect(rows[0].triggered_by).toBe("user");
@@ -125,7 +138,11 @@ describe("SempConversation", () => {
       [{ kind: "turn_start" }, { kind: "message", text: "second wake" }, { kind: "turn_end" }],
     );
     const ttlMs = 40;
-    const conversation = new SempConversation(pool, { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID, reconstructHistory }, ttlMs);
+    const conversation = new SempConversation(
+      pool,
+      { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID, reconstructHistory },
+      ttlMs,
+    );
 
     await conversation.send("hi");
     expect(calls).toEqual([[SEMPREC_PROJECT_ITEM_ID]]);
@@ -152,8 +169,16 @@ describe("SempConversation", () => {
       message: { kind: "message", text: "summary" },
     };
     const reconstructHistory = async () => ({ entries: [priorEntry], compacted: true });
-    const { createAgentSession } = scriptedSession([{ kind: "turn_start" }, { kind: "message", text: "woke" }, { kind: "turn_end" }]);
-    const conversation = new SempConversation(pool, { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID, reconstructHistory });
+    const { createAgentSession } = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "woke" },
+      { kind: "turn_end" },
+    ]);
+    const conversation = new SempConversation(pool, {
+      createAgentSession,
+      projectItemId: SEMPREC_PROJECT_ITEM_ID,
+      reconstructHistory,
+    });
 
     await conversation.send("hi");
 
@@ -180,7 +205,11 @@ describe("SempConversation", () => {
       [{ kind: "turn_start" }, { kind: "message", text: "first wake" }, { kind: "turn_end" }],
       [{ kind: "turn_start" }, { kind: "message", text: "second wake" }, { kind: "turn_end" }],
     );
-    const conversation = new SempConversation(pool, { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID }, ttlMs);
+    const conversation = new SempConversation(
+      pool,
+      { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID },
+      ttlMs,
+    );
 
     await conversation.send("one");
 
@@ -211,7 +240,11 @@ describe("SempConversation", () => {
       [{ kind: "turn_start" }, { kind: "message", text: "first" }, { kind: "turn_end" }],
       [{ kind: "turn_start" }, { kind: "message", text: "second" }, { kind: "turn_end" }],
     );
-    const conversation = new SempConversation(pool, { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID }, ttlMs);
+    const conversation = new SempConversation(
+      pool,
+      { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID },
+      ttlMs,
+    );
 
     await conversation.send("one");
     await new Promise((resolve) => setTimeout(resolve, 60));

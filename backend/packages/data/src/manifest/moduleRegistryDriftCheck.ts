@@ -7,13 +7,19 @@ export const UNKNOWN_HEARTBEAT_ACTION_FINDING_KIND = "module_registry_unknown_he
 export const ORPHANED_OWNER_PROCESS_FINDING_KIND = "module_registry_orphaned_owner_process";
 
 /** Distinct `project_heartbeats.action_id` values with no matching entry in `activeHeartbeatActionIds`. */
-export async function findUnknownHeartbeatActionIds(client: PoolClient, activeHeartbeatActionIds: ReadonlySet<string>): Promise<string[]> {
+export async function findUnknownHeartbeatActionIds(
+  client: PoolClient,
+  activeHeartbeatActionIds: ReadonlySet<string>,
+): Promise<string[]> {
   const { rows } = await client.query<{ action_id: string }>(`SELECT DISTINCT action_id FROM project_heartbeats`);
   return rows.map((row) => row.action_id).filter((actionId) => !activeHeartbeatActionIds.has(actionId));
 }
 
 /** Distinct system-owned `properties.owner_process` values with no matching entry in `activeProcessIds`. */
-export async function findOrphanedOwnerProcessIds(client: PoolClient, activeProcessIds: ReadonlySet<string>): Promise<string[]> {
+export async function findOrphanedOwnerProcessIds(
+  client: PoolClient,
+  activeProcessIds: ReadonlySet<string>,
+): Promise<string[]> {
   const { rows } = await client.query<{ owner_process: string }>(
     `SELECT DISTINCT owner_process FROM properties WHERE owner = 'system' AND owner_process IS NOT NULL`,
   );
@@ -42,7 +48,10 @@ export interface CreateModuleRegistryDriftCheckOptions {
  * rows that are still unresolved, so two overlapping runs never duplicate or double-resolve
  * a finding.
  */
-export function createModuleRegistryDriftCheckAction(pool: Pool, options: CreateModuleRegistryDriftCheckOptions): ActionHandler {
+export function createModuleRegistryDriftCheckAction(
+  pool: Pool,
+  options: CreateModuleRegistryDriftCheckOptions,
+): ActionHandler {
   return async () => {
     await withTransaction(pool, async (client) => {
       const unknownActionIds = await findUnknownHeartbeatActionIds(client, options.activeHeartbeatActionIds);

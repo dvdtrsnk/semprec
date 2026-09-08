@@ -27,7 +27,9 @@ describe("parseHeartbeatRule", () => {
   });
 
   it("rejects a module rule kind whose module is inactive (absent from moduleRuleKinds)", () => {
-    expect(() => parseHeartbeatRule({ kind: "fixtureModule.onWidgetTick", every: 5 })).toThrow(/Unknown heartbeat rule kind/);
+    expect(() => parseHeartbeatRule({ kind: "fixtureModule.onWidgetTick", every: 5 })).toThrow(
+      /Unknown heartbeat rule kind/,
+    );
   });
 
   it("surfaces the module schema's own validation failure", () => {
@@ -40,6 +42,8 @@ describe("parseHeartbeatRule", () => {
         },
       ],
     ]);
-    expect(() => parseHeartbeatRule({ kind: "fixtureModule.onWidgetTick", every: -1 }, moduleRuleKinds)).toThrow(/every must be positive/);
+    expect(() => parseHeartbeatRule({ kind: "fixtureModule.onWidgetTick", every: -1 }, moduleRuleKinds)).toThrow(
+      /every must be positive/,
+    );
   });
 });

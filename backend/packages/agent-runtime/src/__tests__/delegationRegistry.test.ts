@@ -8,7 +8,10 @@ import type { AgentMessage, AgentSession, ConversationEntry, CreateAgentSession 
 let pool: Pool;
 
 /** A session whose `messages()`/`send()` yield exactly the given batch, one call each. */
-function scriptedSession(...batches: AgentMessage[][]): { createAgentSession: CreateAgentSession; callCount: () => number } {
+function scriptedSession(...batches: AgentMessage[][]): {
+  createAgentSession: CreateAgentSession;
+  callCount: () => number;
+} {
   let call = 0;
   const createAgentSession: CreateAgentSession = (): AgentSession => ({
     async *messages() {
@@ -116,8 +119,16 @@ describe("DelegationRegistry", () => {
     const supervisorA = await newSupervisorRunId();
     const supervisorB = await newSupervisorRunId();
     const targetProjectItemId = "33333333-3333-3333-3333-333333333333";
-    const sessionA = scriptedSession([{ kind: "turn_start" }, { kind: "message", text: "for A" }, { kind: "turn_end" }]);
-    const sessionB = scriptedSession([{ kind: "turn_start" }, { kind: "message", text: "for B" }, { kind: "turn_end" }]);
+    const sessionA = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "for A" },
+      { kind: "turn_end" },
+    ]);
+    const sessionB = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "for B" },
+      { kind: "turn_end" },
+    ]);
 
     const resultA = await registry.delegate({
       createAgentSession: sessionA.createAgentSession,
@@ -283,7 +294,11 @@ describe("DelegationRegistry", () => {
       message: { kind: "message", text: "summary" },
     };
     const reconstructHistory: ReconstructDelegatedHistory = async () => ({ entries: [priorEntry], compacted: true });
-    const { createAgentSession } = scriptedSession([{ kind: "turn_start" }, { kind: "message", text: "woke" }, { kind: "turn_end" }]);
+    const { createAgentSession } = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "woke" },
+      { kind: "turn_end" },
+    ]);
 
     const result = await registry.delegate({
       createAgentSession,
@@ -312,7 +327,11 @@ describe("DelegationRegistry", () => {
   it("rejects a malformed targetProjectItemId before touching the database", async () => {
     const registry = new DelegationRegistry(pool);
     const supervisorRunId = await newSupervisorRunId();
-    const { createAgentSession } = scriptedSession([{ kind: "turn_start" }, { kind: "message", text: "x" }, { kind: "turn_end" }]);
+    const { createAgentSession } = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "x" },
+      { kind: "turn_end" },
+    ]);
 
     const result = await registry.delegate({
       createAgentSession,

@@ -1,7 +1,11 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { startHttpContractServer, startSseContractServer, startStdioContractServer } from "../testSupport/mcpContractServers.js";
+import {
+  startHttpContractServer,
+  startSseContractServer,
+  startStdioContractServer,
+} from "../testSupport/mcpContractServers.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
@@ -22,9 +26,16 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 }
 
 async function createMcpServerItem(connectionConfig: McpConnectionConfig, credential?: string) {
-  const item = await withTransaction(pool, (client) => itemsStore.insertItem(client, { databaseId: mcpServersId, properties: { name: "Contract server", connectionConfig } }));
+  const item = await withTransaction(pool, (client) =>
+    itemsStore.insertItem(client, {
+      databaseId: mcpServersId,
+      properties: { name: "Contract server", connectionConfig },
+    }),
+  );
   if (credential !== undefined) {
-    await withTransaction(pool, (client) => storeCredential(client, { itemId: item.id, credentialType: "api_key", plaintext: credential }));
+    await withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: item.id, credentialType: "api_key", plaintext: credential }),
+    );
   }
   return item;
 }
@@ -225,12 +236,17 @@ describe("MCP connection factory (issue #231)", () => {
 
     it("rejects a credential decryption failure before opening any connection", async () => {
       const item = await withTransaction(pool, (client) =>
-        itemsStore.insertItem(client, { databaseId: mcpServersId, properties: { name: "Bad key version", connectionConfig: { transport: "stdio", command: "irrelevant" } } }),
+        itemsStore.insertItem(client, {
+          databaseId: mcpServersId,
+          properties: { name: "Bad key version", connectionConfig: { transport: "stdio", command: "irrelevant" } },
+        }),
       );
       // Encrypt under the real (version 1) key, then bump the stored key_version to one with no
       // corresponding `CREDENTIALS_MASTER_KEY_V2` in the test environment, so decryption fails
       // deterministically without needing an actually-corrupt ciphertext.
-      await withTransaction(pool, (client) => storeCredential(client, { itemId: item.id, credentialType: "api_key", plaintext: "sk-unreachable" }));
+      await withTransaction(pool, (client) =>
+        storeCredential(client, { itemId: item.id, credentialType: "api_key", plaintext: "sk-unreachable" }),
+      );
       await pool.query(`UPDATE external_credentials SET key_version = 2 WHERE item_id = $1`, [item.id]);
 
       const err = await connectMcpServer(pool, item).catch((e: unknown) => e);

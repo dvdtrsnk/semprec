@@ -89,7 +89,9 @@ describe("UtilizationPage (issue #121)", () => {
   });
 
   it("shows an empty state when there is no usage in the period", async () => {
-    renderPage(stubOperations(async () => makeReport({ rows: [], dailyCostUsd: [], dailyTokenUsage: [], totalCostUsd: 0 })));
+    renderPage(
+      stubOperations(async () => makeReport({ rows: [], dailyCostUsd: [], dailyTokenUsage: [], totalCostUsd: 0 })),
+    );
 
     expect(await screen.findByText("No AI usage in this period")).toBeInTheDocument();
   });

@@ -38,7 +38,10 @@ interface McpAgentToolRow {
  * audit row — the next call to this function simply stops returning it. Computed fresh on
  * every call, matching `generatePermissionManifest`'s own no-caching contract.
  */
-export async function getGrantedMcpAgentTools(client: PoolClient, projectItemId: string): Promise<McpAgentToolProjection[]> {
+export async function getGrantedMcpAgentTools(
+  client: PoolClient,
+  projectItemId: string,
+): Promise<McpAgentToolProjection[]> {
   const mcpServersDatabase = await databasesStore.getDatabaseByModuleId(client, MCP_SERVERS_MODULE_ID);
   if (!mcpServersDatabase) return [];
 

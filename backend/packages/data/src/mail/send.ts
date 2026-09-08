@@ -191,14 +191,20 @@ export async function sendDraftEmail(
     }),
   );
   if (!sentFolderItemId) {
-    throw new ValidationError(`Mailbox ${input.mailboxItemId} has no Sent folder yet — sync the account before sending`);
+    throw new ValidationError(
+      `Mailbox ${input.mailboxItemId} has no Sent folder yet — sync the account before sending`,
+    );
   }
 
   if (!adapters.createSmtpClient) throw new Error("No SMTP adapter configured for this composition root");
   // Passed `pool` directly, not wrapped in `withTransaction` (mirrors mailSyncJob.ts's own
   // credential fetch): the access-log insert inside getDecryptedCredential must survive even
   // if decryption itself fails.
-  const credential = await getDecryptedCredential(pool, { itemId: input.mailboxItemId, actorType: "smtp_send", purpose: "email_send" });
+  const credential = await getDecryptedCredential(pool, {
+    itemId: input.mailboxItemId,
+    actorType: "smtp_send",
+    purpose: "email_send",
+  });
   if (!credential) throw new Error(`Mailbox ${input.mailboxItemId} has no stored credential`);
 
   const messageId = generateOutgoingMessageId(input.from.address);
@@ -206,7 +212,13 @@ export async function sendDraftEmail(
 
   try {
     await withTransaction(pool, (client) =>
-      upsertMailMessageMeta(client, { itemId: input.draftItemId, messageId, envelope, inReplyTo: input.inReplyTo, references: input.references }),
+      upsertMailMessageMeta(client, {
+        itemId: input.draftItemId,
+        messageId,
+        envelope,
+        inReplyTo: input.inReplyTo,
+        references: input.references,
+      }),
     );
   } catch (err) {
     if (isItemAlreadyClaimedError(err)) {

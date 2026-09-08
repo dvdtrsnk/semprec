@@ -140,7 +140,11 @@ export class ImapFlowMailClient implements ImapMailClient {
     return Buffer.concat(chunks).toString("utf8");
   }
 
-  private classifyAttachmentParts(uid: number, parts: MessageStructureObject[], html: string | undefined): ClassifiedAttachment[] {
+  private classifyAttachmentParts(
+    uid: number,
+    parts: MessageStructureObject[],
+    html: string | undefined,
+  ): ClassifiedAttachment[] {
     const candidates = parts.map((node): ClassifiedAttachment => {
       const contentId = node.id ? node.id.replace(/^<|>$/g, "") : null;
       const disposition: "attachment" | "inline" = node.disposition === "inline" ? "inline" : "attachment";
@@ -154,7 +158,10 @@ export class ImapFlowMailClient implements ImapMailClient {
         // this, streamed straight from the socket through `download()`'s decoder pipeline into
         // `blobStorage.ts`'s `pipeline()` — never buffered whole in between.
         openStream: async () => {
-          const { content } = await this.client.download(String(uid), partId, { uid: true, maxBytes: MAX_ATTACHMENT_BYTES });
+          const { content } = await this.client.download(String(uid), partId, {
+            uid: true,
+            maxBytes: MAX_ATTACHMENT_BYTES,
+          });
           return content;
         },
       };
@@ -162,12 +169,16 @@ export class ImapFlowMailClient implements ImapMailClient {
     // An inline part actually referenced via `cid:` inside the HTML body is a rendering asset
     // (a signature logo), not a document — excluded here, same rule the other two adapters
     // apply over their own provider-specific part trees (see attachments.ts's header note).
-    return candidates.filter((a) => !(a.disposition === "inline" && a.contentId !== null && Boolean(html?.includes(`cid:${a.contentId}`))));
+    return candidates.filter(
+      (a) => !(a.disposition === "inline" && a.contentId !== null && Boolean(html?.includes(`cid:${a.contentId}`))),
+    );
   }
 
   private async parseFetchedMessage(raw: FetchMessageObject): Promise<FetchedMessage> {
     const envelope = raw.envelope;
-    const tree = raw.bodyStructure ? walkBodyStructure(raw.bodyStructure) : { attachmentParts: [] as MessageStructureObject[] };
+    const tree = raw.bodyStructure
+      ? walkBodyStructure(raw.bodyStructure)
+      : { attachmentParts: [] as MessageStructureObject[] };
     const headerList = parseHeaderBlock(raw.headers);
 
     // A single-part message's root BODYSTRUCTURE node sometimes carries no `.part` of its
@@ -217,7 +228,14 @@ export class ImapFlowMailClient implements ImapMailClient {
     // `envelope-to` feed deliveredToAddress's precedence rule (mail/deliveredTo.ts, issue #93).
     for await (const raw of this.client.fetch(
       `${sinceUid}:*`,
-      { uid: true, envelope: true, bodyStructure: true, flags: true, headers: ["references", "delivered-to", "x-original-to", "envelope-to"], labels: true },
+      {
+        uid: true,
+        envelope: true,
+        bodyStructure: true,
+        flags: true,
+        headers: ["references", "delivered-to", "x-original-to", "envelope-to"],
+        labels: true,
+      },
       { uid: true },
     )) {
       if (raw.uid < sinceUid) continue; // "*" in a range can include one message below sinceUid on an empty-range edge case
@@ -237,7 +255,11 @@ export class ImapFlowMailClient implements ImapMailClient {
     try {
       // A QRESYNC-enabled fetch with changedSince surfaces VANISHED via the 'expunge' event,
       // not as a return value — this drains that event stream for the duration of the call.
-      for await (const _raw of this.client.fetch("1:*", { uid: true }, { uid: true, changedSince: BigInt(sinceModSeq) })) {
+      for await (const _raw of this.client.fetch(
+        "1:*",
+        { uid: true },
+        { uid: true, changedSince: BigInt(sinceModSeq) },
+      )) {
         // draining only — flags themselves are picked up by fetchMessagesSince's next pass.
       }
     } finally {
