@@ -10,7 +10,9 @@ import {
   revokeUserSession,
   SESSION_TTL_SECONDS,
   SESSION_PLATFORMS,
+  SESSION_DELIVERY_CHANNEL_BY_PLATFORM,
   type SessionPlatform,
+  type SessionDeliveryChannel,
   type AuthenticatedIdentity,
 } from "@semprec/data";
 import type { Pool } from "pg";
@@ -41,16 +43,21 @@ function parseCookieHeader(header: string): Record<string, string> {
   return cookies;
 }
 
-/** Prefers the `Authorization: Bearer` header (native clients), falling back to the web session cookie. */
-function extractToken(req: IncomingMessage): string | null {
+/**
+ * Prefers the `Authorization: Bearer` header (native clients), falling back to the web session
+ * cookie. Reports which channel supplied the token alongside it, so the caller can reject a
+ * token presented over a channel its platform doesn't use (see `SESSION_DELIVERY_CHANNEL_BY_PLATFORM`).
+ */
+function extractToken(req: IncomingMessage): { token: string; channel: SessionDeliveryChannel } | null {
   const authHeader = req.headers.authorization;
   if (authHeader?.startsWith("Bearer ")) {
     const token = authHeader.slice("Bearer ".length).trim();
-    return token.length > 0 ? token : null;
+    return token.length > 0 ? { token, channel: "bearer" } : null;
   }
   const cookieHeader = req.headers.cookie;
   if (!cookieHeader) return null;
-  return parseCookieHeader(cookieHeader)[SESSION_COOKIE_NAME] ?? null;
+  const token = parseCookieHeader(cookieHeader)[SESSION_COOKIE_NAME];
+  return token ? { token, channel: "cookie" } : null;
 }
 
 function sessionCookieHeader(token: string, maxAgeSeconds: number): string {
@@ -62,13 +69,19 @@ const CLEAR_SESSION_COOKIE = `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; Secure;
 /**
  * The one path from an HTTP request to a verified session, shared by this handler's own
  * `GET /api/auth/session`/`logout`/`revoke` routes and (per issue #143) every other route that
- * adopts auth. Throws `UnauthorizedError` for a missing, invalid, expired, or revoked token
- * alike — callers should let that propagate to a generic 401, never inspect it further.
+ * adopts auth. Throws `UnauthorizedError` for a missing, invalid, expired, or revoked token, or
+ * one presented over a channel its platform doesn't use (a web session via `Bearer`, or a native
+ * session via cookie) — callers should let that propagate to a generic 401, never inspect it
+ * further; a mismatched channel gets the same opaque failure as a garbage token.
  */
 export async function authenticateRequest(pool: Pool, req: IncomingMessage): Promise<AuthenticatedIdentity> {
-  const token = extractToken(req);
-  if (!token) throw new UnauthorizedError();
-  return withTransaction(pool, (client) => verifySessionToken(client, token));
+  const presented = extractToken(req);
+  if (!presented) throw new UnauthorizedError();
+  const identity = await withTransaction(pool, (client) => verifySessionToken(client, presented.token));
+  if (SESSION_DELIVERY_CHANNEL_BY_PLATFORM[identity.session.platform] !== presented.channel) {
+    throw new UnauthorizedError();
+  }
+  return identity;
 }
 
 function isSessionPlatform(value: unknown): value is SessionPlatform {
@@ -105,9 +118,11 @@ const REVOKE_SESSION_PATH = /^\/api\/auth\/sessions\/([^/]+)\/revoke$/;
  * the other three routes gate on a real session via `authenticateRequest` instead.
  *
  * `SESSION_COOKIE_NAME` is one of two ways a request can carry its token; the other is
- * `Authorization: Bearer` (native clients, or a web client that prefers not to rely on cookies).
- * `login`'s response always includes the raw token in its JSON body so both kinds of client can
- * use it, and additionally sets it as a cookie so a browser client doesn't have to.
+ * `Authorization: Bearer` (native clients only, per `SESSION_DELIVERY_CHANNEL_BY_PLATFORM`).
+ * A `web` login gets its token only via the `Set-Cookie` header — the JSON body omits it, so it
+ * is never readable from page JavaScript — while `ios`/`macos` logins get it in the JSON body for
+ * Keychain storage and no cookie at all. `authenticateRequest` rejects a token presented over the
+ * other channel from the one its platform declared at login.
  */
 export function createAuthRequestListener(pool: Pool) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -137,12 +152,19 @@ export function createAuthRequestListener(pool: Pool) {
           }),
         );
 
-        sendJson(
-          res,
-          200,
-          { token: result.token, user: result.user },
-          { "Set-Cookie": sessionCookieHeader(result.token, SESSION_TTL_SECONDS) },
-        );
+        // Per #141: a browser must never see its token in a readable response body — only the
+        // `httpOnly` cookie carries it. iOS/macOS get it back in the body for Keychain storage
+        // and use it as `Authorization: Bearer` on every later request; they get no cookie.
+        if (body.platform === "web") {
+          sendJson(
+            res,
+            200,
+            { user: result.user },
+            { "Set-Cookie": sessionCookieHeader(result.token, SESSION_TTL_SECONDS) },
+          );
+        } else {
+          sendJson(res, 200, { token: result.token, user: result.user });
+        }
         return;
       }
 
