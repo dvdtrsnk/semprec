@@ -37,7 +37,10 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 }
 
 async function createUser(): Promise<string> {
-  const { rows } = await pool.query<{ id: string }>(`INSERT INTO users DEFAULT VALUES RETURNING id`);
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
+    [`${randomUUID()}@example.com`],
+  );
   return rows[0]!.id;
 }
 

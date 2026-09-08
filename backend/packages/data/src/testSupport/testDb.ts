@@ -3,6 +3,8 @@ import { Pool } from "pg";
 const TABLES = [
   "module_migrations",
   "idempotency_keys",
+  "login_attempts",
+  "sessions",
   "notifications",
   "rollup_dependencies",
   "resource_grants",

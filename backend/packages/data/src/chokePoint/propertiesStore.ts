@@ -166,7 +166,7 @@ export async function setPropertyMigrationStatus(
 
 /**
  * Records that a property-type migration discarded an unconvertible value. Idempotent, and
- * deliberately not reset here — see migration 0025 for why this outlives a single job run.
+ * deliberately not reset here — see migration 0026 for why this outlives a single job run.
  */
 export async function markPropertyMigrationDroppedValues(client: PoolClient, propertyId: string): Promise<void> {
   await client.query(`UPDATE properties SET migration_dropped_values = true WHERE id = $1`, [propertyId]);
