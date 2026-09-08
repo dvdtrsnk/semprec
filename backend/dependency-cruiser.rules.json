@@ -10,6 +10,28 @@
       "to": {
         "path": "^(?!$1/$2/)(modules|services)/[^/]+/src/(?!index\\.ts$)"
       }
+    },
+    {
+      "name": "no-agent-runtime-internal-cross-import",
+      "severity": "error",
+      "comment": "SRP/ISP boundary (issue #137): agent-runtime's lifecycle/audit internals are reached only through its published port (src/index.ts) — never a caller reaching past it into lifecycleAdapter.ts, delegationRegistry.ts, sempConversation.ts, etc. directly.",
+      "from": {
+        "path": "^(?!packages/agent-runtime/)"
+      },
+      "to": {
+        "path": "^packages/agent-runtime/src/(?!index\\.ts$)"
+      }
+    },
+    {
+      "name": "no-agent-runtime-provider-internals",
+      "severity": "error",
+      "comment": "DIP boundary (issue #137): agent-runtime depends only on the CreateAgentSession/AgentSession port it declares in types.ts, never on pi-agent-core's or a model provider's own package directly — that seam is filled by the composition root, not imported here.",
+      "from": {
+        "path": "^packages/agent-runtime/src/"
+      },
+      "to": {
+        "path": "node_modules/(pi-agent-core|@anthropic-ai)/"
+      }
     }
   ]
 }
