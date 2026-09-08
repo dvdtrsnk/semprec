@@ -1,5 +1,5 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
@@ -167,12 +167,17 @@ function buildTransport(config: McpConnectionConfig, credential: string | null):
 function buildStdioTransport(config: Extract<McpConnectionConfig, { transport: "stdio" }>, credential: string | null): BuiltTransport {
   // `env: undefined` (not `{}`) when there's nothing to add — `StdioClientTransport` falls back
   // to `getDefaultEnvironment()`'s safe allowlist only when `env` is omitted entirely; passing
-  // an empty object here would silently strip that default environment from the child process.
+  // any other object (even one that only adds the injected credential) silently strips that
+  // default environment from the child process. So once we know we need a non-undefined `env`
+  // for any reason, we must seed it from `getDefaultEnvironment()` ourselves.
   const credentialEnvVar = config.credentialEnvVar;
-  let env: Record<string, string> | undefined = config.env ? { ...config.env } : undefined;
   const injectsCredential = credential !== null && credentialEnvVar !== undefined;
-  if (injectsCredential) {
-    env = { ...env, [credentialEnvVar]: credential };
+  let env: Record<string, string> | undefined;
+  if (config.env || injectsCredential) {
+    env = { ...getDefaultEnvironment(), ...config.env };
+    if (injectsCredential) {
+      env[credentialEnvVar] = credential;
+    }
   }
   const transport = new StdioClientTransport({ command: config.command, args: config.args, env });
   // `StdioClientTransport` retains this exact `env` object as `_serverParams.env`, but it only
