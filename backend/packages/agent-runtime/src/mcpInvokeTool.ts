@@ -3,6 +3,7 @@ import { Ajv, type ValidateFunction } from "ajv";
 import {
   connectMcpServer,
   resolveGrantedMcpTool,
+  createPendingApprovalRequest,
   withTransaction,
   McpConnectionError,
   type McpClientHandle,
@@ -185,7 +186,9 @@ export async function executeMcpInvocation(
  * Composes `resolveMcpInvocation` + `executeMcpInvocation` into one `(args) => result` function
  * bound to a single granted tool, following `delegateTool.ts`'s factory-closure convention.
  * Suitable wherever no approval gate needs to sit between resolution and execution; a
- * composition root that does need one calls the two steps separately instead.
+ * composition root that does need one calls the two steps separately instead — see
+ * `createApprovalGatedMcpInvokeTool` below, the composition root issue #130 adds for exactly
+ * that gate.
  */
 export function createMcpInvokeTool(
   pool: Pool,
@@ -197,5 +200,60 @@ export function createMcpInvokeTool(
     const resolution = await resolveMcpInvocation(pool, projectItemId, mcpToolRegistrationId, args);
     if (!resolution.ok) return resolution.result;
     return executeMcpInvocation(pool, resolution.target, resolution.args, options);
+  };
+}
+
+/**
+ * Formats the synthetic result a caller sees for a call this issue deferred to a human: shaped
+ * exactly like a real `McpInvokeResult` (`error: false` — the *tool call itself* succeeded in the
+ * sense that a request now exists, even though the underlying tool has not run) so the agent
+ * turn and run complete normally as `done`, per the issue's Task, instead of the run treating
+ * this as a failure.
+ */
+function pendingApprovalResult(requestId: string, toolName: string): McpInvokeResult {
+  return {
+    error: false,
+    result: `Tool '${toolName}' requires human approval before it can run. Approval request ${requestId} has been created and is awaiting a decision; this call has not been executed.`,
+  };
+}
+
+/**
+ * The approval-gated composition root (issue #130): resolves and validates exactly like
+ * `createMcpInvokeTool`, but when the resolved target's `requiresApproval` is set, transactionally
+ * inserts one `pending` `approval_requests` row — snapshotting the tool name, current risk class,
+ * and the exact resolved invocation (registration/server ids and arguments) needed to execute it
+ * later — instead of calling `executeMcpInvocation`, and returns a synthetic success result
+ * carrying the new request's id. A tool that doesn't require approval continues straight through
+ * to `executeMcpInvocation`, unaffected by this gate.
+ */
+export function createApprovalGatedMcpInvokeTool(
+  pool: Pool,
+  agentRunId: string,
+  projectItemId: string,
+  mcpToolRegistrationId: string,
+  options: McpInvokeOptions = {},
+): McpInvokeTool {
+  return async function invoke(args) {
+    const resolution = await resolveMcpInvocation(pool, projectItemId, mcpToolRegistrationId, args);
+    if (!resolution.ok) return resolution.result;
+
+    const { target } = resolution;
+    if (target.requiresApproval) {
+      const request = await withTransaction(pool, (client) =>
+        createPendingApprovalRequest(client, {
+          agentRunId,
+          toolName: target.toolName,
+          riskClass: target.riskClass,
+          payload: {
+            mcpToolRegistrationId: target.mcpToolRegistrationId,
+            mcpServerItemId: target.mcpServerItemId,
+            args: resolution.args,
+          },
+        }),
+      );
+      return pendingApprovalResult(request.id, target.toolName);
+    }
+
+    return executeMcpInvocation(pool, target, resolution.args, options);
   };
 }

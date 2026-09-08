@@ -159,3 +159,10 @@ export {
   setProjectMcpGrantForAgentPage,
   reclassifyMcpTool,
 } from "./mcp/mcpAgentPageGrants.js";
+export type {
+  ApprovalRequest,
+  ApprovalRequestPayload,
+  ApprovalRequestStatus,
+  CreatePendingApprovalRequestInput,
+} from "./mcp/approvalRequestsStore.js";
+export { createPendingApprovalRequest, getApprovalRequest } from "./mcp/approvalRequestsStore.js";
