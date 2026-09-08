@@ -3,8 +3,13 @@ import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { hashPassword, verifyPassword } from "../auth/passwordHash.js";
 import { createUser, getUserByEmail } from "../auth/usersStore.js";
-import { hashToken } from "../auth/token.js";
-import { requestPasswordReset, resetPassword } from "../auth/passwordResetActions.js";
+import { createSession, getActiveSessionByTokenHash } from "../auth/sessionsStore.js";
+import { generateOpaqueToken, hashToken } from "../auth/token.js";
+import {
+  PASSWORD_RESET_MAX_REQUESTS_PER_WINDOW,
+  requestPasswordReset,
+  resetPassword,
+} from "../auth/passwordResetActions.js";
 import type { PasswordResetMailer, SendPasswordResetEmailInput } from "../auth/passwordResetMail.js";
 import { PasswordResetTokenError } from "../errors.js";
 
@@ -90,6 +95,29 @@ describe("password reset actions (issue #142)", () => {
       expect(rows[0]!.token_hash).not.toBe(token);
       expect(rows[0]!.token_hash).toBe(hashToken(token));
     });
+
+    it("stops issuing new tokens (and stops emailing) once the per-window request cap is hit", async () => {
+      const user = await makeUser();
+
+      for (let i = 0; i < PASSWORD_RESET_MAX_REQUESTS_PER_WINDOW; i++) {
+        const mailer = fakeMailer();
+        await requestPasswordReset(pool, mailer, { email: user.email, appBaseUrl: APP_BASE_URL });
+        expect(mailer.sent).toHaveLength(1);
+      }
+
+      // The next request past the cap is a silent no-op, same shape as an unknown email.
+      const mailer = fakeMailer();
+      await expect(
+        requestPasswordReset(pool, mailer, { email: user.email, appBaseUrl: APP_BASE_URL }),
+      ).resolves.toBeUndefined();
+      expect(mailer.sent).toHaveLength(0);
+
+      const { rows } = await pool.query<{ count: string }>(
+        `SELECT count(*) FROM password_reset_tokens WHERE user_id = $1`,
+        [user.id],
+      );
+      expect(Number(rows[0]!.count)).toBe(PASSWORD_RESET_MAX_REQUESTS_PER_WINDOW);
+    });
   });
 
   describe("resetPassword", () => {
@@ -147,6 +175,23 @@ describe("password reset actions (issue #142)", () => {
 
       const updated = await getUserByEmail(pool, user.email);
       expect(await verifyPassword(updated!.passwordHash, OLD_PASSWORD)).toBe(true);
+    });
+
+    it("revokes every pre-existing session for the user on a successful reset", async () => {
+      const user = await makeUser();
+      const { tokenHash } = generateOpaqueToken();
+      await createSession(pool, {
+        userId: user.id,
+        tokenHash,
+        platform: "web",
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      expect(await getActiveSessionByTokenHash(pool, tokenHash)).not.toBeNull();
+
+      const token = await requestAndGetToken(user.email);
+      await resetPassword(pool, { token, newPassword: "a-brand-new-password" });
+
+      expect(await getActiveSessionByTokenHash(pool, tokenHash)).toBeNull();
     });
   });
 });

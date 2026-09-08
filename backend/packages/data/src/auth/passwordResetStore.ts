@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { requireSingleRow } from "../db/pool.js";
 import type { PasswordResetTokenRow } from "./types.js";
 
 function mapRow(row: {
@@ -39,6 +40,25 @@ export async function createPasswordResetToken(
     [input.userId, input.tokenHash, input.expiresAt],
   );
   return mapRow(rows[0]);
+}
+
+/**
+ * Count of reset tokens issued to `userId` within the last `windowSeconds`, regardless of their
+ * current expired/consumed state — the throttling signal `requestPasswordReset` (issue #142)
+ * uses to cap how many reset emails one account can trigger per window, same shape as
+ * `countRecentFailedAttempts` in loginAttemptsStore.ts.
+ */
+export async function countRecentPasswordResetTokens(
+  client: Pool | PoolClient,
+  userId: string,
+  windowSeconds: number,
+): Promise<number> {
+  const { rows } = await client.query<{ count: string }>(
+    `SELECT count(*) FROM password_reset_tokens
+     WHERE user_id = $1 AND created_at > now() - make_interval(secs => $2)`,
+    [userId, windowSeconds],
+  );
+  return Number(requireSingleRow(rows, "password_reset_tokens recent count").count);
 }
 
 export async function getPasswordResetTokenByHash(
