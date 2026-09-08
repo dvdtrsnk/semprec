@@ -2,8 +2,10 @@ import type { Pool, PoolClient } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { NotFoundError } from "../errors.js";
 import { getSystemTimezone } from "../systemSettings.js";
+import { withTransaction } from "../db/pool.js";
 import { computeNextFireAt } from "./nextFireAt.js";
 import {
+  isFloatingRuleKind,
   isOnItemEventRule,
   parseHeartbeatRule,
   type AnyHeartbeatRule,
@@ -264,8 +266,9 @@ export async function recordHeartbeatFailure(client: Pool | PoolClient, id: stri
   await client.query(`UPDATE project_heartbeats SET last_error = $2 WHERE id = $1`, [id, error]);
 }
 
-export function heartbeatFireJobKey(heartbeatId: string, itemId?: string): string {
-  return itemId ? `heartbeat-fire:${heartbeatId}:${itemId}` : `heartbeat-fire:${heartbeatId}`;
+/** `suffix` is an `itemId` for an `onItemEvent` fire or an `occurrenceId` for a scheduled one (issue #213) — either way, distinct suffixes never collapse onto or replace each other's job. */
+export function heartbeatFireJobKey(heartbeatId: string, suffix?: string): string {
+  return suffix ? `heartbeat-fire:${heartbeatId}:${suffix}` : `heartbeat-fire:${heartbeatId}`;
 }
 
 /**
@@ -314,19 +317,49 @@ export interface SweptHeartbeat {
 }
 
 /**
+ * Inserts the `queued` occurrence for one due fire (issue #213) with the exact rule the sweep
+ * just saw, keyed on `(heartbeat_id, scheduled_for)`. `scheduled_for` is the row's *old*
+ * `next_fire_at` — the due time this sweep is firing for, not any newly computed one — so a
+ * conflicting insert (defense in depth alongside the sweep's own `FOR UPDATE SKIP LOCKED`) is an
+ * idempotent no-op: `null` tells the caller not to enqueue a job or advance the schedule again.
+ */
+async function insertHeartbeatOccurrence(
+  client: PoolClient,
+  heartbeatId: string,
+  scheduledFor: Date,
+  ruleSnapshot: AnyHeartbeatRule,
+): Promise<string | null> {
+  const { rows } = await client.query<{ id: string }>(
+    `INSERT INTO heartbeat_occurrences (heartbeat_id, scheduled_for, rule_snapshot, status)
+     VALUES ($1, $2, $3::jsonb, 'queued')
+     ON CONFLICT (heartbeat_id, scheduled_for) DO NOTHING
+     RETURNING id`,
+    [heartbeatId, scheduledFor, JSON.stringify(ruleSnapshot)],
+  );
+  return rows[0]?.id ?? null;
+}
+
+/**
  * The minute-granularity sweep: `FOR UPDATE SKIP LOCKED` is what guarantees "exactly
  * once", not transaction atomicity nor jobKey — two overlapping sweeps could otherwise
  * both select the same row under READ COMMITTED. This same query and update also *is*
  * the catch-up policy: a row whose next_fire_at fell in the past while the server was
- * down is picked up on the first sweep after restart and fired exactly once, with the
- * same "compute the next occurrence from now" logic as a regular on-time fire.
+ * down is picked up on the first sweep after restart and fired exactly once.
+ *
+ * `next_fire_at` only moves here for a *fixed* rule (`dailyTime`/`weekly`), immediately to its
+ * next calendar occurrence — queue delay can never shift a calendar-anchored rule. A *floating*
+ * rule (`interval`/`everyNDays`) is set to `NULL` instead: it stays scheduling-less until the
+ * fire task's first attempt actually starts and computes the next occurrence from that real
+ * execution time, not from this enqueue time (issue #213's fix for the delay-shifts-schedule
+ * bug). `last_fired_at` is no longer touched here either — the first attempt sets it, for both
+ * fixed and floating rules, to `first_started_at`.
  */
 export async function sweepDueHeartbeats(
   client: PoolClient,
   moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
 ): Promise<SweptHeartbeat[]> {
-  const { rows } = await client.query<{ id: string; rule: unknown }>(
-    `SELECT id, rule FROM project_heartbeats
+  const { rows } = await client.query<{ id: string; rule: unknown; next_fire_at: Date }>(
+    `SELECT id, rule, next_fire_at FROM project_heartbeats
      WHERE enabled AND next_fire_at IS NOT NULL AND next_fire_at <= now()
      FOR UPDATE SKIP LOCKED`,
   );
@@ -341,27 +374,156 @@ export async function sweepDueHeartbeats(
     // reactivating the module lets the next sweep pick it back up, instead of enqueueing a
     // heartbeatFire job for a rule core can no longer even parse.
     let rule: AnyHeartbeatRule;
-    let nextFireAt: Date | null;
+    let calendarNextFireAt: Date | null;
     try {
       rule = parseHeartbeatRule(row.rule, moduleRuleKinds);
-      nextFireAt = computeNextFireAt(rule, timezone, now, moduleRuleKinds);
+      calendarNextFireAt = computeNextFireAt(rule, timezone, now, moduleRuleKinds);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await recordHeartbeatFailure(client, row.id, message);
       continue;
     }
-    await client.query(`UPDATE project_heartbeats SET next_fire_at = $2, last_fired_at = $3 WHERE id = $1`, [
-      row.id,
-      nextFireAt,
-      now,
-    ]);
+
+    const occurrenceId = await insertHeartbeatOccurrence(client, row.id, row.next_fire_at, rule);
+    if (!occurrenceId) continue; // idempotent no-op: an occurrence for this exact due time already exists
+
+    const nextFireAt = isFloatingRuleKind(rule.kind) ? null : calendarNextFireAt;
+    await client.query(`UPDATE project_heartbeats SET next_fire_at = $2 WHERE id = $1`, [row.id, nextFireAt]);
     await enqueueJob(
       client,
       CORE_TASK_NAMES.HEARTBEAT_FIRE,
-      { heartbeatId: row.id },
-      { jobKey: heartbeatFireJobKey(row.id), maxAttempts: 3 },
+      { heartbeatId: row.id, occurrenceId },
+      { jobKey: heartbeatFireJobKey(row.id, occurrenceId), maxAttempts: 3 },
     );
     fired.push({ id: row.id });
   }
   return fired;
+}
+
+export type OccurrenceFirePreparation =
+  | { outcome: "missing" }
+  | { outcome: "cancelled" }
+  | { outcome: "degraded" }
+  | { outcome: "proceed"; heartbeat: HeartbeatRow };
+
+/**
+ * The occurrence fire task's "first attempt, lock and decide" step (issue #213). Locks the
+ * heartbeat and occurrence row together and compares the heartbeat's *current* `rule` against
+ * the occurrence's `rule_snapshot` with plain PostgreSQL `jsonb` equality — never by re-parsing
+ * either side, so a disabled heartbeat or one whose rule kind's module went inactive since the
+ * sweep still compares correctly. A disabled heartbeat or a rule that no longer matches its
+ * snapshot cancels the occurrence and executes nothing; the disable/rule-edit transaction that
+ * caused the mismatch already owns recomputing or clearing `next_fire_at`, so this never touches
+ * heartbeat scheduling.
+ *
+ * Only a genuine first attempt (`first_started_at` still `NULL`) sets `first_started_at`,
+ * `status = 'running'`, `project_heartbeats.last_fired_at`, and — for a floating rule only — the
+ * freshly computed `next_fire_at`. A retry (the job was re-attempted after a failure) finds
+ * `first_started_at` already set and skips straight to `"proceed"` without touching any of that
+ * state again, reusing the same occurrence and timestamp.
+ *
+ * Runs as its own short transaction, separate from the (possibly long) handler execution that
+ * follows a `"proceed"` result — the row locks here must never be held across that call.
+ */
+export async function prepareHeartbeatOccurrenceFire(
+  pool: Pool,
+  heartbeatId: string,
+  occurrenceId: string,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<OccurrenceFirePreparation> {
+  return withTransaction(pool, async (client) => {
+    const { rows } = await client.query<{
+      id: string;
+      project_item_id: string;
+      name: string;
+      rule: { kind?: unknown } | null;
+      action_id: string;
+      action_config: Record<string, unknown>;
+      enabled: boolean;
+      next_fire_at: Date | null;
+      last_fired_at: Date | null;
+      last_error: string | null;
+      first_started_at: Date | null;
+      rules_match: boolean;
+    }>(
+      `SELECT h.id, h.project_item_id, h.name, h.rule, h.action_id, h.action_config, h.enabled,
+              h.next_fire_at, h.last_fired_at, h.last_error,
+              o.first_started_at, (h.rule = o.rule_snapshot) AS rules_match
+       FROM heartbeat_occurrences o
+       JOIN project_heartbeats h ON h.id = o.heartbeat_id
+       WHERE o.id = $1 AND o.heartbeat_id = $2
+       FOR UPDATE`,
+      [occurrenceId, heartbeatId],
+    );
+    const row = rows[0];
+    if (!row) return { outcome: "missing" }; // heartbeat/occurrence deleted (cascade) since enqueue
+
+    if (!row.enabled || !row.rules_match) {
+      await client.query(`UPDATE heartbeat_occurrences SET status = 'cancelled' WHERE id = $1`, [occurrenceId]);
+      return { outcome: "cancelled" };
+    }
+
+    // Same deactivated-module guard as the sweep and the non-occurrence fire path: a rule kind
+    // whose owning module went inactive between the sweep enqueuing this job and it running now
+    // must degrade (record the failure, don't execute) instead of throwing and retrying up to
+    // max_attempts against a module that retrying can't reactivate.
+    let rule: AnyHeartbeatRule;
+    try {
+      rule = parseHeartbeatRule(row.rule, moduleRuleKinds);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await recordHeartbeatFailure(client, heartbeatId, message);
+      await client.query(`UPDATE heartbeat_occurrences SET status = 'failed', last_error = $2 WHERE id = $1`, [
+        occurrenceId,
+        message,
+      ]);
+      return { outcome: "degraded" };
+    }
+
+    if (row.first_started_at === null) {
+      const now = new Date();
+      const nextFireAt = isFloatingRuleKind(rule.kind)
+        ? computeNextFireAt(rule, await getSystemTimezone(client), now, moduleRuleKinds)
+        : undefined;
+
+      await client.query(`UPDATE heartbeat_occurrences SET first_started_at = $2, status = 'running' WHERE id = $1`, [
+        occurrenceId,
+        now,
+      ]);
+      if (nextFireAt !== undefined) {
+        await client.query(`UPDATE project_heartbeats SET last_fired_at = $2, next_fire_at = $3 WHERE id = $1`, [
+          heartbeatId,
+          now,
+          nextFireAt,
+        ]);
+      } else {
+        await client.query(`UPDATE project_heartbeats SET last_fired_at = $2 WHERE id = $1`, [heartbeatId, now]);
+      }
+    }
+
+    // Built from the row already locked above, tolerating an unparseable rule (its module may
+    // have gone inactive between the sweep and this fire) — the handler dispatch that follows
+    // only needs `actionId`/`actionConfig`/`projectItemId`, never the parsed `rule` itself, so
+    // this must degrade the same way `listHeartbeatsByProject`/`setHeartbeatEnabled`'s disable
+    // path do rather than throw and turn a graceful skip into a retriable job error.
+    const heartbeat = mapRow(row, moduleRuleKinds, { tolerateUnknownRuleKind: true });
+    return { outcome: "proceed", heartbeat };
+  });
+}
+
+export async function succeedHeartbeatOccurrence(client: Pool | PoolClient, occurrenceId: string): Promise<void> {
+  await client.query(`UPDATE heartbeat_occurrences SET status = 'succeeded', last_error = NULL WHERE id = $1`, [
+    occurrenceId,
+  ]);
+}
+
+export async function failHeartbeatOccurrence(
+  client: Pool | PoolClient,
+  occurrenceId: string,
+  message: string,
+): Promise<void> {
+  await client.query(`UPDATE heartbeat_occurrences SET status = 'failed', last_error = $2 WHERE id = $1`, [
+    occurrenceId,
+    message,
+  ]);
 }
