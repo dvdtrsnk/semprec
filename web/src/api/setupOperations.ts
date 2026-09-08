@@ -24,6 +24,8 @@ export type SetupPublicUser = z.infer<typeof publicUserSchema>;
 
 const setupResponseSchema = z.object({ user: publicUserSchema });
 
+const errorResponseSchema = z.object({ error: z.string() });
+
 export interface SetupAccountInput {
   token: string;
   email: string;
@@ -85,8 +87,9 @@ export function createSetupOperations(options: SetupOperationsOptions): SetupOpe
 /** Best-effort read of `{ error: string }` (the handler's shape for 400/413/etc) so a validation failure surfaces its actual reason instead of a bare status code. */
 async function readErrorMessage(response: Response): Promise<string | null> {
   try {
-    const body = (await response.json()) as { error?: unknown };
-    return typeof body.error === "string" ? body.error : null;
+    const body: unknown = await response.json();
+    const parsed = errorResponseSchema.safeParse(body);
+    return parsed.success ? parsed.data.error : null;
   } catch {
     return null;
   }

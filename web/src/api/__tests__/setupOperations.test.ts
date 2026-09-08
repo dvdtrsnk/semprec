@@ -66,6 +66,17 @@ describe("setup operations", () => {
     ).rejects.toMatchObject({ kind: "retryable", status: 400, message: "'password' must be at least 8 characters" });
   });
 
+  it("falls back to the default message when a 400's error body doesn't match the expected shape", async () => {
+    const operations = createSetupOperations({
+      baseUrl: "/api",
+      fetchImpl: async () => jsonResponse({ error: 12345 }, 400),
+    });
+
+    await expect(
+      operations.setupAccount({ token: "t", email: "a@example.com", password: "short" }),
+    ).rejects.toMatchObject({ kind: "retryable", status: 400, message: "Request to /setup failed with 400" });
+  });
+
   it("classifies a malformed success envelope (e.g. a bare null body) as retryable instead of throwing an unhandled TypeError", async () => {
     const operations = createSetupOperations({
       baseUrl: "/api",
