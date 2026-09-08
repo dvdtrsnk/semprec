@@ -47,6 +47,9 @@ importers:
       '@semprec/realtime':
         specifier: workspace:*
         version: link:../realtime
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
       pg:
         specifier: ^8.23.0
         version: 8.23.0
