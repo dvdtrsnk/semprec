@@ -2,6 +2,13 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { ChokePointError, ValidationError, bootstrapFirstAccount } from "@semprec/data";
 import type { Pool } from "pg";
 
+/** Same `Authorization: Bearer <token>` extraction as `approvalRequestsHandler.ts`'s `isAuthorized`. */
+function extractBearerToken(req: IncomingMessage): string {
+  const header = req.headers.authorization;
+  if (!header || !header.startsWith("Bearer ")) return "";
+  return header.slice("Bearer ".length);
+}
+
 export interface SetupHandlerOptions {
   /**
    * The deployment's one-time bootstrap secret (#233). Explicit parameter, not read from
@@ -39,13 +46,13 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 /**
- * Handles `POST /api/setup?token=...` for issue #233 — the only way to create an account in
- * this deployment. Unauthenticated by design (there is no user yet to authenticate as); its
- * safety comes entirely from `bootstrapFirstAccount` refusing to run once any user exists or the
- * query token doesn't match `SETUP_TOKEN`, both of which it reports as a plain 404 rather than a
- * 401/403 so the route never confirms or denies "setup is still open" to an unauthenticated
- * caller. #234 builds the web wizard that drives this API; #143 lists it among the documented
- * public route exceptions.
+ * Handles `POST /api/setup` (token via `Authorization: Bearer <token>`) for issue #233 — the
+ * only way to create an account in this deployment. Unauthenticated by design (there is no user
+ * yet to authenticate as); its safety comes entirely from `bootstrapFirstAccount` refusing to run
+ * once any user exists or the bearer token doesn't match `SETUP_TOKEN`, both of which it reports
+ * as a plain 404 rather than a 401/403 so the route never confirms or denies "setup is still
+ * open" to an unauthenticated caller. #234 builds the web wizard that drives this API; #143 lists
+ * it among the documented public route exceptions.
  */
 export function createSetupRequestListener(pool: Pool, options: SetupHandlerOptions) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -61,10 +68,9 @@ export function createSetupRequestListener(pool: Pool, options: SetupHandlerOpti
           throw new ValidationError("'password' must be a non-empty string");
         }
 
-        const user = await bootstrapFirstAccount(pool, options.setupToken, {
+        const user = await bootstrapFirstAccount(pool, options.setupToken, extractBearerToken(req), {
           email: body.email,
           password: body.password,
-          token: url.searchParams.get("token") ?? "",
         });
 
         sendJson(res, 200, { user });

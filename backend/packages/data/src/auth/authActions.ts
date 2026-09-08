@@ -33,19 +33,17 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 /** NIST SP 800-63B floors length-based password strength at 8 characters and leaves further complexity rules to the caller; we impose none. */
 const MIN_PASSWORD_LENGTH = 8;
 
-export interface CreateAccountInput {
+interface CreateAccountInput {
   email: string;
   password: string;
 }
 
 /**
- * The one place that turns an email/password pair into a `users` row — used today by
- * `bootstrapFirstAccount` (#233) and meant to be the same function a future public signup
- * route would call, so the two paths can never drift in what they consider a valid account.
+ * Turns an email/password pair into a `users` row for `bootstrapFirstAccount` (#233).
  * Normalizes the email (see `normalizeEmail`), validates both fields, and hashes the password
  * with Argon2id (`hashPassword`) before handing off to `createUser`.
  */
-export async function createAccount(client: Pool | PoolClient, input: CreateAccountInput): Promise<PublicUser> {
+async function createAccount(client: Pool | PoolClient, input: CreateAccountInput): Promise<PublicUser> {
   const email = normalizeEmail(input.email);
   if (!EMAIL_PATTERN.test(email)) {
     throw new ValidationError("'email' must be a valid email address");
@@ -147,17 +145,15 @@ function tokensMatch(provided: string, expected: string): boolean {
 export interface BootstrapFirstAccountInput {
   email: string;
   password: string;
-  /** Caller-supplied token, checked against the deployment's `SETUP_TOKEN` secret. */
-  token: string;
 }
 
 /**
  * Creates the one and only account this deployment will ever create through `/setup` (#233).
  * Available exactly once: as soon as any user exists, this throws `NotFoundError` before even
- * looking at `token` — the acceptance criteria's "return 404 before token validation" — so a
- * caller poking the route after bootstrap, with or without a valid token, learns nothing beyond
- * "not found". The same `NotFoundError`/404 is used for a wrong token, so the route doesn't leak
- * "setup is still open, you just guessed wrong" either.
+ * looking at `providedToken` — the acceptance criteria's "return 404 before token validation" —
+ * so a caller poking the route after bootstrap, with or without a valid token, learns nothing
+ * beyond "not found". The same `NotFoundError`/404 is used for a wrong token, so the route
+ * doesn't leak "setup is still open, you just guessed wrong" either.
  *
  * Race safety: a cheap unlocked check short-circuits the common post-bootstrap case, then the
  * actual decision runs inside a transaction holding `SETUP_ADVISORY_LOCK_KEY` for its duration —
@@ -167,6 +163,7 @@ export interface BootstrapFirstAccountInput {
 export async function bootstrapFirstAccount(
   pool: Pool,
   expectedToken: string,
+  providedToken: string,
   input: BootstrapFirstAccountInput,
 ): Promise<PublicUser> {
   if (await anyUserExists(pool)) throw new NotFoundError("Not found");
@@ -175,7 +172,7 @@ export async function bootstrapFirstAccount(
     await client.query("SELECT pg_advisory_xact_lock($1)", [SETUP_ADVISORY_LOCK_KEY]);
 
     if (await anyUserExists(client)) throw new NotFoundError("Not found");
-    if (!tokensMatch(input.token, expectedToken)) throw new NotFoundError("Not found");
+    if (!tokensMatch(providedToken, expectedToken)) throw new NotFoundError("Not found");
 
     return createAccount(client, { email: input.email, password: input.password });
   });

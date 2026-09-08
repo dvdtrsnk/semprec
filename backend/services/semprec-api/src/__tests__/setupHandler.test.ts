@@ -34,9 +34,9 @@ describe("createSetupRequestListener", () => {
 
   describe("POST /api/setup", () => {
     it("creates the account with the correct token against an empty users table", async () => {
-      const res = await fetch(`${baseUrl}/api/setup?token=${SETUP_TOKEN}`, {
+      const res = await fetch(`${baseUrl}/api/setup`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SETUP_TOKEN}` },
         body: JSON.stringify({ email: "owner@example.com", password: "s3cret-password" }),
       });
 
@@ -46,9 +46,9 @@ describe("createSetupRequestListener", () => {
     });
 
     it("returns 404 for a wrong token", async () => {
-      const res = await fetch(`${baseUrl}/api/setup?token=wrong-token`, {
+      const res = await fetch(`${baseUrl}/api/setup`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: "Bearer wrong-token" },
         body: JSON.stringify({ email: "owner@example.com", password: "s3cret-password" }),
       });
       expect(res.status).toBe(404);
@@ -66,27 +66,27 @@ describe("createSetupRequestListener", () => {
     it("returns 404 once a user already exists, even with the correct token", async () => {
       await createUser(pool, { email: "existing@example.com", passwordHash: await hashPassword("whatever-password") });
 
-      const res = await fetch(`${baseUrl}/api/setup?token=${SETUP_TOKEN}`, {
+      const res = await fetch(`${baseUrl}/api/setup`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SETUP_TOKEN}` },
         body: JSON.stringify({ email: "owner@example.com", password: "s3cret-password" }),
       });
       expect(res.status).toBe(404);
     });
 
     it("rejects a malformed email with 400", async () => {
-      const res = await fetch(`${baseUrl}/api/setup?token=${SETUP_TOKEN}`, {
+      const res = await fetch(`${baseUrl}/api/setup`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SETUP_TOKEN}` },
         body: JSON.stringify({ email: "not-an-email", password: "s3cret-password" }),
       });
       expect(res.status).toBe(400);
     });
 
     it("rejects a missing password with 400", async () => {
-      const res = await fetch(`${baseUrl}/api/setup?token=${SETUP_TOKEN}`, {
+      const res = await fetch(`${baseUrl}/api/setup`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SETUP_TOKEN}` },
         body: JSON.stringify({ email: "owner@example.com" }),
       });
       expect(res.status).toBe(400);

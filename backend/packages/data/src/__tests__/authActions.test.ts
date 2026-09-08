@@ -5,14 +5,7 @@ import { hashPassword } from "../auth/passwordHash.js";
 import { createUser } from "../auth/usersStore.js";
 import { getActiveSessionByTokenHash, listSessionsForUser } from "../auth/sessionsStore.js";
 import { countRecentFailedAttempts } from "../auth/loginAttemptsStore.js";
-import {
-  login,
-  verifySessionToken,
-  logout,
-  revokeUserSession,
-  createAccount,
-  bootstrapFirstAccount,
-} from "../auth/authActions.js";
+import { login, verifySessionToken, logout, revokeUserSession, bootstrapFirstAccount } from "../auth/authActions.js";
 import { LOCKOUT_THRESHOLD } from "../auth/loginLockout.js";
 import { NotFoundError, UnauthorizedError, ValidationError } from "../errors.js";
 
@@ -294,9 +287,14 @@ describe("auth actions (issue #140)", () => {
     });
   });
 
-  describe("createAccount (issue #233)", () => {
+  describe("bootstrapFirstAccount (issue #233)", () => {
+    const SETUP_TOKEN = "correct-setup-token";
+
     it("hashes the password and creates a user the caller can immediately log in as", async () => {
-      const account = await createAccount(pool, { email: "New.User@Example.com", password: "s3cret-password" });
+      const account = await bootstrapFirstAccount(pool, SETUP_TOKEN, SETUP_TOKEN, {
+        email: "New.User@Example.com",
+        password: "s3cret-password",
+      });
 
       expect(account.email).toBe("new.user@example.com");
       expect((account as { passwordHash?: unknown }).passwordHash).toBeUndefined();
@@ -310,26 +308,21 @@ describe("auth actions (issue #140)", () => {
     });
 
     it("rejects a malformed email", async () => {
-      await expect(createAccount(pool, { email: "not-an-email", password: "s3cret-password" })).rejects.toThrow(
-        ValidationError,
-      );
+      await expect(
+        bootstrapFirstAccount(pool, SETUP_TOKEN, SETUP_TOKEN, { email: "not-an-email", password: "s3cret-password" }),
+      ).rejects.toThrow(ValidationError);
     });
 
     it("rejects a too-short password", async () => {
-      await expect(createAccount(pool, { email: "person@example.com", password: "short" })).rejects.toThrow(
-        ValidationError,
-      );
+      await expect(
+        bootstrapFirstAccount(pool, SETUP_TOKEN, SETUP_TOKEN, { email: "person@example.com", password: "short" }),
+      ).rejects.toThrow(ValidationError);
     });
-  });
-
-  describe("bootstrapFirstAccount (issue #233)", () => {
-    const SETUP_TOKEN = "correct-setup-token";
 
     it("creates the account with a matching token against an empty users table", async () => {
-      const account = await bootstrapFirstAccount(pool, SETUP_TOKEN, {
+      const account = await bootstrapFirstAccount(pool, SETUP_TOKEN, SETUP_TOKEN, {
         email: "owner@example.com",
         password: "s3cret-password",
-        token: SETUP_TOKEN,
       });
       expect(account.email).toBe("owner@example.com");
 
@@ -344,10 +337,9 @@ describe("auth actions (issue #140)", () => {
 
     it("rejects a wrong token with NotFoundError", async () => {
       await expect(
-        bootstrapFirstAccount(pool, SETUP_TOKEN, {
+        bootstrapFirstAccount(pool, SETUP_TOKEN, "wrong-token", {
           email: "owner@example.com",
           password: "s3cret-password",
-          token: "wrong-token",
         }),
       ).rejects.toThrow(NotFoundError);
     });
@@ -355,25 +347,22 @@ describe("auth actions (issue #140)", () => {
     it("returns NotFoundError once a user already exists, even with the correct token", async () => {
       await makeUser();
       await expect(
-        bootstrapFirstAccount(pool, SETUP_TOKEN, {
+        bootstrapFirstAccount(pool, SETUP_TOKEN, SETUP_TOKEN, {
           email: "owner@example.com",
           password: "s3cret-password",
-          token: SETUP_TOKEN,
         }),
       ).rejects.toThrow(NotFoundError);
     });
 
     it("permits exactly one winner when two callers race with the correct token", async () => {
       const results = await Promise.allSettled([
-        bootstrapFirstAccount(pool, SETUP_TOKEN, {
+        bootstrapFirstAccount(pool, SETUP_TOKEN, SETUP_TOKEN, {
           email: "first@example.com",
           password: "s3cret-password",
-          token: SETUP_TOKEN,
         }),
-        bootstrapFirstAccount(pool, SETUP_TOKEN, {
+        bootstrapFirstAccount(pool, SETUP_TOKEN, SETUP_TOKEN, {
           email: "second@example.com",
           password: "s3cret-password",
-          token: SETUP_TOKEN,
         }),
       ]);
 
