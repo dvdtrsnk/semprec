@@ -6,6 +6,7 @@ import { createUser } from "../auth/usersStore.js";
 import { getActiveSessionByTokenHash, listSessionsForUser } from "../auth/sessionsStore.js";
 import { countRecentFailedAttempts } from "../auth/loginAttemptsStore.js";
 import { login, verifySessionToken, logout, revokeUserSession } from "../auth/authActions.js";
+import { LOCKOUT_THRESHOLD } from "../auth/loginLockout.js";
 import { UnauthorizedError } from "../errors.js";
 
 let pool: Pool;
@@ -83,6 +84,132 @@ describe("auth actions (issue #140)", () => {
       expect(first.session.id).not.toBe(second.session.id);
       const sessions = await listSessionsForUser(pool, user.id);
       expect(sessions).toHaveLength(2);
+    });
+  });
+
+  describe("lockout (issue #232)", () => {
+    async function failLogin(email: string, ip: string) {
+      await expect(login(pool, { email, password: "wrong-password", platform: "web", ip })).rejects.toThrow(
+        UnauthorizedError,
+      );
+    }
+
+    /** Pushes every recorded attempt for this email+IP pair back by `seconds`, simulating the lockout window elapsing without a real-time sleep in the test. */
+    async function backdateAttempts(email: string, ip: string, seconds: number) {
+      await pool.query(
+        `UPDATE login_attempts SET attempted_at = attempted_at - make_interval(secs => $3) WHERE email = $1 AND ip = $2`,
+        [email, ip, seconds],
+      );
+    }
+
+    it("records every attempt with a normalized (trimmed, lowercased) email", async () => {
+      await makeUser("person@example.com");
+      await login(pool, { email: " Person@Example.com ", password: "s3cret-password", platform: "web", ip: "5.5.5.5" });
+      expect(await countRecentFailedAttempts(pool, "person@example.com", "5.5.5.5", 3600)).toBe(0);
+
+      const { rows } = await pool.query<{ email: string }>(
+        "SELECT email FROM login_attempts WHERE ip = '5.5.5.5' ORDER BY attempted_at DESC LIMIT 1",
+      );
+      expect(rows[0].email).toBe("person@example.com");
+    });
+
+    it("rejects a correct password once the threshold of consecutive failures is reached", async () => {
+      const user = await makeUser();
+      for (let i = 0; i < LOCKOUT_THRESHOLD; i++) {
+        await failLogin(user.email, "6.6.6.6");
+      }
+
+      await expect(
+        login(pool, { email: user.email, password: "s3cret-password", platform: "web", ip: "6.6.6.6" }),
+      ).rejects.toThrow(UnauthorizedError);
+    });
+
+    it("does not lock out below the threshold", async () => {
+      const user = await makeUser();
+      for (let i = 0; i < LOCKOUT_THRESHOLD - 1; i++) {
+        await failLogin(user.email, "7.7.7.7");
+      }
+
+      const result = await login(pool, {
+        email: user.email,
+        password: "s3cret-password",
+        platform: "web",
+        ip: "7.7.7.7",
+      });
+      expect(result.token).toBeTruthy();
+    });
+
+    it("scopes lockout to the email+IP pair, not the email alone", async () => {
+      const user = await makeUser();
+      for (let i = 0; i < LOCKOUT_THRESHOLD; i++) {
+        await failLogin(user.email, "8.8.8.8");
+      }
+
+      const result = await login(pool, {
+        email: user.email,
+        password: "s3cret-password",
+        platform: "web",
+        ip: "9.9.9.9",
+      });
+      expect(result.token).toBeTruthy();
+    });
+
+    it("grows the lockout window exponentially with further failures through it", async () => {
+      const user = await makeUser();
+      for (let i = 0; i < LOCKOUT_THRESHOLD; i++) {
+        await failLogin(user.email, "10.10.10.10");
+      }
+      // First lockout window is LOCKOUT_BASE_SECONDS (30s); back past it but the rejected
+      // retry below is itself recorded as a new failure, doubling the next window to 60s.
+      await backdateAttempts(user.email, "10.10.10.10", 31);
+      await failLogin(user.email, "10.10.10.10");
+
+      // Only 35s elapsed since that failure — inside the doubled ~60s window, so still locked.
+      await backdateAttempts(user.email, "10.10.10.10", 35);
+      await expect(
+        login(pool, { email: user.email, password: "s3cret-password", platform: "web", ip: "10.10.10.10" }),
+      ).rejects.toThrow(UnauthorizedError);
+    });
+
+    it("resets the active failure sequence after a success, so lockout starts fresh", async () => {
+      const user = await makeUser();
+      for (let i = 0; i < LOCKOUT_THRESHOLD - 1; i++) {
+        await failLogin(user.email, "11.11.11.11");
+      }
+      const result = await login(pool, {
+        email: user.email,
+        password: "s3cret-password",
+        platform: "web",
+        ip: "11.11.11.11",
+      });
+      expect(result.token).toBeTruthy();
+
+      for (let i = 0; i < LOCKOUT_THRESHOLD - 1; i++) {
+        await failLogin(user.email, "11.11.11.11");
+      }
+      const secondResult = await login(pool, {
+        email: user.email,
+        password: "s3cret-password",
+        platform: "web",
+        ip: "11.11.11.11",
+      });
+      expect(secondResult.token).toBeTruthy();
+    });
+
+    it("lifts once the lockout window has elapsed", async () => {
+      const user = await makeUser();
+      for (let i = 0; i < LOCKOUT_THRESHOLD; i++) {
+        await failLogin(user.email, "12.12.12.12");
+      }
+      await backdateAttempts(user.email, "12.12.12.12", 31);
+
+      const result = await login(pool, {
+        email: user.email,
+        password: "s3cret-password",
+        platform: "web",
+        ip: "12.12.12.12",
+      });
+      expect(result.token).toBeTruthy();
     });
   });
 
