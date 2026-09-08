@@ -1,5 +1,5 @@
 import type { Queryable } from "../db/pool.js";
-import { NotFoundError } from "../errors.js";
+import { ValidationError } from "../errors.js";
 
 /**
  * `mcp_tool_registrations` (issue #124): one row per tool a discovery sync has last seen on
@@ -11,8 +11,14 @@ import { NotFoundError } from "../errors.js";
  * `upsertMcpToolRegistration` is the sync-facing write (issue #125, "Synchronize tools only
  * on human request", owns calling it): it snapshots the tool's name/schema/description/active
  * state from a live MCP `tools/list` call. It never touches `requires_approval` or
- * `risk_class` — those are user-owned (see `setRequiresApproval`/`setRiskClass` below) and
- * must survive a re-sync untouched.
+ * `risk_class` — those are user-owned (see `mcpGrantsAdminStore.ts`) and must survive a
+ * re-sync untouched.
+ *
+ * The user-only `risk_class`/`requires_approval` mutations live in `mcpGrantsAdminStore.ts`,
+ * not here, and are deliberately not re-exported from this package's `index.ts`: keeping them
+ * off `@semprec/data`'s public surface means `agent-runtime` (already a dependent of this
+ * package) has no importable path to them at all, per this issue's "agents have no write path
+ * to grants" acceptance criterion.
  */
 export interface McpToolRegistration {
   id: string;
@@ -27,7 +33,7 @@ export interface McpToolRegistration {
   updatedAt: string;
 }
 
-interface McpToolRegistrationRow {
+export interface McpToolRegistrationRow {
   id: string;
   mcp_server_item_id: string;
   tool_name: string;
@@ -40,7 +46,8 @@ interface McpToolRegistrationRow {
   updated_at: string;
 }
 
-function rowToRegistration(row: McpToolRegistrationRow): McpToolRegistration {
+/** Exported for `mcpGrantsAdminStore.ts` only — not part of this package's public `index.ts` surface. */
+export function rowToRegistration(row: McpToolRegistrationRow): McpToolRegistration {
   return {
     id: row.id,
     mcpServerItemId: row.mcp_server_item_id,
@@ -65,6 +72,13 @@ export interface UpsertMcpToolRegistrationInput {
 
 /** Creates or refreshes a tool's discovery snapshot. Leaves `requires_approval`/`risk_class` alone on an existing row. */
 export async function upsertMcpToolRegistration(client: Queryable, input: UpsertMcpToolRegistrationInput): Promise<McpToolRegistration> {
+  // `JSON.stringify(undefined)` returns `undefined`, not a string, which `pg` would otherwise
+  // bind as SQL NULL — turning a caller bug into an opaque `tool_schema` NOT NULL violation
+  // instead of a clear validation error at this module's boundary.
+  if (input.toolSchema === undefined) {
+    throw new ValidationError("mcp_tool_registrations.tool_schema is required (received undefined)");
+  }
+
   const { rows } = await client.query<McpToolRegistrationRow>(
     `INSERT INTO mcp_tool_registrations (mcp_server_item_id, tool_name, tool_schema, description, active)
      VALUES ($1, $2, $3::jsonb, $4, $5)
@@ -90,31 +104,4 @@ export async function listMcpToolRegistrationsForServer(client: Queryable, mcpSe
     [mcpServerItemId],
   );
   return rows.map(rowToRegistration);
-}
-
-/**
- * User-only mutation (issue #124 acceptance criteria): sets a tool's risk classification.
- * Automatic risk classification is explicitly out of scope for this issue — this function is
- * the only writer of `risk_class`, and it must only ever be called from an authenticated
- * human-facing route, never from agent-runtime or proposal-confirmation code paths.
- */
-export async function setMcpToolRiskClass(client: Queryable, id: string, riskClass: string): Promise<McpToolRegistration> {
-  const { rows } = await client.query<McpToolRegistrationRow>(
-    `UPDATE mcp_tool_registrations SET risk_class = $2, updated_at = now() WHERE id = $1 RETURNING *`,
-    [id, riskClass],
-  );
-  const row = rows[0];
-  if (!row) throw new NotFoundError(`No mcp_tool_registrations row with id '${id}'`);
-  return rowToRegistration(row);
-}
-
-/** User-only mutation (issue #124 acceptance criteria): toggles whether invoking this tool requires approval. */
-export async function setMcpToolRequiresApproval(client: Queryable, id: string, requiresApproval: boolean): Promise<McpToolRegistration> {
-  const { rows } = await client.query<McpToolRegistrationRow>(
-    `UPDATE mcp_tool_registrations SET requires_approval = $2, updated_at = now() WHERE id = $1 RETURNING *`,
-    [id, requiresApproval],
-  );
-  const row = rows[0];
-  if (!row) throw new NotFoundError(`No mcp_tool_registrations row with id '${id}'`);
-  return rowToRegistration(row);
 }

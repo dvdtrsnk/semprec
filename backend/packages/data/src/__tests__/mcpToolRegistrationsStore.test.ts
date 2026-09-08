@@ -2,14 +2,9 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import {
-  getMcpToolRegistration,
-  listMcpToolRegistrationsForServer,
-  setMcpToolRequiresApproval,
-  setMcpToolRiskClass,
-  upsertMcpToolRegistration,
-} from "../mcp/mcpToolRegistrationsStore.js";
-import { NotFoundError } from "../errors.js";
+import { getMcpToolRegistration, listMcpToolRegistrationsForServer, upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
+import { setMcpToolRequiresApproval, setMcpToolRiskClass } from "../mcp/mcpGrantsAdminStore.js";
+import { NotFoundError, ValidationError } from "../errors.js";
 
 let pool: Pool;
 
@@ -50,6 +45,12 @@ describe("mcpToolRegistrationsStore", () => {
         "search_web",
       ]),
     ).rejects.toThrow(/duplicate key|unique constraint/i);
+  });
+
+  it("rejects an undefined tool schema instead of silently binding SQL NULL", async () => {
+    await expect(
+      upsertMcpToolRegistration(pool, { mcpServerItemId: randomUUID(), toolName: "search_web", toolSchema: undefined }),
+    ).rejects.toThrow(ValidationError);
   });
 
   it("re-syncing a tool's schema snapshot leaves risk_class/requires_approval untouched", async () => {

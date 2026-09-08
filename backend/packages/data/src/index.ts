@@ -123,5 +123,9 @@ export * from "./views/temporalSwitcherViewType.js";
 export * from "./inbox/inboxTickAction.js";
 export { manifest as inboxPipelineModuleManifest } from "./inbox/inboxModuleManifest.js";
 
-export * from "./mcp/mcpToolRegistrationsStore.js";
-export * from "./mcp/mcpProjectGrantsStore.js";
+// `mcpGrantsAdminStore.ts`'s user-only grant/risk-class/approval mutations are deliberately
+// NOT exported here — see that file's header comment (issue #124).
+export type { McpToolRegistration, UpsertMcpToolRegistrationInput } from "./mcp/mcpToolRegistrationsStore.js";
+export { upsertMcpToolRegistration, getMcpToolRegistration, listMcpToolRegistrationsForServer } from "./mcp/mcpToolRegistrationsStore.js";
+export type { ProjectMcpGrant } from "./mcp/mcpProjectGrantsStore.js";
+export { listProjectMcpGrants, getProjectMcpGrant } from "./mcp/mcpProjectGrantsStore.js";
