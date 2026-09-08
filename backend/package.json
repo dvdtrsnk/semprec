@@ -13,6 +13,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "check:boundaries": "depcruise --config .dependency-cruiser.cjs --output-type err modules services",
+    "check:pi-import-paths": "pnpm --filter @semprec/agent-runtime run check-pi-import-paths",
     "migrate": "pnpm --filter @semprec/data run build && node packages/data/dist/db/runMigrationsCli.js"
   },
   "devDependencies": {
