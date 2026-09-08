@@ -188,9 +188,9 @@ describe("scheduler", () => {
 
     const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
     expect(runs).toHaveLength(1);
-    expect(runs[0].status).toBe("done");
-    expect(runs[0].result).toBe("handled: process the inbox");
-    expect(runs[0].triggeredBy).toBe("heartbeat");
+    expect(runs[0]!.status).toBe("done");
+    expect(runs[0]!.result).toBe("handled: process the inbox");
+    expect(runs[0]!.triggeredBy).toBe("heartbeat");
   });
 
   describe("module-declared heartbeat rule kinds", () => {

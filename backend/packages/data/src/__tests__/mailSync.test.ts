@@ -2557,7 +2557,7 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
     // Confirms the fetch actually walked into a real message's body (calling `download`) rather
     // than trivially seeing no flag mutation because nothing was fetched at all.
     expect(fetched).toHaveLength(1);
-    expect(fetched[0].message.bodyText).toBeDefined();
+    expect(fetched[0]!.message.bodyText).toBeDefined();
     expect(raw.calls).toContain("download");
     expect(raw.calls.some((c) => c.startsWith("messageFlagsAdd"))).toBe(false);
   });

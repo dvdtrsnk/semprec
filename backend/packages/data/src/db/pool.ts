@@ -59,3 +59,18 @@ export async function withTransaction<T>(pool: Pool, fn: (client: PoolClient) =>
     client.release();
   }
 }
+
+/**
+ * Unwraps the single row of a query that returns exactly one by construction — an aggregate
+ * with no GROUP BY, a `SELECT format(...)`, a `RETURNING` on a row just written. Postgres
+ * guarantees the row; `noUncheckedIndexedAccess` cannot see that, and `rows[0]!` would silently
+ * hand a downstream `undefined` to whatever reads a column off it if the invariant ever broke.
+ * `context` names the query so the resulting error is diagnosable.
+ */
+export function requireSingleRow<T>(rows: T[], context: string): T {
+  const row = rows[0];
+  if (row === undefined) {
+    throw new Error(`Expected exactly one row from ${context}, got none`);
+  }
+  return row;
+}

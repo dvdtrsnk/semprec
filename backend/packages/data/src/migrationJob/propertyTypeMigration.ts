@@ -164,8 +164,9 @@ export async function runPropertyTypeMigrationJob(
     } finally {
       client.release();
     }
-    if (rows.length === 0 || rows.length < pageSize) break;
-    cursor = rows[rows.length - 1].id;
+    const lastRow = rows[rows.length - 1];
+    if (lastRow === undefined || rows.length < pageSize) break;
+    cursor = lastRow.id;
   }
 
   const finalClient = await pool.connect();

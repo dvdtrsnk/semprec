@@ -103,9 +103,9 @@ describe("getAiUsageReport", () => {
     const report = await getAiUsageReport(pool, { from: "2026-01-01T00:00:00Z", to: "2026-12-30T00:00:00Z" });
 
     expect(report.rows).toHaveLength(1);
-    expect(report.rows[0].inputTokens).toBeNull();
-    expect(report.rows[0].outputTokens).toBeNull();
-    expect(report.rows[0].audioSeconds).toBe(42);
+    expect(report.rows[0]!.inputTokens).toBeNull();
+    expect(report.rows[0]!.outputTokens).toBeNull();
+    expect(report.rows[0]!.audioSeconds).toBe(42);
   });
 
   it("returns an explicit zero-cost point for every day in range, not a missing one", async () => {

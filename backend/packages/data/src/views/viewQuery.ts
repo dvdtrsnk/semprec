@@ -92,7 +92,8 @@ async function queryCuratedView(
     ).map((item) => [item.id, item]),
   );
   const items = page.map((m) => itemsById.get(m.itemId)).filter((item): item is ItemRow => item !== undefined);
-  return { items, nextCursor: hasMore ? String(page[page.length - 1].position) : null };
+  const lastOnPage = page[page.length - 1];
+  return { items, nextCursor: hasMore && lastOnPage !== undefined ? String(lastOnPage.position) : null };
 }
 
 export async function queryView(

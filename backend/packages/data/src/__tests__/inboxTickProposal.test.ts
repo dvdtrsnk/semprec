@@ -52,7 +52,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       );
       const edges = await relationsStore.listRelationsForItem(client, relationDefinition!.id, itemId);
       if (edges.length === 0) return null;
-      const proposalItemId = relationsStore.otherSide(edges[0], itemId);
+      const proposalItemId = relationsStore.otherSide(edges[0]!, itemId);
       return itemsStore.getItemById(client, proposalsId, proposalItemId);
     });
   }
@@ -101,7 +101,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     expect(proposal!.properties.status).toBe("proposed");
     expect(proposal!.properties.fingerprint).toBe(sha256Of("☑️", "Buy milk"));
     expect(proposal!.properties.history).toHaveLength(1);
-    const [entry] = proposal!.properties.history as Array<Record<string, unknown>>;
+    const entry = (proposal!.properties.history as Array<Record<string, unknown>>)[0]!;
     expect(entry).toMatchObject({ author: "ai" });
     expect(typeof entry.message).toBe("string");
     expect(typeof entry.at).toBe("string");
@@ -447,7 +447,7 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
       );
       const edges = await relationsStore.listRelationsForItem(client, relationDefinition!.id, itemId);
       if (edges.length === 0) return null;
-      const proposalItemId = relationsStore.otherSide(edges[0], itemId);
+      const proposalItemId = relationsStore.otherSide(edges[0]!, itemId);
       return itemsStore.getItemById(client, proposalsId, proposalItemId);
     });
   }

@@ -1,4 +1,4 @@
-import type { Queryable } from "../db/pool.js";
+import { requireSingleRow, type Queryable } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
 import {
   rowToRegistration,
@@ -71,5 +71,5 @@ export async function setProjectMcpGrant(client: Queryable, input: SetProjectMcp
      RETURNING *`,
     [input.projectItemId, input.mcpToolRegistrationId, input.granted],
   );
-  return rowToGrant(rows[0]);
+  return rowToGrant(requireSingleRow(rows, "project_mcp_grants upsert RETURNING"));
 }

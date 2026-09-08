@@ -112,7 +112,7 @@ describe("MCP tool sync (issue #125)", () => {
       try {
         const item = await createMcpServerItem(contract.connectionConfig);
         await syncMcpServerTools(pool, item.id);
-        const [first] = await listMcpToolRegistrationsForServer(pool, item.id);
+        const first = (await listMcpToolRegistrationsForServer(pool, item.id))[0]!;
         await setMcpToolRiskClass(pool, first.id, "high");
         await setMcpToolRequiresApproval(pool, first.id, false);
 
@@ -125,7 +125,7 @@ describe("MCP tool sync (issue #125)", () => {
         ]);
         await syncMcpServerTools(pool, item.id);
 
-        const [resynced] = await listMcpToolRegistrationsForServer(pool, item.id);
+        const resynced = (await listMcpToolRegistrationsForServer(pool, item.id))[0]!;
         expect(resynced.id).toBe(first.id);
         expect(resynced.description).toBe("Updated description");
         expect(resynced.toolSchema).toEqual({ type: "object", properties: { q: { type: "string" } } });
@@ -141,15 +141,15 @@ describe("MCP tool sync (issue #125)", () => {
       try {
         const item = await createMcpServerItem(contract.connectionConfig);
         await syncMcpServerTools(pool, item.id);
-        const [existing] = await listMcpToolRegistrationsForServer(pool, item.id);
+        const existing = (await listMcpToolRegistrationsForServer(pool, item.id))[0]!;
 
         contract.setTools([]);
         await syncMcpServerTools(pool, item.id);
 
         const registrations = await listMcpToolRegistrationsForServer(pool, item.id);
         expect(registrations).toHaveLength(1);
-        expect(registrations[0].id).toBe(existing.id);
-        expect(registrations[0].active).toBe(false);
+        expect(registrations[0]!.id).toBe(existing.id);
+        expect(registrations[0]!.active).toBe(false);
       } finally {
         await contract.stop();
       }

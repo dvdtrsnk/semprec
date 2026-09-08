@@ -83,11 +83,11 @@ describe("library module (issue #25)", () => {
 
     const booksViews = await chokePoint.listViewsByDatabase(booksId);
     expect(booksViews).toHaveLength(1);
-    expect(booksViews[0].type).toBe("library-grid");
-    expect(booksViews[0].config).toMatchObject({ coverKey: "cover", subtitleKey: "author", statusKey: "status" });
+    expect(booksViews[0]!.type).toBe("library-grid");
+    expect(booksViews[0]!.config).toMatchObject({ coverKey: "cover", subtitleKey: "author", statusKey: "status" });
 
     const moviesViews = await chokePoint.listViewsByDatabase(moviesId);
-    expect(moviesViews[0].config).toMatchObject({
+    expect(moviesViews[0]!.config).toMatchObject({
       coverKey: "cover",
       subtitleKey: "year",
       secondaryRatingKey: "secondaryRating",
@@ -188,7 +188,7 @@ describe("library module (issue #25)", () => {
     );
     expect(rows).toHaveLength(1);
     await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
-      rows[0].id,
+      rows[0]!.id,
     ]);
     await withTransaction(pool, (client) => sweepDueHeartbeats(client));
 
@@ -220,7 +220,7 @@ describe("library module (issue #25)", () => {
       [movie.id],
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0].metadata).toEqual({ rating: 4 });
+    expect(rows[0]!.metadata).toEqual({ rating: 4 });
 
     // Not a property on either side.
     expect((await chokePoint.getItem(moviesId, movie.id))?.properties.rating).toBeUndefined();
@@ -243,7 +243,7 @@ describe("library module (issue #25)", () => {
       [LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID, booksId],
     );
     await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
-      rows[0].id,
+      rows[0]!.id,
     ]);
     await withTransaction(pool, (client) => sweepDueHeartbeats(client));
 

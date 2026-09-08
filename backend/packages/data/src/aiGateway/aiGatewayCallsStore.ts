@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { requireSingleRow } from "../db/pool.js";
 
 export interface AiGatewayCallRow {
   id: string;
@@ -103,5 +104,6 @@ export async function getGatewaySpend(client: Pool | PoolClient, timezone: strin
      WHERE at >= date_trunc('month', now() AT TIME ZONE $1) AT TIME ZONE $1`,
     [timezone],
   );
-  return { spentToday: Number(rows[0].spent_today), spentMonth: Number(rows[0].spent_month) };
+  const totals = requireSingleRow(rows, "ai_gateway_calls spend totals");
+  return { spentToday: Number(totals.spent_today), spentMonth: Number(totals.spent_month) };
 }

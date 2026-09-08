@@ -11,7 +11,7 @@ export interface DeliveredToCandidates {
 /** A raw header value can be `"Name <addr>"` or a bare address — this extracts just the address. */
 function extractAddress(raw: string): string {
   const match = raw.match(/<([^<>]+)>/);
-  return (match ? match[1] : raw).trim();
+  return (match?.[1] ?? raw).trim();
 }
 
 export interface ResolveDeliveredToAddressInput {
@@ -31,8 +31,9 @@ export interface ResolveDeliveredToAddressInput {
 export function resolveDeliveredToAddress(input: ResolveDeliveredToAddressInput): string | undefined {
   const { candidates, structuredTo, structuredCc, mailboxAliases } = input;
 
-  if (candidates.deliveredToHeaders.length > 0) {
-    return normalizeEmailAddress(extractAddress(candidates.deliveredToHeaders[0]));
+  const [firstDeliveredTo] = candidates.deliveredToHeaders;
+  if (firstDeliveredTo !== undefined) {
+    return normalizeEmailAddress(extractAddress(firstDeliveredTo));
   }
   if (candidates.xOriginalTo) {
     return normalizeEmailAddress(extractAddress(candidates.xOriginalTo));
@@ -47,5 +48,6 @@ export function resolveDeliveredToAddress(input: ResolveDeliveredToAddressInput)
     if (structuredAddresses.has(normalizedAlias)) return normalizedAlias;
   }
 
-  return mailboxAliases.length > 0 ? normalizeEmailAddress(mailboxAliases[0]) : undefined;
+  const [firstAlias] = mailboxAliases;
+  return firstAlias !== undefined ? normalizeEmailAddress(firstAlias) : undefined;
 }

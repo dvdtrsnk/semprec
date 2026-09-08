@@ -117,8 +117,8 @@ describe("getGrantedMcpAgentTools (issue #126)", () => {
 
     const tools = await withTransaction(pool, (client) => getGrantedMcpAgentTools(client, projectItemId));
     expect(tools).toHaveLength(1);
-    expect(tools[0].riskClass).toBe("destructive");
-    expect(tools[0].requiresApproval).toBe(true);
+    expect(tools[0]!.riskClass).toBe("destructive");
+    expect(tools[0]!.requiresApproval).toBe(true);
   });
 
   it("lets two projects expose different subsets of the same server", async () => {

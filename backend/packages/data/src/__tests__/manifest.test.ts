@@ -44,9 +44,9 @@ describe("permission manifest and drift check", () => {
 
     const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, projectItem.id));
     expect(manifest.databases).toHaveLength(1);
-    expect(manifest.databases[0].databaseId).toBe(owned.id);
-    expect(manifest.databases[0].writable).toBe(true);
-    expect(manifest.databases[0].properties.map((p) => p.key).sort()).toEqual(["note", "rating"]);
+    expect(manifest.databases[0]!.databaseId).toBe(owned.id);
+    expect(manifest.databases[0]!.writable).toBe(true);
+    expect(manifest.databases[0]!.properties.map((p) => p.key).sort()).toEqual(["note", "rating"]);
   });
 
   it("scopes Semprec's own grant to Processing proposals only, per issue #105's grant separation", async () => {
@@ -54,7 +54,7 @@ describe("permission manifest and drift check", () => {
     await seedSystem(pool, viewTypeRegistry);
 
     const { rows } = await pool.query<{ id: string }>(`SELECT id FROM items WHERE properties ->> 'name' = 'Semprec'`);
-    const semprecProjectItemId = rows[0].id;
+    const semprecProjectItemId = rows[0]!.id;
 
     const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, semprecProjectItemId));
 
@@ -74,7 +74,7 @@ describe("permission manifest and drift check", () => {
 
     const mcpServersId = (
       await pool.query<{ id: string }>(`SELECT id FROM databases WHERE owner_module_id = 'mcpServers'`)
-    ).rows[0].id;
+    ).rows[0]!.id;
     const server = await withTransaction(pool, (client) =>
       itemsStore.insertItem(client, { databaseId: mcpServersId, properties: { name: "Server", active: true } }),
     );
