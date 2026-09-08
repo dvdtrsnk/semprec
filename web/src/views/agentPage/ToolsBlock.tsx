@@ -23,6 +23,10 @@ interface RowMutationState {
 function useMcpToolGrants(operations: McpAgentPageOperations, projectItemId: string) {
   const [resource, setResource] = useState<ToolsResource>({ status: "loading" });
   const mounted = useRef(true);
+  // Guards against out-of-order responses: two overlapping `load` calls (e.g. two mutations
+  // each triggering their own `refresh`) can resolve in either order, and only the response to
+  // the most-recently-started request should ever be applied.
+  const loadGeneration = useRef(0);
   useEffect(
     () => () => {
       mounted.current = false;
@@ -32,6 +36,7 @@ function useMcpToolGrants(operations: McpAgentPageOperations, projectItemId: str
 
   const load = useCallback(
     async (background: boolean) => {
+      const generation = ++loadGeneration.current;
       if (background) {
         setResource((prev) => (prev.status === "ready" ? { ...prev, refreshing: true } : prev));
       } else {
@@ -39,9 +44,9 @@ function useMcpToolGrants(operations: McpAgentPageOperations, projectItemId: str
       }
       try {
         const rows = await operations.listMcpToolGrants(projectItemId);
-        if (mounted.current) setResource({ status: "ready", rows, refreshing: false });
+        if (mounted.current && generation === loadGeneration.current) setResource({ status: "ready", rows, refreshing: false });
       } catch (error) {
-        if (!mounted.current) return;
+        if (!mounted.current || generation !== loadGeneration.current) return;
         setResource((prev) =>
           // A failed background refresh doesn't discard rows already on screen — only a
           // failed *initial* load (nothing to show yet) becomes the full error state.
@@ -130,9 +135,11 @@ function ToolRow({
  * checkbox bound directly to `project_mcp_grants.granted` for (this project, this tool) and
  * minimal authenticated controls to reclassify `riskClass`/`requiresApproval`.
  *
- * Mutations are optimistic (the checkbox/select reflects the intended state immediately) and
- * revert with an inline per-row error on failure, rather than freezing the whole block while
- * one row's write is in flight.
+ * Mutations are pessimistic: the row's controls stay bound to the last-known server value and
+ * are disabled while a write is in flight, then re-enabled once the post-mutation refresh
+ * lands — rather than freezing the whole block while one row's write is in flight. A failed
+ * mutation surfaces an inline per-row error instead of reverting anything, since nothing was
+ * changed optimistically to revert.
  */
 export function ToolsBlock({ projectItemId, operations }: { projectItemId: string; operations: McpAgentPageOperations }) {
   const t = useTranslate();

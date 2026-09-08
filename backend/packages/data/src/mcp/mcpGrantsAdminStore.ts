@@ -49,15 +49,28 @@ export interface SetProjectMcpGrantInput {
   granted: boolean;
 }
 
+const FOREIGN_KEY_VIOLATION_ERRCODE = "23503";
+
+function isForeignKeyViolation(err: unknown): boolean {
+  return (err as { code?: string })?.code === FOREIGN_KEY_VIOLATION_ERRCODE;
+}
+
 /** User-only mutation: grants or revokes a project's ability to invoke one registered tool. */
 export async function setProjectMcpGrant(client: Queryable, input: SetProjectMcpGrantInput): Promise<ProjectMcpGrant> {
-  const { rows } = await client.query<ProjectMcpGrantRow>(
-    `INSERT INTO project_mcp_grants (project_item_id, mcp_tool_registration_id, granted)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (project_item_id, mcp_tool_registration_id) DO UPDATE
-       SET granted = EXCLUDED.granted, updated_at = now()
-     RETURNING *`,
-    [input.projectItemId, input.mcpToolRegistrationId, input.granted],
-  );
-  return rowToGrant(rows[0]);
+  try {
+    const { rows } = await client.query<ProjectMcpGrantRow>(
+      `INSERT INTO project_mcp_grants (project_item_id, mcp_tool_registration_id, granted)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (project_item_id, mcp_tool_registration_id) DO UPDATE
+         SET granted = EXCLUDED.granted, updated_at = now()
+       RETURNING *`,
+      [input.projectItemId, input.mcpToolRegistrationId, input.granted],
+    );
+    return rowToGrant(rows[0]);
+  } catch (err) {
+    if (isForeignKeyViolation(err)) {
+      throw new NotFoundError(`No mcp_tool_registrations row with id '${input.mcpToolRegistrationId}'`);
+    }
+    throw err;
+  }
 }

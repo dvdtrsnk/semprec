@@ -103,6 +103,24 @@ describe("createMcpAgentPageRequestListener", () => {
     expect(res.status).toBe(400);
   });
 
+  it("maps a grant PATCH for an unknown mcpToolRegistrationId to a 404 response", async () => {
+    const res = await fetch(`${baseUrl}/api/projects/${randomUUID()}/mcp-grants/${randomUUID()}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ granted: true }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects a PATCH with a malformed JSON body", async () => {
+    const res = await fetch(`${baseUrl}/api/projects/${randomUUID()}/mcp-grants/${randomUUID()}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      body: "{not valid json",
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("reclassifies a registration's riskClass and requiresApproval through PATCH", async () => {
     const server1 = await createMcpServerItem("Server", true);
     const registration = await upsertMcpToolRegistration(pool, { mcpServerItemId: server1.id, toolName: "tool", toolSchema: {} });

@@ -157,4 +157,42 @@ describe("ToolsBlock (issue #127)", () => {
     releaseSecondLoad();
     await screen.findByText((_, element) => element?.tagName === "H3" && element.textContent === "Docs server");
   });
+
+  it("ignores a stale response when an earlier reload resolves after a later one", async () => {
+    const rowA = makeRow({ mcpToolRegistrationId: "reg-a", toolName: "tool_a" });
+    const rowB = makeRow({ mcpToolRegistrationId: "reg-b", toolName: "tool_b" });
+
+    let call = 0;
+    let releaseFirstReload!: () => void;
+    const listMcpToolGrants = vi.fn(async () => {
+      call++;
+      if (call === 1) return [rowA];
+      if (call === 2) {
+        // The initial load's response for the *first* background reload — deliberately held
+        // back so it resolves after the second reload's response, simulating out-of-order
+        // network delivery.
+        await new Promise<void>((resolve) => (releaseFirstReload = resolve));
+        return [rowA];
+      }
+      return [rowA, rowB];
+    });
+    const setMcpToolGrant = vi.fn(async (input: { granted: boolean }) => ({ granted: input.granted }));
+
+    renderBlock(stubOperations({ listMcpToolGrants, setMcpToolGrant }));
+
+    const checkboxA = await screen.findByRole("checkbox", { name: "tool_a" });
+    await userEvent.click(checkboxA); // triggers reload #2 (held back)
+
+    await screen.findByText("Refreshing…");
+    await userEvent.click(checkboxA); // triggers reload #3 (resolves immediately with both rows)
+
+    await screen.findByRole("checkbox", { name: "tool_b" });
+
+    releaseFirstReload();
+    // Give the stale reload's promise a turn to (not) apply its result.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(screen.getByRole("checkbox", { name: "tool_b" })).toBeInTheDocument();
+  });
 });

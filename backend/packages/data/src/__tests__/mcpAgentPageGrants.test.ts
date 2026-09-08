@@ -125,6 +125,14 @@ describe("setProjectMcpGrantForAgentPage / reclassifyMcpTool (issue #127)", () =
     expect(revoked.granted).toBe(false);
   });
 
+  it("propagates NotFoundError when granting an unknown registration id", async () => {
+    await expect(
+      withTransaction(pool, (client) =>
+        setProjectMcpGrantForAgentPage(client, { projectItemId: randomUUID(), mcpToolRegistrationId: randomUUID(), granted: true }),
+      ),
+    ).rejects.toThrow(NotFoundError);
+  });
+
   it("reclassifies riskClass and requiresApproval independently", async () => {
     const server = await createMcpServerItem("Server", true);
     const registration = await upsertMcpToolRegistration(pool, { mcpServerItemId: server.id, toolName: "tool", toolSchema: {} });

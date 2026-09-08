@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { withTransaction, ChokePointError, listMcpToolGrantsForProject, reclassifyMcpTool, setProjectMcpGrantForAgentPage } from "@semprec/data";
+import { withTransaction, ChokePointError, ValidationError, listMcpToolGrantsForProject, reclassifyMcpTool, setProjectMcpGrantForAgentPage } from "@semprec/data";
 import type { Pool } from "pg";
 
 export interface McpAgentPageHandlerOptions {
@@ -27,7 +27,11 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(chunk as Buffer);
   if (chunks.length === 0) return {};
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new ValidationError("Request body is not valid JSON");
+  }
 }
 
 const MCP_GRANTS_PATH = /^\/api\/projects\/([^/]+)\/mcp-grants(?:\/([^/]+))?$/;
