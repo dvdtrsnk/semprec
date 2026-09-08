@@ -62,6 +62,17 @@ export function isOnItemEventRule(rule: AnyHeartbeatRule): boolean {
 }
 
 /**
+ * Floating by `kind` alone, not by parsed shape — the sweep and the occurrence fire task
+ * (issue #213) both need this before deciding whether a rule needs full parsing/module
+ * dispatch at all: `everyNDays`/`interval` are the only kinds whose `next_fire_at` is computed
+ * from actual execution time rather than the calendar, and both are core-owned, so checking the
+ * raw `kind` string never risks throwing for a module-declared kind.
+ */
+export function isFloatingRuleKind(kind: string): boolean {
+  return kind === "everyNDays" || kind === "interval";
+}
+
+/**
  * Validates a raw rule against core's fixed schema when its `kind` is core-owned, or against
  * the matching entry of `moduleRuleKinds` otherwise — the "union of core and active
  * heartbeatRuleKinds" the scheduler validates against (issue #109). A `kind` that is neither

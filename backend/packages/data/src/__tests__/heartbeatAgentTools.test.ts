@@ -303,6 +303,12 @@ describe("heartbeat.list / heartbeat.history / heartbeat.trigger agent tools", (
       heartbeat.id,
     ]);
     await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    const { rows: occurrenceRows } = await pool.query<{ id: string }>(
+      "SELECT id FROM heartbeat_occurrences WHERE heartbeat_id = $1",
+      [heartbeat.id],
+    );
+    expect(occurrenceRows).toHaveLength(1);
+    const occurrenceId = occurrenceRows[0].id;
 
     const callingRun = await createAgentRun(pool, { projectItemId: PROJECT_A, triggeredBy: "user", task: "trigger" });
     const heartbeatTrigger = createHeartbeatTriggerTool(pool);
@@ -310,7 +316,7 @@ describe("heartbeat.list / heartbeat.history / heartbeat.trigger agent tools", (
 
     const jobs = await pendingTriggerJobs(pool);
     expect(jobs.map((j) => j.key).sort()).toEqual(
-      [`heartbeat-fire:${heartbeat.id}`, `heartbeat-fire:manual:${heartbeat.id}`].sort(),
+      [`heartbeat-fire:${heartbeat.id}:${occurrenceId}`, `heartbeat-fire:manual:${heartbeat.id}`].sort(),
     );
   });
 

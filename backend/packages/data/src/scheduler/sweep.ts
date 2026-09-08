@@ -2,7 +2,16 @@ import type { Pool } from "pg";
 import type { Task } from "@semprec/queue";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { withTransaction } from "../db/pool.js";
-import { getHeartbeat, recordHeartbeatFailure, recordHeartbeatSuccess, sweepDueHeartbeats } from "./schedulerStore.js";
+import { ValidationError } from "../errors.js";
+import {
+  failHeartbeatOccurrence,
+  getHeartbeat,
+  prepareHeartbeatOccurrenceFire,
+  recordHeartbeatFailure,
+  recordHeartbeatSuccess,
+  succeedHeartbeatOccurrence,
+  sweepDueHeartbeats,
+} from "./schedulerStore.js";
 import type { HeartbeatRuleKindRegistry } from "./rule.js";
 import type { ActionRegistry } from "./actions.js";
 
@@ -28,8 +37,10 @@ export async function handleHeartbeatSweepTask(pool: Pool, moduleRegistry?: Modu
 /**
  * Runs the heartbeat's action handler. On the final retry attempt (max_attempts: 3
  * total), a failure is recorded to `last_error` and a `heartbeat_error` notification
- * is written in the same transaction; the next scheduled occurrence is unaffected
- * (next_fire_at was already advanced by the sweep regardless of outcome).
+ * is written in the same transaction. `payload` carries exactly one of three discriminators
+ * (issue #213): `occurrenceId` for a sweep-driven scheduled fire, `itemId` for an `onItemEvent`
+ * fire, or `triggeredByRunId` for a `heartbeat.trigger` manual fire — zero or more than one is
+ * rejected with `validation_failed` rather than guessed at.
  */
 export function createHeartbeatFireTask(pool: Pool, registry: ActionRegistry, moduleRegistry?: ModuleRegistry): Task {
   return async (rawPayload, helpers) => {
@@ -37,6 +48,10 @@ export function createHeartbeatFireTask(pool: Pool, registry: ActionRegistry, mo
     const heartbeatId = record?.heartbeatId;
     if (typeof heartbeatId !== "string") {
       throw new Error("heartbeatFire job payload missing string field 'heartbeatId'");
+    }
+    const rawOccurrenceId = record?.occurrenceId;
+    if (rawOccurrenceId !== undefined && typeof rawOccurrenceId !== "string") {
+      throw new Error("heartbeatFire job payload field 'occurrenceId' must be a string when present");
     }
     const rawItemId = record?.itemId;
     if (rawItemId !== undefined && typeof rawItemId !== "string") {
@@ -46,9 +61,26 @@ export function createHeartbeatFireTask(pool: Pool, registry: ActionRegistry, mo
     if (rawTriggeredByRunId !== undefined && typeof rawTriggeredByRunId !== "string") {
       throw new Error("heartbeatFire job payload field 'triggeredByRunId' must be a string when present");
     }
-    const payload = { heartbeatId, itemId: rawItemId, triggeredByRunId: rawTriggeredByRunId };
+    const discriminators = [rawOccurrenceId, rawItemId, rawTriggeredByRunId].filter((v) => v !== undefined);
+    if (discriminators.length !== 1) {
+      throw new ValidationError(
+        "heartbeatFire job payload must carry exactly one of 'occurrenceId', 'itemId', 'triggeredByRunId'",
+      );
+    }
+    const payload = {
+      heartbeatId,
+      occurrenceId: rawOccurrenceId,
+      itemId: rawItemId,
+      triggeredByRunId: rawTriggeredByRunId,
+    };
 
     const moduleRuleKinds = await resolveModuleRuleKinds(moduleRegistry);
+
+    if (payload.occurrenceId !== undefined) {
+      await runScheduledOccurrenceFire(pool, registry, moduleRuleKinds, heartbeatId, payload.occurrenceId, helpers);
+      return;
+    }
+
     const readClient = await pool.connect();
     let heartbeat;
     try {
@@ -93,4 +125,49 @@ export function createHeartbeatFireTask(pool: Pool, registry: ActionRegistry, mo
       throw err;
     }
   };
+}
+
+/**
+ * The `occurrenceId` branch of `createHeartbeatFireTask` (issue #213): a sweep-driven fire for
+ * `dailyTime`/`weekly`/`interval`/`everyNDays`. `prepareHeartbeatOccurrenceFire` does the
+ * locking, snapshot comparison, and (on a genuine first attempt) the scheduling-state update, all
+ * before this ever calls the action handler.
+ */
+async function runScheduledOccurrenceFire(
+  pool: Pool,
+  registry: ActionRegistry,
+  moduleRuleKinds: HeartbeatRuleKindRegistry,
+  heartbeatId: string,
+  occurrenceId: string,
+  helpers: { job: { attempts: number; max_attempts: number } },
+): Promise<void> {
+  const prep = await prepareHeartbeatOccurrenceFire(pool, heartbeatId, occurrenceId, moduleRuleKinds);
+  // "missing": deleted since enqueue; "cancelled": disabled or stale snapshot; "degraded": rule
+  // kind's module went inactive (failure already recorded) — none of these execute the handler.
+  if (prep.outcome !== "proceed") return;
+
+  const heartbeat = prep.heartbeat;
+  const handler = registry.get(heartbeat.actionId);
+  if (!handler) throw new Error(`No handler registered for heartbeat action '${heartbeat.actionId}'`);
+
+  try {
+    await handler(heartbeat.actionConfig, { heartbeatId: heartbeat.id, projectItemId: heartbeat.projectItemId });
+    await withTransaction(pool, async (client) => {
+      await recordHeartbeatSuccess(client, heartbeat.id);
+      await succeedHeartbeatOccurrence(client, occurrenceId);
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const isFinalAttempt = helpers.job.attempts >= helpers.job.max_attempts;
+    if (isFinalAttempt) {
+      await withTransaction(pool, async (client) => {
+        await recordHeartbeatFailure(client, heartbeat.id, message);
+        await failHeartbeatOccurrence(client, occurrenceId, message);
+        await client.query(`INSERT INTO notifications (kind, payload) VALUES ('heartbeat_error', $1::jsonb)`, [
+          JSON.stringify({ heartbeatId: heartbeat.id, name: heartbeat.name, error: message }),
+        ]);
+      });
+    }
+    throw err;
+  }
 }
