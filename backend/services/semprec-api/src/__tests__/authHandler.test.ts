@@ -68,7 +68,7 @@ describe("createAuthRequestListener", () => {
   });
 
   describe("POST /api/auth/login", () => {
-    it("returns a token and sets a session cookie for correct credentials", async () => {
+    it("sets a session cookie for correct web credentials, and never puts the token in the body", async () => {
       const user = await makeUser();
 
       const res = await fetch(`${baseUrl}/api/auth/login`, {
@@ -78,11 +78,27 @@ describe("createAuthRequestListener", () => {
       });
 
       expect(res.status).toBe(200);
+      const body = (await res.json()) as { user: { id: string; email: string }; token?: unknown };
+      expect(body.token).toBeUndefined();
+      expect(body.user.email).toBe(user.email);
+      expect(body).not.toHaveProperty("user.passwordHash");
+      expect(sessionCookieFrom(res)).toBeTruthy();
+    });
+
+    it("returns the token in the body and sets no cookie for native (ios/macos) credentials", async () => {
+      const user = await makeUser();
+
+      const res = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "ios" }),
+      });
+
+      expect(res.status).toBe(200);
       const body = (await res.json()) as { token: string; user: { id: string; email: string } };
       expect(body.token).toBeTruthy();
       expect(body.user.email).toBe(user.email);
-      expect(body).not.toHaveProperty("user.passwordHash");
-      expect(sessionCookieFrom(res)).toBe(encodeURIComponent(body.token));
+      expect(res.headers.get("set-cookie")).toBeNull();
     });
 
     it("returns 401 for a wrong password", async () => {
@@ -163,6 +179,36 @@ describe("createAuthRequestListener", () => {
       const res = await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: "Bearer garbage" } });
       expect(res.status).toBe(401);
     });
+
+    it("rejects a web session's token when presented as a bearer token", async () => {
+      const user = await makeUser();
+      const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "web" }),
+      });
+      const cookie = sessionCookieFrom(loginRes);
+
+      const res = await fetch(`${baseUrl}/api/auth/session`, {
+        headers: { Authorization: `Bearer ${decodeURIComponent(cookie)}` },
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it("rejects a native session's token when presented as a cookie", async () => {
+      const user = await makeUser();
+      const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "ios" }),
+      });
+      const { token } = (await loginRes.json()) as { token: string };
+
+      const res = await fetch(`${baseUrl}/api/auth/session`, {
+        headers: { Cookie: `${SESSION_COOKIE_NAME}=${token}` },
+      });
+      expect(res.status).toBe(401);
+    });
   });
 
   describe("POST /api/auth/logout", () => {
@@ -171,7 +217,7 @@ describe("createAuthRequestListener", () => {
       const first = await fetch(`${baseUrl}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "web" }),
+        body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "macos" }),
       });
       const { token: tokenA } = (await first.json()) as { token: string };
       const second = await fetch(`${baseUrl}/api/auth/login`, {
@@ -209,7 +255,7 @@ describe("createAuthRequestListener", () => {
       const active = await fetch(`${baseUrl}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "web" }),
+        body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "ios" }),
       });
       const { token: activeToken } = (await active.json()) as { token: string };
       const target = await fetch(`${baseUrl}/api/auth/login`, {
@@ -245,7 +291,7 @@ describe("createAuthRequestListener", () => {
       const ownerLogin = await fetch(`${baseUrl}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: owner.email, password: PASSWORD, platform: "web" }),
+        body: JSON.stringify({ email: owner.email, password: PASSWORD, platform: "ios" }),
       });
       const { token: ownerToken } = (await ownerLogin.json()) as { token: string };
       const ownerSession = (await (
@@ -255,7 +301,7 @@ describe("createAuthRequestListener", () => {
       const attackerLogin = await fetch(`${baseUrl}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: attacker.email, password: PASSWORD, platform: "web" }),
+        body: JSON.stringify({ email: attacker.email, password: PASSWORD, platform: "ios" }),
       });
       const { token: attackerToken } = (await attackerLogin.json()) as { token: string };
 

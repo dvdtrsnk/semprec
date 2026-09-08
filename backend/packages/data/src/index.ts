@@ -139,6 +139,7 @@ export * from "./auth/loginAttemptsStore.js";
 export * from "./auth/emailNormalization.js";
 export * from "./auth/loginLockout.js";
 export * from "./auth/authActions.js";
+export * from "./auth/nativeBridge.js";
 export * from "./auth/passwordResetStore.js";
 export * from "./auth/passwordResetMail.js";
 export * from "./auth/passwordResetActions.js";
