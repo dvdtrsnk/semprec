@@ -29,10 +29,17 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
   it("returns pending requests joined with their source project's name and agent run", async () => {
     const projects = await chokePoint.createDatabase({ name: "Projects" });
     await chokePoint.createProperty({ databaseId: projects.id, key: "name", name: "Name", type: "title" });
-    const projectItem = await chokePoint.createItem({ databaseId: projects.id, properties: { name: "Renovate the kitchen" } });
+    const projectItem = await chokePoint.createItem({
+      databaseId: projects.id,
+      properties: { name: "Renovate the kitchen" },
+    });
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", projectItemId: projectItem.id });
 
-    const payload = { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: { to: "a@b.com", apiKey: "secret" } };
+    const payload = {
+      mcpToolRegistrationId: randomUUID(),
+      mcpServerItemId: randomUUID(),
+      args: { to: "a@b.com", apiKey: "secret" },
+    };
     const created = await createPendingApprovalRequest(pool, {
       agentRunId: run.id,
       toolName: "send_email",
@@ -61,7 +68,11 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
 
   it("never includes argument values, only their keys", async () => {
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
-    const payload = { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: { password: "hunter2" } };
+    const payload = {
+      mcpToolRegistrationId: randomUUID(),
+      mcpServerItemId: randomUUID(),
+      args: { password: "hunter2" },
+    };
     await createPendingApprovalRequest(pool, { agentRunId: run.id, toolName: "login", riskClass: "high", payload });
 
     const rows = await listApprovalRequestsQueue(pool);
@@ -84,9 +95,24 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
   it("orders oldest request first and excludes decided requests", async () => {
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
     const payload = { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} };
-    const first = await createPendingApprovalRequest(pool, { agentRunId: run.id, toolName: "first", riskClass: "low", payload });
-    const second = await createPendingApprovalRequest(pool, { agentRunId: run.id, toolName: "second", riskClass: "low", payload });
-    const decided = await createPendingApprovalRequest(pool, { agentRunId: run.id, toolName: "third", riskClass: "low", payload });
+    const first = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "first",
+      riskClass: "low",
+      payload,
+    });
+    const second = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "second",
+      riskClass: "low",
+      payload,
+    });
+    const decided = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "third",
+      riskClass: "low",
+      payload,
+    });
     await decideApprovalRequest(pool, decided.id, "approved", await createUser());
 
     const rows = await listApprovalRequestsQueue(pool);

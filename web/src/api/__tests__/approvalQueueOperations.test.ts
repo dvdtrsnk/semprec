@@ -35,8 +35,7 @@ describe("approval queue operations", () => {
   it("degrades a single malformed row to a placeholder, keeping the rest of the list", async () => {
     const operations = createApprovalQueueOperations({
       baseUrl: "/api",
-      fetchImpl: async () =>
-        jsonResponse({ rows: [{ id: "bad-1", toolName: 42 }, makeRawRow({ id: "req-2" })] }),
+      fetchImpl: async () => jsonResponse({ rows: [{ id: "bad-1", toolName: 42 }, makeRawRow({ id: "req-2" })] }),
     });
 
     const entries = await operations.listApprovalRequests();
@@ -62,7 +61,12 @@ describe("approval queue operations", () => {
       baseUrl: "/api",
       fetchImpl: async (input, init) => {
         calls.push({ url: String(input), method: init?.method, body: JSON.parse(String(init?.body)) });
-        return jsonResponse({ id: "req-1", status: "approved", decidedAt: "2026-09-01T12:05:00.000Z", decidedBy: "user-1" });
+        return jsonResponse({
+          id: "req-1",
+          status: "approved",
+          decidedAt: "2026-09-01T12:05:00.000Z",
+          decidedBy: "user-1",
+        });
       },
     });
 
@@ -77,12 +81,20 @@ describe("approval queue operations", () => {
       method: "PATCH",
       body: { decision: "approved", decidedByUserId: "user-1" },
     });
-    expect(result).toEqual({ id: "req-1", status: "approved", decidedAt: "2026-09-01T12:05:00.000Z", decidedBy: "user-1" });
+    expect(result).toEqual({
+      id: "req-1",
+      status: "approved",
+      decidedAt: "2026-09-01T12:05:00.000Z",
+      decidedBy: "user-1",
+    });
   });
 
   it("classifies a forbidden or missing resource as unavailable and a server error as retryable", async () => {
     const withStatus = (status: number) =>
-      createApprovalQueueOperations({ baseUrl: "/api", fetchImpl: async () => jsonResponse({}, status) }).listApprovalRequests();
+      createApprovalQueueOperations({
+        baseUrl: "/api",
+        fetchImpl: async () => jsonResponse({}, status),
+      }).listApprovalRequests();
 
     await expect(withStatus(403)).rejects.toMatchObject({ kind: "unavailable" });
     await expect(withStatus(500)).rejects.toMatchObject({ kind: "retryable" });

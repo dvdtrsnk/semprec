@@ -123,14 +123,12 @@ describe("ApprovalQueue (issue #132)", () => {
   });
 
   it("approves a request and shows the decided state", async () => {
-    const decideApprovalRequest = vi.fn(
-      async (): Promise<DecidedApprovalRequest> => ({
-        id: "req-1",
-        status: "approved",
-        decidedAt: "2026-09-01T12:05:00.000Z",
-        decidedBy: DECIDED_BY,
-      }),
-    );
+    const decideApprovalRequest = vi.fn(async (): Promise<DecidedApprovalRequest> => ({
+      id: "req-1",
+      status: "approved",
+      decidedAt: "2026-09-01T12:05:00.000Z",
+      decidedBy: DECIDED_BY,
+    }));
     renderQueue(
       stubOperations({
         listApprovalRequests: vi.fn(async () => [okEntry()]),
@@ -150,14 +148,12 @@ describe("ApprovalQueue (issue #132)", () => {
   });
 
   it("rejects a request and shows the decided state", async () => {
-    const decideApprovalRequest = vi.fn(
-      async (): Promise<DecidedApprovalRequest> => ({
-        id: "req-1",
-        status: "rejected",
-        decidedAt: "2026-09-01T12:05:00.000Z",
-        decidedBy: DECIDED_BY,
-      }),
-    );
+    const decideApprovalRequest = vi.fn(async (): Promise<DecidedApprovalRequest> => ({
+      id: "req-1",
+      status: "rejected",
+      decidedAt: "2026-09-01T12:05:00.000Z",
+      decidedBy: DECIDED_BY,
+    }));
     renderQueue(
       stubOperations({
         listApprovalRequests: vi.fn(async () => [okEntry()]),
@@ -171,14 +167,12 @@ describe("ApprovalQueue (issue #132)", () => {
   });
 
   it("shows a race note when the authoritative decision differs from what was requested", async () => {
-    const decideApprovalRequest = vi.fn(
-      async (): Promise<DecidedApprovalRequest> => ({
-        id: "req-1",
-        status: "rejected",
-        decidedAt: "2026-09-01T12:05:00.000Z",
-        decidedBy: "someone-else",
-      }),
-    );
+    const decideApprovalRequest = vi.fn(async (): Promise<DecidedApprovalRequest> => ({
+      id: "req-1",
+      status: "rejected",
+      decidedAt: "2026-09-01T12:05:00.000Z",
+      decidedBy: "someone-else",
+    }));
     renderQueue(
       stubOperations({
         listApprovalRequests: vi.fn(async () => [okEntry()]),
@@ -219,7 +213,9 @@ describe("ApprovalQueue (issue #132)", () => {
       }),
     );
 
-    expect(await screen.findByText("This request could not be displayed (malformed data)", { exact: false })).toBeInTheDocument();
+    expect(
+      await screen.findByText("This request could not be displayed (malformed data)", { exact: false }),
+    ).toBeInTheDocument();
     expect(screen.getByText("delete_file")).toBeInTheDocument();
   });
 });

@@ -45,8 +45,7 @@ export interface MalformedApprovalRequestRow {
 }
 
 export type ApprovalQueueEntry =
-  | { kind: "ok"; row: ApprovalRequestRow }
-  | { kind: "malformed"; row: MalformedApprovalRequestRow };
+  { kind: "ok"; row: ApprovalRequestRow } | { kind: "malformed"; row: MalformedApprovalRequestRow };
 
 function parseQueueRow(raw: unknown): ApprovalQueueEntry {
   const parsed = approvalRequestRowSchema.safeParse(raw);

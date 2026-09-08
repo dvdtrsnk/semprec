@@ -32,7 +32,13 @@ function MalformedRow({ id }: { id: string | null }) {
   );
 }
 
-function DecidedBadge({ decided, requestedDecision }: { decided: DecidedApprovalRequest; requestedDecision: ApprovalDecision }) {
+function DecidedBadge({
+  decided,
+  requestedDecision,
+}: {
+  decided: DecidedApprovalRequest;
+  requestedDecision: ApprovalDecision;
+}) {
   const t = useTranslate();
   // A race: this row was already approved/rejected by someone else before this client's own
   // decision landed — the response carries the *authoritative* outcome, which may not match
@@ -71,12 +77,17 @@ function PendingRow({
     <li className="approval-queue__row">
       <div className="approval-queue__summary">
         <span className="approval-queue__tool-name">{row.toolName}</span>
-        <span className="approval-queue__risk-class">{t("approvalQueue.row.riskClass", { riskClass: row.riskClass })}</span>
+        <span className="approval-queue__risk-class">
+          {t("approvalQueue.row.riskClass", { riskClass: row.riskClass })}
+        </span>
       </div>
       <p className="approval-queue__args">{argsSummary}</p>
-      <p className="approval-queue__meta">{t("approvalQueue.row.requestedAt", { when: formatRequestedAt(row.requestedAt) })}</p>
+      <p className="approval-queue__meta">
+        {t("approvalQueue.row.requestedAt", { when: formatRequestedAt(row.requestedAt) })}
+      </p>
       <p className="approval-queue__source">
-        {row.projectName ?? (row.projectItemId ? t("approvalQueue.row.project.unknown") : t("approvalQueue.row.project.none"))}
+        {row.projectName ??
+          (row.projectItemId ? t("approvalQueue.row.project.unknown") : t("approvalQueue.row.project.none"))}
         {" · "}
         {t("approvalQueue.row.agentRun", { id: row.agentRunId })}
       </p>
@@ -116,7 +127,9 @@ export function ApprovalQueue({
   const t = useTranslate();
   const { resource, reload } = useAsyncResource(() => operations.listApprovalRequests(), [operations]);
   const [mutations, setMutations] = useState<Record<string, RowMutationState>>({});
-  const [decisions, setDecisions] = useState<Record<string, { decided: DecidedApprovalRequest; requestedDecision: ApprovalDecision }>>({});
+  const [decisions, setDecisions] = useState<
+    Record<string, { decided: DecidedApprovalRequest; requestedDecision: ApprovalDecision }>
+  >({});
 
   const onDecide = useCallback(
     async (row: ApprovalRequestRow, decision: ApprovalDecision) => {
@@ -151,9 +164,17 @@ export function ApprovalQueue({
           if (entry.kind === "malformed") return <MalformedRow key={entry.row.id ?? Math.random()} id={entry.row.id} />;
           const decision = decisions[entry.row.id];
           if (decision) {
-            return <DecidedBadge key={entry.row.id} decided={decision.decided} requestedDecision={decision.requestedDecision} />;
+            return (
+              <DecidedBadge
+                key={entry.row.id}
+                decided={decision.decided}
+                requestedDecision={decision.requestedDecision}
+              />
+            );
           }
-          return <PendingRow key={entry.row.id} row={entry.row} mutation={mutations[entry.row.id]} onDecide={onDecide} />;
+          return (
+            <PendingRow key={entry.row.id} row={entry.row} mutation={mutations[entry.row.id]} onDecide={onDecide} />
+          );
         })}
       </ul>
     </section>

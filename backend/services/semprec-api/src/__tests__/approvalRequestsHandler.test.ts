@@ -214,7 +214,12 @@ describe("createApprovalRequestsRequestListener", () => {
       const projectItem = await chokePoint.createItem({ databaseId: projects.id, properties: { name: "Kitchen" } });
       const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", projectItemId: projectItem.id });
       const payload = { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: { to: "a@b.com" } };
-      await createPendingApprovalRequest(pool, { agentRunId: run.id, toolName: "send_email", riskClass: "moderate", payload });
+      await createPendingApprovalRequest(pool, {
+        agentRunId: run.id,
+        toolName: "send_email",
+        riskClass: "moderate",
+        payload,
+      });
 
       const res = await fetch(`${baseUrl}/api/approval-requests`, {
         headers: { Authorization: `Bearer ${AUTH_TOKEN}` },

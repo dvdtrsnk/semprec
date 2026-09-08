@@ -167,7 +167,11 @@ export type {
   ApprovalRequestDecision,
   CreatePendingApprovalRequestInput,
 } from "./mcp/approvalRequestsStore.js";
-export { createPendingApprovalRequest, getApprovalRequest, listPendingApprovalRequests } from "./mcp/approvalRequestsStore.js";
+export {
+  createPendingApprovalRequest,
+  getApprovalRequest,
+  listPendingApprovalRequests,
+} from "./mcp/approvalRequestsStore.js";
 export type { ApprovalRequestQueueEntry, ApprovalRequestSafeSummary } from "./mcp/approvalRequestsQueue.js";
 export { listApprovalRequestsQueue } from "./mcp/approvalRequestsQueue.js";
 export type { McpInvokeResult, McpInvokeArgs, McpInvokeOptions } from "./mcp/mcpToolExecution.js";
