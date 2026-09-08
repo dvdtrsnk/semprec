@@ -91,3 +91,63 @@ body {
   border-bottom: 1px solid var(--color-border);
   text-align: left;
 }
+
+.agent-tools__server {
+  margin: var(--space-3) 0;
+}
+
+.agent-tools__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.agent-tools__row {
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.agent-tools__checkbox {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+.agent-tools__description {
+  margin: var(--space-1) 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.agent-tools__classification {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+  font-size: var(--font-size-sm);
+}
+
+.agent-tools__row-error {
+  margin: var(--space-1) 0 0;
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+}
+
+.agent-tools__refreshing {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.agent-tools__badge {
+  margin-left: var(--space-2);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-1);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.agent-tools__badge--offline {
+  color: var(--color-danger);
+  background: var(--color-surface-raised);
+}

@@ -138,3 +138,5 @@ export type { SyncMcpServerToolsOptions, SyncMcpServerToolsResult } from "./mcp/
 export { syncMcpServerTools } from "./mcp/mcpSync.js";
 export type { McpAgentToolProjection } from "./mcp/mcpAgentTools.js";
 export { getGrantedMcpAgentTools } from "./mcp/mcpAgentTools.js";
+export type { McpToolGrantForProject, ReclassifyMcpToolInput } from "./mcp/mcpAgentPageGrants.js";
+export { listMcpToolGrantsForProject, setProjectMcpGrantForAgentPage, reclassifyMcpTool } from "./mcp/mcpAgentPageGrants.js";

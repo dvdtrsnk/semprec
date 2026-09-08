@@ -86,6 +86,13 @@ export const en = {
   "aiUsage.run.none": "Not tied to a run",
   "aiUsage.unit.tokens": "{input} in / {output} out tokens",
   "aiUsage.unit.audioSeconds": "{seconds}s audio (audio-only, no tokens)",
+  "agentPage.tools.title": "Tools",
+  "agentPage.tools.empty": "No active MCP tools are registered in the system yet",
+  "agentPage.tools.refreshing": "Refreshing…",
+  "agentPage.tools.transportOffline": "Server offline",
+  "agentPage.tools.riskClass": "Risk class",
+  "agentPage.tools.requiresApproval": "Requires approval",
+  "agentPage.tools.mutationError": "Could not save: {message}",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -174,6 +181,13 @@ export const cs: Messages = {
   "aiUsage.run.none": "Mimo běh",
   "aiUsage.unit.tokens": "{input} vstup / {output} výstup tokenů",
   "aiUsage.unit.audioSeconds": "{seconds}s zvuku (pouze zvuk, bez tokenů)",
+  "agentPage.tools.title": "Nástroje",
+  "agentPage.tools.empty": "V systému zatím nejsou registrované žádné aktivní MCP nástroje",
+  "agentPage.tools.refreshing": "Aktualizuje se…",
+  "agentPage.tools.transportOffline": "Server offline",
+  "agentPage.tools.riskClass": "Riziková třída",
+  "agentPage.tools.requiresApproval": "Vyžaduje schválení",
+  "agentPage.tools.mutationError": "Nepodařilo se uložit: {message}",
 };
 
 export const CATALOGS = { cs, en } as const;
