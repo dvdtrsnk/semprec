@@ -28,6 +28,7 @@ export type { CompactionAdapter, CompactionSettings, PreparedCompaction } from "
 export type { ReconstructedHistory } from "./conversationReconstruction.js";
 export {
   createMcpInvokeTool,
+  createApprovalGatedMcpInvokeTool,
   resolveMcpInvocation,
   executeMcpInvocation,
   type McpInvokeTool,
