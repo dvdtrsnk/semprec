@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
-import { PROPERTY_TYPES, type PropertyOwner, type PropertyRow, type PropertyType } from "../types.js";
+import { PROPERTY_TYPES, type DatabaseRow, type PropertyOwner, type PropertyRow, type PropertyType } from "../types.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { getDatabase } from "./databasesStore.js";
 
@@ -17,7 +17,7 @@ function mapPropertyRow(row: {
   id: string;
   database_id: string;
   key: string;
-  name: string;
+  name: string | null;
   type: string;
   config: Record<string, unknown>;
   locked: boolean;
@@ -72,18 +72,20 @@ async function requireProperty(client: PoolClient, propertyId: string): Promise<
   return property;
 }
 
-async function assertDatabaseSchemaUnlocked(client: PoolClient, databaseId: string): Promise<void> {
+async function assertDatabaseSchemaUnlocked(client: PoolClient, databaseId: string): Promise<DatabaseRow> {
   const database = await getDatabase(client, databaseId);
   if (!database) throw new NotFoundError(`Database ${databaseId} not found`);
   if (database.schemaLocked) {
     throw new ForbiddenError("The owning database's schema is locked; only a code-level migration may change it");
   }
+  return database;
 }
 
 export interface CreatePropertyInput {
   databaseId: string;
   key: string;
-  name: string;
+  /** Required unless the owning database is a system database — enforced below, not by the (now nullable) column. */
+  name: string | null;
   type: PropertyType;
   config?: Record<string, unknown>;
   locked?: boolean;
@@ -95,7 +97,10 @@ export async function createProperty(client: PoolClient, input: CreatePropertyIn
   if (!PROPERTY_TYPES.includes(input.type)) {
     throw new ValidationError(`Unknown property type '${input.type}'`, { field: "type" });
   }
-  await assertDatabaseSchemaUnlocked(client, input.databaseId);
+  const database = await assertDatabaseSchemaUnlocked(client, input.databaseId);
+  if (!database.system && !input.name) {
+    throw new ValidationError("name is required for a property of a non-system database", { field: "name" });
+  }
 
   const { rows } = await client.query(
     `INSERT INTO properties (database_id, key, name, type, config, locked, owner, owner_process)

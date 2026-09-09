@@ -37,7 +37,16 @@ export type PropertyType = (typeof PROPERTY_TYPES)[number];
 
 export interface DatabaseRow {
   id: string;
-  name: string;
+  /** Stable unique English camelCase identifier (issue #235) — set only for system databases; null for user-created ones. */
+  key: string | null;
+  /**
+   * Nullable for a system database (issue #235): a null value is an override slot for the
+   * translation catalog #146 ships, not a "no name" state — until #147 wires the resolver, a
+   * serializer needing a display string falls back to `key`. `system: false` databases are
+   * still required to carry a name by application validation (databasesStore.createDatabase),
+   * not by a DB constraint.
+   */
+  name: string | null;
   parentItemId: string | null;
   ownerProjectItemId: string | null;
   ownerModuleId: string | null;
@@ -50,7 +59,8 @@ export interface PropertyRow {
   id: string;
   databaseId: string;
   key: string;
-  name: string;
+  /** Nullable for a built-in property of a system database (issue #235) — see `DatabaseRow.name`. */
+  name: string | null;
   type: PropertyType;
   config: Record<string, unknown>;
   locked: boolean;
