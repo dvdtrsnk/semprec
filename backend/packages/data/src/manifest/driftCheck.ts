@@ -80,9 +80,10 @@ export function createDriftCheckAction(pool: Pool, options: CreateDriftCheckActi
 
       const orphaned = await findOrphanedOwnerProcessProperties(client, options.activeProcessIds);
       if (orphaned.length > 0) {
-        await client.query(`INSERT INTO manifest_drift_findings (kind, payload) VALUES ('agent_manifest_drift', $1::jsonb)`, [
-          JSON.stringify({ projectItemId: context.projectItemId, orphanedOwnerProcess: orphaned }),
-        ]);
+        await client.query(
+          `INSERT INTO manifest_drift_findings (kind, payload) VALUES ('agent_manifest_drift', $1::jsonb)`,
+          [JSON.stringify({ projectItemId: context.projectItemId, orphanedOwnerProcess: orphaned })],
+        );
       }
     });
   };

@@ -105,9 +105,7 @@ describe("writeNotification", () => {
 
     await write("job-1");
     await write("job-1"); // replay of the same transition: must not duplicate
-    const { rows: afterReplay } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [
-      "hb-replay",
-    ]);
+    const { rows: afterReplay } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, ["hb-replay"]);
     expect(afterReplay).toHaveLength(1);
 
     await write("job-2"); // a distinct, later failure of the same source: a genuinely new row

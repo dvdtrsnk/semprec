@@ -155,9 +155,10 @@ describe("moduleRegistry.checkDrift", () => {
       action({}, { heartbeatId: "hb", projectItemId }),
     ]);
 
-    const { rows } = await pool.query(`SELECT id FROM manifest_drift_findings WHERE kind = $1 AND resolved_at IS NULL`, [
-      UNKNOWN_HEARTBEAT_ACTION_FINDING_KIND,
-    ]);
+    const { rows } = await pool.query(
+      `SELECT id FROM manifest_drift_findings WHERE kind = $1 AND resolved_at IS NULL`,
+      [UNKNOWN_HEARTBEAT_ACTION_FINDING_KIND],
+    );
     expect(rows).toHaveLength(1);
   });
 });

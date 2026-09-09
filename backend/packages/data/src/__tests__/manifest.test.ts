@@ -342,7 +342,9 @@ describe("permission manifest and drift check", () => {
     const action = createDriftCheckAction(pool);
     await action({}, { heartbeatId: "hb", projectItemId: projectItem.id });
 
-    const { rows } = await pool.query("SELECT kind, payload FROM manifest_drift_findings WHERE kind = 'agent_manifest_drift'");
+    const { rows } = await pool.query(
+      "SELECT kind, payload FROM manifest_drift_findings WHERE kind = 'agent_manifest_drift'",
+    );
     expect(rows).toHaveLength(1);
     expect(rows[0].payload.orphanedOwnerProcess).toHaveLength(1);
   });
