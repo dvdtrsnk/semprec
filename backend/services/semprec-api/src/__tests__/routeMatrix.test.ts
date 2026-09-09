@@ -16,10 +16,12 @@ const noopMailer: PasswordResetMailer = {
 
 /**
  * Issue #143's route-matrix test: every route this service answers is listed in
- * `routeMatrix.ts`, tagged `public` or not. This drives that list end to end against the real
- * dispatcher with zero credentials — a protected route whose handler doesn't actually call
- * `authenticateRequest` fails here with a non-401 response, and a route marked `public` without
- * a `publicReason` fails the documentation check below.
+ * `routeMatrix.ts`, tagged `public` or not. This drives every `surface: "api"` entry end to end
+ * against the real dispatcher with zero credentials — a protected route whose handler doesn't
+ * actually call `authenticateRequest` fails here with a non-401 response, and a route marked
+ * `public` without a `publicReason` fails the documentation check below. `surface: "view"`
+ * entries (client-side-only paths this backend doesn't serve) are covered by that same
+ * documentation check but skip the fetch assertions — there's no server here to hit.
  */
 describe("route matrix (issue #143)", () => {
   let server: Server;
@@ -55,7 +57,7 @@ describe("route matrix (issue #143)", () => {
     }
   });
 
-  for (const route of ROUTE_MATRIX) {
+  for (const route of ROUTE_MATRIX.filter((r) => r.surface === "api")) {
     it(`${route.public ? "leaves public" : "rejects unauthenticated access to"} ${route.name} (${route.method} ${route.path})`, async () => {
       const res = await fetch(`${baseUrl}${route.path}`, {
         method: route.method,
@@ -72,7 +74,7 @@ describe("route matrix (issue #143)", () => {
   }
 
   it("still rejects an unauthenticated request bearing a garbage session token", async () => {
-    for (const route of ROUTE_MATRIX.filter((r) => !r.public)) {
+    for (const route of ROUTE_MATRIX.filter((r) => r.surface === "api" && !r.public)) {
       const res = await fetch(`${baseUrl}${route.path}`, {
         method: route.method,
         headers: {

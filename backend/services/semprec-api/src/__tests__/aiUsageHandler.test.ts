@@ -1,4 +1,5 @@
 import { createServer, type Server } from "node:http";
+import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
@@ -11,7 +12,7 @@ let pool: Pool;
 
 async function authHeader(): Promise<{ Authorization: string }> {
   const user = await createUser(pool, {
-    email: "usage-reader@example.com",
+    email: `${randomUUID()}@example.com`,
     passwordHash: await hashPassword(PASSWORD),
   });
   const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
