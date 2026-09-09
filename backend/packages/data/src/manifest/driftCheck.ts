@@ -1,7 +1,8 @@
 import type { Pool, PoolClient } from "pg";
+import type { ModuleRegistry } from "@semprec/module-registry";
 import { withTransaction } from "../db/pool.js";
 import type { ActionContext, ActionHandler } from "../scheduler/actions.js";
-import { generatePermissionManifest } from "./permissionManifest.js";
+import { generatePermissionManifest, type ManifestLocale } from "./permissionManifest.js";
 
 export interface OrphanedOwnerProcessProperty {
   propertyId: string;
@@ -25,6 +26,15 @@ export async function findOrphanedOwnerProcessProperties(
 
 export interface CreateDriftCheckActionOptions {
   activeProcessIds?: ReadonlySet<string>;
+  /**
+   * Threaded straight through to `generatePermissionManifest` (issue #147) so this check also
+   * confirms every database/property/option name it touches actually resolves against the
+   * loaded catalogs — not just that the query shape is valid. Omitted by default: this action
+   * has no per-request authenticated user to take a locale from, and confirming resolvability
+   * without a `moduleRegistry` (the pre-#147 behavior) is still a meaningful check on its own.
+   */
+  moduleRegistry?: ModuleRegistry;
+  locale?: ManifestLocale;
 }
 
 /**
@@ -46,7 +56,10 @@ export function createDriftCheckAction(pool: Pool, options: CreateDriftCheckActi
     await withTransaction(pool, async (client) => {
       // Confirms the schema this drift check reports against is actually resolvable;
       // the manifest's content is only consumed once the text comparator (above) exists.
-      await generatePermissionManifest(client, context.projectItemId);
+      await generatePermissionManifest(client, context.projectItemId, {
+        moduleRegistry: options.moduleRegistry,
+        locale: options.locale,
+      });
 
       const orphaned = await findOrphanedOwnerProcessProperties(client, options.activeProcessIds);
       if (orphaned.length > 0) {

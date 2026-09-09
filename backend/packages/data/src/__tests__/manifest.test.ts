@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { ModuleRegistry } from "@semprec/module-registry";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
@@ -10,6 +11,14 @@ import { seedSystem } from "../seed/seedSystem.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
 import { setProjectMcpGrant } from "../mcp/mcpGrantsAdminStore.js";
+
+const SYSTEM_DATABASES_MANIFEST_PATH = new URL("../seed/systemDatabasesModuleManifest.js", import.meta.url).href;
+
+async function systemDatabasesRegistry(): Promise<ModuleRegistry> {
+  const registry = new ModuleRegistry(() => new Set(["systemDatabases"]));
+  await registry.loadModule(SYSTEM_DATABASES_MANIFEST_PATH);
+  return registry;
+}
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -134,6 +143,118 @@ describe("permission manifest and drift check", () => {
       findOrphanedOwnerProcessProperties(client, new Set(["some.otherModule"])),
     );
     expect(orphanedWithActiveList.map((o) => o.key).sort()).toEqual(["orphan", "owned"]);
+  });
+
+  it("resolves a system database's name, property name and select options via the cs/en catalog (issue #147)", async () => {
+    const project = await chokePoint.createDatabase({ name: "Projects" });
+    const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });
+
+    const tasksDb = await chokePoint.createDatabase({
+      name: null,
+      key: "tasks",
+      system: true,
+      ownerProjectItemId: projectItem.id,
+    });
+    await chokePoint.createProperty({
+      databaseId: tasksDb.id,
+      key: "status",
+      name: null,
+      type: "select",
+      config: { options: [{ key: "notDone" }, { key: "done" }, { key: "wontDo" }] },
+    });
+
+    const moduleRegistry = await systemDatabasesRegistry();
+
+    const csManifest = await withTransaction(pool, (client) =>
+      generatePermissionManifest(client, projectItem.id, { moduleRegistry, locale: "cs" }),
+    );
+    const csDb = csManifest.databases.find((db) => db.databaseId === tasksDb.id)!;
+    expect(csDb.name).toBe("Úkoly");
+    const csStatus = csDb.properties.find((p) => p.key === "status")!;
+    expect(csStatus.name).toBe("Stav");
+    expect(csStatus.options).toEqual([
+      { key: "notDone", label: "Nesplněno" },
+      { key: "done", label: "Splněno" },
+      { key: "wontDo", label: "Nebude splněno" },
+    ]);
+
+    const enManifest = await withTransaction(pool, (client) =>
+      generatePermissionManifest(client, projectItem.id, { moduleRegistry, locale: "en" }),
+    );
+    const enDb = enManifest.databases.find((db) => db.databaseId === tasksDb.id)!;
+    expect(enDb.name).toBe("Tasks");
+    const enStatus = enDb.properties.find((p) => p.key === "status")!;
+    expect(enStatus.name).toBe("Status");
+    expect(enStatus.options).toEqual([
+      { key: "notDone", label: "Not done" },
+      { key: "done", label: "Done" },
+      { key: "wontDo", label: "Won't do" },
+    ]);
+  });
+
+  it("falls back to the raw key when no moduleRegistry is given, and lets a stored override win over the catalog", async () => {
+    const project = await chokePoint.createDatabase({ name: "Projects" });
+    const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });
+
+    const tasksDb = await chokePoint.createDatabase({
+      name: null,
+      key: "tasks",
+      system: true,
+      ownerProjectItemId: projectItem.id,
+    });
+    await chokePoint.createProperty({
+      databaseId: tasksDb.id,
+      key: "status",
+      name: null,
+      type: "select",
+      config: { options: [{ key: "notDone" }] },
+    });
+
+    // No moduleRegistry: pre-#147 raw-key placeholder behavior, unchanged.
+    const noRegistryManifest = await withTransaction(pool, (client) =>
+      generatePermissionManifest(client, projectItem.id),
+    );
+    const noRegistryDb = noRegistryManifest.databases.find((db) => db.databaseId === tasksDb.id)!;
+    expect(noRegistryDb.name).toBe("tasks");
+    const noRegistryStatus = noRegistryDb.properties.find((p) => p.key === "status")!;
+    expect(noRegistryStatus.name).toBe("status");
+    expect(noRegistryStatus.options).toEqual([{ key: "notDone", label: "notDone" }]);
+
+    // A stored override on the database, property, and option all win over the catalog,
+    // in every locale.
+    await pool.query(`UPDATE databases SET name = $1 WHERE id = $2`, ["My Tasks", tasksDb.id]);
+    await pool.query(`UPDATE properties SET name = $1 WHERE database_id = $2 AND key = 'status'`, [
+      "My Status",
+      tasksDb.id,
+    ]);
+    await pool.query(
+      `UPDATE properties SET config = $1::jsonb WHERE database_id = $2 AND key = 'status'`,
+      [JSON.stringify({ options: [{ key: "notDone", label: "Not started yet" }] }), tasksDb.id],
+    );
+
+    const moduleRegistry = await systemDatabasesRegistry();
+    for (const locale of ["cs", "en"] as const) {
+      const manifest = await withTransaction(pool, (client) =>
+        generatePermissionManifest(client, projectItem.id, { moduleRegistry, locale }),
+      );
+      const db = manifest.databases.find((d) => d.databaseId === tasksDb.id)!;
+      expect(db.name).toBe("My Tasks");
+      const status = db.properties.find((p) => p.key === "status")!;
+      expect(status.name).toBe("My Status");
+      expect(status.options).toEqual([{ key: "notDone", label: "Not started yet" }]);
+    }
+  });
+
+  it("leaves a user-authored (non-system) database's name byte-for-byte unchanged regardless of locale", async () => {
+    const project = await chokePoint.createDatabase({ name: "Projects" });
+    const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });
+    const owned = await chokePoint.createDatabase({ name: "Můj vlastní deník", ownerProjectItemId: projectItem.id });
+
+    const moduleRegistry = await systemDatabasesRegistry();
+    const manifest = await withTransaction(pool, (client) =>
+      generatePermissionManifest(client, projectItem.id, { moduleRegistry, locale: "en" }),
+    );
+    expect(manifest.databases.find((db) => db.databaseId === owned.id)?.name).toBe("Můj vlastní deník");
   });
 
   it("the drift check action writes a notification when an orphan is found, and nothing when clean", async () => {

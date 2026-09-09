@@ -1,14 +1,25 @@
 import type { PoolClient } from "pg";
+import { ModuleRegistry, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { heartbeatRuleSchema, type HeartbeatRule } from "../scheduler/rule.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
 import { getGrantedMcpAgentTools, type McpAgentToolProjection } from "../mcp/mcpAgentTools.js";
+
+/** The two locales `resolveCatalogLabel` resolves against (issue #236's scope note). */
+export type ManifestLocale = "cs" | "en";
+
+export interface ManifestPropertyOption {
+  key: string;
+  label: string;
+}
 
 export interface ManifestProperty {
   key: string;
   name: string;
   owner: "user" | "system";
   locked: boolean;
+  /** Resolved select/multi_select option labels (issue #147) — absent for every other property type. */
+  options?: ManifestPropertyOption[];
 }
 
 export interface ManifestDatabase {
@@ -61,6 +72,23 @@ export interface PermissionManifest {
   agentTools: McpAgentToolProjection[];
 }
 
+export interface GeneratePermissionManifestOptions {
+  /**
+   * Supplies the `cs`/`en` catalogs a database/property/option resolves its display label
+   * against (issue #147). Omitted for callers with no natural per-user locale (e.g. the
+   * drift-check heartbeat, which validates resolvability rather than rendering to a person) —
+   * in that case every name/label falls back to the pre-#147 raw-key placeholder below,
+   * exactly as before this option existed.
+   */
+  moduleRegistry?: ModuleRegistry;
+  /** Ignored unless `moduleRegistry` is also given. Defaults to `"en"`, the reference locale. */
+  locale?: ManifestLocale;
+}
+
+function rawKeyFallback(override: string | null, key: string | null, id: string): string {
+  return override ?? key ?? id;
+}
+
 /**
  * Computed synchronously from current schema state, scoped to one project (small,
  * indexed queries — not a scan of the whole system). Never persistently cached: this
@@ -69,7 +97,31 @@ export interface PermissionManifest {
 export async function generatePermissionManifest(
   client: PoolClient,
   projectItemId: string,
+  options: GeneratePermissionManifestOptions = {},
 ): Promise<PermissionManifest> {
+  const { moduleRegistry } = options;
+  const locale = options.locale ?? "en";
+
+  // A database's `owner_module_id` column stores the database *key* (e.g. "tasks"), not the
+  // `ModuleManifest.id` that actually owns its i18n catalog (e.g. "systemDatabases") — this
+  // map resolves key -> owning module id so catalogs can be looked up correctly.
+  let dbKeyToModuleId: Map<string, string> | undefined;
+  const catalogsByModuleId = new Map<string, ModuleCatalogs | undefined>();
+  if (moduleRegistry) {
+    const allDbs = await moduleRegistry.getDatabases();
+    dbKeyToModuleId = new Map(allDbs.map((d) => [d.key, d.moduleId]));
+  }
+
+  async function catalogsForDbKey(dbKey: string | null): Promise<ModuleCatalogs | undefined> {
+    if (!moduleRegistry || !dbKey) return undefined;
+    const moduleId = dbKeyToModuleId?.get(dbKey);
+    if (!moduleId) return undefined;
+    if (!catalogsByModuleId.has(moduleId)) {
+      catalogsByModuleId.set(moduleId, await moduleRegistry.getCatalogs(moduleId));
+    }
+    return catalogsByModuleId.get(moduleId);
+  }
+
   const { rows: databaseRows } = await client.query<{
     id: string;
     name: string | null;
@@ -84,16 +136,45 @@ export async function generatePermissionManifest(
   const databases: ManifestDatabase[] = [];
   for (const db of databaseRows) {
     const properties = await listPropertiesByDatabase(client, db.id);
+    const catalogs = await catalogsForDbKey(db.key);
+
+    const dbName = catalogs
+      ? resolveCatalogLabel(db.name, catalogs[locale], catalogs.en, `database.${db.key}.name`)
+      : rawKeyFallback(db.name, db.key, db.id);
+
+    const manifestProperties: ManifestProperty[] = properties.map((p) => {
+      const propName = catalogs
+        ? resolveCatalogLabel(p.name, catalogs[locale], catalogs.en, `property.${db.key}.${p.key}.name`)
+        : rawKeyFallback(p.name, p.key, p.key);
+
+      const manifestProperty: ManifestProperty = { key: p.key, name: propName, owner: p.owner, locked: p.locked };
+
+      if (p.type === "select" || p.type === "multi_select") {
+        const rawOptions = p.config.options;
+        if (Array.isArray(rawOptions)) {
+          manifestProperty.options = (rawOptions as { key: string; label?: string }[]).map((option) => ({
+            key: option.key,
+            label: catalogs
+              ? resolveCatalogLabel(
+                  option.label ?? null,
+                  catalogs[locale],
+                  catalogs.en,
+                  `property.${db.key}.${p.key}.option.${option.key}`,
+                )
+              : rawKeyFallback(option.label ?? null, option.key, option.key),
+          }));
+        }
+      }
+
+      return manifestProperty;
+    });
+
     databases.push({
       databaseId: db.id,
-      // Until issue #147 wires the translation-catalog resolver, a null `name` (a system
-      // database's built-in label override slot, issue #235) falls back to the raw `key` —
-      // the last step of the fallback chain #146 implements — as a placeholder, not a
-      // translation.
-      name: db.name ?? db.key ?? db.id,
+      name: dbName,
       schemaLocked: db.schema_locked,
       writable: !(db.owner_module_id && SEMPREC_READ_ONLY_MODULE_IDS.includes(db.owner_module_id)),
-      properties: properties.map((p) => ({ key: p.key, name: p.name ?? p.key, owner: p.owner, locked: p.locked })),
+      properties: manifestProperties,
     });
   }
 
