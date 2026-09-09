@@ -113,7 +113,7 @@ describe("moduleRegistry.checkDrift", () => {
     await action({}, { heartbeatId: "hb", projectItemId });
 
     const { rows: findings } = await pool.query(
-      `SELECT kind, dedupe_key, resolved_at FROM notifications WHERE kind IN ($1, $2)`,
+      `SELECT kind, dedupe_key, resolved_at FROM manifest_drift_findings WHERE kind IN ($1, $2)`,
       [UNKNOWN_HEARTBEAT_ACTION_FINDING_KIND, ORPHANED_OWNER_PROCESS_FINDING_KIND],
     );
     expect(findings).toHaveLength(2);
@@ -126,7 +126,7 @@ describe("moduleRegistry.checkDrift", () => {
     await action({}, { heartbeatId: "hb", projectItemId });
 
     const { rows: afterRepair } = await pool.query(
-      `SELECT kind, resolved_at FROM notifications WHERE kind IN ($1, $2)`,
+      `SELECT kind, resolved_at FROM manifest_drift_findings WHERE kind IN ($1, $2)`,
       [UNKNOWN_HEARTBEAT_ACTION_FINDING_KIND, ORPHANED_OWNER_PROCESS_FINDING_KIND],
     );
     expect(afterRepair).toHaveLength(2);
@@ -155,7 +155,7 @@ describe("moduleRegistry.checkDrift", () => {
       action({}, { heartbeatId: "hb", projectItemId }),
     ]);
 
-    const { rows } = await pool.query(`SELECT id FROM notifications WHERE kind = $1 AND resolved_at IS NULL`, [
+    const { rows } = await pool.query(`SELECT id FROM manifest_drift_findings WHERE kind = $1 AND resolved_at IS NULL`, [
       UNKNOWN_HEARTBEAT_ACTION_FINDING_KIND,
     ]);
     expect(rows).toHaveLength(1);

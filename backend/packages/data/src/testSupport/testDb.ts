@@ -6,6 +6,7 @@ const TABLES = [
   "login_attempts",
   "sessions",
   "notifications",
+  "manifest_drift_findings",
   "rollup_dependencies",
   "resource_grants",
   "project_mcp_grants",
