@@ -62,6 +62,12 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
   if (input.key && !input.system) {
     throw new ValidationError("key is only valid for system databases", { field: "key" });
   }
+  if (input.system && !input.name && !input.key) {
+    // Without a name, key is the only source of a display label the permissionManifest
+    // fallback (db.name ?? db.key ?? db.id) has to fall back to before it resorts to
+    // surfacing the raw database id.
+    throw new ValidationError("key is required for a system database with a null name", { field: "key" });
+  }
 
   let database: DatabaseRow;
   try {

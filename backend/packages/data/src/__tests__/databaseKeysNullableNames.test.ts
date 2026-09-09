@@ -43,6 +43,10 @@ describe("issue #235: databases.key and nullable system names", () => {
     await expect(chokePoint.createDatabase({ name: "User DB", key: "userDb" })).rejects.toBeInstanceOf(ValidationError);
   });
 
+  it("rejects a system database with neither a name nor a key", async () => {
+    await expect(chokePoint.createDatabase({ name: null, system: true })).rejects.toBeInstanceOf(ValidationError);
+  });
+
   it("rejects a duplicate databases.key", async () => {
     await chokePoint.createDatabase({ name: null, key: "widgets", system: true });
     await expect(chokePoint.createDatabase({ name: null, key: "widgets", system: true })).rejects.toBeInstanceOf(
