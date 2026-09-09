@@ -1742,11 +1742,13 @@ describe("mail sync job error handling (issue #26)", () => {
     expect(item.rows[0].properties.syncStatus).toBe("ok");
   });
 
-  it("sets Mailbox.syncStatus to 'needsReauthorization' when the adapter reports a revoked credential", async () => {
+  it("sets Mailbox.syncStatus to 'needsReauthorization' when the adapter reports a revoked credential, without writing a mail_sync_error notification (issue #149)", async () => {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");
     const filesId = await databaseIdFor("files");
     const mailboxesId = await databaseIdFor("mailboxes");
+    const passwordHash = await hashPassword("s3cret-password");
+    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
 
     const mailbox = await withTransaction(pool, (client) =>
       createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
@@ -1783,6 +1785,9 @@ describe("mail sync job error handling (issue #26)", () => {
       client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]),
     );
     expect(item.rows[0].properties.syncStatus).toBe("needsReauthorization");
+
+    const { rows: notifications } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [mailbox.id]);
+    expect(notifications).toHaveLength(0);
   });
 
   it("writes a mail_sync_error notification on failure, deduped by job id but not across distinct failing jobs (issue #149)", async () => {

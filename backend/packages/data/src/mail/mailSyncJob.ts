@@ -345,8 +345,12 @@ export async function handleSyncMailAccountTask(
       );
       // Issue #149: same transaction as the error record, so a replayed job (same job id,
       // same `transitionInstance`) never duplicates it. Deliberately not raised for the
-      // `MailConnectionLimitError` branch above — that's contention, not a sync failure.
-      const userId = await getEarliestUserId(client);
+      // `MailConnectionLimitError` branch above — that's contention, not a sync failure —
+      // nor for `MailReauthorizationRequiredError`: per the comment above, that's "a normal
+      // state, not a system error," and its own `needsReauthorization` status already makes
+      // it distinguishable from a genuine failure, so notifying with the same "Mail sync
+      // failed" title would conflate the two states.
+      const userId = err instanceof MailReauthorizationRequiredError ? null : await getEarliestUserId(client);
       if (userId) {
         await writeNotification(client, {
           userId,
