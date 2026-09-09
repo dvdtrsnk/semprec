@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import type { PasswordResetMailer } from "@semprec/data";
+import { loadFullModuleRegistry, type PasswordResetMailer } from "@semprec/data";
 import { createDispatcher } from "../app.js";
 import { ROUTE_MATRIX } from "../routeMatrix.js";
 
@@ -13,6 +13,8 @@ const SETUP_TOKEN = "route-matrix-setup-token";
 const noopMailer: PasswordResetMailer = {
   async sendPasswordResetEmail() {},
 };
+
+const moduleRegistry = await loadFullModuleRegistry();
 
 /**
  * Issue #143's route-matrix test: every route this service answers is listed in
@@ -35,6 +37,7 @@ describe("route matrix (issue #143)", () => {
       passwordResetMailer: noopMailer,
       appBaseUrl: "https://app.example.test",
       setupToken: SETUP_TOKEN,
+      moduleRegistry,
     });
     server = createServer(dispatch);
     await new Promise<void>((resolve) => server.listen(0, resolve));

@@ -56,6 +56,19 @@ export async function anyUserExists(client: Pool | PoolClient): Promise<boolean>
   return (rows[0] as { exists: boolean }).exists;
 }
 
+/**
+ * Semprec is a personal, single-tenant system — `databases`/`items` carry no owning-user column
+ * at all (only `owner_project_item_id`), so a background action with no per-request session
+ * (e.g. the drift-check heartbeat, `manifest/driftCheck.ts`) has no other honest way to find
+ * "the" user whose `users.locale` a runtime-generated manifest should resolve against. The
+ * first-created account is the closest stand-in for that single owner. Returns `null` before
+ * setup (#233) has created any account yet.
+ */
+export async function getEarliestUserLocale(client: Pool | PoolClient): Promise<string | null> {
+  const { rows } = await client.query(`SELECT locale FROM users ORDER BY created_at ASC, id ASC LIMIT 1`);
+  return rows[0] ? (rows[0] as { locale: string }).locale : null;
+}
+
 /** Used by `resetPassword` (auth/passwordResetActions.ts) to replace a user's password hash after a reset token is consumed. */
 export async function updateUserPasswordHash(
   client: Pool | PoolClient,
