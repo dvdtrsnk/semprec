@@ -41,8 +41,8 @@ describe("systemDatabases reference i18n catalog (issue #236)", () => {
       "Custom name",
     );
     expect(resolveCatalogLabel(null, catalogs?.cs, catalogs?.en ?? {}, "database.areas.name")).toBe("Oblasti");
-    expect(
-      resolveCatalogLabel(null, catalogs?.cs, catalogs?.en ?? {}, "database.notARealDatabase.name"),
-    ).toBe("database.notARealDatabase.name");
+    expect(resolveCatalogLabel(null, catalogs?.cs, catalogs?.en ?? {}, "database.notARealDatabase.name")).toBe(
+      "database.notARealDatabase.name",
+    );
   });
 });
