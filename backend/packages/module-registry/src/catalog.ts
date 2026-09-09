@@ -26,9 +26,12 @@ async function loadOneCatalog(i18nDir: string, locale: Locale, modulePath: strin
     raw = await readFile(filePath, "utf8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
-    throw new Error(`Module at "${modulePath}" has an unreadable i18n catalog "${filePath}": ${(err as Error).message}`, {
-      cause: err,
-    });
+    throw new Error(
+      `Module at "${modulePath}" has an unreadable i18n catalog "${filePath}": ${(err as Error).message}`,
+      {
+        cause: err,
+      },
+    );
   }
 
   let parsed: unknown;

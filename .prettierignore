@@ -6,6 +6,9 @@ pnpm-lock.yaml
 apple/
 .claude/
 
+# Intentionally invalid JSON used to test i18n catalog error handling (issue #236).
+backend/packages/module-registry/src/__tests__/fixtures/catalogMalformedJson/i18n/cs.json
+
 # The code-review bot parses these as literal glob patterns, but Prettier formats them as
 # Markdown: it escapes `*` to `\*` and reads `*...*` as emphasis, rewriting it to `_..._`.
 # That silently emptied every backend and web pattern in commit 5103dbe, and the bot skipped
