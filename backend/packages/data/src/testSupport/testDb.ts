@@ -4,6 +4,7 @@ const TABLES = [
   "module_migrations",
   "idempotency_keys",
   "login_attempts",
+  "push_subscriptions",
   "sessions",
   "notifications",
   "manifest_drift_findings",

@@ -16,6 +16,7 @@ import { recordLoginAttempt, getFailureStreak } from "./loginAttemptsStore.js";
 import { normalizeEmail } from "./emailNormalization.js";
 import { lockoutDurationSeconds } from "./loginLockout.js";
 import type { SessionPlatform, SessionRow, UserRow } from "./types.js";
+import { revokePushSubscriptionsForSession } from "../push/pushSubscriptionsStore.js";
 
 /** How long a freshly-issued session stays valid without further activity. */
 export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
@@ -200,21 +201,30 @@ export async function verifySessionToken(client: Pool | PoolClient, token: strin
   return { session, user: toPublicUser(user) };
 }
 
-/** Ends exactly the session the caller is currently authenticated with; every other session for the user stays valid. */
+/**
+ * Ends exactly the session the caller is currently authenticated with; every other session for
+ * the user stays valid. Runs in the caller's transaction, so the session revocation and the
+ * push-registration cascade (issue #150 — a registration must not outlive the session that
+ * created it) commit or roll back together.
+ */
 export async function logout(client: Pool | PoolClient, sessionId: string): Promise<void> {
   await revokeSession(client, sessionId);
+  await revokePushSubscriptionsForSession(client, sessionId);
 }
 
 /**
  * Remote revocation of one of the current user's *other* sessions (device management). Scoped to
  * `userId` so a caller can't revoke a session id they don't own by guessing it. Returns `false`
  * for an unknown id, an id owned by someone else, or an already-revoked session — the caller
- * treats all three as the same "nothing to do" outcome.
+ * treats all three as the same "nothing to do" outcome. On an actual revocation, also cascades
+ * to that session's push registrations (issue #150), same as `logout`.
  */
 export async function revokeUserSession(
   client: Pool | PoolClient,
   userId: string,
   sessionId: string,
 ): Promise<boolean> {
-  return revokeSessionForUser(client, sessionId, userId);
+  const revoked = await revokeSessionForUser(client, sessionId, userId);
+  if (revoked) await revokePushSubscriptionsForSession(client, sessionId);
+  return revoked;
 }

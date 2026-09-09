@@ -156,6 +156,10 @@ export * from "./auth/passwordResetStore.js";
 export * from "./auth/passwordResetMail.js";
 export * from "./auth/passwordResetActions.js";
 
+export * from "./push/types.js";
+export * from "./push/pushSubscriptionsStore.js";
+export * from "./push/pushSubscriptionActions.js";
+
 // `mcpGrantsAdminStore.ts`'s user-only grant/risk-class/approval mutations are deliberately
 // NOT exported here — see that file's header comment (issue #124).
 export type { McpToolRegistration, UpsertMcpToolRegistrationInput } from "./mcp/mcpToolRegistrationsStore.js";

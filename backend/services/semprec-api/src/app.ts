@@ -6,6 +6,7 @@ import { createMcpAgentPageRequestListener } from "./mcpAgentPageHandler.js";
 import { createApprovalRequestsRequestListener } from "./approvalRequestsHandler.js";
 import { createAgentRunRequestListener } from "./agentRunHandler.js";
 import { createAuthRequestListener } from "./authHandler.js";
+import { createPushSubscriptionsRequestListener } from "./pushSubscriptionsHandler.js";
 import { createSetupRequestListener } from "./setupHandler.js";
 import { createSchemaRequestListener } from "./schemaHandler.js";
 
@@ -34,6 +35,7 @@ export function createDispatcher(pool: Pool, options: AppOptions): (req: Incomin
     passwordResetMailer: options.passwordResetMailer,
     appBaseUrl: options.appBaseUrl,
   });
+  const pushSubscriptionsListener = createPushSubscriptionsRequestListener(pool);
   const setupListener = createSetupRequestListener(pool, { setupToken: options.setupToken });
   const schemaListener = createSchemaRequestListener(pool, options.moduleRegistry);
 
@@ -57,6 +59,10 @@ export function createDispatcher(pool: Pool, options: AppOptions): (req: Incomin
     }
     if (pathname.startsWith("/api/auth/")) {
       void authListener(req, res);
+      return;
+    }
+    if (pathname.startsWith("/api/push-subscriptions")) {
+      void pushSubscriptionsListener(req, res);
       return;
     }
     if (pathname === "/api/setup") {
