@@ -29,11 +29,16 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
     chunks.push(buf);
   }
   if (chunks.length === 0) return {};
+  let parsed: unknown;
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch {
     throw new ValidationError("Request body is not valid JSON");
   }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new ValidationError("Request body must be a JSON object");
+  }
+  return parsed;
 }
 
 const REVOKE_PUSH_SUBSCRIPTION_PATH = /^\/api\/push-subscriptions\/([^/]+)\/revoke$/;

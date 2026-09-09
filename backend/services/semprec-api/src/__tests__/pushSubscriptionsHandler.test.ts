@@ -99,6 +99,19 @@ describe("createPushSubscriptionsRequestListener (issue #150)", () => {
     expect(await revokeRes.json()).toEqual({ revoked: true });
   });
 
+  it("rejects a JSON null body with a 400 rather than a 500", async () => {
+    const user = await makeUser();
+    const token = await tokenFor(user.email, "ios");
+
+    const res = await fetch(`${baseUrl}/api/push-subscriptions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: "null",
+    });
+
+    expect(res.status).toBe(400);
+  });
+
   it("rejects an unauthenticated revocation", async () => {
     const res = await fetch(`${baseUrl}/api/push-subscriptions/00000000-0000-0000-0000-000000000000/revoke`, {
       method: "POST",
