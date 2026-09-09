@@ -109,7 +109,9 @@ export async function generateSchemaProjection(
   const agentToolProjections = await moduleRegistry.getAgentTools(grantedCapabilities);
   const agentTools: SchemaAgentToolProjection[] = [];
   for (const tool of agentToolProjections) {
-    const catalogs = catalogsByActiveModuleId.get(tool.moduleId) ?? (await moduleRegistry.getCatalogs(tool.moduleId));
+    // `getAgentTools` only ever returns tools from active modules (the same set
+    // `catalogsByActiveModuleId` was built from above), so this lookup always hits.
+    const catalogs = catalogsByActiveModuleId.get(tool.moduleId);
     agentTools.push({
       moduleId: tool.moduleId,
       name: tool.name,
