@@ -199,6 +199,26 @@ describe("library module (issue #25)", () => {
     expect(afterNewTransition).toHaveLength(2);
   });
 
+  it("skips the automation_error notification (but still records the failure) before any user account exists (issue #149)", async () => {
+    const moviesId = await getDatabaseIdByModule("movies");
+    const item = await chokePoint.createItem({ databaseId: moviesId, properties: { name: "Sicario", year: 2015 } });
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+
+    const failingFetcher: LibraryMetadataFetcher = async () => {
+      throw new Error("source unavailable");
+    };
+    const payload = { itemId: item.id, databaseId: moviesId, config: { source: "test", coverKey: "cover" } };
+
+    await expect(
+      handleProcessLibraryMetadataTask(pool, payload, failingFetcher, { job: { id: "job-1" } }),
+    ).rejects.toThrow("source unavailable");
+
+    const { rows } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [item.id]);
+    expect(rows).toHaveLength(0);
+    const automation = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    expect(automation?.status).toBe("error");
+  });
+
   it("a locked item_automation row is never touched by the heartbeat", async () => {
     const booksId = await getDatabaseIdByModule("books");
     const registry = libraryRegistry();

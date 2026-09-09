@@ -351,7 +351,7 @@ export async function handleSyncMailAccountTask(
         await writeNotification(client, {
           userId,
           kind: "mail_sync_error",
-          linkHref: null,
+          linkHref: `?page=mailbox&id=${payload.mailboxItemId}`,
           sourceTable: "mail_account_sync_state",
           sourceId: payload.mailboxItemId,
           transitionInstance: helpers.job.id,

@@ -1824,7 +1824,7 @@ describe("mail sync job error handling (issue #26)", () => {
         user_id: user.id,
         kind: "mail_sync_error",
         title: "Mail sync failed",
-        link_href: null,
+        link_href: `?page=mailbox&id=${mailbox.id}`,
         source_table: "mail_account_sync_state",
         transition_instance: "job-1",
       },
@@ -1849,6 +1849,38 @@ describe("mail sync job error handling (issue #26)", () => {
       mailbox.id,
     ]);
     expect(afterNewTransition).toHaveLength(2);
+  });
+
+  it("skips the mail_sync_error notification (but still records the sync error) before any user account exists (issue #149)", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+    );
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+
+    const moduleIds = {
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      foldersDatabaseId: foldersId,
+      mailboxesDatabaseId: mailboxesId,
+    };
+
+    await expect(
+      handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, {}, moduleIds, noopStorage, {
+        job: { id: "job-1" },
+      }),
+    ).rejects.toThrow("has no stored credential");
+
+    const { rows } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [mailbox.id]);
+    expect(rows).toHaveLength(0);
+    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
+    expect(state!.lastError).toContain("has no stored credential");
   });
 
   it("sets Mailbox.syncStatus to 'error' when the credential itself can't be decrypted (a failure before any adapter/transaction runs)", async () => {
