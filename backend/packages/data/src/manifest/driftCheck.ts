@@ -47,7 +47,7 @@ export interface CreateDriftCheckActionOptions {
 }
 
 /**
- * Registers as a heartbeat action; reports via `notifications`, never stays silent
+ * Registers as a heartbeat action; reports via `manifest_drift_findings`, never stays silent
  * about a mismatch. Only the mechanically-checkable half (owner_process orphans) runs
  * here — the manifest <-> `agents` text comparison is a semantic-judgment task that
  * genuinely needs an LLM call through the AI gateway, out of scope for this issue
@@ -80,9 +80,10 @@ export function createDriftCheckAction(pool: Pool, options: CreateDriftCheckActi
 
       const orphaned = await findOrphanedOwnerProcessProperties(client, options.activeProcessIds);
       if (orphaned.length > 0) {
-        await client.query(`INSERT INTO notifications (kind, payload) VALUES ('agent_manifest_drift', $1::jsonb)`, [
-          JSON.stringify({ projectItemId: context.projectItemId, orphanedOwnerProcess: orphaned }),
-        ]);
+        await client.query(
+          `INSERT INTO manifest_drift_findings (kind, payload) VALUES ('agent_manifest_drift', $1::jsonb)`,
+          [JSON.stringify({ projectItemId: context.projectItemId, orphanedOwnerProcess: orphaned })],
+        );
       }
     });
   };

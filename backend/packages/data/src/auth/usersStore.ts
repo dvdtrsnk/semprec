@@ -69,6 +69,17 @@ export async function getEarliestUserLocale(client: Pool | PoolClient): Promise<
   return rows[0] ? (rows[0] as { locale: string }).locale : null;
 }
 
+/**
+ * Same "closest stand-in for the single owner" reasoning as `getEarliestUserLocale`, for a
+ * background producer (e.g. the `heartbeat_error` notification writer, `scheduler/sweep.ts`)
+ * that needs a `notifications.user_id` to write to rather than a locale to resolve against.
+ * Returns `null` before setup (#233) has created any account yet.
+ */
+export async function getEarliestUserId(client: Pool | PoolClient): Promise<string | null> {
+  const { rows } = await client.query(`SELECT id FROM users ORDER BY created_at ASC, id ASC LIMIT 1`);
+  return rows[0] ? (rows[0] as { id: string }).id : null;
+}
+
 /** Used by `resetPassword` (auth/passwordResetActions.ts) to replace a user's password hash after a reset token is consumed. */
 export async function updateUserPasswordHash(
   client: Pool | PoolClient,
