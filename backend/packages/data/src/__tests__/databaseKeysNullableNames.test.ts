@@ -10,7 +10,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { TEN_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
 
 const MIGRATION_SQL = await readFile(
-  path.join(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations/0027_database_keys_nullable_names.sql"),
+  path.join(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations/0028_database_keys_nullable_names.sql"),
   "utf8",
 );
 
