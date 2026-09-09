@@ -9,11 +9,13 @@ import {
   createAgentRun,
   createPendingApprovalRequest,
   createChokePoint,
+  hashPassword,
+  login,
   type ChokePoint,
 } from "@semprec/data";
 import { createApprovalRequestsRequestListener } from "../approvalRequestsHandler.js";
 
-const AUTH_TOKEN = "test-token";
+const PASSWORD = "s3cret-password";
 
 let pool: Pool;
 
@@ -23,6 +25,13 @@ async function createUser(): Promise<string> {
     [`${randomUUID()}@example.com`],
   );
   return rows[0]!.id;
+}
+
+async function authHeader(): Promise<{ Authorization: string }> {
+  const email = `${randomUUID()}@example.com`;
+  await pool.query(`INSERT INTO users (email, password_hash) VALUES ($1, $2)`, [email, await hashPassword(PASSWORD)]);
+  const { token } = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+  return { Authorization: `Bearer ${token}` };
 }
 
 async function createPendingRequest(): Promise<string> {
@@ -49,7 +58,7 @@ describe("createApprovalRequestsRequestListener", () => {
     await resetDatabase(pool);
     await seedSystem(pool, viewTypeRegistry);
 
-    server = createServer(createApprovalRequestsRequestListener(pool, { authToken: AUTH_TOKEN }));
+    server = createServer(createApprovalRequestsRequestListener(pool));
     await new Promise<void>((resolve) => server.listen(0, resolve));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
@@ -64,21 +73,21 @@ describe("createApprovalRequestsRequestListener", () => {
     await pool?.end();
   });
 
-  it("rejects a request with no bearer token", async () => {
+  it("rejects a request with no credentials", async () => {
     const res = await fetch(`${baseUrl}/api/approval-requests/${randomUUID()}`, { method: "PATCH" });
     expect(res.status).toBe(401);
   });
 
-  it("rejects a request with the wrong bearer token", async () => {
+  it("rejects a request with a garbage bearer token", async () => {
     const res = await fetch(`${baseUrl}/api/approval-requests/${randomUUID()}`, {
       method: "PATCH",
-      headers: { Authorization: "Bearer wrong" },
+      headers: { Authorization: "Bearer garbage" },
     });
     expect(res.status).toBe(401);
   });
 
   it("returns 404 for an unknown path", async () => {
-    const res = await fetch(`${baseUrl}/not-a-real-path`, { headers: { Authorization: `Bearer ${AUTH_TOKEN}` } });
+    const res = await fetch(`${baseUrl}/not-a-real-path`, { headers: await authHeader() });
     expect(res.status).toBe(404);
   });
 
@@ -88,7 +97,7 @@ describe("createApprovalRequestsRequestListener", () => {
 
     const res = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: JSON.stringify({ decision: "approved", decidedByUserId: userId }),
     });
     expect(res.status).toBe(200);
@@ -103,7 +112,7 @@ describe("createApprovalRequestsRequestListener", () => {
 
     const res = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: JSON.stringify({ decision: "rejected", decidedByUserId: userId }),
     });
     expect(res.status).toBe(200);
@@ -117,7 +126,7 @@ describe("createApprovalRequestsRequestListener", () => {
 
     const res = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: JSON.stringify({ decision: "maybe", decidedByUserId: userId }),
     });
     expect(res.status).toBe(400);
@@ -128,7 +137,7 @@ describe("createApprovalRequestsRequestListener", () => {
 
     const res = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: JSON.stringify({ decision: "approved" }),
     });
     expect(res.status).toBe(400);
@@ -139,7 +148,7 @@ describe("createApprovalRequestsRequestListener", () => {
 
     const res = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: JSON.stringify({ decision: "approved", decidedByUserId: randomUUID() }),
     });
     expect(res.status).toBe(400);
@@ -152,14 +161,14 @@ describe("createApprovalRequestsRequestListener", () => {
 
     const first = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: JSON.stringify({ decision: "approved", decidedByUserId: userId }),
     });
     expect(first.status).toBe(200);
 
     const second = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: JSON.stringify({ decision: "rejected", decidedByUserId: otherUser }),
     });
     expect(second.status).toBe(200);
@@ -173,7 +182,7 @@ describe("createApprovalRequestsRequestListener", () => {
 
     const res = await fetch(`${baseUrl}/api/approval-requests/${randomUUID()}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: JSON.stringify({ decision: "approved", decidedByUserId: userId }),
     });
     expect(res.status).toBe(404);
@@ -182,7 +191,7 @@ describe("createApprovalRequestsRequestListener", () => {
   it("rejects a PATCH with a malformed JSON body", async () => {
     const res = await fetch(`${baseUrl}/api/approval-requests/${randomUUID()}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: "{not valid json",
     });
     expect(res.status).toBe(400);
@@ -191,21 +200,21 @@ describe("createApprovalRequestsRequestListener", () => {
   it("rejects a PATCH whose body exceeds the maximum allowed size", async () => {
     const res = await fetch(`${baseUrl}/api/approval-requests/${randomUUID()}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: JSON.stringify({ decision: "approved", decidedByUserId: "x".repeat(2 * 1024 * 1024) }),
     });
     expect(res.status).toBe(413);
   });
 
   describe("GET /api/approval-requests (issue #132)", () => {
-    it("rejects a request with no bearer token", async () => {
+    it("rejects a request with no credentials", async () => {
       const res = await fetch(`${baseUrl}/api/approval-requests`);
       expect(res.status).toBe(401);
     });
 
     it("returns an empty queue when there are no pending requests", async () => {
       const res = await fetch(`${baseUrl}/api/approval-requests`, {
-        headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+        headers: await authHeader(),
       });
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ rows: [] });
@@ -225,7 +234,7 @@ describe("createApprovalRequestsRequestListener", () => {
       });
 
       const res = await fetch(`${baseUrl}/api/approval-requests`, {
-        headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+        headers: await authHeader(),
       });
       expect(res.status).toBe(200);
       const body = (await res.json()) as { rows: Array<Record<string, unknown>> };
@@ -250,12 +259,12 @@ describe("createApprovalRequestsRequestListener", () => {
       const userId = await createUser();
       await fetch(`${baseUrl}/api/approval-requests/${id}`, {
         method: "PATCH",
-        headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
         body: JSON.stringify({ decision: "approved", decidedByUserId: userId }),
       });
 
       const res = await fetch(`${baseUrl}/api/approval-requests`, {
-        headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+        headers: await authHeader(),
       });
       expect(await res.json()).toEqual({ rows: [] });
     });

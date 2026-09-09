@@ -7,10 +7,10 @@ import { OperationError } from "./genericOperations.js";
  * database view, it's the one-time account-bootstrap call.
  *
  * Unlike every other operations module here, this one *does* carry a bearer token from the
- * browser: the setup token is not a server-side shared secret like `SEMPREC_API_TOKEN`, it's
- * the operator's one-time bootstrap credential, handed to them out of band and pasted into
- * this page's URL — so attaching it is this call's whole job, not something a proxy does on
- * its behalf.
+ * browser: the setup token isn't a session (there's no user yet to have one), it's the
+ * operator's one-time bootstrap credential, handed to them out of band and pasted into this
+ * page's URL — so attaching it is this call's whole job, not something a proxy does on its
+ * behalf.
  */
 
 const publicUserSchema = z.object({
