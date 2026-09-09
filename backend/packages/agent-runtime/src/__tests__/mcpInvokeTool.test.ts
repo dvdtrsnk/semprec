@@ -18,6 +18,8 @@ import {
   createViewTypeRegistry,
   createAgentRun,
   getApprovalRequest,
+  createUser,
+  hashPassword,
   type McpConnectionConfig,
   type ViewTypeRegistry,
 } from "@semprec/data";
@@ -220,6 +222,46 @@ describe("MCP invoke adapter (issue #128)", () => {
         result: JSON.stringify({ name: "search_web", arguments: { query: "semprec" } }),
       });
       expect(contractServer.getLastToolCall()).toEqual({ name: "search_web", arguments: { query: "semprec" } });
+    });
+
+    it("writes an approval_pending notification alongside the request, one per created request, never deduped away (issue #149)", async () => {
+      const contractServer = startStdioContractServer([SEARCH_TOOL]);
+      servers.push(contractServer);
+      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+      const passwordHash = await hashPassword("s3cret-password");
+      const user = await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+
+      const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
+      const first = await invoke({ query: "semprec" });
+      const firstRequestId = first.result.match(/Approval request ([0-9a-f-]{36})/i)![1]!;
+
+      const { rows: afterFirst } = await pool.query(
+        `SELECT user_id, kind, title, source_table, source_id, transition_instance FROM notifications WHERE source_id = $1`,
+        [firstRequestId],
+      );
+      expect(afterFirst).toMatchObject([
+        {
+          user_id: user.id,
+          kind: "approval_pending",
+          title: `"search_web" needs approval`,
+          source_table: "approval_requests",
+          transition_instance: firstRequestId,
+        },
+      ]);
+
+      // A second, independent call is a different request (a different transition) and gets its
+      // own notification rather than being deduped against the first.
+      const second = await invoke({ query: "semprec again" });
+      const secondRequestId = second.result.match(/Approval request ([0-9a-f-]{36})/i)![1]!;
+      expect(secondRequestId).not.toBe(firstRequestId);
+
+      const { rows: allNotifications } = await pool.query(
+        `SELECT source_id FROM notifications WHERE kind = 'approval_pending'`,
+      );
+      expect(allNotifications.map((r: { source_id: string }) => r.source_id).sort()).toEqual(
+        [firstRequestId, secondRequestId].sort(),
+      );
     });
 
     it("rejects an invalid call before creating any approval request", async () => {

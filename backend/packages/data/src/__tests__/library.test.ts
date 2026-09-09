@@ -21,7 +21,13 @@ import {
   markItemAutomationDone,
   setItemAutomationLocked,
 } from "../library/itemAutomationStore.js";
-import { enqueueLibraryMetadataProcessing, type LibraryMetadataFetcher } from "../library/libraryMetadataJob.js";
+import {
+  enqueueLibraryMetadataProcessing,
+  handleProcessLibraryMetadataTask,
+  type LibraryMetadataFetcher,
+} from "../library/libraryMetadataJob.js";
+import { createUser } from "../auth/usersStore.js";
+import { hashPassword } from "../auth/passwordHash.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -144,6 +150,73 @@ describe("library module (issue #25)", () => {
     expect(automation?.status).toBe("error");
     expect(automation?.error).toBe("source unavailable");
     expect(automation?.attempts).toBe(1);
+  });
+
+  it("writes an automation_error notification on failure, deduped by job id but not across distinct failing jobs (issue #149)", async () => {
+    const moviesId = await getDatabaseIdByModule("movies");
+    const item = await chokePoint.createItem({ databaseId: moviesId, properties: { name: "Sicario", year: 2015 } });
+    const passwordHash = await hashPassword("s3cret-password");
+    const user = await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+
+    const failingFetcher: LibraryMetadataFetcher = async () => {
+      throw new Error("source unavailable");
+    };
+    const payload = { itemId: item.id, databaseId: moviesId, config: { source: "test", coverKey: "cover" } };
+
+    await expect(
+      handleProcessLibraryMetadataTask(pool, payload, failingFetcher, { job: { id: "job-1" } }),
+    ).rejects.toThrow("source unavailable");
+
+    const { rows: afterFirst } = await pool.query(
+      `SELECT user_id, kind, title, link_href, source_table, source_id, transition_instance FROM notifications WHERE source_id = $1`,
+      [item.id],
+    );
+    expect(afterFirst).toMatchObject([
+      {
+        user_id: user.id,
+        kind: "automation_error",
+        title: "Item automation failed",
+        link_href: `?page=library-item&id=${item.id}`,
+        source_table: "item_automation",
+        transition_instance: "job-1",
+      },
+    ]);
+
+    // Redelivery of the same job must not duplicate the notification.
+    await expect(
+      handleProcessLibraryMetadataTask(pool, payload, failingFetcher, { job: { id: "job-1" } }),
+    ).rejects.toThrow("source unavailable");
+    const { rows: afterReplay } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [item.id]);
+    expect(afterReplay).toHaveLength(1);
+
+    // A later, independent failure (a new job) is a different transition and does insert.
+    await expect(
+      handleProcessLibraryMetadataTask(pool, payload, failingFetcher, { job: { id: "job-2" } }),
+    ).rejects.toThrow("source unavailable");
+    const { rows: afterNewTransition } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [
+      item.id,
+    ]);
+    expect(afterNewTransition).toHaveLength(2);
+  });
+
+  it("skips the automation_error notification (but still records the failure) before any user account exists (issue #149)", async () => {
+    const moviesId = await getDatabaseIdByModule("movies");
+    const item = await chokePoint.createItem({ databaseId: moviesId, properties: { name: "Sicario", year: 2015 } });
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+
+    const failingFetcher: LibraryMetadataFetcher = async () => {
+      throw new Error("source unavailable");
+    };
+    const payload = { itemId: item.id, databaseId: moviesId, config: { source: "test", coverKey: "cover" } };
+
+    await expect(
+      handleProcessLibraryMetadataTask(pool, payload, failingFetcher, { job: { id: "job-1" } }),
+    ).rejects.toThrow("source unavailable");
+
+    const { rows } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [item.id]);
+    expect(rows).toHaveLength(0);
+    const automation = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    expect(automation?.status).toBe("error");
   });
 
   it("a locked item_automation row is never touched by the heartbeat", async () => {

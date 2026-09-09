@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { createAgentRun, finishAgentRun } from "@semprec/data";
+import { createAgentRun, finishAgentRun, finishAgentRunWithErrorNotification, withTransaction } from "@semprec/data";
 import type { CompactionAdapter } from "./compaction.js";
 import {
   persistCompaction,
@@ -45,10 +45,16 @@ interface ConversationRegistryEntry {
   ttlTimer: ReturnType<typeof setTimeout>;
 }
 
-/** Best-effort: matches `runAgentSession`'s error handling in `lifecycleAdapter.ts` so a failed turn never leaves an `agent_runs` row stuck at `running` forever. */
+/**
+ * Best-effort: matches `runAgentSession`'s error handling in `lifecycleAdapter.ts` so a failed
+ * turn never leaves an `agent_runs` row stuck at `running` forever. Closing the run and writing
+ * its `agent_run_error` notification (issue #149) run in one transaction, so a crash between the
+ * two never leaves one without the other.
+ */
 async function failRun(pool: Pool, agentRunId: string, err: unknown): Promise<void> {
   try {
-    await finishAgentRun(pool, agentRunId, "error", err instanceof Error ? err.message : String(err));
+    const message = err instanceof Error ? err.message : String(err);
+    await withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, agentRunId, message));
     await pushRunStatus(pool, agentRunId, "error");
   } catch (closeErr) {
     console.error("SempConversation: failed to close errored run", agentRunId, closeErr);

@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
-import { createAgentRun, finishAgentRun } from "../agentRuns/agentRunsStore.js";
+import { createAgentRun, finishAgentRun, finishAgentRunWithErrorNotification } from "../agentRuns/agentRunsStore.js";
+import { withTransaction } from "../db/pool.js";
 import { parseItemRelationFilterConfig, passesItemRelationFilter } from "./itemRelationFilter.js";
 
 export interface ActionContext {
@@ -71,7 +72,9 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
       await finishAgentRun(pool, run.id, "done", outcome?.result ?? null);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      await finishAgentRun(pool, run.id, "error", message);
+      // Same transaction as the source write, per issue #149: a crash between closing the run
+      // and writing its `agent_run_error` notification never leaves one without the other.
+      await withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, run.id, message));
       throw err;
     }
   };
