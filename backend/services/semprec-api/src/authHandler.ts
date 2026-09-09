@@ -8,10 +8,15 @@ import {
   logout,
   verifySessionToken,
   revokeUserSession,
+  requestPasswordReset,
+  resetPassword,
   SESSION_TTL_SECONDS,
   SESSION_PLATFORMS,
+  SESSION_DELIVERY_CHANNEL_BY_PLATFORM,
   type SessionPlatform,
+  type SessionDeliveryChannel,
   type AuthenticatedIdentity,
+  type PasswordResetMailer,
 } from "@semprec/data";
 import type { Pool } from "pg";
 
@@ -41,16 +46,21 @@ function parseCookieHeader(header: string): Record<string, string> {
   return cookies;
 }
 
-/** Prefers the `Authorization: Bearer` header (native clients), falling back to the web session cookie. */
-function extractToken(req: IncomingMessage): string | null {
+/**
+ * Prefers the `Authorization: Bearer` header (native clients), falling back to the web session
+ * cookie. Reports which channel supplied the token alongside it, so the caller can reject a
+ * token presented over a channel its platform doesn't use (see `SESSION_DELIVERY_CHANNEL_BY_PLATFORM`).
+ */
+function extractToken(req: IncomingMessage): { token: string; channel: SessionDeliveryChannel } | null {
   const authHeader = req.headers.authorization;
   if (authHeader?.startsWith("Bearer ")) {
     const token = authHeader.slice("Bearer ".length).trim();
-    return token.length > 0 ? token : null;
+    return token.length > 0 ? { token, channel: "bearer" } : null;
   }
   const cookieHeader = req.headers.cookie;
   if (!cookieHeader) return null;
-  return parseCookieHeader(cookieHeader)[SESSION_COOKIE_NAME] ?? null;
+  const token = parseCookieHeader(cookieHeader)[SESSION_COOKIE_NAME];
+  return token ? { token, channel: "cookie" } : null;
 }
 
 function sessionCookieHeader(token: string, maxAgeSeconds: number): string {
@@ -62,13 +72,19 @@ const CLEAR_SESSION_COOKIE = `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; Secure;
 /**
  * The one path from an HTTP request to a verified session, shared by this handler's own
  * `GET /api/auth/session`/`logout`/`revoke` routes and (per issue #143) every other route that
- * adopts auth. Throws `UnauthorizedError` for a missing, invalid, expired, or revoked token
- * alike — callers should let that propagate to a generic 401, never inspect it further.
+ * adopts auth. Throws `UnauthorizedError` for a missing, invalid, expired, or revoked token, or
+ * one presented over a channel its platform doesn't use (a web session via `Bearer`, or a native
+ * session via cookie) — callers should let that propagate to a generic 401, never inspect it
+ * further; a mismatched channel gets the same opaque failure as a garbage token.
  */
 export async function authenticateRequest(pool: Pool, req: IncomingMessage): Promise<AuthenticatedIdentity> {
-  const token = extractToken(req);
-  if (!token) throw new UnauthorizedError();
-  return withTransaction(pool, (client) => verifySessionToken(client, token));
+  const presented = extractToken(req);
+  if (!presented) throw new UnauthorizedError();
+  const identity = await withTransaction(pool, (client) => verifySessionToken(client, presented.token));
+  if (SESSION_DELIVERY_CHANNEL_BY_PLATFORM[identity.session.platform] !== presented.channel) {
+    throw new UnauthorizedError();
+  }
+  return identity;
 }
 
 function isSessionPlatform(value: unknown): value is SessionPlatform {
@@ -98,18 +114,29 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 
 const REVOKE_SESSION_PATH = /^\/api\/auth\/sessions\/([^/]+)\/revoke$/;
 
+export interface AuthRequestListenerOptions {
+  /** Sends the reset link email; issue #142's SMTP path. */
+  passwordResetMailer: PasswordResetMailer;
+  /** Origin the emailed password-reset link is built against, e.g. `https://app.semprec.example`. */
+  appBaseUrl: string;
+}
+
 /**
  * Auth-v1's HTTP surface (issue #140): `POST /api/auth/login`, `POST /api/auth/logout`,
- * `POST /api/auth/sessions/:id/revoke`, and `GET /api/auth/session`. Unlike this package's other
- * handlers, there is no shared-secret `authToken` gate here — `login` is necessarily public, and
- * the other three routes gate on a real session via `authenticateRequest` instead.
+ * `POST /api/auth/sessions/:id/revoke`, `GET /api/auth/session`, and (issue #142)
+ * `POST /api/auth/password-reset/request` / `POST /api/auth/password-reset/consume`. Unlike this
+ * package's other handlers, there is no shared-secret `authToken` gate here — `login` and the
+ * password-reset routes are necessarily public, and the session routes gate on a real session
+ * via `authenticateRequest` instead.
  *
  * `SESSION_COOKIE_NAME` is one of two ways a request can carry its token; the other is
- * `Authorization: Bearer` (native clients, or a web client that prefers not to rely on cookies).
- * `login`'s response always includes the raw token in its JSON body so both kinds of client can
- * use it, and additionally sets it as a cookie so a browser client doesn't have to.
+ * `Authorization: Bearer` (native clients only, per `SESSION_DELIVERY_CHANNEL_BY_PLATFORM`).
+ * A `web` login gets its token only via the `Set-Cookie` header — the JSON body omits it, so it
+ * is never readable from page JavaScript — while `ios`/`macos` logins get it in the JSON body for
+ * Keychain storage and no cookie at all. `authenticateRequest` rejects a token presented over the
+ * other channel from the one its platform declared at login.
  */
-export function createAuthRequestListener(pool: Pool) {
+export function createAuthRequestListener(pool: Pool, options: AuthRequestListenerOptions) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
 
@@ -137,12 +164,51 @@ export function createAuthRequestListener(pool: Pool) {
           }),
         );
 
-        sendJson(
-          res,
-          200,
-          { token: result.token, user: result.user },
-          { "Set-Cookie": sessionCookieHeader(result.token, SESSION_TTL_SECONDS) },
+        // Per #141: a browser must never see its token in a readable response body — only the
+        // `httpOnly` cookie carries it. iOS/macOS get it back in the body for Keychain storage
+        // and use it as `Authorization: Bearer` on every later request; they get no cookie.
+        if (body.platform === "web") {
+          sendJson(
+            res,
+            200,
+            { user: result.user },
+            { "Set-Cookie": sessionCookieHeader(result.token, SESSION_TTL_SECONDS) },
+          );
+        } else {
+          sendJson(res, 200, { token: result.token, user: result.user });
+        }
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/auth/password-reset/request") {
+        const body = (await readJsonBody(req)) as { email?: unknown };
+        if (typeof body.email !== "string" || body.email.length === 0) {
+          throw new ValidationError("'email' must be a non-empty string");
+        }
+
+        // Always 200 with the same body regardless of whether `email` matched an account —
+        // issue #142's "request responses do not disclose whether an email exists".
+        await requestPasswordReset(pool, options.passwordResetMailer, {
+          email: body.email,
+          appBaseUrl: options.appBaseUrl,
+        });
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/auth/password-reset/consume") {
+        const body = (await readJsonBody(req)) as { token?: unknown; newPassword?: unknown };
+        if (typeof body.token !== "string" || body.token.length === 0) {
+          throw new ValidationError("'token' must be a non-empty string");
+        }
+        if (typeof body.newPassword !== "string" || body.newPassword.length === 0) {
+          throw new ValidationError("'newPassword' must be a non-empty string");
+        }
+
+        await withTransaction(pool, (client) =>
+          resetPassword(client, { token: body.token as string, newPassword: body.newPassword as string }),
         );
+        sendJson(res, 200, { ok: true });
         return;
       }
 

@@ -133,6 +133,14 @@ export const en = {
   "approvalQueue.decided.race": "This request was already decided before your action went through",
   "approvalQueue.actionError": "Could not save: {message}",
   "approvalQueue.malformed": "This request could not be displayed (malformed data)",
+  "setup.title": "Set up your account",
+  "setup.email": "Email",
+  "setup.password": "Password",
+  "setup.submit": "Create account",
+  "setup.submitting": "Creating account…",
+  "setup.success": "Your account has been created.",
+  "setup.success.login": "Continue to login",
+  "setup.notFound": "This setup link is no longer valid.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -268,6 +276,14 @@ export const cs: Messages = {
   "approvalQueue.decided.race": "Tato žádost byla rozhodnuta dříve, než se provedla vaše akce",
   "approvalQueue.actionError": "Nepodařilo se uložit: {message}",
   "approvalQueue.malformed": "Tuto žádost nelze zobrazit (poškozená data)",
+  "setup.title": "Nastavení účtu",
+  "setup.email": "E-mail",
+  "setup.password": "Heslo",
+  "setup.submit": "Vytvořit účet",
+  "setup.submitting": "Vytváření účtu…",
+  "setup.success": "Účet byl vytvořen.",
+  "setup.success.login": "Pokračovat na přihlášení",
+  "setup.notFound": "Tento odkaz na nastavení už není platný.",
 };
 
 export const CATALOGS = { cs, en } as const;

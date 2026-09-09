@@ -83,6 +83,15 @@ export async function revokeSessionForUser(client: Pool | PoolClient, id: string
   return (result.rowCount ?? 0) > 0;
 }
 
+/**
+ * Revokes every still-active session for `userId` in one statement — the "kick everyone out"
+ * counterpart to `revokeSessionForUser`'s single-session scope. `resetPassword` (issue #142)
+ * calls this so a session an attacker held before the reset doesn't outlive it.
+ */
+export async function revokeAllSessionsForUser(client: Pool | PoolClient, userId: string): Promise<void> {
+  await client.query(`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, [userId]);
+}
+
 export async function listSessionsForUser(client: Pool | PoolClient, userId: string): Promise<SessionRow[]> {
   const { rows } = await client.query(
     `SELECT ${SELECT_COLUMNS} FROM sessions WHERE user_id = $1 ORDER BY created_at DESC`,

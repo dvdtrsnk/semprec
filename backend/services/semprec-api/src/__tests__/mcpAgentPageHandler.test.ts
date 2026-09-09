@@ -9,13 +9,25 @@ import {
   withTransaction,
   createItemWithClient,
   upsertMcpToolRegistration,
+  createUser,
+  hashPassword,
+  login,
 } from "@semprec/data";
 import { createMcpAgentPageRequestListener } from "../mcpAgentPageHandler.js";
 
-const AUTH_TOKEN = "test-token";
+const PASSWORD = "s3cret-password";
 
 let pool: Pool;
 let mcpServersId: string;
+
+async function authHeader(): Promise<{ Authorization: string }> {
+  const user = await createUser(pool, {
+    email: `${randomUUID()}@example.com`,
+    passwordHash: await hashPassword(PASSWORD),
+  });
+  const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+  return { Authorization: `Bearer ${token}` };
+}
 
 async function createMcpServerItem(name: string, active: boolean) {
   return withTransaction(pool, (client) =>
@@ -36,7 +48,7 @@ describe("createMcpAgentPageRequestListener", () => {
     if (!rows[0]) throw new Error("mcpServers database was not seeded");
     mcpServersId = rows[0].id;
 
-    server = createServer(createMcpAgentPageRequestListener(pool, { authToken: AUTH_TOKEN }));
+    server = createServer(createMcpAgentPageRequestListener(pool));
     await new Promise<void>((resolve) => server.listen(0, resolve));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
@@ -51,20 +63,20 @@ describe("createMcpAgentPageRequestListener", () => {
     await pool?.end();
   });
 
-  it("rejects a request with no bearer token", async () => {
+  it("rejects a request with no credentials", async () => {
     const res = await fetch(`${baseUrl}/api/projects/${randomUUID()}/mcp-grants`);
     expect(res.status).toBe(401);
   });
 
-  it("rejects a request with the wrong bearer token", async () => {
+  it("rejects a request with a garbage bearer token", async () => {
     const res = await fetch(`${baseUrl}/api/projects/${randomUUID()}/mcp-grants`, {
-      headers: { Authorization: "Bearer wrong" },
+      headers: { Authorization: "Bearer garbage" },
     });
     expect(res.status).toBe(401);
   });
 
   it("returns 404 for an unknown path", async () => {
-    const res = await fetch(`${baseUrl}/not-a-real-path`, { headers: { Authorization: `Bearer ${AUTH_TOKEN}` } });
+    const res = await fetch(`${baseUrl}/not-a-real-path`, { headers: await authHeader() });
     expect(res.status).toBe(404);
   });
 
@@ -78,7 +90,7 @@ describe("createMcpAgentPageRequestListener", () => {
     const projectItemId = randomUUID();
 
     const res = await fetch(`${baseUrl}/api/projects/${projectItemId}/mcp-grants`, {
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+      headers: await authHeader(),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { rows: unknown[] };
@@ -96,7 +108,7 @@ describe("createMcpAgentPageRequestListener", () => {
 
     const patchRes = await fetch(`${baseUrl}/api/projects/${projectItemId}/mcp-grants/${registration.id}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: JSON.stringify({ granted: true }),
     });
     expect(patchRes.status).toBe(200);
@@ -104,7 +116,7 @@ describe("createMcpAgentPageRequestListener", () => {
     expect(grant.granted).toBe(true);
 
     const getRes = await fetch(`${baseUrl}/api/projects/${projectItemId}/mcp-grants`, {
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+      headers: await authHeader(),
     });
     const body = (await getRes.json()) as { rows: Array<{ granted: boolean }> };
     expect(body.rows[0]!.granted).toBe(true);
@@ -113,7 +125,7 @@ describe("createMcpAgentPageRequestListener", () => {
   it("rejects a grant PATCH with a non-boolean 'granted'", async () => {
     const res = await fetch(`${baseUrl}/api/projects/${randomUUID()}/mcp-grants/${randomUUID()}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: JSON.stringify({ granted: "yes" }),
     });
     expect(res.status).toBe(400);
@@ -122,7 +134,7 @@ describe("createMcpAgentPageRequestListener", () => {
   it("maps a grant PATCH for an unknown mcpToolRegistrationId to a 404 response", async () => {
     const res = await fetch(`${baseUrl}/api/projects/${randomUUID()}/mcp-grants/${randomUUID()}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: JSON.stringify({ granted: true }),
     });
     expect(res.status).toBe(404);
@@ -131,7 +143,7 @@ describe("createMcpAgentPageRequestListener", () => {
   it("rejects a PATCH with a malformed JSON body", async () => {
     const res = await fetch(`${baseUrl}/api/projects/${randomUUID()}/mcp-grants/${randomUUID()}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: "{not valid json",
     });
     expect(res.status).toBe(400);
@@ -140,7 +152,7 @@ describe("createMcpAgentPageRequestListener", () => {
   it("rejects a PATCH whose body exceeds the maximum allowed size", async () => {
     const res = await fetch(`${baseUrl}/api/projects/${randomUUID()}/mcp-grants/${randomUUID()}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: JSON.stringify({ granted: true, padding: "x".repeat(2 * 1024 * 1024) }),
     });
     expect(res.status).toBe(413);
@@ -156,7 +168,7 @@ describe("createMcpAgentPageRequestListener", () => {
 
     const res = await fetch(`${baseUrl}/api/mcp-tool-registrations/${registration.id}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: JSON.stringify({ riskClass: "destructive", requiresApproval: true }),
     });
     expect(res.status).toBe(200);
@@ -168,7 +180,7 @@ describe("createMcpAgentPageRequestListener", () => {
   it("maps a validation error (neither field set) to a 400 response", async () => {
     const res = await fetch(`${baseUrl}/api/mcp-tool-registrations/${randomUUID()}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(400);
@@ -177,7 +189,7 @@ describe("createMcpAgentPageRequestListener", () => {
   it("maps an unknown registration id to a 404 response", async () => {
     const res = await fetch(`${baseUrl}/api/mcp-tool-registrations/${randomUUID()}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}`, "Content-Type": "application/json" },
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: JSON.stringify({ riskClass: "high" }),
     });
     expect(res.status).toBe(404);
