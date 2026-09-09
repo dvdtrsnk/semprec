@@ -111,6 +111,14 @@ describe("issue #235: databases.key and nullable system names", () => {
         `UPDATE properties SET name = 'Status'
          WHERE key = 'status' AND database_id = (SELECT id FROM databases WHERE owner_module_id = 'tasks' AND system = true)`,
       );
+      // Companies.projects is a relation property whose key lives on the *source* side
+      // (seedTenDatabases.ts's companies -> projects relate() call) rather than being one of
+      // companies' own createProps specs — regression coverage for a HIGH-severity review
+      // finding where this key was missing from the migration's per-database allowlist.
+      await client.query(
+        `UPDATE properties SET name = 'Projects'
+         WHERE key = 'projects' AND database_id = (SELECT id FROM databases WHERE owner_module_id = 'companies' AND system = true)`,
+      );
     } finally {
       client.release();
     }
@@ -129,6 +137,12 @@ describe("issue #235: databases.key and nullable system names", () => {
          WHERE key = 'status' AND database_id = (SELECT id FROM databases WHERE owner_module_id = 'tasks' AND system = true)`,
       );
       expect(propertyRows[0]!.name).toBeNull();
+
+      const { rows: companiesProjectsRows } = await client2.query<{ name: string | null }>(
+        `SELECT name FROM properties
+         WHERE key = 'projects' AND database_id = (SELECT id FROM databases WHERE owner_module_id = 'companies' AND system = true)`,
+      );
+      expect(companiesProjectsRows[0]!.name).toBeNull();
     } finally {
       client2.release();
     }

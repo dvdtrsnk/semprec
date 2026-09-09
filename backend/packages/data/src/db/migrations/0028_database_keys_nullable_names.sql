@@ -42,7 +42,7 @@ DECLARE
     "files": ["name", "type", "date", "file", "area", "projects", "healthRecords", "companies"],
     "events": ["name", "type", "date", "people", "transcript", "actionItems", "company", "project"],
     "healthRecords": ["name", "date", "status", "subject", "type", "tags", "projects", "area", "files"],
-    "companies": ["name", "ico", "web", "area", "people", "files", "meetings"],
+    "companies": ["name", "ico", "web", "projects", "area", "people", "files", "meetings"],
     "transcripts": ["name", "status", "date", "notes", "link", "speakers", "event"],
     "journal": ["name", "type", "period", "area"]
   }'::jsonb;
