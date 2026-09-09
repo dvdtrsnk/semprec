@@ -32,6 +32,8 @@ import {
   type LegacyRawMimeFetcher,
 } from "./migrationJob/mailLegacyEmailMigration.js";
 import { handleApprovalRequestExecuteTask } from "./mcp/approvalRequestExecution.js";
+import { handleNotificationFanoutTask } from "./notifications/notificationFanoutJob.js";
+import type { PushSenders } from "./push/pushSenders.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -89,6 +91,7 @@ export function createCoreTaskList(
   ),
   legacyRawMimeFetcher: LegacyRawMimeFetcher = noopLegacyRawMimeFetcher,
   moduleRegistry?: ModuleRegistry,
+  pushSenders?: PushSenders,
 ): TaskList {
   return {
     [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {
@@ -165,6 +168,13 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: async (payload) => {
       await handleApprovalRequestExecuteTask(pool, { approvalRequestId: requireString(payload, "approvalRequestId") });
+    },
+    [CORE_TASK_NAMES.NOTIFICATION_FANOUT]: async (payload) => {
+      await handleNotificationFanoutTask(
+        pool,
+        { notificationId: requireString(payload, "notificationId") },
+        pushSenders,
+      );
     },
   };
 }

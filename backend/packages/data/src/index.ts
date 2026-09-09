@@ -67,7 +67,10 @@ export {
 export * from "./manifest/schemaProjection.js";
 export * from "./manifest/fullModuleRegistry.js";
 export * from "./notifications/findings.js";
+export * from "./notifications/notificationKinds.js";
 export * from "./notifications/notify.js";
+export * from "./notifications/notificationsStore.js";
+export * from "./notifications/notificationFanoutJob.js";
 
 export * from "./agentRuns/agentRunsStore.js";
 export * from "./agentRuns/agentRunEventsStore.js";

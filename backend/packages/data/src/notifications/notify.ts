@@ -2,27 +2,8 @@ import type { PoolClient } from "pg";
 import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
 import { getUserById } from "../auth/usersStore.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
-
-/**
- * The closed initial kind catalog (issue #237). `approval_pending`, `agent_run_error`,
- * `heartbeat_error`, `automation_error`, and `mail_sync_error` have a producer (this issue ships
- * only `heartbeat_error`'s, at `scheduler/sweep.ts`; the rest land in #149). `process_stale`,
- * `queue_backlog`, `mail_sync_stalled`, and `backup_restore_failed` are reserved: allowed by the
- * database's `CHECK` constraint (migration 0030) but have no producer yet.
- */
-export const NOTIFICATION_KINDS = [
-  "approval_pending",
-  "agent_run_error",
-  "heartbeat_error",
-  "automation_error",
-  "mail_sync_error",
-  "process_stale",
-  "queue_backlog",
-  "mail_sync_stalled",
-  "backup_restore_failed",
-] as const;
-
-export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
+import { enqueueNotificationFanout } from "./notificationFanoutJob.js";
+import type { NotificationKind } from "./notificationKinds.js";
 
 let catalogsPromise: Promise<ModuleCatalogs> | undefined;
 
@@ -67,6 +48,12 @@ export interface WriteNotificationInput {
  * caller's transaction rolls this insert back with it, and committing it exposes both together.
  * Deduplicates on `(sourceTable, sourceId, kind, transitionInstance)` via the unique index from
  * migration 0030 — a replay is a silent no-op, never a second row.
+ *
+ * On an actual (non-replay) insert, also enqueues issue #151's `notificationFanout` job in the
+ * same transaction — "this notification exists" and "delivery will be attempted" land together,
+ * the same commit-coupling pattern as `decideAndEnqueueApprovalRequest`. A replay enqueues
+ * nothing new: the row already has a notification, and that notification's fanout job (keyed by
+ * its own id) either already ran or is already queued.
  */
 export async function writeNotification(client: PoolClient, input: WriteNotificationInput): Promise<void> {
   const user = await getUserById(client, input.userId);
@@ -79,10 +66,16 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
   const titleTemplate = resolveCatalogLabel(null, catalogs[locale], catalogs.en, `notification.${input.kind}.title`);
   const title = interpolate(titleTemplate, input.titleParams ?? {});
 
-  await client.query(
+  const { rows } = await client.query(
     `INSERT INTO notifications (user_id, kind, title, link_href, source_table, source_id, transition_instance)
      VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (source_table, source_id, kind, transition_instance) DO NOTHING`,
+     ON CONFLICT (source_table, source_id, kind, transition_instance) DO NOTHING
+     RETURNING id`,
     [input.userId, input.kind, title, input.linkHref, input.sourceTable, input.sourceId, input.transitionInstance],
   );
+
+  const notificationId = (rows[0] as { id: string } | undefined)?.id;
+  if (notificationId) {
+    await enqueueNotificationFanout(client, notificationId);
+  }
 }
