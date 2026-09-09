@@ -6,12 +6,6 @@ export type PushChannel = (typeof PUSH_CHANNELS)[number];
 export const APNS_ENVIRONMENTS = ["sandbox", "production"] as const;
 export type ApnsEnvironment = (typeof APNS_ENVIRONMENTS)[number];
 
-/** The platform each channel is valid for (migration 0031's `push_subscriptions_channel_platform_chk`). */
-export const PLATFORMS_BY_CHANNEL: Record<PushChannel, readonly SessionPlatform[]> = {
-  web_push: ["web"],
-  apns: ["ios", "macos"],
-};
-
 export interface PushSubscriptionRow {
   id: string;
   userId: string;
