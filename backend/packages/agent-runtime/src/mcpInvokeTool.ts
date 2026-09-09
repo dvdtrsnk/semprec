@@ -5,6 +5,8 @@ import {
   createPendingApprovalRequest,
   withTransaction,
   executeMcpInvocation,
+  getEarliestUserId,
+  writeNotification,
   type McpToolInvocationTarget,
   type McpInvokeResult,
   type McpInvokeArgs,
@@ -139,6 +141,13 @@ function pendingApprovalResult(requestId: string, toolName: string): McpInvokeRe
  * later — instead of calling `executeMcpInvocation`, and returns a synthetic success result
  * carrying the new request's id. A tool that doesn't require approval continues straight through
  * to `executeMcpInvocation`, unaffected by this gate.
+ *
+ * The insert also writes the reference `approval_pending` notification (issue #149) in the same
+ * transaction: rolling back the request rolls back the notification with it. `transitionInstance`
+ * is the new request's own freshly generated id — a create is a one-shot event with no retry of
+ * "the same" transition to dedupe against, so the id doubling as both `sourceId` and
+ * `transitionInstance` is exactly as unique as the row it names. Silently skips the notification
+ * before any account exists, matching `notifyHeartbeatError`.
  */
 export function createApprovalGatedMcpInvokeTool(
   pool: Pool,
@@ -153,8 +162,8 @@ export function createApprovalGatedMcpInvokeTool(
 
     const { target } = resolution;
     if (target.requiresApproval) {
-      const request = await withTransaction(pool, (client) =>
-        createPendingApprovalRequest(client, {
+      const request = await withTransaction(pool, async (client) => {
+        const created = await createPendingApprovalRequest(client, {
           agentRunId,
           toolName: target.toolName,
           riskClass: target.riskClass,
@@ -163,8 +172,21 @@ export function createApprovalGatedMcpInvokeTool(
             mcpServerItemId: target.mcpServerItemId,
             args: resolution.args,
           },
-        }),
-      );
+        });
+        const userId = await getEarliestUserId(client);
+        if (userId) {
+          await writeNotification(client, {
+            userId,
+            kind: "approval_pending",
+            titleParams: { toolName: created.toolName },
+            linkHref: `?page=approvals&user=${userId}`,
+            sourceTable: "approval_requests",
+            sourceId: created.id,
+            transitionInstance: created.id,
+          });
+        }
+        return created;
+      });
       return pendingApprovalResult(request.id, target.toolName);
     }
 

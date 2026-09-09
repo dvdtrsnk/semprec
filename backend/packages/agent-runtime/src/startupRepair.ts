@@ -1,5 +1,10 @@
 import type { Pool } from "pg";
-import { finishAgentRun, insertAgentRunEvent, listAgentRunEvents, listRunningAgentRuns } from "@semprec/data";
+import {
+  finishAgentRunWithErrorNotification,
+  insertAgentRunEvent,
+  listAgentRunEvents,
+  listRunningAgentRuns,
+} from "@semprec/data";
 
 const INTERRUPTED_REASON = "interrupted_by_restart";
 
@@ -16,7 +21,8 @@ const INTERRUPTED_REASON = "interrupted_by_restart";
  * installing its graphile-worker runner.
  *
  * Two repairs, per orphaned run:
- *  1. Close it out as `error` with reason `interrupted_by_restart`.
+ *  1. Close it out as `error` with reason `interrupted_by_restart`, writing the
+ *     `agent_run_error` notification (issue #149) in the same transaction.
  *  2. If its last logged event is an unpaired `tool_use`, append a synthetic
  *     `tool_result` so the stored transcript keeps the invariant that every
  *     `tool_use` has a matching `tool_result` (needed for #119's reconstruction and
@@ -33,7 +39,7 @@ export async function repairInterruptedRuns(pool: Pool): Promise<{ repairedRunId
 
     const orphaned = await listRunningAgentRuns(client);
     for (const run of orphaned) {
-      await finishAgentRun(client, run.id, "error", INTERRUPTED_REASON);
+      await finishAgentRunWithErrorNotification(client, run.id, INTERRUPTED_REASON);
 
       const events = await listAgentRunEvents(client, run.id);
       const last = events[events.length - 1];

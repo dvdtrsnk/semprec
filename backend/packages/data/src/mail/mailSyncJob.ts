@@ -1,4 +1,5 @@
 import type { Readable } from "node:stream";
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { withTransaction } from "../db/pool.js";
@@ -6,6 +7,8 @@ import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { updateItemWithClient } from "../chokePoint/chokePoint.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
+import { getEarliestUserId } from "../auth/usersStore.js";
+import { writeNotification } from "../notifications/notify.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
 import {
   getMailAccountSyncState,
@@ -134,12 +137,24 @@ function trackWrittenKeys(storage: BlobStorageWriter): { storage: BlobStorageWri
  * (the same "revisit only at real growth" judgment call the full-text-search design makes),
  * not a general-purpose bulk-sync architecture.
  */
+export interface SyncMailAccountHelpers {
+  job: { id: string };
+}
+
+/**
+ * `helpers` defaults to a freshly generated id: only graphile-worker's real per-attempt job id
+ * (threaded through by worker.ts) makes the `mail_sync_error` notification's `transitionInstance`
+ * (issue #149) dedupe correctly across retries of the *same* attempt — callers that don't care
+ * about that (most of this file's own tests) can omit it entirely, same as `imapConnectionLimiter`
+ * below.
+ */
 export async function handleSyncMailAccountTask(
   pool: Pool,
   payload: SyncMailAccountPayload,
   adapters: MailSyncAdapterFactory,
   moduleIds: MailModuleIds,
   storage: BlobStorageWriter,
+  helpers: SyncMailAccountHelpers = { job: { id: randomUUID() } },
   imapConnectionLimiter: ImapConnectionLimiter = sharedImapConnectionLimiter,
 ): Promise<void> {
   const { storage: trackedStorage, writtenKeys } = trackWrittenKeys(storage);
@@ -328,6 +343,20 @@ export async function handleSyncMailAccountTask(
         { databaseId: moduleIds.mailboxesDatabaseId, itemId: payload.mailboxItemId, propertiesPatch: { syncStatus } },
         { allowedSystemKeys: MAILBOX_SYNC_STATUS_ALLOWED_KEYS },
       );
+      // Issue #149: same transaction as the error record, so a replayed job (same job id,
+      // same `transitionInstance`) never duplicates it. Deliberately not raised for the
+      // `MailConnectionLimitError` branch above — that's contention, not a sync failure.
+      const userId = await getEarliestUserId(client);
+      if (userId) {
+        await writeNotification(client, {
+          userId,
+          kind: "mail_sync_error",
+          linkHref: null,
+          sourceTable: "mail_account_sync_state",
+          sourceId: payload.mailboxItemId,
+          transitionInstance: helpers.job.id,
+        });
+      }
     });
     throw err;
   }

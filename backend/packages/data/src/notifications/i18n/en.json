@@ -1,3 +1,7 @@
 {
-  "notification.heartbeat_error.title": "Heartbeat \"{name}\" failed"
+  "notification.heartbeat_error.title": "Heartbeat \"{name}\" failed",
+  "notification.approval_pending.title": "\"{toolName}\" needs approval",
+  "notification.agent_run_error.title": "Agent run failed",
+  "notification.automation_error.title": "Item automation failed",
+  "notification.mail_sync_error.title": "Mail sync failed"
 }

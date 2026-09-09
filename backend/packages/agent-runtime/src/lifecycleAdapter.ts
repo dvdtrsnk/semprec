@@ -2,6 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import {
   createAgentRun,
   finishAgentRun,
+  finishAgentRunWithErrorNotification,
   getAgentRun,
   insertAgentRunEvent,
   type AgentRunEventKind,
@@ -130,7 +131,10 @@ export async function runAgentSession(client: Pool | PoolClient, input: RunAgent
     await pushRunStatus(client, run.id, "done");
   } catch (err) {
     try {
-      await finishAgentRun(client, run.id, "error", err instanceof Error ? err.message : String(err));
+      // Issue #149: same client as the status write, so a caller-supplied transaction rolls
+      // both back together; a bare pool gives the same best-effort guarantee this catch block
+      // already had before the notification existed.
+      await finishAgentRunWithErrorNotification(client, run.id, err instanceof Error ? err.message : String(err));
       await pushRunStatus(client, run.id, "error");
     } catch {
       // Best-effort: the run is left 'running' if this secondary write fails, but the

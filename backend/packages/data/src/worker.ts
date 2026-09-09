@@ -122,7 +122,7 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.DOC_HISTORY_CLEANUP]: async () => {
       await handleDocHistoryCleanupTask(pool);
     },
-    [CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS]: async (payload) => {
+    [CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS]: async (payload, helpers) => {
       await handleProcessLibraryMetadataTask(
         pool,
         {
@@ -131,12 +131,13 @@ export function createCoreTaskList(
           config: requireLibraryMetadataConfig(payload),
         },
         libraryMetadataFetcher,
+        { job: { id: helpers.job.id } },
       );
     },
     [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: async () => {
       await handleMailAccountSyncSweepTask(pool);
     },
-    [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: async (payload) => {
+    [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: async (payload, helpers) => {
       if (!mailModuleIds)
         throw new Error("mailAccountSync job requires createCoreTaskList's mailModuleIds argument to be configured");
       await handleSyncMailAccountTask(
@@ -145,6 +146,7 @@ export function createCoreTaskList(
         mailSyncAdapters,
         mailModuleIds,
         mailBlobStorage,
+        { job: { id: helpers.job.id } },
       );
     },
     [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: async () => {
