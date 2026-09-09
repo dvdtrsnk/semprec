@@ -1,0 +1,15 @@
+{
+  "database.tasks.name": "Tasks",
+  "property.tasks.name.name": "Name",
+  "property.tasks.status.name": "Status",
+  "property.tasks.status.option.notDone": "Not done",
+  "property.tasks.status.option.done": "Done",
+  "property.tasks.status.option.wontDo": "Won't do",
+  "property.tasks.date.name": "Date",
+  "property.tasks.timeFrom.name": "Time from",
+  "property.tasks.timeTo.name": "Time to",
+  "property.tasks.time.name": "Time",
+  "property.tasks.notifications.name": "Notifications",
+  "property.tasks.persistent.name": "Persistent",
+  "property.tasks.project.name": "Project"
+}
