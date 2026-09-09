@@ -256,7 +256,9 @@ describe("MCP invoke adapter (issue #128)", () => {
       const secondRequestId = second.result.match(/Approval request ([0-9a-f-]{36})/i)![1]!;
       expect(secondRequestId).not.toBe(firstRequestId);
 
-      const { rows: allNotifications } = await pool.query(`SELECT source_id FROM notifications WHERE kind = 'approval_pending'`);
+      const { rows: allNotifications } = await pool.query(
+        `SELECT source_id FROM notifications WHERE kind = 'approval_pending'`,
+      );
       expect(allNotifications.map((r: { source_id: string }) => r.source_id).sort()).toEqual(
         [firstRequestId, secondRequestId].sort(),
       );

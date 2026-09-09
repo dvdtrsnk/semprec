@@ -1836,9 +1836,7 @@ describe("mail sync job error handling (issue #26)", () => {
         job: { id: "job-1" },
       }),
     ).rejects.toThrow("has no stored credential");
-    const { rows: afterReplay } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [
-      mailbox.id,
-    ]);
+    const { rows: afterReplay } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [mailbox.id]);
     expect(afterReplay).toHaveLength(1);
 
     // A later, independent failure (a new job) is a different transition and does insert.
