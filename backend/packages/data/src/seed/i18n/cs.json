@@ -1,0 +1,15 @@
+{
+  "database.tasks.name": "Úkoly",
+  "property.tasks.name.name": "Název",
+  "property.tasks.status.name": "Stav",
+  "property.tasks.status.option.notDone": "Nesplněno",
+  "property.tasks.status.option.done": "Splněno",
+  "property.tasks.status.option.wontDo": "Nebude splněno",
+  "property.tasks.date.name": "Datum",
+  "property.tasks.timeFrom.name": "Čas od",
+  "property.tasks.timeTo.name": "Čas do",
+  "property.tasks.time.name": "Čas",
+  "property.tasks.notifications.name": "Oznámení",
+  "property.tasks.persistent.name": "Trvalý",
+  "property.tasks.project.name": "Projekt"
+}

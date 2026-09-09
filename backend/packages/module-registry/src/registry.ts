@@ -1,3 +1,4 @@
+import { loadModuleCatalogs, type ModuleCatalogs } from "./catalog.js";
 import { moduleManifestSchema, type ModuleManifest } from "./manifest.js";
 
 export interface ModuleDatabaseProjection {
@@ -112,6 +113,8 @@ export class ModuleRegistry {
   private readonly agentToolNameOwners = new Map<string, string>();
   private readonly workerNameOwners = new Map<string, string>();
   private readonly heartbeatRuleKindOwners = new Map<string, string>();
+  private readonly catalogsById = new Map<string, ModuleCatalogs>();
+  private readonly catalogKeyOwners = new Map<string, string>();
   private readonly reservedTaskNames: ReadonlySet<string>;
   private readonly reservedHeartbeatRuleKinds: ReadonlySet<string>;
 
@@ -154,12 +157,17 @@ export class ModuleRegistry {
       );
     }
 
+    const catalogs = await loadModuleCatalogs(path);
+
     this.assertExportsExist(path, manifest, imported);
     this.assertDataMigrationsReferenceOwnDatabases(path, manifest);
+    this.assertCatalogKeysAvailable(path, catalogs);
     this.claimCrossModuleIdentifiers(path, manifest);
+    this.commitCatalogKeys(manifest.id, catalogs);
 
     this.modulesById.set(manifest.id, { manifest, exports: imported });
     this.moduleIdByName.set(manifest.name, manifest.id);
+    this.catalogsById.set(manifest.id, catalogs);
     return manifest.id;
   }
 
@@ -206,6 +214,29 @@ export class ModuleRegistry {
         );
       }
       seen.add(key);
+    }
+  }
+
+  /**
+   * A catalog key (`database.<db>.name`, `property.<db>.<property>.option.<option>`, ...) may
+   * only ever be claimed by one module, mirroring `claimCrossModuleIdentifiers` below — checked
+   * against every other already-loaded module's `cs`/`en` catalogs *before* anything about this
+   * module is committed, so a rejected module never leaves a catalog key claimed.
+   */
+  private assertCatalogKeysAvailable(path: string, catalogs: ModuleCatalogs): void {
+    for (const key of new Set([...Object.keys(catalogs.cs), ...Object.keys(catalogs.en)])) {
+      const existingOwner = this.catalogKeyOwners.get(key);
+      if (existingOwner !== undefined) {
+        throw new Error(
+          `Duplicate i18n catalog key "${key}" loading "${path}" (already claimed by module "${existingOwner}")`,
+        );
+      }
+    }
+  }
+
+  private commitCatalogKeys(moduleId: string, catalogs: ModuleCatalogs): void {
+    for (const key of new Set([...Object.keys(catalogs.cs), ...Object.keys(catalogs.en)])) {
+      this.catalogKeyOwners.set(key, moduleId);
     }
   }
 
@@ -455,5 +486,16 @@ export class ModuleRegistry {
   async getSystemProjectModuleIds(): Promise<string[]> {
     const active = await this.getActiveModules();
     return active.filter((loaded) => loaded.manifest.systemProject).map((loaded) => loaded.manifest.id);
+  }
+
+  /**
+   * A module's loaded `cs`/`en` catalogs (issue #236) — `undefined` for an inactive or unknown
+   * module id, never a manifest, matching every other projection here. A module with no `i18n/`
+   * directory still returns `{ cs: {}, en: {} }`, not `undefined`.
+   */
+  async getCatalogs(moduleId: string): Promise<ModuleCatalogs | undefined> {
+    const active = await this.getActiveModules();
+    if (!active.some((loaded) => loaded.manifest.id === moduleId)) return undefined;
+    return this.catalogsById.get(moduleId);
   }
 }

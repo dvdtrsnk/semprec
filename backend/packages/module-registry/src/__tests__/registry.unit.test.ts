@@ -270,3 +270,56 @@ describe("ModuleRegistry data migration validation", () => {
     expect(registry.listModuleIds()).toEqual([]);
   });
 });
+
+describe("ModuleRegistry.loadModule catalogs (issue #236)", () => {
+  it("loads a module's cs/en catalogs from beside its manifest", async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixture-catalog-good"]));
+    await registry.loadModule(fixturePath("catalogGood/module.js"));
+
+    expect(await registry.getCatalogs("fixture-catalog-good")).toEqual({
+      cs: { "database.fixtureCatalogGood.name": "Fixtura dobrého katalogu" },
+      en: { "database.fixtureCatalogGood.name": "Fixture Catalog Good" },
+    });
+  });
+
+  it("loads a module with no i18n/ directory with empty catalogs, not undefined", async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixture-good"]));
+    await registry.loadModule(fixturePath("goodModule.js"));
+
+    expect(await registry.getCatalogs("fixture-good")).toEqual({ cs: {}, en: {} });
+  });
+
+  it("returns undefined for an inactive or unknown module id", async () => {
+    const registry = new ModuleRegistry(() => new Set());
+    await registry.loadModule(fixturePath("catalogGood/module.js"));
+
+    expect(await registry.getCatalogs("fixture-catalog-good")).toBeUndefined();
+    expect(await registry.getCatalogs("does-not-exist")).toBeUndefined();
+  });
+
+  it("rejects a module with a malformed (invalid JSON) catalog file", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await expect(registry.loadModule(fixturePath("catalogMalformedJson/module.js"))).rejects.toThrow(
+      /malformed i18n catalog/,
+    );
+    expect(registry.listModuleIds()).toEqual([]);
+  });
+
+  it("rejects a module whose catalog has a non-string value", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await expect(registry.loadModule(fixturePath("catalogNonStringValue/module.js"))).rejects.toThrow(
+      /invalid i18n catalog/,
+    );
+    expect(registry.listModuleIds()).toEqual([]);
+  });
+
+  it("rejects a catalog key already claimed by a previously loaded module, without partially registering the rejected module", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await registry.loadModule(fixturePath("catalogDuplicateKeyA/module.js"));
+
+    await expect(registry.loadModule(fixturePath("catalogDuplicateKeyB/module.js"))).rejects.toThrow(
+      /Duplicate i18n catalog key "database.fixtureCatalogShared.name" loading .* \(already claimed by module "fixture-catalog-duplicate-key-a"\)/,
+    );
+    expect(registry.listModuleIds()).toEqual(["fixture-catalog-duplicate-key-a"]);
+  });
+});
