@@ -176,7 +176,7 @@ describe("library module (issue #25)", () => {
         user_id: user.id,
         kind: "automation_error",
         title: "Item automation failed",
-        link_href: null,
+        link_href: `?page=library-item&id=${item.id}`,
         source_table: "item_automation",
         transition_instance: "job-1",
       },

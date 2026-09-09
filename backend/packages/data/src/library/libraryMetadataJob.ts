@@ -183,7 +183,7 @@ export async function handleProcessLibraryMetadataTask(
         await writeNotification(client, {
           userId,
           kind: "automation_error",
-          linkHref: null,
+          linkHref: `?page=library-item&id=${payload.itemId}`,
           sourceTable: "item_automation",
           sourceId: payload.itemId,
           transitionInstance: helpers.job.id,
