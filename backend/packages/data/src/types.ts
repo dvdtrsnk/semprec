@@ -55,6 +55,20 @@ export interface DatabaseRow {
   archivedAt: string | null;
 }
 
+/**
+ * One `select`/`multi_select` catalog entry (issue #145). `key` is the stable English
+ * camelCase token item property values and typed filters store/compare against — never
+ * rewritten by this shape change. `label` is present only for an option a user added or
+ * renamed at runtime (not part of the shipped catalog): an explicit override, the same
+ * role `DatabaseRow.name`/`PropertyRow.name` play one level up (issue #235). A shipped
+ * catalog option carries no `label` at all; until #147 wires the translation-catalog
+ * resolver, a serializer needing a display string for it falls back to the raw `key`.
+ */
+export interface SelectOption {
+  key: string;
+  label?: string;
+}
+
 export interface PropertyRow {
   id: string;
   databaseId: string;

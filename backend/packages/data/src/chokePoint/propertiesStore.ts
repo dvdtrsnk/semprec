@@ -4,6 +4,38 @@ import { PROPERTY_TYPES, type DatabaseRow, type PropertyOwner, type PropertyRow,
 import { assertKnownValue } from "../dbRowValidation.js";
 import { getDatabase } from "./databasesStore.js";
 
+/**
+ * Issue #145: a select/multi_select property's `config.options` must already be in the
+ * `{ key, label? }[]` catalog shape — the bare-string shape only ever exists in already-
+ * written rows, repaired once by migration 0029, never accepted from a new write.
+ */
+function assertValidSelectOptions(type: PropertyType, config: Record<string, unknown> | undefined): void {
+  if (type !== "select" && type !== "multi_select") return;
+  const options = config?.options;
+  if (options === undefined) return;
+  if (!Array.isArray(options)) {
+    throw new ValidationError("select/multi_select config.options must be an array", { field: "config" });
+  }
+  for (const option of options) {
+    if (typeof option !== "object" || option === null || Array.isArray(option)) {
+      throw new ValidationError("each select/multi_select option must be an object of shape { key, label? }", {
+        field: "config",
+      });
+    }
+    const { key, label } = option as { key?: unknown; label?: unknown };
+    if (typeof key !== "string" || key.length === 0) {
+      throw new ValidationError("each select/multi_select option requires a non-empty string 'key'", {
+        field: "config",
+      });
+    }
+    if (label !== undefined && typeof label !== "string") {
+      throw new ValidationError("a select/multi_select option's 'label' must be a string when present", {
+        field: "config",
+      });
+    }
+  }
+}
+
 const PROPERTY_OWNERS: readonly PropertyOwner[] = ["user", "system"];
 const MIGRATION_STATUSES: readonly PropertyRow["migrationStatus"][] = [
   "stable",
@@ -101,6 +133,7 @@ export async function createProperty(client: PoolClient, input: CreatePropertyIn
   if (!database.system && !input.name) {
     throw new ValidationError("name is required for a property of a non-system database", { field: "name" });
   }
+  assertValidSelectOptions(input.type, input.config);
 
   const { rows } = await client.query(
     `INSERT INTO properties (database_id, key, name, type, config, locked, owner, owner_process)
@@ -202,6 +235,7 @@ export async function updatePropertyConfig(
 ): Promise<PropertyRow> {
   const property = await requireProperty(client, propertyId);
   await assertPropertySchemaMutable(client, property);
+  assertValidSelectOptions(property.type, config);
 
   const { rows } = await client.query(
     `UPDATE properties SET config = $2::jsonb WHERE id = $1 RETURNING ${PROPERTY_COLUMNS}`,
