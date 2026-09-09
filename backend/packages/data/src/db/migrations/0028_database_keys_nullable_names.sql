@@ -24,10 +24,28 @@ ALTER TABLE properties ALTER COLUMN name DROP NOT NULL;
 -- into overrides the future translation catalog can replace. A fresh install gets this
 -- directly from seed/seedTenDatabases.ts instead, so this is a no-op there. Idempotent: safe
 -- to re-run on every deploy.
+--
+-- Only the property keys seed/seedTenDatabasesInTransaction itself creates on each database
+-- (own fields + every relation/inverse key it wires between the ten) are nulled below — not
+-- every property under these database ids. Other module seeds add further properties onto
+-- these same ids after schema_locked flips true (e.g. seed/seedEmailModule.ts's raw-SQL
+-- People.emails insert), and those are out of this issue's scope, so their name is left as-is.
 DO $$
 DECLARE
   module_id text;
   db_id uuid;
+  builtin_keys jsonb := '{
+    "areas": ["name", "active", "note", "projects", "company", "healthRecord"],
+    "projects": ["name", "pinned", "status", "date", "color", "agents", "systemActive", "area", "company", "people", "files", "healthRecords", "tasks", "events"],
+    "tasks": ["name", "status", "date", "timeFrom", "timeTo", "time", "notifications", "persistent", "project"],
+    "people": ["name", "relationship", "contact", "projects", "companies"],
+    "files": ["name", "type", "date", "file", "area", "projects", "healthRecords", "companies"],
+    "events": ["name", "type", "date", "people", "transcript", "actionItems", "company", "project"],
+    "healthRecords": ["name", "date", "status", "subject", "type", "tags", "projects", "area", "files"],
+    "companies": ["name", "ico", "web", "area", "people", "files", "meetings"],
+    "transcripts": ["name", "status", "date", "notes", "link", "speakers", "event"],
+    "journal": ["name", "type", "period", "area"]
+  }'::jsonb;
 BEGIN
   FOREACH module_id IN ARRAY ARRAY[
     'areas', 'projects', 'tasks', 'people', 'files',
@@ -41,6 +59,10 @@ BEGIN
 
     UPDATE databases SET key = module_id WHERE id = db_id AND key IS NULL;
     UPDATE databases SET name = NULL WHERE id = db_id;
-    UPDATE properties SET name = NULL WHERE database_id = db_id AND name IS NOT NULL;
+    UPDATE properties
+      SET name = NULL
+      WHERE database_id = db_id
+        AND name IS NOT NULL
+        AND key IN (SELECT jsonb_array_elements_text(builtin_keys -> module_id));
   END LOOP;
 END $$;

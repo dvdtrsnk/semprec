@@ -59,6 +59,9 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
   if (!input.system && !input.name) {
     throw new ValidationError("name is required for a non-system database", { field: "name" });
   }
+  if (input.key && !input.system) {
+    throw new ValidationError("key is only valid for system databases", { field: "key" });
+  }
 
   let database: DatabaseRow;
   try {

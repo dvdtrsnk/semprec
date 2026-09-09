@@ -39,6 +39,10 @@ describe("issue #235: databases.key and nullable system names", () => {
     expect(db.key).toBe("widgets");
   });
 
+  it("rejects a key on a non-system database", async () => {
+    await expect(chokePoint.createDatabase({ name: "User DB", key: "userDb" })).rejects.toBeInstanceOf(ValidationError);
+  });
+
   it("rejects a duplicate databases.key", async () => {
     await chokePoint.createDatabase({ name: null, key: "widgets", system: true });
     await expect(chokePoint.createDatabase({ name: null, key: "widgets", system: true })).rejects.toBeInstanceOf(
@@ -131,6 +135,40 @@ describe("issue #235: databases.key and nullable system names", () => {
 
     // Idempotent: re-running must not error.
     await expect(pool.query(MIGRATION_SQL)).resolves.toBeDefined();
+  });
+
+  it("does not null a property outside seedTenDatabasesInTransaction's own built-in keys on backfill", async () => {
+    await seedSystem(pool);
+    const client = await pool.connect();
+    try {
+      // Simulate another module seed (e.g. seedEmailModule.ts) attaching a further named
+      // property directly onto one of the ten databases after it was locked — an upgrade
+      // install's backfill must leave this alone, not blanket-null every property under
+      // that database id.
+      const { rows: dbRows } = await client.query<{ id: string }>(
+        `SELECT id FROM databases WHERE owner_module_id = 'people' AND system = true`,
+      );
+      await client.query(
+        `INSERT INTO properties (database_id, key, name, type, config, owner) VALUES ($1, 'outOfScopeField', 'Emails', 'longText', '{}'::jsonb, 'user')`,
+        [dbRows[0]!.id],
+      );
+      await client.query(`UPDATE databases SET key = NULL, name = 'People' WHERE id = $1`, [dbRows[0]!.id]);
+    } finally {
+      client.release();
+    }
+
+    await pool.query(MIGRATION_SQL);
+
+    const client2 = await pool.connect();
+    try {
+      const { rows } = await client2.query<{ name: string | null }>(
+        `SELECT p.name FROM properties p JOIN databases d ON d.id = p.database_id
+         WHERE d.owner_module_id = 'people' AND d.system = true AND p.key = 'outOfScopeField'`,
+      );
+      expect(rows[0]!.name).toBe("Emails");
+    } finally {
+      client2.release();
+    }
   });
 
   it("is a no-op when the ten hardcoded databases have not been seeded yet", async () => {
