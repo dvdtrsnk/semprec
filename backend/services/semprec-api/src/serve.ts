@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { createTransport } from "nodemailer";
 import {
   createPool,
+  loadFullModuleRegistry,
   NodemailerPasswordResetMailer,
   noopPasswordResetMailer,
   type PasswordResetMailer,
@@ -43,7 +44,13 @@ function buildPasswordResetMailer(): PasswordResetMailer {
 }
 
 const pool = createPool(connectionString);
-const dispatch = createDispatcher(pool, { passwordResetMailer: buildPasswordResetMailer(), appBaseUrl, setupToken });
+const moduleRegistry = await loadFullModuleRegistry();
+const dispatch = createDispatcher(pool, {
+  passwordResetMailer: buildPasswordResetMailer(),
+  appBaseUrl,
+  setupToken,
+  moduleRegistry,
+});
 
 const server = createServer(dispatch);
 

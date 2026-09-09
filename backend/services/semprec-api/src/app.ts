@@ -1,17 +1,20 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
-import type { PasswordResetMailer } from "@semprec/data";
+import type { PasswordResetMailer, loadFullModuleRegistry } from "@semprec/data";
 import { createAiUsageRequestListener } from "./aiUsageHandler.js";
 import { createMcpAgentPageRequestListener } from "./mcpAgentPageHandler.js";
 import { createApprovalRequestsRequestListener } from "./approvalRequestsHandler.js";
 import { createAgentRunRequestListener } from "./agentRunHandler.js";
 import { createAuthRequestListener } from "./authHandler.js";
 import { createSetupRequestListener } from "./setupHandler.js";
+import { createSchemaRequestListener } from "./schemaHandler.js";
 
 export interface AppOptions {
   passwordResetMailer: PasswordResetMailer;
   appBaseUrl: string;
   setupToken: string;
+  /** Backs `GET /api/schema` (issue #147) — every active module's manifest loaded once at startup. */
+  moduleRegistry: Awaited<ReturnType<typeof loadFullModuleRegistry>>;
 }
 
 /**
@@ -32,9 +35,14 @@ export function createDispatcher(pool: Pool, options: AppOptions): (req: Incomin
     appBaseUrl: options.appBaseUrl,
   });
   const setupListener = createSetupRequestListener(pool, { setupToken: options.setupToken });
+  const schemaListener = createSchemaRequestListener(pool, options.moduleRegistry);
 
   return function dispatch(req: IncomingMessage, res: ServerResponse): void {
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+    if (pathname === "/api/schema") {
+      void schemaListener(req, res);
+      return;
+    }
     if (pathname === "/api/ai-usage") {
       void aiUsageListener(req, res);
       return;

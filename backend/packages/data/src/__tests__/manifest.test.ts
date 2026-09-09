@@ -192,6 +192,39 @@ describe("permission manifest and drift check", () => {
     ]);
   });
 
+  it("resolves multi_select options identically to select (issue #147, same option-resolution branch)", async () => {
+    const project = await chokePoint.createDatabase({ name: "Projects" });
+    const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });
+
+    const tasksDb = await chokePoint.createDatabase({
+      name: null,
+      key: "tasks",
+      system: true,
+      ownerProjectItemId: projectItem.id,
+    });
+    await chokePoint.createProperty({
+      databaseId: tasksDb.id,
+      key: "status",
+      name: null,
+      type: "multi_select",
+      config: { options: [{ key: "notDone" }, { key: "done" }, { key: "wontDo" }] },
+    });
+
+    const moduleRegistry = await systemDatabasesRegistry();
+
+    const csManifest = await withTransaction(pool, (client) =>
+      generatePermissionManifest(client, projectItem.id, { moduleRegistry, locale: "cs" }),
+    );
+    const csStatus = csManifest.databases
+      .find((db) => db.databaseId === tasksDb.id)!
+      .properties.find((p) => p.key === "status")!;
+    expect(csStatus.options).toEqual([
+      { key: "notDone", label: "Nesplněno" },
+      { key: "done", label: "Splněno" },
+      { key: "wontDo", label: "Nebude splněno" },
+    ]);
+  });
+
   it("falls back to the raw key when no moduleRegistry is given, and lets a stored override win over the catalog", async () => {
     const project = await chokePoint.createDatabase({ name: "Projects" });
     const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });

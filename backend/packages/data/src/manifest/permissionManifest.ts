@@ -1,12 +1,13 @@
 import type { PoolClient } from "pg";
-import { ModuleRegistry, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
+import type { ModuleRegistry } from "@semprec/module-registry";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { heartbeatRuleSchema, type HeartbeatRule } from "../scheduler/rule.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
 import { getGrantedMcpAgentTools, type McpAgentToolProjection } from "../mcp/mcpAgentTools.js";
+import { createCatalogResolver, resolveDatabaseName, resolveProperty } from "./catalogResolution.js";
+import type { ManifestLocale } from "./catalogResolution.js";
 
-/** The two locales `resolveCatalogLabel` resolves against (issue #236's scope note). */
-export type ManifestLocale = "cs" | "en";
+export type { ManifestLocale } from "./catalogResolution.js";
 
 export interface ManifestPropertyOption {
   key: string;
@@ -85,10 +86,6 @@ export interface GeneratePermissionManifestOptions {
   locale?: ManifestLocale;
 }
 
-function rawKeyFallback(override: string | null, key: string | null, id: string): string {
-  return override ?? key ?? id;
-}
-
 /**
  * Computed synchronously from current schema state, scoped to one project (small,
  * indexed queries — not a scan of the whole system). Never persistently cached: this
@@ -101,26 +98,7 @@ export async function generatePermissionManifest(
 ): Promise<PermissionManifest> {
   const { moduleRegistry } = options;
   const locale = options.locale ?? "en";
-
-  // A database's `owner_module_id` column stores the database *key* (e.g. "tasks"), not the
-  // `ModuleManifest.id` that actually owns its i18n catalog (e.g. "systemDatabases") — this
-  // map resolves key -> owning module id so catalogs can be looked up correctly.
-  let dbKeyToModuleId: Map<string, string> | undefined;
-  const catalogsByModuleId = new Map<string, ModuleCatalogs | undefined>();
-  if (moduleRegistry) {
-    const allDbs = await moduleRegistry.getDatabases();
-    dbKeyToModuleId = new Map(allDbs.map((d) => [d.key, d.moduleId]));
-  }
-
-  async function catalogsForDbKey(dbKey: string | null): Promise<ModuleCatalogs | undefined> {
-    if (!moduleRegistry || !dbKey) return undefined;
-    const moduleId = dbKeyToModuleId?.get(dbKey);
-    if (!moduleId) return undefined;
-    if (!catalogsByModuleId.has(moduleId)) {
-      catalogsByModuleId.set(moduleId, await moduleRegistry.getCatalogs(moduleId));
-    }
-    return catalogsByModuleId.get(moduleId);
-  }
+  const catalogResolver = await createCatalogResolver(moduleRegistry);
 
   const { rows: databaseRows } = await client.query<{
     id: string;
@@ -136,38 +114,10 @@ export async function generatePermissionManifest(
   const databases: ManifestDatabase[] = [];
   for (const db of databaseRows) {
     const properties = await listPropertiesByDatabase(client, db.id);
-    const catalogs = await catalogsForDbKey(db.key);
+    const catalogs = await catalogResolver.getCatalogsForDbKey(db.key);
 
-    const dbName = catalogs
-      ? resolveCatalogLabel(db.name, catalogs[locale], catalogs.en, `database.${db.key}.name`)
-      : rawKeyFallback(db.name, db.key, db.id);
-
-    const manifestProperties: ManifestProperty[] = properties.map((p) => {
-      const propName = catalogs
-        ? resolveCatalogLabel(p.name, catalogs[locale], catalogs.en, `property.${db.key}.${p.key}.name`)
-        : rawKeyFallback(p.name, p.key, p.key);
-
-      const manifestProperty: ManifestProperty = { key: p.key, name: propName, owner: p.owner, locked: p.locked };
-
-      if (p.type === "select" || p.type === "multi_select") {
-        const rawOptions = p.config.options;
-        if (Array.isArray(rawOptions)) {
-          manifestProperty.options = (rawOptions as { key: string; label?: string }[]).map((option) => ({
-            key: option.key,
-            label: catalogs
-              ? resolveCatalogLabel(
-                  option.label ?? null,
-                  catalogs[locale],
-                  catalogs.en,
-                  `property.${db.key}.${p.key}.option.${option.key}`,
-                )
-              : rawKeyFallback(option.label ?? null, option.key, option.key),
-          }));
-        }
-      }
-
-      return manifestProperty;
-    });
+    const dbName = resolveDatabaseName(db.name, db.key, db.id, catalogs, locale);
+    const manifestProperties: ManifestProperty[] = properties.map((p) => resolveProperty(p, db.key, catalogs, locale));
 
     databases.push({
       databaseId: db.id,

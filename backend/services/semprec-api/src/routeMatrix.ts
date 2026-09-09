@@ -100,6 +100,13 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
   },
   { name: "current session", method: "GET", path: "/api/auth/session", surface: "api", public: false },
   {
+    name: "schema projection",
+    method: "GET",
+    path: "/api/schema",
+    surface: "api",
+    public: false,
+  },
+  {
     name: "ai usage report",
     method: "GET",
     path: "/api/ai-usage?from=2026-01-01&to=2026-01-02",

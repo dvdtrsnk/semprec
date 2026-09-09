@@ -126,6 +126,18 @@ export async function getDatabaseByModuleId(client: PoolClient, ownerModuleId: s
   return rows[0] ? mapDatabaseRow(rows[0]) : null;
 }
 
+/**
+ * Every non-archived database system-wide, including the ten hardcoded system databases
+ * (issue #147's schema-projection endpoint needs these: they carry no `owner_project_item_id`,
+ * so they're invisible to any project-scoped query like `generatePermissionManifest`'s).
+ */
+export async function listAllDatabases(client: PoolClient): Promise<DatabaseRow[]> {
+  const { rows } = await client.query(
+    `SELECT ${DATABASE_COLUMNS} FROM databases WHERE archived_at IS NULL ORDER BY key, name`,
+  );
+  return rows.map(mapDatabaseRow);
+}
+
 async function requireDatabase(client: PoolClient, id: string): Promise<DatabaseRow> {
   const database = await getDatabase(client, id);
   if (!database) throw new NotFoundError(`Database ${id} not found`);

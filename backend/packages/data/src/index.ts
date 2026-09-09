@@ -55,6 +55,16 @@ export * from "./manifest/permissionManifest.js";
 export * from "./manifest/driftCheck.js";
 export * from "./manifest/moduleRegistryDriftCheck.js";
 export * from "./manifest/knownActionIds.js";
+export {
+  createCatalogResolver,
+  resolveDatabaseName,
+  resolveProperty,
+  type CatalogResolver,
+  type ResolvedOption,
+  type ResolvedProperty,
+} from "./manifest/catalogResolution.js";
+export * from "./manifest/schemaProjection.js";
+export * from "./manifest/fullModuleRegistry.js";
 export * from "./notifications/findings.js";
 
 export * from "./agentRuns/agentRunsStore.js";
