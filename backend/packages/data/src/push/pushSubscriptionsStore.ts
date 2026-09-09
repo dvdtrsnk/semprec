@@ -133,11 +133,11 @@ export type ProviderInvalidationInput =
   { channel: "web_push"; endpoint: string } | { channel: "apns"; deviceToken: string };
 
 /**
- * The one repository operation for provider invalidation the issue's Task asks for: a web push
- * send answered with 404/410, or an APNs send answered with 410/`BadDeviceToken`, means the
- * provider itself says this registration is dead — #151's delivery path calls this with exactly
- * the registration it tried to use, never a caller-supplied search. Returns whether a row was
- * actually revoked (it may already have been, e.g. a concurrent duplicate send).
+ * The one repository operation for provider invalidation issue #150's Task explicitly requires:
+ * a web push send answered with 404/410, or an APNs send answered with 410/`BadDeviceToken`,
+ * means the provider itself says this registration is dead. Callers pass exactly the registration
+ * they tried to use, never a caller-supplied search. Returns whether a row was actually revoked
+ * (it may already have been, e.g. a concurrent duplicate send).
  */
 export async function revokePushSubscriptionByProviderInvalidation(
   client: Pool | PoolClient,
