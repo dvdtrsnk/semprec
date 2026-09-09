@@ -40,6 +40,11 @@ export default defineConfig({
           });
         },
       },
+      // No stopgap secret attached here: the setup wizard (#234) sends its own
+      // Authorization: Bearer <setupToken> from the browser, so this proxy just forwards it.
+      "/api/setup": {
+        target: process.env.SEMPREC_API_URL ?? "http://localhost:3001",
+      },
     },
   },
   test: {
