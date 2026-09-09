@@ -1,5 +1,4 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { timingSafeEqual } from "node:crypto";
 import {
   withTransaction,
   ChokePointError,
@@ -9,25 +8,12 @@ import {
   listApprovalRequestsQueue,
 } from "@semprec/data";
 import type { Pool } from "pg";
-
-export interface ApprovalRequestsHandlerOptions {
-  /** Same stopgap shared-secret bearer token as `aiUsageHandler.ts` — see that file's comment. */
-  authToken: string;
-}
+import { authenticateRequest } from "./authHandler.js";
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(payload);
-}
-
-/** Constant-time so a network caller can't recover the token byte-by-byte from response timing. */
-function isAuthorized(req: IncomingMessage, authToken: string): boolean {
-  const header = req.headers.authorization;
-  if (!header || !header.startsWith("Bearer ")) return false;
-  const provided = Buffer.from(header.slice("Bearer ".length));
-  const expected = Buffer.from(authToken);
-  return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
 const MAX_BODY_BYTES = 1 * 1024 * 1024;
@@ -65,9 +51,9 @@ function isForeignKeyViolation(err: unknown): boolean {
  * `PATCH /api/approval-requests/:id`, body `{ decision: "approved" | "rejected",
  * decidedByUserId: string }`.
  *
- * `decidedByUserId` is a stopgap request-body field, not a real session's user id — same
- * "documented stopgap, trivial to swap once auth-v1 (#138-143) lands" convention as this
- * package's other handlers' `authToken` (see `aiUsageHandler.ts`'s comment).
+ * `decidedByUserId` is a request-body field, not derived from the authenticated session — the
+ * route itself is gated by `authenticateRequest` (issue #143), but which user made the decision
+ * still comes from the body, same as before.
  *
  * Delegates the actual state transition to `decideAndEnqueueApprovalRequest` — one atomic
  * `UPDATE ... WHERE status = 'pending'` plus, only on approval, enqueueing the reserved
@@ -78,16 +64,13 @@ function isForeignKeyViolation(err: unknown): boolean {
  * to render that returned state (possibly already decided by someone else) rather than treat the
  * no-op as a failure.
  */
-export function createApprovalRequestsRequestListener(pool: Pool, options: ApprovalRequestsHandlerOptions) {
+export function createApprovalRequestsRequestListener(pool: Pool) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!isAuthorized(req, options.authToken)) {
-      sendJson(res, 401, { error: "Unauthorized" });
-      return;
-    }
-
     const url = new URL(req.url ?? "/", "http://localhost");
 
     try {
+      await authenticateRequest(pool, req);
+
       if (req.method === "GET" && url.pathname === "/api/approval-requests") {
         const rows = await withTransaction(pool, (client) => listApprovalRequestsQueue(client));
         sendJson(res, 200, { rows });

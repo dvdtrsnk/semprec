@@ -3,48 +3,17 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-/**
- * `SEMPREC_API_TOKEN` (no `VITE_` prefix) is read here, in this file's own Node process, and
- * never referenced from `src/` — a `VITE_`-prefixed name would have Vite bake its value into
- * the browser bundle, which is exactly what issue #121's `/api/ai-usage` review flagged as a
- * secret leak. Attaching it to the proxied request server-side is a dev-only stand-in for
- * whatever the production reverse proxy (or the auth-v1 epic's session) does instead.
- */
-const semprecApiToken = process.env.SEMPREC_API_TOKEN;
-
+// Every route the API answers is now gated by the session cookie/bearer token issued at login
+// (issue #143), except the documented exceptions (login, password reset, /api/setup) — the
+// proxy just forwards requests as-is, cookies included, with no dev-only secret to attach.
 export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      "/api/ai-usage": {
-        target: process.env.SEMPREC_API_URL ?? "http://localhost:3001",
-        configure(proxy) {
-          proxy.on("proxyReq", (proxyReq) => {
-            if (semprecApiToken) proxyReq.setHeader("Authorization", `Bearer ${semprecApiToken}`);
-          });
-        },
-      },
-      "/api/approval-requests": {
-        target: process.env.SEMPREC_API_URL ?? "http://localhost:3001",
-        configure(proxy) {
-          proxy.on("proxyReq", (proxyReq) => {
-            if (semprecApiToken) proxyReq.setHeader("Authorization", `Bearer ${semprecApiToken}`);
-          });
-        },
-      },
-      "/api/agent-runs": {
-        target: process.env.SEMPREC_API_URL ?? "http://localhost:3001",
-        configure(proxy) {
-          proxy.on("proxyReq", (proxyReq) => {
-            if (semprecApiToken) proxyReq.setHeader("Authorization", `Bearer ${semprecApiToken}`);
-          });
-        },
-      },
-      // No stopgap secret attached here: the setup wizard (#234) sends its own
-      // Authorization: Bearer <setupToken> from the browser, so this proxy just forwards it.
-      "/api/setup": {
-        target: process.env.SEMPREC_API_URL ?? "http://localhost:3001",
-      },
+      "/api/ai-usage": { target: process.env.SEMPREC_API_URL ?? "http://localhost:3001" },
+      "/api/approval-requests": { target: process.env.SEMPREC_API_URL ?? "http://localhost:3001" },
+      "/api/agent-runs": { target: process.env.SEMPREC_API_URL ?? "http://localhost:3001" },
+      "/api/setup": { target: process.env.SEMPREC_API_URL ?? "http://localhost:3001" },
     },
   },
   test: {

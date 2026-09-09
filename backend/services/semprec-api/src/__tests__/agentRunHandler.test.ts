@@ -3,12 +3,18 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { createViewTypeRegistry, seedSystem, createAgentRun } from "@semprec/data";
+import { createViewTypeRegistry, seedSystem, createAgentRun, createUser, hashPassword, login } from "@semprec/data";
 import { createAgentRunRequestListener } from "../agentRunHandler.js";
 
-const AUTH_TOKEN = "test-token";
+const PASSWORD = "s3cret-password";
 
 let pool: Pool;
+
+async function authHeader(): Promise<{ Authorization: string }> {
+  const user = await createUser(pool, { email: `${randomUUID()}@example.com`, passwordHash: await hashPassword(PASSWORD) });
+  const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+  return { Authorization: `Bearer ${token}` };
+}
 
 describe("createAgentRunRequestListener", () => {
   let server: Server;
@@ -20,7 +26,7 @@ describe("createAgentRunRequestListener", () => {
     await resetDatabase(pool);
     await seedSystem(pool, viewTypeRegistry);
 
-    server = createServer(createAgentRunRequestListener(pool, { authToken: AUTH_TOKEN }));
+    server = createServer(createAgentRunRequestListener(pool));
     await new Promise<void>((resolve) => server.listen(0, resolve));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
@@ -35,26 +41,26 @@ describe("createAgentRunRequestListener", () => {
     await pool?.end();
   });
 
-  it("rejects a request with no bearer token", async () => {
+  it("rejects a request with no credentials", async () => {
     const res = await fetch(`${baseUrl}/api/agent-runs/${randomUUID()}`);
     expect(res.status).toBe(401);
   });
 
-  it("rejects a request with the wrong bearer token", async () => {
+  it("rejects a request with a garbage bearer token", async () => {
     const res = await fetch(`${baseUrl}/api/agent-runs/${randomUUID()}`, {
-      headers: { Authorization: "Bearer wrong" },
+      headers: { Authorization: "Bearer garbage" },
     });
     expect(res.status).toBe(401);
   });
 
   it("returns 404 for an unknown path", async () => {
-    const res = await fetch(`${baseUrl}/not-a-real-path`, { headers: { Authorization: `Bearer ${AUTH_TOKEN}` } });
+    const res = await fetch(`${baseUrl}/not-a-real-path`, { headers: await authHeader() });
     expect(res.status).toBe(404);
   });
 
   it("returns 404 for an unknown agent run id", async () => {
     const res = await fetch(`${baseUrl}/api/agent-runs/${randomUUID()}`, {
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+      headers: await authHeader(),
     });
     expect(res.status).toBe(404);
   });
@@ -63,7 +69,7 @@ describe("createAgentRunRequestListener", () => {
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
     const res = await fetch(`${baseUrl}/api/agent-runs/${run.id}`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+      headers: await authHeader(),
     });
     expect(res.status).toBe(404);
   });
@@ -72,7 +78,7 @@ describe("createAgentRunRequestListener", () => {
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "search the docs" });
 
     const res = await fetch(`${baseUrl}/api/agent-runs/${run.id}`, {
-      headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+      headers: await authHeader(),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
