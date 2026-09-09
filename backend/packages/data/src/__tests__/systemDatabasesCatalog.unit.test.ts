@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { ModuleRegistry, resolveCatalogLabel } from "@semprec/module-registry";
 
 /**
- * The reference module's cs/en catalogs (issue #236): systemDatabases ships the Tasks
- * database's translations only — the other nine system databases stay uncovered until
- * issue #146 — proving the registry loads and resolves them correctly end to end.
+ * The systemDatabases module's cs/en catalogs, covering all ten system databases (issue
+ * #146, building on the reference Tasks catalog issue #236 shipped) — proving the registry
+ * loads and resolves them correctly end to end.
  */
 function manifestPath(fileName: string): string {
   return new URL(`../${fileName}`, import.meta.url).href;
@@ -23,9 +23,11 @@ describe("systemDatabases reference i18n catalog (issue #236)", () => {
     expect(catalogs?.en["property.tasks.status.option.notDone"]).toBe("Not done");
     expect(catalogs?.cs["property.tasks.status.option.notDone"]).toBe("Nesplněno");
 
-    // A database this reference catalog doesn't yet cover (issue #146's job) has no entry —
-    // resolving it falls all the way through to the raw key.
-    expect(catalogs?.en["database.areas.name"]).toBeUndefined();
+    expect(catalogs?.en["database.areas.name"]).toBe("Areas");
+    expect(catalogs?.cs["database.areas.name"]).toBe("Oblasti");
+
+    // A key with no entry in either locale falls all the way through to the raw key.
+    expect(catalogs?.en["database.notARealDatabase.name"]).toBeUndefined();
   });
 
   it("resolves a Tasks label through the full override -> locale -> English -> raw-key chain", async () => {
@@ -38,8 +40,9 @@ describe("systemDatabases reference i18n catalog (issue #236)", () => {
     expect(resolveCatalogLabel("Custom name", catalogs?.cs, catalogs?.en ?? {}, "database.tasks.name")).toBe(
       "Custom name",
     );
-    expect(resolveCatalogLabel(null, catalogs?.cs, catalogs?.en ?? {}, "database.areas.name")).toBe(
-      "database.areas.name",
+    expect(resolveCatalogLabel(null, catalogs?.cs, catalogs?.en ?? {}, "database.areas.name")).toBe("Oblasti");
+    expect(resolveCatalogLabel(null, catalogs?.cs, catalogs?.en ?? {}, "database.notARealDatabase.name")).toBe(
+      "database.notARealDatabase.name",
     );
   });
 });

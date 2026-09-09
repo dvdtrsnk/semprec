@@ -11,7 +11,7 @@
     "./testSupport/mcpContractServers": "./src/testSupport/mcpContractServers.ts"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && cp -r src/db/migrations dist/db/migrations && cp -r src/seed/i18n dist/seed/i18n",
+    "build": "tsc -p tsconfig.json && cp -r src/db/migrations dist/db/migrations && cp -r src/seed/i18n dist/seed/i18n && cp -r src/chokePoint/i18n dist/chokePoint/i18n && cp -r src/views/i18n dist/views/i18n && cp -r src/docs/i18n dist/docs/i18n && cp -r src/inbox/i18n dist/inbox/i18n && cp -r src/library/i18n dist/library/i18n && cp -r src/mail/i18n dist/mail/i18n",
     "check-migration-numbering": "node scripts/check-migration-numbering.mjs"
   },
   "dependencies": {
