@@ -100,6 +100,20 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
   },
   { name: "current session", method: "GET", path: "/api/auth/session", surface: "api", public: false },
   {
+    name: "register push subscription",
+    method: "POST",
+    path: "/api/push-subscriptions",
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "revoke push subscription",
+    method: "POST",
+    path: `/api/push-subscriptions/${EXAMPLE_ID}/revoke`,
+    surface: "api",
+    public: false,
+  },
+  {
     name: "schema projection",
     method: "GET",
     path: "/api/schema",
