@@ -98,6 +98,34 @@ export async function listPropertiesByDatabase(client: PoolClient, databaseId: s
   return rows.map(mapPropertyRow);
 }
 
+/**
+ * Batch form of `listPropertiesByDatabase` for callers iterating many databases at once (issue
+ * #147's system-wide schema projection) — one query instead of one-per-database, grouped by
+ * `databaseId` in memory. A database with no properties is simply absent from the result map.
+ */
+export async function listPropertiesByDatabases(
+  client: PoolClient,
+  databaseIds: readonly string[],
+): Promise<Map<string, PropertyRow[]>> {
+  const grouped = new Map<string, PropertyRow[]>();
+  if (databaseIds.length === 0) return grouped;
+
+  const { rows } = await client.query(
+    `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = ANY($1) ORDER BY database_id, key`,
+    [databaseIds],
+  );
+  for (const row of rows) {
+    const property = mapPropertyRow(row);
+    const existing = grouped.get(property.databaseId);
+    if (existing) {
+      existing.push(property);
+    } else {
+      grouped.set(property.databaseId, [property]);
+    }
+  }
+  return grouped;
+}
+
 async function requireProperty(client: PoolClient, propertyId: string): Promise<PropertyRow> {
   const property = await getProperty(client, propertyId);
   if (!property) throw new NotFoundError(`Property ${propertyId} not found`);

@@ -1,7 +1,7 @@
 import type { PoolClient } from "pg";
 import { resolveCatalogLabel, type ModuleCatalogs, type ModuleRegistry } from "@semprec/module-registry";
 import { listAllDatabases } from "../chokePoint/databasesStore.js";
-import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
+import { listPropertiesByDatabases } from "../chokePoint/propertiesStore.js";
 import {
   createCatalogResolver,
   resolveDatabaseName,
@@ -66,9 +66,15 @@ export async function generateSchemaProjection(
   const catalogResolver = await createCatalogResolver(moduleRegistry);
 
   const databaseRows = await listAllDatabases(client);
+  // One batch query for every database's properties (issue #147 review: the naive per-database
+  // loop was an N+1 that grows unboundedly with the number of databases in a deployment).
+  const propertiesByDatabaseId = await listPropertiesByDatabases(
+    client,
+    databaseRows.map((db) => db.id),
+  );
   const databases: SchemaDatabaseProjection[] = [];
   for (const db of databaseRows) {
-    const properties = await listPropertiesByDatabase(client, db.id);
+    const properties = propertiesByDatabaseId.get(db.id) ?? [];
     const catalogs = await catalogResolver.getCatalogsForDbKey(db.key);
     databases.push({
       databaseId: db.id,

@@ -64,6 +64,16 @@ describe("createSchemaRequestListener (issue #147)", () => {
     expect(res.status).toBe(401);
   });
 
+  it("rejects an unauthenticated non-GET request with 401, not 404", async () => {
+    const res = await fetch(`${baseUrl}/api/schema`, { method: "POST" });
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects an authenticated non-GET request to the right path with 405", async () => {
+    const res = await fetch(`${baseUrl}/api/schema`, { method: "POST", headers: await authHeader("en") });
+    expect(res.status).toBe(405);
+  });
+
   it("resolves the ten hardcoded system databases' names in cs, including ones with no project owner", async () => {
     const res = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader("cs") });
     expect(res.status).toBe(200);

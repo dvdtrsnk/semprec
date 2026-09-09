@@ -82,7 +82,20 @@ export interface GeneratePermissionManifestOptions {
    * exactly as before this option existed.
    */
   moduleRegistry?: ModuleRegistry;
-  /** Ignored unless `moduleRegistry` is also given. Defaults to `"en"`, the reference locale. */
+  /**
+   * Ignored unless `moduleRegistry` is also given. Defaults to `"en"`, the reference locale.
+   *
+   * Issue #147 acceptance criterion "apply the resolver and `users.locale` to runtime-generated
+   * AGENT.md manifests": there is deliberately no production call site here that reads
+   * `users.locale` and passes it as this option. No code in this repo renders AGENT.md or runs
+   * an agent at runtime yet — `driftCheck.ts`'s heartbeat is the only non-test caller, and it
+   * has no per-request authenticated user (see its own comment on why `locale` is omitted
+   * there). Wiring this option to a real user's locale belongs to whichever future issue adds
+   * the agent-orchestration runtime that actually renders AGENT.md; this function is ready for
+   * that caller today (`locale` behaves identically here to `generateSchemaProjection`'s, and
+   * both share `catalogResolution.ts`), but plugging it in now would mean threading a locale
+   * through code that doesn't exist.
+   */
   locale?: ManifestLocale;
 }
 

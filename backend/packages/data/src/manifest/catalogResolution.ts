@@ -67,10 +67,12 @@ function rawKeyFallback(override: string | null, key: string | null, id: string)
  * catalog lookup key like `...option.undefined`.
  */
 function filterValidOptions(rawOptions: unknown[]): { key: string; label?: string }[] {
-  return rawOptions.filter(
-    (o): o is { key: string; label?: string } =>
-      typeof o === "object" && o !== null && typeof (o as Record<string, unknown>).key === "string",
-  );
+  return rawOptions.filter((o): o is { key: string; label?: string } => {
+    if (typeof o !== "object" || o === null) return false;
+    const { key, label } = o as Record<string, unknown>;
+    if (typeof key !== "string") return false;
+    return label === undefined || typeof label === "string";
+  });
 }
 
 export function resolveDatabaseName(

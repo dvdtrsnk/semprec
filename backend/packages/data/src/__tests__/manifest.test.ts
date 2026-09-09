@@ -278,6 +278,41 @@ describe("permission manifest and drift check", () => {
     }
   });
 
+  it("drops an option with a non-string key or a non-string label instead of resolving a bogus label (issue #147 review)", async () => {
+    const project = await chokePoint.createDatabase({ name: "Projects" });
+    const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });
+
+    const tasksDb = await chokePoint.createDatabase({
+      name: null,
+      key: "tasks",
+      system: true,
+      ownerProjectItemId: projectItem.id,
+    });
+    await chokePoint.createProperty({
+      databaseId: tasksDb.id,
+      key: "status",
+      name: null,
+      type: "select",
+      config: { options: [{ key: "notDone" }] },
+    });
+
+    // Bypasses the choke point's write-side `assertValidSelectOptions` to simulate a legacy or
+    // directly written row: one option with no string key, one with a numeric label.
+    await pool.query(`UPDATE properties SET config = $1::jsonb WHERE database_id = $2 AND key = 'status'`, [
+      JSON.stringify({ options: [{ key: 42 }, { key: "done", label: 99 }, { key: "wontDo" }] }),
+      tasksDb.id,
+    ]);
+
+    const moduleRegistry = await systemDatabasesRegistry();
+    const manifest = await withTransaction(pool, (client) =>
+      generatePermissionManifest(client, projectItem.id, { moduleRegistry, locale: "en" }),
+    );
+    const status = manifest.databases
+      .find((db) => db.databaseId === tasksDb.id)!
+      .properties.find((p) => p.key === "status")!;
+    expect(status.options).toEqual([{ key: "wontDo", label: "Won't do" }]);
+  });
+
   it("leaves a user-authored (non-system) database's name byte-for-byte unchanged regardless of locale", async () => {
     const project = await chokePoint.createDatabase({ name: "Projects" });
     const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });

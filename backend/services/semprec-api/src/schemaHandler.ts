@@ -32,12 +32,18 @@ export function createSchemaRequestListener(
     const url = new URL(req.url ?? "/", "http://localhost");
 
     try {
-      if (req.method !== "GET" || url.pathname !== "/api/schema") {
+      if (url.pathname !== "/api/schema") {
         sendJson(res, 404, { error: "Not found" });
         return;
       }
 
       const identity = await authenticateRequest(pool, req);
+
+      if (req.method !== "GET") {
+        sendJson(res, 405, { error: "Method not allowed" });
+        return;
+      }
+
       const locale = toManifestLocale(identity.user.locale);
 
       const projection = await withTransaction(pool, (client) =>
