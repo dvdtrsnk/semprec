@@ -227,10 +227,10 @@ describe("permission manifest and drift check", () => {
       "My Status",
       tasksDb.id,
     ]);
-    await pool.query(
-      `UPDATE properties SET config = $1::jsonb WHERE database_id = $2 AND key = 'status'`,
-      [JSON.stringify({ options: [{ key: "notDone", label: "Not started yet" }] }), tasksDb.id],
-    );
+    await pool.query(`UPDATE properties SET config = $1::jsonb WHERE database_id = $2 AND key = 'status'`, [
+      JSON.stringify({ options: [{ key: "notDone", label: "Not started yet" }] }),
+      tasksDb.id,
+    ]);
 
     const moduleRegistry = await systemDatabasesRegistry();
     for (const locale of ["cs", "en"] as const) {
