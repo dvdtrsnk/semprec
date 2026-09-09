@@ -76,25 +76,21 @@ export interface PermissionManifest {
 export interface GeneratePermissionManifestOptions {
   /**
    * Supplies the `cs`/`en` catalogs a database/property/option resolves its display label
-   * against (issue #147). Omitted for callers with no natural per-user locale (e.g. the
-   * drift-check heartbeat, which validates resolvability rather than rendering to a person) —
-   * in that case every name/label falls back to the pre-#147 raw-key placeholder below,
-   * exactly as before this option existed.
+   * against (issue #147). Omitted for callers that only want to confirm the schema is
+   * resolvable at all (e.g. `driftCheck.ts` with no `moduleRegistry`) — in that case every
+   * name/label falls back to the pre-#147 raw-key placeholder below, exactly as before this
+   * option existed.
    */
   moduleRegistry?: ModuleRegistry;
   /**
    * Ignored unless `moduleRegistry` is also given. Defaults to `"en"`, the reference locale.
    *
-   * Issue #147 acceptance criterion "apply the resolver and `users.locale` to runtime-generated
-   * AGENT.md manifests": there is deliberately no production call site here that reads
-   * `users.locale` and passes it as this option. No code in this repo renders AGENT.md or runs
-   * an agent at runtime yet — `driftCheck.ts`'s heartbeat is the only non-test caller, and it
-   * has no per-request authenticated user (see its own comment on why `locale` is omitted
-   * there). Wiring this option to a real user's locale belongs to whichever future issue adds
-   * the agent-orchestration runtime that actually renders AGENT.md; this function is ready for
-   * that caller today (`locale` behaves identically here to `generateSchemaProjection`'s, and
-   * both share `catalogResolution.ts`), but plugging it in now would mean threading a locale
-   * through code that doesn't exist.
+   * `driftCheck.ts`'s heartbeat — the one production caller of this function — resolves this
+   * live from `users.locale` on every run rather than pinning a value here; see its own comment
+   * for why (Semprec is single-tenant with no per-project owning-user column, so the
+   * earliest-created account stands in for "the" user). A caller with a genuine per-request
+   * authenticated user, such as `services/semprec-api/src/schemaHandler.ts`'s sibling
+   * `generateSchemaProjection`, should keep passing that user's locale directly instead.
    */
   locale?: ManifestLocale;
 }

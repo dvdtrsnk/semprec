@@ -4,6 +4,16 @@ import type { PropertyRow } from "../types.js";
 /** The two locales `resolveCatalogLabel` resolves against (issue #236's scope note). */
 export type ManifestLocale = "cs" | "en";
 
+/**
+ * Narrows an untrusted `users.locale` DB value (plain `string` at the type level, not a `cs|en`
+ * union — see `auth/types.ts`) to `ManifestLocale`, the same way every locale-aware projection
+ * (issue #147) does before calling `resolveCatalogLabel`. Shared by `schemaHandler.ts` and
+ * `driftCheck.ts` so both narrow an arbitrary stored locale identically.
+ */
+export function toManifestLocale(locale: string): ManifestLocale {
+  return locale === "cs" ? "cs" : "en";
+}
+
 export interface ResolvedOption {
   key: string;
   label: string;

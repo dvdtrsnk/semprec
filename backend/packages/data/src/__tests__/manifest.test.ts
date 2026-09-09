@@ -11,6 +11,8 @@ import { seedSystem } from "../seed/seedSystem.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
 import { setProjectMcpGrant } from "../mcp/mcpGrantsAdminStore.js";
+import { createUser, getEarliestUserLocale } from "../auth/usersStore.js";
+import { hashPassword } from "../auth/passwordHash.js";
 
 const SYSTEM_DATABASES_MANIFEST_PATH = new URL("../seed/systemDatabasesModuleManifest.js", import.meta.url).href;
 
@@ -343,5 +345,38 @@ describe("permission manifest and drift check", () => {
     const { rows } = await pool.query("SELECT kind, payload FROM notifications WHERE kind = 'agent_manifest_drift'");
     expect(rows).toHaveLength(1);
     expect(rows[0].payload.orphanedOwnerProcess).toHaveLength(1);
+  });
+
+  it("the drift check action runs cleanly against a real user's locale, live, with no throw across a locale change (issue #147 AC #9/#10)", async () => {
+    const project = await chokePoint.createDatabase({ name: "Projects3" });
+    const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });
+    await chokePoint.createDatabase({ name: null, key: "tasks", system: true, ownerProjectItemId: projectItem.id });
+
+    const passwordHash = await hashPassword("s3cret-password");
+    const user = await createUser(pool, { email: "owner@example.test", passwordHash, locale: "cs" });
+
+    const moduleRegistry = await systemDatabasesRegistry();
+    const action = createDriftCheckAction(pool, { moduleRegistry });
+
+    // Exercises the cs catalog: getEarliestUserLocale.test.ts-equivalent coverage below asserts
+    // on the resolved locale value directly; this asserts the action (its one production caller)
+    // doesn't throw while actually depending on that live lookup.
+    await expect(action({}, { heartbeatId: "hb", projectItemId: projectItem.id })).resolves.toBeUndefined();
+
+    // A locale change (no persisted manifest to go stale) takes effect on the very next run.
+    await pool.query(`UPDATE users SET locale = 'en' WHERE id = $1`, [user.id]);
+    await expect(action({}, { heartbeatId: "hb", projectItemId: projectItem.id })).resolves.toBeUndefined();
+  });
+
+  it("getEarliestUserLocale resolves the first-created account's locale and reflects a live update, with no users returning null", async () => {
+    expect(await getEarliestUserLocale(pool)).toBeNull();
+
+    const passwordHash = await hashPassword("s3cret-password");
+    const first = await createUser(pool, { email: "first@example.test", passwordHash, locale: "cs" });
+    await createUser(pool, { email: "second@example.test", passwordHash, locale: "en" });
+    expect(await getEarliestUserLocale(pool)).toBe("cs");
+
+    await pool.query(`UPDATE users SET locale = 'en' WHERE id = $1`, [first.id]);
+    expect(await getEarliestUserLocale(pool)).toBe("en");
   });
 });

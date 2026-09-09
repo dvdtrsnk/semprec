@@ -59,6 +59,7 @@ export {
   createCatalogResolver,
   resolveDatabaseName,
   resolveProperty,
+  toManifestLocale,
   type CatalogResolver,
   type ResolvedOption,
   type ResolvedProperty,

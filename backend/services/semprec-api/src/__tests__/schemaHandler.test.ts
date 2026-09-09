@@ -69,9 +69,10 @@ describe("createSchemaRequestListener (issue #147)", () => {
     expect(res.status).toBe(401);
   });
 
-  it("rejects an authenticated non-GET request to the right path with 405", async () => {
+  it("rejects an authenticated non-GET request to the right path with 405 and an Allow header (RFC 7231 §6.5.5)", async () => {
     const res = await fetch(`${baseUrl}/api/schema`, { method: "POST", headers: await authHeader("en") });
     expect(res.status).toBe(405);
+    expect(res.headers.get("Allow")).toBe("GET");
   });
 
   it("resolves the ten hardcoded system databases' names in cs, including ones with no project owner", async () => {

@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { withTransaction, ChokePointError, generateSchemaProjection, type ManifestLocale } from "@semprec/data";
+import { withTransaction, ChokePointError, generateSchemaProjection, toManifestLocale } from "@semprec/data";
 import type { Pool } from "pg";
 import { authenticateRequest } from "./authHandler.js";
 
@@ -7,10 +7,6 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(payload);
-}
-
-function toManifestLocale(locale: string): ManifestLocale {
-  return locale === "cs" ? "cs" : "en";
 }
 
 /**
@@ -40,6 +36,8 @@ export function createSchemaRequestListener(
       const identity = await authenticateRequest(pool, req);
 
       if (req.method !== "GET") {
+        // RFC 7231 §6.5.5: a 405 response MUST include an Allow header listing the permitted methods.
+        res.setHeader("Allow", "GET");
         sendJson(res, 405, { error: "Method not allowed" });
         return;
       }
