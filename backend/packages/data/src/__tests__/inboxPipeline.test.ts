@@ -89,17 +89,17 @@ describe("Inbox pipeline databases (issue #101)", () => {
     expect(typeProps.find((p) => p.key === "status")).toMatchObject({
       type: "select",
       owner: "user",
-      config: { options: ["active", "archived"] },
+      config: { options: [{ key: "active" }, { key: "archived" }] },
     });
     expect(typeProps.find((p) => p.key === "processingMethod")).toMatchObject({
       type: "select",
       owner: "user",
-      config: { options: ["pageContent", "database"] },
+      config: { options: [{ key: "pageContent" }, { key: "database" }] },
     });
     expect(typeProps.find((p) => p.key === "targetDatabase")).toMatchObject({ type: "select", owner: "user" });
-    expect((typeProps.find((p) => p.key === "targetDatabase")!.config as { options: string[] }).options).toEqual(
-      expect.arrayContaining(["tasks", "events", "projects"]),
-    );
+    expect(
+      (typeProps.find((p) => p.key === "targetDatabase")!.config as { options: { key: string }[] }).options,
+    ).toEqual(expect.arrayContaining([{ key: "tasks" }, { key: "events" }, { key: "projects" }]));
 
     const proposalProps = await chokePoint.listProperties(proposalsId);
     expect(proposalProps.map((p) => p.key).sort()).toEqual([
@@ -116,7 +116,7 @@ describe("Inbox pipeline databases (issue #101)", () => {
     expect(proposalProps.find((p) => p.key === "kind")).toMatchObject({
       type: "select",
       owner: "system",
-      config: { options: ["inbox", "transcript"] },
+      config: { options: [{ key: "inbox" }, { key: "transcript" }] },
     });
     expect(proposalProps.find((p) => p.key === "proposal")).toMatchObject({ type: "json", owner: "system" });
     expect(proposalProps.find((p) => p.key === "history")).toMatchObject({ type: "json", owner: "system" });
@@ -128,7 +128,15 @@ describe("Inbox pipeline databases (issue #101)", () => {
     expect(proposalProps.find((p) => p.key === "status")).toMatchObject({
       type: "select",
       owner: "system",
-      config: { options: ["needsClarification", "proposed", "confirmed", "rejected", "invalid"] },
+      config: {
+        options: [
+          { key: "needsClarification" },
+          { key: "proposed" },
+          { key: "confirmed" },
+          { key: "rejected" },
+          { key: "invalid" },
+        ],
+      },
     });
   });
 

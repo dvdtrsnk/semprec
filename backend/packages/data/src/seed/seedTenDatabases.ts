@@ -25,8 +25,10 @@ import {
 
 export type TenDatabases = Record<TenDatabaseModuleId, DatabaseRow>;
 
+// Issue #145: every shipped catalog option `s` becomes `{ key: s }` — no `label`, since a
+// shipped option's display text is not an override (see SelectOption's doc comment).
 function selectConfig(options: string[]): Record<string, unknown> {
-  return { options };
+  return { options: options.map((key) => ({ key })) };
 }
 
 interface PropSpec {

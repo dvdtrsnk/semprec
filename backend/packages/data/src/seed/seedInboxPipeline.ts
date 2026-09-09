@@ -18,8 +18,10 @@ import { SEMPREC_TICK_ACTION_ID } from "../inbox/inboxTickAction.js";
 import { JOURNAL_INBOX_COMPUTED_KEY } from "../inbox/journalInboxCompute.js";
 import { registerJournalInboxViewType } from "../views/journalInboxViewType.js";
 
+// Issue #145: every shipped catalog option `s` becomes `{ key: s }` — see seedTenDatabases.ts's
+// copy of this helper for the full rationale.
 function selectConfig(options: string[]): Record<string, unknown> {
-  return { options };
+  return { options: options.map((key) => ({ key })) };
 }
 
 interface PropSpec {

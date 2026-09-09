@@ -20,8 +20,10 @@ import {
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID } from "./emailModuleKeys.js";
 
+// Issue #145: every shipped catalog option `s` becomes `{ key: s }` — see seedTenDatabases.ts's
+// copy of this helper for the full rationale.
 function selectConfig(options: string[]): Record<string, unknown> {
-  return { options };
+  return { options: options.map((key) => ({ key })) };
 }
 
 interface PropSpec {
