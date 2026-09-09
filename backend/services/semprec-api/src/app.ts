@@ -22,10 +22,7 @@ export interface AppOptions {
  *
  * Routes by path prefix; `mcpAgentPageListener` already answers 404 itself for anything else.
  */
-export function createDispatcher(
-  pool: Pool,
-  options: AppOptions,
-): (req: IncomingMessage, res: ServerResponse) => void {
+export function createDispatcher(pool: Pool, options: AppOptions): (req: IncomingMessage, res: ServerResponse) => void {
   const aiUsageListener = createAiUsageRequestListener(pool);
   const mcpAgentPageListener = createMcpAgentPageRequestListener(pool);
   const approvalRequestsListener = createApprovalRequestsRequestListener(pool);

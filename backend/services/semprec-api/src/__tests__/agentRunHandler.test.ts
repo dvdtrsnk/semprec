@@ -11,7 +11,10 @@ const PASSWORD = "s3cret-password";
 let pool: Pool;
 
 async function authHeader(): Promise<{ Authorization: string }> {
-  const user = await createUser(pool, { email: `${randomUUID()}@example.com`, passwordHash: await hashPassword(PASSWORD) });
+  const user = await createUser(pool, {
+    email: `${randomUUID()}@example.com`,
+    passwordHash: await hashPassword(PASSWORD),
+  });
   const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
   return { Authorization: `Bearer ${token}` };
 }

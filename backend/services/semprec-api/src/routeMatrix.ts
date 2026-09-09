@@ -51,7 +51,8 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     method: "POST",
     path: "/api/auth/password-reset/request",
     public: true,
-    publicReason: "Issue #142: a forgotten password means there's no session yet; the response never reveals whether the email exists.",
+    publicReason:
+      "Issue #142: a forgotten password means there's no session yet; the response never reveals whether the email exists.",
   },
   {
     name: "password-reset consume",
