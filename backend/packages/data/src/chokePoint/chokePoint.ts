@@ -220,7 +220,8 @@ export interface SystemRelationWriteContext {
 
 export interface RelationPropertySideInput {
   key: string;
-  name: string;
+  /** Nullable for a built-in relation property of a system database (issue #235). */
+  name: string | null;
   owner?: PropertyOwner;
   /** Required and non-empty exactly when `owner` is `'system'`; must be omitted otherwise. */
   ownerProcess?: string;
@@ -231,7 +232,8 @@ export interface RelationPropertySideInput {
 export interface CreateRelationPropertyInput {
   sourceDatabaseId: string;
   key: string;
-  name: string;
+  /** Nullable for a built-in relation property of a system database (issue #235). */
+  name: string | null;
   targetDatabaseId: string;
   cardinality?: "one_to_one" | "one_to_many" | "many_to_many";
   owner?: PropertyOwner;

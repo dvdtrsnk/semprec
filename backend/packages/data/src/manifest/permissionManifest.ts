@@ -72,11 +72,12 @@ export async function generatePermissionManifest(
 ): Promise<PermissionManifest> {
   const { rows: databaseRows } = await client.query<{
     id: string;
-    name: string;
+    name: string | null;
+    key: string | null;
     schema_locked: boolean;
     owner_module_id: string | null;
   }>(
-    `SELECT id, name, schema_locked, owner_module_id FROM databases WHERE owner_project_item_id = $1 AND archived_at IS NULL`,
+    `SELECT id, name, key, schema_locked, owner_module_id FROM databases WHERE owner_project_item_id = $1 AND archived_at IS NULL`,
     [projectItemId],
   );
 
@@ -85,10 +86,14 @@ export async function generatePermissionManifest(
     const properties = await listPropertiesByDatabase(client, db.id);
     databases.push({
       databaseId: db.id,
-      name: db.name,
+      // Until issue #147 wires the translation-catalog resolver, a null `name` (a system
+      // database's built-in label override slot, issue #235) falls back to the raw `key` —
+      // the last step of the fallback chain #146 implements — as a placeholder, not a
+      // translation.
+      name: db.name ?? db.key ?? db.id,
       schemaLocked: db.schema_locked,
       writable: !(db.owner_module_id && SEMPREC_READ_ONLY_MODULE_IDS.includes(db.owner_module_id)),
-      properties: properties.map((p) => ({ key: p.key, name: p.name, owner: p.owner, locked: p.locked })),
+      properties: properties.map((p) => ({ key: p.key, name: p.name ?? p.key, owner: p.owner, locked: p.locked })),
     });
   }
 
