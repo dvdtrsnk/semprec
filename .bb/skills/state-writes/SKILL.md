@@ -11,7 +11,8 @@ hangs on writes being observable in exactly one place.
 
 Recorded as ADRs: `docs/adr/2026-09-10-choke-point-api-for-state-writes.md`,
 `docs/adr/2026-09-10-single-writer-ownership-model.md`,
-`docs/adr/2026-09-10-agent-writes-are-proposals-not-direct-writes.md`.
+`docs/adr/2026-09-10-agent-writes-are-proposals-not-direct-writes.md`,
+`docs/adr/2026-09-10-side-effects-follow-the-commit.md`.
 
 ## 1. All writes go through the choke-point
 
@@ -64,10 +65,13 @@ job that reads the row back. Fire one inside the transaction and a listener can
 act on state that is not there yet — or that never arrives, because the
 transaction rolled back after the message was already sent.
 
-Use the transaction's after-commit hook rather than a bare call following the
-`await`, and remember that a callback running after `COMMIT` cannot fail the
-work any more: if it throws, the caller sees an error for a write that actually
-succeeded. Keep those callbacks defensive.
+Use `runAfterCommit(client, ...)` rather than a bare call following the `await`.
+`withTransaction` runs each registered callback in its own `try`/`catch` after
+`COMMIT`, logs one that throws, and carries on to the rest — the failure never
+reaches the caller, because the write it announces actually succeeded. That is
+deliberate, and it cuts both ways: a callback whose delivery matters has to
+report its own failure, since nothing above it will. Anything needing a real
+delivery guarantee belongs in a queue job written inside the same transaction.
 
 Two related orderings worth checking in the same pass:
 
