@@ -396,6 +396,9 @@ describe("views", () => {
       await expect(
         chokePoint.patchView({ id: view.id, actor: { type: "ai_agent" }, name: "Renamed" }),
       ).rejects.toBeInstanceOf(ForbiddenError);
+      await expect(chokePoint.deleteView({ id: view.id, actor: { type: "ai_agent" } })).rejects.toBeInstanceOf(
+        ForbiddenError,
+      );
       const unchanged = await chokePoint.getView(view.id);
       expect(unchanged?.name).toBe("User view");
     });
