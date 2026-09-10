@@ -22,6 +22,7 @@ export type RealtimeMessage =
         sourceTable: string;
         sourceId: string;
         transitionInstance: string;
+        payload: Record<string, unknown>;
         createdAt: string;
         readAt: string | null;
       };

@@ -6,6 +6,7 @@ export * from "./types.js";
 export { createChokePoint, createItemWithClient, type ChokePoint } from "./chokePoint/chokePoint.js";
 export type { CreateItemInput } from "./chokePoint/chokePoint.js";
 export type { CreateDatabaseInput } from "./chokePoint/databasesStore.js";
+export { getDatabaseByModuleId } from "./chokePoint/databasesStore.js";
 export type { CreatePropertyInput } from "./chokePoint/propertiesStore.js";
 export type { ListItemsOptions } from "./chokePoint/itemsStore.js";
 export { getItemsByIds } from "./chokePoint/itemsStore.js";
@@ -220,3 +221,10 @@ export {
   guidanceReferenceStore,
   createPoolClientTransactionRunner,
 } from "./projectAgentGuidanceStore.js";
+
+export {
+  guidanceDriftHeartbeatStore,
+  AGENT_GUIDANCE_DRIFT_ACTION_ID,
+} from "./guidanceDrift/guidanceDriftHeartbeatStore.js";
+export { agentGuidanceDriftFindingsStore } from "./guidanceDrift/agentGuidanceDriftFindingsStore.js";
+export { createGuidanceManifestPort } from "./guidanceDrift/guidanceManifestPort.js";
