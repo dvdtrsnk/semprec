@@ -32,6 +32,28 @@
       "to": {
         "path": "node_modules/(@earendil-works/pi-|@anthropic-ai/)"
       }
+    },
+    {
+      "name": "no-agent-runtime-guidance-database-import",
+      "severity": "error",
+      "comment": "Issue #214: the project-agent-guidance systemPromptOverride adapter receives an injected loadProjectAgentGuidance port and must never import pg, a pool singleton, or @semprec/data's concrete store directly.",
+      "from": {
+        "path": "^packages/agent-runtime/src/projectAgentGuidanceSystemPrompt\\.ts$"
+      },
+      "to": {
+        "path": "(node_modules/pg/|^packages/data/)"
+      }
+    },
+    {
+      "name": "no-application-into-services-or-agent-runtime",
+      "severity": "error",
+      "comment": "Issue #214: packages/application/src/projectAgentGuidance is a neutral application service — it may depend on packages/shared's generic ports, never on services/* (its composition-root consumers) or packages/agent-runtime (a different consumer).",
+      "from": {
+        "path": "^packages/application/"
+      },
+      "to": {
+        "path": "^(services/|packages/agent-runtime/)"
+      }
     }
   ]
 }

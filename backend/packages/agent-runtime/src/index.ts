@@ -25,6 +25,10 @@ export {
   type ReconstructConversationHistory,
 } from "./sempConversation.js";
 export type { CompactionAdapter, CompactionSettings, PreparedCompaction } from "./compaction.js";
+export {
+  createProjectAgentGuidanceSystemPromptOverride,
+  type LoadProjectAgentGuidancePort,
+} from "./projectAgentGuidanceSystemPrompt.js";
 export type { ReconstructedHistory } from "./conversationReconstruction.js";
 export {
   createMcpInvokeTool,
