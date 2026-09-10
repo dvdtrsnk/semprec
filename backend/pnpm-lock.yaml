@@ -86,6 +86,16 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
 
+  packages/application:
+    dependencies:
+      '@semprec/shared':
+        specifier: workspace:*
+        version: link:../shared
+    devDependencies:
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
+
   packages/credentials:
     dependencies:
       libsodium-wrappers:
@@ -113,6 +123,9 @@ importers:
       '@semprec/queue':
         specifier: workspace:*
         version: link:../queue
+      '@semprec/shared':
+        specifier: workspace:*
+        version: link:../shared
       imapflow:
         specifier: ^1.7.6
         version: 1.7.6
@@ -246,9 +259,15 @@ importers:
 
   services/semprec-api:
     dependencies:
+      '@semprec/application':
+        specifier: workspace:*
+        version: link:../../packages/application
       '@semprec/data':
         specifier: workspace:*
         version: link:../../packages/data
+      '@semprec/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       pg:
         specifier: ^8.23.0
         version: 8.23.0

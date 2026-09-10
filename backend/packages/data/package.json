@@ -20,6 +20,7 @@
     "@semprec/credentials": "workspace:*",
     "@semprec/module-registry": "workspace:*",
     "@semprec/queue": "workspace:*",
+    "@semprec/shared": "workspace:*",
     "imapflow": "^1.7.6",
     "luxon": "^3.7.2",
     "mailparser": "^3.9.17",

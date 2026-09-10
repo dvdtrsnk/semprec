@@ -1,5 +1,5 @@
 {
-  "name": "@semprec/semprec-api",
+  "name": "@semprec/application",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,13 +9,9 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@semprec/application": "workspace:*",
-    "@semprec/data": "workspace:*",
-    "@semprec/shared": "workspace:*",
-    "pg": "^8.23.0"
+    "@semprec/shared": "workspace:*"
   },
   "devDependencies": {
-    "@types/pg": "^8.23.1",
     "vitest": "^4.1.11"
   }
 }

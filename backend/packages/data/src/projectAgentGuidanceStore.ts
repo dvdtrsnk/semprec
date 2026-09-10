@@ -1,0 +1,114 @@
+import type { Pool, PoolClient } from "pg";
+import type {
+  GuidanceReferenceStore,
+  ProjectAgentGuidance,
+  ProjectAgentGuidanceStore,
+  TransactionRunner,
+} from "@semprec/shared";
+import { requireSingleRow } from "./db/pool.js";
+import { NotFoundError } from "./errors.js";
+import { getDatabaseByModuleId } from "./chokePoint/databasesStore.js";
+import { getItemById } from "./chokePoint/itemsStore.js";
+import { getUserById } from "./auth/usersStore.js";
+import { PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
+
+function mapRow(row: {
+  project_item_id: string;
+  owner_user_id: string;
+  markdown: string;
+  updated_at: Date;
+}): ProjectAgentGuidance {
+  return {
+    projectItemId: row.project_item_id,
+    ownerUserId: row.owner_user_id,
+    markdown: row.markdown,
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
+
+/** Concrete `PoolClient` implementation of `@semprec/shared`'s `ProjectAgentGuidanceStore`. */
+export const projectAgentGuidanceStore: ProjectAgentGuidanceStore<PoolClient> = {
+  async load(tx, projectItemId) {
+    const { rows } = await tx.query(
+      `SELECT project_item_id, owner_user_id, markdown, updated_at
+       FROM project_agent_guidance WHERE project_item_id = $1`,
+      [projectItemId],
+    );
+    return rows[0] ? mapRow(rows[0]) : null;
+  },
+
+  async upsert(tx, row) {
+    const { rows } = await tx.query(
+      `INSERT INTO project_agent_guidance (project_item_id, owner_user_id, markdown, updated_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (project_item_id)
+       DO UPDATE SET owner_user_id = EXCLUDED.owner_user_id, markdown = EXCLUDED.markdown, updated_at = now()
+       RETURNING project_item_id, owner_user_id, markdown, updated_at`,
+      [row.projectItemId, row.ownerUserId, row.markdown],
+    );
+    return mapRow(requireSingleRow(rows, "project_agent_guidance upsert"));
+  },
+
+  async transfer(tx, projectItemId, newOwnerUserId) {
+    const { rows } = await tx.query(
+      `UPDATE project_agent_guidance SET owner_user_id = $2, updated_at = now()
+       WHERE project_item_id = $1
+       RETURNING project_item_id, owner_user_id, markdown, updated_at`,
+      [projectItemId, newOwnerUserId],
+    );
+    const row = rows[0];
+    if (!row) throw new NotFoundError(`Project agent guidance for project ${projectItemId} not found`);
+    return mapRow(row);
+  },
+};
+
+/**
+ * Concrete `PoolClient` implementation of `@semprec/shared`'s `GuidanceReferenceStore`.
+ * `requireProjectsItem` resolves the system Projects database by its canonical module id and
+ * looks the item up in that database's partition — the only way to validate a partitioned
+ * item id against a specific logical database, since `items` has no direct FK target.
+ */
+export const guidanceReferenceStore: GuidanceReferenceStore<PoolClient> = {
+  async requireProjectsItem(tx, projectItemId) {
+    const database = await getDatabaseByModuleId(tx, PROJECTS_MODULE_ID);
+    const item = database ? await getItemById(tx, database.id, projectItemId) : null;
+    if (!item) throw new NotFoundError(`Project item ${projectItemId} not found in the Projects database`);
+  },
+
+  async requireUser(tx, userId) {
+    const user = await getUserById(tx, userId);
+    if (!user) throw new NotFoundError(`User ${userId} not found`);
+  },
+
+  async requireUserLocale(tx, userId) {
+    const user = await getUserById(tx, userId);
+    if (!user) throw new NotFoundError(`User ${userId} not found`);
+    return user.locale;
+  },
+};
+
+/**
+ * Concrete `TransactionRunner<PoolClient>`: opens a dedicated connection at the requested
+ * isolation level, commits on success, and always rolls back and releases on throw.
+ */
+export function createPoolClientTransactionRunner(pool: Pool): TransactionRunner<PoolClient> {
+  return {
+    async withTransaction(options, work) {
+      const client = await pool.connect();
+      try {
+        const isolationClause = options.isolation === "serializable" ? "SERIALIZABLE" : "REPEATABLE READ";
+        await client.query(`BEGIN ISOLATION LEVEL ${isolationClause}`);
+        try {
+          const result = await work(client);
+          await client.query("COMMIT");
+          return result;
+        } catch (err) {
+          await client.query("ROLLBACK");
+          throw err;
+        }
+      } finally {
+        client.release();
+      }
+    },
+  };
+}
