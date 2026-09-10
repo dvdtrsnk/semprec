@@ -77,7 +77,13 @@ export const projectAgentGuidanceStore: ProjectAgentGuidanceStore<PoolClient> = 
 export const guidanceReferenceStore: GuidanceReferenceStore<PoolClient> = {
   async requireProjectsItem(tx, projectItemId) {
     const database = await getDatabaseByModuleId(tx, PROJECTS_MODULE_ID);
-    const item = database ? await getItemById(tx, database.id, projectItemId) : null;
+    // A missing Projects module database is a seeding/infrastructure problem, not a missing
+    // item — throw a plain error (not `GuidanceReferenceNotFoundError`) so it propagates as an
+    // infrastructure failure instead of being reported to the caller as a 400 "item not found".
+    if (!database) {
+      throw new Error(`Projects module database not found for module ${PROJECTS_MODULE_ID}`);
+    }
+    const item = await getItemById(tx, database.id, projectItemId);
     if (!item) {
       throw new GuidanceReferenceNotFoundError(`Project item ${projectItemId} not found in the Projects database`);
     }

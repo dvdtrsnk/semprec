@@ -139,6 +139,23 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
       ).rejects.toThrow(GuidanceReferenceNotFoundError);
     });
 
+    it("requireProjectsItem throws a plain infrastructure error, not GuidanceReferenceNotFoundError, when the Projects module database itself is missing", async () => {
+      const { rows } = await pool.query<{ id: string }>(`SELECT id FROM databases WHERE owner_module_id = $1`, [
+        PROJECTS_MODULE_ID,
+      ]);
+      const databaseId = rows[0]?.id;
+      if (!databaseId) throw new Error("Projects database was not seeded");
+      await pool.query(`DELETE FROM items WHERE database_id = $1`, [databaseId]);
+      await pool.query(`DELETE FROM databases WHERE id = $1`, [databaseId]);
+
+      const err = await withTransaction(pool, (client) =>
+        guidanceReferenceStore.requireProjectsItem(client, randomUUID()),
+      ).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(GuidanceReferenceNotFoundError);
+    });
+
     it("requireUser and requireUserLocale resolve for an existing user", async () => {
       const userId = await createTestUser();
       await expect(
