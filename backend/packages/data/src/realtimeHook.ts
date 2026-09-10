@@ -59,6 +59,9 @@ export interface NotificationCreatedEvent {
     kind: string;
     title: string;
     linkHref: string | null;
+    sourceTable: string;
+    sourceId: string;
+    transitionInstance: string;
     createdAt: string;
     readAt: string | null;
   };

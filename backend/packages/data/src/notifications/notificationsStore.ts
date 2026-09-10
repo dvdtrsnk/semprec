@@ -48,6 +48,16 @@ function mapRow(row: NotificationDbRow): NotificationRow {
 const NOTIFICATION_COLUMNS =
   "id, user_id, kind, title, link_href, source_table, source_id, transition_instance, created_at, read_at";
 
+/**
+ * Caps how many unread rows a single reconnect-recovery fetch or mark-all-read sweep touches in
+ * one go, so a user who accumulated an unbounded backlog (a long offline stretch, a runaway
+ * producer) can't force this service to pull or update an arbitrarily large result set — and hold
+ * a client connection — in a single query. A user past this cap simply needs another round of
+ * either operation to keep converging; there's no correctness requirement that either happen in
+ * exactly one query.
+ */
+const MAX_UNREAD_NOTIFICATIONS_PER_QUERY = 500;
+
 /** Reload for the `notificationFanout` job (issue #151) — the writer's transaction has already committed by the time the job runs. */
 export async function getNotificationById(client: Pool | PoolClient, id: string): Promise<NotificationRow | null> {
   const { rows } = await client.query<NotificationDbRow>(
@@ -70,7 +80,8 @@ export async function listUnreadNotificationsForUser(
   const { rows } = await client.query<NotificationDbRow>(
     `SELECT ${NOTIFICATION_COLUMNS} FROM notifications
      WHERE user_id = $1 AND read_at IS NULL
-     ORDER BY created_at, id`,
+     ORDER BY created_at, id
+     LIMIT ${MAX_UNREAD_NOTIFICATIONS_PER_QUERY}`,
     [userId],
   );
   return rows.map(mapRow);
@@ -120,7 +131,12 @@ export async function visitNotification(
 export async function markAllNotificationsRead(client: PoolClient, userId: string): Promise<NotificationRow[]> {
   const { rows } = await client.query<NotificationDbRow>(
     `UPDATE notifications SET read_at = now()
-     WHERE user_id = $1 AND read_at IS NULL
+     WHERE ctid IN (
+       SELECT ctid FROM notifications
+       WHERE user_id = $1 AND read_at IS NULL
+       ORDER BY created_at, id
+       LIMIT ${MAX_UNREAD_NOTIFICATIONS_PER_QUERY}
+     )
      RETURNING ${NOTIFICATION_COLUMNS}`,
     [userId],
   );

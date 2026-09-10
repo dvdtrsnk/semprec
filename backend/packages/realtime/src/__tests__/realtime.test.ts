@@ -79,6 +79,9 @@ describe("realtime", () => {
         kind: "heartbeat_error",
         title: "Heartbeat failed",
         linkHref: "?page=heartbeats",
+        sourceTable: "project_heartbeats",
+        sourceId: "hb-1",
+        transitionInstance: "job-1",
         createdAt: "2026-01-01T00:00:00.000Z",
         readAt: null,
       },
@@ -202,6 +205,9 @@ describe("realtime", () => {
           kind: "heartbeat_error",
           title: "Heartbeat failed",
           linkHref: null,
+          sourceTable: "project_heartbeats",
+          sourceId: "hb-1",
+          transitionInstance: "job-1",
           createdAt: "2026-01-01T00:00:00.000Z",
           readAt: null,
         },
@@ -257,6 +263,66 @@ describe("realtime", () => {
 
       first.close();
       second.close();
+    });
+  });
+
+  describe("startRealtimeServer with a slow resolveUserId (issue #152 PR review race)", () => {
+    let httpServer: Server;
+    let wss: WebSocketServer;
+    let realtimeServer: RealtimeServer;
+    let port: number;
+
+    /** Settles after a macrotask, unlike a plain `Promise.resolve(...)`, to exercise the window between a socket accepting the connection and its identity actually resolving. */
+    function slowResolveUserId(req: IncomingMessage): Promise<string | null> {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      const userId = url.searchParams.get("userId");
+      return new Promise((resolve) => setTimeout(() => resolve(userId), 20));
+    }
+
+    beforeEach(async () => {
+      httpServer = createServer();
+      wss = new WebSocketServer({ server: httpServer });
+      await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+      const address = httpServer.address();
+      if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+      port = address.port;
+      realtimeServer = await startRealtimeServer(pool, wss, { resolveUserId: slowResolveUserId });
+    });
+
+    afterEach(async () => {
+      await realtimeServer.close();
+      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    });
+
+    it("still delivers a notification published before resolveUserId has settled for a just-opened socket", async () => {
+      const client = new WebSocket(`ws://127.0.0.1:${port}?userId=user-1`);
+      await new Promise<void>((resolve, reject) => {
+        client.once("open", () => resolve());
+        client.once("error", reject);
+      });
+
+      const received = new Promise<string>((resolve) => client.once("message", (d) => resolve(messageText(d))));
+
+      // Published immediately after connect, before slowResolveUserId's 20ms delay has elapsed.
+      await publishRealtimeMessage(pool, {
+        type: "notification_created",
+        userId: "user-1",
+        notification: {
+          id: "notif-1",
+          kind: "heartbeat_error",
+          title: "Heartbeat failed",
+          linkHref: null,
+          sourceTable: "project_heartbeats",
+          sourceId: "hb-1",
+          transitionInstance: "job-1",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          readAt: null,
+        },
+      });
+
+      expect(JSON.parse(await received)).toMatchObject({ type: "notification_created", userId: "user-1" });
+
+      client.close();
     });
   });
 });
