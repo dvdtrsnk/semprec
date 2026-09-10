@@ -57,7 +57,7 @@ describe("core module manifests (module-contract issue #226)", () => {
     expect(await registry.getHeartbeatActions()).toEqual([]);
     expect(await registry.getMigrations()).toEqual([
       { moduleId: "docs", migration: "0003_docs.sql" },
-      { moduleId: "docs", migration: "0035_doc_history_retention.sql" },
+      { moduleId: "docs", migration: "0036_doc_history_retention.sql" },
     ]);
   });
 

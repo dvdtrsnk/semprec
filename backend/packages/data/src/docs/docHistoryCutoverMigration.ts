@@ -4,7 +4,7 @@ import { withTransaction } from "../db/pool.js";
 
 /**
  * One-time populated-upgrade cutover for issue #216's retained history model
- * (0035_doc_history_retention.sql adds the checkpoint-boundary columns nullable; this
+ * (0036_doc_history_retention.sql adds the checkpoint-boundary columns nullable; this
  * finishes the job). Unlike every other migration in db/migrations/, this step cannot be
  * plain SQL: computing each doc's "full current-state cutover baseline... from
  * doc_snapshots plus surviving doc_updates" means merging Yjs binary updates, which only the
