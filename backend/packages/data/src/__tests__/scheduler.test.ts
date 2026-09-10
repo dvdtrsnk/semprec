@@ -21,6 +21,8 @@ import { getSystemSettingsItemId } from "../systemSettings.js";
 import { createAgentRun, listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
 import { createHeartbeatTriggerTool } from "../scheduler/heartbeatAgentTools.js";
 import type { HeartbeatRuleKindRegistry } from "../scheduler/rule.js";
+import { createUser } from "../auth/usersStore.js";
+import { hashPassword } from "../auth/passwordHash.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -656,6 +658,65 @@ describe("scheduler", () => {
     await expect(
       task({ heartbeatId: "h1", occurrenceId: "o1", triggeredByRunId: "r1" }, helpers),
     ).rejects.toMatchObject({ code: "validation_failed" });
+  });
+
+  it("writes a heartbeat_error notification on the final retry attempt, deduped by job id but not across distinct failing jobs (issue #237)", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const passwordHash = await hashPassword("s3cret-password");
+    const user = await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Always fails",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "alwaysFails",
+      }),
+    );
+
+    const registry = createActionRegistry();
+    registry.set("alwaysFails", async () => {
+      throw new Error("boom");
+    });
+
+    const task = createHeartbeatFireTask(pool, registry);
+    const finalAttemptHelpers = (jobId: string) =>
+      ({ job: { id: jobId, attempts: 3, max_attempts: 3 } }) as Parameters<typeof task>[1];
+
+    await expect(task({ heartbeatId: heartbeat.id, itemId: "unused" }, finalAttemptHelpers("job-1"))).rejects.toThrow(
+      "boom",
+    );
+
+    const { rows: afterFirst } = await pool.query(
+      `SELECT user_id, kind, title, source_table, source_id, transition_instance FROM notifications WHERE source_id = $1`,
+      [heartbeat.id],
+    );
+    expect(afterFirst).toMatchObject([
+      {
+        user_id: user.id,
+        kind: "heartbeat_error",
+        title: `Heartbeat "Always fails" failed`,
+        source_table: "project_heartbeats",
+        transition_instance: "job-1",
+      },
+    ]);
+
+    // Redelivery of the same job (e.g. a crash after this insert but before the job's own
+    // terminal failure is recorded) must not duplicate the notification.
+    await expect(task({ heartbeatId: heartbeat.id, itemId: "unused" }, finalAttemptHelpers("job-1"))).rejects.toThrow(
+      "boom",
+    );
+    const { rows: afterReplay } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [heartbeat.id]);
+    expect(afterReplay).toHaveLength(1);
+
+    // A later, independent failure (a new job) is a different transition and does insert.
+    await expect(task({ heartbeatId: heartbeat.id, itemId: "unused" }, finalAttemptHelpers("job-2"))).rejects.toThrow(
+      "boom",
+    );
+    const { rows: afterNewTransition } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [
+      heartbeat.id,
+    ]);
+    expect(afterNewTransition).toHaveLength(2);
   });
 
   describe("module-declared heartbeat rule kinds", () => {

@@ -55,7 +55,22 @@ export * from "./manifest/permissionManifest.js";
 export * from "./manifest/driftCheck.js";
 export * from "./manifest/moduleRegistryDriftCheck.js";
 export * from "./manifest/knownActionIds.js";
+export {
+  createCatalogResolver,
+  resolveDatabaseName,
+  resolveProperty,
+  toManifestLocale,
+  type CatalogResolver,
+  type ResolvedOption,
+  type ResolvedProperty,
+} from "./manifest/catalogResolution.js";
+export * from "./manifest/schemaProjection.js";
+export * from "./manifest/fullModuleRegistry.js";
 export * from "./notifications/findings.js";
+export * from "./notifications/notificationKinds.js";
+export * from "./notifications/notify.js";
+export * from "./notifications/notificationsStore.js";
+export * from "./notifications/notificationFanoutJob.js";
 
 export * from "./agentRuns/agentRunsStore.js";
 export * from "./agentRuns/agentRunEventsStore.js";
@@ -139,6 +154,14 @@ export * from "./auth/loginAttemptsStore.js";
 export * from "./auth/emailNormalization.js";
 export * from "./auth/loginLockout.js";
 export * from "./auth/authActions.js";
+export * from "./auth/nativeBridge.js";
+export * from "./auth/passwordResetStore.js";
+export * from "./auth/passwordResetMail.js";
+export * from "./auth/passwordResetActions.js";
+
+export * from "./push/types.js";
+export * from "./push/pushSubscriptionsStore.js";
+export * from "./push/pushSubscriptionActions.js";
 
 // `mcpGrantsAdminStore.ts`'s user-only grant/risk-class/approval mutations are deliberately
 // NOT exported here — see that file's header comment (issue #124).

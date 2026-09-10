@@ -46,3 +46,57 @@ export function setDocUpdateHook(next: DocUpdateHook): void {
 export function notifyDocUpdate(event: DocUpdateEvent): void {
   docUpdateHook(event);
 }
+
+/**
+ * Fired once per newly written `notifications` row (issue #152) — never for a replayed, deduped
+ * write. Unlike `InvalidationEvent`/`DocUpdateEvent`, this carries a `userId`: `@semprec/realtime`
+ * uses it to fan this frame out only to that user's own connected sockets, never to every client.
+ */
+export interface NotificationCreatedEvent {
+  userId: string;
+  notification: {
+    id: string;
+    kind: string;
+    title: string;
+    linkHref: string | null;
+    sourceTable: string;
+    sourceId: string;
+    transitionInstance: string;
+    createdAt: string;
+    readAt: string | null;
+  };
+}
+
+export type NotificationCreatedHook = (event: NotificationCreatedEvent) => void;
+
+let notificationCreatedHook: NotificationCreatedHook = () => {};
+
+export function setNotificationCreatedHook(next: NotificationCreatedHook): void {
+  notificationCreatedHook = next;
+}
+
+export function notifyNotificationCreated(event: NotificationCreatedEvent): void {
+  notificationCreatedHook(event);
+}
+
+/**
+ * Fired when one or more of a user's notifications transition to read (issue #152's visit-and-read
+ * and mark-all-read), so every other active session for that user can converge its unread badge
+ * without re-fetching. Same user-scoped fan-out as `NotificationCreatedEvent`.
+ */
+export interface NotificationReadStateEvent {
+  userId: string;
+  notificationIds: string[];
+}
+
+export type NotificationReadStateHook = (event: NotificationReadStateEvent) => void;
+
+let notificationReadStateHook: NotificationReadStateHook = () => {};
+
+export function setNotificationReadStateHook(next: NotificationReadStateHook): void {
+  notificationReadStateHook = next;
+}
+
+export function notifyNotificationReadState(event: NotificationReadStateEvent): void {
+  notificationReadStateHook(event);
+}

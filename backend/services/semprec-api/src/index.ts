@@ -1,5 +1,5 @@
-export { createAiUsageRequestListener, type AiUsageHandlerOptions } from "./aiUsageHandler.js";
-export { createMcpAgentPageRequestListener, type McpAgentPageHandlerOptions } from "./mcpAgentPageHandler.js";
+export { createAiUsageRequestListener } from "./aiUsageHandler.js";
+export { createMcpAgentPageRequestListener } from "./mcpAgentPageHandler.js";
 export {
   createProjectAgentGuidanceServiceForApi,
   noopGuidanceHeartbeatStore,

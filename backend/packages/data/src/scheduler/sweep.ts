@@ -3,6 +3,8 @@ import type { Task } from "@semprec/queue";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
+import { getEarliestUserId } from "../auth/usersStore.js";
+import { writeNotification } from "../notifications/notify.js";
 import {
   failHeartbeatOccurrence,
   getHeartbeat,
@@ -14,6 +16,34 @@ import {
 } from "./schedulerStore.js";
 import type { HeartbeatRuleKindRegistry } from "./rule.js";
 import type { ActionRegistry } from "./actions.js";
+
+/**
+ * Writes the reference `heartbeat_error` notification (issue #237) for a heartbeat that just
+ * exhausted its retries. `transitionInstance` is the firing queue job's own `id`: stable across
+ * that job's own retries (so a crash between this insert and the job's own final failure can't
+ * duplicate it on redelivery) but distinct for every new fire — a later, independent failure of
+ * the same heartbeat is a different job and so is never deduped away.
+ *
+ * Silently skips before any account exists (setup, #233, not run yet): there is no `users` row
+ * to bind the notification to, and the heartbeat failure itself is still recorded either way.
+ */
+async function notifyHeartbeatError(
+  client: Parameters<typeof writeNotification>[0],
+  heartbeat: { id: string; name: string },
+  jobId: string,
+): Promise<void> {
+  const userId = await getEarliestUserId(client);
+  if (!userId) return;
+  await writeNotification(client, {
+    userId,
+    kind: "heartbeat_error",
+    titleParams: { name: heartbeat.name },
+    linkHref: null,
+    sourceTable: "project_heartbeats",
+    sourceId: heartbeat.id,
+    transitionInstance: jobId,
+  });
+}
 
 /**
  * Resolved fresh on every call (never cached) so a module activated or deactivated between
@@ -132,9 +162,7 @@ export function createHeartbeatFireTask(pool: Pool, registry: ActionRegistry, mo
       if (isFinalAttempt) {
         await withTransaction(pool, async (client) => {
           await recordHeartbeatFailure(client, heartbeat.id, message);
-          await client.query(`INSERT INTO notifications (kind, payload) VALUES ('heartbeat_error', $1::jsonb)`, [
-            JSON.stringify({ heartbeatId: heartbeat.id, name: heartbeat.name, error: message }),
-          ]);
+          await notifyHeartbeatError(client, heartbeat, helpers.job.id);
         });
       }
       throw err;
@@ -156,7 +184,7 @@ async function runScheduledOccurrenceFire(
   heartbeatId: string,
   occurrenceId: string,
   generation: number,
-  helpers: { job: { attempts: number; max_attempts: number } },
+  helpers: { job: { id: string; attempts: number; max_attempts: number } },
 ): Promise<void> {
   const prep = await prepareHeartbeatOccurrenceFire(pool, heartbeatId, occurrenceId, generation, moduleRuleKinds);
   // "missing": deleted since enqueue; "stale": superseded by a reactivation; "cancelled": disabled
@@ -181,9 +209,7 @@ async function runScheduledOccurrenceFire(
       await withTransaction(pool, async (client) => {
         await recordHeartbeatFailure(client, heartbeat.id, message);
         await failHeartbeatOccurrence(client, occurrenceId, message);
-        await client.query(`INSERT INTO notifications (kind, payload) VALUES ('heartbeat_error', $1::jsonb)`, [
-          JSON.stringify({ heartbeatId: heartbeat.id, name: heartbeat.name, error: message }),
-        ]);
+        await notifyHeartbeatError(client, heartbeat, helpers.job.id);
       });
     }
     throw err;

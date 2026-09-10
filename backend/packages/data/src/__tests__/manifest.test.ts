@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { ModuleRegistry } from "@semprec/module-registry";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
@@ -10,6 +11,16 @@ import { seedSystem } from "../seed/seedSystem.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
 import { setProjectMcpGrant } from "../mcp/mcpGrantsAdminStore.js";
+import { createUser, getEarliestUserLocale } from "../auth/usersStore.js";
+import { hashPassword } from "../auth/passwordHash.js";
+
+const SYSTEM_DATABASES_MANIFEST_PATH = new URL("../seed/systemDatabasesModuleManifest.js", import.meta.url).href;
+
+async function systemDatabasesRegistry(): Promise<ModuleRegistry> {
+  const registry = new ModuleRegistry(() => new Set(["systemDatabases"]));
+  await registry.loadModule(SYSTEM_DATABASES_MANIFEST_PATH);
+  return registry;
+}
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -136,6 +147,186 @@ describe("permission manifest and drift check", () => {
     expect(orphanedWithActiveList.map((o) => o.key).sort()).toEqual(["orphan", "owned"]);
   });
 
+  it("resolves a system database's name, property name and select options via the cs/en catalog (issue #147)", async () => {
+    const project = await chokePoint.createDatabase({ name: "Projects" });
+    const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });
+
+    const tasksDb = await chokePoint.createDatabase({
+      name: null,
+      key: "tasks",
+      system: true,
+      ownerProjectItemId: projectItem.id,
+    });
+    await chokePoint.createProperty({
+      databaseId: tasksDb.id,
+      key: "status",
+      name: null,
+      type: "select",
+      config: { options: [{ key: "notDone" }, { key: "done" }, { key: "wontDo" }] },
+    });
+
+    const moduleRegistry = await systemDatabasesRegistry();
+
+    const csManifest = await withTransaction(pool, (client) =>
+      generatePermissionManifest(client, projectItem.id, { moduleRegistry, locale: "cs" }),
+    );
+    const csDb = csManifest.databases.find((db) => db.databaseId === tasksDb.id)!;
+    expect(csDb.name).toBe("Úkoly");
+    const csStatus = csDb.properties.find((p) => p.key === "status")!;
+    expect(csStatus.name).toBe("Stav");
+    expect(csStatus.options).toEqual([
+      { key: "notDone", label: "Nesplněno" },
+      { key: "done", label: "Splněno" },
+      { key: "wontDo", label: "Nebude splněno" },
+    ]);
+
+    const enManifest = await withTransaction(pool, (client) =>
+      generatePermissionManifest(client, projectItem.id, { moduleRegistry, locale: "en" }),
+    );
+    const enDb = enManifest.databases.find((db) => db.databaseId === tasksDb.id)!;
+    expect(enDb.name).toBe("Tasks");
+    const enStatus = enDb.properties.find((p) => p.key === "status")!;
+    expect(enStatus.name).toBe("Status");
+    expect(enStatus.options).toEqual([
+      { key: "notDone", label: "Not done" },
+      { key: "done", label: "Done" },
+      { key: "wontDo", label: "Won't do" },
+    ]);
+  });
+
+  it("resolves multi_select options identically to select (issue #147, same option-resolution branch)", async () => {
+    const project = await chokePoint.createDatabase({ name: "Projects" });
+    const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });
+
+    const tasksDb = await chokePoint.createDatabase({
+      name: null,
+      key: "tasks",
+      system: true,
+      ownerProjectItemId: projectItem.id,
+    });
+    await chokePoint.createProperty({
+      databaseId: tasksDb.id,
+      key: "status",
+      name: null,
+      type: "multi_select",
+      config: { options: [{ key: "notDone" }, { key: "done" }, { key: "wontDo" }] },
+    });
+
+    const moduleRegistry = await systemDatabasesRegistry();
+
+    const csManifest = await withTransaction(pool, (client) =>
+      generatePermissionManifest(client, projectItem.id, { moduleRegistry, locale: "cs" }),
+    );
+    const csStatus = csManifest.databases
+      .find((db) => db.databaseId === tasksDb.id)!
+      .properties.find((p) => p.key === "status")!;
+    expect(csStatus.options).toEqual([
+      { key: "notDone", label: "Nesplněno" },
+      { key: "done", label: "Splněno" },
+      { key: "wontDo", label: "Nebude splněno" },
+    ]);
+  });
+
+  it("falls back to the raw key when no moduleRegistry is given, and lets a stored override win over the catalog", async () => {
+    const project = await chokePoint.createDatabase({ name: "Projects" });
+    const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });
+
+    const tasksDb = await chokePoint.createDatabase({
+      name: null,
+      key: "tasks",
+      system: true,
+      ownerProjectItemId: projectItem.id,
+    });
+    await chokePoint.createProperty({
+      databaseId: tasksDb.id,
+      key: "status",
+      name: null,
+      type: "select",
+      config: { options: [{ key: "notDone" }] },
+    });
+
+    // No moduleRegistry: pre-#147 raw-key placeholder behavior, unchanged.
+    const noRegistryManifest = await withTransaction(pool, (client) =>
+      generatePermissionManifest(client, projectItem.id),
+    );
+    const noRegistryDb = noRegistryManifest.databases.find((db) => db.databaseId === tasksDb.id)!;
+    expect(noRegistryDb.name).toBe("tasks");
+    const noRegistryStatus = noRegistryDb.properties.find((p) => p.key === "status")!;
+    expect(noRegistryStatus.name).toBe("status");
+    expect(noRegistryStatus.options).toEqual([{ key: "notDone", label: "notDone" }]);
+
+    // A stored override on the database, property, and option all win over the catalog,
+    // in every locale.
+    await pool.query(`UPDATE databases SET name = $1 WHERE id = $2`, ["My Tasks", tasksDb.id]);
+    await pool.query(`UPDATE properties SET name = $1 WHERE database_id = $2 AND key = 'status'`, [
+      "My Status",
+      tasksDb.id,
+    ]);
+    await pool.query(`UPDATE properties SET config = $1::jsonb WHERE database_id = $2 AND key = 'status'`, [
+      JSON.stringify({ options: [{ key: "notDone", label: "Not started yet" }] }),
+      tasksDb.id,
+    ]);
+
+    const moduleRegistry = await systemDatabasesRegistry();
+    for (const locale of ["cs", "en"] as const) {
+      const manifest = await withTransaction(pool, (client) =>
+        generatePermissionManifest(client, projectItem.id, { moduleRegistry, locale }),
+      );
+      const db = manifest.databases.find((d) => d.databaseId === tasksDb.id)!;
+      expect(db.name).toBe("My Tasks");
+      const status = db.properties.find((p) => p.key === "status")!;
+      expect(status.name).toBe("My Status");
+      expect(status.options).toEqual([{ key: "notDone", label: "Not started yet" }]);
+    }
+  });
+
+  it("drops an option with a non-string key or a non-string label instead of resolving a bogus label (issue #147 review)", async () => {
+    const project = await chokePoint.createDatabase({ name: "Projects" });
+    const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });
+
+    const tasksDb = await chokePoint.createDatabase({
+      name: null,
+      key: "tasks",
+      system: true,
+      ownerProjectItemId: projectItem.id,
+    });
+    await chokePoint.createProperty({
+      databaseId: tasksDb.id,
+      key: "status",
+      name: null,
+      type: "select",
+      config: { options: [{ key: "notDone" }] },
+    });
+
+    // Bypasses the choke point's write-side `assertValidSelectOptions` to simulate a legacy or
+    // directly written row: one option with no string key, one with a numeric label.
+    await pool.query(`UPDATE properties SET config = $1::jsonb WHERE database_id = $2 AND key = 'status'`, [
+      JSON.stringify({ options: [{ key: 42 }, { key: "done", label: 99 }, { key: "wontDo" }] }),
+      tasksDb.id,
+    ]);
+
+    const moduleRegistry = await systemDatabasesRegistry();
+    const manifest = await withTransaction(pool, (client) =>
+      generatePermissionManifest(client, projectItem.id, { moduleRegistry, locale: "en" }),
+    );
+    const status = manifest.databases
+      .find((db) => db.databaseId === tasksDb.id)!
+      .properties.find((p) => p.key === "status")!;
+    expect(status.options).toEqual([{ key: "wontDo", label: "Won't do" }]);
+  });
+
+  it("leaves a user-authored (non-system) database's name byte-for-byte unchanged regardless of locale", async () => {
+    const project = await chokePoint.createDatabase({ name: "Projects" });
+    const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });
+    const owned = await chokePoint.createDatabase({ name: "Můj vlastní deník", ownerProjectItemId: projectItem.id });
+
+    const moduleRegistry = await systemDatabasesRegistry();
+    const manifest = await withTransaction(pool, (client) =>
+      generatePermissionManifest(client, projectItem.id, { moduleRegistry, locale: "en" }),
+    );
+    expect(manifest.databases.find((db) => db.databaseId === owned.id)?.name).toBe("Můj vlastní deník");
+  });
+
   it("the drift check action writes a notification when an orphan is found, and nothing when clean", async () => {
     const project = await chokePoint.createDatabase({ name: "Projects2" });
     const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });
@@ -151,8 +342,43 @@ describe("permission manifest and drift check", () => {
     const action = createDriftCheckAction(pool);
     await action({}, { heartbeatId: "hb", projectItemId: projectItem.id });
 
-    const { rows } = await pool.query("SELECT kind, payload FROM notifications WHERE kind = 'agent_manifest_drift'");
+    const { rows } = await pool.query(
+      "SELECT kind, payload FROM manifest_drift_findings WHERE kind = 'agent_manifest_drift'",
+    );
     expect(rows).toHaveLength(1);
     expect(rows[0].payload.orphanedOwnerProcess).toHaveLength(1);
+  });
+
+  it("the drift check action runs cleanly against a real user's locale, live, with no throw across a locale change (issue #147 AC #9/#10)", async () => {
+    const project = await chokePoint.createDatabase({ name: "Projects3" });
+    const projectItem = await chokePoint.createItem({ databaseId: project.id, properties: {} });
+    await chokePoint.createDatabase({ name: null, key: "tasks", system: true, ownerProjectItemId: projectItem.id });
+
+    const passwordHash = await hashPassword("s3cret-password");
+    const user = await createUser(pool, { email: "owner@example.test", passwordHash, locale: "cs" });
+
+    const moduleRegistry = await systemDatabasesRegistry();
+    const action = createDriftCheckAction(pool, { moduleRegistry });
+
+    // Exercises the cs catalog: getEarliestUserLocale.test.ts-equivalent coverage below asserts
+    // on the resolved locale value directly; this asserts the action (its one production caller)
+    // doesn't throw while actually depending on that live lookup.
+    await expect(action({}, { heartbeatId: "hb", projectItemId: projectItem.id })).resolves.toBeUndefined();
+
+    // A locale change (no persisted manifest to go stale) takes effect on the very next run.
+    await pool.query(`UPDATE users SET locale = 'en' WHERE id = $1`, [user.id]);
+    await expect(action({}, { heartbeatId: "hb", projectItemId: projectItem.id })).resolves.toBeUndefined();
+  });
+
+  it("getEarliestUserLocale resolves the first-created account's locale and reflects a live update, with no users returning null", async () => {
+    expect(await getEarliestUserLocale(pool)).toBeNull();
+
+    const passwordHash = await hashPassword("s3cret-password");
+    const first = await createUser(pool, { email: "first@example.test", passwordHash, locale: "cs" });
+    await createUser(pool, { email: "second@example.test", passwordHash, locale: "en" });
+    expect(await getEarliestUserLocale(pool)).toBe("cs");
+
+    await pool.query(`UPDATE users SET locale = 'en' WHERE id = $1`, [first.id]);
+    expect(await getEarliestUserLocale(pool)).toBe("en");
   });
 });

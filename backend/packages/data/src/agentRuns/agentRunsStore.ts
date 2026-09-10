@@ -1,5 +1,8 @@
-import type { Pool, PoolClient } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { assertKnownValue } from "../dbRowValidation.js";
+import { getEarliestUserId } from "../auth/usersStore.js";
+import { writeNotification } from "../notifications/notify.js";
+import { withTransaction } from "../db/pool.js";
 
 export type TriggeredBy = "user" | "heartbeat" | "supervisor" | "mcp";
 export type AgentRunUnit = "invocation" | "session";
@@ -88,6 +91,46 @@ export async function finishAgentRun(
     status,
     result,
   ]);
+}
+
+/**
+ * `finishAgentRun(..., "error", ...)` plus the reference `agent_run_error` notification (issue
+ * #149), in the same transaction — every producer that closes a run as `error` (startup-sweep
+ * repair, a budget rejection or any other unrecoverable failure surfacing from the model call,
+ * a heartbeat-triggered run) calls this one function instead of `finishAgentRun` directly, so the
+ * kind has exactly one producer path regardless of how many call sites reach it.
+ *
+ * `transitionInstance` is the run's own id: an `agent_runs` row finishes at most once (its
+ * `status` only ever leaves `running` a single time), so replaying the same close — a retried
+ * caller after a crash before it observed success — is necessarily the same transition, while a
+ * different run failing always has a different id.
+ *
+ * Silently skips the notification before any account exists (setup not run yet), matching
+ * `notifyHeartbeatError`.
+ */
+export async function finishAgentRunWithErrorNotification(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  result: string | null,
+): Promise<void> {
+  // `writeNotification` requires an actual transaction client (it's meant to run alongside the
+  // source write it dedupes against) — a caller that only has a bare `pool` gets one opened here
+  // so the close and the notification still land atomically together.
+  if (client instanceof Pool) {
+    await withTransaction(client, (c) => finishAgentRunWithErrorNotification(c, agentRunId, result));
+    return;
+  }
+  await finishAgentRun(client, agentRunId, "error", result);
+  const userId = await getEarliestUserId(client);
+  if (!userId) return;
+  await writeNotification(client, {
+    userId,
+    kind: "agent_run_error",
+    linkHref: `?page=agent-run&id=${agentRunId}`,
+    sourceTable: "agent_runs",
+    sourceId: agentRunId,
+    transitionInstance: agentRunId,
+  });
 }
 
 export async function getAgentRun(client: Pool | PoolClient, id: string): Promise<AgentRunRow | null> {

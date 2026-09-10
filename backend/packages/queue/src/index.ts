@@ -34,6 +34,9 @@ export const CORE_TASK_NAMES = {
   // Issue #131: the reserved execution job an approval decision enqueues once (and only once)
   // a pending `approval_requests` row is atomically decided `approved`.
   APPROVAL_REQUEST_EXECUTE: "approvalExecute",
+  // Issue #151: fans out one committed notification to every active Web Push/APNs registration
+  // for its user.
+  NOTIFICATION_FANOUT: "notificationFanout",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 

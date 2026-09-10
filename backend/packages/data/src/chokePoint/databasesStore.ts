@@ -1,13 +1,20 @@
 import type { PoolClient } from "pg";
 import { requireSingleRow } from "../db/pool.js";
-import { ForbiddenError, NotFoundError } from "../errors.js";
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import type { DatabaseRow } from "../types.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** True when a Postgres error is the named unique-index violation, so callers can turn it into a clean ConflictError. */
+function isUniqueViolation(err: unknown, constraint: string): boolean {
+  const pgErr = err as { code?: string; constraint?: string };
+  return pgErr?.code === "23505" && pgErr?.constraint === constraint;
+}
+
 function mapDatabaseRow(row: {
   id: string;
-  name: string;
+  name: string | null;
+  key: string | null;
   parent_item_id: string | null;
   owner_project_item_id: string | null;
   owner_module_id: string | null;
@@ -18,6 +25,7 @@ function mapDatabaseRow(row: {
   return {
     id: row.id,
     name: row.name,
+    key: row.key,
     parentItemId: row.parent_item_id,
     ownerProjectItemId: row.owner_project_item_id,
     ownerModuleId: row.owner_module_id,
@@ -27,8 +35,14 @@ function mapDatabaseRow(row: {
   };
 }
 
+const DATABASE_COLUMNS =
+  "id, name, key, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, archived_at";
+
 export interface CreateDatabaseInput {
-  name: string;
+  /** Required unless `system` is true — enforced below, not by the (now nullable) column. */
+  name: string | null;
+  /** Stable unique English camelCase identifier (issue #235) — only ever set for system databases. */
+  key?: string;
   parentItemId?: string;
   ownerProjectItemId?: string;
   ownerModuleId?: string;
@@ -42,20 +56,42 @@ export interface CreateDatabaseInput {
  * only becomes writable once this returns.
  */
 export async function createDatabase(client: PoolClient, input: CreateDatabaseInput): Promise<DatabaseRow> {
-  const { rows } = await client.query(
-    `INSERT INTO databases (name, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, name, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, archived_at`,
-    [
-      input.name,
-      input.parentItemId ?? null,
-      input.ownerProjectItemId ?? null,
-      input.ownerModuleId ?? null,
-      input.schemaLocked ?? false,
-      input.system ?? false,
-    ],
-  );
-  const database = mapDatabaseRow(rows[0]);
+  if (!input.system && !input.name) {
+    throw new ValidationError("name is required for a non-system database", { field: "name" });
+  }
+  if (input.key && !input.system) {
+    throw new ValidationError("key is only valid for system databases", { field: "key" });
+  }
+  if (input.system && !input.name && !input.key) {
+    // Without a name, key is the only source of a display label the permissionManifest
+    // fallback (db.name ?? db.key ?? db.id) has to fall back to before it resorts to
+    // surfacing the raw database id.
+    throw new ValidationError("key is required for a system database with a null name", { field: "key" });
+  }
+
+  let database: DatabaseRow;
+  try {
+    const { rows } = await client.query(
+      `INSERT INTO databases (name, key, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING ${DATABASE_COLUMNS}`,
+      [
+        input.name,
+        input.key ?? null,
+        input.parentItemId ?? null,
+        input.ownerProjectItemId ?? null,
+        input.ownerModuleId ?? null,
+        input.schemaLocked ?? false,
+        input.system ?? false,
+      ],
+    );
+    database = mapDatabaseRow(rows[0]);
+  } catch (err) {
+    if (isUniqueViolation(err, "databases_key_unique")) {
+      throw new ConflictError(`Database key '${input.key}' is already in use`, { field: "key" });
+    }
+    throw err;
+  }
 
   if (!UUID_RE.test(database.id)) {
     // Sanity invariant only: database.id always comes straight from gen_random_uuid()
@@ -78,22 +114,28 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
 }
 
 export async function getDatabase(client: PoolClient, id: string): Promise<DatabaseRow | null> {
-  const { rows } = await client.query(
-    `SELECT id, name, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, archived_at
-     FROM databases WHERE id = $1`,
-    [id],
-  );
+  const { rows } = await client.query(`SELECT ${DATABASE_COLUMNS} FROM databases WHERE id = $1`, [id]);
   return rows[0] ? mapDatabaseRow(rows[0]) : null;
 }
 
 /** Looks up a system database by its canonical `owner_module_id` (e.g. 'tasks', 'events') — see the `canonical-keys` skill's established vocabulary. */
 export async function getDatabaseByModuleId(client: PoolClient, ownerModuleId: string): Promise<DatabaseRow | null> {
-  const { rows } = await client.query(
-    `SELECT id, name, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, archived_at
-     FROM databases WHERE owner_module_id = $1`,
-    [ownerModuleId],
-  );
+  const { rows } = await client.query(`SELECT ${DATABASE_COLUMNS} FROM databases WHERE owner_module_id = $1`, [
+    ownerModuleId,
+  ]);
   return rows[0] ? mapDatabaseRow(rows[0]) : null;
+}
+
+/**
+ * Every non-archived database system-wide, including the ten hardcoded system databases
+ * (issue #147's schema-projection endpoint needs these: they carry no `owner_project_item_id`,
+ * so they're invisible to any project-scoped query like `generatePermissionManifest`'s).
+ */
+export async function listAllDatabases(client: PoolClient): Promise<DatabaseRow[]> {
+  const { rows } = await client.query(
+    `SELECT ${DATABASE_COLUMNS} FROM databases WHERE archived_at IS NULL ORDER BY key, name`,
+  );
+  return rows.map(mapDatabaseRow);
 }
 
 async function requireDatabase(client: PoolClient, id: string): Promise<DatabaseRow> {
@@ -107,8 +149,7 @@ export async function archiveDatabase(client: PoolClient, id: string): Promise<D
   if (database.system) throw new ForbiddenError("A system database cannot be archived");
 
   const { rows } = await client.query(
-    `UPDATE databases SET archived_at = now() WHERE id = $1
-     RETURNING id, name, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, archived_at`,
+    `UPDATE databases SET archived_at = now() WHERE id = $1 RETURNING ${DATABASE_COLUMNS}`,
     [id],
   );
   return mapDatabaseRow(rows[0]);
@@ -117,8 +158,7 @@ export async function archiveDatabase(client: PoolClient, id: string): Promise<D
 export async function restoreDatabase(client: PoolClient, id: string): Promise<DatabaseRow> {
   await requireDatabase(client, id);
   const { rows } = await client.query(
-    `UPDATE databases SET archived_at = NULL WHERE id = $1
-     RETURNING id, name, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, archived_at`,
+    `UPDATE databases SET archived_at = NULL WHERE id = $1 RETURNING ${DATABASE_COLUMNS}`,
     [id],
   );
   return mapDatabaseRow(rows[0]);

@@ -11,7 +11,7 @@
     "./testSupport/mcpContractServers": "./src/testSupport/mcpContractServers.ts"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && cp -r src/db/migrations dist/db/migrations",
+    "build": "tsc -p tsconfig.json && cp -r src/db/migrations dist/db/migrations && cp -r src/seed/i18n dist/seed/i18n && cp -r src/chokePoint/i18n dist/chokePoint/i18n && cp -r src/views/i18n dist/views/i18n && cp -r src/docs/i18n dist/docs/i18n && cp -r src/inbox/i18n dist/inbox/i18n && cp -r src/library/i18n dist/library/i18n && cp -r src/mail/i18n dist/mail/i18n && cp -r src/notifications/i18n dist/notifications/i18n",
     "check-migration-numbering": "node scripts/check-migration-numbering.mjs"
   },
   "dependencies": {
@@ -29,6 +29,7 @@
     "pdf-parse": "^2.4.5",
     "pg": "^8.23.0",
     "sanitize-html": "^2.17.7",
+    "web-push": "^3.6.7",
     "yjs": "^13.6.32",
     "zod": "^4.1.11"
   },
@@ -38,6 +39,7 @@
     "@types/nodemailer": "^8.0.1",
     "@types/pg": "^8.23.1",
     "@types/sanitize-html": "^2.16.1",
+    "@types/web-push": "^3.6.4",
     "embedded-postgres": "^18.4.0-beta.17",
     "vitest": "^4.1.11"
   }

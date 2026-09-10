@@ -1,10 +1,13 @@
 import type { Pool, PoolClient } from "pg";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { withTransaction } from "../db/pool.js";
 import { updateItemWithClient } from "../chokePoint/chokePoint.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createBlob, type CreateBlobInput } from "../blobs/blobsStore.js";
+import { getEarliestUserId } from "../auth/usersStore.js";
+import { writeNotification } from "../notifications/notify.js";
 import {
   ensureItemAutomation,
   getItemAutomation,
@@ -95,10 +98,21 @@ export interface ProcessLibraryMetadataPayload {
  * own retry/backoff (`max_attempts: 3` on this job) takes over; on the final failed
  * attempt the row is left in 'error', picked up again by the next daily retry sweep.
  */
+export interface ProcessLibraryMetadataHelpers {
+  job: { id: string };
+}
+
+/**
+ * `helpers` defaults to a freshly generated id: only graphile-worker's real per-attempt job id
+ * (threaded through by worker.ts) makes the `automation_error` notification's `transitionInstance`
+ * (issue #149) dedupe correctly across retries of the *same* attempt — callers that don't care
+ * about that can omit it entirely.
+ */
 export async function handleProcessLibraryMetadataTask(
   pool: Pool,
   payload: ProcessLibraryMetadataPayload,
   fetcher: LibraryMetadataFetcher,
+  helpers: ProcessLibraryMetadataHelpers = { job: { id: randomUUID() } },
 ): Promise<void> {
   const readClient = await pool.connect();
   let automation;
@@ -160,7 +174,22 @@ export async function handleProcessLibraryMetadataTask(
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await withTransaction(pool, (client) => markItemAutomationError(client, payload.itemId, message));
+    // Issue #149: notification lands in the same transaction as the error record, so a
+    // replayed job (same job id, same `transitionInstance`) never duplicates it.
+    await withTransaction(pool, async (client) => {
+      await markItemAutomationError(client, payload.itemId, message);
+      const userId = await getEarliestUserId(client);
+      if (userId) {
+        await writeNotification(client, {
+          userId,
+          kind: "automation_error",
+          linkHref: `?page=library-item&id=${payload.itemId}`,
+          sourceTable: "item_automation",
+          sourceId: payload.itemId,
+          transitionInstance: helpers.job.id,
+        });
+      }
+    });
     throw err;
   }
 }

@@ -8,14 +8,15 @@ export interface PublishFindingInput {
 }
 
 /**
- * Inserts a `notifications` row unless an active (unresolved) finding with the same
- * `(kind, dedupeKey)` already exists — the partial unique index from migration 0011 is
- * what makes two concurrent callers reporting the same drift race safely: the loser's
- * insert is a no-op instead of a duplicate active finding.
+ * Inserts a `manifest_drift_findings` row unless an active (unresolved) finding with the same
+ * `(kind, dedupeKey)` already exists — the partial unique index (migration 0030, moved here
+ * from the old shared `notifications` stub by issue #237) is what makes two concurrent callers
+ * reporting the same drift race safely: the loser's insert is a no-op instead of a duplicate
+ * active finding.
  */
 export async function publishFinding(client: PoolClient, input: PublishFindingInput): Promise<void> {
   await client.query(
-    `INSERT INTO notifications (kind, dedupe_key, payload) VALUES ($1, $2, $3::jsonb)
+    `INSERT INTO manifest_drift_findings (kind, dedupe_key, payload) VALUES ($1, $2, $3::jsonb)
      ON CONFLICT (kind, dedupe_key) WHERE resolved_at IS NULL AND dedupe_key IS NOT NULL DO NOTHING`,
     [input.kind, input.dedupeKey, JSON.stringify(input.payload)],
   );
@@ -33,7 +34,7 @@ export async function resolveFindingsNotIn(
   stillActiveDedupeKeys: ReadonlySet<string>,
 ): Promise<void> {
   await client.query(
-    `UPDATE notifications
+    `UPDATE manifest_drift_findings
      SET resolved_at = now()
      WHERE kind = $1 AND resolved_at IS NULL AND dedupe_key IS NOT NULL AND NOT (dedupe_key = ANY($2::text[]))`,
     [kind, [...stillActiveDedupeKeys]],

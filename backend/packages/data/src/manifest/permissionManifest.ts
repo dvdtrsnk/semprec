@@ -1,14 +1,26 @@
 import type { PoolClient } from "pg";
+import type { ModuleRegistry } from "@semprec/module-registry";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { heartbeatRuleSchema, type HeartbeatRule } from "../scheduler/rule.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
 import { getGrantedMcpAgentTools, type McpAgentToolProjection } from "../mcp/mcpAgentTools.js";
+import { createCatalogResolver, resolveDatabaseName, resolveProperty } from "./catalogResolution.js";
+import type { ManifestLocale } from "./catalogResolution.js";
+
+export type { ManifestLocale } from "./catalogResolution.js";
+
+export interface ManifestPropertyOption {
+  key: string;
+  label: string;
+}
 
 export interface ManifestProperty {
   key: string;
   name: string;
   owner: "user" | "system";
   locked: boolean;
+  /** Resolved select/multi_select option labels (issue #147) — absent for every other property type. */
+  options?: ManifestPropertyOption[];
 }
 
 export interface ManifestDatabase {
@@ -61,6 +73,28 @@ export interface PermissionManifest {
   agentTools: McpAgentToolProjection[];
 }
 
+export interface GeneratePermissionManifestOptions {
+  /**
+   * Supplies the `cs`/`en` catalogs a database/property/option resolves its display label
+   * against (issue #147). Omitted for callers that only want to confirm the schema is
+   * resolvable at all (e.g. `driftCheck.ts` with no `moduleRegistry`) — in that case every
+   * name/label falls back to the pre-#147 raw-key placeholder below, exactly as before this
+   * option existed.
+   */
+  moduleRegistry?: ModuleRegistry;
+  /**
+   * Ignored unless `moduleRegistry` is also given. Defaults to `"en"`, the reference locale.
+   *
+   * `driftCheck.ts`'s heartbeat — the one production caller of this function — resolves this
+   * live from `users.locale` on every run rather than pinning a value here; see its own comment
+   * for why (Semprec is single-tenant with no per-project owning-user column, so the
+   * earliest-created account stands in for "the" user). A caller with a genuine per-request
+   * authenticated user, such as `services/semprec-api/src/schemaHandler.ts`'s sibling
+   * `generateSchemaProjection`, should keep passing that user's locale directly instead.
+   */
+  locale?: ManifestLocale;
+}
+
 /**
  * Computed synchronously from current schema state, scoped to one project (small,
  * indexed queries — not a scan of the whole system). Never persistently cached: this
@@ -69,26 +103,37 @@ export interface PermissionManifest {
 export async function generatePermissionManifest(
   client: PoolClient,
   projectItemId: string,
+  options: GeneratePermissionManifestOptions = {},
 ): Promise<PermissionManifest> {
+  const { moduleRegistry } = options;
+  const locale = options.locale ?? "en";
+  const catalogResolver = await createCatalogResolver(moduleRegistry);
+
   const { rows: databaseRows } = await client.query<{
     id: string;
-    name: string;
+    name: string | null;
+    key: string | null;
     schema_locked: boolean;
     owner_module_id: string | null;
   }>(
-    `SELECT id, name, schema_locked, owner_module_id FROM databases WHERE owner_project_item_id = $1 AND archived_at IS NULL`,
+    `SELECT id, name, key, schema_locked, owner_module_id FROM databases WHERE owner_project_item_id = $1 AND archived_at IS NULL`,
     [projectItemId],
   );
 
   const databases: ManifestDatabase[] = [];
   for (const db of databaseRows) {
     const properties = await listPropertiesByDatabase(client, db.id);
+    const catalogs = await catalogResolver.getCatalogsForDbKey(db.key);
+
+    const dbName = resolveDatabaseName(db.name, db.key, db.id, catalogs, locale);
+    const manifestProperties: ManifestProperty[] = properties.map((p) => resolveProperty(p, db.key, catalogs, locale));
+
     databases.push({
       databaseId: db.id,
-      name: db.name,
+      name: dbName,
       schemaLocked: db.schema_locked,
       writable: !(db.owner_module_id && SEMPREC_READ_ONLY_MODULE_IDS.includes(db.owner_module_id)),
-      properties: properties.map((p) => ({ key: p.key, name: p.name, owner: p.owner, locked: p.locked })),
+      properties: manifestProperties,
     });
   }
 

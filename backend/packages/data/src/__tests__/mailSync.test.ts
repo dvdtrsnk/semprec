@@ -63,6 +63,8 @@ import type { ImapFlow } from "imapflow";
 import type { MessageStructureObject } from "imapflow";
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
+import { createUser } from "../auth/usersStore.js";
+import { hashPassword } from "../auth/passwordHash.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -1740,11 +1742,13 @@ describe("mail sync job error handling (issue #26)", () => {
     expect(item.rows[0].properties.syncStatus).toBe("ok");
   });
 
-  it("sets Mailbox.syncStatus to 'needsReauthorization' when the adapter reports a revoked credential", async () => {
+  it("sets Mailbox.syncStatus to 'needsReauthorization' when the adapter reports a revoked credential, without writing a mail_sync_error notification (issue #149)", async () => {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");
     const filesId = await databaseIdFor("files");
     const mailboxesId = await databaseIdFor("mailboxes");
+    const passwordHash = await hashPassword("s3cret-password");
+    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
 
     const mailbox = await withTransaction(pool, (client) =>
       createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
@@ -1781,6 +1785,107 @@ describe("mail sync job error handling (issue #26)", () => {
       client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]),
     );
     expect(item.rows[0].properties.syncStatus).toBe("needsReauthorization");
+
+    const { rows: notifications } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [mailbox.id]);
+    expect(notifications).toHaveLength(0);
+  });
+
+  it("writes a mail_sync_error notification on failure, deduped by job id but not across distinct failing jobs (issue #149)", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const passwordHash = await hashPassword("s3cret-password");
+    const user = await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+    );
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+    // Deliberately no storeCredential call, same as the "no stored credential" test below —
+    // reaches `recordSyncError` without needing a real adapter failure.
+
+    const moduleIds = {
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      foldersDatabaseId: foldersId,
+      mailboxesDatabaseId: mailboxesId,
+    };
+
+    await expect(
+      handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, {}, moduleIds, noopStorage, {
+        job: { id: "job-1" },
+      }),
+    ).rejects.toThrow("has no stored credential");
+
+    const { rows: afterFirst } = await pool.query(
+      `SELECT user_id, kind, title, link_href, source_table, source_id, transition_instance FROM notifications WHERE source_id = $1`,
+      [mailbox.id],
+    );
+    expect(afterFirst).toMatchObject([
+      {
+        user_id: user.id,
+        kind: "mail_sync_error",
+        title: "Mail sync failed",
+        link_href: `?page=mailbox&id=${mailbox.id}`,
+        source_table: "mail_account_sync_state",
+        transition_instance: "job-1",
+      },
+    ]);
+
+    // Redelivery of the same job must not duplicate the notification.
+    await expect(
+      handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, {}, moduleIds, noopStorage, {
+        job: { id: "job-1" },
+      }),
+    ).rejects.toThrow("has no stored credential");
+    const { rows: afterReplay } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [mailbox.id]);
+    expect(afterReplay).toHaveLength(1);
+
+    // A later, independent failure (a new job) is a different transition and does insert.
+    await expect(
+      handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, {}, moduleIds, noopStorage, {
+        job: { id: "job-2" },
+      }),
+    ).rejects.toThrow("has no stored credential");
+    const { rows: afterNewTransition } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [
+      mailbox.id,
+    ]);
+    expect(afterNewTransition).toHaveLength(2);
+  });
+
+  it("skips the mail_sync_error notification (but still records the sync error) before any user account exists (issue #149)", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+    );
+    await withTransaction(pool, (client) =>
+      ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+    );
+
+    const moduleIds = {
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      foldersDatabaseId: foldersId,
+      mailboxesDatabaseId: mailboxesId,
+    };
+
+    await expect(
+      handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, {}, moduleIds, noopStorage, {
+        job: { id: "job-1" },
+      }),
+    ).rejects.toThrow("has no stored credential");
+
+    const { rows } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [mailbox.id]);
+    expect(rows).toHaveLength(0);
+    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, mailbox.id));
+    expect(state!.lastError).toContain("has no stored credential");
   });
 
   it("sets Mailbox.syncStatus to 'error' when the credential itself can't be decrypted (a failure before any adapter/transaction runs)", async () => {
@@ -2854,6 +2959,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
         mailboxesDatabaseId: mailboxesId,
       },
       noopStorage,
+      undefined,
       recordingLimiter,
     );
 
@@ -2908,6 +3014,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
         mailboxesDatabaseId: mailboxesId,
       },
       noopStorage,
+      undefined,
       recordingLimiter,
     );
 
@@ -2980,6 +3087,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       { createImapClient: async () => blockingImap },
       moduleIds,
       noopStorage,
+      undefined,
       limiter,
     );
     await firstStarted;
@@ -2993,6 +3101,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       { createImapClient: async () => emptyImap },
       moduleIds,
       noopStorage,
+      undefined,
       limiter,
     );
 

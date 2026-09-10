@@ -1,5 +1,4 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { timingSafeEqual } from "node:crypto";
 import {
   withTransaction,
   ChokePointError,
@@ -9,25 +8,12 @@ import {
   setProjectMcpGrantForAgentPage,
 } from "@semprec/data";
 import type { Pool } from "pg";
-
-export interface McpAgentPageHandlerOptions {
-  /** Same stopgap shared-secret bearer token as `aiUsageHandler.ts` — see that file's comment. */
-  authToken: string;
-}
+import { authenticateRequest } from "./authHandler.js";
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(payload);
-}
-
-/** Constant-time so a network caller can't recover the token byte-by-byte from response timing. */
-function isAuthorized(req: IncomingMessage, authToken: string): boolean {
-  const header = req.headers.authorization;
-  if (!header || !header.startsWith("Bearer ")) return false;
-  const provided = Buffer.from(header.slice("Bearer ".length));
-  const expected = Buffer.from(authToken);
-  return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
 const MAX_BODY_BYTES = 1 * 1024 * 1024;
@@ -67,19 +53,15 @@ const MCP_TOOL_REGISTRATION_PATH = /^\/api\/mcp-tool-registrations\/([^/]+)$/;
  * `@semprec/data`'s `mcpAgentPageGrants.ts` wrappers (see that file's header) — this handler
  * never imports the admin store directly, and couldn't: it's not re-exported from the package.
  *
- * Same stopgap shared-secret auth as `createAiUsageRequestListener` — see that file's comment
- * on `AiUsageHandlerOptions.authToken` for why this isn't a real session/credential yet.
+ * Gated by `authenticateRequest` (issue #143), same session middleware `authHandler.ts` uses.
  */
-export function createMcpAgentPageRequestListener(pool: Pool, options: McpAgentPageHandlerOptions) {
+export function createMcpAgentPageRequestListener(pool: Pool) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!isAuthorized(req, options.authToken)) {
-      sendJson(res, 401, { error: "Unauthorized" });
-      return;
-    }
-
     const url = new URL(req.url ?? "/", "http://localhost");
 
     try {
+      await authenticateRequest(pool, req);
+
       const grantsMatch = url.pathname.match(MCP_GRANTS_PATH);
       if (grantsMatch) {
         // Group 1 of MCP_GRANTS_PATH is mandatory; group 2 is genuinely optional and the

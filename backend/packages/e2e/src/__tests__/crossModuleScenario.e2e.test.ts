@@ -139,7 +139,7 @@ describe("e2e: cross-module scenario (module-contract issue #114)", () => {
     });
     await action({}, { heartbeatId: "hb", projectItemId: "unused" });
     const { rows: whileActive } = await pool.query(
-      `SELECT id FROM notifications WHERE kind = $1 AND resolved_at IS NULL`,
+      `SELECT id FROM manifest_drift_findings WHERE kind = $1 AND resolved_at IS NULL`,
       [ORPHANED_OWNER_PROCESS_FINDING_KIND],
     );
     expect(whileActive).toHaveLength(0);
@@ -151,7 +151,7 @@ describe("e2e: cross-module scenario (module-contract issue #114)", () => {
     });
     await actionAfterDeactivation({}, { heartbeatId: "hb", projectItemId: "unused" });
     const { rows: afterDeactivation } = await pool.query(
-      `SELECT dedupe_key, resolved_at FROM notifications WHERE kind = $1`,
+      `SELECT dedupe_key, resolved_at FROM manifest_drift_findings WHERE kind = $1`,
       [ORPHANED_OWNER_PROCESS_FINDING_KIND],
     );
     expect(afterDeactivation).toEqual([{ dedupe_key: "e2e-alpha", resolved_at: null }]);
@@ -159,7 +159,7 @@ describe("e2e: cross-module scenario (module-contract issue #114)", () => {
     // Reactivating it resolves the finding rather than leaving it dangling.
     await action({}, { heartbeatId: "hb", projectItemId: "unused" });
     const { rows: afterReactivation } = await pool.query(
-      `SELECT resolved_at FROM notifications WHERE kind = $1 AND dedupe_key = $2`,
+      `SELECT resolved_at FROM manifest_drift_findings WHERE kind = $1 AND dedupe_key = $2`,
       [ORPHANED_OWNER_PROCESS_FINDING_KIND, "e2e-alpha"],
     );
     expect(afterReactivation[0]!.resolved_at).not.toBeNull();

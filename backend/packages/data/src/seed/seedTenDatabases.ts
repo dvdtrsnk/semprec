@@ -25,12 +25,19 @@ import {
 
 export type TenDatabases = Record<TenDatabaseModuleId, DatabaseRow>;
 
+// Issue #145: every shipped catalog option `s` becomes `{ key: s }` — no `label`, since a
+// shipped option's display text is not an override (see SelectOption's doc comment).
 function selectConfig(options: string[]): Record<string, unknown> {
-  return { options };
+  return { options: options.map((key) => ({ key })) };
 }
 
 interface PropSpec {
   key: string;
+  /**
+   * Kept only as inline documentation of the canonical label (useful once issue #146 ships a
+   * translation catalog); a built-in property of a system database is stored with a null
+   * `name` (issue #235) — `createProps` below never writes this string to the column.
+   */
   name: string;
   type: PropertyType;
   owner?: PropertyOwner;
@@ -38,8 +45,9 @@ interface PropSpec {
   config?: Record<string, unknown>;
 }
 
-async function createDb(client: PoolClient, name: string, ownerModuleId: TenDatabaseModuleId): Promise<DatabaseRow> {
-  return databasesStore.createDatabase(client, { name, system: true, ownerModuleId });
+/** `key` doubles as `databases.key` (issue #235) and `owner_module_id` — a system database's built-in `name` is always null; its display label comes from the future translation catalog (#146/#147). */
+async function createDb(client: PoolClient, key: TenDatabaseModuleId): Promise<DatabaseRow> {
+  return databasesStore.createDatabase(client, { name: null, key, system: true, ownerModuleId: key });
 }
 
 async function createProps(client: PoolClient, databaseId: string, specs: PropSpec[]): Promise<void> {
@@ -47,7 +55,8 @@ async function createProps(client: PoolClient, databaseId: string, specs: PropSp
     await propertiesStore.createProperty(client, {
       databaseId,
       key: spec.key,
-      name: spec.name,
+      // Null, not spec.name — see PropSpec.name's doc comment.
+      name: null,
       type: spec.type,
       owner: spec.owner,
       locked: spec.locked,
@@ -75,18 +84,27 @@ export async function seedTenDatabasesInTransaction(
   computedKeyRegistry: ComputedKeyRegistry,
   moduleRegistry: ModuleRegistry,
 ): Promise<TenDatabases> {
+  // `input.name`/`input.inverse.name` below are always overridden to null: a relation property
+  // of one of these ten databases is as much a built-in property as the plain ones `createProps`
+  // creates, so it gets the same null-name treatment (issue #235). Each call site below still
+  // spells out its intended label as documentation for the future translation catalog (#146).
   const relate = (input: CreateRelationPropertyInput): Promise<{ property: unknown; inverseProperty: unknown }> =>
-    createRelationPropertyWithClient(client, input, undefined, computedKeyRegistry);
+    createRelationPropertyWithClient(
+      client,
+      { ...input, name: null, inverse: input.inverse ? { ...input.inverse, name: null } : undefined },
+      undefined,
+      computedKeyRegistry,
+    );
 
   // ---- phase 1: create each database and its own (non-relation) properties ----
-  const areas = await createDb(client, "Areas", AREAS_MODULE_ID);
+  const areas = await createDb(client, AREAS_MODULE_ID);
   await createProps(client, areas.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "active", name: "Active", type: "checkbox", owner: "user" },
     { key: "note", name: "Note", type: "text", owner: "user" },
   ]);
 
-  const projects = await createDb(client, "Projects", PROJECTS_MODULE_ID);
+  const projects = await createDb(client, PROJECTS_MODULE_ID);
   await createProps(client, projects.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "pinned", name: "Pinned", type: "checkbox", owner: "user" },
@@ -114,7 +132,7 @@ export async function seedTenDatabasesInTransaction(
     { key: "systemActive", name: "System active", type: "checkbox", owner: "user", locked: true },
   ]);
 
-  const tasks = await createDb(client, "Tasks", TASKS_MODULE_ID);
+  const tasks = await createDb(client, TASKS_MODULE_ID);
   await createProps(client, tasks.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     {
@@ -134,7 +152,7 @@ export async function seedTenDatabasesInTransaction(
     { key: "persistent", name: "Persistent", type: "checkbox", owner: "user" },
   ]);
 
-  const people = await createDb(client, "People", PEOPLE_MODULE_ID);
+  const people = await createDb(client, PEOPLE_MODULE_ID);
   await createProps(client, people.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     // A closed but extensible list, not free text — starting values taken from the mock.
@@ -150,7 +168,7 @@ export async function seedTenDatabasesInTransaction(
     { key: "contact", name: "Contact", type: "select", owner: "user", config: selectConfig(["phone", "email"]) },
   ]);
 
-  const files = await createDb(client, "Files", FILES_MODULE_ID);
+  const files = await createDb(client, FILES_MODULE_ID);
   await createProps(client, files.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "type", name: "Type", type: "select", owner: "user", config: selectConfig(["pdf", "xlsx", "docx", "jpg"]) },
@@ -159,14 +177,14 @@ export async function seedTenDatabasesInTransaction(
     { key: "file", name: "File", type: "file", owner: "user" },
   ]);
 
-  const events = await createDb(client, "Events", EVENTS_MODULE_ID);
+  const events = await createDb(client, EVENTS_MODULE_ID);
   await createProps(client, events.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "type", name: "Type", type: "select", owner: "user", config: selectConfig(["event", "standup", "meeting"]) },
     { key: "date", name: "Date", type: "date", owner: "user", config: { includeTime: true } },
   ]);
 
-  const healthRecords = await createDb(client, "Health records", HEALTH_RECORDS_MODULE_ID);
+  const healthRecords = await createDb(client, HEALTH_RECORDS_MODULE_ID);
   await createProps(client, healthRecords.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "date", name: "Date", type: "date", owner: "user" },
@@ -190,7 +208,7 @@ export async function seedTenDatabasesInTransaction(
     },
   ]);
 
-  const companies = await createDb(client, "Companies", COMPANIES_MODULE_ID);
+  const companies = await createDb(client, COMPANIES_MODULE_ID);
   await createProps(client, companies.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     // Deliberate exception (canonical-keys skill): the Czech IČO company-registration id,
@@ -199,7 +217,7 @@ export async function seedTenDatabasesInTransaction(
     { key: "web", name: "Web", type: "url", owner: "user" },
   ]);
 
-  const transcripts = await createDb(client, "Transcripts", TRANSCRIPTS_MODULE_ID);
+  const transcripts = await createDb(client, TRANSCRIPTS_MODULE_ID);
   await createProps(client, transcripts.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     // Fix: purely a pipeline status: owner is 'system', written only by the transcription
@@ -220,7 +238,7 @@ export async function seedTenDatabasesInTransaction(
     // cache), not here — see the issue's "non-generic" note; not properties at all.
   ]);
 
-  const journal = await createDb(client, "Journal", JOURNAL_MODULE_ID);
+  const journal = await createDb(client, JOURNAL_MODULE_ID);
   await createProps(client, journal.id, [
     { key: "name", name: "Name", type: "title", owner: "system" },
     { key: "type", name: "Type", type: "select", owner: "system", config: selectConfig([...JOURNAL_PERIOD_TYPES]) },
@@ -433,16 +451,15 @@ export async function seedTenDatabasesInTransaction(
 
   // ---- phase 4: seed default views (created_by: 'system') ----
   registerTemporalSwitcherViewType(viewTypeRegistry);
-  const defaultViewTypeByKey = new Map(
-    (await moduleRegistry.getDatabases())
-      .filter((db) => db.defaultViewType !== undefined)
-      .map((db) => [db.key, db.defaultViewType as string]),
-  );
+  // `databases.name` is null for these ten (issue #235), so the view's own (still required,
+  // unrelated) `name` column is sourced from the manifest's label instead.
+  const manifestDatabaseByKey = new Map((await moduleRegistry.getDatabases()).map((db) => [db.key, db]));
   for (const [moduleId, database] of Object.entries(all) as [TenDatabaseModuleId, DatabaseRow][]) {
-    const type = defaultViewTypeByKey.get(moduleId) ?? "table";
+    const manifestDatabase = manifestDatabaseByKey.get(moduleId);
+    const type = manifestDatabase?.defaultViewType ?? "table";
     await viewsStore.createView(
       client,
-      { databaseId: database.id, type, name: database.name, isDefault: true, createdBy: "system" },
+      { databaseId: database.id, type, name: manifestDatabase?.name ?? moduleId, isDefault: true, createdBy: "system" },
       viewTypeRegistry,
     );
   }

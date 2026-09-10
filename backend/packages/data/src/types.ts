@@ -37,7 +37,16 @@ export type PropertyType = (typeof PROPERTY_TYPES)[number];
 
 export interface DatabaseRow {
   id: string;
-  name: string;
+  /** Stable unique English camelCase identifier (issue #235) — set only for system databases; null for user-created ones. */
+  key: string | null;
+  /**
+   * Nullable for a system database (issue #235): a null value is an override slot for the
+   * translation catalog #146 ships, not a "no name" state — until #147 wires the resolver, a
+   * serializer needing a display string falls back to `key`. `system: false` databases are
+   * still required to carry a name by application validation (databasesStore.createDatabase),
+   * not by a DB constraint.
+   */
+  name: string | null;
   parentItemId: string | null;
   ownerProjectItemId: string | null;
   ownerModuleId: string | null;
@@ -46,11 +55,26 @@ export interface DatabaseRow {
   archivedAt: string | null;
 }
 
+/**
+ * One `select`/`multi_select` catalog entry (issue #145). `key` is the stable English
+ * camelCase token item property values and typed filters store/compare against — never
+ * rewritten by this shape change. `label` is present only for an option a user added or
+ * renamed at runtime (not part of the shipped catalog): an explicit override, the same
+ * role `DatabaseRow.name`/`PropertyRow.name` play one level up (issue #235). A shipped
+ * catalog option carries no `label` at all; until #147 wires the translation-catalog
+ * resolver, a serializer needing a display string for it falls back to the raw `key`.
+ */
+export interface SelectOption {
+  key: string;
+  label?: string;
+}
+
 export interface PropertyRow {
   id: string;
   databaseId: string;
   key: string;
-  name: string;
+  /** Nullable for a built-in property of a system database (issue #235) — see `DatabaseRow.name`. */
+  name: string | null;
   type: PropertyType;
   config: Record<string, unknown>;
   locked: boolean;

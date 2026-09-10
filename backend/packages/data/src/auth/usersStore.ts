@@ -49,3 +49,42 @@ export async function getUserById(client: Pool | PoolClient, id: string): Promis
   ]);
   return rows[0] ? mapRow(rows[0]) : null;
 }
+
+/** Backs the setup API's (#233) "no account exists yet" gate — cheaper than a `count(*)` since it can stop at the first row. */
+export async function anyUserExists(client: Pool | PoolClient): Promise<boolean> {
+  const { rows } = await client.query(`SELECT EXISTS(SELECT 1 FROM users) AS "exists"`);
+  return (rows[0] as { exists: boolean }).exists;
+}
+
+/**
+ * Semprec is a personal, single-tenant system — `databases`/`items` carry no owning-user column
+ * at all (only `owner_project_item_id`), so a background action with no per-request session
+ * (e.g. the drift-check heartbeat, `manifest/driftCheck.ts`) has no other honest way to find
+ * "the" user whose `users.locale` a runtime-generated manifest should resolve against. The
+ * first-created account is the closest stand-in for that single owner. Returns `null` before
+ * setup (#233) has created any account yet.
+ */
+export async function getEarliestUserLocale(client: Pool | PoolClient): Promise<string | null> {
+  const { rows } = await client.query(`SELECT locale FROM users ORDER BY created_at ASC, id ASC LIMIT 1`);
+  return rows[0] ? (rows[0] as { locale: string }).locale : null;
+}
+
+/**
+ * Same "closest stand-in for the single owner" reasoning as `getEarliestUserLocale`, for a
+ * background producer (e.g. the `heartbeat_error` notification writer, `scheduler/sweep.ts`)
+ * that needs a `notifications.user_id` to write to rather than a locale to resolve against.
+ * Returns `null` before setup (#233) has created any account yet.
+ */
+export async function getEarliestUserId(client: Pool | PoolClient): Promise<string | null> {
+  const { rows } = await client.query(`SELECT id FROM users ORDER BY created_at ASC, id ASC LIMIT 1`);
+  return rows[0] ? (rows[0] as { id: string }).id : null;
+}
+
+/** Used by `resetPassword` (auth/passwordResetActions.ts) to replace a user's password hash after a reset token is consumed. */
+export async function updateUserPasswordHash(
+  client: Pool | PoolClient,
+  id: string,
+  passwordHash: string,
+): Promise<void> {
+  await client.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [passwordHash, id]);
+}
