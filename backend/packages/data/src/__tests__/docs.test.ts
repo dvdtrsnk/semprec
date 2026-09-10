@@ -7,7 +7,12 @@ import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createDocStore, putBlockWithClient, type DocStore } from "../docs/docStore.js";
 import { ConflictError, HistoryNotRetainedError, ValidationError } from "../errors.js";
 import { DEFAULT_COMPACTION_THRESHOLD, loadDoc, mutateDoc, runCompactionSweep } from "../docs/docPersistence.js";
-import { cleanupExpiredDocHistory, openDocVersionAt } from "../docs/docHistory.js";
+import {
+  cleanupExpiredDocHistory,
+  rebaselineDocHistory,
+  runDocHistoryRetentionSweep,
+  openDocVersionAt,
+} from "../docs/docHistory.js";
 import { getBlock as readBlock, listBlocks as readBlocks } from "../docs/blocks.js";
 import { setDocUpdateHook, type DocUpdateEvent } from "../realtimeHook.js";
 
@@ -572,6 +577,251 @@ describe("docs (CRDT layer)", () => {
     it("openVersionAt on an item with no doc returns null", async () => {
       const item = await makeItem();
       expect(await docStore.openVersionAt(item.id, new Date())).toBeNull();
+    });
+  });
+
+  describe("retention cleanup (issue #86)", () => {
+    it("is a no-op when the cutoff doesn't advance past history_available_from", async () => {
+      const item = await makeItem();
+      await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "user");
+      const doc = await docStore.getDoc(item.id);
+      if (!doc) throw new Error("doc not created");
+
+      const { rows: before } = await pool.query<{
+        history_available_from: Date;
+        checkpointCount: string;
+      }>(
+        `SELECT d.history_available_from, (SELECT count(*) FROM doc_snapshot_history WHERE doc_id = d.id) AS "checkpointCount"
+         FROM docs d WHERE d.id = $1`,
+        [doc.id],
+      );
+
+      // A brand-new doc's history_available_from is "now" — with the default 30-day
+      // retention, the cutoff (30 days ago) precedes it, so nothing should change.
+      const rebaselined = await rebaselineDocHistory(pool, doc.id, 30);
+      expect(rebaselined).toBe(false);
+
+      const { rows: after } = await pool.query<{
+        history_available_from: Date;
+        checkpointCount: string;
+      }>(
+        `SELECT d.history_available_from, (SELECT count(*) FROM doc_snapshot_history WHERE doc_id = d.id) AS "checkpointCount"
+         FROM docs d WHERE d.id = $1`,
+        [doc.id],
+      );
+      expect(after[0]!.history_available_from.getTime()).toBe(before[0]!.history_available_from.getTime());
+      expect(after[0]!.checkpointCount).toBe(before[0]!.checkpointCount);
+    });
+
+    it("re-baselines at the cutoff, reconstructing exact state and deleting only what the new baseline makes redundant", async () => {
+      // Session timezone pinned to UTC and every "now" derived from a single Postgres read,
+      // per the #216 boundary-test convention, so the retention math below is deterministic
+      // regardless of host timezone or test/database clock skew.
+      const reference = await withUtcReferenceTime(pool);
+
+      const item = await makeItem();
+      await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "user");
+      const doc = await docStore.getDoc(item.id);
+      if (!doc) throw new Error("doc not created");
+      await docStore.putBlock(item.id, { id: "b2", flavour: "paragraph" }, "user");
+
+      const { rows: updateRows } = await pool.query<{ update_id: string }>(
+        `SELECT update_id FROM doc_history_updates WHERE doc_id = $1 ORDER BY update_id ASC`,
+        [doc.id],
+      );
+      expect(updateRows).toHaveLength(2);
+      const [b1UpdateId, b2UpdateId] = updateRows.map((r) => r.update_id);
+
+      const retentionDays = 30;
+      const beforeCutoff = new Date(reference.getTime() - (retentionDays + 10) * 24 * 60 * 60 * 1000);
+      const afterCutoff = new Date(reference.getTime() - (retentionDays - 10) * 24 * 60 * 60 * 1000);
+      const cutoff = new Date(reference.getTime() - retentionDays * 24 * 60 * 60 * 1000);
+
+      // b1 (and the doc's original baseline/availability) land before the cutoff; b2 lands
+      // after it — the split the re-baseline is expected to resolve.
+      await pool.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [doc.id, beforeCutoff]);
+      await pool.query(
+        `UPDATE doc_snapshot_history SET represented_at = $2 WHERE doc_id = $1 AND through_update_id = 0`,
+        [doc.id, beforeCutoff],
+      );
+      await pool.query(`UPDATE doc_updates SET created_at = $2 WHERE doc_id = $1 AND id = $3`, [
+        doc.id,
+        beforeCutoff,
+        b1UpdateId,
+      ]);
+      await pool.query(`UPDATE doc_history_updates SET created_at = $2 WHERE doc_id = $1 AND update_id = $3`, [
+        doc.id,
+        beforeCutoff,
+        b1UpdateId,
+      ]);
+      await pool.query(`UPDATE doc_updates SET created_at = $2 WHERE doc_id = $1 AND id = $3`, [
+        doc.id,
+        afterCutoff,
+        b2UpdateId,
+      ]);
+      await pool.query(`UPDATE doc_history_updates SET created_at = $2 WHERE doc_id = $1 AND update_id = $3`, [
+        doc.id,
+        afterCutoff,
+        b2UpdateId,
+      ]);
+
+      const rebaselined = await rebaselineDocHistory(pool, doc.id, retentionDays);
+      expect(rebaselined).toBe(true);
+
+      const { rows: docRows } = await pool.query<{ history_available_from: Date }>(
+        `SELECT history_available_from FROM docs WHERE id = $1`,
+        [doc.id],
+      );
+      expect(Math.abs(docRows[0]!.history_available_from.getTime() - cutoff.getTime())).toBeLessThan(5000);
+
+      const { rows: checkpointRows } = await pool.query<{
+        through_update_id: string;
+        represented_at: Date;
+        expires_at: Date | null;
+      }>(`SELECT through_update_id, represented_at, expires_at FROM doc_snapshot_history WHERE doc_id = $1`, [doc.id]);
+      // The old (pre-cutover) NULL-expiry baseline is gone; exactly the new one remains.
+      expect(checkpointRows).toHaveLength(1);
+      expect(checkpointRows[0]!.through_update_id).toBe(b1UpdateId);
+      expect(checkpointRows[0]!.expires_at).toBeNull();
+
+      const { rows: remainingHistory } = await pool.query<{ update_id: string }>(
+        `SELECT update_id FROM doc_history_updates WHERE doc_id = $1`,
+        [doc.id],
+      );
+      // b1's history row (at/before the cutoff) is deleted as redundant; b2's (after the
+      // cutoff) is kept — required for reconstruction inside the retained interval.
+      expect(remainingHistory.map((r) => r.update_id)).toEqual([b2UpdateId]);
+
+      // The reconstructed baseline itself contains exactly b1 (state as of the cutoff). A
+      // few seconds' buffer keeps this from flaking against the retention window's own live
+      // cutoff (which keeps sliding forward with the wall clock) the instant this runs.
+      const justAfterHistoryAvailableFrom = new Date(docRows[0]!.history_available_from.getTime() + 5000);
+      const atCutoff = await openDocVersionAt(pool, doc.id, justAfterHistoryAvailableFrom, retentionDays);
+      expect(readBlocks(atCutoff).map((b) => b["sys:id"])).toEqual(["b1"]);
+
+      // A timestamp just before the new history_available_from is no longer retained...
+      const justBefore = new Date(docRows[0]!.history_available_from.getTime() - 1000);
+      await expect(openDocVersionAt(pool, doc.id, justBefore, retentionDays)).rejects.toBeInstanceOf(
+        HistoryNotRetainedError,
+      );
+
+      // ...while "now" still reconstructs both updates, including the one kept past the boundary.
+      const atNow = await openDocVersionAt(pool, doc.id, reference, retentionDays);
+      expect(
+        readBlocks(atNow)
+          .map((b) => b["sys:id"])
+          .sort(),
+      ).toEqual(["b1", "b2"]);
+    });
+
+    it("the sweep re-baselines every eligible doc, isolating failures per doc", async () => {
+      const itemA = await makeItem();
+      await docStore.putBlock(itemA.id, { id: "a1", flavour: "paragraph" }, "user");
+      const docA = await docStore.getDoc(itemA.id);
+      if (!docA) throw new Error("doc not created");
+
+      const oldEnough = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+      await pool.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [docA.id, oldEnough]);
+      await pool.query(`UPDATE doc_snapshot_history SET represented_at = $2 WHERE doc_id = $1`, [docA.id, oldEnough]);
+      await pool.query(`UPDATE doc_updates SET created_at = $2 WHERE doc_id = $1`, [docA.id, oldEnough]);
+      await pool.query(`UPDATE doc_history_updates SET created_at = $2 WHERE doc_id = $1`, [docA.id, oldEnough]);
+
+      const itemB = await makeItem();
+      await docStore.putBlock(itemB.id, { id: "b1", flavour: "paragraph" }, "user"); // stays recent
+
+      // A third doc, also eligible for rebaselining, whose checkpoint state is corrupted so
+      // that rebaselineDocHistory's Y.applyUpdate throws — the only way to actually exercise
+      // the sweep's try/catch isolation, rather than merely assert on which docs were eligible.
+      const itemC = await makeItem();
+      await docStore.putBlock(itemC.id, { id: "c1", flavour: "paragraph" }, "user");
+      const docC = await docStore.getDoc(itemC.id);
+      if (!docC) throw new Error("doc not created");
+      await pool.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [docC.id, oldEnough]);
+      await pool.query(`UPDATE doc_snapshot_history SET represented_at = $2 WHERE doc_id = $1`, [docC.id, oldEnough]);
+      await pool.query(`UPDATE doc_updates SET created_at = $2 WHERE doc_id = $1`, [docC.id, oldEnough]);
+      await pool.query(`UPDATE doc_history_updates SET created_at = $2 WHERE doc_id = $1`, [docC.id, oldEnough]);
+      await pool.query(`UPDATE doc_snapshot_history SET state = $2 WHERE doc_id = $1`, [
+        docC.id,
+        Buffer.from([0xff, 0xff, 0xff, 0xff]),
+      ]);
+
+      const succeeded = await runDocHistoryRetentionSweep(pool, 30);
+      expect(succeeded).toBe(1); // only docA rebaselined; docB wasn't eligible, docC's threw
+
+      const { rows: docARows } = await pool.query<{ history_available_from: Date }>(
+        `SELECT history_available_from FROM docs WHERE id = $1`,
+        [docA.id],
+      );
+      expect(docARows[0]!.history_available_from.getTime()).toBeGreaterThan(oldEnough.getTime());
+
+      // docC's thrown error didn't abort the sweep for the other docs, and left docC's own
+      // state untouched by the failed attempt.
+      const { rows: docCRows } = await pool.query<{ history_available_from: Date }>(
+        `SELECT history_available_from FROM docs WHERE id = $1`,
+        [docC.id],
+      );
+      expect(docCRows[0]!.history_available_from.getTime()).toBe(oldEnough.getTime());
+    });
+
+    it("excludes concurrent append via the same document row lock append/compaction already use", async () => {
+      const item = await makeItem();
+      await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "user");
+      const doc = await docStore.getDoc(item.id);
+      if (!doc) throw new Error("doc not created");
+
+      const clientX = await pool.connect();
+      try {
+        await clientX.query("BEGIN");
+        // The exact row lock rebaselineDocHistory takes before reading/writing anything else.
+        await clientX.query(`SELECT 1 FROM doc_snapshots WHERE doc_id = $1 FOR UPDATE`, [doc.id]);
+
+        let appended = false;
+        const appendPromise = mutateDoc(pool, doc.id, "user", (ydoc) => {
+          ydoc.getMap("blocks").set("b2", new Y.Map());
+        }).then(() => {
+          appended = true;
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(appended).toBe(false); // append's own loadDocWithClient lock is blocked behind X
+
+        await clientX.query("COMMIT");
+        await appendPromise;
+        expect(appended).toBe(true);
+      } finally {
+        clientX.release();
+      }
+    });
+
+    it("excludes concurrent compaction via the same document row lock cleanup uses", async () => {
+      const item = await makeItem();
+      await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "user");
+      const doc = await docStore.getDoc(item.id);
+      if (!doc) throw new Error("doc not created");
+
+      const clientX = await pool.connect();
+      try {
+        await clientX.query("BEGIN");
+        // The exact row lock rebaselineDocHistory takes, standing in for a concurrent cleanup.
+        await clientX.query(`SELECT 1 FROM doc_snapshots WHERE doc_id = $1 FOR UPDATE`, [doc.id]);
+
+        let compacted = false;
+        // compactionThreshold=1: the single pending doc_updates row from putBlock above is
+        // already at/over threshold, so loadDoc's lazy check compacts it on this very read —
+        // loadSnapshotForUpdate's own `doc_snapshots ... FOR UPDATE` is the same row lock.
+        const compactPromise = loadDoc(pool, doc.id, 1).then(() => {
+          compacted = true;
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(compacted).toBe(false); // compaction's own loadDocWithClient lock is blocked behind X
+
+        await clientX.query("COMMIT");
+        await compactPromise;
+        expect(compacted).toBe(true);
+      } finally {
+        clientX.release();
+      }
     });
   });
 });
