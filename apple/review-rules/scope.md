@@ -1,6 +1,5 @@
 # Include
 **/*.swift
-docs/adr/**/*.md
 
 # Exclude
 **/*.generated.swift

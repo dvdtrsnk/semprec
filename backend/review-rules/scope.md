@@ -7,7 +7,6 @@ services/**/*.ts
 **/*.json
 **/*.yml
 **/*.yaml
-docs/adr/**/*.md
 
 # Exclude
 

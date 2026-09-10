@@ -5,7 +5,6 @@
 **/*.js
 **/*.jsx
 **/*.css
-docs/adr/**/*.md
 
 # Exclude
 
