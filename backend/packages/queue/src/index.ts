@@ -16,7 +16,6 @@ export const CORE_TASK_NAMES = {
   ROLLUP_RECOMPUTE_FULL: "rollupRecomputeFull",
   PROPERTY_TYPE_MIGRATION: "propertyTypeMigration",
   DOC_COMPACTION_SWEEP: "docCompactionSweep",
-  DOC_HISTORY_SQUASH: "docHistorySquash",
   DOC_HISTORY_CLEANUP: "docHistoryCleanup",
   // Issue #25: the library module's per-item cover/metadata processing job.
   LIBRARY_METADATA_PROCESS: "processLibraryMetadata",

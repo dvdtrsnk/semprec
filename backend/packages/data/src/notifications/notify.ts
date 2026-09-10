@@ -43,6 +43,12 @@ export interface WriteNotificationInput {
    * `id`, which is stable across that job's retries and distinct for every new fire.
    */
   transitionInstance: string;
+  /**
+   * Structured data a client can render without a second round trip to the source row (issue
+   * #85's drift findings are the first producer). Defaults to `{}` (migration 0035's column
+   * default) when omitted.
+   */
+  payload?: Record<string, unknown>;
 }
 
 /**
@@ -61,8 +67,13 @@ export interface WriteNotificationInput {
  * so a subscriber can never observe a row a later failure in this same transaction then rolls
  * back — the live in-app push and the push-notification fanout job above are independent
  * deliveries of the same commit, not a dependency of one on the other.
+ *
+ * Returns the notification's id in both the fresh-insert and the replayed-duplicate case (issue
+ * #85's `packages/notifications` adapter needs a stable id to hand back regardless of which
+ * happened) — the `ON CONFLICT ... DO UPDATE` no-op plus `xmax = 0` is the standard Postgres
+ * "upsert always returns a row, and tells you whether it inserted" idiom.
  */
-export async function writeNotification(client: PoolClient, input: WriteNotificationInput): Promise<void> {
+export async function writeNotification(client: PoolClient, input: WriteNotificationInput): Promise<string> {
   const user = await getUserById(client, input.userId);
   if (!user) {
     throw new Error(`writeNotification: no user with id "${input.userId}"`);
@@ -73,32 +84,49 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
   const titleTemplate = resolveCatalogLabel(null, catalogs[locale], catalogs.en, `notification.${input.kind}.title`);
   const title = interpolate(titleTemplate, input.titleParams ?? {});
 
-  const { rows } = await client.query<{ id: string; created_at: Date }>(
-    `INSERT INTO notifications (user_id, kind, title, link_href, source_table, source_id, transition_instance)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (source_table, source_id, kind, transition_instance) DO NOTHING
-     RETURNING id, created_at`,
-    [input.userId, input.kind, title, input.linkHref, input.sourceTable, input.sourceId, input.transitionInstance],
+  const { rows } = await client.query<{ id: string; created_at: Date; inserted: boolean }>(
+    `INSERT INTO notifications (user_id, kind, title, link_href, source_table, source_id, transition_instance, payload)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+     ON CONFLICT (source_table, source_id, kind, transition_instance)
+       DO UPDATE SET source_table = notifications.source_table
+     RETURNING id, created_at, (xmax = 0) AS inserted`,
+    [
+      input.userId,
+      input.kind,
+      title,
+      input.linkHref,
+      input.sourceTable,
+      input.sourceId,
+      input.transitionInstance,
+      JSON.stringify(input.payload ?? {}),
+    ],
   );
 
-  const inserted = rows[0];
-  if (inserted) {
-    await enqueueNotificationFanout(client, inserted.id);
+  const row = rows[0];
+  if (!row) {
+    throw new Error("writeNotification: upsert returned no row");
+  }
+
+  if (row.inserted) {
+    await enqueueNotificationFanout(client, row.id);
     runAfterCommit(client, () =>
       notifyNotificationCreated({
         userId: input.userId,
         notification: {
-          id: inserted.id,
+          id: row.id,
           kind: input.kind,
           title,
           linkHref: input.linkHref,
           sourceTable: input.sourceTable,
           sourceId: input.sourceId,
           transitionInstance: input.transitionInstance,
-          createdAt: inserted.created_at.toISOString(),
+          payload: input.payload ?? {},
+          createdAt: row.created_at.toISOString(),
           readAt: null,
         },
       }),
     );
   }
+
+  return row.id;
 }

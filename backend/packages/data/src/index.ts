@@ -6,6 +6,7 @@ export * from "./types.js";
 export { createChokePoint, createItemWithClient, type ChokePoint } from "./chokePoint/chokePoint.js";
 export type { CreateItemInput } from "./chokePoint/chokePoint.js";
 export type { CreateDatabaseInput } from "./chokePoint/databasesStore.js";
+export { getDatabaseByModuleId } from "./chokePoint/databasesStore.js";
 export type { CreatePropertyInput } from "./chokePoint/propertiesStore.js";
 export type { ListItemsOptions } from "./chokePoint/itemsStore.js";
 export { getItemsByIds } from "./chokePoint/itemsStore.js";
@@ -122,14 +123,18 @@ export {
   handleDocCompactionSweepTask,
 } from "./docs/docPersistence.js";
 export {
-  DEFAULT_HISTORY_RETENTION_MS,
-  squashDocHistory,
-  runHistorySquashSweep,
-  handleDocHistorySquashTask,
   cleanupExpiredDocHistory,
+  rebaselineDocHistory,
+  runDocHistoryRetentionSweep,
   handleDocHistoryCleanupTask,
   openDocVersionAt,
 } from "./docs/docHistory.js";
+export {
+  DEFAULT_DOC_HISTORY_RETENTION_DAYS,
+  resolveDocHistoryRetentionDays,
+  retentionHours,
+} from "./docs/docHistoryConfig.js";
+export { runDocHistoryCutoverMigration } from "./docs/docHistoryCutoverMigration.js";
 export { manifest as docsModuleManifest } from "./docs/docsModuleManifest.js";
 
 export * from "./blobs/blobsStore.js";
@@ -222,3 +227,10 @@ export {
   guidanceReferenceStore,
   createPoolClientTransactionRunner,
 } from "./projectAgentGuidanceStore.js";
+
+export {
+  guidanceDriftHeartbeatStore,
+  AGENT_GUIDANCE_DRIFT_ACTION_ID,
+} from "./guidanceDrift/guidanceDriftHeartbeatStore.js";
+export { agentGuidanceDriftFindingsStore } from "./guidanceDrift/agentGuidanceDriftFindingsStore.js";
+export { createGuidanceManifestPort } from "./guidanceDrift/guidanceManifestPort.js";

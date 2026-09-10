@@ -5,12 +5,19 @@ import {
   loadFullModuleRegistry,
   NodemailerPasswordResetMailer,
   noopPasswordResetMailer,
+  resolveDocHistoryRetentionDays,
   type PasswordResetMailer,
 } from "@semprec/data";
 import { createDispatcher } from "./app.js";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("DATABASE_URL is not set");
+
+// Issue #216: DOC_HISTORY_RETENTION_DAYS must be a positive integer when set. Called eagerly
+// here (its result discarded — request-time call sites re-read the same env var themselves)
+// so a misconfigured value fails startup instead of being discovered lazily on the first doc
+// read/write.
+resolveDocHistoryRetentionDays();
 
 // One-time bootstrap secret for `POST /api/setup` (#233): a shared secret file, provisioned by
 // the operations batch this issue's Task calls out of scope, whose contents this process reads

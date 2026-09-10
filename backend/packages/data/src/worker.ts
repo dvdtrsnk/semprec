@@ -6,7 +6,7 @@ import { handleRollupRecomputeTask, handleRollupRecomputeFullTask } from "./roll
 import { handleJournalInboxRecomputeTask } from "./inbox/journalInboxCompute.js";
 import { handlePropertyTypeMigrationTask } from "./migrationJob/propertyTypeMigration.js";
 import { handleDocCompactionSweepTask } from "./docs/docPersistence.js";
-import { handleDocHistorySquashTask, handleDocHistoryCleanupTask } from "./docs/docHistory.js";
+import { handleDocHistoryCleanupTask } from "./docs/docHistory.js";
 import type { ActionRegistry } from "./scheduler/actions.js";
 import type { PropertyType } from "./types.js";
 import { PROPERTY_TYPES } from "./types.js";
@@ -67,7 +67,6 @@ function requireLibraryMetadataConfig(payload: unknown): LibraryMetadataJobConfi
  */
 export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 */5 * * * * ${CORE_TASK_NAMES.DOC_COMPACTION_SWEEP}
-0 3 * * * ${CORE_TASK_NAMES.DOC_HISTORY_SQUASH}
 15 3 * * * ${CORE_TASK_NAMES.DOC_HISTORY_CLEANUP}
 */5 * * * * ${CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP}
 30 3 * * * ${CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP}
@@ -118,9 +117,6 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.DOC_COMPACTION_SWEEP]: async () => {
       await handleDocCompactionSweepTask(pool);
-    },
-    [CORE_TASK_NAMES.DOC_HISTORY_SQUASH]: async () => {
-      await handleDocHistorySquashTask(pool);
     },
     [CORE_TASK_NAMES.DOC_HISTORY_CLEANUP]: async () => {
       await handleDocHistoryCleanupTask(pool);

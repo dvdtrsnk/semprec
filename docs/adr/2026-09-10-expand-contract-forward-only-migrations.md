@@ -45,3 +45,6 @@ PR description.
 - Every schema change that removes or narrows something costs an extra
   release cycle (expand, then contract) instead of landing in one migration
   — the cost of keeping rollback safe without a schema-unwind step.
+- Populated-upgrade backfills whose logic can't be expressed in plain SQL
+  (e.g. merging binary CRDT state) are covered by a separate decision, see
+  `2026-09-10-app-code-post-migration-steps.md`.

@@ -55,7 +55,10 @@ describe("core module manifests (module-contract issue #226)", () => {
     expect(moduleId).toBe("docs");
     expect(await registry.getTasks()).toEqual([]);
     expect(await registry.getHeartbeatActions()).toEqual([]);
-    expect(await registry.getMigrations()).toEqual([{ moduleId: "docs", migration: "0003_docs.sql" }]);
+    expect(await registry.getMigrations()).toEqual([
+      { moduleId: "docs", migration: "0003_docs.sql" },
+      { moduleId: "docs", migration: "0036_doc_history_retention.sql" },
+    ]);
   });
 
   it("loads the ten-system-databases manifest with all ten existing database keys and Journal's view type", async () => {

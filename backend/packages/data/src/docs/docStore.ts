@@ -8,7 +8,7 @@ import * as blocks from "./blocks.js";
 import type { BlockInput, BlockData } from "./blocks.js";
 import * as canvas from "./canvas.js";
 import type { CanvasElementInput, CanvasElementData } from "./canvas.js";
-import { openDocVersionAt, squashDocHistory } from "./docHistory.js";
+import { openDocVersionAt } from "./docHistory.js";
 
 function assertKind(doc: DocRow, expected: DocKind): void {
   if (doc.kind !== expected) {
@@ -128,12 +128,6 @@ export function createDocStore(pool: Pool) {
     },
 
     // ---- version history ----
-    async squashHistory(itemId: string, createdBy: CreatedBy, retentionMs?: number): Promise<void> {
-      const docRow = await withTransaction(pool, (client) => docsStore.getDocByItemId(client, itemId));
-      if (!docRow) return;
-      await squashDocHistory(pool, docRow.id, createdBy, retentionMs);
-    },
-
     async openVersionAt(itemId: string, at: Date): Promise<DocVersion | null> {
       const docRow = await withTransaction(pool, (client) => docsStore.getDocByItemId(client, itemId));
       if (!docRow) return null;

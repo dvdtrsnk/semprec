@@ -10,6 +10,7 @@ import {
   LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID,
 } from "../library/libraryMetadataActions.js";
 import { MODULE_REGISTRY_CHECK_DRIFT_ACTION_ID } from "./moduleRegistryDriftCheck.js";
+import { AGENT_GUIDANCE_DRIFT_ACTION_ID } from "../guidanceDrift/guidanceDriftHeartbeatStore.js";
 
 /**
  * A temporary stand-in for the full module registry (issue #29, same caveat as
@@ -27,4 +28,5 @@ export const KNOWN_HEARTBEAT_ACTION_IDS: ReadonlySet<string> = new Set([
   MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID,
   LIBRARY_METADATA_TRIGGER_ACTION_ID,
   LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID,
+  AGENT_GUIDANCE_DRIFT_ACTION_ID,
 ]);
