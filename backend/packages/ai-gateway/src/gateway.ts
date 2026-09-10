@@ -52,6 +52,8 @@ async function withTokenAccounting<T extends TokenCallResult>(
     outputTokens: result.outputTokens,
     costUsd: result.costUsd,
     agentRunId: ctx.agentRunId,
+    projectItemId: ctx.projectItemId,
+    operation: ctx.operation,
   });
   return result;
 }
