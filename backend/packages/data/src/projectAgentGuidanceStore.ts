@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { GuidanceReferenceNotFoundError } from "@semprec/shared";
 import type {
   GuidanceReferenceStore,
   ProjectAgentGuidance,
@@ -40,11 +41,14 @@ export const projectAgentGuidanceStore: ProjectAgentGuidanceStore<PoolClient> = 
   },
 
   async upsert(tx, row) {
+    // `owner_user_id` is deliberately absent from `DO UPDATE`: only `transfer` may change the
+    // owner of an existing row, so a direct `upsert` call can never bypass that authorization
+    // path even though it still accepts `ownerUserId` to seed the very first insert.
     const { rows } = await tx.query<ProjectAgentGuidanceRow>(
       `INSERT INTO project_agent_guidance (project_item_id, owner_user_id, markdown, updated_at)
        VALUES ($1, $2, $3, now())
        ON CONFLICT (project_item_id)
-       DO UPDATE SET owner_user_id = EXCLUDED.owner_user_id, markdown = EXCLUDED.markdown, updated_at = now()
+       DO UPDATE SET markdown = EXCLUDED.markdown, updated_at = now()
        RETURNING project_item_id, owner_user_id, markdown, updated_at`,
       [row.projectItemId, row.ownerUserId, row.markdown],
     );
@@ -74,17 +78,19 @@ export const guidanceReferenceStore: GuidanceReferenceStore<PoolClient> = {
   async requireProjectsItem(tx, projectItemId) {
     const database = await getDatabaseByModuleId(tx, PROJECTS_MODULE_ID);
     const item = database ? await getItemById(tx, database.id, projectItemId) : null;
-    if (!item) throw new NotFoundError(`Project item ${projectItemId} not found in the Projects database`);
+    if (!item) {
+      throw new GuidanceReferenceNotFoundError(`Project item ${projectItemId} not found in the Projects database`);
+    }
   },
 
   async requireUser(tx, userId) {
     const user = await getUserById(tx, userId);
-    if (!user) throw new NotFoundError(`User ${userId} not found`);
+    if (!user) throw new GuidanceReferenceNotFoundError(`User ${userId} not found`);
   },
 
   async requireUserLocale(tx, userId) {
     const user = await getUserById(tx, userId);
-    if (!user) throw new NotFoundError(`User ${userId} not found`);
+    if (!user) throw new GuidanceReferenceNotFoundError(`User ${userId} not found`);
     return user.locale;
   },
 };

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { GuidanceReferenceNotFoundError, MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES } from "@semprec/shared";
 import type {
   GuidanceHeartbeatStore,
   GuidanceReferenceStore,
@@ -168,10 +169,29 @@ describe("createProjectAgentGuidanceService (issue #214)", () => {
     expect(store.rows.size).toBe(0);
   });
 
+  it("rejects markdown over the max size with a 400 validation_failed before touching the store", async () => {
+    const store = fakeStore();
+    const service = createProjectAgentGuidanceService({
+      store,
+      references: fakeReferences(),
+      heartbeats: recordingHeartbeats(),
+      transactions: fakeTransactions(),
+    });
+
+    const oversized = "a".repeat(MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES + 1);
+    const err = await service
+      .upsertProjectAgentGuidance({ userId: "u1" }, { projectItemId: "p1", markdown: oversized })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ProjectAgentGuidanceValidationError);
+    expect((err as ProjectAgentGuidanceValidationError).details).toEqual({ field: "markdown", reason: "too_long" });
+    expect(store.rows.size).toBe(0);
+  });
+
   it("rejects a missing project item with a 400 validation_failed", async () => {
     const references = fakeReferences({
       requireProjectsItem: vi.fn(async () => {
-        throw new Error("not found");
+        throw new GuidanceReferenceNotFoundError("not found");
       }),
     });
     const service = createProjectAgentGuidanceService({
@@ -190,6 +210,28 @@ describe("createProjectAgentGuidanceService (issue #214)", () => {
       field: "projectItemId",
       reason: "not_found",
     });
+  });
+
+  it("propagates an infrastructure error from a reference check unchanged, not as a 400", async () => {
+    const infraError = new Error("connection terminated unexpectedly");
+    const references = fakeReferences({
+      requireProjectsItem: vi.fn(async () => {
+        throw infraError;
+      }),
+    });
+    const service = createProjectAgentGuidanceService({
+      store: fakeStore(),
+      references,
+      heartbeats: recordingHeartbeats(),
+      transactions: fakeTransactions(),
+    });
+
+    const err = await service
+      .upsertProjectAgentGuidance({ userId: "u1" }, { projectItemId: "p1", markdown: "# Hi" })
+      .catch((e: unknown) => e);
+
+    expect(err).toBe(infraError);
+    expect(err).not.toBeInstanceOf(ProjectAgentGuidanceValidationError);
   });
 
   it("transfers ownership only when the actor is the current owner, and upserts the heartbeat", async () => {
@@ -244,7 +286,7 @@ describe("createProjectAgentGuidanceService (issue #214)", () => {
     };
     const references = fakeReferences({
       requireUser: vi.fn(async () => {
-        throw new Error("not found");
+        throw new GuidanceReferenceNotFoundError("not found");
       }),
     });
     const service = createProjectAgentGuidanceService({

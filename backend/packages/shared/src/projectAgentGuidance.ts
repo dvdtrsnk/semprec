@@ -22,6 +22,14 @@ export interface UpsertProjectAgentGuidanceInput {
   markdown: string;
 }
 
+/**
+ * Guidance markdown is appended verbatim to the agent's system prompt on every invocation
+ * (see `packages/agent-runtime`'s `systemPromptOverride` adapter), so an unbounded value risks
+ * context-window overflow and unbounded token cost. 32 KiB comfortably fits real guidance
+ * documents while keeping the worst case bounded.
+ */
+export const MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES = 32 * 1024;
+
 export interface TransferProjectAgentGuidanceInput {
   projectItemId: string;
   newOwnerUserId: string;
@@ -50,10 +58,26 @@ export interface ProjectAgentGuidanceStore<Tx> {
 }
 
 /**
+ * The one failure mode `GuidanceReferenceStore`'s `require*` methods are allowed to signal:
+ * the referenced entity doesn't exist. Implementations (e.g. `packages/data`'s
+ * `guidanceReferenceStore`) throw this specific class for a missing row; any other error
+ * (a dropped connection, a timeout) must propagate as itself so callers in
+ * `packages/application` can distinguish "not found" from an infrastructure failure without
+ * depending on `packages/data`'s concrete error types.
+ */
+export class GuidanceReferenceNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GuidanceReferenceNotFoundError";
+  }
+}
+
+/**
  * Validates the entities `project_agent_guidance` refers to but cannot enforce with a
  * Postgres FK (`items` is partitioned per database, so there is no direct FK target for
- * `project_item_id`). Each `require*` method's only failure mode is "the referenced entity
- * doesn't exist" — callers treat any rejection from these methods as exactly that.
+ * `project_item_id`). Each `require*` method rejects with `GuidanceReferenceNotFoundError`
+ * when the referenced entity doesn't exist; any other rejection is an infrastructure failure
+ * and must not be mistaken for one.
  *
  * `requireUserLocale` has no caller within this issue's scope; it's part of issue #214's port
  * as specified, kept here for #85's drift-notification flow (which needs the owner's locale to

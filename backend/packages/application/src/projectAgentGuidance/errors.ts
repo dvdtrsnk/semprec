@@ -6,7 +6,7 @@
  */
 
 export type ProjectAgentGuidanceValidationField = "projectItemId" | "newOwnerUserId" | "markdown";
-export type ProjectAgentGuidanceValidationReason = "not_found" | "blank";
+export type ProjectAgentGuidanceValidationReason = "not_found" | "blank" | "too_long";
 
 export interface ProjectAgentGuidanceValidationDetails {
   field: ProjectAgentGuidanceValidationField;

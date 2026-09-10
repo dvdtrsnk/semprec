@@ -4,6 +4,7 @@ import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { GuidanceReferenceNotFoundError } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { insertItem } from "../chokePoint/itemsStore.js";
@@ -74,6 +75,31 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
     expect(rows[0].count).toBe(1);
   });
 
+  it("does not change the owner on a second upsert with a different ownerUserId", async () => {
+    const projectItemId = await createProjectItem();
+    const ownerUserId = await createTestUser();
+    const otherUserId = await createTestUser();
+
+    await withTransaction(pool, (client) =>
+      projectAgentGuidanceStore.upsert(client, {
+        projectItemId,
+        ownerUserId,
+        markdown: "# Guidance v1",
+      }),
+    );
+
+    const updated = await withTransaction(pool, (client) =>
+      projectAgentGuidanceStore.upsert(client, {
+        projectItemId,
+        ownerUserId: otherUserId,
+        markdown: "# Guidance v2",
+      }),
+    );
+
+    expect(updated.ownerUserId).toBe(ownerUserId);
+    expect(updated.markdown).toBe("# Guidance v2");
+  });
+
   it("transfers ownership to a new owner", async () => {
     const projectItemId = await createProjectItem();
     const ownerUserId = await createTestUser();
@@ -110,7 +136,7 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
     it("requireProjectsItem rejects an item id that doesn't exist", async () => {
       await expect(
         withTransaction(pool, (client) => guidanceReferenceStore.requireProjectsItem(client, randomUUID())),
-      ).rejects.toThrow(NotFoundError);
+      ).rejects.toThrow(GuidanceReferenceNotFoundError);
     });
 
     it("requireUser and requireUserLocale resolve for an existing user", async () => {
@@ -125,7 +151,7 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
     it("requireUser rejects a user id that doesn't exist", async () => {
       await expect(
         withTransaction(pool, (client) => guidanceReferenceStore.requireUser(client, randomUUID())),
-      ).rejects.toThrow(NotFoundError);
+      ).rejects.toThrow(GuidanceReferenceNotFoundError);
     });
   });
 

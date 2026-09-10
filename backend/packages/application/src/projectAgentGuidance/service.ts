@@ -1,3 +1,4 @@
+import { GuidanceReferenceNotFoundError, MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES } from "@semprec/shared";
 import type {
   GuidanceHeartbeatStore,
   GuidanceReferenceStore,
@@ -30,11 +31,11 @@ export interface ProjectAgentGuidanceService {
 }
 
 /**
- * `GuidanceReferenceStore`'s `require*` methods have exactly one failure mode — the
- * referenced entity doesn't exist — so any rejection is mapped to the matching
- * `validation_failed` response without inspecting what the injected store actually threw.
- * This is what lets this package stay off `packages/data`: it never needs to recognize a
- * concrete `NotFoundError` class.
+ * `GuidanceReferenceStore`'s `require*` methods reject with `GuidanceReferenceNotFoundError`
+ * when the referenced entity doesn't exist; that specific rejection is mapped to the matching
+ * `validation_failed` response. Any other error (a dropped connection, a timeout) is an
+ * infrastructure failure, not a missing entity, and must propagate unchanged rather than be
+ * reported to the caller as a 400.
  */
 async function requireOrValidationError(
   guard: () => Promise<void>,
@@ -42,8 +43,11 @@ async function requireOrValidationError(
 ): Promise<void> {
   try {
     await guard();
-  } catch {
-    throw new ProjectAgentGuidanceValidationError(details);
+  } catch (err) {
+    if (err instanceof GuidanceReferenceNotFoundError) {
+      throw new ProjectAgentGuidanceValidationError(details);
+    }
+    throw err;
   }
 }
 
@@ -60,6 +64,9 @@ export function createProjectAgentGuidanceService<Tx>(
     async upsertProjectAgentGuidance(actor, input) {
       if (input.markdown.trim().length === 0) {
         throw new ProjectAgentGuidanceValidationError({ field: "markdown", reason: "blank" });
+      }
+      if (Buffer.byteLength(input.markdown, "utf8") > MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES) {
+        throw new ProjectAgentGuidanceValidationError({ field: "markdown", reason: "too_long" });
       }
 
       return transactions.withTransaction({ isolation: "serializable" }, async (tx) => {
