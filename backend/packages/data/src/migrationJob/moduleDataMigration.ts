@@ -49,7 +49,7 @@ export async function runModuleDataMigration(pool: Pool, params: RunModuleDataMi
     if (!locked) return;
 
     try {
-      const { rows: existing } = await client.query(
+      const { rows: existing } = await client.query<Record<string, unknown>>(
         `SELECT 1 FROM module_migrations WHERE module_id = $1 AND database_key = $2 AND from_version = $3 AND to_version = $4`,
         [moduleId, databaseKey, fromVersion, toVersion],
       );

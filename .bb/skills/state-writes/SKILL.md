@@ -11,7 +11,8 @@ hangs on writes being observable in exactly one place.
 
 Recorded as ADRs: `docs/adr/2026-09-10-choke-point-api-for-state-writes.md`,
 `docs/adr/2026-09-10-single-writer-ownership-model.md`,
-`docs/adr/2026-09-10-agent-writes-are-proposals-not-direct-writes.md`.
+`docs/adr/2026-09-10-agent-writes-are-proposals-not-direct-writes.md`,
+`docs/adr/2026-09-10-side-effects-follow-the-commit.md`.
 
 ## 1. All writes go through the choke-point
 
@@ -55,6 +56,30 @@ So when implementing an agent tool or heartbeat that "should update X": create a
 proposal card / approval request instead, and let `confirm` do the write inside its
 transaction.
 
+## 4. Side effects follow the commit
+
+A write is not visible until its transaction commits, so anything that tells the
+rest of the system about it must happen *after* the commit, not inside it:
+`NOTIFY`, a WebSocket invalidation, a notification row's push delivery, a queue
+job that reads the row back. Fire one inside the transaction and a listener can
+act on state that is not there yet — or that never arrives, because the
+transaction rolled back after the message was already sent.
+
+Use `runAfterCommit(client, ...)` rather than a bare call following the `await`.
+`withTransaction` runs each registered callback in its own `try`/`catch` after
+`COMMIT`, logs one that throws, and carries on to the rest — the failure never
+reaches the caller, because the write it announces actually succeeded. That is
+deliberate, and it cuts both ways: a callback whose delivery matters has to
+report its own failure, since nothing above it will. Anything needing a real
+delivery guarantee belongs in a queue job written inside the same transaction.
+
+Two related orderings worth checking in the same pass:
+
+- A guard that decides whether to write must run *before* the write, not after
+  it. A validity check placed after the insert is not a guard, it is a comment.
+- An idempotency check read outside the transaction that protects it is not
+  idempotent: two callers both read "not done yet" and both proceed.
+
 ## Before committing, check
 
 - [ ] No raw SQL mutation of item tables outside the data layer's write path.
@@ -62,3 +87,5 @@ transaction.
 - [ ] No agent/LLM-driven code path reaches a write without approval/`confirm`.
 - [ ] New write behavior has a test exercising the choke-point route, not the
       internals.
+- [ ] Every notification, invalidation or enqueue fires after the commit, not
+      inside the transaction.

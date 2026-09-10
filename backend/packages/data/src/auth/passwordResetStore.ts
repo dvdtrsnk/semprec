@@ -2,14 +2,17 @@ import type { Pool, PoolClient } from "pg";
 import { requireSingleRow } from "../db/pool.js";
 import type { PasswordResetTokenRow } from "./types.js";
 
-function mapRow(row: {
+/** The raw `password_reset_tokens` row shape this module reads back from Postgres. */
+type PasswordResetTokenDbRow = {
   id: string;
   user_id: string;
   token_hash: string;
   created_at: Date;
   expires_at: Date;
   consumed_at: Date | null;
-}): PasswordResetTokenRow {
+};
+
+function mapRow(row: PasswordResetTokenDbRow): PasswordResetTokenRow {
   return {
     id: row.id,
     userId: row.user_id,
@@ -33,13 +36,13 @@ export async function createPasswordResetToken(
   client: Pool | PoolClient,
   input: CreatePasswordResetTokenInput,
 ): Promise<PasswordResetTokenRow> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<PasswordResetTokenDbRow>(
     `INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
      VALUES ($1, $2, $3)
      RETURNING ${SELECT_COLUMNS}`,
     [input.userId, input.tokenHash, input.expiresAt],
   );
-  return mapRow(rows[0]);
+  return mapRow(requireSingleRow(rows, "password_reset_tokens row"));
 }
 
 /**
@@ -65,9 +68,10 @@ export async function getPasswordResetTokenByHash(
   client: Pool | PoolClient,
   tokenHash: string,
 ): Promise<PasswordResetTokenRow | null> {
-  const { rows } = await client.query(`SELECT ${SELECT_COLUMNS} FROM password_reset_tokens WHERE token_hash = $1`, [
-    tokenHash,
-  ]);
+  const { rows } = await client.query<PasswordResetTokenDbRow>(
+    `SELECT ${SELECT_COLUMNS} FROM password_reset_tokens WHERE token_hash = $1`,
+    [tokenHash],
+  );
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
@@ -84,7 +88,7 @@ export async function consumePasswordResetToken(
   client: Pool | PoolClient,
   tokenHash: string,
 ): Promise<PasswordResetTokenRow | null> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<PasswordResetTokenDbRow>(
     `UPDATE password_reset_tokens
      SET consumed_at = now()
      WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > now()

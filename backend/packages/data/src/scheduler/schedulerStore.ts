@@ -26,19 +26,22 @@ export interface HeartbeatRow {
   lastError: string | null;
 }
 
+/** The raw `project_heartbeats` row shape this module reads back from Postgres. */
+type HeartbeatDbRow = {
+  id: string;
+  project_item_id: string;
+  name: string;
+  rule: unknown;
+  action_id: string;
+  action_config: Record<string, unknown>;
+  enabled: boolean;
+  next_fire_at: Date | null;
+  last_fired_at: Date | null;
+  last_error: string | null;
+};
+
 function mapRow(
-  row: {
-    id: string;
-    project_item_id: string;
-    name: string;
-    rule: unknown;
-    action_id: string;
-    action_config: Record<string, unknown>;
-    enabled: boolean;
-    next_fire_at: Date | null;
-    last_fired_at: Date | null;
-    last_error: string | null;
-  },
+  row: HeartbeatDbRow,
   moduleRuleKinds: HeartbeatRuleKindRegistry,
   options: { tolerateUnknownRuleKind?: boolean } = {},
 ): HeartbeatRow {
@@ -87,7 +90,7 @@ export async function createHeartbeat(
   const nextFireAt =
     enabled && !isOnItemEventRule(rule) ? await computeNextFireAtNow(client, rule, moduleRuleKinds) : null;
 
-  const { rows } = await client.query(
+  const { rows } = await client.query<HeartbeatDbRow>(
     `INSERT INTO project_heartbeats (project_item_id, name, rule, action_id, action_config, enabled, next_fire_at)
      VALUES ($1, $2, $3::jsonb, $4, $5::jsonb, $6, $7)
      RETURNING ${COLUMNS}`,
@@ -101,7 +104,7 @@ export async function createHeartbeat(
       nextFireAt,
     ],
   );
-  return mapRow(rows[0], moduleRuleKinds);
+  return mapRow(requireSingleRow(rows, "project_heartbeats row"), moduleRuleKinds);
 }
 
 async function computeNextFireAtNow(
@@ -118,7 +121,7 @@ export async function getHeartbeat(
   id: string,
   moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
 ): Promise<HeartbeatRow | null> {
-  const { rows } = await client.query(`SELECT ${COLUMNS} FROM project_heartbeats WHERE id = $1`, [id]);
+  const { rows } = await client.query<HeartbeatDbRow>(`SELECT ${COLUMNS} FROM project_heartbeats WHERE id = $1`, [id]);
   return rows[0] ? mapRow(rows[0], moduleRuleKinds) : null;
 }
 
@@ -142,7 +145,7 @@ export async function listHeartbeatsByProject(
   projectItemId: string,
   moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
 ): Promise<HeartbeatRow[]> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<HeartbeatDbRow>(
     `SELECT ${COLUMNS} FROM project_heartbeats WHERE project_item_id = $1 ORDER BY created_at ASC`,
     [projectItemId],
   );
@@ -161,7 +164,7 @@ export async function getHeartbeatForProject(
   heartbeatId: string,
   moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
 ): Promise<HeartbeatRow | null> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<HeartbeatDbRow>(
     `SELECT ${COLUMNS} FROM project_heartbeats WHERE id = $1 AND project_item_id = $2`,
     [heartbeatId, projectItemId],
   );
@@ -191,11 +194,11 @@ export async function updateHeartbeatRule(
       ? await computeNextFireAtNow(client, rule, moduleRuleKinds)
       : null;
 
-  const { rows } = await client.query(
+  const { rows } = await client.query<HeartbeatDbRow>(
     `UPDATE project_heartbeats SET rule = $2::jsonb, next_fire_at = $3 WHERE id = $1 RETURNING ${COLUMNS}`,
     [id, JSON.stringify(rule), nextFireAt],
   );
-  return mapRow(rows[0], moduleRuleKinds);
+  return mapRow(requireSingleRow(rows, "project_heartbeats row"), moduleRuleKinds);
 }
 
 /** Disabling is a plain flag flip; re-enabling recomputes from now — occurrences missed while paused are not caught up. */
@@ -209,7 +212,7 @@ export async function setHeartbeatEnabled(
     // Disabling must never depend on the rule still being parseable: a heartbeat whose rule
     // kind's module was deactivated needs to be disable-able precisely because it can no
     // longer be scheduled, not stuck enabled forever for the same reason.
-    const { rows } = await client.query(
+    const { rows } = await client.query<HeartbeatDbRow>(
       `UPDATE project_heartbeats SET enabled = false, next_fire_at = NULL WHERE id = $1 RETURNING ${COLUMNS}`,
       [id],
     );
@@ -224,11 +227,11 @@ export async function setHeartbeatEnabled(
     ? await computeNextFireAtNow(client, heartbeat.rule, moduleRuleKinds)
     : null;
 
-  const { rows } = await client.query(
+  const { rows } = await client.query<HeartbeatDbRow>(
     `UPDATE project_heartbeats SET enabled = true, next_fire_at = $2 WHERE id = $1 RETURNING ${COLUMNS}`,
     [id, nextFireAt],
   );
-  return mapRow(rows[0], moduleRuleKinds);
+  return mapRow(requireSingleRow(rows, "project_heartbeats row"), moduleRuleKinds);
 }
 
 /** Called in the same transaction as the `timezone` settings write. */

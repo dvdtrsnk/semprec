@@ -1,7 +1,11 @@
 import type { Pool, PoolClient } from "pg";
+import { requireSingleRow } from "../db/pool.js";
 import type { UserRow } from "./types.js";
 
-function mapRow(row: { id: string; email: string; password_hash: string; locale: string; created_at: Date }): UserRow {
+/** The raw `users` row shape this module reads back from Postgres. */
+type UserDbRow = { id: string; email: string; password_hash: string; locale: string; created_at: Date };
+
+function mapRow(row: UserDbRow): UserRow {
   return {
     id: row.id,
     email: row.email,
@@ -22,21 +26,21 @@ export interface CreateUserInput {
 export async function createUser(client: Pool | PoolClient, input: CreateUserInput): Promise<UserRow> {
   const { rows } =
     input.locale === undefined
-      ? await client.query(
+      ? await client.query<UserDbRow>(
           `INSERT INTO users (email, password_hash) VALUES ($1, $2)
            RETURNING id, email, password_hash, locale, created_at`,
           [input.email, input.passwordHash],
         )
-      : await client.query(
+      : await client.query<UserDbRow>(
           `INSERT INTO users (email, password_hash, locale) VALUES ($1, $2, $3)
            RETURNING id, email, password_hash, locale, created_at`,
           [input.email, input.passwordHash, input.locale],
         );
-  return mapRow(rows[0]);
+  return mapRow(requireSingleRow(rows, "users row"));
 }
 
 export async function getUserByEmail(client: Pool | PoolClient, email: string): Promise<UserRow | null> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<UserDbRow>(
     `SELECT id, email, password_hash, locale, created_at FROM users WHERE email = $1`,
     [email],
   );
@@ -44,16 +48,17 @@ export async function getUserByEmail(client: Pool | PoolClient, email: string): 
 }
 
 export async function getUserById(client: Pool | PoolClient, id: string): Promise<UserRow | null> {
-  const { rows } = await client.query(`SELECT id, email, password_hash, locale, created_at FROM users WHERE id = $1`, [
-    id,
-  ]);
+  const { rows } = await client.query<UserDbRow>(
+    `SELECT id, email, password_hash, locale, created_at FROM users WHERE id = $1`,
+    [id],
+  );
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
 /** Backs the setup API's (#233) "no account exists yet" gate — cheaper than a `count(*)` since it can stop at the first row. */
 export async function anyUserExists(client: Pool | PoolClient): Promise<boolean> {
-  const { rows } = await client.query(`SELECT EXISTS(SELECT 1 FROM users) AS "exists"`);
-  return (rows[0] as { exists: boolean }).exists;
+  const { rows } = await client.query<{ exists: boolean }>(`SELECT EXISTS(SELECT 1 FROM users) AS "exists"`);
+  return rows[0]?.exists ?? false;
 }
 
 /**
@@ -65,8 +70,10 @@ export async function anyUserExists(client: Pool | PoolClient): Promise<boolean>
  * setup (#233) has created any account yet.
  */
 export async function getEarliestUserLocale(client: Pool | PoolClient): Promise<string | null> {
-  const { rows } = await client.query(`SELECT locale FROM users ORDER BY created_at ASC, id ASC LIMIT 1`);
-  return rows[0] ? (rows[0] as { locale: string }).locale : null;
+  const { rows } = await client.query<{ locale: string }>(
+    `SELECT locale FROM users ORDER BY created_at ASC, id ASC LIMIT 1`,
+  );
+  return rows[0] ? rows[0].locale : null;
 }
 
 /**
@@ -76,8 +83,8 @@ export async function getEarliestUserLocale(client: Pool | PoolClient): Promise<
  * Returns `null` before setup (#233) has created any account yet.
  */
 export async function getEarliestUserId(client: Pool | PoolClient): Promise<string | null> {
-  const { rows } = await client.query(`SELECT id FROM users ORDER BY created_at ASC, id ASC LIMIT 1`);
-  return rows[0] ? (rows[0] as { id: string }).id : null;
+  const { rows } = await client.query<{ id: string }>(`SELECT id FROM users ORDER BY created_at ASC, id ASC LIMIT 1`);
+  return rows[0] ? rows[0].id : null;
 }
 
 /** Used by `resetPassword` (auth/passwordResetActions.ts) to replace a user's password hash after a reset token is consumed. */

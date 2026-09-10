@@ -70,7 +70,7 @@ Two modes, detected by the `SEMPREC_HARNESS` environment variable:
    previously completed issues — that is your inherited context.
 2. **Implement exactly the Task section** — no more, no less. Items under "Out of
    scope" must NOT be built, even if trivial. The conventions are law:
-   `backend/review-rules/` and the skills in `backend/.claude/skills/`
+   `backend/review-rules/` and the skills in `.bb/skills/`
    (choke-point writes, single-writer ownership, expand/contract migrations,
    AI calls only via the gateway, English camelCase canonical keys, labels via
    i18n). Before designing anything that isn't a straight application of those
@@ -84,7 +84,8 @@ Two modes, detected by the `SEMPREC_HARNESS` environment variable:
    working state (see "single, non-resumable turn" above).
 3. **Self-check before the PR** — a CI round-trip costs minutes, your own review
    costs seconds. In order:
-   a. Run the project's build and full test suite; everything must pass.
+   a. Run `pnpm run verify` in `backend/` and in `web/` — the same sequence CI
+      runs, in the same order. Everything must pass.
    b. Read your complete diff (`git diff origin/develop`) in the role of a strict
       reviewer applying `backend/review-rules/rules.md` and
       `backend/review-rules/tasks/*.md`, including whether the diff introduces a

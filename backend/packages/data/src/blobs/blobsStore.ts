@@ -1,7 +1,9 @@
 import type { Queryable } from "../db/pool.js";
+import { requireSingleRow } from "../db/pool.js";
 import type { BlobRow } from "../types.js";
 
-function mapBlobRow(row: {
+/** The raw `blobs` row shape this module reads back from Postgres. */
+type BlobDbRow = {
   id: string;
   mime_type: string;
   byte_size: string;
@@ -9,7 +11,9 @@ function mapBlobRow(row: {
   source_url: string | null;
   content_hash: string | null;
   created_at: Date;
-}): BlobRow {
+};
+
+function mapBlobRow(row: BlobDbRow): BlobRow {
   return {
     id: row.id,
     mimeType: row.mime_type,
@@ -33,22 +37,24 @@ export interface CreateBlobInput {
 
 /** `blobs` is not item/database state (no `properties`/`owner`), so it is written directly, the same way `docs`/`doc_snapshots` are — not through the choke-point. */
 export async function createBlob(client: Queryable, input: CreateBlobInput): Promise<BlobRow> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<BlobDbRow>(
     `INSERT INTO blobs (mime_type, byte_size, storage_key, source_url, content_hash)
      VALUES ($1, $2, $3, $4, $5)
      RETURNING ${BLOB_COLUMNS}`,
     [input.mimeType, String(input.byteSize), input.storageKey, input.sourceUrl ?? null, input.contentHash ?? null],
   );
-  return mapBlobRow(rows[0]);
+  return mapBlobRow(requireSingleRow(rows, "blobs row"));
 }
 
 export async function getBlob(client: Queryable, id: string): Promise<BlobRow | null> {
-  const { rows } = await client.query(`SELECT ${BLOB_COLUMNS} FROM blobs WHERE id = $1`, [id]);
+  const { rows } = await client.query<BlobDbRow>(`SELECT ${BLOB_COLUMNS} FROM blobs WHERE id = $1`, [id]);
   return rows[0] ? mapBlobRow(rows[0]) : null;
 }
 
 export async function getBlobByContentHash(client: Queryable, contentHash: string): Promise<BlobRow | null> {
-  const { rows } = await client.query(`SELECT ${BLOB_COLUMNS} FROM blobs WHERE content_hash = $1`, [contentHash]);
+  const { rows } = await client.query<BlobDbRow>(`SELECT ${BLOB_COLUMNS} FROM blobs WHERE content_hash = $1`, [
+    contentHash,
+  ]);
   return rows[0] ? mapBlobRow(rows[0]) : null;
 }
 
@@ -62,7 +68,7 @@ export async function getBlobByContentHash(client: Queryable, contentHash: strin
 export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput): Promise<BlobRow> {
   if (!input.contentHash) return createBlob(client, input);
 
-  const inserted = await client.query(
+  const inserted = await client.query<BlobDbRow>(
     // The conflict target must repeat blobs_content_hash_uq's own partial predicate
     // (0004_ten_databases.sql) — Postgres only infers a partial unique index as an ON
     // CONFLICT arbiter when the clause's WHERE matches the index's WHERE verbatim; without

@@ -53,7 +53,10 @@ export async function deleteCredential(client: Queryable, itemId: string): Promi
 }
 
 export async function hasCredential(client: Queryable, itemId: string): Promise<boolean> {
-  const { rows } = await client.query(`SELECT 1 FROM external_credentials WHERE item_id = $1`, [itemId]);
+  const { rows } = await client.query<Record<string, unknown>>(
+    `SELECT 1 FROM external_credentials WHERE item_id = $1`,
+    [itemId],
+  );
   return rows.length > 0;
 }
 

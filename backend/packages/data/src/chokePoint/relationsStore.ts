@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { requireSingleRow } from "../db/pool.js";
 import { CardinalityViolationError, NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRelationRow, RelationDefinitionRow } from "../types.js";
 import { assertKnownValue } from "../dbRowValidation.js";
@@ -12,12 +13,15 @@ function isCardinalityViolation(err: unknown): boolean {
 
 const CARDINALITIES: readonly RelationDefinitionRow["cardinality"][] = ["one_to_one", "one_to_many", "many_to_many"];
 
-function mapRelationDefinitionRow(row: {
+/** The raw `relation_definitions` row shape this module reads back from Postgres. */
+type RelationDefinitionDbRow = {
   id: string;
   property_id_a: string;
   property_id_b: string | null;
   cardinality: string;
-}): RelationDefinitionRow {
+};
+
+function mapRelationDefinitionRow(row: RelationDefinitionDbRow): RelationDefinitionRow {
   return {
     id: row.id,
     propertyIdA: row.property_id_a,
@@ -26,13 +30,16 @@ function mapRelationDefinitionRow(row: {
   };
 }
 
-function mapItemRelationRow(row: {
+/** The raw `item_relations` row shape this module reads back from Postgres. */
+type ItemRelationDbRow = {
   id: string;
   relation_definition_id: string;
   item_a: string;
   item_b: string;
   metadata: Record<string, unknown>;
-}): ItemRelationRow {
+};
+
+function mapItemRelationRow(row: ItemRelationDbRow): ItemRelationRow {
   return {
     id: row.id,
     relationDefinitionId: row.relation_definition_id,
@@ -52,17 +59,17 @@ export async function createRelationDefinition(
   client: PoolClient,
   input: CreateRelationDefinitionInput,
 ): Promise<RelationDefinitionRow> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<RelationDefinitionDbRow>(
     `INSERT INTO relation_definitions (property_id_a, property_id_b, cardinality)
      VALUES ($1, $2, $3)
      RETURNING id, property_id_a, property_id_b, cardinality`,
     [input.propertyIdA, input.propertyIdB ?? null, input.cardinality ?? "many_to_many"],
   );
-  return mapRelationDefinitionRow(rows[0]);
+  return mapRelationDefinitionRow(requireSingleRow(rows, "relation row"));
 }
 
 export async function getRelationDefinition(client: PoolClient, id: string): Promise<RelationDefinitionRow | null> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<RelationDefinitionDbRow>(
     `SELECT id, property_id_a, property_id_b, cardinality FROM relation_definitions WHERE id = $1`,
     [id],
   );
@@ -80,7 +87,7 @@ export async function getRelationDefinitionsByPropertyIds(
   propertyIds: string[],
 ): Promise<Map<string, RelationDefinitionRow>> {
   if (propertyIds.length === 0) return new Map();
-  const { rows } = await client.query(
+  const { rows } = await client.query<RelationDefinitionDbRow>(
     `SELECT id, property_id_a, property_id_b, cardinality FROM relation_definitions
      WHERE property_id_a = ANY($1::uuid[]) OR property_id_b = ANY($1::uuid[])`,
     [propertyIds],
@@ -101,7 +108,7 @@ export async function getRelationDefinitionByPropertyId(
   client: PoolClient,
   propertyId: string,
 ): Promise<RelationDefinitionRow | null> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<RelationDefinitionDbRow>(
     `SELECT id, property_id_a, property_id_b, cardinality FROM relation_definitions
      WHERE property_id_a = $1 OR property_id_b = $1`,
     [propertyId],
@@ -121,14 +128,14 @@ export async function createItemRelation(client: PoolClient, input: CreateItemRe
   if (!definition) throw new NotFoundError(`Relation definition ${input.relationDefinitionId} not found`);
 
   try {
-    const { rows } = await client.query(
+    const { rows } = await client.query<ItemRelationDbRow>(
       `INSERT INTO item_relations (relation_definition_id, item_a, item_b, metadata)
        VALUES ($1, $2, $3, $4::jsonb)
        ON CONFLICT (relation_definition_id, item_a, item_b) DO UPDATE SET metadata = EXCLUDED.metadata
        RETURNING id, relation_definition_id, item_a, item_b, metadata`,
       [input.relationDefinitionId, input.itemA, input.itemB, JSON.stringify(input.metadata ?? {})],
     );
-    return mapItemRelationRow(rows[0]);
+    return mapItemRelationRow(requireSingleRow(rows, "relation row"));
   } catch (err) {
     if (isCardinalityViolation(err)) {
       throw new CardinalityViolationError(
@@ -153,7 +160,7 @@ export async function updateItemRelationMetadata(
   itemB: string,
   metadata: Record<string, unknown>,
 ): Promise<ItemRelationRow | null> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<ItemRelationDbRow>(
     `UPDATE item_relations SET metadata = $4::jsonb
      WHERE relation_definition_id = $1 AND item_a = $2 AND item_b = $3
      RETURNING id, relation_definition_id, item_a, item_b, metadata`,
@@ -168,7 +175,7 @@ export async function deleteItemRelation(
   itemA: string,
   itemB: string,
 ): Promise<ItemRelationRow | null> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<ItemRelationDbRow>(
     `DELETE FROM item_relations WHERE relation_definition_id = $1 AND item_a = $2 AND item_b = $3
      RETURNING id, relation_definition_id, item_a, item_b, metadata`,
     [relationDefinitionId, itemA, itemB],
@@ -182,7 +189,7 @@ export async function listRelationsForItem(
   relationDefinitionId: string,
   itemId: string,
 ): Promise<ItemRelationRow[]> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<ItemRelationDbRow>(
     `SELECT id, relation_definition_id, item_a, item_b, metadata FROM item_relations
      WHERE relation_definition_id = $1 AND (item_a = $2 OR item_b = $2)`,
     [relationDefinitionId, itemId],
@@ -207,7 +214,7 @@ export async function listRelationsForItems(
   itemIds: string[],
 ): Promise<ItemRelationRow[]> {
   if (itemIds.length === 0) return [];
-  const { rows } = await client.query(
+  const { rows } = await client.query<ItemRelationDbRow>(
     `SELECT id, relation_definition_id, item_a, item_b, metadata FROM item_relations
      WHERE relation_definition_id = $1 AND (item_a = ANY($2::uuid[]) OR item_b = ANY($2::uuid[]))`,
     [relationDefinitionId, itemIds],
@@ -217,7 +224,7 @@ export async function listRelationsForItems(
 
 /** Every edge `itemId` participates in, across all relation definitions — used for the soft-delete/restore rollup trigger. */
 export async function listAllRelationsForItem(client: PoolClient, itemId: string): Promise<ItemRelationRow[]> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<ItemRelationDbRow>(
     `SELECT id, relation_definition_id, item_a, item_b, metadata FROM item_relations WHERE item_a = $1 OR item_b = $1`,
     [itemId],
   );

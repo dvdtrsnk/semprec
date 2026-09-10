@@ -18,7 +18,8 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write . --ignore-path ../.prettierignore",
-    "format:check": "prettier --check . --ignore-path ../.prettierignore"
+    "format:check": "prettier --check . --ignore-path ../.prettierignore",
+    "verify": "pnpm run lint && pnpm run format:check && pnpm -r run build && pnpm run test:unit && pnpm run check:pi-import-paths && pnpm --filter @semprec/data run check-migration-numbering && pnpm run check:boundaries && pnpm run test:integration && pnpm run test:e2e"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

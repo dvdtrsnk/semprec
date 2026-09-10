@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { requireSingleRow } from "../db/pool.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import type { CreatedBy, ViewRow } from "../types.js";
 import { assertKnownValue } from "../dbRowValidation.js";
@@ -10,7 +11,8 @@ const CREATED_BY_VALUES: readonly CreatedBy[] = ["user", "ai_agent", "system"];
 const VIEW_COLUMNS =
   "id, database_id, type, name, config, is_default, owner_module_id, created_by, creator_project_item_id";
 
-function mapViewRow(row: {
+/** The raw `views` row shape this module reads back from Postgres. */
+type ViewDbRow = {
   id: string;
   database_id: string | null;
   type: string;
@@ -20,7 +22,9 @@ function mapViewRow(row: {
   owner_module_id: string | null;
   created_by: string;
   creator_project_item_id: string | null;
-}): ViewRow {
+};
+
+function mapViewRow(row: ViewDbRow): ViewRow {
   return {
     id: row.id,
     databaseId: row.database_id,
@@ -110,7 +114,7 @@ export async function createView(
   validateViewTypeConfig(input.type, config, viewTypeRegistry);
 
   try {
-    const { rows } = await client.query(
+    const { rows } = await client.query<ViewDbRow>(
       `INSERT INTO views (database_id, type, name, config, is_default, owner_module_id, created_by, creator_project_item_id)
        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
        RETURNING ${VIEW_COLUMNS}`,
@@ -125,7 +129,7 @@ export async function createView(
         input.creatorProjectItemId ?? null,
       ],
     );
-    return mapViewRow(rows[0]);
+    return mapViewRow(requireSingleRow(rows, "views row"));
   } catch (err) {
     if (isUniqueViolation(err, "views_one_default_per_db")) {
       throw new ConflictError(`Database ${input.databaseId} already has a default view`, { field: "isDefault" });
@@ -135,7 +139,7 @@ export async function createView(
 }
 
 export async function getView(client: PoolClient, id: string): Promise<ViewRow | null> {
-  const { rows } = await client.query(`SELECT ${VIEW_COLUMNS} FROM views WHERE id = $1`, [id]);
+  const { rows } = await client.query<ViewDbRow>(`SELECT ${VIEW_COLUMNS} FROM views WHERE id = $1`, [id]);
   return rows[0] ? mapViewRow(rows[0]) : null;
 }
 
@@ -146,14 +150,17 @@ async function requireView(client: PoolClient, id: string): Promise<ViewRow> {
 }
 
 export async function listViewsByDatabase(client: PoolClient, databaseId: string): Promise<ViewRow[]> {
-  const { rows } = await client.query(`SELECT ${VIEW_COLUMNS} FROM views WHERE database_id = $1 ORDER BY name`, [
-    databaseId,
-  ]);
+  const { rows } = await client.query<ViewDbRow>(
+    `SELECT ${VIEW_COLUMNS} FROM views WHERE database_id = $1 ORDER BY name`,
+    [databaseId],
+  );
   return rows.map(mapViewRow);
 }
 
 export async function listCuratedViews(client: PoolClient): Promise<ViewRow[]> {
-  const { rows } = await client.query(`SELECT ${VIEW_COLUMNS} FROM views WHERE database_id IS NULL ORDER BY name`);
+  const { rows } = await client.query<ViewDbRow>(
+    `SELECT ${VIEW_COLUMNS} FROM views WHERE database_id IS NULL ORDER BY name`,
+  );
   return rows.map(mapViewRow);
 }
 
@@ -205,11 +212,11 @@ export async function patchView(
 
   params.push(id);
   try {
-    const { rows } = await client.query(
+    const { rows } = await client.query<ViewDbRow>(
       `UPDATE views SET ${sets.join(", ")} WHERE id = $${params.length} RETURNING ${VIEW_COLUMNS}`,
       params,
     );
-    return mapViewRow(rows[0]);
+    return mapViewRow(requireSingleRow(rows, "views row"));
   } catch (err) {
     if (isUniqueViolation(err, "views_one_default_per_db")) {
       throw new ConflictError(`Database ${view.databaseId} already has a default view`, { field: "isDefault" });

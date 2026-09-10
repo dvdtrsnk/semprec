@@ -36,7 +36,8 @@ export interface RecordAudioCallInput {
   agentRunId?: string | null;
 }
 
-function mapRow(row: {
+/** The raw `ai_gateway_calls` row shape this module reads back from Postgres. */
+type AiGatewayCallDbRow = {
   id: string;
   at: Date;
   provider: string;
@@ -48,7 +49,9 @@ function mapRow(row: {
   agent_run_id: string | null;
   project_item_id: string | null;
   operation: string | null;
-}): AiGatewayCallRow {
+};
+
+function mapRow(row: AiGatewayCallDbRow): AiGatewayCallRow {
   return {
     id: row.id,
     at: row.at.toISOString(),
@@ -69,7 +72,7 @@ export async function recordTokenGatewayCall(
   client: Pool | PoolClient,
   input: RecordTokenCallInput,
 ): Promise<AiGatewayCallRow> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<AiGatewayCallDbRow>(
     `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation)
      VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8)
      RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation`,
@@ -84,7 +87,7 @@ export async function recordTokenGatewayCall(
       input.operation ?? null,
     ],
   );
-  return mapRow(rows[0]);
+  return mapRow(requireSingleRow(rows, "ai_gateway_calls row"));
 }
 
 /** transcribe()/diarize() accounting: native unit is audio seconds, both token columns stay NULL (not 0 — no token concept applies). */
@@ -92,13 +95,13 @@ export async function recordAudioGatewayCall(
   client: Pool | PoolClient,
   input: RecordAudioCallInput,
 ): Promise<AiGatewayCallRow> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<AiGatewayCallDbRow>(
     `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation)
      VALUES ($1, $2, NULL, NULL, $3, $4, $5, NULL, NULL)
      RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation`,
     [input.provider, input.model, input.audioSeconds, input.costUsd, input.agentRunId ?? null],
   );
-  return mapRow(rows[0]);
+  return mapRow(requireSingleRow(rows, "ai_gateway_calls row"));
 }
 
 export interface GatewaySpend {

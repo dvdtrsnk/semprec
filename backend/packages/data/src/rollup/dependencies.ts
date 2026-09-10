@@ -7,12 +7,15 @@ export interface RollupDependencyRow {
   sourcePropertyKey: string | null;
 }
 
-function mapRow(row: {
+/** The raw `rollup_dependencies` row shape this module reads back from Postgres. */
+type RollupDependencyDbRow = {
   rollup_property_id: string;
   relation_definition_id: string;
   source_database_id: string;
   source_property_key: string | null;
-}): RollupDependencyRow {
+};
+
+function mapRow(row: RollupDependencyDbRow): RollupDependencyRow {
   return {
     rollupPropertyId: row.rollup_property_id,
     relationDefinitionId: row.relation_definition_id,
@@ -46,7 +49,7 @@ export async function findDependenciesByRelationDefinition(
   client: PoolClient,
   relationDefinitionId: string,
 ): Promise<RollupDependencyRow[]> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<RollupDependencyDbRow>(
     `SELECT rollup_property_id, relation_definition_id, source_database_id, source_property_key
      FROM rollup_dependencies WHERE relation_definition_id = $1`,
     [relationDefinitionId],
@@ -60,7 +63,7 @@ export async function findDependenciesBySource(
   sourceDatabaseId: string,
   sourcePropertyKey: string,
 ): Promise<RollupDependencyRow[]> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<RollupDependencyDbRow>(
     `SELECT rollup_property_id, relation_definition_id, source_database_id, source_property_key
      FROM rollup_dependencies WHERE source_database_id = $1 AND source_property_key = $2`,
     [sourceDatabaseId, sourcePropertyKey],
@@ -72,7 +75,7 @@ export async function getRollupDependency(
   client: PoolClient,
   rollupPropertyId: string,
 ): Promise<RollupDependencyRow | null> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<RollupDependencyDbRow>(
     `SELECT rollup_property_id, relation_definition_id, source_database_id, source_property_key
      FROM rollup_dependencies WHERE rollup_property_id = $1`,
     [rollupPropertyId],

@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { requireSingleRow } from "../db/pool.js";
 import type { Queryable } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import {
@@ -21,7 +22,10 @@ export interface TaskRecurrence {
   active: boolean;
 }
 
-function mapRow(row: { item_id: string; mode: string; rule: unknown; active: boolean }): TaskRecurrence {
+/** The raw `task_recurrence` row shape this module reads back from Postgres. */
+type TaskRecurrenceDbRow = { item_id: string; mode: string; rule: unknown; active: boolean };
+
+function mapRow(row: TaskRecurrenceDbRow): TaskRecurrence {
   const mode = assertKnownValue(TASK_RECURRENCE_MODES, row.mode, "task recurrence mode");
   return {
     itemId: row.item_id,
@@ -46,11 +50,11 @@ export async function createTaskRecurrence(
   input: CreateTaskRecurrenceInput,
 ): Promise<TaskRecurrence> {
   const rule = parseTaskRecurrenceRule(input.mode, input.rule);
-  const { rows } = await client.query(
+  const { rows } = await client.query<TaskRecurrenceDbRow>(
     `INSERT INTO task_recurrence (item_id, mode, rule, active) VALUES ($1, $2, $3::jsonb, $4) RETURNING ${COLUMNS}`,
     [input.itemId, input.mode, JSON.stringify(rule), input.active ?? true],
   );
-  return mapRow(rows[0]);
+  return mapRow(requireSingleRow(rows, "task_recurrence row"));
 }
 
 /**
@@ -73,7 +77,7 @@ export async function getTaskRecurrence(
   itemId: string,
   forUpdate = false,
 ): Promise<TaskRecurrence | null> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<TaskRecurrenceDbRow>(
     `SELECT ${COLUMNS} FROM task_recurrence WHERE item_id = $1${forUpdate ? " FOR UPDATE" : ""}`,
     [itemId],
   );

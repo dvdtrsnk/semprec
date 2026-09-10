@@ -78,26 +78,17 @@ A CI round-trip is now ~6 minutes plus the review bot, so never use CI as your
 first check. Run exactly what `.github/workflows/ci.yml` runs, in order:
 
 ```
-# backend
 cd backend
 pnpm install --frozen-lockfile
-pnpm run lint
-pnpm run format:check
-pnpm -r run build
-pnpm --filter @semprec/data run check-migration-numbering
-pnpm run test:unit
-pnpm run check:boundaries
-pnpm run test:integration      # ~3 min, provisions its own ephemeral Postgres
-pnpm run test:e2e
+pnpm run verify
 
-# web
 cd ../web
 pnpm install --frozen-lockfile
-pnpm run lint
-pnpm run format:check
-pnpm run build
-pnpm test
+pnpm run verify
 ```
+
+`verify` is exactly what `.github/workflows/ci.yml` runs, in the same order, so
+a local pass means CI has nothing new to say.
 
 Notes:
 
@@ -112,7 +103,7 @@ Notes:
 Then read your own diff (`git diff origin/develop`) as a strict reviewer
 applying `backend/review-rules/rules.md`, `backend/review-rules/tasks/*.md` and
 the matching `web/review-rules/` for frontend changes, plus the conventions in
-`backend/.claude/skills/` (choke-point writes, single-writer ownership,
+`.bb/skills/` (choke-point writes, single-writer ownership,
 expand/contract migrations, AI calls only through the gateway, English
 camelCase canonical keys, labels via i18n). Sweep for debug prints,
 commented-out code and files unrelated to this branch. Fix what you find and

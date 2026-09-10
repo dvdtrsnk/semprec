@@ -2,7 +2,7 @@
   choke-point API — no direct database access from the web frontend.
   (`docs/adr/2026-09-10-choke-point-api-for-state-writes.md`)
 - No new abstraction, helper, or config flag beyond what the current issue's
-  Zadani asks for — flag speculative generality the same way the project's
+  Task asks for — flag speculative generality the same way the project's
   own contribution guidance treats it: a smell, not a virtue.
   (`docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md`)
 - TypeScript: no `any` at a module boundary (API response, form input,
