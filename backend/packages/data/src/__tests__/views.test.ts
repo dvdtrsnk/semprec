@@ -312,6 +312,74 @@ describe("views", () => {
       ).rejects.toBeInstanceOf(ForbiddenError);
     });
 
+    it("a user's curated-membership write (add/remove/reorder) adopts an agent's view the same way patch does", async () => {
+      const view = await chokePoint.createView(
+        { type: "list", name: "Agent's collection", config: { membership: "manual" } },
+        agentActor(agentA),
+      );
+      const db = await makeTasksDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "X" } });
+
+      const added = await chokePoint.addViewItem({ viewId: view.id, itemId: item.id, actor: userActor });
+      expect(added.viewId).toBe(view.id);
+      let current = await chokePoint.getView(view.id);
+      expect(current?.createdBy).toBe("user");
+      expect(current?.creatorProjectItemId).toBeNull();
+      // Adoption already happened, so the agent that created it can no longer write to it.
+      await expect(
+        chokePoint.reorderViewItem({ viewId: view.id, itemId: item.id, position: 0, actor: agentActor(agentA) }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+
+      // Same for removeViewItem/reorderViewItem starting from a fresh agent-owned view.
+      const view2 = await chokePoint.createView(
+        { type: "list", name: "Agent's collection 2", config: { membership: "manual" } },
+        agentActor(agentA),
+      );
+      await chokePoint.addViewItem({ viewId: view2.id, itemId: item.id, actor: agentActor(agentA) });
+      await chokePoint.reorderViewItem({ viewId: view2.id, itemId: item.id, position: 0, actor: userActor });
+      current = await chokePoint.getView(view2.id);
+      expect(current?.createdBy).toBe("user");
+      expect(current?.creatorProjectItemId).toBeNull();
+
+      const view3 = await chokePoint.createView(
+        { type: "list", name: "Agent's collection 3", config: { membership: "manual" } },
+        agentActor(agentA),
+      );
+      await chokePoint.addViewItem({ viewId: view3.id, itemId: item.id, actor: agentActor(agentA) });
+      await chokePoint.removeViewItem({ viewId: view3.id, itemId: item.id, actor: userActor });
+      current = await chokePoint.getView(view3.id);
+      expect(current?.createdBy).toBe("user");
+      expect(current?.creatorProjectItemId).toBeNull();
+    });
+
+    it("a user may delete an agent's view outright, with no adoption record needed", async () => {
+      const db = await makeTasksDb();
+      const view = await chokePoint.createView(
+        { databaseId: db.id, type: "table", name: "Agent view" },
+        agentActor(agentA),
+      );
+      await chokePoint.deleteView({ id: view.id, actor: userActor });
+      expect(await chokePoint.getView(view.id)).toBeNull();
+    });
+
+    it("a user's write to a system view never flips created_by", async () => {
+      const db = await makeTasksDb();
+      const client = await pool.connect();
+      let view;
+      try {
+        view = await viewsStore.createView(
+          client,
+          { databaseId: db.id, type: "table", name: "System view", createdBy: "system" },
+          viewTypeRegistry,
+        );
+      } finally {
+        client.release();
+      }
+      const patched = await chokePoint.patchView({ id: view.id, actor: userActor, name: "Renamed" });
+      expect(patched.createdBy).toBe("system");
+      expect(patched.creatorProjectItemId).toBeNull();
+    });
+
     it("an agent may never set is_default via patch, even on its own view", async () => {
       const db = await makeTasksDb();
       const view = await chokePoint.createView(

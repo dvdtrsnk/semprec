@@ -251,6 +251,23 @@ async function assertAuthenticatedAgentIdentity(client: PoolClient, actor: Actor
   }
 }
 
+/**
+ * One-way adoption (issue #87): a user's write — patch or curated-membership mutation — to an
+ * agent-owned view flips it to 'user' and clears the creator identity, in the same transaction
+ * as (and before) the mutation itself. A system view is never adopted: it never has
+ * `createdBy === 'ai_agent'`, so the condition below is false for it by construction.
+ */
+async function adoptIfUserWrite(
+  client: PoolClient,
+  view: ViewRow,
+  actor: Actor,
+  viewTypeRegistry: ViewTypeRegistry,
+): Promise<void> {
+  if (actor.type === "user" && view.createdBy === "ai_agent") {
+    await viewsStore.patchView(client, view.id, { createdBy: "user", creatorProjectItemId: null }, viewTypeRegistry);
+  }
+}
+
 /** Shared by patch/delete on a view and every write to its `view_items` membership. A no-op for a 'user'/'system' actor — only an agent write is ownership-checked here. */
 function assertViewWritable(view: ViewRow, actor: Actor): void {
   if (actor.type !== "ai_agent") return;
@@ -987,6 +1004,14 @@ export function createChokePoint(
     },
 
     // ---- views ----
+    // An agent write here is a direct write, not a proposal through the `confirm` flow — this
+    // predates issue #87 (views already recorded `created_by = 'ai_agent'` via a direct write;
+    // see the `created_by` column and its pre-existing enforcement) and issue #87's own Task and
+    // acceptance criteria describe agents patching/deleting/reordering views directly, while its
+    // "Out of scope" section explicitly excludes "Approval queues for editing another agent's
+    // view." Views are an agent's own sandboxed workspace state, not the proposal-gated resource
+    // [[2026-09-10-agent-writes-are-proposals-not-direct-writes]] governs; issue #87 only tightens
+    // *which* agent may write to *which* view, it does not introduce agent direct-writes.
     /**
      * `actor` (default `{ type: 'user' }`) governs `createdBy`/`creatorProjectItemId` — a
      * caller never sets either directly. Creating as `type: 'ai_agent'` requires and stores
@@ -1087,6 +1112,7 @@ export function createChokePoint(
           });
         }
         assertViewWritable(view, input.actor);
+        await adoptIfUserWrite(client, view, input.actor, viewTypeRegistry);
         return viewItemsStore.addViewItem(client, input.viewId, input.itemId, input.position);
       });
     },
@@ -1097,6 +1123,7 @@ export function createChokePoint(
         const view = await viewsStore.getView(client, input.viewId);
         if (!view) return;
         assertViewWritable(view, input.actor);
+        await adoptIfUserWrite(client, view, input.actor, viewTypeRegistry);
         await viewItemsStore.removeViewItem(client, input.viewId, input.itemId);
       });
     },
@@ -1112,6 +1139,7 @@ export function createChokePoint(
         const view = await viewsStore.getView(client, input.viewId);
         if (!view) throw new NotFoundError(`View ${input.viewId} not found`);
         assertViewWritable(view, input.actor);
+        await adoptIfUserWrite(client, view, input.actor, viewTypeRegistry);
         return viewItemsStore.reorderViewItem(client, input.viewId, input.itemId, input.position);
       });
     },
