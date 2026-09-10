@@ -277,6 +277,19 @@ describe("createProjectAgentGuidanceService (issue #214)", () => {
     ).rejects.toBeInstanceOf(ProjectAgentGuidanceOwnerViolationError);
   });
 
+  it("rejects a transfer when no guidance exists yet with a 403 owner_violation", async () => {
+    const service = createProjectAgentGuidanceService({
+      store: fakeStore(),
+      references: fakeReferences(),
+      heartbeats: recordingHeartbeats(),
+      transactions: fakeTransactions(),
+    });
+
+    await expect(
+      service.transferProjectAgentGuidance({ userId: "u1" }, { projectItemId: "p1", newOwnerUserId: "u2" }),
+    ).rejects.toBeInstanceOf(ProjectAgentGuidanceOwnerViolationError);
+  });
+
   it("rejects a transfer to a nonexistent target user with a 400 validation_failed", async () => {
     const existing: ProjectAgentGuidance = {
       projectItemId: "p1",
