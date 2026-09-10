@@ -206,6 +206,9 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
           return;
         }
         if (err instanceof ProviderCallError) {
+          // Standard failed-call observability event: no ai_gateway_calls row exists for a
+          // transport failure (see the comment above), so this log is the only trace it happened.
+          console.error(`Provider call failed for ${options.provider.id}/${options.model}:`, err.message);
           sendJson(res, 502, { error: "Provider call failed", code: "provider_failed" });
           return;
         }
