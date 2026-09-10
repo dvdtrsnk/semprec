@@ -43,6 +43,12 @@ export interface WriteNotificationInput {
    * `id`, which is stable across that job's retries and distinct for every new fire.
    */
   transitionInstance: string;
+  /**
+   * Structured data a client can render without a second round trip to the source row (issue
+   * #85's drift findings are the first producer). Defaults to `{}` (migration 0035's column
+   * default) when omitted.
+   */
+  payload?: Record<string, unknown>;
 }
 
 /**
@@ -74,11 +80,20 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
   const title = interpolate(titleTemplate, input.titleParams ?? {});
 
   const { rows } = await client.query<{ id: string; created_at: Date }>(
-    `INSERT INTO notifications (user_id, kind, title, link_href, source_table, source_id, transition_instance)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO notifications (user_id, kind, title, link_href, source_table, source_id, transition_instance, payload)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
      ON CONFLICT (source_table, source_id, kind, transition_instance) DO NOTHING
      RETURNING id, created_at`,
-    [input.userId, input.kind, title, input.linkHref, input.sourceTable, input.sourceId, input.transitionInstance],
+    [
+      input.userId,
+      input.kind,
+      title,
+      input.linkHref,
+      input.sourceTable,
+      input.sourceId,
+      input.transitionInstance,
+      JSON.stringify(input.payload ?? {}),
+    ],
   );
 
   const inserted = rows[0];
@@ -95,6 +110,7 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
           sourceTable: input.sourceTable,
           sourceId: input.sourceId,
           transitionInstance: input.transitionInstance,
+          payload: input.payload ?? {},
           createdAt: inserted.created_at.toISOString(),
           readAt: null,
         },

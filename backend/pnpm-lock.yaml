@@ -297,12 +297,18 @@ importers:
 
   services/semprec-api:
     dependencies:
+      '@semprec/ai-gateway-client':
+        specifier: workspace:*
+        version: link:../../packages/ai-gateway-client
       '@semprec/application':
         specifier: workspace:*
         version: link:../../packages/application
       '@semprec/data':
         specifier: workspace:*
         version: link:../../packages/data
+      '@semprec/module-registry':
+        specifier: workspace:*
+        version: link:../../packages/module-registry
       '@semprec/shared':
         specifier: workspace:*
         version: link:../../packages/shared

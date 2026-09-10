@@ -9,8 +9,10 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@semprec/ai-gateway-client": "workspace:*",
     "@semprec/application": "workspace:*",
     "@semprec/data": "workspace:*",
+    "@semprec/module-registry": "workspace:*",
     "@semprec/shared": "workspace:*",
     "nodemailer": "^9.0.6",
     "pg": "^8.23.0"

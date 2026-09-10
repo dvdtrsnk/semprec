@@ -222,3 +222,11 @@ export {
   guidanceReferenceStore,
   createPoolClientTransactionRunner,
 } from "./projectAgentGuidanceStore.js";
+
+export {
+  guidanceDriftHeartbeatStore,
+  AGENT_GUIDANCE_DRIFT_ACTION_ID,
+} from "./guidanceDrift/guidanceDriftHeartbeatStore.js";
+export { agentGuidanceDriftFindingsStore } from "./guidanceDrift/agentGuidanceDriftFindingsStore.js";
+export { createGuidanceManifestPort } from "./guidanceDrift/guidanceManifestPort.js";
+export { createGuidanceNotificationWriter } from "./guidanceDrift/guidanceNotificationWriter.js";
