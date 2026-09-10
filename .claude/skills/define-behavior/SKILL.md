@@ -45,11 +45,12 @@ Hard rules:
 
 - **Behavior, not technology.** The architecture is already fixed by this
   project (choke-point API, ownership model, module contracts, migration
-  discipline — see `backend/review-rules/` and the skills in
-  `backend/.claude/skills/`). Do not ask which library, which table layout,
-  which endpoint shape. An architecture question is legitimate only when the
-  existing architecture genuinely does not answer it — and even then, first send
-  a subagent to check.
+  discipline — see `backend/review-rules/`, the skills in
+  `backend/.claude/skills/`, and the decisions recorded under `docs/adr/`).
+  Do not ask which library, which table layout, which endpoint shape. An
+  architecture question is legitimate only when the existing architecture
+  genuinely does not answer it — and even then, first send a subagent to check
+  both the review-rules/skills and `docs/adr/`.
 - **One question per message**, with a recommendation and its reasoning. Batched
   questionnaires get shallow answers.
 - **Persist.** Do not stop at the first "sounds good". You are done only when no
@@ -84,10 +85,15 @@ in the spec, go back to the user — do not fill it silently.
    capability — if unsure, block on the latest issue known to already use it.
 4. Avoid forward references: an issue's Context may point to its predecessors
    freely, but reference a *later* sibling only when genuinely needed.
-5. Write the epic per the same document: approved spec, a `## Decisions` section
+5. If decomposition genuinely requires a new architectural decision (not
+   covered by an existing rule or `docs/adr/` record — this should be rare per
+   "Behavior, not technology" above), name it explicitly in the Task of the
+   issue that introduces it: that issue must add an ADR under `docs/adr/`
+   (format in `docs/adr/README.md`) alongside the implementation.
+6. Write the epic per the same document: approved spec, a `## Decisions` section
    preserving the grilling Q&A (question → adopted answer → reason — the
    decision log would otherwise die with this conversation), and the checklist.
-6. **Real mode:** create the epic first, then the issues **in batch order**
+7. **Real mode:** create the epic first, then the issues **in batch order**
    (`gh issue create -R dvdtrsnk/semprec`) — creating sequentially means every
    backward in-batch reference already has its real `#N` at write time. Then do
    one substitution pass: edit the epic checklist and any issue that used a

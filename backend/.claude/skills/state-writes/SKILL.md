@@ -9,6 +9,10 @@ Three laws govern every write to persisted state in the Semprec backend. They ex
 because the whole system's auditability, undo, realtime sync, and AI-safety story
 hangs on writes being observable in exactly one place.
 
+Recorded as ADRs: `docs/adr/2026-09-10-choke-point-api-for-state-writes.md`,
+`docs/adr/2026-09-10-single-writer-ownership-model.md`,
+`docs/adr/2026-09-10-agent-writes-are-proposals-not-direct-writes.md`.
+
 ## 1. All writes go through the choke-point
 
 Route every mutation of item/database state through the generic choke-point API

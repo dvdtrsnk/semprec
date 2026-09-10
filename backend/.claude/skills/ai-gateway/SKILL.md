@@ -5,6 +5,8 @@ description: How to call LLMs and AI providers from Semprec backend code. Use th
 
 # AI calls go through semprec-ai-gateway. All of them.
 
+Recorded as ADR: `docs/adr/2026-09-10-ai-gateway-monopoly-on-provider-calls.md`.
+
 `semprec-ai-gateway` is the single process allowed to talk to AI providers. Every
 other package, service, module, and script makes AI calls only through the
 gateway's internal contract.

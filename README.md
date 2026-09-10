@@ -61,3 +61,11 @@ PR, gated by an automated code review. `main` holds released versions only:
 it advances exclusively through a `develop -> main` promotion PR, which on
 merge triggers a release pipeline that tags and publishes a GitHub Release
 from the version in `backend/package.json`.
+
+## Architecture decisions
+
+Why the architecture is shaped the way it is — the choke-point API, the
+ownership model, the AI gateway, migration discipline, and other
+cross-cutting calls — is recorded as Architecture Decision Records under
+[`docs/adr/`](docs/adr/README.md). Check there before introducing a new
+architectural pattern.
