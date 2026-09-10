@@ -73,8 +73,11 @@ endpoint absent) — those are where findings concentrate.
 Run the same pipeline CI runs. A CI round-trip costs minutes; this costs seconds:
 
 ```
-cd backend && pnpm run verify
-cd web && pnpm run verify
+cd backend
+pnpm run verify
+
+cd ../web
+pnpm run verify
 ```
 
 Then read your own diff as a strict reviewer applying the `review-rules/` of

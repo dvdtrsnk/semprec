@@ -68,7 +68,7 @@ export async function getBlobByContentHash(client: Queryable, contentHash: strin
 export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput): Promise<BlobRow> {
   if (!input.contentHash) return createBlob(client, input);
 
-  const inserted = await client.query(
+  const inserted = await client.query<BlobDbRow>(
     // The conflict target must repeat blobs_content_hash_uq's own partial predicate
     // (0004_ten_databases.sql) — Postgres only infers a partial unique index as an ON
     // CONFLICT arbiter when the clause's WHERE matches the index's WHERE verbatim; without

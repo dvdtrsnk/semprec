@@ -83,7 +83,7 @@ export async function ensureMailAccountSyncState(
   client: Queryable,
   input: EnsureMailAccountSyncStateInput,
 ): Promise<MailAccountSyncStateRow> {
-  const inserted = await client.query(
+  const inserted = await client.query<MailAccountSyncStateDbRow>(
     `INSERT INTO mail_account_sync_state (item_id, sync_mode) VALUES ($1, $2) ON CONFLICT (item_id) DO NOTHING RETURNING ${COLUMNS}`,
     [input.itemId, input.syncMode],
   );

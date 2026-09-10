@@ -40,7 +40,7 @@ const COLUMNS = "item_id, status, error, attempts, last_attempt_at";
  * already-resolved row back to 'pending'.
  */
 export async function ensureItemAutomation(client: PoolClient, itemId: string): Promise<ItemAutomationRow> {
-  const inserted = await client.query(
+  const inserted = await client.query<ItemAutomationDbRow>(
     `INSERT INTO item_automation (item_id) VALUES ($1) ON CONFLICT (item_id) DO NOTHING RETURNING ${COLUMNS}`,
     [itemId],
   );

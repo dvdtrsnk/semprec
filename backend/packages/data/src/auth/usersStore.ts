@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { requireSingleRow } from "../db/pool.js";
 import type { UserRow } from "./types.js";
 
 /** The raw `users` row shape this module reads back from Postgres. */
@@ -25,17 +26,17 @@ export interface CreateUserInput {
 export async function createUser(client: Pool | PoolClient, input: CreateUserInput): Promise<UserRow> {
   const { rows } =
     input.locale === undefined
-      ? await client.query(
+      ? await client.query<UserDbRow>(
           `INSERT INTO users (email, password_hash) VALUES ($1, $2)
            RETURNING id, email, password_hash, locale, created_at`,
           [input.email, input.passwordHash],
         )
-      : await client.query(
+      : await client.query<UserDbRow>(
           `INSERT INTO users (email, password_hash, locale) VALUES ($1, $2, $3)
            RETURNING id, email, password_hash, locale, created_at`,
           [input.email, input.passwordHash, input.locale],
         );
-  return mapRow(rows[0]);
+  return mapRow(requireSingleRow(rows, "users row"));
 }
 
 export async function getUserByEmail(client: Pool | PoolClient, email: string): Promise<UserRow | null> {
