@@ -13,13 +13,16 @@ export interface ItemAutomationRow {
   lastAttemptAt: string | null;
 }
 
-function mapRow(row: {
+/** The raw `item_automation` row shape this module reads back from Postgres. */
+type ItemAutomationDbRow = {
   item_id: string;
   status: string;
   error: string | null;
   attempts: number;
   last_attempt_at: Date | null;
-}): ItemAutomationRow {
+};
+
+function mapRow(row: ItemAutomationDbRow): ItemAutomationRow {
   return {
     itemId: row.item_id,
     status: assertKnownValue(ITEM_AUTOMATION_STATUSES, row.status, "item automation status"),
@@ -49,13 +52,19 @@ export async function ensureItemAutomation(client: PoolClient, itemId: string): 
 }
 
 export async function getItemAutomation(client: PoolClient, itemId: string): Promise<ItemAutomationRow | null> {
-  const { rows } = await client.query(`SELECT ${COLUMNS} FROM item_automation WHERE item_id = $1`, [itemId]);
+  const { rows } = await client.query<ItemAutomationDbRow>(
+    `SELECT ${COLUMNS} FROM item_automation WHERE item_id = $1`,
+    [itemId],
+  );
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
 /** Row-locking read used before a mutation, inside the caller's transaction — same pattern as `itemsStore.lockItemById`. */
 export async function lockItemAutomation(client: PoolClient, itemId: string): Promise<ItemAutomationRow | null> {
-  const { rows } = await client.query(`SELECT ${COLUMNS} FROM item_automation WHERE item_id = $1 FOR UPDATE`, [itemId]);
+  const { rows } = await client.query<ItemAutomationDbRow>(
+    `SELECT ${COLUMNS} FROM item_automation WHERE item_id = $1 FOR UPDATE`,
+    [itemId],
+  );
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
@@ -89,7 +98,7 @@ export async function setItemAutomationLocked(
   itemId: string,
   locked: boolean,
 ): Promise<ItemAutomationRow> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<ItemAutomationDbRow>(
     `UPDATE item_automation SET status = $2 WHERE item_id = $1 AND status ${locked ? "!=" : "="} 'locked' RETURNING ${COLUMNS}`,
     [itemId, locked ? "locked" : "pending"],
   );
@@ -114,7 +123,7 @@ export async function listErroredItemAutomationForDatabases(
   databaseIds: string[],
 ): Promise<ItemAutomationRow[]> {
   if (databaseIds.length === 0) return [];
-  const { rows } = await client.query(
+  const { rows } = await client.query<ItemAutomationDbRow>(
     `SELECT ia.item_id, ia.status, ia.error, ia.attempts, ia.last_attempt_at
      FROM item_automation ia
      JOIN items i ON i.id = ia.item_id

@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { requireSingleRow } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 
 export type AgentRunEventKind =
@@ -22,7 +23,10 @@ export interface AgentRunEventRow {
   at: string;
 }
 
-function mapRow(row: { id: string; agent_run_id: string; kind: string; payload: unknown; at: Date }): AgentRunEventRow {
+/** The raw `agent_run_events` row shape this module reads back from Postgres. */
+type AgentRunEventDbRow = { id: string; agent_run_id: string; kind: string; payload: unknown; at: Date };
+
+function mapRow(row: AgentRunEventDbRow): AgentRunEventRow {
   return {
     id: row.id,
     agentRunId: row.agent_run_id,
@@ -44,18 +48,18 @@ export async function insertAgentRunEvent(
   kind: AgentRunEventKind,
   payload: unknown,
 ): Promise<AgentRunEventRow> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<AgentRunEventDbRow>(
     `INSERT INTO agent_run_events (agent_run_id, kind, payload)
      VALUES ($1, $2, $3)
      RETURNING id, agent_run_id, kind, payload, at`,
     [agentRunId, kind, JSON.stringify(payload)],
   );
-  return mapRow(rows[0]);
+  return mapRow(requireSingleRow(rows, "agent_run_events row"));
 }
 
 /** Transcript reconstruction source: every row for a run, in monotonic event-id order. */
 export async function listAgentRunEvents(client: Pool | PoolClient, agentRunId: string): Promise<AgentRunEventRow[]> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<AgentRunEventDbRow>(
     `SELECT id, agent_run_id, kind, payload, at FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id ASC`,
     [agentRunId],
   );
@@ -73,7 +77,7 @@ export async function listAgentRunEventsByRunIds(
   agentRunIds: string[],
 ): Promise<AgentRunEventRow[]> {
   if (agentRunIds.length === 0) return [];
-  const { rows } = await client.query(
+  const { rows } = await client.query<AgentRunEventDbRow>(
     `SELECT id, agent_run_id, kind, payload, at FROM agent_run_events WHERE agent_run_id = ANY($1) ORDER BY agent_run_id, id ASC`,
     [agentRunIds],
   );

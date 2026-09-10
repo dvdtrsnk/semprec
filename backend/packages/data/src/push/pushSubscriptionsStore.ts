@@ -1,9 +1,11 @@
 import type { Pool, PoolClient } from "pg";
+import { requireSingleRow } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { SESSION_PLATFORMS } from "../auth/types.js";
 import { APNS_ENVIRONMENTS, PUSH_CHANNELS, type PushSubscriptionRow } from "./types.js";
 
-function mapRow(row: {
+/** The raw `push_subscriptions` row shape this module reads back from Postgres. */
+type PushSubscriptionDbRow = {
   id: string;
   user_id: string;
   session_id: string | null;
@@ -17,7 +19,9 @@ function mapRow(row: {
   created_at: Date;
   updated_at: Date;
   revoked_at: Date | null;
-}): PushSubscriptionRow {
+};
+
+function mapRow(row: PushSubscriptionDbRow): PushSubscriptionRow {
   return {
     id: row.id,
     userId: row.user_id,
@@ -61,7 +65,7 @@ export async function upsertWebPushSubscription(
   client: Pool | PoolClient,
   input: UpsertWebPushSubscriptionInput,
 ): Promise<PushSubscriptionRow> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<PushSubscriptionDbRow>(
     `INSERT INTO push_subscriptions (user_id, session_id, channel, platform, endpoint, p256dh, auth_secret)
      VALUES ($1, $2, 'web_push', 'web', $3, $4, $5)
      ON CONFLICT (endpoint) WHERE revoked_at IS NULL AND endpoint IS NOT NULL
@@ -70,7 +74,7 @@ export async function upsertWebPushSubscription(
      RETURNING ${SELECT_COLUMNS}`,
     [input.userId, input.sessionId, input.endpoint, input.p256dh, input.authSecret],
   );
-  return mapRow(rows[0]);
+  return mapRow(requireSingleRow(rows, "push_subscriptions row"));
 }
 
 export interface UpsertApnsSubscriptionInput {
@@ -86,7 +90,7 @@ export async function upsertApnsSubscription(
   client: Pool | PoolClient,
   input: UpsertApnsSubscriptionInput,
 ): Promise<PushSubscriptionRow> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<PushSubscriptionDbRow>(
     `INSERT INTO push_subscriptions (user_id, session_id, channel, platform, device_token, apns_environment)
      VALUES ($1, $2, 'apns', $3, $4, $5)
      ON CONFLICT (device_token) WHERE revoked_at IS NULL AND device_token IS NOT NULL
@@ -95,7 +99,7 @@ export async function upsertApnsSubscription(
      RETURNING ${SELECT_COLUMNS}`,
     [input.userId, input.sessionId, input.platform, input.deviceToken, input.apnsEnvironment],
   );
-  return mapRow(rows[0]);
+  return mapRow(requireSingleRow(rows, "push_subscriptions row"));
 }
 
 /**
@@ -162,7 +166,7 @@ export async function listPushSubscriptionsForUser(
   client: Pool | PoolClient,
   userId: string,
 ): Promise<PushSubscriptionRow[]> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<PushSubscriptionDbRow>(
     `SELECT ${SELECT_COLUMNS} FROM push_subscriptions WHERE user_id = $1 ORDER BY created_at DESC`,
     [userId],
   );

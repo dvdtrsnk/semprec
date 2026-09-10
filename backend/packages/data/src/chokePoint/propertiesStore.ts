@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { requireSingleRow } from "../db/pool.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { PROPERTY_TYPES, type DatabaseRow, type PropertyOwner, type PropertyRow, type PropertyType } from "../types.js";
 import { assertKnownValue } from "../dbRowValidation.js";
@@ -45,7 +46,8 @@ const MIGRATION_STATUSES: readonly PropertyRow["migrationStatus"][] = [
   "partial",
 ];
 
-function mapPropertyRow(row: {
+/** The raw `properties` row shape this module reads back from Postgres. */
+type PropertyDbRow = {
   id: string;
   database_id: string;
   key: string;
@@ -56,7 +58,9 @@ function mapPropertyRow(row: {
   owner: string;
   owner_process: string | null;
   migration_status: string;
-}): PropertyRow {
+};
+
+function mapPropertyRow(row: PropertyDbRow): PropertyRow {
   return {
     id: row.id,
     databaseId: row.database_id,
@@ -74,7 +78,9 @@ function mapPropertyRow(row: {
 const PROPERTY_COLUMNS = "id, database_id, key, name, type, config, locked, owner, owner_process, migration_status";
 
 export async function getProperty(client: PoolClient, propertyId: string): Promise<PropertyRow | null> {
-  const { rows } = await client.query(`SELECT ${PROPERTY_COLUMNS} FROM properties WHERE id = $1`, [propertyId]);
+  const { rows } = await client.query<PropertyDbRow>(`SELECT ${PROPERTY_COLUMNS} FROM properties WHERE id = $1`, [
+    propertyId,
+  ]);
   return rows[0] ? mapPropertyRow(rows[0]) : null;
 }
 
@@ -83,7 +89,7 @@ export async function getPropertyByKey(
   databaseId: string,
   key: string,
 ): Promise<PropertyRow | null> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<PropertyDbRow>(
     `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = $1 AND key = $2`,
     [databaseId, key],
   );
@@ -91,7 +97,7 @@ export async function getPropertyByKey(
 }
 
 export async function listPropertiesByDatabase(client: PoolClient, databaseId: string): Promise<PropertyRow[]> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<PropertyDbRow>(
     `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = $1 ORDER BY key`,
     [databaseId],
   );
@@ -110,7 +116,7 @@ export async function listPropertiesByDatabases(
   const grouped = new Map<string, PropertyRow[]>();
   if (databaseIds.length === 0) return grouped;
 
-  const { rows } = await client.query(
+  const { rows } = await client.query<PropertyDbRow>(
     `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = ANY($1) ORDER BY database_id, key`,
     [databaseIds],
   );
@@ -163,7 +169,7 @@ export async function createProperty(client: PoolClient, input: CreatePropertyIn
   }
   assertValidSelectOptions(input.type, input.config);
 
-  const { rows } = await client.query(
+  const { rows } = await client.query<PropertyDbRow>(
     `INSERT INTO properties (database_id, key, name, type, config, locked, owner, owner_process)
      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
      RETURNING ${PROPERTY_COLUMNS}`,
@@ -178,17 +184,17 @@ export async function createProperty(client: PoolClient, input: CreatePropertyIn
       input.ownerProcess ?? null,
     ],
   );
-  return mapPropertyRow(rows[0]);
+  return mapPropertyRow(requireSingleRow(rows, "properties row"));
 }
 
 /** The label is always renamable — `locked` governs deletion / type change, never the display name. */
 export async function renameProperty(client: PoolClient, propertyId: string, name: string): Promise<PropertyRow> {
   await requireProperty(client, propertyId);
-  const { rows } = await client.query(`UPDATE properties SET name = $2 WHERE id = $1 RETURNING ${PROPERTY_COLUMNS}`, [
-    propertyId,
-    name,
-  ]);
-  return mapPropertyRow(rows[0]);
+  const { rows } = await client.query<PropertyDbRow>(
+    `UPDATE properties SET name = $2 WHERE id = $1 RETURNING ${PROPERTY_COLUMNS}`,
+    [propertyId, name],
+  );
+  return mapPropertyRow(requireSingleRow(rows, "properties row"));
 }
 
 async function assertPropertySchemaMutable(client: PoolClient, property: PropertyRow): Promise<void> {
@@ -211,7 +217,7 @@ export async function changePropertyType(
   const property = await requireProperty(client, propertyId);
   await assertPropertySchemaMutable(client, property);
 
-  const { rows } = await client.query(
+  const { rows } = await client.query<PropertyDbRow>(
     // `migration_dropped_values` is cleared here and only here: a fresh retype starts a new
     // migration, so whatever a previous retype of this property discarded is no longer its
     // result. Every other writer only ever sets the flag.
@@ -219,7 +225,7 @@ export async function changePropertyType(
      WHERE id = $1 RETURNING ${PROPERTY_COLUMNS}`,
     [propertyId, newType, migrationStatus],
   );
-  return mapPropertyRow(rows[0]);
+  return mapPropertyRow(requireSingleRow(rows, "properties row"));
 }
 
 export async function setPropertyMigrationStatus(
@@ -265,11 +271,11 @@ export async function updatePropertyConfig(
   await assertPropertySchemaMutable(client, property);
   assertValidSelectOptions(property.type, config);
 
-  const { rows } = await client.query(
+  const { rows } = await client.query<PropertyDbRow>(
     `UPDATE properties SET config = $2::jsonb WHERE id = $1 RETURNING ${PROPERTY_COLUMNS}`,
     [propertyId, JSON.stringify(config)],
   );
-  return mapPropertyRow(rows[0]);
+  return mapPropertyRow(requireSingleRow(rows, "properties row"));
 }
 
 /** Caller (the choke-point) is responsible for the mirror-dependency check before calling this. */

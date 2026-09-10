@@ -41,7 +41,8 @@ export interface MailAccountSyncStateRow {
   nextExpectedActivityAt: string | null;
 }
 
-function mapRow(row: {
+/** The raw `mail_account_sync_state` row shape this module reads back from Postgres. */
+type MailAccountSyncStateDbRow = {
   item_id: string;
   sync_mode: string;
   gmail_history_id: string | null;
@@ -52,7 +53,9 @@ function mapRow(row: {
   last_error: string | null;
   last_activity_at: Date | null;
   next_expected_activity_at: Date | null;
-}): MailAccountSyncStateRow {
+};
+
+function mapRow(row: MailAccountSyncStateDbRow): MailAccountSyncStateRow {
   return {
     itemId: row.item_id,
     syncMode: assertKnownValue(SYNC_MODES, row.sync_mode, "mail sync mode"),
@@ -95,7 +98,10 @@ export async function getMailAccountSyncState(
   client: Queryable,
   itemId: string,
 ): Promise<MailAccountSyncStateRow | null> {
-  const { rows } = await client.query(`SELECT ${COLUMNS} FROM mail_account_sync_state WHERE item_id = $1`, [itemId]);
+  const { rows } = await client.query<MailAccountSyncStateDbRow>(
+    `SELECT ${COLUMNS} FROM mail_account_sync_state WHERE item_id = $1`,
+    [itemId],
+  );
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
@@ -243,7 +249,7 @@ export async function recordConnectionLimitBackoff(
 
 /** Accounts due for another sync pass — consumed by the periodic sweep job, not the observability check (issue #39), which reads the same column but only to alert. */
 export async function listAccountsDueForSync(client: Queryable): Promise<MailAccountSyncStateRow[]> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<MailAccountSyncStateDbRow>(
     `SELECT ${COLUMNS} FROM mail_account_sync_state WHERE next_expected_activity_at IS NULL OR next_expected_activity_at <= now()`,
   );
   return rows.map(mapRow);

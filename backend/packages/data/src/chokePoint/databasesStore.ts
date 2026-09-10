@@ -11,7 +11,8 @@ function isUniqueViolation(err: unknown, constraint: string): boolean {
   return pgErr?.code === "23505" && pgErr?.constraint === constraint;
 }
 
-function mapDatabaseRow(row: {
+/** The raw `databases` row shape this module reads back from Postgres. */
+type DatabaseDbRow = {
   id: string;
   name: string | null;
   key: string | null;
@@ -21,7 +22,9 @@ function mapDatabaseRow(row: {
   schema_locked: boolean;
   system: boolean;
   archived_at: Date | null;
-}): DatabaseRow {
+};
+
+function mapDatabaseRow(row: DatabaseDbRow): DatabaseRow {
   return {
     id: row.id,
     name: row.name,
@@ -71,7 +74,7 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
 
   let database: DatabaseRow;
   try {
-    const { rows } = await client.query(
+    const { rows } = await client.query<DatabaseDbRow>(
       `INSERT INTO databases (name, key, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING ${DATABASE_COLUMNS}`,
@@ -85,7 +88,7 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
         input.system ?? false,
       ],
     );
-    database = mapDatabaseRow(rows[0]);
+    database = mapDatabaseRow(requireSingleRow(rows, "databases row"));
   } catch (err) {
     if (isUniqueViolation(err, "databases_key_unique")) {
       throw new ConflictError(`Database key '${input.key}' is already in use`, { field: "key" });
@@ -114,15 +117,16 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
 }
 
 export async function getDatabase(client: PoolClient, id: string): Promise<DatabaseRow | null> {
-  const { rows } = await client.query(`SELECT ${DATABASE_COLUMNS} FROM databases WHERE id = $1`, [id]);
+  const { rows } = await client.query<DatabaseDbRow>(`SELECT ${DATABASE_COLUMNS} FROM databases WHERE id = $1`, [id]);
   return rows[0] ? mapDatabaseRow(rows[0]) : null;
 }
 
 /** Looks up a system database by its canonical `owner_module_id` (e.g. 'tasks', 'events') — see the `canonical-keys` skill's established vocabulary. */
 export async function getDatabaseByModuleId(client: PoolClient, ownerModuleId: string): Promise<DatabaseRow | null> {
-  const { rows } = await client.query(`SELECT ${DATABASE_COLUMNS} FROM databases WHERE owner_module_id = $1`, [
-    ownerModuleId,
-  ]);
+  const { rows } = await client.query<DatabaseDbRow>(
+    `SELECT ${DATABASE_COLUMNS} FROM databases WHERE owner_module_id = $1`,
+    [ownerModuleId],
+  );
   return rows[0] ? mapDatabaseRow(rows[0]) : null;
 }
 
@@ -132,7 +136,7 @@ export async function getDatabaseByModuleId(client: PoolClient, ownerModuleId: s
  * so they're invisible to any project-scoped query like `generatePermissionManifest`'s).
  */
 export async function listAllDatabases(client: PoolClient): Promise<DatabaseRow[]> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<DatabaseDbRow>(
     `SELECT ${DATABASE_COLUMNS} FROM databases WHERE archived_at IS NULL ORDER BY key, name`,
   );
   return rows.map(mapDatabaseRow);
@@ -148,18 +152,18 @@ export async function archiveDatabase(client: PoolClient, id: string): Promise<D
   const database = await requireDatabase(client, id);
   if (database.system) throw new ForbiddenError("A system database cannot be archived");
 
-  const { rows } = await client.query(
+  const { rows } = await client.query<DatabaseDbRow>(
     `UPDATE databases SET archived_at = now() WHERE id = $1 RETURNING ${DATABASE_COLUMNS}`,
     [id],
   );
-  return mapDatabaseRow(rows[0]);
+  return mapDatabaseRow(requireSingleRow(rows, "databases row"));
 }
 
 export async function restoreDatabase(client: PoolClient, id: string): Promise<DatabaseRow> {
   await requireDatabase(client, id);
-  const { rows } = await client.query(
+  const { rows } = await client.query<DatabaseDbRow>(
     `UPDATE databases SET archived_at = NULL WHERE id = $1 RETURNING ${DATABASE_COLUMNS}`,
     [id],
   );
-  return mapDatabaseRow(rows[0]);
+  return mapDatabaseRow(requireSingleRow(rows, "databases row"));
 }

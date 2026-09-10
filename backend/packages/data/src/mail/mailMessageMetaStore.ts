@@ -1,4 +1,5 @@
 import type { Queryable } from "../db/pool.js";
+import { requireSingleRow } from "../db/pool.js";
 
 export interface MailEnvelopeAddress {
   name?: string;
@@ -34,7 +35,8 @@ export interface MailMessageMetaRow {
   migrationStatus: MailMessageMigrationStatus;
 }
 
-function mapRow(row: {
+/** The raw `mail_message_meta` row shape this module reads back from Postgres. */
+type MailMessageMetaDbRow = {
   item_id: string;
   message_id: string;
   in_reply_to: string | null;
@@ -47,7 +49,9 @@ function mapRow(row: {
   message_kind: MailMessageKind;
   dsn_original_message_id: string | null;
   migration_status: MailMessageMigrationStatus;
-}): MailMessageMetaRow {
+};
+
+function mapRow(row: MailMessageMetaDbRow): MailMessageMetaRow {
   return {
     itemId: row.item_id,
     messageId: row.message_id,
@@ -94,7 +98,7 @@ export async function upsertMailMessageMeta(
   client: Queryable,
   input: UpsertMailMessageMetaInput,
 ): Promise<MailMessageMetaRow> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<MailMessageMetaDbRow>(
     `INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope,
                                      delivered_to_address, message_kind, dsn_original_message_id, migration_status)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12)
@@ -120,14 +124,17 @@ export async function upsertMailMessageMeta(
       input.migrationStatus ?? "stable",
     ],
   );
-  return mapRow(rows[0]);
+  return mapRow(requireSingleRow(rows, "mail_message_meta row"));
 }
 
 export async function getMailMessageMetaByItemId(
   client: Queryable,
   itemId: string,
 ): Promise<MailMessageMetaRow | null> {
-  const { rows } = await client.query(`SELECT ${COLUMNS} FROM mail_message_meta WHERE item_id = $1`, [itemId]);
+  const { rows } = await client.query<MailMessageMetaDbRow>(
+    `SELECT ${COLUMNS} FROM mail_message_meta WHERE item_id = $1`,
+    [itemId],
+  );
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
@@ -135,7 +142,10 @@ export async function getMailMessageMetaByMessageId(
   client: Queryable,
   messageId: string,
 ): Promise<MailMessageMetaRow | null> {
-  const { rows } = await client.query(`SELECT ${COLUMNS} FROM mail_message_meta WHERE message_id = $1`, [messageId]);
+  const { rows } = await client.query<MailMessageMetaDbRow>(
+    `SELECT ${COLUMNS} FROM mail_message_meta WHERE message_id = $1`,
+    [messageId],
+  );
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
@@ -143,9 +153,10 @@ export async function getMailMessageMetaByProviderMessageId(
   client: Queryable,
   providerMessageId: string,
 ): Promise<MailMessageMetaRow | null> {
-  const { rows } = await client.query(`SELECT ${COLUMNS} FROM mail_message_meta WHERE provider_message_id = $1`, [
-    providerMessageId,
-  ]);
+  const { rows } = await client.query<MailMessageMetaDbRow>(
+    `SELECT ${COLUMNS} FROM mail_message_meta WHERE provider_message_id = $1`,
+    [providerMessageId],
+  );
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
@@ -176,11 +187,12 @@ export interface MailThreadRow {
 }
 
 export async function createMailThread(client: Queryable, subjectHint?: string): Promise<MailThreadRow> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<{ id: string; subject_hint: string | null }>(
     `INSERT INTO mail_threads (subject_hint) VALUES ($1) RETURNING id, subject_hint`,
     [subjectHint ?? null],
   );
-  return { id: rows[0].id, subjectHint: rows[0].subject_hint };
+  const thread = requireSingleRow(rows, "mail_threads row");
+  return { id: thread.id, subjectHint: thread.subject_hint };
 }
 
 /** Moves every message out of `fromThreadId` into `toThreadId`, then deletes the now-empty `mail_threads` row — nothing else references `mail_threads` except this table's own `thread_id`, so once this UPDATE runs, `fromThreadId` is guaranteed to have zero remaining referencers. Leaving it would accumulate an orphaned row on every dummy-container merge (threading.ts's self-heal path). */
