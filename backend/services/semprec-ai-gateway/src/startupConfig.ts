@@ -18,7 +18,7 @@ function buildRegisteredProviders(env: NodeJS.ProcessEnv): StructuredCompletionP
  * `serve.ts` stays a thin wiring script and tests can exercise the same validation without
  * booting a real HTTP server.
  */
-export function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
+function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name];
   if (!value) throw new Error(`${name} is not set`);
   return value;
