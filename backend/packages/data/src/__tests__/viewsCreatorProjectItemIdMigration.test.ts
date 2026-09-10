@@ -68,7 +68,11 @@ describe("0037_views_creator_project_item_id migration", () => {
     });
     const agent = await chokePoint.createItem({ databaseId: projectsDb.id, properties: {} });
     try {
-      await chokePoint.patchView({ id: legacyViewId, actor: { type: "ai_agent", agentProjectItemId: agent.id }, name: "x" });
+      await chokePoint.patchView({
+        id: legacyViewId,
+        actor: { type: "ai_agent", agentProjectItemId: agent.id },
+        name: "x",
+      });
       expect.unreachable("expected ForbiddenError");
     } catch (err) {
       expect(err).toBeInstanceOf(ForbiddenError);
