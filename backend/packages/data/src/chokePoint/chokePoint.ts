@@ -1006,14 +1006,11 @@ export function createChokePoint(
     },
 
     // ---- views ----
-    // An agent write here is a direct write, not a proposal through the `confirm` flow — this
-    // predates issue #87 (views already recorded `created_by = 'ai_agent'` via a direct write;
-    // see the `created_by` column and its pre-existing enforcement) and issue #87's own Task and
-    // acceptance criteria describe agents patching/deleting/reordering views directly, while its
-    // "Out of scope" section explicitly excludes "Approval queues for editing another agent's
-    // view." Views are an agent's own sandboxed workspace state, not the proposal-gated resource
-    // [[2026-09-10-agent-writes-are-proposals-not-direct-writes]] governs; issue #87 only tightens
-    // *which* agent may write to *which* view, it does not introduce agent direct-writes.
+    // An agent write here is a direct write, not a proposal through the `confirm` flow. This is
+    // the documented views carve-out in
+    // [[2026-09-10-agent-writes-are-proposals-not-direct-writes]] ("Scope: agent-owned views are
+    // excluded") — issue #87 only tightens *which* agent may write to *which* view, it does not
+    // introduce agent direct-writes.
     /**
      * `actor` (default `{ type: 'user' }`) governs `createdBy`/`creatorProjectItemId` — a
      * caller never sets either directly. Creating as `type: 'ai_agent'` requires and stores
