@@ -44,9 +44,9 @@ function fakeStore(initial: ProjectAgentGuidance | null = null): ProjectAgentGui
       rows.set(row.projectItemId, saved);
       return saved;
     },
-    async transfer(_tx, projectItemId, newOwnerUserId) {
+    async transfer(_tx, projectItemId, currentOwnerUserId, newOwnerUserId) {
       const existing = rows.get(projectItemId);
-      if (!existing) throw new Error("not found");
+      if (!existing || existing.ownerUserId !== currentOwnerUserId) throw new Error("not found");
       const updated = { ...existing, ownerUserId: newOwnerUserId, updatedAt: new Date().toISOString() };
       rows.set(projectItemId, updated);
       return updated;
