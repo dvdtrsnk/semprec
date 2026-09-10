@@ -236,6 +236,22 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
 
+  packages/notifications:
+    dependencies:
+      '@semprec/data':
+        specifier: workspace:*
+        version: link:../data
+      '@semprec/shared':
+        specifier: workspace:*
+        version: link:../shared
+      pg:
+        specifier: ^8.23.0
+        version: 8.23.0
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
+
   packages/queue:
     dependencies:
       graphile-worker:
@@ -309,6 +325,9 @@ importers:
       '@semprec/module-registry':
         specifier: workspace:*
         version: link:../../packages/module-registry
+      '@semprec/notifications':
+        specifier: workspace:*
+        version: link:../../packages/notifications
       '@semprec/shared':
         specifier: workspace:*
         version: link:../../packages/shared

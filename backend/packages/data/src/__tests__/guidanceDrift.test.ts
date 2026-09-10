@@ -7,15 +7,11 @@ import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { insertItem } from "../chokePoint/itemsStore.js";
-import { createUser } from "../auth/usersStore.js";
-import { projectAgentGuidanceStore } from "../projectAgentGuidanceStore.js";
 import {
   AGENT_GUIDANCE_DRIFT_ACTION_ID,
   guidanceDriftHeartbeatStore,
 } from "../guidanceDrift/guidanceDriftHeartbeatStore.js";
 import { agentGuidanceDriftFindingsStore } from "../guidanceDrift/agentGuidanceDriftFindingsStore.js";
-import { createGuidanceNotificationWriter } from "../guidanceDrift/guidanceNotificationWriter.js";
-import { listUnreadNotificationsForUser } from "../notifications/notificationsStore.js";
 import type { GuidanceDriftContradiction } from "@semprec/shared";
 
 let pool: Pool;
@@ -27,11 +23,6 @@ async function createProjectItem(): Promise<string> {
     return insertItem(client, { databaseId: database.id, properties: { name: `Project ${randomUUID()}` } });
   });
   return item.id;
-}
-
-async function createTestUser(): Promise<string> {
-  const user = await createUser(pool, { email: `${randomUUID()}@example.com`, passwordHash: "hash" });
-  return user.id;
 }
 
 const CONTRADICTION: GuidanceDriftContradiction = {
@@ -207,56 +198,8 @@ describe("guidanceDrift stores (issue #85)", () => {
       expect(listed.map((row) => row.id)).toEqual([active.finding.id]);
     });
   });
-
-  describe("createGuidanceNotificationWriter", () => {
-    it("writes a notification carrying the finding payload, deduped by fingerprint", async () => {
-      const projectItemId = await createProjectItem();
-      const ownerUserId = await createTestUser();
-      await withTransaction(pool, (client) =>
-        projectAgentGuidanceStore.upsert(client, { projectItemId, ownerUserId, markdown: "# Guidance" }),
-      );
-      const fingerprint = "d".repeat(64);
-      const findingId = randomUUID();
-      const writer = createGuidanceNotificationWriter();
-
-      const payload = {
-        projectItemId,
-        fingerprint,
-        claim: CONTRADICTION.claim,
-        guidanceExcerpt: CONTRADICTION.guidanceExcerpt,
-        manifestFacts: CONTRADICTION.manifestFacts,
-        severity: CONTRADICTION.severity,
-      };
-
-      await withTransaction(pool, (client) =>
-        writer.create(client, {
-          userId: ownerUserId,
-          kind: "agent_guidance_drift",
-          linkHref: `/projects/${projectItemId}/agent-guidance`,
-          sourceTable: "agent_guidance_drift_findings",
-          sourceId: findingId,
-          payload,
-        }),
-      );
-      // A replay of the same transition (same source row + fingerprint) must not duplicate.
-      await withTransaction(pool, (client) =>
-        writer.create(client, {
-          userId: ownerUserId,
-          kind: "agent_guidance_drift",
-          linkHref: `/projects/${projectItemId}/agent-guidance`,
-          sourceTable: "agent_guidance_drift_findings",
-          sourceId: findingId,
-          payload,
-        }),
-      );
-
-      const unread = await listUnreadNotificationsForUser(pool, ownerUserId);
-      expect(unread).toHaveLength(1);
-      expect(unread[0]).toMatchObject({
-        kind: "agent_guidance_drift",
-        linkHref: `/projects/${projectItemId}/agent-guidance`,
-        payload,
-      });
-    });
-  });
 });
+
+// `createGuidanceNotificationWriter`'s tests live in `packages/notifications` (issue #85's
+// AC #46: the writer itself moved there too, on top of that package's `createNotification`),
+// exercised against `@semprec/data`'s public API rather than these internal fixtures.

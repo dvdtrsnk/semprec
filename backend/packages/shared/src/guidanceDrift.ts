@@ -67,6 +67,16 @@ export interface CreateGuidanceNotificationInput {
   linkHref: string;
   sourceTable: string;
   sourceId: string;
+  /**
+   * Dedup key for the underlying notification writer's `(sourceTable, sourceId, kind,
+   * transitionInstance)` unique index. Must be unique per activation/resolution *cycle*, not
+   * just per fingerprint: `finding.id` and `fingerprint` are both stable across a
+   * resolved-then-reappeared cycle, so keying on either alone would cause the second
+   * activation's notification to collide with the first and be silently dropped. Callers should
+   * derive this from the fingerprint plus something that changes across cycles (e.g. this run's
+   * `seenAt`/`resolvedAt` timestamp).
+   */
+  transitionInstance: string;
   payload: Record<string, unknown>;
 }
 

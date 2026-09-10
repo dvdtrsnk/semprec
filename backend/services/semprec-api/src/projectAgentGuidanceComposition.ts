@@ -8,12 +8,12 @@ import {
 import {
   agentGuidanceDriftFindingsStore,
   createGuidanceManifestPort,
-  createGuidanceNotificationWriter,
   createPoolClientTransactionRunner,
   guidanceDriftHeartbeatStore,
   guidanceReferenceStore,
   projectAgentGuidanceStore,
 } from "@semprec/data";
+import { createGuidanceNotificationWriter } from "@semprec/notifications";
 import { createHttpAiGatewayClient } from "@semprec/ai-gateway-client";
 import type { ModuleRegistry } from "@semprec/module-registry";
 

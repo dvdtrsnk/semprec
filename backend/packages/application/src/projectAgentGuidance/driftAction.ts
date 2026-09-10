@@ -157,6 +157,10 @@ export function createAgentGuidanceDriftAction<Tx>(
             linkHref,
             sourceTable: "agent_guidance_drift_findings",
             sourceId: finding.id,
+            // Scoped to this activation cycle (not just the fingerprint) so a finding that
+            // resolves and later reappears gets a fresh notification instead of colliding with
+            // its original activation's dedup key.
+            transitionInstance: `${fingerprint}:${seenAt.toISOString()}`,
             payload: {
               projectItemId,
               fingerprint,
@@ -181,6 +185,9 @@ export function createAgentGuidanceDriftAction<Tx>(
             linkHref,
             sourceTable: "agent_guidance_drift_findings",
             sourceId: finding.id,
+            // Scoped to this resolution cycle for the same reason as the active-transition
+            // notification above: the same finding can resolve more than once over its lifetime.
+            transitionInstance: `${active.fingerprint}:${seenAt.toISOString()}`,
             payload: { projectItemId, fingerprint: active.fingerprint },
           });
         }
