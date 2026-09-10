@@ -341,9 +341,10 @@ describe("docs (CRDT layer)", () => {
         );
       }
 
-      const { rows: historyUpdates } = await pool.query(`SELECT count(*)::int AS n FROM doc_history_updates WHERE doc_id = $1`, [
-        doc.id,
-      ]);
+      const { rows: historyUpdates } = await pool.query(
+        `SELECT count(*)::int AS n FROM doc_history_updates WHERE doc_id = $1`,
+        [doc.id],
+      );
       expect(historyUpdates[0].n).toBe(1 + threshold); // seed write + the threshold writes, none deleted by compaction
 
       const { rows: baseline } = await pool.query(
@@ -361,10 +362,12 @@ describe("docs (CRDT layer)", () => {
       const doc = await docStore.getDoc(item.id);
       if (!doc) throw new Error("doc not created");
 
-      const { rows: updateRows } = await pool.query<{ id: string; update: Buffer; created_by: string; created_at: Date }>(
-        `SELECT id, update, created_by, created_at FROM doc_updates WHERE doc_id = $1`,
-        [doc.id],
-      );
+      const { rows: updateRows } = await pool.query<{
+        id: string;
+        update: Buffer;
+        created_by: string;
+        created_at: Date;
+      }>(`SELECT id, update, created_by, created_at FROM doc_updates WHERE doc_id = $1`, [doc.id]);
       const { rows: historyRows } = await pool.query<{
         update_id: string;
         update: Buffer;
@@ -521,10 +524,9 @@ describe("docs (CRDT layer)", () => {
         [doc.id],
       );
       await pool.query(`UPDATE doc_updates SET created_at = now() - interval '10 days' WHERE doc_id = $1`, [doc.id]);
-      await pool.query(
-        `UPDATE doc_history_updates SET created_at = now() - interval '10 days' WHERE doc_id = $1`,
-        [doc.id],
-      );
+      await pool.query(`UPDATE doc_history_updates SET created_at = now() - interval '10 days' WHERE doc_id = $1`, [
+        doc.id,
+      ]);
 
       const justBeforeCutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000 - 1000);
       const justAfterCutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000 + 1000);
