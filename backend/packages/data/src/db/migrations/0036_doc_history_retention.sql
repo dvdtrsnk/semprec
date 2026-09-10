@@ -34,7 +34,7 @@ CREATE INDEX doc_history_updates_expires_at_idx ON doc_history_updates (expires_
 -- `doc_snapshot_history` rows carry no through_update_id boundary and are therefore not
 -- safely resumable under the new selection contract, so the backfill discards them and
 -- installs one valid cutover baseline per doc instead of trying to retrofit old rows.
-ALTER TABLE doc_snapshot_history ADD COLUMN through_update_id bigint;
+ALTER TABLE doc_snapshot_history ADD COLUMN through_update_id bigint DEFAULT 0;
 ALTER TABLE doc_snapshot_history ADD COLUMN represented_at timestamptz;
 
 -- Rolling (never-expiring) baseline checkpoints — the new-doc baseline and the populated-

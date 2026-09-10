@@ -23,17 +23,23 @@ import { withTransaction } from "../db/pool.js";
  * deleted but no new baseline installed yet.
  */
 export async function runDocHistoryCutoverMigration(pool: Pool): Promise<void> {
-  const { rows: columnRows } = await pool.query<{ is_nullable: string }>(
-    `SELECT is_nullable FROM information_schema.columns
-     WHERE table_name = 'doc_snapshot_history' AND column_name = 'through_update_id'`,
-  );
-  if (columnRows[0]?.is_nullable === "NO") return; // already migrated
-
   await withTransaction(pool, async (client) => {
     // Excludes any concurrent doc creation/write for the duration of the cutover, so no doc
     // can be left with its old checkpoints deleted and no baseline yet, or a baseline
     // installed from a state that a concurrent write then invalidates.
     await client.query(`LOCK TABLE docs IN EXCLUSIVE MODE`);
+
+    // The idempotency check must run inside this transaction, after the lock is held: two
+    // replicas invoking this concurrently at deploy time would otherwise both read
+    // is_nullable='YES' before either takes the lock, and the second (now serialized behind
+    // the first's commit) would re-delete and reinstall every baseline the first just wrote —
+    // a transient window where concurrent readers see doc_snapshot_history empty.
+    const { rows: columnRows } = await client.query<{ is_nullable: string }>(
+      `SELECT is_nullable FROM information_schema.columns
+       WHERE table_name = 'doc_snapshot_history' AND column_name = 'through_update_id'`,
+    );
+    if (columnRows[0]?.is_nullable === "NO") return; // already migrated
+
     await client.query(`DELETE FROM doc_snapshot_history`);
 
     const { rows: cutoverRows } = await client.query<{ cutover_at: Date }>(

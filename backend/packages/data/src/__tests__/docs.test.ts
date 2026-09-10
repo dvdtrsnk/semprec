@@ -498,6 +498,16 @@ describe("docs (CRDT layer)", () => {
     });
 
     it("openVersionAt raises HistoryNotRetainedError for a nonfuture time before the retention cutoff", async () => {
+      // Session timezone pinned to UTC and every "now" derived from a single Postgres read
+      // (rather than each of Node's Date.now() and Postgres's own now() drifting
+      // independently) so the boundary math below is deterministic regardless of the host's
+      // local timezone or clock skew between the test process and the database.
+      await pool.query(`SET TIME ZONE 'UTC'`);
+      const { rows: referenceRows } = await pool.query<{ reference: Date }>(
+        `SELECT transaction_timestamp() AS reference`,
+      );
+      const reference = referenceRows[0]!.reference;
+
       const item = await makeItem();
       await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "user");
       const doc = await docStore.getDoc(item.id);
@@ -505,31 +515,38 @@ describe("docs (CRDT layer)", () => {
 
       // Push history_available_from back so it doesn't itself trip the check, isolating the
       // retention-cutoff branch (retentionDays = 1 below, so 2 days ago is outside it).
-      await pool.query(`UPDATE docs SET history_available_from = now() - interval '10 days' WHERE id = $1`, [doc.id]);
-      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+      const tenDaysAgo = new Date(reference.getTime() - 10 * 24 * 60 * 60 * 1000);
+      await pool.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [doc.id, tenDaysAgo]);
+      const twoDaysAgo = new Date(reference.getTime() - 2 * 24 * 60 * 60 * 1000);
 
       await expect(openDocVersionAt(pool, doc.id, twoDaysAgo, 1)).rejects.toBeInstanceOf(HistoryNotRetainedError);
     });
 
     it("a just-after-cutoff read succeeds while a just-before-cutoff read is not retained (deterministic under a configured retention window)", async () => {
+      // Session timezone pinned to UTC and every "now" derived from a single Postgres read
+      // (rather than each of Node's Date.now() and Postgres's own now() drifting
+      // independently) so the boundary math below is deterministic regardless of the host's
+      // local timezone or clock skew between the test process and the database.
+      await pool.query(`SET TIME ZONE 'UTC'`);
+      const { rows: referenceRows } = await pool.query<{ reference: Date }>(
+        `SELECT transaction_timestamp() AS reference`,
+      );
+      const reference = referenceRows[0]!.reference;
+
       const item = await makeItem();
       await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "user");
       const doc = await docStore.getDoc(item.id);
       if (!doc) throw new Error("doc not created");
 
       const retentionDays = 1;
-      await pool.query(`UPDATE docs SET history_available_from = now() - interval '10 days' WHERE id = $1`, [doc.id]);
-      await pool.query(
-        `UPDATE doc_snapshot_history SET represented_at = now() - interval '10 days' WHERE doc_id = $1`,
-        [doc.id],
-      );
-      await pool.query(`UPDATE doc_updates SET created_at = now() - interval '10 days' WHERE doc_id = $1`, [doc.id]);
-      await pool.query(`UPDATE doc_history_updates SET created_at = now() - interval '10 days' WHERE doc_id = $1`, [
-        doc.id,
-      ]);
+      const tenDaysAgo = new Date(reference.getTime() - 10 * 24 * 60 * 60 * 1000);
+      await pool.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [doc.id, tenDaysAgo]);
+      await pool.query(`UPDATE doc_snapshot_history SET represented_at = $2 WHERE doc_id = $1`, [doc.id, tenDaysAgo]);
+      await pool.query(`UPDATE doc_updates SET created_at = $2 WHERE doc_id = $1`, [doc.id, tenDaysAgo]);
+      await pool.query(`UPDATE doc_history_updates SET created_at = $2 WHERE doc_id = $1`, [doc.id, tenDaysAgo]);
 
-      const justBeforeCutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000 - 1000);
-      const justAfterCutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000 + 1000);
+      const justBeforeCutoff = new Date(reference.getTime() - retentionDays * 24 * 60 * 60 * 1000 - 1000);
+      const justAfterCutoff = new Date(reference.getTime() - retentionDays * 24 * 60 * 60 * 1000 + 1000);
 
       await expect(openDocVersionAt(pool, doc.id, justBeforeCutoff, retentionDays)).rejects.toBeInstanceOf(
         HistoryNotRetainedError,
