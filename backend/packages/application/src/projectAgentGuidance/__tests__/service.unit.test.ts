@@ -39,8 +39,9 @@ function fakeStore(initial: ProjectAgentGuidance | null = null): ProjectAgentGui
       return rows.get(projectItemId) ?? null;
     },
     async upsert(_tx, row) {
-      rows.set(row.projectItemId, row);
-      return row;
+      const saved = { ...row, updatedAt: new Date().toISOString() };
+      rows.set(row.projectItemId, saved);
+      return saved;
     },
     async transfer(_tx, projectItemId, newOwnerUserId) {
       const existing = rows.get(projectItemId);

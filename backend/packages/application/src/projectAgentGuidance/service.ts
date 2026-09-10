@@ -77,7 +77,6 @@ export function createProjectAgentGuidanceService<Tx>(
           projectItemId: input.projectItemId,
           ownerUserId: existing ? existing.ownerUserId : actor.userId,
           markdown: input.markdown,
-          updatedAt: new Date().toISOString(),
         });
 
         await heartbeats.upsertDriftHeartbeat(tx, input.projectItemId);

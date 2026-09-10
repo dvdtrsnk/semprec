@@ -45,7 +45,7 @@ export interface TransactionRunner<Tx> {
  */
 export interface ProjectAgentGuidanceStore<Tx> {
   load(tx: Tx, projectItemId: string): Promise<ProjectAgentGuidance | null>;
-  upsert(tx: Tx, row: ProjectAgentGuidance): Promise<ProjectAgentGuidance>;
+  upsert(tx: Tx, row: Omit<ProjectAgentGuidance, "updatedAt">): Promise<ProjectAgentGuidance>;
   transfer(tx: Tx, projectItemId: string, newOwnerUserId: string): Promise<ProjectAgentGuidance>;
 }
 
@@ -54,6 +54,10 @@ export interface ProjectAgentGuidanceStore<Tx> {
  * Postgres FK (`items` is partitioned per database, so there is no direct FK target for
  * `project_item_id`). Each `require*` method's only failure mode is "the referenced entity
  * doesn't exist" — callers treat any rejection from these methods as exactly that.
+ *
+ * `requireUserLocale` has no caller within this issue's scope; it's part of issue #214's port
+ * as specified, kept here for #85's drift-notification flow (which needs the owner's locale to
+ * localize the notification) rather than re-adding it to this interface later.
  */
 export interface GuidanceReferenceStore<Tx> {
   requireProjectsItem(tx: Tx, projectItemId: string): Promise<void>;

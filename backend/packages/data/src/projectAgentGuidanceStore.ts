@@ -12,12 +12,14 @@ import { getItemById } from "./chokePoint/itemsStore.js";
 import { getUserById } from "./auth/usersStore.js";
 import { PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
 
-function mapRow(row: {
+type ProjectAgentGuidanceRow = {
   project_item_id: string;
   owner_user_id: string;
   markdown: string;
   updated_at: Date;
-}): ProjectAgentGuidance {
+};
+
+function mapRow(row: ProjectAgentGuidanceRow): ProjectAgentGuidance {
   return {
     projectItemId: row.project_item_id,
     ownerUserId: row.owner_user_id,
@@ -29,7 +31,7 @@ function mapRow(row: {
 /** Concrete `PoolClient` implementation of `@semprec/shared`'s `ProjectAgentGuidanceStore`. */
 export const projectAgentGuidanceStore: ProjectAgentGuidanceStore<PoolClient> = {
   async load(tx, projectItemId) {
-    const { rows } = await tx.query(
+    const { rows } = await tx.query<ProjectAgentGuidanceRow>(
       `SELECT project_item_id, owner_user_id, markdown, updated_at
        FROM project_agent_guidance WHERE project_item_id = $1`,
       [projectItemId],
@@ -38,7 +40,7 @@ export const projectAgentGuidanceStore: ProjectAgentGuidanceStore<PoolClient> = 
   },
 
   async upsert(tx, row) {
-    const { rows } = await tx.query(
+    const { rows } = await tx.query<ProjectAgentGuidanceRow>(
       `INSERT INTO project_agent_guidance (project_item_id, owner_user_id, markdown, updated_at)
        VALUES ($1, $2, $3, now())
        ON CONFLICT (project_item_id)
@@ -50,7 +52,7 @@ export const projectAgentGuidanceStore: ProjectAgentGuidanceStore<PoolClient> = 
   },
 
   async transfer(tx, projectItemId, newOwnerUserId) {
-    const { rows } = await tx.query(
+    const { rows } = await tx.query<ProjectAgentGuidanceRow>(
       `UPDATE project_agent_guidance SET owner_user_id = $2, updated_at = now()
        WHERE project_item_id = $1
        RETURNING project_item_id, owner_user_id, markdown, updated_at`,
@@ -103,7 +105,12 @@ export function createPoolClientTransactionRunner(pool: Pool): TransactionRunner
           await client.query("COMMIT");
           return result;
         } catch (err) {
-          await client.query("ROLLBACK");
+          try {
+            await client.query("ROLLBACK");
+          } catch {
+            // The original error is the one worth propagating; a failed rollback (e.g. a
+            // broken connection) shouldn't mask it.
+          }
           throw err;
         }
       } finally {

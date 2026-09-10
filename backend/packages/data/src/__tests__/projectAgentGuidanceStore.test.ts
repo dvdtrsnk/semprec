@@ -57,7 +57,6 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
         projectItemId,
         ownerUserId,
         markdown: "# Guidance v1",
-        updatedAt: new Date().toISOString(),
       }),
     );
     expect(created.markdown).toBe("# Guidance v1");
@@ -67,7 +66,6 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
         projectItemId,
         ownerUserId,
         markdown: "# Guidance v2",
-        updatedAt: new Date().toISOString(),
       }),
     );
     expect(updated.markdown).toBe("# Guidance v2");
@@ -86,7 +84,6 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
         projectItemId,
         ownerUserId,
         markdown: "# Guidance",
-        updatedAt: new Date().toISOString(),
       }),
     );
 
@@ -160,7 +157,6 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
             projectItemId,
             ownerUserId,
             markdown: "# Should roll back",
-            updatedAt: new Date().toISOString(),
           });
           throw new Error("boom");
         }),
