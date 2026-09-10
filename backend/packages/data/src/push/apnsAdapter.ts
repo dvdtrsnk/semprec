@@ -73,6 +73,9 @@ interface ApnsResponse {
   reason?: string;
 }
 
+/** A hung APNs connection/request must not block a graphile-worker task runner slot forever. */
+const APNS_REQUEST_TIMEOUT_MS = 10_000;
+
 function postApnsRequest(
   host: string,
   deviceToken: string,
@@ -81,7 +84,30 @@ function postApnsRequest(
 ): Promise<ApnsResponse> {
   return new Promise((resolve, reject) => {
     const client = http2.connect(host);
-    client.on("error", reject);
+    let settled = false;
+
+    const timeout = setTimeout(() => {
+      fail(new Error(`APNs request to ${host} timed out after ${APNS_REQUEST_TIMEOUT_MS}ms`));
+    }, APNS_REQUEST_TIMEOUT_MS);
+    timeout.unref?.();
+
+    function fail(error: Error): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      client.destroy();
+      reject(error);
+    }
+
+    function succeed(response: ApnsResponse): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      client.close();
+      resolve(response);
+    }
+
+    client.on("error", fail);
 
     const req = client.request({
       ...headers,
@@ -99,19 +125,15 @@ function postApnsRequest(
       responseBody += chunk;
     });
     req.on("end", () => {
-      client.close();
       let reason: string | undefined;
       try {
         reason = responseBody ? (JSON.parse(responseBody) as { reason?: string }).reason : undefined;
       } catch {
         reason = undefined;
       }
-      resolve({ status, reason });
+      succeed({ status, reason });
     });
-    req.on("error", (error: Error) => {
-      client.close();
-      reject(error);
-    });
+    req.on("error", fail);
     req.end(body);
   });
 }
@@ -130,7 +152,10 @@ export async function sendApnsNotification(
   config: ApnsConfig = getApnsConfigFromEnv(),
 ): Promise<PushSendResult> {
   const body = JSON.stringify({
-    aps: { alert: { title: payload.title, body: payload.title } },
+    // `notifications` (migration 0030) has no separate body/description column — `title` is the
+    // only user-facing text there is, so the alert carries it as `title` alone rather than
+    // duplicating it into `body` too.
+    aps: { alert: { title: payload.title } },
     link_href: payload.linkHref,
     notification_id: payload.notificationId,
   });
