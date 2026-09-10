@@ -5,7 +5,7 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createDocStore, putBlockWithClient, type DocStore } from "../docs/docStore.js";
-import { ConflictError, HistoryNotRetainedError, ValidationError } from "../errors.js";
+import { ConflictError, HistoryNotRetainedError, NotFoundError, ValidationError } from "../errors.js";
 import { DEFAULT_COMPACTION_THRESHOLD, loadDoc, mutateDoc, runCompactionSweep } from "../docs/docPersistence.js";
 import {
   cleanupExpiredDocHistory,
@@ -596,6 +596,12 @@ describe("docs (CRDT layer)", () => {
     it("openVersionAt on an item with no doc returns null", async () => {
       const item = await makeItem();
       expect(await docStore.openVersionAt(item.id, new Date())).toBeNull();
+    });
+
+    it("openDocVersionAt raises NotFoundError for a doc id that does not exist", async () => {
+      await expect(openDocVersionAt(pool, "00000000-0000-0000-0000-000000000000", new Date())).rejects.toBeInstanceOf(
+        NotFoundError,
+      );
     });
   });
 

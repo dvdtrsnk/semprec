@@ -1,7 +1,7 @@
 import * as Y from "yjs";
 import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
-import { HistoryNotRetainedError, ValidationError } from "../errors.js";
+import { HistoryNotRetainedError, NotFoundError, ValidationError } from "../errors.js";
 import { resolveDocHistoryRetentionDays, retentionHours } from "./docHistoryConfig.js";
 
 /**
@@ -157,6 +157,7 @@ export async function handleDocHistoryCleanupTask(pool: Pool): Promise<void> {
  * replayed forward from its nearest checkpoint (the new-doc baseline, a compaction
  * checkpoint, or the populated-upgrade cutover baseline).
  *
+ * - A nonexistent `docId` raises `NotFoundError` (404 `not_found`).
  * - A future `at` raises `ValidationError` (400 `validation_failed`).
  * - An `at` before `docs.history_available_from` or before the configured retention cutoff
  *   raises `HistoryNotRetainedError` (410 `history_not_retained`) — a stable explicit
@@ -188,7 +189,7 @@ export async function openDocVersionAt(
     );
     const docRow = docRows[0];
     if (!docRow) {
-      throw new ValidationError(`Doc ${docId} does not exist`, { docId });
+      throw new NotFoundError(`Doc ${docId} does not exist`, { docId });
     }
 
     const { rows: cutoffRows } = await client.query<{ cutoff: Date }>(

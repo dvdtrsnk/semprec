@@ -75,6 +75,11 @@ export async function runDocHistoryCutoverMigration(pool: Pool): Promise<void> {
       await client.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [doc.id, cutoverAt]);
     }
 
+    // Each ALTER TABLE ... SET NOT NULL scans doc_snapshot_history to verify the constraint,
+    // still under the docs EXCLUSIVE lock above — acceptable for this one-time cutover at
+    // current scale (every row was just written by the loop above, in-cache), but a table
+    // large enough to make that scan slow would need this step split out from the per-doc
+    // loop's lock instead of just accepted here.
     await client.query(`ALTER TABLE doc_snapshot_history ALTER COLUMN through_update_id SET NOT NULL`);
     await client.query(`ALTER TABLE doc_snapshot_history ALTER COLUMN represented_at SET NOT NULL`);
   });
