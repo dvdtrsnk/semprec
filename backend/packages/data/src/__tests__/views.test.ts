@@ -9,7 +9,6 @@ import { createViewTypeRegistry, registerViewType, type ViewTypeRegistry } from 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
 let chokePoint: ChokePoint;
-let projectsDbId: string;
 let agentA: string;
 let agentB: string;
 
@@ -33,7 +32,7 @@ describe("views", () => {
       system: true,
       ownerModuleId: "projects",
     });
-    projectsDbId = projectsDb.id;
+    const projectsDbId = projectsDb.id;
     agentA = (await chokePoint.createItem({ databaseId: projectsDbId, properties: {} })).id;
     agentB = (await chokePoint.createItem({ databaseId: projectsDbId, properties: {} })).id;
   });
