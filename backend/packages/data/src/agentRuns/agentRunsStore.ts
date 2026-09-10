@@ -2,7 +2,7 @@ import { Pool, type PoolClient } from "pg";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { getEarliestUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
-import { withTransaction } from "../db/pool.js";
+import { withTransaction, requireSingleRow } from "../db/pool.js";
 
 export type TriggeredBy = "user" | "heartbeat" | "supervisor" | "mcp";
 export type AgentRunUnit = "invocation" | "session";
@@ -26,7 +26,8 @@ export interface AgentRunRow {
   finishedAt: string | null;
 }
 
-function mapRow(row: {
+/** The raw `agent_runs` row shape this module reads back from Postgres. */
+type AgentRunDbRow = {
   id: string;
   project_item_id: string | null;
   parent_run_id: string | null;
@@ -38,7 +39,9 @@ function mapRow(row: {
   result: string | null;
   started_at: Date;
   finished_at: Date | null;
-}): AgentRunRow {
+};
+
+function mapRow(row: AgentRunDbRow): AgentRunRow {
   return {
     id: row.id,
     projectItemId: row.project_item_id,
@@ -64,7 +67,7 @@ export interface CreateAgentRunInput {
 }
 
 export async function createAgentRun(client: Pool | PoolClient, input: CreateAgentRunInput): Promise<AgentRunRow> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<AgentRunDbRow>(
     `INSERT INTO agent_runs (project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task)
      VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at`,
@@ -77,7 +80,7 @@ export async function createAgentRun(client: Pool | PoolClient, input: CreateAge
       input.task,
     ],
   );
-  return mapRow(rows[0]);
+  return mapRow(requireSingleRow(rows, "agent_runs row"));
 }
 
 export async function finishAgentRun(
@@ -134,7 +137,7 @@ export async function finishAgentRunWithErrorNotification(
 }
 
 export async function getAgentRun(client: Pool | PoolClient, id: string): Promise<AgentRunRow | null> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<AgentRunDbRow>(
     `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
      FROM agent_runs WHERE id = $1`,
     [id],
@@ -145,7 +148,7 @@ export async function getAgentRun(client: Pool | PoolClient, id: string): Promis
 /** The batched form of `getAgentRun` — for resolving a set of runs (e.g. the approval queue's source-run links) in one query instead of one per row. */
 export async function getAgentRunsByIds(client: Pool | PoolClient, ids: string[]): Promise<AgentRunRow[]> {
   if (ids.length === 0) return [];
-  const { rows } = await client.query(
+  const { rows } = await client.query<AgentRunDbRow>(
     `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
      FROM agent_runs WHERE id = ANY($1::uuid[])`,
     [ids],
@@ -164,7 +167,7 @@ export async function listAgentRunsByHeartbeat(
   heartbeatId: string,
   limit?: number,
 ): Promise<AgentRunRow[]> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<AgentRunDbRow>(
     `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
      FROM agent_runs WHERE heartbeat_id = $1 ORDER BY started_at DESC` + (limit !== undefined ? ` LIMIT $2` : ``),
     limit !== undefined ? [heartbeatId, limit] : [heartbeatId],
@@ -190,7 +193,7 @@ export async function listSessionAgentRuns(
   client: Pool | PoolClient,
   filter: SessionAgentRunsFilter,
 ): Promise<AgentRunRow[]> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<AgentRunDbRow>(
     `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
      FROM agent_runs
      WHERE project_item_id = $1 AND unit = 'session' AND triggered_by = $2 AND parent_run_id IS NOT DISTINCT FROM $3
@@ -206,7 +209,7 @@ export async function listSessionAgentRuns(
  * repair (`@semprec/agent-runtime`'s `repairInterruptedRuns`) is the only caller.
  */
 export async function listRunningAgentRuns(client: Pool | PoolClient): Promise<AgentRunRow[]> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<AgentRunDbRow>(
     `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
      FROM agent_runs WHERE status = 'running' ORDER BY started_at ASC`,
   );

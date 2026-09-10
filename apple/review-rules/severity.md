@@ -4,8 +4,7 @@
   silently corrupts persisted/synced state.
 - **high** — a bug that breaks the feature the issue asked for, a retain
   cycle in a closure capturing `self` across an async boundary, UI state
-  mutated off the main actor, or a violation of the issue's own "Mimo
-  scope".
+  mutated off the main actor, or a violation of the issue's own "Out of scope".
 - **medium** — a bug confined to an edge case, a missing preview for a new
   screen, or an inconsistency with an established pattern elsewhere in the
   codebase.

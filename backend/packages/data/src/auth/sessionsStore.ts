@@ -1,8 +1,10 @@
 import type { Pool, PoolClient } from "pg";
+import { requireSingleRow } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { SESSION_PLATFORMS, type SessionRow } from "./types.js";
 
-function mapRow(row: {
+/** The raw `sessions` row shape this module reads back from Postgres. */
+type SessionDbRow = {
   id: string;
   user_id: string;
   token_hash: string;
@@ -12,7 +14,9 @@ function mapRow(row: {
   expires_at: Date;
   user_agent: string | null;
   revoked_at: Date | null;
-}): SessionRow {
+};
+
+function mapRow(row: SessionDbRow): SessionRow {
   return {
     id: row.id,
     userId: row.user_id,
@@ -39,13 +43,13 @@ export interface CreateSessionInput {
 
 /** Throws (unique violation) in the astronomically unlikely event `tokenHash` collides with a live session. */
 export async function createSession(client: Pool | PoolClient, input: CreateSessionInput): Promise<SessionRow> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<SessionDbRow>(
     `INSERT INTO sessions (user_id, token_hash, platform, expires_at, user_agent)
      VALUES ($1, $2, $3, $4, $5)
      RETURNING ${SELECT_COLUMNS}`,
     [input.userId, input.tokenHash, input.platform, input.expiresAt, input.userAgent ?? null],
   );
-  return mapRow(rows[0]);
+  return mapRow(requireSingleRow(rows, "sessions row"));
 }
 
 /** A session is "active" when it is neither revoked nor past its expiry — the two independent ways a token stops working. */
@@ -53,7 +57,7 @@ export async function getActiveSessionByTokenHash(
   client: Pool | PoolClient,
   tokenHash: string,
 ): Promise<SessionRow | null> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<SessionDbRow>(
     `SELECT ${SELECT_COLUMNS} FROM sessions
      WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now()`,
     [tokenHash],
@@ -93,7 +97,7 @@ export async function revokeAllSessionsForUser(client: Pool | PoolClient, userId
 }
 
 export async function listSessionsForUser(client: Pool | PoolClient, userId: string): Promise<SessionRow[]> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<SessionDbRow>(
     `SELECT ${SELECT_COLUMNS} FROM sessions WHERE user_id = $1 ORDER BY created_at DESC`,
     [userId],
   );

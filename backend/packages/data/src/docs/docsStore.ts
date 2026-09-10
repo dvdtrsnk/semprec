@@ -6,7 +6,10 @@ import type { DocKind, DocRow } from "../types.js";
 
 const DOC_KIND_VALUES: readonly DocKind[] = ["page", "canvas"];
 
-function mapDocRow(row: { id: string; item_id: string; kind: string; created_at: Date }): DocRow {
+/** The raw `docs` row shape this module reads back from Postgres. */
+type DocDbRow = { id: string; item_id: string; kind: string; created_at: Date };
+
+function mapDocRow(row: DocDbRow): DocRow {
   return {
     id: row.id,
     itemId: row.item_id,
@@ -16,12 +19,16 @@ function mapDocRow(row: { id: string; item_id: string; kind: string; created_at:
 }
 
 export async function getDocByItemId(client: Queryable, itemId: string): Promise<DocRow | null> {
-  const { rows } = await client.query(`SELECT id, item_id, kind, created_at FROM docs WHERE item_id = $1`, [itemId]);
+  const { rows } = await client.query<DocDbRow>(`SELECT id, item_id, kind, created_at FROM docs WHERE item_id = $1`, [
+    itemId,
+  ]);
   return rows[0] ? mapDocRow(rows[0]) : null;
 }
 
 export async function getDocById(client: Queryable, docId: string): Promise<DocRow | null> {
-  const { rows } = await client.query(`SELECT id, item_id, kind, created_at FROM docs WHERE id = $1`, [docId]);
+  const { rows } = await client.query<DocDbRow>(`SELECT id, item_id, kind, created_at FROM docs WHERE id = $1`, [
+    docId,
+  ]);
   return rows[0] ? mapDocRow(rows[0]) : null;
 }
 
@@ -48,7 +55,7 @@ export async function getOrCreateDoc(client: Queryable, itemId: string, kind: Do
     return existing;
   }
 
-  const { rows } = await client.query(
+  const { rows } = await client.query<DocDbRow & { history_available_from: Date }>(
     `INSERT INTO docs (item_id, kind, history_available_from) VALUES ($1, $2, now())
      ON CONFLICT (item_id) DO NOTHING RETURNING id, item_id, kind, created_at, history_available_from`,
     [itemId, kind],

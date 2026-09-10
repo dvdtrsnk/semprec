@@ -97,7 +97,7 @@ export async function recomputeRollupCell(pool: Pool, rollupPropertyId: string, 
     // query text, and errors ("could not determine data type of parameter $3") if a
     // later placeholder ($4) is used but $3 never appears at all. The tautological
     // `$3::text IS NULL OR $3::text IS NOT NULL` gives it an explicit, harmless context.
-    const { rows } = await client.query(
+    const { rows } = await client.query<{ value: unknown }>(
       `SELECT ${select} AS value
        FROM item_relations ir
        JOIN items t ON t.database_id = $4 AND t.id = (CASE WHEN ir.item_a = $2 THEN ir.item_b ELSE ir.item_a END)

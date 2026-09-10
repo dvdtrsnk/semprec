@@ -2,13 +2,16 @@ import type { Pool, PoolClient } from "pg";
 import { requireSingleRow } from "../db/pool.js";
 import type { LoginAttemptRow } from "./types.js";
 
-function mapRow(row: {
+/** The raw `login_attempts` row shape this module reads back from Postgres. */
+type LoginAttemptDbRow = {
   id: string;
   email: string;
   ip: string;
   succeeded: boolean;
   attempted_at: Date;
-}): LoginAttemptRow {
+};
+
+function mapRow(row: LoginAttemptDbRow): LoginAttemptRow {
   return {
     id: row.id,
     email: row.email,
@@ -29,12 +32,12 @@ export async function recordLoginAttempt(
   client: Pool | PoolClient,
   input: RecordLoginAttemptInput,
 ): Promise<LoginAttemptRow> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<LoginAttemptDbRow>(
     `INSERT INTO login_attempts (email, ip, succeeded) VALUES ($1, $2, $3)
      RETURNING id, email, ip, succeeded, attempted_at`,
     [input.email, input.ip, input.succeeded],
   );
-  return mapRow(rows[0]);
+  return mapRow(requireSingleRow(rows, "login_attempts row"));
 }
 
 /** Count of failed attempts for `email` from `ip` within the last `windowSeconds` — the throttling signal for #140's login endpoint. */

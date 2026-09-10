@@ -3,14 +3,17 @@ import { requireSingleRow, type Queryable } from "../db/pool.js";
 import { ConflictError, NotFoundError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 
-function mapItemRow(row: {
+/** The raw `items` row shape this module reads back from Postgres. */
+type ItemDbRow = {
   id: string;
   database_id: string;
   properties: Record<string, unknown>;
   computed: Record<string, unknown>;
   updated_at: Date;
   deleted_at: Date | null;
-}): ItemRow {
+};
+
+function mapItemRow(row: ItemDbRow): ItemRow {
   return {
     id: row.id,
     databaseId: row.database_id,
@@ -22,7 +25,7 @@ function mapItemRow(row: {
 }
 
 export async function getItemById(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, updated_at, deleted_at
      FROM items WHERE database_id = $1 AND id = $2`,
     [databaseId, itemId],
@@ -32,7 +35,7 @@ export async function getItemById(client: Queryable, databaseId: string, itemId:
 
 /** Row-locking read used before a mutation, inside the caller's transaction. */
 export async function lockItemById(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, updated_at, deleted_at
      FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE`,
     [databaseId, itemId],
@@ -95,12 +98,12 @@ export async function insertItem(client: Queryable, input: InsertItemInput): Pro
     }
   }
 
-  const { rows } = await client.query(
+  const { rows } = await client.query<ItemDbRow>(
     `INSERT INTO items (id, database_id, properties) VALUES ($1, $2, $3::jsonb)
      RETURNING id, database_id, properties, computed, updated_at, deleted_at`,
     [itemId, input.databaseId, JSON.stringify(input.properties)],
   );
-  return mapItemRow(rows[0]);
+  return mapItemRow(requireSingleRow(rows, "items row"));
 }
 
 /**
@@ -143,17 +146,17 @@ export async function updateItemProperties(client: Queryable, input: UpdateItemI
     throw new ConflictError("Item was modified since ifVersion was read", { current });
   }
 
-  const { rows } = await client.query(
+  const { rows } = await client.query<ItemDbRow>(
     `UPDATE items SET properties = properties || $3::jsonb, updated_at = now()
      WHERE database_id = $1 AND id = $2
      RETURNING id, database_id, properties, computed, updated_at, deleted_at`,
     [input.databaseId, input.itemId, JSON.stringify(input.propertiesPatch)],
   );
-  return mapItemRow(rows[0]);
+  return mapItemRow(requireSingleRow(rows, "items row"));
 }
 
 export async function softDeleteItem(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<ItemDbRow>(
     `UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL
      RETURNING id, database_id, properties, computed, updated_at, deleted_at`,
     [databaseId, itemId],
@@ -162,7 +165,7 @@ export async function softDeleteItem(client: Queryable, databaseId: string, item
 }
 
 export async function restoreItem(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<ItemDbRow>(
     `UPDATE items SET deleted_at = NULL WHERE database_id = $1 AND id = $2 AND deleted_at IS NOT NULL
      RETURNING id, database_id, properties, computed, updated_at, deleted_at`,
     [databaseId, itemId],
@@ -208,7 +211,7 @@ export async function listItems(
   }
   params.push(limit + 1);
 
-  const { rows } = await client.query(
+  const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, updated_at, deleted_at
      FROM items WHERE ${conditions.join(" AND ")} ORDER BY ${orderBySql} LIMIT $${params.length}`,
     params,
@@ -254,7 +257,7 @@ export async function countItems(
  */
 export async function getItemsByIds(client: Queryable, itemIds: string[]): Promise<ItemRow[]> {
   if (itemIds.length === 0) return [];
-  const { rows } = await client.query(
+  const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, updated_at, deleted_at
      FROM items WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL`,
     [itemIds],
@@ -278,7 +281,7 @@ export async function getItemsByIdsInDatabaseIncludingDeleted(
   itemIds: string[],
 ): Promise<ItemRow[]> {
   if (itemIds.length === 0) return [];
-  const { rows } = await client.query(
+  const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, updated_at, deleted_at
      FROM items WHERE database_id = $1 AND id = ANY($2::uuid[])`,
     [databaseId, itemIds],

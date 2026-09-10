@@ -9,14 +9,17 @@ export interface MailFolderSyncStateRow {
   lastError: string | null;
 }
 
-function mapRow(row: {
+/** The raw `mail_folder_sync_state` row shape this module reads back from Postgres. */
+type MailFolderSyncStateDbRow = {
   item_id: string;
   uidvalidity: string | null;
   uidnext: string | null;
   highestmodseq: string | null;
   last_full_reconcile_at: Date | null;
   last_error: string | null;
-}): MailFolderSyncStateRow {
+};
+
+function mapRow(row: MailFolderSyncStateDbRow): MailFolderSyncStateRow {
   return {
     itemId: row.item_id,
     uidvalidity: row.uidvalidity,
@@ -30,7 +33,7 @@ function mapRow(row: {
 const COLUMNS = "item_id, uidvalidity, uidnext, highestmodseq, last_full_reconcile_at, last_error";
 
 export async function ensureMailFolderSyncState(client: Queryable, itemId: string): Promise<MailFolderSyncStateRow> {
-  const inserted = await client.query(
+  const inserted = await client.query<MailFolderSyncStateDbRow>(
     `INSERT INTO mail_folder_sync_state (item_id) VALUES ($1) ON CONFLICT (item_id) DO NOTHING RETURNING ${COLUMNS}`,
     [itemId],
   );
@@ -44,7 +47,10 @@ export async function getMailFolderSyncState(
   client: Queryable,
   itemId: string,
 ): Promise<MailFolderSyncStateRow | null> {
-  const { rows } = await client.query(`SELECT ${COLUMNS} FROM mail_folder_sync_state WHERE item_id = $1`, [itemId]);
+  const { rows } = await client.query<MailFolderSyncStateDbRow>(
+    `SELECT ${COLUMNS} FROM mail_folder_sync_state WHERE item_id = $1`,
+    [itemId],
+  );
   return rows[0] ? mapRow(rows[0]) : null;
 }
 

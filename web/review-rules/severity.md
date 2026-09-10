@@ -3,7 +3,7 @@
   state.
 - **high** — a bug that breaks the feature the issue asked for, a missing
   input validation at a boundary the choke-point API exposes, or a
-  violation of the issue's own "Mimo scope".
+  violation of the issue's own "Out of scope".
 - **medium** — a bug confined to an edge case, a missing test for new
   behavior, or an inconsistency with an established pattern elsewhere in
   the codebase.

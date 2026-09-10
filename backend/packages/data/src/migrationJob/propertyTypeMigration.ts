@@ -126,7 +126,7 @@ export async function runPropertyTypeMigrationJob(
     const client: PoolClient = await pool.connect();
     let rows: Array<{ id: string; properties: Record<string, unknown> }>;
     try {
-      const result = await client.query(
+      const result = await client.query<{ id: string; properties: Record<string, unknown> }>(
         `SELECT id, properties FROM items WHERE database_id = $1 ${cursor ? "AND id > $3" : ""}
          ORDER BY id ASC LIMIT $2`,
         cursor ? [property.databaseId, pageSize, cursor] : [property.databaseId, pageSize],
