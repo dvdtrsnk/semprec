@@ -66,7 +66,7 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
   const titleTemplate = resolveCatalogLabel(null, catalogs[locale], catalogs.en, `notification.${input.kind}.title`);
   const title = interpolate(titleTemplate, input.titleParams ?? {});
 
-  const { rows } = await client.query(
+  const { rows } = await client.query<{ id: string }>(
     `INSERT INTO notifications (user_id, kind, title, link_href, source_table, source_id, transition_instance)
      VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (source_table, source_id, kind, transition_instance) DO NOTHING
@@ -74,7 +74,7 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
     [input.userId, input.kind, title, input.linkHref, input.sourceTable, input.sourceId, input.transitionInstance],
   );
 
-  const notificationId = (rows[0] as { id: string } | undefined)?.id;
+  const notificationId = rows[0]?.id;
   if (notificationId) {
     await enqueueNotificationFanout(client, notificationId);
   }
