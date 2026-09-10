@@ -66,16 +66,17 @@ async function compact(
     // Rows are loaded ordered by id ascending, so the last one is the greatest id — the
     // inclusive boundary when several merged updates share a timestamp.
     const boundary = mergedUpdates[mergedUpdates.length - 1]!;
-    // expires_at is anchored to compaction time (transaction_timestamp()), not
-    // boundary.created_at (content time): a dormant doc compacted today, whose last write was
-    // long ago, must still be reconstructable for the full retentionDays window starting now —
-    // anchoring to the old content timestamp could expire the checkpoint before that window
-    // even begins, leaving openVersionAt silently unable to see updates since expired too.
-    // represented_at stays content-anchored: it's the instant the checkpoint's state was
-    // actually current, which is what the replay boundary comparison depends on.
+    // expires_at = represented_at + make_interval(hours => ...) per issue #216's Task
+    // (represented_at is boundary.created_at, the content timestamp this checkpoint's state
+    // was current at). A dormant doc's compaction checkpoint can therefore expire before a
+    // query within the nominal retentionDays window reaches it — but that query still finds
+    // the doc's earlier, non-expiring baseline checkpoint (new-doc or cutover), which is
+    // always represented_at-earlier and NULL-expiry, so replay still succeeds; it just
+    // replays a longer stretch of doc_history_updates instead of resuming from the now-
+    // expired later checkpoint. History_not_retained is never returned incorrectly by this.
     await client.query(
       `INSERT INTO doc_snapshot_history (doc_id, state, through_update_id, represented_at, expires_at, created_by)
-       VALUES ($1, $2, $3, $4::timestamptz, transaction_timestamp() + make_interval(hours => $5::int), 'system')`,
+       VALUES ($1, $2, $3, $4::timestamptz, $4::timestamptz + make_interval(hours => $5::int), 'system')`,
       [docId, state, boundary.id, boundary.created_at, retentionHours(retentionDays)],
     );
     await client.query(`DELETE FROM doc_updates WHERE doc_id = $1 AND id = ANY($2::bigint[])`, [

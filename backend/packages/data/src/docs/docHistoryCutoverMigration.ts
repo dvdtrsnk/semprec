@@ -36,7 +36,8 @@ export async function runDocHistoryCutoverMigration(pool: Pool): Promise<void> {
     // a transient window where concurrent readers see doc_snapshot_history empty.
     const { rows: columnRows } = await client.query<{ is_nullable: string }>(
       `SELECT is_nullable FROM information_schema.columns
-       WHERE table_name = 'doc_snapshot_history' AND column_name = 'through_update_id'`,
+       WHERE table_schema = current_schema() AND table_name = 'doc_snapshot_history'
+         AND column_name = 'through_update_id'`,
     );
     if (columnRows[0]?.is_nullable === "NO") return; // already migrated
 

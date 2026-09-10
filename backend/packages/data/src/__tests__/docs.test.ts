@@ -15,6 +15,22 @@ let pool: Pool;
 let chokePoint: ChokePoint;
 let docStore: DocStore;
 
+// `SET TIME ZONE` is session-scoped, not transaction-scoped — issuing it via pool.query()
+// would leak the UTC setting onto whichever pooled connection served that query, for
+// whichever later, unrelated test next borrows it. Pinning to a dedicated client and
+// resetting before release keeps this test's determinism fix from leaking state.
+async function withUtcReferenceTime(pool: Pool): Promise<Date> {
+  const client = await pool.connect();
+  try {
+    await client.query(`SET TIME ZONE 'UTC'`);
+    const { rows } = await client.query<{ reference: Date }>(`SELECT transaction_timestamp() AS reference`);
+    return rows[0]!.reference;
+  } finally {
+    await client.query(`RESET TIME ZONE`);
+    client.release();
+  }
+}
+
 describe("docs (CRDT layer)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -501,12 +517,11 @@ describe("docs (CRDT layer)", () => {
       // Session timezone pinned to UTC and every "now" derived from a single Postgres read
       // (rather than each of Node's Date.now() and Postgres's own now() drifting
       // independently) so the boundary math below is deterministic regardless of the host's
-      // local timezone or clock skew between the test process and the database.
-      await pool.query(`SET TIME ZONE 'UTC'`);
-      const { rows: referenceRows } = await pool.query<{ reference: Date }>(
-        `SELECT transaction_timestamp() AS reference`,
-      );
-      const reference = referenceRows[0]!.reference;
+      // local timezone or clock skew between the test process and the database. `SET TIME
+      // ZONE` is session-scoped, so this borrows a dedicated client (rather than pool.query,
+      // which could hand the now-UTC session to a later, unrelated test) and resets it before
+      // releasing the client back to the pool.
+      const reference = await withUtcReferenceTime(pool);
 
       const item = await makeItem();
       await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "user");
@@ -526,12 +541,11 @@ describe("docs (CRDT layer)", () => {
       // Session timezone pinned to UTC and every "now" derived from a single Postgres read
       // (rather than each of Node's Date.now() and Postgres's own now() drifting
       // independently) so the boundary math below is deterministic regardless of the host's
-      // local timezone or clock skew between the test process and the database.
-      await pool.query(`SET TIME ZONE 'UTC'`);
-      const { rows: referenceRows } = await pool.query<{ reference: Date }>(
-        `SELECT transaction_timestamp() AS reference`,
-      );
-      const reference = referenceRows[0]!.reference;
+      // local timezone or clock skew between the test process and the database. `SET TIME
+      // ZONE` is session-scoped, so this borrows a dedicated client (rather than pool.query,
+      // which could hand the now-UTC session to a later, unrelated test) and resets it before
+      // releasing the client back to the pool.
+      const reference = await withUtcReferenceTime(pool);
 
       const item = await makeItem();
       await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "user");

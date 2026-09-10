@@ -102,7 +102,8 @@ describe("runDocHistoryCutoverMigration", () => {
 
     const { rows: columnRows } = await pool.query<{ is_nullable: string }>(
       `SELECT is_nullable FROM information_schema.columns
-       WHERE table_name = 'doc_snapshot_history' AND column_name IN ('through_update_id', 'represented_at')`,
+       WHERE table_schema = current_schema() AND table_name = 'doc_snapshot_history'
+         AND column_name IN ('through_update_id', 'represented_at')`,
     );
     expect(columnRows.every((r) => r.is_nullable === "NO")).toBe(true);
 
