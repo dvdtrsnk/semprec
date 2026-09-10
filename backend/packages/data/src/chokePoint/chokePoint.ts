@@ -241,9 +241,14 @@ async function assertAuthenticatedAgentIdentity(client: PoolClient, actor: Actor
     );
   }
   const projectsDatabase = await databasesStore.getDatabaseByModuleId(client, PROJECTS_MODULE_ID);
-  const projectItem = projectsDatabase
-    ? await itemsStore.getItemById(client, projectsDatabase.id, actor.agentProjectItemId)
-    : null;
+  if (!projectsDatabase) {
+    throw new ForbiddenError(
+      "The Projects system database does not exist, so no agent identity can be verified",
+      { field: "agentProjectItemId", reason: "unknown_authenticated_agent_identity" },
+      "owner_violation",
+    );
+  }
+  const projectItem = await itemsStore.getItemById(client, projectsDatabase.id, actor.agentProjectItemId);
   if (!projectItem || projectItem.deletedAt) {
     throw new ForbiddenError(
       `Projects item ${actor.agentProjectItemId} does not exist`,
@@ -273,11 +278,20 @@ async function adoptIfUserWrite(
 /** Shared by patch/delete on a view and every write to its `view_items` membership. A no-op for a 'user'/'system' actor — only an agent write is ownership-checked here. */
 function assertViewWritable(view: ViewRow, actor: Actor): void {
   if (actor.type !== "ai_agent") return;
-  if (view.createdBy === "system") throw ownerViolation(view, "system_owned");
-  if (view.createdBy === "user") throw ownerViolation(view, "user_owned");
-  // view.createdBy === "ai_agent"
-  if (view.creatorProjectItemId === null) throw ownerViolation(view, "legacy_creator_unknown");
-  if (view.creatorProjectItemId !== actor.agentProjectItemId) throw ownerViolation(view, "creator_mismatch");
+  switch (view.createdBy) {
+    case "system":
+      throw ownerViolation(view, "system_owned");
+    case "user":
+      throw ownerViolation(view, "user_owned");
+    case "ai_agent":
+      if (view.creatorProjectItemId === null) throw ownerViolation(view, "legacy_creator_unknown");
+      if (view.creatorProjectItemId !== actor.agentProjectItemId) throw ownerViolation(view, "creator_mismatch");
+      return;
+    default: {
+      const exhaustive: never = view.createdBy;
+      throw new Error(`Unhandled CreatedBy value: ${String(exhaustive)}`);
+    }
+  }
 }
 
 /** Proves the caller's process identity for a protected system relation write — see `assertRelationSideCreatable`/`assertRelationPropertyWritable` below. Never accepted on the public facade. */
@@ -1006,11 +1020,9 @@ export function createChokePoint(
     },
 
     // ---- views ----
-    // An agent write here is a direct write, not a proposal through the `confirm` flow. This is
-    // the documented views carve-out in
-    // [[2026-09-10-agent-writes-are-proposals-not-direct-writes]] ("Scope: agent-owned views are
-    // excluded") — issue #87 only tightens *which* agent may write to *which* view, it does not
-    // introduce agent direct-writes.
+    // An agent write here is a direct write, not a proposal through the `confirm` flow — see
+    // [[2026-09-10-views-are-excluded-from-the-agent-proposal-flow]]. Issue #87 only tightens
+    // *which* agent may write to *which* view, it does not introduce agent direct-writes.
     /**
      * `actor` (default `{ type: 'user' }`) governs `createdBy`/`creatorProjectItemId` — a
      * caller never sets either directly. Creating as `type: 'ai_agent'` requires and stores
