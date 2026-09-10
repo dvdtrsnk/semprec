@@ -54,6 +54,28 @@
       "to": {
         "path": "^(services/|packages/agent-runtime/)"
       }
+    },
+    {
+      "name": "no-application-gateway-implementation-import",
+      "severity": "error",
+      "comment": "Issue #215: packages/application imports only @semprec/shared's AiGatewayClientPort — never packages/ai-gateway-client's HTTP implementation nor packages/ai-gateway itself — so it stays ignorant of how a structured completion actually reaches a provider.",
+      "from": {
+        "path": "^packages/application/"
+      },
+      "to": {
+        "path": "^packages/(ai-gateway-client|ai-gateway)/"
+      }
+    },
+    {
+      "name": "no-model-provider-dependency-outside-gateway",
+      "severity": "error",
+      "comment": "Issue #215 acceptance criterion: no direct model-provider dependency exists outside semprec-ai-gateway. Only services/semprec-ai-gateway/src may import a model-provider SDK package directly.",
+      "from": {
+        "path": "^(?!services/semprec-ai-gateway/)"
+      },
+      "to": {
+        "path": "node_modules/(@anthropic-ai/|openai/)"
+      }
     }
   ]
 }

@@ -11,6 +11,9 @@ export interface AiGatewayCallRow {
   audioSeconds: number | null;
   costUsd: number;
   agentRunId: string | null;
+  /** Set only by #215's `POST /internal/complete` route; null for every other caller. */
+  projectItemId: string | null;
+  operation: string | null;
 }
 
 export interface RecordTokenCallInput {
@@ -20,6 +23,9 @@ export interface RecordTokenCallInput {
   outputTokens: number;
   costUsd: number;
   agentRunId?: string | null;
+  /** #215: always set together, or not at all — the structured-completion route sets both. */
+  projectItemId?: string | null;
+  operation?: string | null;
 }
 
 export interface RecordAudioCallInput {
@@ -40,6 +46,8 @@ function mapRow(row: {
   audio_seconds: string | null;
   cost_usd: string;
   agent_run_id: string | null;
+  project_item_id: string | null;
+  operation: string | null;
 }): AiGatewayCallRow {
   return {
     id: row.id,
@@ -51,6 +59,8 @@ function mapRow(row: {
     audioSeconds: row.audio_seconds === null ? null : Number(row.audio_seconds),
     costUsd: Number(row.cost_usd),
     agentRunId: row.agent_run_id,
+    projectItemId: row.project_item_id,
+    operation: row.operation,
   };
 }
 
@@ -60,10 +70,19 @@ export async function recordTokenGatewayCall(
   input: RecordTokenCallInput,
 ): Promise<AiGatewayCallRow> {
   const { rows } = await client.query(
-    `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id)
-     VALUES ($1, $2, $3, $4, NULL, $5, $6)
-     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id`,
-    [input.provider, input.model, input.inputTokens, input.outputTokens, input.costUsd, input.agentRunId ?? null],
+    `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation)
+     VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8)
+     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation`,
+    [
+      input.provider,
+      input.model,
+      input.inputTokens,
+      input.outputTokens,
+      input.costUsd,
+      input.agentRunId ?? null,
+      input.projectItemId ?? null,
+      input.operation ?? null,
+    ],
   );
   return mapRow(rows[0]);
 }
@@ -74,9 +93,9 @@ export async function recordAudioGatewayCall(
   input: RecordAudioCallInput,
 ): Promise<AiGatewayCallRow> {
   const { rows } = await client.query(
-    `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id)
-     VALUES ($1, $2, NULL, NULL, $3, $4, $5)
-     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id`,
+    `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation)
+     VALUES ($1, $2, NULL, NULL, $3, $4, $5, NULL, NULL)
+     RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation`,
     [input.provider, input.model, input.audioSeconds, input.costUsd, input.agentRunId ?? null],
   );
   return mapRow(rows[0]);
