@@ -5,6 +5,8 @@ description: Expand/contract discipline for every Postgres schema change in the 
 
 # Migrations: expand/contract, forward-only
 
+Recorded as ADR: `docs/adr/2026-09-10-expand-contract-forward-only-migrations.md`.
+
 Deploys flip a symlink and restart services; rollback flips the symlink back
 **without unwinding schema**. That single operational fact dictates every rule
 here: the previous release's code must keep working against the new schema,

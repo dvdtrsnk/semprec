@@ -73,15 +73,23 @@ Two modes, detected by the `SEMPREC_HARNESS` environment variable:
    `backend/review-rules/` and the skills in `backend/.claude/skills/`
    (choke-point writes, single-writer ownership, expand/contract migrations,
    AI calls only via the gateway, English camelCase canonical keys, labels via
-   i18n). For a large or unfamiliar area, spawn `Explore` subagents to map the
-   relevant code before editing — cheaper than a wrong first attempt. Commit
-   once you reach a working state (see "single, non-resumable turn" above).
+   i18n). Before designing anything that isn't a straight application of those
+   conventions, check `docs/adr/` (`ls docs/adr/`, grep frontmatter for `area`)
+   for a decision already covering it — don't re-derive or silently contradict
+   a past architectural call. If the Task genuinely requires a new
+   architectural pattern not covered by any rule or ADR, add one under
+   `docs/adr/` in this same PR (format in `docs/adr/README.md`). For a large or
+   unfamiliar area, spawn `Explore` subagents to map the relevant code before
+   editing — cheaper than a wrong first attempt. Commit once you reach a
+   working state (see "single, non-resumable turn" above).
 3. **Self-check before the PR** — a CI round-trip costs minutes, your own review
    costs seconds. In order:
    a. Run the project's build and full test suite; everything must pass.
    b. Read your complete diff (`git diff origin/develop`) in the role of a strict
       reviewer applying `backend/review-rules/rules.md` and
-      `backend/review-rules/tasks/*.md`. A subagent can run this pass — call it
+      `backend/review-rules/tasks/*.md`, including whether the diff introduces a
+      new architectural pattern with no corresponding ADR, or contradicts an
+      existing one in `docs/adr/`. A subagent can run this pass — call it
       in the foreground and read its findings before continuing. Fix every
       violation you find.
    c. Sweep the diff for leftovers: debug prints, commented-out code, files
