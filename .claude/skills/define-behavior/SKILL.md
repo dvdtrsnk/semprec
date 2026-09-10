@@ -46,7 +46,7 @@ Hard rules:
 - **Behavior, not technology.** The architecture is already fixed by this
   project (choke-point API, ownership model, module contracts, migration
   discipline — see `backend/review-rules/`, the skills in
-  `backend/.claude/skills/`, and the decisions recorded under `docs/adr/`).
+  `.bb/skills/`, and the decisions recorded under `docs/adr/`).
   Do not ask which library, which table layout, which endpoint shape. An
   architecture question is legitimate only when the existing architecture
   genuinely does not answer it — and even then, first send a subagent to check

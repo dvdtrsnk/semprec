@@ -7,7 +7,7 @@ Check for correctness bugs and gaps:
    async boundary where the object may already be gone by completion — high.
 3. UI state (`@Published`, `@State`, view model properties driving SwiftUI)
    mutated off the main actor — high.
-4. An edge case the linked issue's Zadani explicitly calls out (e.g. a
+4. An edge case the linked issue's Task explicitly calls out (e.g. a
    stated fallback, a named error condition) that the diff does not
    actually handle — high.
 5. Dead code, an unused import, or a variable/parameter that is never read

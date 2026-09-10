@@ -12,7 +12,8 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write . --ignore-path ../.prettierignore --ignore-path .gitignore",
-    "format:check": "prettier --check . --ignore-path ../.prettierignore --ignore-path .gitignore"
+    "format:check": "prettier --check . --ignore-path ../.prettierignore --ignore-path .gitignore",
+    "verify": "pnpm run lint && pnpm run format:check && pnpm run build && pnpm test"
   },
   "dependencies": {
     "react": "^19.2.0",

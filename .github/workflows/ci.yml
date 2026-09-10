@@ -29,6 +29,13 @@ jobs:
         with:
           node-version: 22
 
+      # The review bot reads every `review-rules/scope.md` as literal glob patterns and
+      # silently skips whatever they don't match, so a corrupted scope file turns the
+      # required `code-review` check into a green light that reviewed nothing — which is
+      # how 14 pull requests merged unreviewed. Cheap enough to run before anything else.
+      - name: Review-rules scope sanity
+        run: node .github/scripts/check-review-scope.mjs
+
       # Backend static checks plus the unit tier; the database-backed tiers are
       # added to this same job further down.
       - name: Backend — install

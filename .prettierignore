@@ -15,3 +15,9 @@ backend/packages/module-registry/src/__tests__/fixtures/catalogMalformedJson/i18
 # every file on both platforms for 14 merged pull requests before anyone noticed. `apple/`
 # escaped only because it is ignored above.
 review-rules/
+
+# Same reasoning one level up: `.bb/AGENTS.md` and `.bb/skills/` are injected into every
+# agent thread verbatim, and `.claude/` above is already excluded for the same reason.
+# Keeping the formatter out of them means a table or a glob written here is what the
+# agent actually reads.
+.bb/

@@ -4,7 +4,9 @@ documentation and AI-agent workflow files that don't belong to `backend/`,
 and are reviewed independently.
 
 In scope here: Architecture Decision Records (`docs/adr/`), the
-autonomous-workflow skills (`.claude/skills/`), and the root `README.md`.
+autonomous-workflow skills (`.claude/skills/`), the agent instructions and
+convention skills BB injects into every thread (`.bb/AGENTS.md`,
+`.bb/skills/`), and the root `README.md`.
 This platform reviews the quality and internal consistency of those
 documents themselves (ADR format, convention discipline, skill
 correctness) — it does not have visibility into `backend/`/`apple`/`web`
