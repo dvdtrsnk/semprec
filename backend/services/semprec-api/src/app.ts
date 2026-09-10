@@ -7,6 +7,7 @@ import { createApprovalRequestsRequestListener } from "./approvalRequestsHandler
 import { createAgentRunRequestListener } from "./agentRunHandler.js";
 import { createAuthRequestListener } from "./authHandler.js";
 import { createPushSubscriptionsRequestListener } from "./pushSubscriptionsHandler.js";
+import { createNotificationsRequestListener } from "./notificationsHandler.js";
 import { createSetupRequestListener } from "./setupHandler.js";
 import { createSchemaRequestListener } from "./schemaHandler.js";
 
@@ -36,6 +37,7 @@ export function createDispatcher(pool: Pool, options: AppOptions): (req: Incomin
     appBaseUrl: options.appBaseUrl,
   });
   const pushSubscriptionsListener = createPushSubscriptionsRequestListener(pool);
+  const notificationsListener = createNotificationsRequestListener(pool);
   const setupListener = createSetupRequestListener(pool, { setupToken: options.setupToken });
   const schemaListener = createSchemaRequestListener(pool, options.moduleRegistry);
 
@@ -63,6 +65,10 @@ export function createDispatcher(pool: Pool, options: AppOptions): (req: Incomin
     }
     if (pathname.startsWith("/api/push-subscriptions")) {
       void pushSubscriptionsListener(req, res);
+      return;
+    }
+    if (pathname.startsWith("/api/notifications")) {
+      void notificationsListener(req, res);
       return;
     }
     if (pathname === "/api/setup") {

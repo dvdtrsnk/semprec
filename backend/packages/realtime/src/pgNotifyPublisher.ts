@@ -10,7 +10,20 @@ export const REALTIME_CHANNEL = "semprec_realtime";
 export type RealtimeMessage =
   | { type: "item_invalidation"; databaseId: string; itemId: string; key: string }
   | { type: "doc_update"; docId: string; update: string; createdBy: string }
-  | { type: "agent_run_event"; agentRunId: string; kind: string; payload: unknown };
+  | { type: "agent_run_event"; agentRunId: string; kind: string; payload: unknown }
+  | {
+      type: "notification_created";
+      userId: string;
+      notification: {
+        id: string;
+        kind: string;
+        title: string;
+        linkHref: string | null;
+        createdAt: string;
+        readAt: string | null;
+      };
+    }
+  | { type: "notification_read_state"; userId: string; notificationIds: string[] };
 
 /**
  * Postgres caps a NOTIFY payload at ~8000 bytes; a `doc_update` message whose

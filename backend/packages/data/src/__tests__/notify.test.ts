@@ -1,10 +1,11 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { writeNotification } from "../notifications/notify.js";
+import { setNotificationCreatedHook, type NotificationCreatedEvent } from "../realtimeHook.js";
 
 let pool: Pool;
 
@@ -12,6 +13,10 @@ describe("writeNotification", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+  });
+
+  afterEach(() => {
+    setNotificationCreatedHook(() => {});
   });
 
   afterAll(async () => {
@@ -124,6 +129,65 @@ describe("writeNotification", () => {
         [userId],
       ),
     ).rejects.toThrow();
+  });
+
+  it("fires the notification_created realtime hook after commit, but not for a replayed transition", async () => {
+    const userId = await createTestUser();
+    const events: NotificationCreatedEvent[] = [];
+    setNotificationCreatedHook((event) => events.push(event));
+
+    await withTransaction(pool, (client) =>
+      writeNotification(client, {
+        userId,
+        kind: "heartbeat_error",
+        titleParams: { name: "Daily digest" },
+        linkHref: "?page=heartbeats",
+        sourceTable: "project_heartbeats",
+        sourceId: "hb-realtime",
+        transitionInstance: "job-1",
+      }),
+    );
+    // Replaying the same transition must not fire a second event.
+    await withTransaction(pool, (client) =>
+      writeNotification(client, {
+        userId,
+        kind: "heartbeat_error",
+        titleParams: { name: "Daily digest" },
+        linkHref: "?page=heartbeats",
+        sourceTable: "project_heartbeats",
+        sourceId: "hb-realtime",
+        transitionInstance: "job-1",
+      }),
+    );
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      userId,
+      notification: { title: `Heartbeat "Daily digest" failed`, linkHref: "?page=heartbeats", readAt: null },
+    });
+  });
+
+  it("never fires the realtime hook when the caller's transaction rolls back", async () => {
+    const userId = await createTestUser();
+    const events: NotificationCreatedEvent[] = [];
+    setNotificationCreatedHook((event) => events.push(event));
+
+    await expect(
+      withTransaction(pool, async (client) => {
+        await writeNotification(client, {
+          userId,
+          kind: "heartbeat_error",
+          titleParams: { name: "Doomed" },
+          linkHref: null,
+          sourceTable: "project_heartbeats",
+          sourceId: "hb-rollback-realtime",
+          transitionInstance: "job-1",
+        });
+        throw new Error("caller transaction fails after the write");
+      }),
+    ).rejects.toThrow("caller transaction fails after the write");
+
+    expect(events).toHaveLength(0);
   });
 
   it("has a partial index on user_id where read_at is null, backing the unread lookup", async () => {

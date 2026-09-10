@@ -1,5 +1,10 @@
 import type { Pool } from "pg";
-import { setInvalidationHook, setDocUpdateHook } from "@semprec/data";
+import {
+  setInvalidationHook,
+  setDocUpdateHook,
+  setNotificationCreatedHook,
+  setNotificationReadStateHook,
+} from "@semprec/data";
 import { publishRealtimeMessage } from "./pgNotifyPublisher.js";
 
 /**
@@ -18,6 +23,16 @@ export function wireRealtimeHooks(pool: Pool): void {
   setDocUpdateHook((event) => {
     publishRealtimeMessage(pool, { type: "doc_update", ...event }).catch((err: unknown) => {
       console.error("Failed to publish doc_update realtime message", err);
+    });
+  });
+  setNotificationCreatedHook((event) => {
+    publishRealtimeMessage(pool, { type: "notification_created", ...event }).catch((err: unknown) => {
+      console.error("Failed to publish notification_created realtime message", err);
+    });
+  });
+  setNotificationReadStateHook((event) => {
+    publishRealtimeMessage(pool, { type: "notification_read_state", ...event }).catch((err: unknown) => {
+      console.error("Failed to publish notification_read_state realtime message", err);
     });
   });
 }

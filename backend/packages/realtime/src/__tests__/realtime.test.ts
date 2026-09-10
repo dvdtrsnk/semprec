@@ -1,8 +1,15 @@
-import { createServer, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server } from "node:http";
 import { afterAll, beforeEach, describe, expect, it, afterEach } from "vitest";
 import { Pool } from "pg";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
-import { setDocUpdateHook, setInvalidationHook, notifyDocUpdate } from "@semprec/data";
+import {
+  setDocUpdateHook,
+  setInvalidationHook,
+  setNotificationCreatedHook,
+  setNotificationReadStateHook,
+  notifyDocUpdate,
+  notifyNotificationCreated,
+} from "@semprec/data";
 import { publishRealtimeMessage } from "../pgNotifyPublisher.js";
 import { wireRealtimeHooks } from "../wireHooks.js";
 import { startRealtimeServer, type RealtimeServer } from "../wsServer.js";
@@ -56,6 +63,39 @@ describe("realtime", () => {
     setDocUpdateHook(() => {});
   });
 
+  it("wireRealtimeHooks turns a notification-created event into a user-scoped Postgres NOTIFY (issue #152)", async () => {
+    wireRealtimeHooks(pool);
+
+    const listenClient = await pool.connect();
+    await listenClient.query("LISTEN semprec_realtime");
+    const received = new Promise<{ channel: string; payload?: string }>((resolve) => {
+      listenClient.once("notification", resolve);
+    });
+
+    notifyNotificationCreated({
+      userId: "user-1",
+      notification: {
+        id: "notif-1",
+        kind: "heartbeat_error",
+        title: "Heartbeat failed",
+        linkHref: "?page=heartbeats",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        readAt: null,
+      },
+    });
+
+    const notification = await received;
+    expect(JSON.parse(notification.payload ?? "{}")).toMatchObject({
+      type: "notification_created",
+      userId: "user-1",
+      notification: { id: "notif-1", title: "Heartbeat failed" },
+    });
+
+    listenClient.release(true);
+    setNotificationCreatedHook(() => {});
+    setNotificationReadStateHook(() => {});
+  });
+
   describe("startRealtimeServer", () => {
     let httpServer: Server;
     let wss: WebSocketServer;
@@ -104,6 +144,119 @@ describe("realtime", () => {
       });
 
       client.close();
+    });
+  });
+
+  describe("startRealtimeServer with resolveUserId (issue #152)", () => {
+    let httpServer: Server;
+    let wss: WebSocketServer;
+    let realtimeServer: RealtimeServer;
+    let port: number;
+
+    /** Simulates session verification off a `?userId=` query param — a real caller would look up a session token instead. */
+    function resolveUserId(req: IncomingMessage): Promise<string | null> {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      return Promise.resolve(url.searchParams.get("userId"));
+    }
+
+    beforeEach(async () => {
+      httpServer = createServer();
+      wss = new WebSocketServer({ server: httpServer });
+      await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+      const address = httpServer.address();
+      if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+      port = address.port;
+      realtimeServer = await startRealtimeServer(pool, wss, { resolveUserId });
+    });
+
+    afterEach(async () => {
+      await realtimeServer.close();
+      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    });
+
+    async function connect(userId: string | null): Promise<WebSocket> {
+      const query = userId ? `?userId=${encodeURIComponent(userId)}` : "";
+      const client = new WebSocket(`ws://127.0.0.1:${port}${query}`);
+      await new Promise<void>((resolve, reject) => {
+        client.once("open", () => resolve());
+        client.once("error", reject);
+      });
+      return client;
+    }
+
+    it("delivers a notification_created message only to the matching user's socket", async () => {
+      const mine = await connect("user-1");
+      const someoneElses = await connect("user-2");
+
+      const receivedByMine = new Promise<string>((resolve) => mine.once("message", (d) => resolve(messageText(d))));
+      let othersMessage: string | undefined;
+      someoneElses.once("message", (d) => {
+        othersMessage = messageText(d);
+      });
+
+      await publishRealtimeMessage(pool, {
+        type: "notification_created",
+        userId: "user-1",
+        notification: {
+          id: "notif-1",
+          kind: "heartbeat_error",
+          title: "Heartbeat failed",
+          linkHref: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          readAt: null,
+        },
+      });
+
+      const message = await receivedByMine;
+      expect(JSON.parse(message)).toMatchObject({ type: "notification_created", userId: "user-1" });
+
+      // Give the other socket a beat to (not) receive anything before asserting it stayed silent.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(othersMessage).toBeUndefined();
+
+      mine.close();
+      someoneElses.close();
+    });
+
+    it("never delivers a notification_read_state message to an unauthenticated socket", async () => {
+      const unauthenticated = await connect(null);
+
+      let received: string | undefined;
+      unauthenticated.once("message", (d) => {
+        received = messageText(d);
+      });
+
+      await publishRealtimeMessage(pool, {
+        type: "notification_read_state",
+        userId: "user-1",
+        notificationIds: ["notif-1"],
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(received).toBeUndefined();
+
+      unauthenticated.close();
+    });
+
+    it("still broadcasts a non-user-scoped message (item_invalidation) to every connected client", async () => {
+      const first = await connect("user-1");
+      const second = await connect("user-2");
+
+      const receivedByFirst = new Promise<string>((resolve) => first.once("message", (d) => resolve(messageText(d))));
+      const receivedBySecond = new Promise<string>((resolve) => second.once("message", (d) => resolve(messageText(d))));
+
+      await publishRealtimeMessage(pool, {
+        type: "item_invalidation",
+        databaseId: "db-1",
+        itemId: "item-1",
+        key: "status",
+      });
+
+      expect(JSON.parse(await receivedByFirst)).toMatchObject({ type: "item_invalidation" });
+      expect(JSON.parse(await receivedBySecond)).toMatchObject({ type: "item_invalidation" });
+
+      first.close();
+      second.close();
     });
   });
 });
