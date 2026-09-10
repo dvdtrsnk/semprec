@@ -1,10 +1,10 @@
 import type { PoolClient } from "pg";
 import type {
-  GuidanceDriftContradiction,
   GuidanceDriftFinding,
   GuidanceDriftFindingStore,
   UpsertActiveGuidanceDriftFindingInput,
 } from "@semprec/shared";
+import { validateGuidanceDriftContradiction } from "@semprec/shared";
 import { requireSingleRow } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
 
@@ -12,7 +12,10 @@ interface FindingRow {
   id: string;
   project_item_id: string;
   fingerprint: string;
-  payload: GuidanceDriftContradiction;
+  // JSONB column: the `pg` driver hands back a plain object with no runtime guarantee it still
+  // matches `GuidanceDriftContradiction`'s shape (a direct DB patch or schema evolution could
+  // diverge it), so `mapRow` validates and narrows it below rather than casting.
+  payload: Record<string, unknown>;
   status: "active" | "resolved";
   first_seen_at: Date;
   last_seen_at: Date;
@@ -24,7 +27,7 @@ function mapRow(row: FindingRow): GuidanceDriftFinding {
     id: row.id,
     projectItemId: row.project_item_id,
     fingerprint: row.fingerprint,
-    payload: row.payload,
+    payload: validateGuidanceDriftContradiction(row.payload, `agent_guidance_drift_findings row ${row.id}`),
     status: row.status,
     firstSeenAt: row.first_seen_at.toISOString(),
     lastSeenAt: row.last_seen_at.toISOString(),

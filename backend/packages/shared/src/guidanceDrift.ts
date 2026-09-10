@@ -104,3 +104,37 @@ export function fingerprintGuidanceDriftContradiction(contradiction: GuidanceDri
   const canonical = canonicalizeJson(normalized);
   return createHash("sha256").update(canonical, "utf8").digest("hex");
 }
+
+/**
+ * Narrows an `unknown` value to a `GuidanceDriftContradiction`, throwing if any field is missing,
+ * the wrong type, or empty. Shared by both the AI-gateway response boundary
+ * (`driftAction.ts`, which validates defensively even though the gateway already enforces this
+ * schema server-side) and the `agent_guidance_drift_findings.payload` JSONB boundary
+ * (`agentGuidanceDriftFindingsStore.ts`'s `mapRow`), so a malformed row from a direct DB patch or
+ * schema evolution can never be passed through as a typed `GuidanceDriftFinding.payload` silently.
+ */
+export function validateGuidanceDriftContradiction(entry: unknown, context: string): GuidanceDriftContradiction {
+  if (typeof entry !== "object" || entry === null) {
+    throw new Error(`${context}: contradiction is not an object`);
+  }
+  const { claim, guidanceExcerpt, manifestFacts, severity } = entry as Record<string, unknown>;
+
+  if (typeof claim !== "string" || claim.length === 0) {
+    throw new Error(`${context}: contradiction has an invalid claim`);
+  }
+  if (typeof guidanceExcerpt !== "string" || guidanceExcerpt.length === 0) {
+    throw new Error(`${context}: contradiction has an invalid guidanceExcerpt`);
+  }
+  if (
+    !Array.isArray(manifestFacts) ||
+    manifestFacts.length === 0 ||
+    !manifestFacts.every((fact) => typeof fact === "string" && fact.length > 0)
+  ) {
+    throw new Error(`${context}: contradiction has invalid manifestFacts`);
+  }
+  if (severity !== "blocking" && severity !== "warning") {
+    throw new Error(`${context}: contradiction has an invalid severity`);
+  }
+
+  return { claim, guidanceExcerpt, manifestFacts, severity };
+}

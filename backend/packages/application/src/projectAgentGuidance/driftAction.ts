@@ -1,4 +1,4 @@
-import { fingerprintGuidanceDriftContradiction } from "@semprec/shared";
+import { fingerprintGuidanceDriftContradiction, validateGuidanceDriftContradiction } from "@semprec/shared";
 import type {
   AiGatewayClientPort,
   GuidanceDriftContradiction,
@@ -210,36 +210,7 @@ function validateContradictions(content: unknown): GuidanceDriftContradiction[] 
   if (!Array.isArray(contradictions)) {
     throw new Error("agent guidance drift: gateway response contradictions is not an array");
   }
-  return contradictions.map((entry, index) => validateContradiction(entry, index));
-}
-
-function validateContradiction(entry: unknown, index: number): GuidanceDriftContradiction {
-  if (typeof entry !== "object" || entry === null) {
-    throw new Error(`agent guidance drift: contradiction ${index} is not an object`);
-  }
-  const { claim, guidanceExcerpt, manifestFacts, severity } = entry as Record<string, unknown>;
-
-  if (typeof claim !== "string" || claim.length === 0) {
-    throw new Error(`agent guidance drift: contradiction ${index} has an invalid claim`);
-  }
-  if (typeof guidanceExcerpt !== "string" || guidanceExcerpt.length === 0) {
-    throw new Error(`agent guidance drift: contradiction ${index} has an invalid guidanceExcerpt`);
-  }
-  if (
-    !Array.isArray(manifestFacts) ||
-    manifestFacts.length === 0 ||
-    !manifestFacts.every((fact) => typeof fact === "string" && fact.length > 0)
-  ) {
-    throw new Error(`agent guidance drift: contradiction ${index} has invalid manifestFacts`);
-  }
-  if (severity !== "blocking" && severity !== "warning") {
-    throw new Error(`agent guidance drift: contradiction ${index} has an invalid severity`);
-  }
-
-  return {
-    claim,
-    guidanceExcerpt,
-    manifestFacts,
-    severity,
-  };
+  return contradictions.map((entry, index) =>
+    validateGuidanceDriftContradiction(entry, `agent guidance drift: contradiction ${index}`),
+  );
 }
