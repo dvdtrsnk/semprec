@@ -134,6 +134,18 @@ describe("POST /internal/complete", () => {
     expect(provider.calls).toHaveLength(0);
   });
 
+  it("rejects a temperature outside [0, 1] with 400 validation_failed", async () => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", { ...VALID_BODY, temperature: 1.5 });
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { code: string }).code).toBe("validation_failed");
+    expect(provider.calls).toHaveLength(0);
+  });
+
   it("rejects a responseSchema with a remote $ref with 400 validation_failed", async () => {
     const provider = new FakeProvider();
     startServer(provider);

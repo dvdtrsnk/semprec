@@ -99,8 +99,13 @@ function validateBody(raw: unknown): CompleteRequestBody {
   if (typeof body.operation !== "string" || !SUPPORTED_OPERATIONS.has(body.operation)) {
     throw new ValidationError("'operation' is missing or unsupported", { field: "operation" });
   }
-  if (typeof body.temperature !== "number" || !Number.isFinite(body.temperature)) {
-    throw new ValidationError("'temperature' must be a finite number", { field: "temperature" });
+  if (
+    typeof body.temperature !== "number" ||
+    !Number.isFinite(body.temperature) ||
+    body.temperature < 0 ||
+    body.temperature > 1
+  ) {
+    throw new ValidationError("'temperature' must be a finite number between 0 and 1", { field: "temperature" });
   }
   if (typeof body.system !== "string" || body.system.length === 0) {
     throw new ValidationError("'system' must be a non-empty string", { field: "system" });
