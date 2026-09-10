@@ -12,9 +12,12 @@ import { ProjectAgentGuidanceOwnerViolationError, ProjectAgentGuidanceValidation
 
 type FakeTx = { calls: string[] };
 
-function fakeTransactions(): TransactionRunner<FakeTx> {
+function fakeTransactions(): TransactionRunner<FakeTx> & { isolationsUsed: string[] } {
+  const isolationsUsed: string[] = [];
   return {
-    async withTransaction(_options, work) {
+    isolationsUsed,
+    async withTransaction(options, work) {
+      isolationsUsed.push(options.isolation);
       return work({ calls: [] });
     },
   };
@@ -44,9 +47,9 @@ function fakeStore(initial: ProjectAgentGuidance | null = null): ProjectAgentGui
       rows.set(row.projectItemId, saved);
       return saved;
     },
-    async transfer(_tx, projectItemId, currentOwnerUserId, newOwnerUserId) {
+    async transfer(_tx, projectItemId, newOwnerUserId) {
       const existing = rows.get(projectItemId);
-      if (!existing || existing.ownerUserId !== currentOwnerUserId) throw new Error("not found");
+      if (!existing) throw new Error("not found");
       const updated = { ...existing, ownerUserId: newOwnerUserId, updatedAt: new Date().toISOString() };
       rows.set(projectItemId, updated);
       return updated;
@@ -73,15 +76,38 @@ describe("createProjectAgentGuidanceService (issue #214)", () => {
       updatedAt: new Date().toISOString(),
     };
     const store = fakeStore(existing);
+    const transactions = fakeTransactions();
     const service = createProjectAgentGuidanceService({
       store,
       references: fakeReferences(),
       heartbeats: recordingHeartbeats(),
-      transactions: fakeTransactions(),
+      transactions,
     });
 
     await expect(service.loadProjectAgentGuidance("p1")).resolves.toEqual(existing);
     await expect(service.loadProjectAgentGuidance("missing")).resolves.toBeNull();
+    expect(transactions.isolationsUsed).toEqual(["repeatable_read", "repeatable_read"]);
+  });
+
+  it("uses a serializable transaction for mutating calls", async () => {
+    const existing: ProjectAgentGuidance = {
+      projectItemId: "p1",
+      ownerUserId: "u1",
+      markdown: "# Hi",
+      updatedAt: new Date().toISOString(),
+    };
+    const transactions = fakeTransactions();
+    const service = createProjectAgentGuidanceService({
+      store: fakeStore(existing),
+      references: fakeReferences(),
+      heartbeats: recordingHeartbeats(),
+      transactions,
+    });
+
+    await service.upsertProjectAgentGuidance({ userId: "u1" }, { projectItemId: "p1", markdown: "# New" });
+    await service.transferProjectAgentGuidance({ userId: "u1" }, { projectItemId: "p1", newOwnerUserId: "u2" });
+
+    expect(transactions.isolationsUsed).toEqual(["serializable", "serializable"]);
   });
 
   it("creates guidance owned by the actor and upserts the drift heartbeat in the same call", async () => {

@@ -110,7 +110,7 @@ export function createProjectAgentGuidanceService<Tx>(
           reason: "not_found",
         });
 
-        const saved = await store.transfer(tx, input.projectItemId, existing.ownerUserId, input.newOwnerUserId);
+        const saved = await store.transfer(tx, input.projectItemId, input.newOwnerUserId);
         await heartbeats.upsertDriftHeartbeat(tx, input.projectItemId);
         return saved;
       });

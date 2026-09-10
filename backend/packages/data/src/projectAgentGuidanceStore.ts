@@ -55,21 +55,16 @@ export const projectAgentGuidanceStore: ProjectAgentGuidanceStore<PoolClient> = 
     return mapRow(requireSingleRow(rows, "project_agent_guidance upsert"));
   },
 
-  async transfer(tx, projectItemId, currentOwnerUserId, newOwnerUserId) {
-    // `owner_user_id = $2` in the WHERE clause mirrors `upsert`'s owner-mutation containment: a
-    // direct call with a stale or wrong `currentOwnerUserId` matches no row and is rejected,
-    // rather than silently transferring a guidance row it doesn't actually own.
+  async transfer(tx, projectItemId, newOwnerUserId) {
     const { rows } = await tx.query<ProjectAgentGuidanceRow>(
-      `UPDATE project_agent_guidance SET owner_user_id = $3, updated_at = now()
-       WHERE project_item_id = $1 AND owner_user_id = $2
+      `UPDATE project_agent_guidance SET owner_user_id = $2, updated_at = now()
+       WHERE project_item_id = $1
        RETURNING project_item_id, owner_user_id, markdown, updated_at`,
-      [projectItemId, currentOwnerUserId, newOwnerUserId],
+      [projectItemId, newOwnerUserId],
     );
     const row = rows[0];
     if (!row) {
-      throw new NotFoundError(
-        `Project agent guidance for project ${projectItemId} owned by ${currentOwnerUserId} not found`,
-      );
+      throw new NotFoundError(`Project agent guidance for project ${projectItemId} not found`);
     }
     return mapRow(row);
   },

@@ -54,18 +54,7 @@ export interface TransactionRunner<Tx> {
 export interface ProjectAgentGuidanceStore<Tx> {
   load(tx: Tx, projectItemId: string): Promise<ProjectAgentGuidance | null>;
   upsert(tx: Tx, row: Omit<ProjectAgentGuidance, "updatedAt">): Promise<ProjectAgentGuidance>;
-  /**
-   * `currentOwnerUserId` mirrors `upsert`'s owner-mutation containment: passing it lets the
-   * concrete store require it in the update's WHERE clause, so a direct call with a stale or
-   * wrong `currentOwnerUserId` can never change ownership even if the caller bypasses the
-   * application service's own authorization check.
-   */
-  transfer(
-    tx: Tx,
-    projectItemId: string,
-    currentOwnerUserId: string,
-    newOwnerUserId: string,
-  ): Promise<ProjectAgentGuidance>;
+  transfer(tx: Tx, projectItemId: string, newOwnerUserId: string): Promise<ProjectAgentGuidance>;
 }
 
 /**

@@ -114,41 +114,15 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
     );
 
     const transferred = await withTransaction(pool, (client) =>
-      projectAgentGuidanceStore.transfer(client, projectItemId, ownerUserId, newOwnerUserId),
+      projectAgentGuidanceStore.transfer(client, projectItemId, newOwnerUserId),
     );
     expect(transferred.ownerUserId).toBe(newOwnerUserId);
   });
 
   it("rejects transferring guidance that doesn't exist", async () => {
     await expect(
-      withTransaction(pool, (client) =>
-        projectAgentGuidanceStore.transfer(client, randomUUID(), randomUUID(), randomUUID()),
-      ),
+      withTransaction(pool, (client) => projectAgentGuidanceStore.transfer(client, randomUUID(), randomUUID())),
     ).rejects.toThrow(NotFoundError);
-  });
-
-  it("rejects transferring guidance when the supplied currentOwnerUserId doesn't match the stored owner", async () => {
-    const projectItemId = await createProjectItem();
-    const ownerUserId = await createTestUser();
-    const wrongOwnerUserId = await createTestUser();
-    const newOwnerUserId = await createTestUser();
-
-    await withTransaction(pool, (client) =>
-      projectAgentGuidanceStore.upsert(client, {
-        projectItemId,
-        ownerUserId,
-        markdown: "# Guidance",
-      }),
-    );
-
-    await expect(
-      withTransaction(pool, (client) =>
-        projectAgentGuidanceStore.transfer(client, projectItemId, wrongOwnerUserId, newOwnerUserId),
-      ),
-    ).rejects.toThrow(NotFoundError);
-
-    const loaded = await withTransaction(pool, (client) => projectAgentGuidanceStore.load(client, projectItemId));
-    expect(loaded?.ownerUserId).toBe(ownerUserId);
   });
 
   describe("guidanceReferenceStore", () => {

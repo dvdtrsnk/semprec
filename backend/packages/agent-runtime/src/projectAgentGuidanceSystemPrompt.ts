@@ -16,6 +16,14 @@ export type LoadProjectAgentGuidancePort = (projectItemId: string) => Promise<{ 
  * under the fixed `## Project-specific guidance` heading. Returns the identity function when
  * no guidance exists for the project — no other file or generated content is ever appended
  * as guidance.
+ *
+ * The markdown is appended unsanitized, so a project owner can write adversarial content
+ * (e.g. an instruction override) into their own project's guidance. This is an accepted risk,
+ * not an oversight: only the project's own owner can write this field (enforced by
+ * `ProjectAgentGuidanceService`'s authorization check), so the threat model is the same as any
+ * other owner-authored project configuration — it bounds a project owner's ability to influence
+ * their own project's agent, not a third party's. `MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES`
+ * bounds the payload size, not its content.
  */
 export async function createProjectAgentGuidanceSystemPromptOverride(
   loadProjectAgentGuidance: LoadProjectAgentGuidancePort,
