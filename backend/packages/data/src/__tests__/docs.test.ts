@@ -729,14 +729,38 @@ describe("docs (CRDT layer)", () => {
       const itemB = await makeItem();
       await docStore.putBlock(itemB.id, { id: "b1", flavour: "paragraph" }, "user"); // stays recent
 
+      // A third doc, also eligible for rebaselining, whose checkpoint state is corrupted so
+      // that rebaselineDocHistory's Y.applyUpdate throws — the only way to actually exercise
+      // the sweep's try/catch isolation, rather than merely assert on which docs were eligible.
+      const itemC = await makeItem();
+      await docStore.putBlock(itemC.id, { id: "c1", flavour: "paragraph" }, "user");
+      const docC = await docStore.getDoc(itemC.id);
+      if (!docC) throw new Error("doc not created");
+      await pool.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [docC.id, oldEnough]);
+      await pool.query(`UPDATE doc_snapshot_history SET represented_at = $2 WHERE doc_id = $1`, [docC.id, oldEnough]);
+      await pool.query(`UPDATE doc_updates SET created_at = $2 WHERE doc_id = $1`, [docC.id, oldEnough]);
+      await pool.query(`UPDATE doc_history_updates SET created_at = $2 WHERE doc_id = $1`, [docC.id, oldEnough]);
+      await pool.query(`UPDATE doc_snapshot_history SET state = $2 WHERE doc_id = $1`, [
+        docC.id,
+        Buffer.from([0xff, 0xff, 0xff, 0xff]),
+      ]);
+
       const succeeded = await runDocHistoryRetentionSweep(pool, 30);
-      expect(succeeded).toBe(1); // only docA's cutoff had advanced past its history_available_from
+      expect(succeeded).toBe(1); // only docA rebaselined; docB wasn't eligible, docC's threw
 
       const { rows: docARows } = await pool.query<{ history_available_from: Date }>(
         `SELECT history_available_from FROM docs WHERE id = $1`,
         [docA.id],
       );
       expect(docARows[0]!.history_available_from.getTime()).toBeGreaterThan(oldEnough.getTime());
+
+      // docC's thrown error didn't abort the sweep for the other docs, and left docC's own
+      // state untouched by the failed attempt.
+      const { rows: docCRows } = await pool.query<{ history_available_from: Date }>(
+        `SELECT history_available_from FROM docs WHERE id = $1`,
+        [docC.id],
+      );
+      expect(docCRows[0]!.history_available_from.getTime()).toBe(oldEnough.getTime());
     });
 
     it("excludes concurrent append via the same document row lock append/compaction already use", async () => {
@@ -764,6 +788,37 @@ describe("docs (CRDT layer)", () => {
         await clientX.query("COMMIT");
         await appendPromise;
         expect(appended).toBe(true);
+      } finally {
+        clientX.release();
+      }
+    });
+
+    it("excludes concurrent compaction via the same document row lock cleanup uses", async () => {
+      const item = await makeItem();
+      await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "user");
+      const doc = await docStore.getDoc(item.id);
+      if (!doc) throw new Error("doc not created");
+
+      const clientX = await pool.connect();
+      try {
+        await clientX.query("BEGIN");
+        // The exact row lock rebaselineDocHistory takes, standing in for a concurrent cleanup.
+        await clientX.query(`SELECT 1 FROM doc_snapshots WHERE doc_id = $1 FOR UPDATE`, [doc.id]);
+
+        let compacted = false;
+        // compactionThreshold=1: the single pending doc_updates row from putBlock above is
+        // already at/over threshold, so loadDoc's lazy check compacts it on this very read —
+        // loadSnapshotForUpdate's own `doc_snapshots ... FOR UPDATE` is the same row lock.
+        const compactPromise = loadDoc(pool, doc.id, 1).then(() => {
+          compacted = true;
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(compacted).toBe(false); // compaction's own loadDocWithClient lock is blocked behind X
+
+        await clientX.query("COMMIT");
+        await compactPromise;
+        expect(compacted).toBe(true);
       } finally {
         clientX.release();
       }
