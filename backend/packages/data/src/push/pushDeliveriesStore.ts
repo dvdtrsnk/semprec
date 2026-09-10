@@ -33,24 +33,22 @@ export async function getPushDeliveryStatuses(
   client: Pool | PoolClient,
   notificationId: string,
 ): Promise<PushDeliveryStatus[]> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<{
+    id: string;
+    push_subscription_id: string;
+    delivered_at: Date | null;
+    failed_permanently_at: Date | null;
+  }>(
     `SELECT id, push_subscription_id, delivered_at, failed_permanently_at
      FROM push_deliveries WHERE notification_id = $1`,
     [notificationId],
   );
-  return rows.map(
-    (row: {
-      id: string;
-      push_subscription_id: string;
-      delivered_at: Date | null;
-      failed_permanently_at: Date | null;
-    }) => ({
-      id: row.id,
-      pushSubscriptionId: row.push_subscription_id,
-      delivered: row.delivered_at !== null,
-      failedPermanently: row.failed_permanently_at !== null,
-    }),
-  );
+  return rows.map((row) => ({
+    id: row.id,
+    pushSubscriptionId: row.push_subscription_id,
+    delivered: row.delivered_at !== null,
+    failedPermanently: row.failed_permanently_at !== null,
+  }));
 }
 
 /** Terminal success — never dispatched again (the fanout job filters it out via `getPushDeliveryStatuses`). */

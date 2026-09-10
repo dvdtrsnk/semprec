@@ -15,7 +15,7 @@ export interface NotificationRow {
   readAt: string | null;
 }
 
-function mapRow(row: {
+interface NotificationDbRow {
   id: string;
   user_id: string;
   kind: string;
@@ -26,7 +26,9 @@ function mapRow(row: {
   transition_instance: string;
   created_at: Date;
   read_at: Date | null;
-}): NotificationRow {
+}
+
+function mapRow(row: NotificationDbRow): NotificationRow {
   return {
     id: row.id,
     userId: row.user_id,
@@ -43,7 +45,7 @@ function mapRow(row: {
 
 /** Reload for the `notificationFanout` job (issue #151) — the writer's transaction has already committed by the time the job runs. */
 export async function getNotificationById(client: Pool | PoolClient, id: string): Promise<NotificationRow | null> {
-  const { rows } = await client.query(
+  const { rows } = await client.query<NotificationDbRow>(
     `SELECT id, user_id, kind, title, link_href, source_table, source_id, transition_instance, created_at, read_at
      FROM notifications WHERE id = $1`,
     [id],

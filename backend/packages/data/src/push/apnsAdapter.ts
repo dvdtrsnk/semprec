@@ -76,6 +76,26 @@ interface ApnsResponse {
 /** A hung APNs connection/request must not block a graphile-worker task runner slot forever. */
 const APNS_REQUEST_TIMEOUT_MS = 10_000;
 
+/** APNs error bodies are a small JSON object (`{"reason": "..."}`); anything past this is not a legitimate response. */
+const MAX_APNS_RESPONSE_BYTES = 64 * 1024;
+
+function extractReason(responseBody: string): string | undefined {
+  if (!responseBody) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(responseBody);
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      typeof (parsed as Record<string, unknown>).reason === "string"
+    ) {
+      return (parsed as Record<string, unknown>).reason as string;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function postApnsRequest(
   host: string,
   deviceToken: string,
@@ -122,16 +142,14 @@ function postApnsRequest(
     });
     req.setEncoding("utf8");
     req.on("data", (chunk: string) => {
+      if (responseBody.length + chunk.length > MAX_APNS_RESPONSE_BYTES) {
+        fail(new Error(`APNs response from ${host} exceeded ${MAX_APNS_RESPONSE_BYTES} bytes`));
+        return;
+      }
       responseBody += chunk;
     });
     req.on("end", () => {
-      let reason: string | undefined;
-      try {
-        reason = responseBody ? (JSON.parse(responseBody) as { reason?: string }).reason : undefined;
-      } catch {
-        reason = undefined;
-      }
-      succeed({ status, reason });
+      succeed({ status, reason: extractReason(responseBody) });
     });
     req.on("error", fail);
     req.end(body);
