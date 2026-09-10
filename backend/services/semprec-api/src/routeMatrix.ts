@@ -114,6 +114,27 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
   },
   {
+    name: "unread notifications",
+    method: "GET",
+    path: "/api/notifications/unread",
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "visit notification",
+    method: "POST",
+    path: `/api/notifications/${EXAMPLE_ID}/visit`,
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "mark all notifications read",
+    method: "POST",
+    path: "/api/notifications/mark-all-read",
+    surface: "api",
+    public: false,
+  },
+  {
     name: "schema projection",
     method: "GET",
     path: "/api/schema",
