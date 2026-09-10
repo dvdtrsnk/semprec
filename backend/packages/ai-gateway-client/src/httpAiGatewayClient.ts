@@ -8,11 +8,45 @@ import {
 /** #215's 60-second budget for the whole round trip to `semprec-ai-gateway`. */
 const REQUEST_TIMEOUT_MS = 60_000;
 
+/**
+ * This is a loopback round trip to a process whose own request cap (`MAX_BODY_BYTES` in
+ * `completeHandler.ts`) is 1 MiB, so the response can't legitimately exceed that either — cap it
+ * the same way rather than buffering an unbounded or malformed response into memory.
+ */
+const MAX_RESPONSE_BODY_BYTES = 1024 * 1024;
+
 export interface HttpAiGatewayClientConfig {
   /** The port `semprec-ai-gateway` listens on; the client always addresses it over loopback. */
   port: number;
   /** Compared by the gateway against its own `AI_GATEWAY_INTERNAL_TOKEN`. */
   token: string;
+}
+
+class ResponseTooLargeError extends Error {}
+
+/**
+ * Reads the response body with a hard byte cap, independent of any (absent, wrong, or
+ * adversarial) `Content-Length` header, so a malformed or oversized response can't be buffered
+ * into memory wholesale before it's even parsed.
+ */
+async function readJsonBodyWithSizeCap(res: Response, maxBytes: number): Promise<unknown> {
+  const reader = res.body?.getReader();
+  if (!reader) throw new ResponseTooLargeError("Response body stream was unavailable");
+
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel();
+      throw new ResponseTooLargeError("Response body exceeded the maximum allowed size");
+    }
+    chunks.push(value);
+  }
+  const body = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+  return JSON.parse(body);
 }
 
 function isCompletionResult(value: unknown): value is AiGatewayCompletionResult {
@@ -59,7 +93,7 @@ export function createHttpAiGatewayClient(config: HttpAiGatewayClientConfig): Ai
 
       let body: unknown;
       try {
-        body = await res.json();
+        body = await readJsonBodyWithSizeCap(res, MAX_RESPONSE_BODY_BYTES);
       } catch {
         throw new AiGatewayFailedError("invalid_response");
       }

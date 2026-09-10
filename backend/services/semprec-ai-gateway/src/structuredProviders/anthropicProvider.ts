@@ -37,7 +37,7 @@ function isAnthropicMessagesResponse(value: unknown): value is AnthropicMessages
  */
 async function readJsonBodyWithSizeCap(res: Response, maxBytes: number): Promise<unknown> {
   const reader = res.body?.getReader();
-  if (!reader) return JSON.parse(await res.text());
+  if (!reader) throw new ProviderCallError("Anthropic response body stream was unavailable");
 
   const chunks: Uint8Array[] = [];
   let size = 0;

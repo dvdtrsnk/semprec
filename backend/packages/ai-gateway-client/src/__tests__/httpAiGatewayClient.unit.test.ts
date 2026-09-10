@@ -88,4 +88,21 @@ describe("createHttpAiGatewayClient", () => {
     expect(error).toBeInstanceOf(AiGatewayFailedError);
     expect((error as InstanceType<typeof AiGatewayFailedError>).reason).toBe("invalid_response");
   });
+
+  it("maps a response body over the size cap to ai_gateway_failed with reason 'invalid_response' without buffering it whole", async () => {
+    const hugeBody = JSON.stringify({
+      content: "x".repeat(2 * 1024 * 1024),
+      usage: { inputTokens: 1, outputTokens: 1 },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(hugeBody, { status: 200 })),
+    );
+
+    const client = createHttpAiGatewayClient({ port: 4100, token: "secret-token" });
+    const error = await client.complete(INPUT).catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(AiGatewayFailedError);
+    expect((error as InstanceType<typeof AiGatewayFailedError>).reason).toBe("invalid_response");
+  });
 });
