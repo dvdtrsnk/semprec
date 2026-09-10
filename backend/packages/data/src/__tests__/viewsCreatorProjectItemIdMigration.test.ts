@@ -7,14 +7,14 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 
 const MIGRATION_SQL = await readFile(
-  path.join(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations/0035_views_creator_project_item_id.sql"),
+  path.join(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations/0037_views_creator_project_item_id.sql"),
   "utf8",
 );
 
 let pool: Pool;
 let chokePoint: ChokePoint;
 
-describe("0035_views_creator_project_item_id migration", () => {
+describe("0037_views_creator_project_item_id migration", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     chokePoint = createChokePoint(pool);
