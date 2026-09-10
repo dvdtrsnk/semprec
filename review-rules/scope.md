@@ -1,6 +1,6 @@
 # Include
 
-docs/adr/**/*.md
+docs/adr/*.md
 .claude/skills/**/*.md
 README.md
 
