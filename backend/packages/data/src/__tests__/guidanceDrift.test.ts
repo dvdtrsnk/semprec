@@ -99,10 +99,10 @@ describe("guidanceDrift stores (issue #85)", () => {
     it("re-enables a previously disabled heartbeat on the next upsert", async () => {
       const projectItemId = await createProjectItem();
       await withTransaction(pool, (client) => guidanceDriftHeartbeatStore.upsertDriftHeartbeat(client, projectItemId));
-      await pool.query(
-        `UPDATE project_heartbeats SET enabled = false WHERE project_item_id = $1 AND action_id = $2`,
-        [projectItemId, AGENT_GUIDANCE_DRIFT_ACTION_ID],
-      );
+      await pool.query(`UPDATE project_heartbeats SET enabled = false WHERE project_item_id = $1 AND action_id = $2`, [
+        projectItemId,
+        AGENT_GUIDANCE_DRIFT_ACTION_ID,
+      ]);
 
       await withTransaction(pool, (client) => guidanceDriftHeartbeatStore.upsertDriftHeartbeat(client, projectItemId));
 
