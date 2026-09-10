@@ -121,15 +121,13 @@ export {
   runCompactionSweep,
   handleDocCompactionSweepTask,
 } from "./docs/docPersistence.js";
+export { cleanupExpiredDocHistory, handleDocHistoryCleanupTask, openDocVersionAt } from "./docs/docHistory.js";
 export {
-  DEFAULT_HISTORY_RETENTION_MS,
-  squashDocHistory,
-  runHistorySquashSweep,
-  handleDocHistorySquashTask,
-  cleanupExpiredDocHistory,
-  handleDocHistoryCleanupTask,
-  openDocVersionAt,
-} from "./docs/docHistory.js";
+  DEFAULT_DOC_HISTORY_RETENTION_DAYS,
+  resolveDocHistoryRetentionDays,
+  retentionHours,
+} from "./docs/docHistoryConfig.js";
+export { runDocHistoryCutoverMigration } from "./docs/docHistoryCutoverMigration.js";
 export { manifest as docsModuleManifest } from "./docs/docsModuleManifest.js";
 
 export * from "./blobs/blobsStore.js";

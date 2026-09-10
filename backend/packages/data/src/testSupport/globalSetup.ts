@@ -6,6 +6,7 @@ import EmbeddedPostgres from "embedded-postgres";
 import { Pool } from "pg";
 import { ensureQueueSchema } from "@semprec/queue";
 import { runMigrations } from "../db/migrate.js";
+import { runDocHistoryCutoverMigration } from "../docs/docHistoryCutoverMigration.js";
 
 /**
  * A fixed port made any second test run on the same machine fail in a way that reads like a
@@ -63,6 +64,7 @@ export default async function setup(): Promise<() => Promise<void>> {
 
   const pool = new Pool({ connectionString });
   await runMigrations(pool);
+  await runDocHistoryCutoverMigration(pool);
   await ensureQueueSchema(pool);
   await pool.end();
 

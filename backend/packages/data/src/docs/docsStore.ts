@@ -49,7 +49,8 @@ export async function getOrCreateDoc(client: Queryable, itemId: string, kind: Do
   }
 
   const { rows } = await client.query(
-    `INSERT INTO docs (item_id, kind) VALUES ($1, $2) ON CONFLICT (item_id) DO NOTHING RETURNING id, item_id, kind, created_at`,
+    `INSERT INTO docs (item_id, kind, history_available_from) VALUES ($1, $2, now())
+     ON CONFLICT (item_id) DO NOTHING RETURNING id, item_id, kind, created_at, history_available_from`,
     [itemId, kind],
   );
   if (rows[0]) {
@@ -62,6 +63,16 @@ export async function getOrCreateDoc(client: Queryable, itemId: string, kind: Do
       state,
       stateVector,
     ]);
+    // The non-expiring baseline checkpoint (issue #216): `docs.created_at` and
+    // `history_available_from` share the same `now()` evaluation in the INSERT above (both
+    // resolve to `transaction_timestamp()`, constant within a statement), so this checkpoint's
+    // `represented_at` matches `history_available_from` exactly — openDocVersionAt can select
+    // it for any timestamp at or after doc creation, including before the first update.
+    await client.query(
+      `INSERT INTO doc_snapshot_history (doc_id, state, through_update_id, represented_at, expires_at, created_by)
+       VALUES ($1, $2, 0, $3, NULL, 'system')`,
+      [rows[0].id, state, rows[0].history_available_from],
+    );
     return mapDocRow(rows[0]);
   }
 

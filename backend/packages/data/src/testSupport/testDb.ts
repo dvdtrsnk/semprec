@@ -35,6 +35,7 @@ const TABLES = [
   "relation_definitions",
   "properties",
   "doc_snapshot_history",
+  "doc_history_updates",
   "doc_updates",
   "doc_snapshots",
   "docs",
