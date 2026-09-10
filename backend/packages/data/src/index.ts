@@ -122,7 +122,13 @@ export {
   runCompactionSweep,
   handleDocCompactionSweepTask,
 } from "./docs/docPersistence.js";
-export { cleanupExpiredDocHistory, handleDocHistoryCleanupTask, openDocVersionAt } from "./docs/docHistory.js";
+export {
+  cleanupExpiredDocHistory,
+  rebaselineDocHistory,
+  runDocHistoryRetentionSweep,
+  handleDocHistoryCleanupTask,
+  openDocVersionAt,
+} from "./docs/docHistory.js";
 export {
   DEFAULT_DOC_HISTORY_RETENTION_DAYS,
   resolveDocHistoryRetentionDays,
