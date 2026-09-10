@@ -13,6 +13,7 @@ export interface NotificationRow {
   sourceTable: string;
   sourceId: string;
   transitionInstance: string;
+  payload: Record<string, unknown>;
   createdAt: string;
   readAt: string | null;
 }
@@ -26,6 +27,7 @@ interface NotificationDbRow {
   source_table: string;
   source_id: string;
   transition_instance: string;
+  payload: Record<string, unknown>;
   created_at: Date;
   read_at: Date | null;
 }
@@ -40,13 +42,14 @@ function mapRow(row: NotificationDbRow): NotificationRow {
     sourceTable: row.source_table,
     sourceId: row.source_id,
     transitionInstance: row.transition_instance,
+    payload: row.payload,
     createdAt: row.created_at.toISOString(),
     readAt: row.read_at ? row.read_at.toISOString() : null,
   };
 }
 
 const NOTIFICATION_COLUMNS =
-  "id, user_id, kind, title, link_href, source_table, source_id, transition_instance, created_at, read_at";
+  "id, user_id, kind, title, link_href, source_table, source_id, transition_instance, payload, created_at, read_at";
 
 /**
  * Caps how many unread rows a single reconnect-recovery fetch or mark-all-read sweep touches in
