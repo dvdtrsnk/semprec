@@ -50,6 +50,22 @@ export class NotFoundError extends ChokePointError {
 }
 
 /**
+ * Raised by `openDocVersionAt` (issue #216) for a nonfuture timestamp that is nonetheless
+ * outside retained history — before the doc's `history_available_from` baseline, or before
+ * the configured retention cutoff. A stable, explicit "not retained" result rather than a
+ * misleading partial reconstruction.
+ */
+export class HistoryNotRetainedError extends ChokePointError {
+  constructor(docId: string, at: Date) {
+    super(410, "history_not_retained", `Doc ${docId} has no retained history at ${at.toISOString()}`, {
+      docId,
+      at: at.toISOString(),
+    });
+    this.name = "HistoryNotRetainedError";
+  }
+}
+
+/**
  * Raised for every login/session-verification failure — bad password, unknown email, missing
  * token, expired session, revoked session — all with the same generic message. Issue #140's
  * requirement is a single public 401 contract that never reveals which of those conditions
