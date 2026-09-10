@@ -3,5 +3,7 @@
   "notification.approval_pending.title": "Nástroj „{toolName}“ vyžaduje schválení",
   "notification.agent_run_error.title": "Běh agenta selhal",
   "notification.automation_error.title": "Automatizace položky selhala",
-  "notification.mail_sync_error.title": "Synchronizace pošty selhala"
+  "notification.mail_sync_error.title": "Synchronizace pošty selhala",
+  "notification.agent_guidance_drift.title": "Pokyny pro agenta jsou v rozporu s oprávněními",
+  "notification.agent_guidance_drift_resolved.title": "Rozpor v pokynech pro agenta vyřešen"
 }
