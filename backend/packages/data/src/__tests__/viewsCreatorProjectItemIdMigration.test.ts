@@ -5,6 +5,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { ForbiddenError } from "../errors.js";
 
 const MIGRATION_SQL = await readFile(
   path.join(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations/0037_views_creator_project_item_id.sql"),
@@ -66,9 +67,18 @@ describe("0037_views_creator_project_item_id migration", () => {
       ownerModuleId: "projects",
     });
     const agent = await chokePoint.createItem({ databaseId: projectsDb.id, properties: {} });
-    await expect(
-      chokePoint.patchView({ id: legacyViewId, actor: { type: "ai_agent", agentProjectItemId: agent.id }, name: "x" }),
-    ).rejects.toThrow();
+    try {
+      await chokePoint.patchView({ id: legacyViewId, actor: { type: "ai_agent", agentProjectItemId: agent.id }, name: "x" });
+      expect.unreachable("expected ForbiddenError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ForbiddenError);
+      expect((err as ForbiddenError).code).toBe("owner_violation");
+      expect((err as ForbiddenError).details).toEqual({
+        field: "creatorProjectItemId",
+        viewId: legacyViewId,
+        reason: "legacy_creator_unknown",
+      });
+    }
     const adopted = await chokePoint.patchView({ id: legacyViewId, actor: { type: "user" }, name: "Adopted" });
     expect(adopted.createdBy).toBe("user");
     expect(adopted.creatorProjectItemId).toBeNull();
