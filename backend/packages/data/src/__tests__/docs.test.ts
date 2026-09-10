@@ -36,6 +36,22 @@ async function withUtcReferenceTime(pool: Pool): Promise<Date> {
   }
 }
 
+/**
+ * The same live cutoff formula openDocVersionAt/rebaselineDocHistory compute internally,
+ * read fresh at call time. A fixed buffer added to a timestamp captured earlier in a test
+ * can't outrun this: the retention window keeps sliding forward with the wall clock, so on a
+ * loaded CI host enough time can pass between two calls to make an "of course it's still
+ * retained" timestamp fall behind the live cutoff by the second call. Computing this
+ * immediately before the call it guards gives an exact, non-flaky lower bound instead.
+ */
+async function currentRetentionCutoff(pool: Pool, retentionDays: number): Promise<Date> {
+  const { rows } = await pool.query<{ cutoff: Date }>(
+    `SELECT transaction_timestamp() - make_interval(hours => $1::int) AS cutoff`,
+    [retentionDays * 24],
+  );
+  return rows[0]!.cutoff;
+}
+
 describe("docs (CRDT layer)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -695,10 +711,16 @@ describe("docs (CRDT layer)", () => {
       // cutoff) is kept — required for reconstruction inside the retained interval.
       expect(remainingHistory.map((r) => r.update_id)).toEqual([b2UpdateId]);
 
-      // The reconstructed baseline itself contains exactly b1 (state as of the cutoff). A
-      // few seconds' buffer keeps this from flaking against the retention window's own live
-      // cutoff (which keeps sliding forward with the wall clock) the instant this runs.
-      const justAfterHistoryAvailableFrom = new Date(docRows[0]!.history_available_from.getTime() + 5000);
+      // The reconstructed baseline itself contains exactly b1 (state as of the cutoff).
+      // openDocVersionAt rejects any `at` below its own freshly-recomputed live cutoff, which
+      // keeps sliding forward with the wall clock — a fixed buffer added to a timestamp
+      // captured earlier in this test could be outrun by that drift on a loaded host. Reading
+      // the live cutoff immediately before this call and taking the later of it and
+      // history_available_from gives an exact, non-flaky lower bound instead.
+      const liveCutoff = await currentRetentionCutoff(pool, retentionDays);
+      const justAfterHistoryAvailableFrom = new Date(
+        Math.max(docRows[0]!.history_available_from.getTime(), liveCutoff.getTime()) + 100,
+      );
       const atCutoff = await openDocVersionAt(pool, doc.id, justAfterHistoryAvailableFrom, retentionDays);
       expect(readBlocks(atCutoff).map((b) => b["sys:id"])).toEqual(["b1"]);
 
