@@ -10,6 +10,7 @@ const TABLES = [
   "manifest_drift_findings",
   "rollup_dependencies",
   "resource_grants",
+  "project_agent_guidance",
   "project_mcp_grants",
   "mcp_tool_registrations",
   "approval_requests",

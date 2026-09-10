@@ -216,3 +216,9 @@ export { executeMcpInvocation } from "./mcp/mcpToolExecution.js";
 // reachable from a route handler.
 export type { DecideApprovalRequestInput } from "./mcp/approvalDecisionAction.js";
 export { decideAndEnqueueApprovalRequest } from "./mcp/approvalDecisionAction.js";
+
+export {
+  projectAgentGuidanceStore,
+  guidanceReferenceStore,
+  createPoolClientTransactionRunner,
+} from "./projectAgentGuidanceStore.js";
