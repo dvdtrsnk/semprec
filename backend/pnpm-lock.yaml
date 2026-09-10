@@ -86,6 +86,16 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
 
+  packages/ai-gateway-client:
+    dependencies:
+      '@semprec/shared':
+        specifier: workspace:*
+        version: link:../shared
+    devDependencies:
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
+
   packages/application:
     dependencies:
       '@semprec/shared':
@@ -262,6 +272,28 @@ importers:
         version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
 
   packages/shared: {}
+
+  services/semprec-ai-gateway:
+    dependencies:
+      '@semprec/ai-gateway':
+        specifier: workspace:*
+        version: link:../../packages/ai-gateway
+      '@semprec/data':
+        specifier: workspace:*
+        version: link:../../packages/data
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
+      pg:
+        specifier: ^8.23.0
+        version: 8.23.0
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
 
   services/semprec-api:
     dependencies:
