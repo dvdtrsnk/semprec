@@ -38,6 +38,7 @@ import { createActionQueueAffinity, type ActionQueueAffinity } from "../schedule
 import { getSystemSettingsItemId } from "../systemSettings.js";
 import { createComputedKeyRegistry, type ComputedKeyRegistry } from "./computedKeyRegistry.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "./viewTypeRegistry.js";
+import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 
 interface AssertWritablePropertiesOptions {
   /**
@@ -202,15 +203,62 @@ async function assertRelationDatabasesNotArchived(client: PoolClient, context: R
   await assertDatabaseNotArchived(client, context.targetDatabaseId);
 }
 
-/** Shared by patch/delete on a view and every write to its `view_items` membership. */
-function assertViewWritable(view: ViewRow, actor: CreatedBy): void {
-  if (actor === "ai_agent" && view.createdBy !== "ai_agent") {
+/**
+ * The caller identity every view/view_items write is checked against (issue #87). `type`
+ * mirrors `CreatedBy` (the write's intended kind); `agentProjectItemId` is the server-derived
+ * owning Projects item id for an authenticated agent caller — required when `type ===
+ * 'ai_agent'`, never present otherwise, and never accepted from a request body (it is set only
+ * by whatever authenticates the caller, upstream of the choke-point).
+ */
+export interface Actor {
+  type: CreatedBy;
+  agentProjectItemId?: string;
+}
+
+function ownerViolation(view: { id: string }, reason: string): ForbiddenError {
+  return new ForbiddenError(
+    `View ${view.id} write rejected by owner_violation: ${reason}`,
+    { field: "creatorProjectItemId", viewId: view.id, reason },
+    "owner_violation",
+  );
+}
+
+/**
+ * Every agent-actor write (view row or `view_items` membership) proves its identity before
+ * touching any row: a missing `agentProjectItemId` or one that names no real Projects item is
+ * rejected outright, so a cross-agent or legacy-owner check never runs against a forged or
+ * dangling identity. A no-op for a 'user'/'system' actor.
+ */
+async function assertAuthenticatedAgentIdentity(client: PoolClient, actor: Actor): Promise<void> {
+  if (actor.type !== "ai_agent") return;
+  if (!actor.agentProjectItemId) {
     throw new ForbiddenError(
-      `View ${view.id} is owned by '${view.createdBy}' and cannot be written by an agent`,
-      { field: "createdBy" },
+      "An agent actor requires actor.agentProjectItemId",
+      { field: "agentProjectItemId", reason: "missing_authenticated_agent_identity" },
       "owner_violation",
     );
   }
+  const projectsDatabase = await databasesStore.getDatabaseByModuleId(client, PROJECTS_MODULE_ID);
+  const projectItem = projectsDatabase
+    ? await itemsStore.getItemById(client, projectsDatabase.id, actor.agentProjectItemId)
+    : null;
+  if (!projectItem || projectItem.deletedAt) {
+    throw new ForbiddenError(
+      `Projects item ${actor.agentProjectItemId} does not exist`,
+      { field: "agentProjectItemId", reason: "unknown_authenticated_agent_identity" },
+      "owner_violation",
+    );
+  }
+}
+
+/** Shared by patch/delete on a view and every write to its `view_items` membership. A no-op for a 'user'/'system' actor — only an agent write is ownership-checked here. */
+function assertViewWritable(view: ViewRow, actor: Actor): void {
+  if (actor.type !== "ai_agent") return;
+  if (view.createdBy === "system") throw ownerViolation(view, "system_owned");
+  if (view.createdBy === "user") throw ownerViolation(view, "user_owned");
+  // view.createdBy === "ai_agent"
+  if (view.creatorProjectItemId === null) throw ownerViolation(view, "legacy_creator_unknown");
+  if (view.creatorProjectItemId !== actor.agentProjectItemId) throw ownerViolation(view, "creator_mismatch");
 }
 
 /** Proves the caller's process identity for a protected system relation write — see `assertRelationSideCreatable`/`assertRelationPropertyWritable` below. Never accepted on the public facade. */
@@ -939,8 +987,27 @@ export function createChokePoint(
     },
 
     // ---- views ----
-    async createView(input: viewsStore.CreateViewInput): Promise<ViewRow> {
-      return withTransaction(pool, (client) => viewsStore.createView(client, input, viewTypeRegistry));
+    /**
+     * `actor` (default `{ type: 'user' }`) governs `createdBy`/`creatorProjectItemId` — a
+     * caller never sets either directly. Creating as `type: 'ai_agent'` requires and stores
+     * `actor.agentProjectItemId` (issue #87); a 'user'/'system' actor stores no creator.
+     */
+    async createView(
+      input: Omit<viewsStore.CreateViewInput, "createdBy" | "creatorProjectItemId">,
+      actor: Actor = { type: "user" },
+    ): Promise<ViewRow> {
+      return withTransaction(pool, async (client) => {
+        await assertAuthenticatedAgentIdentity(client, actor);
+        return viewsStore.createView(
+          client,
+          {
+            ...input,
+            createdBy: actor.type,
+            creatorProjectItemId: actor.type === "ai_agent" ? actor.agentProjectItemId! : null,
+          },
+          viewTypeRegistry,
+        );
+      });
     },
 
     async getView(id: string): Promise<ViewRow | null> {
@@ -958,24 +1025,26 @@ export function createChokePoint(
 
     async patchView(input: {
       id: string;
-      actor: CreatedBy;
+      actor: Actor;
       name?: string;
       config?: Record<string, unknown>;
       isDefault?: boolean;
     }): Promise<ViewRow> {
       return withTransaction(pool, async (client) => {
+        await assertAuthenticatedAgentIdentity(client, input.actor);
         const view = await viewsStore.getView(client, input.id);
         if (!view) throw new NotFoundError(`View ${input.id} not found`);
         assertViewWritable(view, input.actor);
-        if (input.actor === "ai_agent" && input.isDefault !== undefined) {
+        if (input.actor.type === "ai_agent" && input.isDefault !== undefined) {
           throw new ForbiddenError(
             "is_default cannot be set by an agent, not even on its own view",
             { field: "isDefault" },
             "owner_violation",
           );
         }
-        // One-way adoption: a user's write to an agent's view flips it to 'user'; a system view is never flipped by a user write.
-        const adopt = input.actor === "user" && view.createdBy === "ai_agent";
+        // One-way adoption: a user's write to an agent's view flips it to 'user' and clears the
+        // creator identity; a system view is never flipped by a user write.
+        const adopt = input.actor.type === "user" && view.createdBy === "ai_agent";
         return viewsStore.patchView(
           client,
           input.id,
@@ -984,14 +1053,16 @@ export function createChokePoint(
             config: input.config,
             isDefault: input.isDefault,
             createdBy: adopt ? "user" : undefined,
+            creatorProjectItemId: adopt ? null : undefined,
           },
           viewTypeRegistry,
         );
       });
     },
 
-    async deleteView(input: { id: string; actor: CreatedBy }): Promise<void> {
+    async deleteView(input: { id: string; actor: Actor }): Promise<void> {
       return withTransaction(pool, async (client) => {
+        await assertAuthenticatedAgentIdentity(client, input.actor);
         const view = await viewsStore.getView(client, input.id);
         if (!view) return;
         assertViewWritable(view, input.actor);
@@ -1004,9 +1075,10 @@ export function createChokePoint(
       viewId: string;
       itemId: string;
       position?: number;
-      actor: CreatedBy;
+      actor: Actor;
     }): Promise<ViewItemRow> {
       return withTransaction(pool, async (client) => {
+        await assertAuthenticatedAgentIdentity(client, input.actor);
         const view = await viewsStore.getView(client, input.viewId);
         if (!view) throw new NotFoundError(`View ${input.viewId} not found`);
         if (view.databaseId !== null) {
@@ -1019,8 +1091,9 @@ export function createChokePoint(
       });
     },
 
-    async removeViewItem(input: { viewId: string; itemId: string; actor: CreatedBy }): Promise<void> {
+    async removeViewItem(input: { viewId: string; itemId: string; actor: Actor }): Promise<void> {
       return withTransaction(pool, async (client) => {
+        await assertAuthenticatedAgentIdentity(client, input.actor);
         const view = await viewsStore.getView(client, input.viewId);
         if (!view) return;
         assertViewWritable(view, input.actor);
@@ -1032,9 +1105,10 @@ export function createChokePoint(
       viewId: string;
       itemId: string;
       position: number;
-      actor: CreatedBy;
+      actor: Actor;
     }): Promise<ViewItemRow> {
       return withTransaction(pool, async (client) => {
+        await assertAuthenticatedAgentIdentity(client, input.actor);
         const view = await viewsStore.getView(client, input.viewId);
         if (!view) throw new NotFoundError(`View ${input.viewId} not found`);
         assertViewWritable(view, input.actor);
