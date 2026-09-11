@@ -21,7 +21,27 @@ expensive; finding it takes seconds.
 For a large or unfamiliar area, map the relevant code before editing. A wrong
 first attempt costs more than the reading would have.
 
-## 2. Build exactly the Task
+## 2. Load the skills this Task touches
+
+Do this before you write anything, and say in one line which you loaded and why
+— or that none apply. It is a deliberate decision, not a formality: the rules
+below are the ones this repository's review actually reports, and an agent that
+means to "remember them as it goes" reliably does not.
+
+| Load | When the Task involves |
+|---|---|
+| `state-writes` | creating, updating or deleting persisted state — items, relations, blocks, rows in any table |
+| `io-hardening` | a new HTTP route or handler, a webhook receiver, or any outbound call |
+| `error-handling` | a `catch`, an error mapping, a rollback path, or any decision about what happens on failure |
+| `db-migrations` | a schema change, constraint, index, or backfill |
+| `canonical-keys` | a stored key, option value, view type, or any string a user will see |
+| `ai-gateway` | any model call, provider SDK, or provider credential |
+| `adr-conventions` | adding an ADR, or editing, superseding or narrowing an existing one |
+
+Most issues match more than one. Load all that apply — they are short, and the
+cost of reading one is far below the cost of the finding it prevents.
+
+## 3. Build exactly the Task
 
 Everything in `## Task` must be delivered. Nothing under `### Out of scope` may
 be built, even when it is two lines and you are already in the file — the
@@ -36,14 +56,14 @@ those is a finding, recorded as such in
 
 The conventions are law, not suggestions: choke-point writes, single-writer
 ownership, expand/contract migrations, AI calls only through the gateway,
-English camelCase canonical keys, labels through i18n, typed boundaries. Load
-the matching skill (see `.bb/AGENTS.md`) rather than reconstructing a rule from
-memory.
+English camelCase canonical keys, labels through i18n, typed boundaries. You
+loaded the skills covering them in step 2 — apply what they say rather than
+reconstructing a rule from memory.
 
 Commit as soon as the work reaches a self-consistent state, and again after
 each round of fixes. Uncommitted work does not survive a run that ends early.
 
-## 3. Self-review, then verify
+## 4. Self-review, then verify
 
 In this order, because each step is cheaper than the one after it:
 
@@ -61,7 +81,7 @@ In this order, because each step is cheaper than the one after it:
 
 Fix what each step finds and commit it before moving on.
 
-## 4. When the review bot comes back
+## 5. When the review bot comes back
 
 Findings at `medium` and above block the merge. Triage each one against the
 `review-rules/` of the platform it touches:
@@ -72,7 +92,7 @@ Findings at `medium` and above block the merge. Triage each one against the
   code to make a mistaken finding go away; the next reader inherits both the
   change and the confusion.
 
-## 5. When you cannot finish
+## 6. When you cannot finish
 
 Do not merge a broken pull request and do not close the issue. Commit and push
 what you have so a human can inspect or resume it, then say precisely what

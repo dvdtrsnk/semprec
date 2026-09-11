@@ -34,13 +34,33 @@ the failure mode that rule exists to prevent.
 | Skill | Load it when |
 |---|---|
 | `implement-issue` | starting any issue — the execution contract |
-| `adr-conventions` | writing a new ADR, or editing, superseding, or narrowing an existing one |
-| `state-writes` | anything that creates, updates or deletes persisted state |
-| `db-migrations` | any schema change, constraint, index or backfill |
-| `canonical-keys` | any stored key, option value, or user-facing label |
-| `ai-gateway` | any LLM or AI-provider call |
-| `io-hardening` | any new HTTP route, handler, or outbound call |
-| `error-handling` | any `catch`, error mapping, or failure path |
+| `adr-conventions` | adding an ADR, or editing, superseding or narrowing an existing one |
+| `state-writes` | creating, updating or deleting persisted state — items, relations, blocks, rows in any table |
+| `db-migrations` | a schema change, constraint, index, or backfill |
+| `canonical-keys` | a stored key, option value, view type, or any string a user will see |
+| `ai-gateway` | any model call, provider SDK, or provider credential |
+| `io-hardening` | a new HTTP route or handler, a webhook receiver, or any outbound call |
+| `error-handling` | a `catch`, an error mapping, a rollback path, or any decision about what happens on failure |
+
+## What the review actually reports
+
+Four failure shapes account for most of the blocking findings on this
+repository's pull requests. They are worth knowing even if you load no skill at
+all:
+
+- **Rule 6 below, in its usual disguises.** A `pg` row read without a type
+  argument on the `query()` call, `res.json() as X`, a receiving variable whose
+  annotation `any[]` satisfies without checking anything. (`state-writes`)
+- **A side effect that does not wait for the commit.** A `NOTIFY`, a WebSocket
+  invalidation or an enqueue fired inside the transaction that performed the
+  write reaches a listener before the row exists — or after a rollback.
+  (`state-writes`)
+- **A new route that trusts its caller.** Authorization checked against an
+  identifier taken from the body, an unvalidated field, an uncapped body, no
+  rate limit on something reachable without a session. (`io-hardening`)
+- **A branch nobody tested.** Every behaviour the issue's Acceptance criteria
+  promises, and every claim you write in a docstring, is something the reviewer
+  will look for a test of.
 
 ## What this repository is strict about
 
