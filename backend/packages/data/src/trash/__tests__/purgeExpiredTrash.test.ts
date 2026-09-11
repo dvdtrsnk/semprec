@@ -113,4 +113,18 @@ describe("purgeExpiredTrash (issue #156)", () => {
     const { rows: leafRows } = await pool.query("SELECT id FROM items WHERE id = $1", [leafItem.id]);
     expect(leafRows).toHaveLength(1);
   });
+
+  it("never hard-deletes an eligible item whose database has since been archived, leaving it for a future run", async () => {
+    const db = await makeMoviesDb();
+    const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
+    await chokePoint.softDeleteItem(db.id, item.id);
+    await ageDeletion(item.id, 31);
+    await chokePoint.archiveDatabase(db.id);
+
+    const purgedCount = await purgeExpiredTrash(pool);
+    expect(purgedCount).toBe(0);
+
+    const { rows } = await pool.query("SELECT id FROM items WHERE id = $1", [item.id]);
+    expect(rows).toHaveLength(1);
+  });
 });

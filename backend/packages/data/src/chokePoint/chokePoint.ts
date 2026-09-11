@@ -853,29 +853,21 @@ async function changePropertyTypeWithClient(
   return updated;
 }
 
-/** One item in the subtree `collectItemSubtree` walks: enough to route a per-item store call. */
-export interface ItemSubtreeRef {
-  databaseId: string;
-  itemId: string;
-}
-
 /**
- * Walks down from a page item to every row nested underneath it — the inline databases it owns
- * directly (`databases.parent_item_id = itemId`), every item in each of those, and recursively
- * whatever inline databases *those* items own in turn — so delete/restore (issue #156) can act on
- * the whole subtree in one transaction instead of just the one row named by the caller. Root-first
- * order, BFS by level. Guards against a `parent_item_id` cycle the same way `getItemPath` guards
- * against one in the opposite direction: tracking every database id already walked and refusing to
- * walk it twice, so a corrupted loop stops the traversal instead of hanging it.
+ * Walks down from an already-fetched page item to every row nested underneath it — the inline
+ * databases it owns directly (`databases.parent_item_id = itemId`), every item in each of those,
+ * and recursively whatever inline databases *those* items own in turn — so delete/restore (issue
+ * #156) can act on the whole subtree in one transaction instead of just the one row named by the
+ * caller. Root-first order, BFS by level, root included as given (its `deletedAt` reflects the
+ * state the caller read it in, before this transaction's own writes). Guards against a
+ * `parent_item_id` cycle the same way `getItemPath` guards against one in the opposite direction:
+ * tracking every database id already walked and refusing to walk it twice, so a corrupted loop
+ * stops the traversal instead of hanging it.
  */
-async function collectItemSubtree(
-  client: PoolClient,
-  rootDatabaseId: string,
-  rootItemId: string,
-): Promise<ItemSubtreeRef[]> {
-  const subtree: ItemSubtreeRef[] = [{ databaseId: rootDatabaseId, itemId: rootItemId }];
+async function collectItemSubtree(client: PoolClient, root: ItemRow): Promise<ItemRow[]> {
+  const subtree: ItemRow[] = [root];
   const visitedDatabaseIds = new Set<string>();
-  let frontier = [rootItemId];
+  let frontier = [root.id];
 
   while (frontier.length > 0) {
     const nextFrontier: string[] = [];
@@ -886,7 +878,7 @@ async function collectItemSubtree(
         visitedDatabaseIds.add(database.id);
         const rows = await itemsStore.getAllItemsInDatabase(client, database.id);
         for (const row of rows) {
-          subtree.push({ databaseId: database.id, itemId: row.id });
+          subtree.push(row);
           nextFrontier.push(row.id);
         }
       }
@@ -1076,10 +1068,8 @@ export function createChokePoint(
      * /api/items/:id`, a trashed item is the expected target of either route, not a 404.
      */
     async findItemIncludingDeleted(itemId: string): Promise<ItemRow | null> {
-      return withTransaction(pool, async (client) => {
-        const [item] = await itemsStore.getItemsByIdsIncludingDeleted(client, [itemId]);
-        return item ?? null;
-      });
+      const [item] = await itemsStore.getItemsByIdsIncludingDeleted(pool, [itemId]);
+      return item ?? null;
     },
 
     /**
@@ -1169,42 +1159,105 @@ export function createChokePoint(
         }
         if (before.deletedAt) return before; // already trashed: idempotent no-op, same as a repeat DELETE
 
-        const subtree = await collectItemSubtree(client, databaseId, itemId);
-        for (const ref of subtree) await assertDatabaseNotArchived(client, ref.databaseId);
+        const subtree = await collectItemSubtree(client, before);
+        for (const row of subtree) await assertDatabaseNotArchived(client, row.databaseId);
 
         let rootResult: ItemRow | null = null;
-        for (const ref of subtree) {
-          const item = await itemsStore.softDeleteItem(client, ref.databaseId, ref.itemId);
-          if (!item) continue;
-          if (ref.itemId === itemId) rootResult = item;
-          await triggerOnItemEventHeartbeats(client, ref.databaseId, "delete", ref.itemId, queueAffinity);
-          const edges = await relationsStore.listAllRelationsForItem(client, ref.itemId);
+        for (const row of subtree) {
+          const item = await itemsStore.softDeleteItem(client, row.databaseId, row.id);
+          if (!item) continue; // already independently trashed: not part of this cascade, left untouched
+          if (row.id === itemId) rootResult = item;
+          await triggerOnItemEventHeartbeats(client, row.databaseId, "delete", row.id, queueAffinity);
+          const edges = await relationsStore.listAllRelationsForItem(client, row.id);
           for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
         }
         return rootResult;
       });
     },
 
-    /** The exact cascade `softDeleteItem` runs, in reverse — restores `itemId` and its whole subtree in one transaction, symmetric to how the delete side of it was trashed. */
+    /**
+     * The exact cascade `softDeleteItem` runs, in reverse — restores `itemId` and its whole
+     * subtree in one transaction, symmetric to how the delete side of it was trashed. Only
+     * restores subtree rows whose `deletedAt` exactly matches the root's own `deletedAt`: since
+     * Postgres's `now()` is fixed for the lifetime of a transaction, every row the original
+     * cascade delete touched shares one identical timestamp, which lets this tell "trashed
+     * together with the root" apart from a row that happened to already be independently trashed
+     * (earlier or later) before this subtree was ever cascaded — restoring the latter would
+     * silently resurrect data the user deleted on purpose.
+     */
     async restoreItem(databaseId: string, itemId: string): Promise<ItemRow | null> {
       return withTransaction(pool, async (client) => {
         await assertDatabaseNotArchived(client, databaseId);
-        const before = await itemsStore.getItemById(client, databaseId, itemId);
+        // Locked for the same reason `softDeleteItem` locks its root: without it, two concurrent
+        // restores of the same item can both read `deletedAt` as set, both proceed, and the
+        // second one's SQL-level `itemsStore.restoreItem` then finds nothing left to restore and
+        // returns null — turning an already-successful restore into a spurious 404.
+        const before = await itemsStore.lockItemById(client, databaseId, itemId);
         if (!before) return null;
         if (!before.deletedAt) return before; // not trashed: idempotent no-op, same as a repeat restore
+        const cascadeEpoch = before.deletedAt;
 
-        const subtree = await collectItemSubtree(client, databaseId, itemId);
-        for (const ref of subtree) await assertDatabaseNotArchived(client, ref.databaseId);
+        const subtree = await collectItemSubtree(client, before);
+        for (const row of subtree) await assertDatabaseNotArchived(client, row.databaseId);
 
         let rootResult: ItemRow | null = null;
-        for (const ref of subtree) {
-          const item = await itemsStore.restoreItem(client, ref.databaseId, ref.itemId);
+        for (const row of subtree) {
+          if (row.deletedAt !== cascadeEpoch) continue; // not trashed together with the root: leave as-is
+          const item = await itemsStore.restoreItem(client, row.databaseId, row.id);
           if (!item) continue;
-          if (ref.itemId === itemId) rootResult = item;
-          const edges = await relationsStore.listAllRelationsForItem(client, ref.itemId);
+          if (row.id === itemId) rootResult = item;
+          const edges = await relationsStore.listAllRelationsForItem(client, row.id);
           for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
         }
         return rootResult;
+      });
+    },
+
+    /**
+     * Permanently removes an already-eligible trashed root together with its cascade subtree —
+     * the 30-day purge sweep's (`trash/purgeExpiredTrash.ts`, issue #156) only path to a hard
+     * delete, so it stays a choke-point-guarded write like every other item mutation instead of a
+     * second route into the `items` table. Mirrors `softDeleteItem`/`restoreItem`'s subtree walk,
+     * but only descends into a branch that is itself past `cutoff`: a still-live or
+     * too-recently-trashed row blocks the purge of everything nested under it, since only a
+     * branch that was cascade-deleted together with the root is safe to remove with it. Re-checks
+     * the root's own eligibility inside this transaction (rather than trusting the caller's
+     * earlier candidate snapshot), so a concurrent restore between candidate selection and this
+     * call is never hard-deleted out from under it. Rejects — and purges nothing — if any
+     * database in the eligible subtree is archived, same as `softDeleteItem`/`restoreItem`.
+     * Returns the ids actually purged, empty if the root turned out not to be eligible.
+     */
+    async purgeExpiredTrashSubtree(rootItemId: string, cutoff: Date): Promise<string[]> {
+      return withTransaction(pool, async (client) => {
+        const [root] = await itemsStore.getItemsByIdsIncludingDeleted(client, [rootItemId]);
+        if (!root || !root.deletedAt || new Date(root.deletedAt) >= cutoff) return [];
+
+        const subtree: ItemRow[] = [root];
+        const visitedDatabaseIds = new Set<string>();
+        let frontier = [root.id];
+        while (frontier.length > 0) {
+          const nextFrontier: string[] = [];
+          for (const parentItemId of frontier) {
+            const childDatabases = await databasesStore.listDatabasesByParentItem(client, parentItemId);
+            for (const database of childDatabases) {
+              if (visitedDatabaseIds.has(database.id)) continue;
+              visitedDatabaseIds.add(database.id);
+              const rows = await itemsStore.getAllItemsInDatabase(client, database.id);
+              for (const row of rows) {
+                if (!row.deletedAt || new Date(row.deletedAt) >= cutoff) continue; // live or too fresh: branch stops here
+                subtree.push(row);
+                nextFrontier.push(row.id);
+              }
+            }
+          }
+          frontier = nextFrontier;
+        }
+
+        const subtreeDatabaseIds = new Set(subtree.map((row) => row.databaseId));
+        for (const id of subtreeDatabaseIds) await assertDatabaseNotArchived(client, id);
+
+        for (const row of subtree) await itemsStore.hardDeleteItem(client, row.databaseId, row.id);
+        return subtree.map((row) => row.id);
       });
     },
 

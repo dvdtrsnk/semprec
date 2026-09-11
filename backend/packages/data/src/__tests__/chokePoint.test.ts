@@ -641,5 +641,38 @@ describe("choke-point", () => {
       expect(restored?.id).toBe(item.id);
       expect(restored?.deletedAt).toBeNull();
     });
+
+    it("restoring a page never resurrects a row that was independently trashed before the cascade, even though it sits in the same subtree", async () => {
+      const { rootDb, rootItem, midDb, midItem } = await makePageWithInlineSubtree();
+
+      // Trashed on its own, before the page above it was ever deleted — a deliberate, separate act.
+      const independentlyDeleted = await chokePoint.softDeleteItem(midDb.id, midItem.id);
+      expect(independentlyDeleted?.deletedAt).not.toBeNull();
+
+      await chokePoint.softDeleteItem(rootDb.id, rootItem.id);
+      const restored = await chokePoint.restoreItem(rootDb.id, rootItem.id);
+      expect(restored?.deletedAt).toBeNull();
+
+      // The cascade restored everything it itself trashed, but must leave the independently
+      // deleted row exactly as it found it — restoring it would silently undo an unrelated,
+      // intentional delete.
+      const midItemAfter = await chokePoint.getItem(midDb.id, midItem.id);
+      expect(midItemAfter?.deletedAt).toBe(independentlyDeleted?.deletedAt);
+    });
+
+    it("two concurrent restores of the same trashed item both resolve to the live row, never a spurious 404", async () => {
+      const db = await makeMoviesDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
+      await chokePoint.softDeleteItem(db.id, item.id);
+
+      const [first, second] = await Promise.all([
+        chokePoint.restoreItem(db.id, item.id),
+        chokePoint.restoreItem(db.id, item.id),
+      ]);
+      expect(first?.id).toBe(item.id);
+      expect(second?.id).toBe(item.id);
+      expect(first?.deletedAt).toBeNull();
+      expect(second?.deletedAt).toBeNull();
+    });
   });
 });
