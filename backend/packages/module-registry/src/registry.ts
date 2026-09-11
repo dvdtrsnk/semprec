@@ -1,5 +1,10 @@
 import { loadModuleCatalogs, type ModuleCatalogs } from "./catalog.js";
-import { moduleManifestSchema, type ModuleManifest } from "./manifest.js";
+import {
+  moduleManifestSchema,
+  type CustomRouteJustification,
+  type CustomRouteMethod,
+  type ModuleManifest,
+} from "./manifest.js";
 
 export interface ModuleDatabaseProjection {
   moduleId: string;
@@ -25,6 +30,30 @@ export interface ModuleWorkerProjection {
   moduleId: string;
   name: string;
   handlerExport: string;
+}
+
+export interface ModuleCustomRouteProjection {
+  moduleId: string;
+  name: string;
+  method: CustomRouteMethod;
+  path: string;
+  justification: CustomRouteJustification;
+  handlerExport: string;
+}
+
+/**
+ * A module custom route's `handlerExport` resolved to the actual imported value (not just the
+ * export name `ModuleCustomRouteProjection` carries) — deliberately untyped beyond `unknown`,
+ * the same forward-resolution the queue's `ModuleTaskDefinition.handler` uses: `semprec-api` (the
+ * only consumer, issue #239) casts it to its own adapter-handler-factory shape after reading it
+ * back, so this package never has to depend on `semprec-api`'s HTTP types.
+ */
+export interface ModuleCustomRouteDefinition {
+  moduleId: string;
+  name: string;
+  method: CustomRouteMethod;
+  path: string;
+  handler: unknown;
 }
 
 export interface ModuleMigrationProjection {
@@ -113,6 +142,8 @@ export class ModuleRegistry {
   private readonly agentToolNameOwners = new Map<string, string>();
   private readonly workerNameOwners = new Map<string, string>();
   private readonly heartbeatRuleKindOwners = new Map<string, string>();
+  /** Keyed by `"<method> <path>"` — the fail-fast collision surface issue #239's Task requires. */
+  private readonly customRouteOwners = new Map<string, string>();
   private readonly catalogsById = new Map<string, ModuleCatalogs>();
   private readonly catalogKeyOwners = new Map<string, string>();
   private readonly reservedTaskNames: ReadonlySet<string>;
@@ -162,8 +193,10 @@ export class ModuleRegistry {
     this.assertExportsExist(path, manifest, imported);
     this.assertDataMigrationsReferenceOwnDatabases(path, manifest);
     this.assertCatalogKeysAvailable(path, catalogs);
+    this.assertCustomRoutesAvailable(path, manifest);
     this.claimCrossModuleIdentifiers(path, manifest);
     this.commitCatalogKeys(manifest.id, catalogs);
+    this.commitCustomRoutes(manifest);
 
     this.modulesById.set(manifest.id, { manifest, exports: imported });
     this.moduleIdByName.set(manifest.name, manifest.id);
@@ -189,6 +222,43 @@ export class ModuleRegistry {
     for (const dataMigration of manifest.dataMigrations ?? []) {
       const label = `data migration "${dataMigration.databaseKey}" (${dataMigration.fromVersion} -> ${dataMigration.toVersion})`;
       this.requireFunctionExport(imported, dataMigration.converterExport, path, label);
+    }
+    for (const route of manifest.customRoutes ?? []) {
+      this.requireFunctionExport(imported, route.handlerExport, path, `custom route "${route.name}"`);
+    }
+  }
+
+  /**
+   * Every custom route's `method`+`path` may only ever be claimed once across all loaded
+   * modules — checked here, before anything commits, so a rejected module never leaves a route
+   * claimed. Deliberately its own method rather than folded into `claimCrossModuleIdentifiers`'s
+   * generic `claims` array: the issue's acceptance criteria requires the failure to identify
+   * *both* owning modules by id, which this spells out explicitly rather than relying on that
+   * generic path's "loading \"<file path>\"" phrasing to stand in for the new module's id.
+   */
+  private assertCustomRoutesAvailable(path: string, manifest: ModuleManifest): void {
+    const seenInThisManifest = new Map<string, string>();
+    for (const route of manifest.customRoutes ?? []) {
+      const key = `${route.method} ${route.path}`;
+      const existingOwner = this.customRouteOwners.get(key);
+      if (existingOwner !== undefined) {
+        throw new Error(
+          `Duplicate custom route "${key}" loading "${path}": module "${manifest.id}" and module "${existingOwner}" both register it`,
+        );
+      }
+      const seenName = seenInThisManifest.get(key);
+      if (seenName !== undefined) {
+        throw new Error(
+          `Duplicate custom route "${key}" declared twice in module "${manifest.id}" (routes "${seenName}" and "${route.name}")`,
+        );
+      }
+      seenInThisManifest.set(key, route.name);
+    }
+  }
+
+  private commitCustomRoutes(manifest: ModuleManifest): void {
+    for (const route of manifest.customRoutes ?? []) {
+      this.customRouteOwners.set(`${route.method} ${route.path}`, manifest.id);
     }
   }
 
@@ -479,6 +549,30 @@ export class ModuleRegistry {
         fromVersion: dataMigration.fromVersion,
         toVersion: dataMigration.toVersion,
         converter: loaded.exports[dataMigration.converterExport] as ModuleDataMigrationDefinition["converter"],
+      })),
+    );
+  }
+
+  async getCustomRoutes(): Promise<ModuleCustomRouteProjection[]> {
+    const active = await this.getActiveModules();
+    return active.flatMap((loaded) =>
+      (loaded.manifest.customRoutes ?? []).map((route) => ({ moduleId: loaded.manifest.id, ...route })),
+    );
+  }
+
+  /**
+   * Resolves each active module's declared custom routes to their actual imported handler
+   * value, for `semprec-api` (issue #239) to mount into the flat `/api` namespace at startup.
+   */
+  async getCustomRouteDefinitions(): Promise<ModuleCustomRouteDefinition[]> {
+    const active = await this.getActiveModules();
+    return active.flatMap((loaded) =>
+      (loaded.manifest.customRoutes ?? []).map((route) => ({
+        moduleId: loaded.manifest.id,
+        name: route.name,
+        method: route.method,
+        path: route.path,
+        handler: loaded.exports[route.handlerExport],
       })),
     );
   }

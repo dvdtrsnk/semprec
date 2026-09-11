@@ -258,7 +258,7 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
    * `http.createServer` discards its listener's return value, so an `async` listener turns any
    * rejection escaping the try/catch above into an unhandled rejection — which Node answers by
    * exiting the process. Keeping the boundary synchronous confines it to a 500 for the one
-   * request. Same shape as `aiUsageHandler.ts`.
+   * request. Same shape as `setupHandler.ts`.
    */
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {

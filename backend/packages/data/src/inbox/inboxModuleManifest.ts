@@ -7,6 +7,8 @@ import {
 } from "../seed/inboxPipelineKeys.js";
 import { SEMPREC_TICK_ACTION_ID } from "./inboxTickAction.js";
 
+export { createConfirmProposalRouteHandler, createInboxTypesRouteHandler } from "./inboxRouteHandlers.js";
+
 /**
  * Retrofit manifest (module-contract issue #227) for the Inbox pipeline (issues #101-#106):
  * Inbox, Inbox item types, and Processing proposals (`0010_inbox_type_processing.sql` — the
@@ -39,4 +41,25 @@ export const manifest: ModuleManifest = {
   viewTypes: [JOURNAL_INBOX_VIEW_TYPE],
   heartbeatActions: [SEMPREC_TICK_ACTION_ID],
   migrations: ["0010_inbox_type_processing.sql"],
+  customRoutes: [
+    {
+      name: "confirmProposal",
+      method: "POST",
+      path: "/api/proposals/:id/confirm",
+      handlerExport: "createConfirmProposalRouteHandler",
+      // A cross-destination write (item creation/patch plus, for an MCP server proposal, a
+      // stored credential) committed in one transaction with the proposal's own status
+      // transition — issue #239's "cross-database write in one transaction" justification.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "listInboxTypes",
+      method: "GET",
+      path: "/api/inbox-types",
+      handlerExport: "createInboxTypesRouteHandler",
+      // Shaped for exactly one consumer, the capture UI's type picker — not a generic
+      // list-items-in-a-database query.
+      justification: "single-consumer-read",
+    },
+  ],
 };

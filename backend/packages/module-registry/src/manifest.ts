@@ -64,6 +64,37 @@ export interface ModuleAgentToolDescriptor {
   capability?: string;
 }
 
+/**
+ * The two, and only two, reasons a custom route (issue #239) is allowed to exist outside the
+ * generic REST surface: `transactional-semantics` covers an action with its own transactional
+ * shape a generic item write/read can't express (a cross-database write in one transaction, an
+ * aggregate read outside the item model, a binary upload); `single-consumer-read` covers a read
+ * shortcut shaped for exactly one consumer. Never CRUD over module data — that always goes
+ * through the generic resource endpoints instead. `moduleManifestSchema` rejects any entry
+ * missing one of these two values, satisfying the issue's "every manifest entry must state which
+ * justification applies" rule structurally, with no extra runtime check needed.
+ */
+export const CUSTOM_ROUTE_JUSTIFICATIONS = ["transactional-semantics", "single-consumer-read"] as const;
+export type CustomRouteJustification = (typeof CUSTOM_ROUTE_JUSTIFICATIONS)[number];
+
+export const CUSTOM_ROUTE_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+export type CustomRouteMethod = (typeof CUSTOM_ROUTE_METHODS)[number];
+
+/**
+ * A named custom route (issue #239) a module mounts into the flat `/api` namespace at startup,
+ * through the `semprec-api` REST adapter (#238) — shared auth, validation, status mapping, and
+ * serialization, with no private auth or error path of its own. `path` is matched exactly
+ * (`:param`-style segments become path parameters); `handlerExport` names an export of this same
+ * module file, resolved by the registry the same way every other manifest export is.
+ */
+export interface ModuleCustomRouteDescriptor {
+  name: string;
+  method: CustomRouteMethod;
+  path: string;
+  handlerExport: string;
+  justification: CustomRouteJustification;
+}
+
 export interface ModuleManifest {
   id: string;
   version: string;
@@ -80,6 +111,7 @@ export interface ModuleManifest {
   workers?: ModuleWorkerDescriptor[];
   migrations?: string[];
   dataMigrations?: ModuleDataMigrationDescriptor[];
+  customRoutes?: ModuleCustomRouteDescriptor[];
 }
 
 const moduleTaskDescriptorSchema = z.object({
@@ -118,6 +150,15 @@ const moduleAgentToolDescriptorSchema = z.object({
   capability: z.string().min(1).optional(),
 });
 
+/** `path` must live under the flat `/api` namespace the issue's Task requires every custom route to mount into. */
+const moduleCustomRouteDescriptorSchema = z.object({
+  name: z.string().min(1),
+  method: z.enum(CUSTOM_ROUTE_METHODS),
+  path: z.string().regex(/^\/api\/\S*$/, 'must be a path starting with "/api/"'),
+  handlerExport: z.string().min(1),
+  justification: z.enum(CUSTOM_ROUTE_JUSTIFICATIONS),
+});
+
 export const moduleManifestSchema = z.object({
   id: z.string().min(1),
   version: z.string().min(1),
@@ -134,4 +175,5 @@ export const moduleManifestSchema = z.object({
   workers: z.array(moduleWorkerDescriptorSchema).optional(),
   migrations: z.array(z.string().min(1)).optional(),
   dataMigrations: z.array(moduleDataMigrationDescriptorSchema).optional(),
+  customRoutes: z.array(moduleCustomRouteDescriptorSchema).optional(),
 });

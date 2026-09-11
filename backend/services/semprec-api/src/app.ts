@@ -1,12 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import type { PasswordResetMailer, loadFullModuleRegistry } from "@semprec/data";
-import { createAiUsageRequestListener } from "./aiUsageHandler.js";
+import { mountCustomRoutes } from "./adapter/customRouteMount.js";
 import { createMcpAgentPageRequestListener } from "./mcpAgentPageHandler.js";
 import { createApprovalRequestsRequestListener } from "./approvalRequestsHandler.js";
 import { createAgentRunRequestListener } from "./agentRunHandler.js";
 import { createAuthRequestListener } from "./authHandler.js";
-import { createPushSubscriptionsRequestListener } from "./pushSubscriptionsHandler.js";
 import { createNotificationsRequestListener } from "./notificationsHandler.js";
 import { createSetupRequestListener } from "./setupHandler.js";
 import { createSchemaRequestListener } from "./schemaHandler.js";
@@ -25,10 +24,18 @@ export interface AppOptions {
  * drive `routeMatrix.ts`'s inventory against a real in-memory server, with no process/port of
  * its own to manage.
  *
- * Routes by path prefix; `mcpAgentPageListener` already answers 404 itself for anything else.
+ * Routes by path prefix; a module's custom route (issue #239 — `POST /api/proposals/:id/confirm`,
+ * `GET /api/inbox-types`, `POST /api/push-subscriptions`, `POST /api/push-subscriptions/:id/revoke`,
+ * `GET /api/ai-usage`) is tried first through `mountCustomRoutes`, since none of those paths are
+ * exact prefixes this function otherwise routes; `mcpAgentPageListener` still answers 404 itself
+ * for anything left unmatched.
  */
-export function createDispatcher(pool: Pool, options: AppOptions): (req: IncomingMessage, res: ServerResponse) => void {
-  const aiUsageListener = createAiUsageRequestListener(pool);
+export async function createDispatcher(
+  pool: Pool,
+  options: AppOptions,
+): Promise<(req: IncomingMessage, res: ServerResponse) => void> {
+  const customRouteDefinitions = await options.moduleRegistry.getCustomRouteDefinitions();
+  const dispatchCustomRoute = mountCustomRoutes(pool, customRouteDefinitions);
   const mcpAgentPageListener = createMcpAgentPageRequestListener(pool);
   const approvalRequestsListener = createApprovalRequestsRequestListener(pool);
   const agentRunListener = createAgentRunRequestListener(pool);
@@ -36,19 +43,16 @@ export function createDispatcher(pool: Pool, options: AppOptions): (req: Incomin
     passwordResetMailer: options.passwordResetMailer,
     appBaseUrl: options.appBaseUrl,
   });
-  const pushSubscriptionsListener = createPushSubscriptionsRequestListener(pool);
   const notificationsListener = createNotificationsRequestListener(pool);
   const setupListener = createSetupRequestListener(pool, { setupToken: options.setupToken });
   const schemaListener = createSchemaRequestListener(pool, options.moduleRegistry);
 
   return function dispatch(req: IncomingMessage, res: ServerResponse): void {
+    if (dispatchCustomRoute(req, res)) return;
+
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
     if (pathname === "/api/schema") {
       void schemaListener(req, res);
-      return;
-    }
-    if (pathname === "/api/ai-usage") {
-      void aiUsageListener(req, res);
       return;
     }
     if (pathname === "/api/approval-requests" || pathname.startsWith("/api/approval-requests/")) {
@@ -61,10 +65,6 @@ export function createDispatcher(pool: Pool, options: AppOptions): (req: Incomin
     }
     if (pathname.startsWith("/api/auth/")) {
       void authListener(req, res);
-      return;
-    }
-    if (pathname.startsWith("/api/push-subscriptions")) {
-      void pushSubscriptionsListener(req, res);
       return;
     }
     if (pathname.startsWith("/api/notifications")) {
