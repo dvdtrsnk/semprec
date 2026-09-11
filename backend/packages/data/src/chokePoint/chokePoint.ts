@@ -1013,6 +1013,54 @@ export function createChokePoint(
       return withTransaction(pool, (client) => itemsStore.getItemById(client, databaseId, itemId));
     },
 
+    /**
+     * Cross-partition lookup by id alone (issue #241's `GET /api/items/:id`, whose URL carries no
+     * `databaseId` to route `getItem`'s partitioned lookup through). Backed by the same
+     * `getItemsByIds` scan `assertItemExists` already uses for view membership — acceptable here
+     * for the same reason: a single-row point lookup, not a scan over a large membership list.
+     */
+    async findItem(itemId: string): Promise<ItemRow | null> {
+      return withTransaction(pool, async (client) => {
+        const [item] = await itemsStore.getItemsByIds(client, [itemId]);
+        return item ?? null;
+      });
+    },
+
+    /**
+     * The breadcrumb chain `GET /api/items/:id?include=path` needs (issue #241): starting at
+     * `itemId`, walks `databases.parent_item_id` outward — from the item's own database to
+     * whichever item (in whichever other database) that database is nested under, and that
+     * item's own database's parent, and so on — so a caller never has to assemble hierarchy
+     * itself. Ordered root-first, ending with `itemId`. Stops (rather than throwing) if an
+     * ancestor's item or database has since gone missing partway up the chain; the caller
+     * already has everything found below that point.
+     *
+     * Guards against a `parent_item_id` cycle (database A's parent item lives in a database
+     * whose own parent item is, transitively, back in database A) by tracking every database
+     * id already walked and stopping the moment one repeats — otherwise a cycle would hang this
+     * loop, and the request, forever.
+     *
+     * Iterative per-level walk rather than a single recursive CTE — the trade-off is recorded in
+     * `docs/adr/2026-09-11-iterative-parent-chain-traversal-in-choke-point.md`.
+     */
+    async getItemPath(itemId: string): Promise<ItemRow[]> {
+      return withTransaction(pool, async (client) => {
+        const chain: ItemRow[] = [];
+        const visitedDatabaseIds = new Set<string>();
+        let currentId: string | undefined = itemId;
+        while (currentId) {
+          const [item] = await itemsStore.getItemsByIds(client, [currentId]);
+          if (!item) break;
+          chain.unshift(item);
+          if (visitedDatabaseIds.has(item.databaseId)) break;
+          visitedDatabaseIds.add(item.databaseId);
+          const database = await databasesStore.getDatabase(client, item.databaseId);
+          currentId = database?.parentItemId ?? undefined;
+        }
+        return chain;
+      });
+    },
+
     /** Filter with either `filter` (a filter tree, views/filterTree.ts) or `buildFilterSql`, never both. */
     async listItems(databaseId: string, options?: ListItemsInput) {
       return withTransaction(pool, async (client) => {

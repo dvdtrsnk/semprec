@@ -27,3 +27,12 @@ export function toItemEnvelope(item: ItemRow): ItemEnvelope {
     deletedAt: item.deletedAt,
   };
 }
+
+/** `GET /api/items/:id?include=path`'s wire shape (issue #241): the item envelope plus the server-assembled breadcrumb, root-first, ending with the item itself — omitted entirely when `?include=path` wasn't requested. */
+export interface ItemDetailEnvelope extends ItemEnvelope {
+  path?: ItemEnvelope[];
+}
+
+export function toItemDetailEnvelope(item: ItemRow, path?: ItemRow[]): ItemDetailEnvelope {
+  return path === undefined ? toItemEnvelope(item) : { ...toItemEnvelope(item), path: path.map(toItemEnvelope) };
+}

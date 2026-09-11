@@ -271,4 +271,25 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     surface: "api",
     public: false,
   },
+  {
+    name: "create item",
+    method: "POST",
+    path: `/api/databases/${EXAMPLE_ID}/items`,
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "item detail",
+    method: "GET",
+    path: `/api/items/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "patch item",
+    method: "PATCH",
+    path: `/api/items/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+  },
 ];
