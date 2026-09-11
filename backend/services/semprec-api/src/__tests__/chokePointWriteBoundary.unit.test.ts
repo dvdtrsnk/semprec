@@ -49,6 +49,9 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "delete view": "services/semprec-api/src/viewsHandler.ts",
   "add/reposition curated view item": "services/semprec-api/src/viewsHandler.ts",
   "remove curated view item": "services/semprec-api/src/viewsHandler.ts",
+  "create item": "services/semprec-api/src/itemsHandler.ts",
+  "item detail": "services/semprec-api/src/itemsHandler.ts",
+  "patch item": "services/semprec-api/src/itemsHandler.ts",
 };
 
 const apiRoutes: RouteMatrixEntry[] = ROUTE_MATRIX.filter((route) => route.surface === "api");
