@@ -54,6 +54,8 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "patch item": "services/semprec-api/src/itemsHandler.ts",
   "delete item": "services/semprec-api/src/itemsHandler.ts",
   "restore item": "services/semprec-api/src/itemsHandler.ts",
+  "upload file": "services/semprec-api/src/filesHandler.ts",
+  "download blob": "services/semprec-api/src/blobsHandler.ts",
 };
 
 const apiRoutes: RouteMatrixEntry[] = ROUTE_MATRIX.filter((route) => route.surface === "api");

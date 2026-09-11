@@ -306,4 +306,18 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     surface: "api",
     public: false,
   },
+  {
+    name: "upload file",
+    method: "POST",
+    path: "/api/files",
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "download blob",
+    method: "GET",
+    path: `/api/blobs/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+  },
 ];

@@ -187,6 +187,29 @@ export async function getAllItemsInDatabase(client: Queryable, databaseId: strin
 }
 
 /**
+ * The lowest-id (deterministic, since item ids are random UUIDs with no creation-order meaning)
+ * live Files item whose `file` property points at `blobId` — issue #158's convergence rule for
+ * concurrent identical uploads: every caller streaming the same bytes ends up dedup'd onto one
+ * `blobs` row (`findOrCreateBlob`'s unique-index insert), and this is the query that lets a second
+ * caller reuse the Files item the first one already created for it instead of creating a
+ * duplicate. Also used to resolve a download filename for `GET /api/blobs/:id`, which only knows
+ * a blob id, not an item.
+ */
+export async function findFileItemByBlobId(
+  client: Queryable,
+  databaseId: string,
+  blobId: string,
+): Promise<ItemRow | null> {
+  const { rows } = await client.query<ItemDbRow>(
+    `SELECT id, database_id, properties, computed, updated_at, deleted_at FROM items
+     WHERE database_id = $1 AND deleted_at IS NULL AND properties -> 'file' ->> 'blobId' = $2
+     ORDER BY id ASC LIMIT 1`,
+    [databaseId, blobId],
+  );
+  return rows[0] ? mapItemRow(rows[0]) : null;
+}
+
+/**
  * Every item, across every database's partition, trashed longer ago than `olderThan` — the
  * 30-day purge sweep's entry point into the subtree roots it must consider. Queried against the
  * partitioned parent table directly (same pattern as `getItemsByIds`), so it isn't scoped to one
