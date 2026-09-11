@@ -14,6 +14,8 @@ export interface BoundaryViolation {
 
 export interface BoundaryCheckResult {
   violations: BoundaryViolation[];
+  /** Every source file dependency-cruiser actually resolved and scanned, for callers that need to prove a specific file was covered, not just that no violation was found for it. */
+  scannedFiles: string[];
 }
 
 function loadForbiddenRules(): IForbiddenRuleType[] {
@@ -62,5 +64,6 @@ export async function checkModuleBoundaries(
       }
     }
   }
-  return { violations };
+  const scannedFiles = output.modules.map((module) => module.source);
+  return { violations, scannedFiles };
 }
