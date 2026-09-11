@@ -1,13 +1,21 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { createChokePoint, type Actor, type ChokePoint } from "../chokePoint/chokePoint.js";
+import * as viewsStore from "../chokePoint/viewsStore.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { createViewTypeRegistry, registerViewType, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
 let chokePoint: ChokePoint;
+let agentA: string;
+let agentB: string;
+
+const userActor: Actor = { type: "user" };
+function agentActor(agentProjectItemId: string): Actor {
+  return { type: "ai_agent", agentProjectItemId };
+}
 
 describe("views", () => {
   beforeEach(async () => {
@@ -15,6 +23,18 @@ describe("views", () => {
     viewTypeRegistry = createViewTypeRegistry();
     chokePoint = createChokePoint(pool, undefined, viewTypeRegistry);
     await resetDatabase(pool);
+
+    // A minimal stand-in for the seeded Projects system database — enough for
+    // assertAuthenticatedAgentIdentity to resolve a real "owning Projects item" per agent.
+    const projectsDb = await chokePoint.createDatabase({
+      name: null,
+      key: "projects",
+      system: true,
+      ownerModuleId: "projects",
+    });
+    const projectsDbId = projectsDb.id;
+    agentA = (await chokePoint.createItem({ databaseId: projectsDbId, properties: {} })).id;
+    agentB = (await chokePoint.createItem({ databaseId: projectsDbId, properties: {} })).id;
   });
 
   afterAll(async () => {
@@ -36,6 +56,7 @@ describe("views", () => {
       const view = await chokePoint.createView({ databaseId: db.id, type: "table", name: "All tasks" });
       expect(view.databaseId).toBe(db.id);
       expect(view.createdBy).toBe("user");
+      expect(view.creatorProjectItemId).toBeNull();
       expect(view.type).toBe("table");
     });
 
@@ -86,25 +107,54 @@ describe("views", () => {
       ).rejects.toBeInstanceOf(ConflictError);
     });
 
-    it("an agent may create a view freely, but never with isDefault: true", async () => {
+    it("an agent may create a view freely, but never with isDefault: true, and it stores the agent's own creator identity", async () => {
       const db = await makeTasksDb();
-      const view = await chokePoint.createView({
-        databaseId: db.id,
-        type: "table",
-        name: "Agent view",
-        createdBy: "ai_agent",
-      });
+      const view = await chokePoint.createView(
+        { databaseId: db.id, type: "table", name: "Agent view" },
+        agentActor(agentA),
+      );
       expect(view.createdBy).toBe("ai_agent");
+      expect(view.creatorProjectItemId).toBe(agentA);
 
       await expect(
-        chokePoint.createView({
-          databaseId: db.id,
-          type: "board",
-          name: "Agent default",
-          createdBy: "ai_agent",
-          isDefault: true,
-        }),
+        chokePoint.createView(
+          { databaseId: db.id, type: "board", name: "Agent default", isDefault: true },
+          agentActor(agentA),
+        ),
       ).rejects.toBeInstanceOf(ForbiddenError);
+    });
+
+    it("an agent creating without actor.agentProjectItemId gets 403 owner_violation / missing_authenticated_agent_identity, and persists nothing", async () => {
+      const db = await makeTasksDb();
+      try {
+        await chokePoint.createView({ databaseId: db.id, type: "table", name: "Agent view" }, { type: "ai_agent" });
+        expect.unreachable("expected ForbiddenError");
+      } catch (err) {
+        expect(err).toBeInstanceOf(ForbiddenError);
+        expect((err as ForbiddenError).code).toBe("owner_violation");
+        expect((err as ForbiddenError).details).toEqual({
+          field: "agentProjectItemId",
+          reason: "missing_authenticated_agent_identity",
+        });
+      }
+      expect(await chokePoint.listViewsByDatabase(db.id)).toHaveLength(0);
+    });
+
+    it("an agent creating with an agentProjectItemId naming no real Projects item gets 403 owner_violation / unknown_authenticated_agent_identity, and persists nothing", async () => {
+      const db = await makeTasksDb();
+      const fakeAgentId = "00000000-0000-0000-0000-000000000000";
+      try {
+        await chokePoint.createView({ databaseId: db.id, type: "table", name: "Agent view" }, agentActor(fakeAgentId));
+        expect.unreachable("expected ForbiddenError");
+      } catch (err) {
+        expect(err).toBeInstanceOf(ForbiddenError);
+        expect((err as ForbiddenError).code).toBe("owner_violation");
+        expect((err as ForbiddenError).details).toEqual({
+          field: "agentProjectItemId",
+          reason: "unknown_authenticated_agent_identity",
+        });
+      }
+      expect(await chokePoint.listViewsByDatabase(db.id)).toHaveLength(0);
     });
 
     it("inline database creation is always system: false and carries parentItemId", async () => {
@@ -116,89 +166,241 @@ describe("views", () => {
     });
   });
 
-  describe("created_by enforcement", () => {
-    it("an agent cannot patch a user's view — 403 owner_violation", async () => {
+  describe("per-agent ownership enforcement", () => {
+    it("agent B cannot patch, delete, or reorder membership in a view created by agent A — 403 owner_violation / creator_mismatch", async () => {
       const db = await makeTasksDb();
-      const view = await chokePoint.createView({ databaseId: db.id, type: "table", name: "User view" });
+      const view = await chokePoint.createView(
+        { databaseId: db.id, type: "table", name: "Agent A's view" },
+        agentActor(agentA),
+      );
       try {
-        await chokePoint.patchView({ id: view.id, actor: "ai_agent", name: "Renamed" });
+        await chokePoint.patchView({ id: view.id, actor: agentActor(agentB), name: "Renamed" });
         expect.unreachable("expected ForbiddenError");
       } catch (err) {
         expect(err).toBeInstanceOf(ForbiddenError);
         expect((err as ForbiddenError).code).toBe("owner_violation");
+        expect((err as ForbiddenError).details).toEqual({
+          field: "creatorProjectItemId",
+          viewId: view.id,
+          reason: "creator_mismatch",
+        });
+      }
+      await expect(chokePoint.deleteView({ id: view.id, actor: agentActor(agentB) })).rejects.toBeInstanceOf(
+        ForbiddenError,
+      );
+
+      const curated = await chokePoint.createView(
+        { type: "list", name: "Agent A's collection", config: { membership: "manual" } },
+        agentActor(agentA),
+      );
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "X" } });
+      await chokePoint.addViewItem({ viewId: curated.id, itemId: item.id, actor: agentActor(agentA) });
+      await expect(
+        chokePoint.reorderViewItem({ viewId: curated.id, itemId: item.id, position: 0, actor: agentActor(agentB) }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+      await expect(
+        chokePoint.removeViewItem({ viewId: curated.id, itemId: item.id, actor: agentActor(agentB) }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+      await expect(
+        chokePoint.addViewItem({ viewId: curated.id, itemId: item.id, actor: agentActor(agentB) }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+    });
+
+    it("agent A can mutate its own view", async () => {
+      const db = await makeTasksDb();
+      const view = await chokePoint.createView(
+        { databaseId: db.id, type: "table", name: "Agent view" },
+        agentActor(agentA),
+      );
+      const patched = await chokePoint.patchView({ id: view.id, actor: agentActor(agentA), name: "Renamed" });
+      expect(patched.name).toBe("Renamed");
+      await chokePoint.deleteView({ id: view.id, actor: agentActor(agentA) });
+      expect(await chokePoint.getView(view.id)).toBeNull();
+    });
+
+    it("an agent mutating a user-owned view gets 403 owner_violation / user_owned", async () => {
+      const db = await makeTasksDb();
+      const view = await chokePoint.createView({ databaseId: db.id, type: "table", name: "User view" });
+      try {
+        await chokePoint.patchView({ id: view.id, actor: agentActor(agentA), name: "Renamed" });
+        expect.unreachable("expected ForbiddenError");
+      } catch (err) {
+        expect(err).toBeInstanceOf(ForbiddenError);
+        expect((err as ForbiddenError).code).toBe("owner_violation");
+        expect((err as ForbiddenError).details).toEqual({
+          field: "creatorProjectItemId",
+          viewId: view.id,
+          reason: "user_owned",
+        });
       }
     });
 
-    it("an agent can patch its own view", async () => {
+    it("an agent mutating a system-owned view gets 403 owner_violation / system_owned", async () => {
       const db = await makeTasksDb();
-      const view = await chokePoint.createView({
-        databaseId: db.id,
-        type: "table",
-        name: "Agent view",
-        createdBy: "ai_agent",
-      });
-      const patched = await chokePoint.patchView({ id: view.id, actor: "ai_agent", name: "Renamed by agent" });
-      expect(patched.name).toBe("Renamed by agent");
-      expect(patched.createdBy).toBe("ai_agent");
+      const client = await pool.connect();
+      let view;
+      try {
+        view = await viewsStore.createView(
+          client,
+          { databaseId: db.id, type: "table", name: "System view", createdBy: "system" },
+          viewTypeRegistry,
+        );
+      } finally {
+        client.release();
+      }
+      try {
+        await chokePoint.deleteView({ id: view.id, actor: agentActor(agentA) });
+        expect.unreachable("expected ForbiddenError");
+      } catch (err) {
+        expect(err).toBeInstanceOf(ForbiddenError);
+        expect((err as ForbiddenError).code).toBe("owner_violation");
+        expect((err as ForbiddenError).details).toEqual({
+          field: "creatorProjectItemId",
+          viewId: view.id,
+          reason: "system_owned",
+        });
+      }
     });
 
-    it("a user's patch to an agent's view adopts it (ai_agent -> user), one-way", async () => {
+    it("a legacy AI view (creator_project_item_id NULL) is unwritable by any agent but adoptable by a user", async () => {
       const db = await makeTasksDb();
-      const view = await chokePoint.createView({
-        databaseId: db.id,
-        type: "table",
-        name: "Agent view",
-        createdBy: "ai_agent",
-      });
-      const adopted = await chokePoint.patchView({ id: view.id, actor: "user", name: "Now mine" });
+      const client = await pool.connect();
+      let legacyView;
+      try {
+        legacyView = await viewsStore.createView(
+          client,
+          { databaseId: db.id, type: "table", name: "Legacy agent view", createdBy: "ai_agent" },
+          viewTypeRegistry,
+        );
+      } finally {
+        client.release();
+      }
+      expect(legacyView.creatorProjectItemId).toBeNull();
+
+      try {
+        await chokePoint.patchView({ id: legacyView.id, actor: agentActor(agentA), name: "Steal" });
+        expect.unreachable("expected ForbiddenError");
+      } catch (err) {
+        expect(err).toBeInstanceOf(ForbiddenError);
+        expect((err as ForbiddenError).code).toBe("owner_violation");
+        expect((err as ForbiddenError).details).toEqual({
+          field: "creatorProjectItemId",
+          viewId: legacyView.id,
+          reason: "legacy_creator_unknown",
+        });
+      }
+
+      const adopted = await chokePoint.patchView({ id: legacyView.id, actor: userActor, name: "Adopted" });
       expect(adopted.createdBy).toBe("user");
+      expect(adopted.creatorProjectItemId).toBeNull();
+    });
+
+    it("a user's patch to an agent's view adopts it (ai_agent -> user) and clears the creator identity, one-way", async () => {
+      const db = await makeTasksDb();
+      const view = await chokePoint.createView(
+        { databaseId: db.id, type: "table", name: "Agent view" },
+        agentActor(agentA),
+      );
+      const adopted = await chokePoint.patchView({ id: view.id, actor: userActor, name: "Now mine" });
+      expect(adopted.createdBy).toBe("user");
+      expect(adopted.creatorProjectItemId).toBeNull();
 
       // Reverse direction never happens: an agent write now fails since it's no longer its own view.
-      await expect(chokePoint.patchView({ id: view.id, actor: "ai_agent", name: "Steal back" })).rejects.toBeInstanceOf(
-        ForbiddenError,
+      await expect(
+        chokePoint.patchView({ id: view.id, actor: agentActor(agentA), name: "Steal back" }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+    });
+
+    it("a user's curated-membership write (add/remove/reorder) adopts an agent's view the same way patch does", async () => {
+      const view = await chokePoint.createView(
+        { type: "list", name: "Agent's collection", config: { membership: "manual" } },
+        agentActor(agentA),
       );
+      const db = await makeTasksDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "X" } });
+
+      const added = await chokePoint.addViewItem({ viewId: view.id, itemId: item.id, actor: userActor });
+      expect(added.viewId).toBe(view.id);
+      let current = await chokePoint.getView(view.id);
+      expect(current?.createdBy).toBe("user");
+      expect(current?.creatorProjectItemId).toBeNull();
+      // Adoption already happened, so the agent that created it can no longer write to it.
+      await expect(
+        chokePoint.reorderViewItem({ viewId: view.id, itemId: item.id, position: 0, actor: agentActor(agentA) }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+
+      // Same for removeViewItem/reorderViewItem starting from a fresh agent-owned view.
+      const view2 = await chokePoint.createView(
+        { type: "list", name: "Agent's collection 2", config: { membership: "manual" } },
+        agentActor(agentA),
+      );
+      await chokePoint.addViewItem({ viewId: view2.id, itemId: item.id, actor: agentActor(agentA) });
+      await chokePoint.reorderViewItem({ viewId: view2.id, itemId: item.id, position: 0, actor: userActor });
+      current = await chokePoint.getView(view2.id);
+      expect(current?.createdBy).toBe("user");
+      expect(current?.creatorProjectItemId).toBeNull();
+
+      const view3 = await chokePoint.createView(
+        { type: "list", name: "Agent's collection 3", config: { membership: "manual" } },
+        agentActor(agentA),
+      );
+      await chokePoint.addViewItem({ viewId: view3.id, itemId: item.id, actor: agentActor(agentA) });
+      await chokePoint.removeViewItem({ viewId: view3.id, itemId: item.id, actor: userActor });
+      current = await chokePoint.getView(view3.id);
+      expect(current?.createdBy).toBe("user");
+      expect(current?.creatorProjectItemId).toBeNull();
+    });
+
+    it("a user may delete an agent's view outright, with no adoption record needed", async () => {
+      const db = await makeTasksDb();
+      const view = await chokePoint.createView(
+        { databaseId: db.id, type: "table", name: "Agent view" },
+        agentActor(agentA),
+      );
+      await chokePoint.deleteView({ id: view.id, actor: userActor });
+      expect(await chokePoint.getView(view.id)).toBeNull();
     });
 
     it("a user's write to a system view never flips created_by", async () => {
       const db = await makeTasksDb();
-      const view = await chokePoint.createView({
-        databaseId: db.id,
-        type: "table",
-        name: "System view",
-        createdBy: "system",
-      });
-      const patched = await chokePoint.patchView({ id: view.id, actor: "user", name: "Edited" });
+      const client = await pool.connect();
+      let view;
+      try {
+        view = await viewsStore.createView(
+          client,
+          { databaseId: db.id, type: "table", name: "System view", createdBy: "system" },
+          viewTypeRegistry,
+        );
+      } finally {
+        client.release();
+      }
+      const patched = await chokePoint.patchView({ id: view.id, actor: userActor, name: "Renamed" });
       expect(patched.createdBy).toBe("system");
+      expect(patched.creatorProjectItemId).toBeNull();
     });
 
     it("an agent may never set is_default via patch, even on its own view", async () => {
       const db = await makeTasksDb();
-      const view = await chokePoint.createView({
-        databaseId: db.id,
-        type: "table",
-        name: "Agent view",
-        createdBy: "ai_agent",
-      });
-      await expect(chokePoint.patchView({ id: view.id, actor: "ai_agent", isDefault: true })).rejects.toBeInstanceOf(
-        ForbiddenError,
+      const view = await chokePoint.createView(
+        { databaseId: db.id, type: "table", name: "Agent view" },
+        agentActor(agentA),
       );
+      await expect(
+        chokePoint.patchView({ id: view.id, actor: agentActor(agentA), isDefault: true }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
     });
 
-    it("an agent cannot delete a user's view but can delete its own", async () => {
+    it("patching or deleting as an agent without actor.agentProjectItemId is rejected before touching the view", async () => {
       const db = await makeTasksDb();
-      const userView = await chokePoint.createView({ databaseId: db.id, type: "table", name: "User view" });
-      await expect(chokePoint.deleteView({ id: userView.id, actor: "ai_agent" })).rejects.toBeInstanceOf(
+      const view = await chokePoint.createView({ databaseId: db.id, type: "table", name: "User view" });
+      await expect(
+        chokePoint.patchView({ id: view.id, actor: { type: "ai_agent" }, name: "Renamed" }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+      await expect(chokePoint.deleteView({ id: view.id, actor: { type: "ai_agent" } })).rejects.toBeInstanceOf(
         ForbiddenError,
       );
-
-      const agentView = await chokePoint.createView({
-        databaseId: db.id,
-        type: "table",
-        name: "Agent view",
-        createdBy: "ai_agent",
-      });
-      await chokePoint.deleteView({ id: agentView.id, actor: "ai_agent" });
-      expect(await chokePoint.getView(agentView.id)).toBeNull();
+      const unchanged = await chokePoint.getView(view.id);
+      expect(unchanged?.name).toBe("User view");
     });
   });
 
@@ -214,7 +416,7 @@ describe("views", () => {
 
       const patched = await chokePoint.patchView({
         id: view.id,
-        actor: "user",
+        actor: userActor,
         config: { sort: [{ property: "status", direction: "desc" }] },
       });
       expect(patched.config.propertyOrder).toEqual(["title", "status"]);
@@ -223,7 +425,11 @@ describe("views", () => {
 
     it("patching a curated view's config without re-stating membership does not reject it as a curated/filtered switch", async () => {
       const view = await chokePoint.createView({ type: "list", name: "Collection", config: { membership: "manual" } });
-      const patched = await chokePoint.patchView({ id: view.id, actor: "user", config: { widths: { title: 200 } } });
+      const patched = await chokePoint.patchView({
+        id: view.id,
+        actor: userActor,
+        config: { widths: { title: 200 } },
+      });
       expect(patched.config.membership).toBe("manual");
       expect(patched.config.widths).toEqual({ title: 200 });
       expect(patched.databaseId).toBeNull();
@@ -237,7 +443,7 @@ describe("views", () => {
       const item2 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Two" } });
       const filtered = await chokePoint.createView({ databaseId: db.id, type: "table", name: "Filtered" });
       await expect(
-        chokePoint.addViewItem({ viewId: filtered.id, itemId: item1.id, actor: "user" }),
+        chokePoint.addViewItem({ viewId: filtered.id, itemId: item1.id, actor: userActor }),
       ).rejects.toBeInstanceOf(ValidationError);
 
       const curated = await chokePoint.createView({
@@ -245,16 +451,16 @@ describe("views", () => {
         name: "Collection",
         config: { membership: "manual" },
       });
-      await chokePoint.addViewItem({ viewId: curated.id, itemId: item1.id, actor: "user" });
-      await chokePoint.addViewItem({ viewId: curated.id, itemId: item2.id, actor: "user" });
+      await chokePoint.addViewItem({ viewId: curated.id, itemId: item1.id, actor: userActor });
+      await chokePoint.addViewItem({ viewId: curated.id, itemId: item2.id, actor: userActor });
       const members = await chokePoint.listViewItems(curated.id);
       expect(members.map((m) => m.itemId)).toEqual([item1.id, item2.id]);
 
-      await chokePoint.reorderViewItem({ viewId: curated.id, itemId: item2.id, position: 0, actor: "user" });
+      await chokePoint.reorderViewItem({ viewId: curated.id, itemId: item2.id, position: 0, actor: userActor });
       const reordered = await chokePoint.listViewItems(curated.id);
       expect(reordered.map((m) => m.itemId)).toEqual([item2.id, item1.id]);
 
-      await chokePoint.removeViewItem({ viewId: curated.id, itemId: item1.id, actor: "user" });
+      await chokePoint.removeViewItem({ viewId: curated.id, itemId: item1.id, actor: userActor });
       expect((await chokePoint.listViewItems(curated.id)).map((m) => m.itemId)).toEqual([item2.id]);
     });
 
@@ -268,10 +474,10 @@ describe("views", () => {
         name: "Collection",
         config: { membership: "manual" },
       });
-      await chokePoint.addViewItem({ viewId: curated.id, itemId: item1.id, actor: "user" });
-      await chokePoint.addViewItem({ viewId: curated.id, itemId: item2.id, actor: "user" });
+      await chokePoint.addViewItem({ viewId: curated.id, itemId: item1.id, actor: userActor });
+      await chokePoint.addViewItem({ viewId: curated.id, itemId: item2.id, actor: userActor });
 
-      await chokePoint.addViewItem({ viewId: curated.id, itemId: item3.id, position: 0, actor: "user" });
+      await chokePoint.addViewItem({ viewId: curated.id, itemId: item3.id, position: 0, actor: userActor });
       const members = await chokePoint.listViewItems(curated.id);
       expect(members.map((m) => m.itemId)).toEqual([item3.id, item1.id, item2.id]);
       expect(new Set(members.map((m) => m.position)).size).toBe(3); // no ties
@@ -286,10 +492,10 @@ describe("views", () => {
         name: "Collection",
         config: { membership: "manual" },
       });
-      await chokePoint.addViewItem({ viewId: curated.id, itemId: item1.id, actor: "user" });
-      await chokePoint.addViewItem({ viewId: curated.id, itemId: item2.id, actor: "user" });
+      await chokePoint.addViewItem({ viewId: curated.id, itemId: item1.id, actor: userActor });
+      await chokePoint.addViewItem({ viewId: curated.id, itemId: item2.id, actor: userActor });
 
-      await chokePoint.addViewItem({ viewId: curated.id, itemId: item2.id, position: 0, actor: "user" });
+      await chokePoint.addViewItem({ viewId: curated.id, itemId: item2.id, position: 0, actor: userActor });
       const members = await chokePoint.listViewItems(curated.id);
       expect(members.map((m) => m.itemId)).toEqual([item2.id, item1.id]);
     });
@@ -305,16 +511,14 @@ describe("views", () => {
         config: { membership: "manual" },
       });
       await expect(
-        chokePoint.addViewItem({ viewId: userCollection.id, itemId: item.id, actor: "ai_agent" }),
+        chokePoint.addViewItem({ viewId: userCollection.id, itemId: item.id, actor: agentActor(agentA) }),
       ).rejects.toBeInstanceOf(ForbiddenError);
 
-      const agentCollection = await chokePoint.createView({
-        type: "list",
-        name: "Agent's",
-        config: { membership: "manual" },
-        createdBy: "ai_agent",
-      });
-      await chokePoint.addViewItem({ viewId: agentCollection.id, itemId: item.id, actor: "ai_agent" });
+      const agentCollection = await chokePoint.createView(
+        { type: "list", name: "Agent's", config: { membership: "manual" } },
+        agentActor(agentA),
+      );
+      await chokePoint.addViewItem({ viewId: agentCollection.id, itemId: item.id, actor: agentActor(agentA) });
       expect((await chokePoint.listViewItems(agentCollection.id)).map((m) => m.itemId)).toEqual([item.id]);
     });
 
@@ -326,8 +530,8 @@ describe("views", () => {
       const itemB = await chokePoint.createItem({ databaseId: dbB.id, properties: { title: "Note" } });
 
       const collection = await chokePoint.createView({ type: "list", name: "Mixed", config: { membership: "manual" } });
-      await chokePoint.addViewItem({ viewId: collection.id, itemId: itemA.id, actor: "user" });
-      await chokePoint.addViewItem({ viewId: collection.id, itemId: itemB.id, actor: "user" });
+      await chokePoint.addViewItem({ viewId: collection.id, itemId: itemA.id, actor: userActor });
+      await chokePoint.addViewItem({ viewId: collection.id, itemId: itemB.id, actor: userActor });
 
       const result = await chokePoint.queryView(collection.id);
       expect(result.items.map((i) => i.id).sort()).toEqual([itemA.id, itemB.id].sort());
@@ -341,7 +545,7 @@ describe("views", () => {
       }
       const collection = await chokePoint.createView({ type: "list", name: "Paged", config: { membership: "manual" } });
       for (const item of items) {
-        await chokePoint.addViewItem({ viewId: collection.id, itemId: item.id, actor: "user" });
+        await chokePoint.addViewItem({ viewId: collection.id, itemId: item.id, actor: userActor });
       }
 
       const firstPage = await chokePoint.queryView(collection.id, { limit: 2 });
@@ -371,14 +575,14 @@ describe("views", () => {
           name: "Collection",
           config: { membership: "manual" },
         });
-        await chokePoint.addViewItem({ viewId: curated.id, itemId: item1.id, actor: "user" });
-        await chokePoint.addViewItem({ viewId: curated.id, itemId: item2.id, actor: "user" });
-        await chokePoint.addViewItem({ viewId: curated.id, itemId: item3.id, actor: "user" });
-        await chokePoint.addViewItem({ viewId: curated.id, itemId: item4.id, actor: "user" });
+        await chokePoint.addViewItem({ viewId: curated.id, itemId: item1.id, actor: userActor });
+        await chokePoint.addViewItem({ viewId: curated.id, itemId: item2.id, actor: userActor });
+        await chokePoint.addViewItem({ viewId: curated.id, itemId: item3.id, actor: userActor });
+        await chokePoint.addViewItem({ viewId: curated.id, itemId: item4.id, actor: userActor });
 
         await Promise.all([
-          chokePoint.reorderViewItem({ viewId: curated.id, itemId: item1.id, position: 3, actor: "user" }),
-          chokePoint.reorderViewItem({ viewId: curated.id, itemId: item4.id, position: 0, actor: "user" }),
+          chokePoint.reorderViewItem({ viewId: curated.id, itemId: item1.id, position: 3, actor: userActor }),
+          chokePoint.reorderViewItem({ viewId: curated.id, itemId: item4.id, position: 0, actor: userActor }),
         ]);
 
         const members = await chokePoint.listViewItems(curated.id);
