@@ -338,6 +338,9 @@ importers:
         specifier: ^8.23.0
         version: 8.23.0
     devDependencies:
+      '@semprec/module-boundaries':
+        specifier: workspace:*
+        version: link:../../packages/module-boundaries
       '@types/nodemailer':
         specifier: ^8.0.1
         version: 8.0.1

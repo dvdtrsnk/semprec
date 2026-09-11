@@ -90,8 +90,50 @@ describe("checkModuleBoundaries", () => {
           imported: "modules/alpha/src/internal.ts",
           rules: ["no-module-service-internal-cross-import"],
         },
+        {
+          importer: "modules/beta/src/badCoreTableWrite.ts",
+          imported: "packages/data/src/chokePoint/itemsStore.ts",
+          rules: ["no-core-table-write-outside-choke-point"],
+        },
+        {
+          importer: "modules/beta/src/badCoreTableWriteDatabases.ts",
+          imported: "packages/data/src/chokePoint/databasesStore.ts",
+          rules: ["no-core-table-write-outside-choke-point"],
+        },
+        {
+          importer: "modules/beta/src/badCoreTableWriteProperties.ts",
+          imported: "packages/data/src/chokePoint/propertiesStore.ts",
+          rules: ["no-core-table-write-outside-choke-point"],
+        },
       ]),
     );
-    expect(violations).toHaveLength(4);
+    expect(violations).toHaveLength(7);
+  });
+
+  it.each([
+    ["itemsStore.ts", "modules/beta/src/badCoreTableWrite.ts", "packages/data/src/chokePoint/itemsStore.ts"],
+    [
+      "databasesStore.ts",
+      "modules/beta/src/badCoreTableWriteDatabases.ts",
+      "packages/data/src/chokePoint/databasesStore.ts",
+    ],
+    [
+      "propertiesStore.ts",
+      "modules/beta/src/badCoreTableWriteProperties.ts",
+      "packages/data/src/chokePoint/propertiesStore.ts",
+    ],
+  ])("rejects a route handler or module importing %s directly (issue #154)", async (_storeName, importer, imported) => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const violation = violations.find((v: BoundaryViolation) => v.importer === importer);
+
+    expect(violation?.imported).toBe(imported);
+    expect(violation?.rules).toContain("no-core-table-write-outside-choke-point");
+  });
+
+  it("lets the choke-point package itself import its own write-capable store (issue #154)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const importers = violations.map((violation: BoundaryViolation) => violation.importer);
+
+    expect(importers).not.toContain("packages/data/src/chokePoint/usesOwnStore.ts");
   });
 });
