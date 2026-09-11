@@ -306,4 +306,32 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     surface: "api",
     public: false,
   },
+  {
+    name: "query database",
+    method: "POST",
+    path: `/api/databases/${EXAMPLE_ID}/query`,
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "query view",
+    method: "POST",
+    path: `/api/views/${EXAMPLE_ID}/query`,
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "create/replace relation",
+    method: "PUT",
+    path: `/api/items/${EXAMPLE_ID}/relations/exampleKey/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "delete relation",
+    method: "DELETE",
+    path: `/api/items/${EXAMPLE_ID}/relations/exampleKey/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+  },
 ];
