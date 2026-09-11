@@ -5,6 +5,11 @@ export {
   createHeartbeatHistoryTool,
   createHeartbeatTriggerTool,
 } from "../scheduler/heartbeatAgentTools.js";
+export {
+  createRegisterPushSubscriptionRouteHandler,
+  createRevokePushSubscriptionRouteHandler,
+} from "../push/pushRouteHandlers.js";
+export { createAiUsageRouteHandler } from "../aiGateway/aiUsageRouteHandler.js";
 
 /**
  * Retrofit manifest (module-contract issue #226) for the schema/data core: the choke point
@@ -36,4 +41,31 @@ export const manifest: ModuleManifest = {
     { name: "heartbeat.trigger", handlerExport: "createHeartbeatTriggerTool" },
   ],
   migrations: ["0001_core_schema.sql"],
+  customRoutes: [
+    {
+      name: "registerPushSubscription",
+      method: "POST",
+      path: "/api/push-subscriptions",
+      handlerExport: "createRegisterPushSubscriptionRouteHandler",
+      // Binds the new row to the caller's own session in one transaction with its upsert —
+      // issue #239's "cross-database write in one transaction" justification.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "revokePushSubscription",
+      method: "POST",
+      path: "/api/push-subscriptions/:id/revoke",
+      handlerExport: "createRevokePushSubscriptionRouteHandler",
+      justification: "transactional-semantics",
+    },
+    {
+      name: "aiUsageReport",
+      method: "GET",
+      path: "/api/ai-usage",
+      handlerExport: "createAiUsageRouteHandler",
+      // An aggregate report over ai_gateway_calls/agent_runs/system settings, outside the item
+      // model entirely — issue #239's "aggregate read outside the item model" justification.
+      justification: "transactional-semantics",
+    },
+  ],
 };

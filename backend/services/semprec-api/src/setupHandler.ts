@@ -12,8 +12,7 @@ function extractBearerToken(req: IncomingMessage): string {
 export interface SetupHandlerOptions {
   /**
    * The deployment's one-time bootstrap secret (#233). Explicit parameter, not read from
-   * `process.env` here, so the caller (`serve.ts`) decides where it comes from — same
-   * convention as `aiUsageHandler.ts`'s `authToken`.
+   * `process.env` here, so the caller (`serve.ts`) decides where it comes from.
    */
   setupToken: string;
 }

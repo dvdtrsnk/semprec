@@ -148,6 +148,20 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     surface: "api",
     public: false,
   },
+  {
+    name: "confirm proposal",
+    method: "POST",
+    path: `/api/proposals/${EXAMPLE_ID}/confirm`,
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "inbox types",
+    method: "GET",
+    path: "/api/inbox-types",
+    surface: "api",
+    public: false,
+  },
   { name: "approval queue", method: "GET", path: "/api/approval-requests", surface: "api", public: false },
   {
     name: "approval decision",

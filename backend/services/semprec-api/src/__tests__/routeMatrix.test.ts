@@ -33,7 +33,7 @@ describe("route matrix (issue #143)", () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
 
-    const dispatch = createDispatcher(pool, {
+    const dispatch = await createDispatcher(pool, {
       passwordResetMailer: noopMailer,
       appBaseUrl: "https://app.example.test",
       setupToken: SETUP_TOKEN,

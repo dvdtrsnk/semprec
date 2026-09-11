@@ -70,28 +70,49 @@ function sendItemResponse(res: ServerResponse, status: number, item: ItemRow): v
 export interface AdapterRequestContext {
   req: IncomingMessage;
   identity: AuthenticatedIdentity;
+  /** Path parameters extracted from the mounted route's pattern (e.g. `:id`) — `{}` for a route with none. */
+  params: Record<string, string>;
   body: unknown;
 }
 
-export type AdapterHandler = (ctx: AdapterRequestContext) => Promise<{ status: number; item: ItemRow }>;
+/**
+ * What a handler resolves with: either the item to serialize into the #238 item envelope, or —
+ * for a custom route (#239) whose response isn't shaped like an item at all (a list, a report, a
+ * plain confirmation) — a raw JSON `body` sent as-is. Either way, status mapping and error
+ * serialization stay the adapter's job, never the handler's.
+ */
+export type AdapterHandlerResult = { status: number; item: ItemRow } | { status: number; body: unknown };
+
+export type AdapterHandler = (ctx: AdapterRequestContext) => Promise<AdapterHandlerResult>;
+
+export interface AdapterRequestListenerOptions {
+  /** Resolves the mounted route's path parameters for this request; omitted (or returning `{}`) for a route with none. */
+  extractParams?: (req: IncomingMessage) => Record<string, string>;
+}
 
 /**
  * Wraps a route handler with this adapter's shared auth, JSON body parsing, and error/serialization
  * mapping — the "no third path, no per-route opt-out" auth guarantee and the "single place" status
- * mapping the issue's Task asks for. A handler either resolves with the item to serialize, or
+ * mapping the issue's Task asks for. A handler either resolves with the item/body to serialize, or
  * throws; anything other than a `ChokePointError`/`PayloadTooLargeError` is an unexpected failure,
  * logged and answered with a generic 500 rather than leaking its details to the client.
  */
 export function createAdapterRequestListener(
   pool: Pool,
   handler: AdapterHandler,
+  options: AdapterRequestListenerOptions = {},
 ): (req: IncomingMessage, res: ServerResponse) => void {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const identity = await requireAuthenticatedIdentity(pool, req);
       const body = await readJsonBody(req);
-      const { status, item } = await handler({ req, identity, body });
-      sendItemResponse(res, status, item);
+      const params = options.extractParams?.(req) ?? {};
+      const result = await handler({ req, identity, params, body });
+      if ("item" in result) {
+        sendItemResponse(res, result.status, result.item);
+      } else {
+        sendJson(res, result.status, result.body);
+      }
     } catch (err) {
       if (err instanceof PayloadTooLargeError) {
         sendJson(res, 413, { error: { code: "payload_too_large" } });

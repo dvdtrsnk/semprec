@@ -59,7 +59,7 @@ export function createSchemaRequestListener(
   }
 
   /**
-   * Same reasoning as `aiUsageHandler.ts`'s wrapper: an `async` listener handed straight to
+   * Same reasoning as `authHandler.ts`'s wrapper: an `async` listener handed straight to
    * `http.createServer` turns any rejection escaping the try/catch above into an unhandled
    * rejection, which Node answers by exiting the whole process over one bad request.
    */

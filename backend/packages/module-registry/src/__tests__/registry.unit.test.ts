@@ -111,6 +111,66 @@ describe("ModuleRegistry.loadModule", () => {
   });
 });
 
+describe("ModuleRegistry custom routes (issue #239)", () => {
+  it("rejects a custom route colliding on method+path with one already claimed by another module, identifying both owners", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await registry.loadModule(fixturePath("goodModule.js"));
+
+    await expect(registry.loadModule(fixturePath("duplicateCustomRouteModule.js"))).rejects.toThrow(
+      /Duplicate custom route "GET \/api\/fixture-good\/thing" loading .*: module "fixture-duplicate-custom-route" and module "fixture-good" both register it/,
+    );
+    expect(registry.listModuleIds()).toEqual(["fixture-good"]);
+  });
+
+  it("rejects the same method+path declared twice within one manifest", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await expect(registry.loadModule(fixturePath("customRouteDuplicateWithinManifestModule.js"))).rejects.toThrow(
+      /Duplicate custom route "POST \/api\/fixture-self-dupe\/thing" declared twice in module "fixture-custom-route-duplicate-within-manifest"/,
+    );
+    expect(registry.listModuleIds()).toEqual([]);
+  });
+
+  it("rejects a custom route path outside the flat /api namespace", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await expect(registry.loadModule(fixturePath("customRouteInvalidPathModule.js"))).rejects.toThrow(
+      /invalid manifest/,
+    );
+    expect(registry.listModuleIds()).toEqual([]);
+  });
+
+  it("rejects a custom route with no justification", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await expect(registry.loadModule(fixturePath("customRouteMissingJustificationModule.js"))).rejects.toThrow(
+      /invalid manifest/,
+    );
+    expect(registry.listModuleIds()).toEqual([]);
+  });
+
+  it("rejects a custom route referencing a missing handler export", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await expect(registry.loadModule(fixturePath("customRouteMissingExportModule.js"))).rejects.toThrow(
+      /custom route "fixtureMissingExport.thing" references missing export "doesNotExist"/,
+    );
+    expect(registry.listModuleIds()).toEqual([]);
+  });
+
+  it("resolves custom route definitions to their actual imported handler, active modules only", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await registry.loadModule(fixturePath("goodModule.js"));
+
+    const definitions = await registry.getCustomRouteDefinitions();
+    expect(definitions).toHaveLength(1);
+    expect(definitions[0]?.moduleId).toBe("fixture-good");
+    expect(definitions[0]?.method).toBe("GET");
+    expect(definitions[0]?.path).toBe("/api/fixture-good/thing");
+    expect(typeof definitions[0]?.handler).toBe("function");
+
+    const inactive = new ModuleRegistry(() => new Set());
+    await inactive.loadModule(fixturePath("goodModule.js"));
+    expect(await inactive.getCustomRouteDefinitions()).toEqual([]);
+  });
+});
+
 describe("ModuleRegistry projections", () => {
   async function loadBoth(
     getActiveModuleIds: () => ReadonlySet<string> | Promise<ReadonlySet<string>>,
