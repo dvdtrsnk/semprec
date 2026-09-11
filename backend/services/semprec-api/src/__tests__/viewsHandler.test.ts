@@ -50,6 +50,15 @@ interface ViewItemBody {
   position: number;
 }
 
+interface ItemQueryBody {
+  items: { id: string }[];
+  nextCursor: string | null;
+}
+
+interface ErrorBody {
+  error: { code: string; details?: unknown };
+}
+
 describe("view routes (issue #155)", () => {
   let server: Server;
   let baseUrl: string;
@@ -302,6 +311,107 @@ describe("view routes (issue #155)", () => {
 
       const res = await fetch(`${baseUrl}/api/views/${view.id}/items/${item.id}`, { method: "DELETE", headers });
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe("query view (issue #157)", () => {
+    it("rejects an unauthenticated request", async () => {
+      const res = await fetch(`${baseUrl}/api/views/${randomUUID()}/query`, { method: "POST" });
+      expect(res.status).toBe(401);
+    });
+
+    it("returns 404 querying an unknown view", async () => {
+      const headers = await authHeader();
+      const res = await fetch(`${baseUrl}/api/views/${randomUUID()}/query`, { method: "POST", headers });
+      expect(res.status).toBe(404);
+    });
+
+    it("uses the view's own stored filter when the request omits one, never 204", async () => {
+      const database = await chokePoint.createDatabase({ name: "Movies" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "title", name: "Title", type: "text" });
+      const arrival = await chokePoint.createItem({ databaseId: database.id, properties: { title: "Arrival" } });
+      await chokePoint.createItem({ databaseId: database.id, properties: { title: "Dune" } });
+      const filter = { type: "equals", property: "title", value: "Arrival" };
+      const view = await chokePoint.createView({ databaseId: database.id, type: "table", name: "Arrivals", config: { filter } });
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+
+      const res = await fetch(`${baseUrl}/api/views/${view.id}/query`, { method: "POST", headers, body: "{}" });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as ItemQueryBody;
+      expect(body.items.map((i) => i.id)).toEqual([arrival.id]);
+    });
+
+    it("lets an ad-hoc filter override the view's stored filter", async () => {
+      const database = await chokePoint.createDatabase({ name: "Movies" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "title", name: "Title", type: "text" });
+      const arrival = await chokePoint.createItem({ databaseId: database.id, properties: { title: "Arrival" } });
+      const dune = await chokePoint.createItem({ databaseId: database.id, properties: { title: "Dune" } });
+      const view = await chokePoint.createView({
+        databaseId: database.id,
+        type: "table",
+        name: "Arrivals",
+        config: { filter: { type: "equals", property: "title", value: "Arrival" } },
+      });
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+
+      const res = await fetch(`${baseUrl}/api/views/${view.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ filter: { type: "equals", property: "title", value: "Dune" } }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as ItemQueryBody;
+      expect(body.items.map((i) => i.id)).toEqual([dune.id]);
+      expect(body.items.map((i) => i.id)).not.toContain(arrival.id);
+    });
+
+    it("returns validation_failed sending filter/sort against a curated view", async () => {
+      const view = await chokePoint.createView({ type: "list", name: "Collection", config: { membership: "manual" } });
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+
+      const res = await fetch(`${baseUrl}/api/views/${view.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ filter: { type: "is_empty", property: "title" } }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as ErrorBody;
+      expect(body.error.code).toBe("validation_failed");
+    });
+
+    it("paginates a curated view by position without filter/sort", async () => {
+      const view = await chokePoint.createView({ type: "list", name: "Collection", config: { membership: "manual" } });
+      const database = await chokePoint.createDatabase({ name: "D" });
+      const itemA = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+      const itemB = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+      await chokePoint.addViewItem({ viewId: view.id, itemId: itemA.id, actor: { type: "user" } });
+      await chokePoint.addViewItem({ viewId: view.id, itemId: itemB.id, actor: { type: "user" } });
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+
+      const res = await fetch(`${baseUrl}/api/views/${view.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ limit: 1 }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as ItemQueryBody;
+      expect(body.items.map((i) => i.id)).toEqual([itemA.id]);
+      expect(body.nextCursor).not.toBeNull();
+    });
+
+    it("returns validation_failed for a non-positive limit", async () => {
+      const database = await chokePoint.createDatabase({ name: "D" });
+      const view = await chokePoint.createView({ databaseId: database.id, type: "table", name: "All rows" });
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+
+      const res = await fetch(`${baseUrl}/api/views/${view.id}/query`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ limit: -1 }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as ErrorBody;
+      expect(body.error.code).toBe("validation_failed");
     });
   });
 });
