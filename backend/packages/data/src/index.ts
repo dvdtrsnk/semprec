@@ -28,12 +28,7 @@ export * from "./views/viewConfig.js";
 export * from "./views/mailboxClientViewType.js";
 export type { FilterProperty, FilterProperties } from "./views/filterCompiler.js";
 export { buildFilterProperties } from "./views/filterProperties.js";
-export type {
-  QueryViewOptions,
-  QueryViewResult,
-  DatabaseQueryInput,
-  ViewQueryInput,
-} from "./views/viewQuery.js";
+export type { QueryViewOptions, QueryViewResult, DatabaseQueryInput, ViewQueryInput } from "./views/viewQuery.js";
 export { manifest as viewsModuleManifest } from "./views/viewsModuleManifest.js";
 
 export * from "./scheduler/rule.js";

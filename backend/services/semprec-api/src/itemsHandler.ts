@@ -180,7 +180,11 @@ export function createItemRoutes(pool: Pool): RouteDefinition[] {
         const propertyKey = requireStringParam(ctx.params, "propertyKey");
         const targetItemId = requireStringParam(ctx.params, "targetItemId");
         const property = await findRelationProperty(chokePoint, id, propertyKey);
-        const edge = await chokePoint.deleteRelation({ relationPropertyId: property.id, callerItemId: id, targetItemId });
+        const edge = await chokePoint.deleteRelation({
+          relationPropertyId: property.id,
+          callerItemId: id,
+          targetItemId,
+        });
         if (!edge) {
           throw new NotFoundError(`Relation edge not found`, {
             relationPropertyId: property.id,

@@ -332,7 +332,12 @@ describe("view routes (issue #155)", () => {
       const arrival = await chokePoint.createItem({ databaseId: database.id, properties: { title: "Arrival" } });
       await chokePoint.createItem({ databaseId: database.id, properties: { title: "Dune" } });
       const filter = { type: "equals", property: "title", value: "Arrival" };
-      const view = await chokePoint.createView({ databaseId: database.id, type: "table", name: "Arrivals", config: { filter } });
+      const view = await chokePoint.createView({
+        databaseId: database.id,
+        type: "table",
+        name: "Arrivals",
+        config: { filter },
+      });
       const headers = { ...(await authHeader()), "Content-Type": "application/json" };
 
       const res = await fetch(`${baseUrl}/api/views/${view.id}/query`, { method: "POST", headers, body: "{}" });

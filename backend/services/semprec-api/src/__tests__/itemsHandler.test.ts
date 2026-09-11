@@ -642,7 +642,12 @@ describe("item routes (issue #241)", () => {
       const headers = { ...(await authHeader()), "Content-Type": "application/json" };
       const filter = { type: "equals", property: "title", value: "Arrival" };
 
-      const view = await chokePoint.createView({ databaseId: db.id, type: "table", name: "Arrivals", config: { filter } });
+      const view = await chokePoint.createView({
+        databaseId: db.id,
+        type: "table",
+        name: "Arrivals",
+        config: { filter },
+      });
 
       const dbRes = await fetch(`${baseUrl}/api/databases/${db.id}/query`, {
         method: "POST",
@@ -750,10 +755,10 @@ describe("item routes (issue #241)", () => {
         });
         const directBody = (await direct.json()) as RelationBody;
 
-        const inverse = await fetch(
-          `${baseUrl}/api/items/${person.id}/relations/${inverseProperty.key}/${task.id}`,
-          { method: "PUT", headers },
-        );
+        const inverse = await fetch(`${baseUrl}/api/items/${person.id}/relations/${inverseProperty.key}/${task.id}`, {
+          method: "PUT",
+          headers,
+        });
         expect(inverse.status).toBe(200);
         const inverseBody = (await inverse.json()) as RelationBody;
         expect(inverseBody.id).toBe(directBody.id);
