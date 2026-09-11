@@ -21,33 +21,25 @@ describe("choke-point write boundary for route handlers (issue #154)", () => {
     expect(ROUTE_MATRIX.filter((route) => route.surface === "api").length).toBeGreaterThan(0);
   });
 
-  it(
-    "keeps every handler reachable from this service's dispatcher free of direct core-table writes",
-    async () => {
-      const { violations } = await checkModuleBoundaries(backendRoot, [
-        "services/semprec-api",
-        "packages/data",
-        "packages/module-registry",
-      ]);
-      const writeBoundaryViolations = violations.filter((violation) =>
-        violation.rules.includes("no-core-table-write-outside-choke-point"),
-      );
+  it("keeps every handler reachable from this service's dispatcher free of direct core-table writes", async () => {
+    const { violations } = await checkModuleBoundaries(backendRoot, [
+      "services/semprec-api",
+      "packages/data",
+      "packages/module-registry",
+    ]);
+    const writeBoundaryViolations = violations.filter((violation) =>
+      violation.rules.includes("no-core-table-write-outside-choke-point"),
+    );
 
-      expect(writeBoundaryViolations).toEqual([]);
-    },
-    30_000,
-  );
+    expect(writeBoundaryViolations).toEqual([]);
+  }, 30_000);
 
-  it(
-    "does not itself flag the choke-point package's own writes to items/databases/properties",
-    async () => {
-      const { violations } = await checkModuleBoundaries(backendRoot, ["packages/data"]);
-      const writeBoundaryViolations = violations.filter((violation) =>
-        violation.rules.includes("no-core-table-write-outside-choke-point"),
-      );
+  it("does not itself flag the choke-point package's own writes to items/databases/properties", async () => {
+    const { violations } = await checkModuleBoundaries(backendRoot, ["packages/data"]);
+    const writeBoundaryViolations = violations.filter((violation) =>
+      violation.rules.includes("no-core-table-write-outside-choke-point"),
+    );
 
-      expect(writeBoundaryViolations).toEqual([]);
-    },
-    30_000,
-  );
+    expect(writeBoundaryViolations).toEqual([]);
+  }, 30_000);
 });
