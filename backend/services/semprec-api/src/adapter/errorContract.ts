@@ -60,9 +60,23 @@ export interface ErrorResponseBody {
   };
 }
 
-/** `ConflictError`'s internal details shape (`{ current: ItemRow }`) — see `chokePoint/itemsStore.ts`'s `ifVersion` check. */
+/**
+ * `ConflictError`'s internal details shape (`{ current: ItemRow }`) — see `chokePoint/itemsStore.ts`'s
+ * `ifVersion` check. Checks `current`'s required fields, not just its presence, so a `ConflictError`
+ * some future call site raises with an unrelated `details` shape falls through to the generic
+ * verbatim-`details` branch below instead of being projected as if it were an item.
+ */
 function isVersionConflictDetails(details: unknown): details is { current: ItemRow } {
-  return typeof details === "object" && details !== null && "current" in details;
+  if (typeof details !== "object" || details === null || !("current" in details)) return false;
+  const current = details.current;
+  return (
+    typeof current === "object" &&
+    current !== null &&
+    typeof (current as Partial<ItemRow>).id === "string" &&
+    typeof (current as Partial<ItemRow>).databaseId === "string" &&
+    typeof (current as Partial<ItemRow>).properties === "object" &&
+    typeof (current as Partial<ItemRow>).updatedAt === "string"
+  );
 }
 
 export interface VersionConflictDetails {

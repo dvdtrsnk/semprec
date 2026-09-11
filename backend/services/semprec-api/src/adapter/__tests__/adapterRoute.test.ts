@@ -131,4 +131,18 @@ describe("adapter route (issue #238)", () => {
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("not_found");
   });
+
+  it("rejects a body over the 1 MiB cap with payload_too_large", async () => {
+    const token = await tokenFor("uploader@example.com");
+    const oversized = JSON.stringify({ title: "x".repeat(1024 * 1024 + 1) });
+    const res = await fetch(baseUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: oversized,
+    });
+
+    expect(res.status).toBe(413);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("payload_too_large");
+  });
 });

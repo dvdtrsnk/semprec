@@ -15,7 +15,13 @@ import { toItemEnvelope } from "./itemEnvelope.js";
  *
  * Contract evolution rule: there is no URL versioning (no `/api/v1/...`). Contract changes here
  * are additive only — a new envelope field, a new route, a new error code — never a breaking
- * change without a transition period.
+ * change without a transition period. See
+ * `docs/adr/2026-09-11-additive-only-rest-contract-no-url-versioning.md` for why.
+ *
+ * `requireAuthenticatedIdentity`, `readJsonBody`, `sendErrorResponse`, and `sendItemResponse` are
+ * deliberately module-private: `createAdapterRequestListener` is the only supported entry point,
+ * so a route handler can never bypass its centralized auth gate or error mapping by calling one of
+ * these directly.
  */
 
 const MAX_BODY_BYTES = 1 * 1024 * 1024;
@@ -23,12 +29,12 @@ const MAX_BODY_BYTES = 1 * 1024 * 1024;
 export class PayloadTooLargeError extends Error {}
 
 /** Every route mounted through this adapter authenticates the same way — session cookie or `Authorization: Bearer` (issue #143) — before its handler ever runs. */
-export async function requireAuthenticatedIdentity(pool: Pool, req: IncomingMessage): Promise<AuthenticatedIdentity> {
+async function requireAuthenticatedIdentity(pool: Pool, req: IncomingMessage): Promise<AuthenticatedIdentity> {
   return authenticateRequest(pool, req);
 }
 
 /** Parses the request body as JSON, capped at 1 MiB; malformed JSON is `validation_failed`, an oversized body is a distinct `PayloadTooLargeError` a caller maps to 413. */
-export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
@@ -52,12 +58,12 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 /** Sends a `ChokePointError` as this adapter's `{ error: { code, details } }` body, at the status the shared code→status table assigns it. */
-export function sendErrorResponse(res: ServerResponse, err: ChokePointError): void {
+function sendErrorResponse(res: ServerResponse, err: ChokePointError): void {
   sendJson(res, statusForError(err), toErrorResponseBody(err));
 }
 
 /** Sends a successful item write/read as the full item envelope — never an empty 204. */
-export function sendItemResponse(res: ServerResponse, status: number, item: ItemRow): void {
+function sendItemResponse(res: ServerResponse, status: number, item: ItemRow): void {
   sendJson(res, status, toItemEnvelope(item));
 }
 
