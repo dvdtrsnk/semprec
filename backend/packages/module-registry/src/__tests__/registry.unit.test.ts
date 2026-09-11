@@ -158,17 +158,6 @@ describe("ModuleRegistry custom routes (issue #239)", () => {
     const registry = new ModuleRegistry(alwaysActive);
     await registry.loadModule(fixturePath("goodModule.js"));
 
-    expect(await registry.getCustomRoutes()).toEqual([
-      {
-        moduleId: "fixture-good",
-        name: "fixtureGood.customRoute",
-        method: "GET",
-        path: "/api/fixture-good/thing",
-        handlerExport: "handleCustomRoute",
-        justification: "single-consumer-read",
-      },
-    ]);
-
     const definitions = await registry.getCustomRouteDefinitions();
     expect(definitions).toHaveLength(1);
     expect(definitions[0]?.moduleId).toBe("fixture-good");

@@ -1,10 +1,5 @@
 import { loadModuleCatalogs, type ModuleCatalogs } from "./catalog.js";
-import {
-  moduleManifestSchema,
-  type CustomRouteJustification,
-  type CustomRouteMethod,
-  type ModuleManifest,
-} from "./manifest.js";
+import { moduleManifestSchema, type CustomRouteMethod, type ModuleManifest } from "./manifest.js";
 
 export interface ModuleDatabaseProjection {
   moduleId: string;
@@ -32,21 +27,11 @@ export interface ModuleWorkerProjection {
   handlerExport: string;
 }
 
-export interface ModuleCustomRouteProjection {
-  moduleId: string;
-  name: string;
-  method: CustomRouteMethod;
-  path: string;
-  justification: CustomRouteJustification;
-  handlerExport: string;
-}
-
 /**
- * A module custom route's `handlerExport` resolved to the actual imported value (not just the
- * export name `ModuleCustomRouteProjection` carries) — deliberately untyped beyond `unknown`,
- * the same forward-resolution the queue's `ModuleTaskDefinition.handler` uses: `semprec-api` (the
- * only consumer, issue #239) casts it to its own adapter-handler-factory shape after reading it
- * back, so this package never has to depend on `semprec-api`'s HTTP types.
+ * A module custom route's `handlerExport` resolved to the actual imported value — deliberately
+ * untyped beyond `unknown`, the same forward-resolution the queue's `ModuleTaskDefinition.handler`
+ * uses: `semprec-api` (the only consumer, issue #239) casts it to its own adapter-handler-factory
+ * shape after reading it back, so this package never has to depend on `semprec-api`'s HTTP types.
  */
 export interface ModuleCustomRouteDefinition {
   moduleId: string;
@@ -550,13 +535,6 @@ export class ModuleRegistry {
         toVersion: dataMigration.toVersion,
         converter: loaded.exports[dataMigration.converterExport] as ModuleDataMigrationDefinition["converter"],
       })),
-    );
-  }
-
-  async getCustomRoutes(): Promise<ModuleCustomRouteProjection[]> {
-    const active = await this.getActiveModules();
-    return active.flatMap((loaded) =>
-      (loaded.manifest.customRoutes ?? []).map((route) => ({ moduleId: loaded.manifest.id, ...route })),
     );
   }
 

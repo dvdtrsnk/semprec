@@ -25,6 +25,5 @@ export {
   type ModuleTaskDefinition,
   type ModuleHeartbeatRuleKindDefinition,
   type ModuleDataMigrationDefinition,
-  type ModuleCustomRouteProjection,
   type ModuleCustomRouteDefinition,
 } from "./registry.js";
