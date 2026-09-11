@@ -215,6 +215,12 @@ export interface Actor {
   agentProjectItemId?: string;
 }
 
+/** `view_items` carries no FK to `items` (partitioned, no single partition key) — this is the live existence check `addViewItem` runs in its place. */
+async function assertItemExists(client: PoolClient, itemId: string): Promise<void> {
+  const [item] = await itemsStore.getItemsByIds(client, [itemId]);
+  if (!item) throw new NotFoundError(`Item ${itemId} not found`);
+}
+
 function ownerViolation(view: { id: string }, reason: string): ForbiddenError {
   return new ForbiddenError(
     `View ${view.id} write rejected by owner_violation: ${reason}`,
@@ -1175,6 +1181,7 @@ export function createChokePoint(
           });
         }
         assertViewWritable(view, input.actor);
+        await assertItemExists(client, input.itemId);
         await adoptIfUserWrite(client, view, input.actor, viewTypeRegistry);
         return viewItemsStore.addViewItem(client, input.viewId, input.itemId, input.position);
       });
