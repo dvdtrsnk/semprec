@@ -447,4 +447,64 @@ describe("choke-point", () => {
     expect(reloaded?.name).toBe("Score");
     expect(reloaded?.type).toBe("text");
   });
+
+  it("updateProperty applies a config-only change for a non-rollup property", async () => {
+    const db = await chokePoint.createDatabase({ name: "Db" });
+    const property = await chokePoint.createProperty({
+      databaseId: db.id,
+      key: "status",
+      name: "Status",
+      type: "select",
+      config: { options: [{ key: "todo", label: "Todo" }] },
+    });
+
+    const { property: updated, typeChanged } = await chokePoint.updateProperty(property.id, {
+      config: {
+        options: [
+          { key: "todo", label: "Todo" },
+          { key: "done", label: "Done" },
+        ],
+      },
+    });
+    expect(typeChanged).toBe(false);
+    expect(updated.config).toEqual({
+      options: [
+        { key: "todo", label: "Todo" },
+        { key: "done", label: "Done" },
+      ],
+    });
+  });
+
+  it("updateProperty's config change enqueues a rollup backfill when the property is a rollup", async () => {
+    const projects = await chokePoint.createDatabase({ name: "Projects" });
+    const tasks = await chokePoint.createDatabase({ name: "Tasks" });
+    await chokePoint.createProperty({ databaseId: tasks.id, key: "hours", name: "Hours", type: "number" });
+    await chokePoint.createRelationProperty({
+      sourceDatabaseId: projects.id,
+      key: "tasks",
+      name: "Tasks",
+      targetDatabaseId: tasks.id,
+    });
+    const rollup = await chokePoint.createProperty({
+      databaseId: projects.id,
+      key: "taskCount",
+      name: "Task count",
+      type: "rollup",
+      config: { relationPropertyKey: "tasks", aggregation: "count" },
+    });
+
+    const { property: updated } = await chokePoint.updateProperty(rollup.id, {
+      config: { relationPropertyKey: "tasks", aggregation: "sum", targetPropertyKey: "hours" },
+    });
+    expect(updated.config).toEqual({ relationPropertyKey: "tasks", aggregation: "sum", targetPropertyKey: "hours" });
+
+    const { rows } = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+       FROM graphile_worker._private_jobs j
+       JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+       WHERE t.identifier = 'rollupRecomputeFull' AND j.key = $1`,
+      [`rollup-recompute:${rollup.id}:full`],
+    );
+    expect(rows[0]?.count).toBe("1");
+  });
 });
