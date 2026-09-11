@@ -1,0 +1,85 @@
+import type { ChokePointError, ItemRow } from "@semprec/data";
+import { toItemEnvelope, type ItemEnvelope } from "./itemEnvelope.js";
+
+/**
+ * The closed enum of error codes the `semprec-api` REST adapter speaks (issue #238). Every route
+ * built on this adapter maps its `ChokePointError`s onto exactly one of these — there is no
+ * escape hatch to invent a new code from a route handler. Growing this list is an additive
+ * contract change (new code, same shape for the existing ones); removing or repurposing one is
+ * a breaking change and needs a transition period, per the adapter's "no URL versioning, additive
+ * only" evolution rule.
+ */
+export const ITEM_ERROR_CODES = [
+  "owner_violation",
+  "computed_readonly",
+  "schema_locked",
+  "property_locked",
+  "version_conflict",
+  "validation_failed",
+  "not_found",
+  "approval_required",
+  "heartbeat_event_triggered",
+] as const;
+
+export type ItemErrorCode = (typeof ITEM_ERROR_CODES)[number];
+
+/**
+ * The single code→status table every route built on this adapter shares, so no later slice can
+ * drift into mapping the same code to two different statuses. `version_conflict` and
+ * `approval_required`/`computed_readonly`/`schema_locked`/`property_locked`/`not_found` are fixed
+ * by the issue's approved behavior; `owner_violation`, `validation_failed`, and
+ * `heartbeat_event_triggered` are this adapter's own deterministic choice (400 for a bad request
+ * shape, 403 for an authorization boundary, 409 for a request that is well-formed but conflicts
+ * with the addressed resource's current state).
+ */
+export const ITEM_ERROR_STATUS_BY_CODE: Readonly<Record<ItemErrorCode, number>> = {
+  owner_violation: 403,
+  computed_readonly: 403,
+  schema_locked: 403,
+  property_locked: 403,
+  version_conflict: 409,
+  validation_failed: 400,
+  not_found: 404,
+  approval_required: 403,
+  heartbeat_event_triggered: 409,
+};
+
+function isItemErrorCode(code: string): code is ItemErrorCode {
+  return (ITEM_ERROR_CODES as readonly string[]).includes(code);
+}
+
+/** The `status` this adapter answers with for a given `ChokePointError` — the table above when the error's `code` is one of the nine, its own `status` otherwise (forward-compatible with a code this contract hasn't named yet). */
+export function statusForError(err: ChokePointError): number {
+  return isItemErrorCode(err.code) ? ITEM_ERROR_STATUS_BY_CODE[err.code] : err.status;
+}
+
+export interface ErrorResponseBody {
+  error: {
+    code: string;
+    details?: unknown;
+  };
+}
+
+/** `ConflictError`'s internal details shape (`{ current: ItemRow }`) — see `chokePoint/itemsStore.ts`'s `ifVersion` check. */
+function isVersionConflictDetails(details: unknown): details is { current: ItemRow } {
+  return typeof details === "object" && details !== null && "current" in details;
+}
+
+export interface VersionConflictDetails {
+  currentItem: ItemEnvelope;
+}
+
+/**
+ * The single place a thrown `ChokePointError` becomes the `{ error: { code, details } }` body
+ * defined by issue #238's error contract — no route handler builds this shape itself.
+ * `version_conflict`'s `details.currentItem` is the one code whose wire shape isn't just the
+ * choke-point error's own `details` verbatim: the choke-point raises it with `{ current }` (an
+ * `ItemRow`), and this is where that gets projected onto the public item envelope.
+ */
+export function toErrorResponseBody(err: ChokePointError): ErrorResponseBody {
+  if (err.code === "version_conflict" && isVersionConflictDetails(err.details)) {
+    const details: VersionConflictDetails = { currentItem: toItemEnvelope(err.details.current) };
+    return { error: { code: err.code, details } };
+  }
+  return { error: { code: err.code, details: err.details } };
+}
