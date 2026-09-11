@@ -68,8 +68,10 @@ export async function addViewItem(
   return mapViewItemRow(requireSingleRow(rows, "view_items row"));
 }
 
-export async function removeViewItem(client: PoolClient, viewId: string, itemId: string): Promise<void> {
-  await client.query(`DELETE FROM view_items WHERE view_id = $1 AND item_id = $2`, [viewId, itemId]);
+/** Returns whether a row was actually removed, so the choke-point can distinguish a real removal from a no-op on a non-member `itemId`. */
+export async function removeViewItem(client: PoolClient, viewId: string, itemId: string): Promise<boolean> {
+  const result = await client.query(`DELETE FROM view_items WHERE view_id = $1 AND item_id = $2`, [viewId, itemId]);
+  return result.rowCount !== null && result.rowCount > 0;
 }
 
 /**

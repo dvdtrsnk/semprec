@@ -1194,7 +1194,8 @@ export function createChokePoint(
         if (!view) throw new NotFoundError(`View ${input.viewId} not found`);
         assertViewWritable(view, input.actor);
         await adoptIfUserWrite(client, view, input.actor, viewTypeRegistry);
-        await viewItemsStore.removeViewItem(client, input.viewId, input.itemId);
+        const removed = await viewItemsStore.removeViewItem(client, input.viewId, input.itemId);
+        if (!removed) throw new NotFoundError(`Item ${input.itemId} is not a member of view ${input.viewId}`);
       });
     },
 

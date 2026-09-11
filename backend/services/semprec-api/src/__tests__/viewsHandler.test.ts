@@ -215,6 +215,26 @@ describe("view routes (issue #155)", () => {
       expect(members.map((m) => m.itemId)).toEqual([itemB.id, itemA.id]);
     });
 
+    it("returns 400 for a non-integer or negative position", async () => {
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const view = await makeCuratedView();
+      const item = await makeItem();
+
+      const floatRes = await fetch(`${baseUrl}/api/views/${view.id}/items/${item.id}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ position: 1.5 }),
+      });
+      expect(floatRes.status).toBe(400);
+
+      const negativeRes = await fetch(`${baseUrl}/api/views/${view.id}/items/${item.id}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ position: -1 }),
+      });
+      expect(negativeRes.status).toBe(400);
+    });
+
     it("removes a member from a curated view (200 with its prior representation, not 204)", async () => {
       const headers = await authHeader();
       const view = await makeCuratedView();

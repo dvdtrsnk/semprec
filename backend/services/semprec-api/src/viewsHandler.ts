@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { createChokePoint, NotFoundError, type Actor } from "@semprec/data";
+import { createChokePoint, NotFoundError, ValidationError, type Actor } from "@semprec/data";
 import type { RouteDefinition } from "./adapter/routeTable.js";
 import { requireJsonObjectBody, requireStringField, requireStringParam } from "./adapter/requestValidation.js";
 import { toViewEnvelope } from "./adapter/viewEnvelope.js";
@@ -11,6 +11,16 @@ function optionalConfigField(body: Record<string, unknown>): Record<string, unkn
   return typeof body.config === "object" && body.config !== null && !Array.isArray(body.config)
     ? (body.config as Record<string, unknown>)
     : undefined;
+}
+
+/** `view_items.position` is a non-negative Postgres `integer`; an out-of-range value must fail as 400, not surface as a raw DB error. */
+function optionalPositionField(body: Record<string, unknown>): number | undefined {
+  if (body.position === undefined) return undefined;
+  const { position } = body;
+  if (typeof position !== "number" || !Number.isInteger(position) || position < 0) {
+    throw new ValidationError("'position' must be a non-negative integer", { field: "position" });
+  }
+  return position;
 }
 
 /**
@@ -71,7 +81,7 @@ export function createViewRoutes(pool: Pool): RouteDefinition[] {
         const viewId = requireStringParam(ctx.params, "id");
         const itemId = requireStringParam(ctx.params, "itemId");
         const body = requireJsonObjectBody(ctx.body);
-        const position = typeof body.position === "number" ? body.position : undefined;
+        const position = optionalPositionField(body);
         const viewItem = await chokePoint.addViewItem({ viewId, itemId, position, actor: USER_ACTOR });
         return { status: 200, body: toViewItemEnvelope(viewItem) };
       },
