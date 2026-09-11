@@ -117,6 +117,12 @@ export interface ViewRow {
   isDefault: boolean;
   ownerModuleId: string | null;
   createdBy: CreatedBy;
+  /**
+   * The owning Projects item id of the concrete agent that created this view (issue #87) —
+   * null for every 'user'/'system' view and for an 'ai_agent' view created before this column
+   * existed (a "legacy" AI view, unwritable by any agent but still user-adoptable).
+   */
+  creatorProjectItemId: string | null;
 }
 
 export interface ViewItemRow {
