@@ -34,7 +34,8 @@ export interface AppOptions {
  * `GET /api/ai-usage`) is tried first through `mountCustomRoutes`, then the generic database/property/
  * view/item resource routes (issue #240 — `/api/databases`, `/api/properties/:id`; issue #155 —
  * `/api/views/:id`, `/api/views/:id/items/:itemId`; issue #241 — `/api/databases/:id/items`,
- * `/api/items/:id`) through `mountRoutes`, since
+ * `/api/items/:id`; issue #156 — `DELETE /api/items/:id`, `POST /api/items/:id/restore`) through
+ * `mountRoutes`, since
  * none of those paths are exact prefixes this function otherwise routes; `mcpAgentPageListener` still
  * answers 404 itself for anything left unmatched.
  */

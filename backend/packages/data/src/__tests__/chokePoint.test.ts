@@ -555,4 +555,91 @@ describe("choke-point", () => {
       expect(path.at(-1)?.id).toBe(rootItem.id);
     });
   });
+
+  describe("item trash: cascade delete, restore, and archived rejection (issue #156)", () => {
+    async function makePageWithInlineSubtree() {
+      const rootDb = await chokePoint.createDatabase({ name: "Root" });
+      const rootItem = await chokePoint.createItem({ databaseId: rootDb.id, properties: {} });
+
+      const midDb = await chokePoint.createInlineDatabase({ name: "Mid", parentItemId: rootItem.id });
+      const midItem = await chokePoint.createItem({ databaseId: midDb.id, properties: {} });
+      const midSibling = await chokePoint.createItem({ databaseId: midDb.id, properties: {} });
+
+      const leafDb = await chokePoint.createInlineDatabase({ name: "Leaf", parentItemId: midItem.id });
+      const leafItem = await chokePoint.createItem({ databaseId: leafDb.id, properties: {} });
+
+      return { rootDb, rootItem, midDb, midItem, midSibling, leafDb, leafItem };
+    }
+
+    it("deleting a page cascades to every row in its inline databases, recursively, in one transaction", async () => {
+      const { rootDb, rootItem, midDb, midItem, midSibling, leafDb, leafItem } = await makePageWithInlineSubtree();
+
+      const deleted = await chokePoint.softDeleteItem(rootDb.id, rootItem.id);
+      expect(deleted?.deletedAt).not.toBeNull();
+
+      const midItemAfter = await chokePoint.getItem(midDb.id, midItem.id);
+      const midSiblingAfter = await chokePoint.getItem(midDb.id, midSibling.id);
+      const leafItemAfter = await chokePoint.getItem(leafDb.id, leafItem.id);
+      expect(midItemAfter?.deletedAt).not.toBeNull();
+      expect(midSiblingAfter?.deletedAt).not.toBeNull();
+      expect(leafItemAfter?.deletedAt).not.toBeNull();
+    });
+
+    it("restoring the page brings back exactly the subtree the delete cascade trashed", async () => {
+      const { rootDb, rootItem, midDb, midItem, midSibling, leafDb, leafItem } = await makePageWithInlineSubtree();
+      await chokePoint.softDeleteItem(rootDb.id, rootItem.id);
+
+      const restored = await chokePoint.restoreItem(rootDb.id, rootItem.id);
+      expect(restored?.deletedAt).toBeNull();
+
+      const midItemAfter = await chokePoint.getItem(midDb.id, midItem.id);
+      const midSiblingAfter = await chokePoint.getItem(midDb.id, midSibling.id);
+      const leafItemAfter = await chokePoint.getItem(leafDb.id, leafItem.id);
+      expect(midItemAfter?.deletedAt).toBeNull();
+      expect(midSiblingAfter?.deletedAt).toBeNull();
+      expect(leafItemAfter?.deletedAt).toBeNull();
+    });
+
+    it("rejects the entire cascade, writing nothing, when an inline database anywhere in the subtree is archived", async () => {
+      const { rootDb, rootItem, midDb, leafDb } = await makePageWithInlineSubtree();
+      await chokePoint.archiveDatabase(leafDb.id);
+
+      await expectDatabaseArchived(chokePoint.softDeleteItem(rootDb.id, rootItem.id));
+
+      const rootAfter = await chokePoint.getItem(rootDb.id, rootItem.id);
+      expect(rootAfter?.deletedAt).toBeNull();
+      const { items: midItemsAfter } = await chokePoint.listItems(midDb.id);
+      expect(midItemsAfter).toHaveLength(2);
+    });
+
+    it("rejects the entire restore cascade when an inline database anywhere in the subtree is archived", async () => {
+      const { rootDb, rootItem, leafDb } = await makePageWithInlineSubtree();
+      await chokePoint.softDeleteItem(rootDb.id, rootItem.id);
+      await chokePoint.archiveDatabase(leafDb.id);
+
+      await expectDatabaseArchived(chokePoint.restoreItem(rootDb.id, rootItem.id));
+
+      const rootAfter = await chokePoint.getItem(rootDb.id, rootItem.id);
+      expect(rootAfter?.deletedAt).not.toBeNull();
+    });
+
+    it("a repeat delete of an already-trashed page is an idempotent no-op, not a 404", async () => {
+      const db = await makeMoviesDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
+      const first = await chokePoint.softDeleteItem(db.id, item.id);
+
+      const second = await chokePoint.softDeleteItem(db.id, item.id);
+      expect(second?.id).toBe(item.id);
+      expect(second?.deletedAt).toBe(first?.deletedAt);
+    });
+
+    it("a repeat restore of an already-live item is an idempotent no-op, not a 404", async () => {
+      const db = await makeMoviesDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
+
+      const restored = await chokePoint.restoreItem(db.id, item.id);
+      expect(restored?.id).toBe(item.id);
+      expect(restored?.deletedAt).toBeNull();
+    });
+  });
 });

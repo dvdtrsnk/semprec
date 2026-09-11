@@ -853,6 +853,49 @@ async function changePropertyTypeWithClient(
   return updated;
 }
 
+/** One item in the subtree `collectItemSubtree` walks: enough to route a per-item store call. */
+export interface ItemSubtreeRef {
+  databaseId: string;
+  itemId: string;
+}
+
+/**
+ * Walks down from a page item to every row nested underneath it — the inline databases it owns
+ * directly (`databases.parent_item_id = itemId`), every item in each of those, and recursively
+ * whatever inline databases *those* items own in turn — so delete/restore (issue #156) can act on
+ * the whole subtree in one transaction instead of just the one row named by the caller. Root-first
+ * order, BFS by level. Guards against a `parent_item_id` cycle the same way `getItemPath` guards
+ * against one in the opposite direction: tracking every database id already walked and refusing to
+ * walk it twice, so a corrupted loop stops the traversal instead of hanging it.
+ */
+async function collectItemSubtree(
+  client: PoolClient,
+  rootDatabaseId: string,
+  rootItemId: string,
+): Promise<ItemSubtreeRef[]> {
+  const subtree: ItemSubtreeRef[] = [{ databaseId: rootDatabaseId, itemId: rootItemId }];
+  const visitedDatabaseIds = new Set<string>();
+  let frontier = [rootItemId];
+
+  while (frontier.length > 0) {
+    const nextFrontier: string[] = [];
+    for (const parentItemId of frontier) {
+      const childDatabases = await databasesStore.listDatabasesByParentItem(client, parentItemId);
+      for (const database of childDatabases) {
+        if (visitedDatabaseIds.has(database.id)) continue;
+        visitedDatabaseIds.add(database.id);
+        const rows = await itemsStore.getAllItemsInDatabase(client, database.id);
+        for (const row of rows) {
+          subtree.push({ databaseId: database.id, itemId: row.id });
+          nextFrontier.push(row.id);
+        }
+      }
+    }
+    frontier = nextFrontier;
+  }
+  return subtree;
+}
+
 export function createChokePoint(
   pool: Pool,
   computedKeyRegistry: ComputedKeyRegistry = createComputedKeyRegistry(),
@@ -1027,6 +1070,19 @@ export function createChokePoint(
     },
 
     /**
+     * `findItem`'s counterpart that also resolves an already-trashed item — `DELETE
+     * /api/items/:id` and `POST /api/items/:id/restore` (issue #156) both need an item's
+     * `databaseId` before they can call `softDeleteItem`/`restoreItem`, and unlike `GET
+     * /api/items/:id`, a trashed item is the expected target of either route, not a 404.
+     */
+    async findItemIncludingDeleted(itemId: string): Promise<ItemRow | null> {
+      return withTransaction(pool, async (client) => {
+        const [item] = await itemsStore.getItemsByIdsIncludingDeleted(client, [itemId]);
+        return item ?? null;
+      });
+    },
+
+    /**
      * The breadcrumb chain `GET /api/items/:id?include=path` needs (issue #241): starting at
      * `itemId`, walks `databases.parent_item_id` outward — from the item's own database to
      * whichever item (in whichever other database) that database is nested under, and that
@@ -1086,6 +1142,12 @@ export function createChokePoint(
       });
     },
 
+    /**
+     * Soft-deletes `itemId` and, in the same transaction, cascades to its whole subtree — every
+     * inline database it owns and their rows, recursively (issue #156). Every database touched
+     * anywhere in that subtree must be unarchived, or the entire cascade is rejected and nothing
+     * is written; a database midway down the tree being archived is not a partial success.
+     */
     async softDeleteItem(databaseId: string, itemId: string): Promise<ItemRow | null> {
       return withTransaction(pool, async (client) => {
         await assertDatabaseNotArchived(client, databaseId);
@@ -1098,30 +1160,51 @@ export function createChokePoint(
         // it mattered, a system-active item. The lock is held until this transaction commits,
         // so a concurrent writer blocks here instead of racing past the check.
         const before = await itemsStore.lockItemById(client, databaseId, itemId);
-        if (before?.properties.systemActive === true) {
+        if (!before) return null;
+        if (before.properties.systemActive === true) {
           throw new ForbiddenError(
             `Item ${itemId} is a system-active project and cannot be deleted, only deactivated`,
             { field: "systemActive" },
           );
         }
+        if (before.deletedAt) return before; // already trashed: idempotent no-op, same as a repeat DELETE
 
-        const item = await itemsStore.softDeleteItem(client, databaseId, itemId);
-        if (!item) return null;
-        await triggerOnItemEventHeartbeats(client, databaseId, "delete", itemId, queueAffinity);
-        const edges = await relationsStore.listAllRelationsForItem(client, itemId);
-        for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
-        return item;
+        const subtree = await collectItemSubtree(client, databaseId, itemId);
+        for (const ref of subtree) await assertDatabaseNotArchived(client, ref.databaseId);
+
+        let rootResult: ItemRow | null = null;
+        for (const ref of subtree) {
+          const item = await itemsStore.softDeleteItem(client, ref.databaseId, ref.itemId);
+          if (!item) continue;
+          if (ref.itemId === itemId) rootResult = item;
+          await triggerOnItemEventHeartbeats(client, ref.databaseId, "delete", ref.itemId, queueAffinity);
+          const edges = await relationsStore.listAllRelationsForItem(client, ref.itemId);
+          for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
+        }
+        return rootResult;
       });
     },
 
+    /** The exact cascade `softDeleteItem` runs, in reverse — restores `itemId` and its whole subtree in one transaction, symmetric to how the delete side of it was trashed. */
     async restoreItem(databaseId: string, itemId: string): Promise<ItemRow | null> {
       return withTransaction(pool, async (client) => {
         await assertDatabaseNotArchived(client, databaseId);
-        const item = await itemsStore.restoreItem(client, databaseId, itemId);
-        if (!item) return null;
-        const edges = await relationsStore.listAllRelationsForItem(client, itemId);
-        for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
-        return item;
+        const before = await itemsStore.getItemById(client, databaseId, itemId);
+        if (!before) return null;
+        if (!before.deletedAt) return before; // not trashed: idempotent no-op, same as a repeat restore
+
+        const subtree = await collectItemSubtree(client, databaseId, itemId);
+        for (const ref of subtree) await assertDatabaseNotArchived(client, ref.databaseId);
+
+        let rootResult: ItemRow | null = null;
+        for (const ref of subtree) {
+          const item = await itemsStore.restoreItem(client, ref.databaseId, ref.itemId);
+          if (!item) continue;
+          if (ref.itemId === itemId) rootResult = item;
+          const edges = await relationsStore.listAllRelationsForItem(client, ref.itemId);
+          for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
+        }
+        return rootResult;
       });
     },
 

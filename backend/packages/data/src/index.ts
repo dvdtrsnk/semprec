@@ -235,3 +235,5 @@ export {
 } from "./guidanceDrift/guidanceDriftHeartbeatStore.js";
 export { agentGuidanceDriftFindingsStore } from "./guidanceDrift/agentGuidanceDriftFindingsStore.js";
 export { createGuidanceManifestPort } from "./guidanceDrift/guidanceManifestPort.js";
+
+export { purgeExpiredTrash, handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";

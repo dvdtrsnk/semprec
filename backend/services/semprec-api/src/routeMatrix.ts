@@ -292,4 +292,18 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     surface: "api",
     public: false,
   },
+  {
+    name: "delete item",
+    method: "DELETE",
+    path: `/api/items/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "restore item",
+    method: "POST",
+    path: `/api/items/${EXAMPLE_ID}/restore`,
+    surface: "api",
+    public: false,
+  },
 ];
