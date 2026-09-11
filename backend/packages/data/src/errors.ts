@@ -80,25 +80,26 @@ export class UnauthorizedError extends ChokePointError {
 
 /**
  * The `schema_locked` code of the REST error contract (issue #238) — a write rejected because
- * the owning database's schema is locked (`databases.schema_locked`, enforced today as a plain
- * `ForbiddenError` by `assertDatabaseSchemaUnlocked` in `chokePoint/propertiesStore.ts`). This
- * dedicated class is for a caller that wants to raise or match on this specific code.
+ * the owning database's schema is locked (`databases.schema_locked`), raised by
+ * `assertDatabaseSchemaUnlocked` in `chokePoint/propertiesStore.ts` (issue #240). Extends
+ * `ForbiddenError` rather than `ChokePointError` directly so existing `instanceof ForbiddenError`
+ * call sites (`chokePoint.test.ts`) keep matching it — only its `code` changed, not its category.
  */
-export class SchemaLockedError extends ChokePointError {
+export class SchemaLockedError extends ForbiddenError {
   constructor(message: string, details?: unknown) {
-    super(403, "schema_locked", message, details);
+    super(message, details, "schema_locked");
     this.name = "SchemaLockedError";
   }
 }
 
 /**
  * The `property_locked` code of the REST error contract (issue #238) — a schema change rejected
- * because the individual property is itself locked (`properties.locked`, enforced today as a
- * plain `ForbiddenError` by `assertPropertySchemaMutable` in `chokePoint/propertiesStore.ts`).
+ * because the individual property is itself locked (`properties.locked`), raised by
+ * `assertPropertySchemaMutable` in `chokePoint/propertiesStore.ts` (issue #240).
  */
-export class PropertyLockedError extends ChokePointError {
+export class PropertyLockedError extends ForbiddenError {
   constructor(message: string, details?: unknown) {
-    super(403, "property_locked", message, details);
+    super(message, details, "property_locked");
     this.name = "PropertyLockedError";
   }
 }

@@ -389,4 +389,122 @@ describe("choke-point", () => {
     const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [db.id]);
     expect(rows[0].n).toBe(1);
   });
+
+  it("renameDatabase changes the name, including for a system database", async () => {
+    const db = await chokePoint.createDatabase({ name: "Before" });
+    const renamed = await chokePoint.renameDatabase(db.id, "After");
+    expect(renamed.name).toBe("After");
+    expect((await chokePoint.getDatabase(db.id))?.name).toBe("After");
+
+    const system = await chokePoint.createDatabase({ name: "System Before", system: true });
+    const renamedSystem = await chokePoint.renameDatabase(system.id, "System After");
+    expect(renamedSystem.name).toBe("System After");
+  });
+
+  it("renameDatabase on a missing database raises NotFoundError", async () => {
+    await expect(chokePoint.renameDatabase(randomUUID(), "New Name")).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("listDatabases excludes archived databases but includes everything else", async () => {
+    const kept = await chokePoint.createDatabase({ name: "Kept" });
+    const archived = await chokePoint.createDatabase({ name: "Archived" });
+    await chokePoint.archiveDatabase(archived.id);
+
+    const listed = await chokePoint.listDatabases();
+    const ids = listed.map((db) => db.id);
+    expect(ids).toContain(kept.id);
+    expect(ids).not.toContain(archived.id);
+  });
+
+  it("updateProperty applies name, config, and type together in one transaction", async () => {
+    const db = await chokePoint.createDatabase({ name: "Db" });
+    const property = await chokePoint.createProperty({ databaseId: db.id, key: "score", name: "Score", type: "text" });
+
+    const { property: updated, typeChanged } = await chokePoint.updateProperty(property.id, {
+      name: "New Score",
+      type: "number",
+    });
+    expect(updated.name).toBe("New Score");
+    expect(updated.type).toBe("number");
+    expect(typeChanged).toBe(true);
+  });
+
+  it("updateProperty rolls back a requested rename when the same call's type change is rejected as locked", async () => {
+    const db = await chokePoint.createDatabase({ name: "Db" });
+    const property = await chokePoint.createProperty({
+      databaseId: db.id,
+      key: "score",
+      name: "Score",
+      type: "text",
+      locked: true,
+    });
+
+    await expect(chokePoint.updateProperty(property.id, { name: "New Score", type: "number" })).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+
+    const reloaded = await chokePoint.getProperty(property.id);
+    expect(reloaded?.name).toBe("Score");
+    expect(reloaded?.type).toBe("text");
+  });
+
+  it("updateProperty applies a config-only change for a non-rollup property", async () => {
+    const db = await chokePoint.createDatabase({ name: "Db" });
+    const property = await chokePoint.createProperty({
+      databaseId: db.id,
+      key: "status",
+      name: "Status",
+      type: "select",
+      config: { options: [{ key: "todo", label: "Todo" }] },
+    });
+
+    const { property: updated, typeChanged } = await chokePoint.updateProperty(property.id, {
+      config: {
+        options: [
+          { key: "todo", label: "Todo" },
+          { key: "done", label: "Done" },
+        ],
+      },
+    });
+    expect(typeChanged).toBe(false);
+    expect(updated.config).toEqual({
+      options: [
+        { key: "todo", label: "Todo" },
+        { key: "done", label: "Done" },
+      ],
+    });
+  });
+
+  it("updateProperty's config change enqueues a rollup backfill when the property is a rollup", async () => {
+    const projects = await chokePoint.createDatabase({ name: "Projects" });
+    const tasks = await chokePoint.createDatabase({ name: "Tasks" });
+    await chokePoint.createProperty({ databaseId: tasks.id, key: "hours", name: "Hours", type: "number" });
+    await chokePoint.createRelationProperty({
+      sourceDatabaseId: projects.id,
+      key: "tasks",
+      name: "Tasks",
+      targetDatabaseId: tasks.id,
+    });
+    const rollup = await chokePoint.createProperty({
+      databaseId: projects.id,
+      key: "taskCount",
+      name: "Task count",
+      type: "rollup",
+      config: { relationPropertyKey: "tasks", aggregation: "count" },
+    });
+
+    const { property: updated } = await chokePoint.updateProperty(rollup.id, {
+      config: { relationPropertyKey: "tasks", aggregation: "sum", targetPropertyKey: "hours" },
+    });
+    expect(updated.config).toEqual({ relationPropertyKey: "tasks", aggregation: "sum", targetPropertyKey: "hours" });
+
+    const { rows } = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+       FROM graphile_worker._private_jobs j
+       JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+       WHERE t.identifier = 'rollupRecomputeFull' AND j.key = $1`,
+      [`rollup-recompute:${rollup.id}:full`],
+    );
+    expect(rows[0]?.count).toBe("1");
+  });
 });

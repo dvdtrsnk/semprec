@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { requireSingleRow } from "../db/pool.js";
-import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
+import { NotFoundError, PropertyLockedError, SchemaLockedError, ValidationError } from "../errors.js";
 import { PROPERTY_TYPES, type DatabaseRow, type PropertyOwner, type PropertyRow, type PropertyType } from "../types.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { getDatabase } from "./databasesStore.js";
@@ -142,7 +142,7 @@ async function assertDatabaseSchemaUnlocked(client: PoolClient, databaseId: stri
   const database = await getDatabase(client, databaseId);
   if (!database) throw new NotFoundError(`Database ${databaseId} not found`);
   if (database.schemaLocked) {
-    throw new ForbiddenError("The owning database's schema is locked; only a code-level migration may change it");
+    throw new SchemaLockedError("The owning database's schema is locked; only a code-level migration may change it");
   }
   return database;
 }
@@ -199,7 +199,7 @@ export async function renameProperty(client: PoolClient, propertyId: string, nam
 
 async function assertPropertySchemaMutable(client: PoolClient, property: PropertyRow): Promise<void> {
   if (property.locked) {
-    throw new ForbiddenError(`Property ${property.id} is locked; its schema cannot be changed`);
+    throw new PropertyLockedError(`Property ${property.id} is locked; its schema cannot be changed`);
   }
   await assertDatabaseSchemaUnlocked(client, property.databaseId);
 }

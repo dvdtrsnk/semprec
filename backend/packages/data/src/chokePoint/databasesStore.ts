@@ -159,6 +159,16 @@ export async function archiveDatabase(client: PoolClient, id: string): Promise<D
   return mapDatabaseRow(requireSingleRow(rows, "databases row"));
 }
 
+/** The label is always renamable, same as `renameProperty` in `propertiesStore.ts` — `schemaLocked`/`system` govern schema mutation, never the display name. */
+export async function renameDatabase(client: PoolClient, id: string, name: string): Promise<DatabaseRow> {
+  await requireDatabase(client, id);
+  const { rows } = await client.query<DatabaseDbRow>(
+    `UPDATE databases SET name = $2 WHERE id = $1 RETURNING ${DATABASE_COLUMNS}`,
+    [id, name],
+  );
+  return mapDatabaseRow(requireSingleRow(rows, "databases row"));
+}
+
 export async function restoreDatabase(client: PoolClient, id: string): Promise<DatabaseRow> {
   await requireDatabase(client, id);
   const { rows } = await client.query<DatabaseDbRow>(
