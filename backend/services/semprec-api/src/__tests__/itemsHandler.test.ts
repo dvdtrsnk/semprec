@@ -172,6 +172,12 @@ describe("item routes (issue #241)", () => {
       expect(res.status).toBe(404);
     });
 
+    it("returns 404 for an unknown item even with ?include=path", async () => {
+      const headers = await authHeader();
+      const res = await fetch(`${baseUrl}/api/items/${randomUUID()}?include=path`, { headers });
+      expect(res.status).toBe(404);
+    });
+
     it("returns the item without a path by default", async () => {
       const db = await makeMoviesDb();
       const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
@@ -235,6 +241,21 @@ describe("item routes (issue #241)", () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as ItemBody;
       expect(body.properties).toEqual({ title: "Dune (2021)", year: 2021 });
+    });
+
+    it("rejects a patch body with no properties field with a 'required' message, not a type error", async () => {
+      const db = await makeMoviesDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+
+      const res = await fetch(`${baseUrl}/api/items/${item.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ ifVersion: item.updatedAt }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as ErrorBody;
+      expect(body.error.code).toBe("validation_failed");
     });
 
     it("returns 404 patching an unknown item", async () => {

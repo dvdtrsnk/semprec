@@ -507,4 +507,31 @@ describe("choke-point", () => {
     );
     expect(rows[0]?.count).toBe("1");
   });
+
+  describe("getItemPath", () => {
+    it("walks parent_item_id outward, root-first, ending with the item itself", async () => {
+      const rootDb = await chokePoint.createDatabase({ name: "Root" });
+      const rootItem = await chokePoint.createItem({ databaseId: rootDb.id, properties: {} });
+      const midDb = await chokePoint.createInlineDatabase({ name: "Mid", parentItemId: rootItem.id });
+      const midItem = await chokePoint.createItem({ databaseId: midDb.id, properties: {} });
+
+      const path = await chokePoint.getItemPath(midItem.id);
+      expect(path.map((item) => item.id)).toEqual([rootItem.id, midItem.id]);
+    });
+
+    it("stops rather than looping forever if parent_item_id ever forms a cycle", async () => {
+      const rootDb = await chokePoint.createDatabase({ name: "Root" });
+      const rootItem = await chokePoint.createItem({ databaseId: rootDb.id, properties: {} });
+      const midDb = await chokePoint.createInlineDatabase({ name: "Mid", parentItemId: rootItem.id });
+      const midItem = await chokePoint.createItem({ databaseId: midDb.id, properties: {} });
+
+      // Only reachable via corrupted data, not through the choke-point's own API — closes the
+      // loop root -> mid -> root, which `getItemPath`'s while loop must not spin on forever.
+      await pool.query("UPDATE databases SET parent_item_id = $1 WHERE id = $2", [midItem.id, rootDb.id]);
+
+      const path = await chokePoint.getItemPath(rootItem.id);
+      expect(path.length).toBeGreaterThan(0);
+      expect(path.length).toBeLessThanOrEqual(3);
+    });
+  });
 });

@@ -1034,15 +1034,23 @@ export function createChokePoint(
      * itself. Ordered root-first, ending with `itemId`. Stops (rather than throwing) if an
      * ancestor's item or database has since gone missing partway up the chain; the caller
      * already has everything found below that point.
+     *
+     * Guards against a `parent_item_id` cycle (database A's parent item lives in a database
+     * whose own parent item is, transitively, back in database A) by tracking every database
+     * id already walked and stopping the moment one repeats — otherwise a cycle would hang this
+     * loop, and the request, forever.
      */
     async getItemPath(itemId: string): Promise<ItemRow[]> {
       return withTransaction(pool, async (client) => {
         const chain: ItemRow[] = [];
+        const visitedDatabaseIds = new Set<string>();
         let currentId: string | undefined = itemId;
         while (currentId) {
           const [item] = await itemsStore.getItemsByIds(client, [currentId]);
           if (!item) break;
           chain.unshift(item);
+          if (visitedDatabaseIds.has(item.databaseId)) break;
+          visitedDatabaseIds.add(item.databaseId);
           const database = await databasesStore.getDatabase(client, item.databaseId);
           currentId = database?.parentItemId ?? undefined;
         }

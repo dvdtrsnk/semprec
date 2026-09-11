@@ -45,13 +45,21 @@ export function createItemRoutes(pool: Pool): RouteDefinition[] {
       path: "/api/items/:id",
       handler: async (ctx) => {
         const id = requireStringParam(ctx.params, "id");
-        const item = await chokePoint.findItem(id);
-        if (!item) throw new NotFoundError(`Item ${id} not found`);
-
         const includePath = requestUrl(ctx.req.url).searchParams.get("include") === "path";
-        if (!includePath) return { status: 200, body: toItemEnvelope(item) };
 
+        if (!includePath) {
+          const item = await chokePoint.findItem(id);
+          if (!item) throw new NotFoundError(`Item ${id} not found`);
+          return { status: 200, body: toItemEnvelope(item) };
+        }
+
+        // `getItemPath`'s chain already ends with `id` itself (or is empty if it doesn't exist),
+        // so deriving the item from it — rather than a separate `findItem` call — keeps both
+        // reads inside `getItemPath`'s one transaction instead of two, which would otherwise let
+        // the item be deleted or changed in the gap between them.
         const path = await chokePoint.getItemPath(id);
+        const item = path.at(-1);
+        if (!item) throw new NotFoundError(`Item ${id} not found`);
         return { status: 200, body: toItemDetailEnvelope(item, path) };
       },
     },
@@ -64,8 +72,10 @@ export function createItemRoutes(pool: Pool): RouteDefinition[] {
         if (!existing) throw new NotFoundError(`Item ${id} not found`);
 
         const body = requireJsonObjectBody(ctx.body);
-        const propertiesPatch = jsonObjectField(body.properties, "properties");
-        if (!propertiesPatch) throw new ValidationError("'properties' must be a JSON object", { field: "properties" });
+        if (body.properties === undefined) {
+          throw new ValidationError("'properties' is required", { field: "properties" });
+        }
+        const propertiesPatch = jsonObjectField(body.properties, "properties") ?? {};
         const ifVersion = typeof body.ifVersion === "string" ? body.ifVersion : undefined;
 
         const item = await chokePoint.updateItem({
