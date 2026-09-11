@@ -1158,7 +1158,7 @@ export function createChokePoint(
       return withTransaction(pool, async (client) => {
         await assertAuthenticatedAgentIdentity(client, input.actor);
         const view = await viewsStore.getView(client, input.id);
-        if (!view) return;
+        if (!view) throw new NotFoundError(`View ${input.id} not found`);
         assertViewWritable(view, input.actor);
         await viewsStore.deleteView(client, input.id);
       });
@@ -1191,7 +1191,7 @@ export function createChokePoint(
       return withTransaction(pool, async (client) => {
         await assertAuthenticatedAgentIdentity(client, input.actor);
         const view = await viewsStore.getView(client, input.viewId);
-        if (!view) return;
+        if (!view) throw new NotFoundError(`View ${input.viewId} not found`);
         assertViewWritable(view, input.actor);
         await adoptIfUserWrite(client, view, input.actor, viewTypeRegistry);
         await viewItemsStore.removeViewItem(client, input.viewId, input.itemId);
