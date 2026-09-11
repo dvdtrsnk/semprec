@@ -5,6 +5,7 @@ import { mountCustomRoutes } from "./adapter/customRouteMount.js";
 import { mountRoutes } from "./adapter/routeTable.js";
 import { createDatabaseRoutes } from "./databasesHandler.js";
 import { createPropertyRoutes } from "./propertiesHandler.js";
+import { createViewRoutes } from "./viewsHandler.js";
 import { createMcpAgentPageRequestListener } from "./mcpAgentPageHandler.js";
 import { createApprovalRequestsRequestListener } from "./approvalRequestsHandler.js";
 import { createAgentRunRequestListener } from "./agentRunHandler.js";
@@ -30,7 +31,8 @@ export interface AppOptions {
  * Routes by path prefix; a module's custom route (issue #239 — `POST /api/proposals/:id/confirm`,
  * `GET /api/inbox-types`, `POST /api/push-subscriptions`, `POST /api/push-subscriptions/:id/revoke`,
  * `GET /api/ai-usage`) is tried first through `mountCustomRoutes`, then the generic database/property
- * resource routes (issue #240 — `/api/databases`, `/api/properties/:id`) through `mountRoutes`, since
+ * resource routes (issue #240 — `/api/databases`, `/api/properties/:id`; issue #155 — `/api/views/:id`,
+ * `/api/views/:id/items/:itemId`) through `mountRoutes`, since
  * none of those paths are exact prefixes this function otherwise routes; `mcpAgentPageListener` still
  * answers 404 itself for anything left unmatched.
  */
@@ -43,6 +45,7 @@ export async function createDispatcher(
   const dispatchResourceRoute = mountRoutes(pool, [
     ...createDatabaseRoutes(pool, options.moduleRegistry),
     ...createPropertyRoutes(pool, options.moduleRegistry),
+    ...createViewRoutes(pool),
   ]);
   const mcpAgentPageListener = createMcpAgentPageRequestListener(pool);
   const approvalRequestsListener = createApprovalRequestsRequestListener(pool);

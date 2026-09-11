@@ -44,6 +44,11 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "create property": "services/semprec-api/src/databasesHandler.ts",
   "update property": "services/semprec-api/src/propertiesHandler.ts",
   "delete property": "services/semprec-api/src/propertiesHandler.ts",
+  "create view": "services/semprec-api/src/viewsHandler.ts",
+  "patch view": "services/semprec-api/src/viewsHandler.ts",
+  "delete view": "services/semprec-api/src/viewsHandler.ts",
+  "add/reposition curated view item": "services/semprec-api/src/viewsHandler.ts",
+  "remove curated view item": "services/semprec-api/src/viewsHandler.ts",
 };
 
 const apiRoutes: RouteMatrixEntry[] = ROUTE_MATRIX.filter((route) => route.surface === "api");

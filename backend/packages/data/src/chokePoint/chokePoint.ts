@@ -215,6 +215,12 @@ export interface Actor {
   agentProjectItemId?: string;
 }
 
+/** `view_items` carries no FK to `items` (partitioned, no single partition key) — this is the live existence check `addViewItem` runs in its place. */
+async function assertItemExists(client: PoolClient, itemId: string): Promise<void> {
+  const [item] = await itemsStore.getItemsByIds(client, [itemId]);
+  if (!item) throw new NotFoundError(`Item ${itemId} not found`);
+}
+
 function ownerViolation(view: { id: string }, reason: string): ForbiddenError {
   return new ForbiddenError(
     `View ${view.id} write rejected by owner_violation: ${reason}`,
@@ -1152,7 +1158,7 @@ export function createChokePoint(
       return withTransaction(pool, async (client) => {
         await assertAuthenticatedAgentIdentity(client, input.actor);
         const view = await viewsStore.getView(client, input.id);
-        if (!view) return;
+        if (!view) throw new NotFoundError(`View ${input.id} not found`);
         assertViewWritable(view, input.actor);
         await viewsStore.deleteView(client, input.id);
       });
@@ -1175,6 +1181,7 @@ export function createChokePoint(
           });
         }
         assertViewWritable(view, input.actor);
+        await assertItemExists(client, input.itemId);
         await adoptIfUserWrite(client, view, input.actor, viewTypeRegistry);
         return viewItemsStore.addViewItem(client, input.viewId, input.itemId, input.position);
       });
@@ -1184,10 +1191,16 @@ export function createChokePoint(
       return withTransaction(pool, async (client) => {
         await assertAuthenticatedAgentIdentity(client, input.actor);
         const view = await viewsStore.getView(client, input.viewId);
-        if (!view) return;
+        if (!view) throw new NotFoundError(`View ${input.viewId} not found`);
+        if (view.databaseId !== null) {
+          throw new ValidationError("Only a curated view (databaseId = null) accepts view_items membership", {
+            field: "viewId",
+          });
+        }
         assertViewWritable(view, input.actor);
         await adoptIfUserWrite(client, view, input.actor, viewTypeRegistry);
-        await viewItemsStore.removeViewItem(client, input.viewId, input.itemId);
+        const removed = await viewItemsStore.removeViewItem(client, input.viewId, input.itemId);
+        if (!removed) throw new NotFoundError(`Item ${input.itemId} is not a member of view ${input.viewId}`);
       });
     },
 

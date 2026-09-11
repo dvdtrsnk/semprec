@@ -464,6 +464,30 @@ describe("views", () => {
       expect((await chokePoint.listViewItems(curated.id)).map((m) => m.itemId)).toEqual([item2.id]);
     });
 
+    it("removeViewItem throws NotFoundError for an itemId that is not a member of the view", async () => {
+      const db = await makeTasksDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "One" } });
+      const curated = await chokePoint.createView({
+        type: "list",
+        name: "Collection",
+        config: { membership: "manual" },
+      });
+
+      await expect(
+        chokePoint.removeViewItem({ viewId: curated.id, itemId: item.id, actor: userActor }),
+      ).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    it("removeViewItem rejects a non-curated (linked) view with ValidationError", async () => {
+      const db = await makeTasksDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "One" } });
+      const filtered = await chokePoint.createView({ databaseId: db.id, type: "table", name: "Filtered" });
+
+      await expect(
+        chokePoint.removeViewItem({ viewId: filtered.id, itemId: item.id, actor: userActor }),
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+
     it("inserting at an explicit position shifts existing members instead of tying with them", async () => {
       const db = await makeTasksDb();
       const item1 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "One" } });
