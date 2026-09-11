@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
+import * as itemsStore from "../../chokePoint/itemsStore.js";
 import { purgeExpiredTrash } from "../purgeExpiredTrash.js";
 
 let pool: Pool;
@@ -126,5 +127,29 @@ describe("purgeExpiredTrash (issue #156)", () => {
 
     const { rows } = await pool.query("SELECT id FROM items WHERE id = $1", [item.id]);
     expect(rows).toHaveLength(1);
+  });
+
+  it("never destroys an item a concurrent restore un-deletes between the purge's eligibility scan and its delete loop", async () => {
+    // itemsStore.hardDeleteItem is purgeExpiredTrashSubtree's only path to a permanent delete, and
+    // its eligibility read has no row lock — this is the one guard standing between a race and
+    // silently destroying an item a concurrent restoreItem just brought back to life. Exercised
+    // directly here since the actual race (an interleaved restoreItem call mid-transaction) isn't
+    // reproducible deterministically from a test.
+    const db = await makeMoviesDb();
+    const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
+    await chokePoint.softDeleteItem(db.id, item.id);
+    await ageDeletion(item.id, 31);
+
+    // Simulates a concurrent restoreItem committing after purgeExpiredTrashSubtree's eligibility
+    // scan already read this row as trashed, but before its delete loop reaches it.
+    const restored = await chokePoint.restoreItem(db.id, item.id);
+    expect(restored?.deletedAt).toBeNull();
+
+    const wasDeleted = await itemsStore.hardDeleteItem(pool, db.id, item.id);
+    expect(wasDeleted).toBe(false);
+
+    const { rows } = await pool.query("SELECT id, deleted_at FROM items WHERE id = $1", [item.id]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].deleted_at).toBeNull();
   });
 });

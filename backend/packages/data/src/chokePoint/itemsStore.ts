@@ -201,9 +201,21 @@ export async function findItemsDeletedBefore(client: Queryable, olderThan: Date)
   return rows.map(mapItemRow);
 }
 
-/** Permanently removes one row — the purge sweep's only caller; never reachable from a request handler. */
-export async function hardDeleteItem(client: Queryable, databaseId: string, itemId: string): Promise<void> {
-  await client.query(`DELETE FROM items WHERE database_id = $1 AND id = $2`, [databaseId, itemId]);
+/**
+ * Permanently removes one row — the purge sweep's only caller; never reachable from a request
+ * handler. Guarded by `deleted_at IS NOT NULL` so a row a concurrent `restoreItem` un-deletes
+ * between the purge's eligibility scan and this call is silently skipped rather than destroyed
+ * while live — the purge's own subtree snapshot has no lock on any of these rows, so this is the
+ * only thing standing between a race and permanently losing a freshly-restored item. Returns
+ * whether a row was actually removed, so a caller counting what it purged doesn't count a row
+ * this guard skipped.
+ */
+export async function hardDeleteItem(client: Queryable, databaseId: string, itemId: string): Promise<boolean> {
+  const result = await client.query(`DELETE FROM items WHERE database_id = $1 AND id = $2 AND deleted_at IS NOT NULL`, [
+    databaseId,
+    itemId,
+  ]);
+  return (result.rowCount ?? 0) > 0;
 }
 
 export interface ListItemsOptions {

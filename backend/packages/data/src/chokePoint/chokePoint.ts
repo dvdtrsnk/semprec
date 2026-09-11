@@ -1222,10 +1222,14 @@ export function createChokePoint(
      * too-recently-trashed row blocks the purge of everything nested under it, since only a
      * branch that was cascade-deleted together with the root is safe to remove with it. Re-checks
      * the root's own eligibility inside this transaction (rather than trusting the caller's
-     * earlier candidate snapshot), so a concurrent restore between candidate selection and this
-     * call is never hard-deleted out from under it. Rejects — and purges nothing — if any
-     * database in the eligible subtree is archived, same as `softDeleteItem`/`restoreItem`.
-     * Returns the ids actually purged, empty if the root turned out not to be eligible.
+     * earlier candidate snapshot); that snapshot read is a plain, unlocked `SELECT`, so it alone
+     * cannot stop a `restoreItem` from committing on one of these rows between this scan and the
+     * delete loop below — the actual guard against that race is `itemsStore.hardDeleteItem`'s own
+     * `deleted_at IS NOT NULL` condition, which turns a race-restored row's delete into a no-op
+     * instead of destroying it. Rejects — and purges nothing — if any database in the eligible
+     * subtree is archived, same as `softDeleteItem`/`restoreItem`. Returns the ids actually
+     * removed (never one a concurrent restore raced ahead of), empty if the root turned out not
+     * to be eligible.
      */
     async purgeExpiredTrashSubtree(rootItemId: string, cutoff: Date): Promise<string[]> {
       return withTransaction(pool, async (client) => {
@@ -1256,8 +1260,12 @@ export function createChokePoint(
         const subtreeDatabaseIds = new Set(subtree.map((row) => row.databaseId));
         for (const id of subtreeDatabaseIds) await assertDatabaseNotArchived(client, id);
 
-        for (const row of subtree) await itemsStore.hardDeleteItem(client, row.databaseId, row.id);
-        return subtree.map((row) => row.id);
+        const purgedIds: string[] = [];
+        for (const row of subtree) {
+          const removed = await itemsStore.hardDeleteItem(client, row.databaseId, row.id);
+          if (removed) purgedIds.push(row.id);
+        }
+        return purgedIds;
       });
     },
 
