@@ -78,6 +78,63 @@ export class UnauthorizedError extends ChokePointError {
   }
 }
 
+/**
+ * The `schema_locked` code of the REST error contract (issue #238) — a write rejected because
+ * the owning database's schema is locked (`databases.schema_locked`, enforced today as a plain
+ * `ForbiddenError` by `assertDatabaseSchemaUnlocked` in `chokePoint/propertiesStore.ts`). This
+ * dedicated class is for a caller that wants to raise or match on this specific code.
+ */
+export class SchemaLockedError extends ChokePointError {
+  constructor(message: string, details?: unknown) {
+    super(403, "schema_locked", message, details);
+    this.name = "SchemaLockedError";
+  }
+}
+
+/**
+ * The `property_locked` code of the REST error contract (issue #238) — a schema change rejected
+ * because the individual property is itself locked (`properties.locked`, enforced today as a
+ * plain `ForbiddenError` by `assertPropertySchemaMutable` in `chokePoint/propertiesStore.ts`).
+ */
+export class PropertyLockedError extends ChokePointError {
+  constructor(message: string, details?: unknown) {
+    super(403, "property_locked", message, details);
+    this.name = "PropertyLockedError";
+  }
+}
+
+/**
+ * The `approval_required` code of the REST error contract (issue #238) — raised in place of
+ * performing an agent-originated write that the module contract flags as approval-gated (see
+ * `docs/adr/2026-09-10-agent-writes-are-proposals-not-direct-writes.md`). `details` links the
+ * caller to the approval request the write was turned into instead, so a REST caller can poll or
+ * navigate to it. The in-process AgentTool adapter takes a different path for the same situation —
+ * it queues the same approval request and reports a synthetic success back to the model instead
+ * of surfacing this error.
+ */
+export class ApprovalRequiredError extends ChokePointError {
+  constructor(message: string, details: { approvalRequestId: string; link: string }) {
+    super(403, "approval_required", message, details);
+    this.name = "ApprovalRequiredError";
+  }
+}
+
+/**
+ * The `heartbeat_event_triggered` code of the REST error contract (issue #238) — a manual trigger
+ * of an `onItemEvent` heartbeat, which only ever fires from the write that produced the event,
+ * never on demand. The AgentTool surface for the same rejection already exists as the plain
+ * string constant `HEARTBEAT_EVENT_TRIGGERED_ERROR` in `scheduler/heartbeatAgentTools.ts`; this
+ * class is the equivalent for a REST caller that wants to raise or match on this specific code.
+ * Kept distinct from `validation_failed` so a client can offer a specific "this heartbeat fires
+ * automatically" message instead of a generic bad-request one.
+ */
+export class HeartbeatEventTriggeredError extends ChokePointError {
+  constructor(message: string, details?: unknown) {
+    super(409, "heartbeat_event_triggered", message, details);
+    this.name = "HeartbeatEventTriggeredError";
+  }
+}
+
 const PASSWORD_RESET_TOKEN_ERROR_MESSAGES = {
   invalid: "Password reset token is invalid",
   expired: "Password reset token has expired",
