@@ -24,12 +24,13 @@ function requestUrl(rawUrl: string | undefined): URL {
 }
 
 /**
- * The item endpoint family (issue #241): `POST /api/databases/:id/items`, `GET /api/items/:id`
- * (with optional `?include=path` for a server-assembled breadcrumb), and `PATCH /api/items/:id`
- * with `ifVersion`-checked optimistic concurrency. Every route is a thin mapping onto
+ * The item endpoint family: `POST /api/databases/:id/items`, `GET /api/items/:id` (with optional
+ * `?include=path` for a server-assembled breadcrumb), and `PATCH /api/items/:id` with
+ * `ifVersion`-checked optimistic concurrency (issue #241); `DELETE /api/items/:id` and
+ * `POST /api/items/:id/restore` (issue #156). Every route is a thin mapping onto
  * `createChokePoint`'s service calls — the `Idempotency-Key` requirement, the `computed_readonly`/
- * `version_conflict`/`database_archived` rejections, and the breadcrumb walk itself all live in
- * the choke-point, not here. Soft delete/restore are #156's, not this issue's.
+ * `version_conflict`/`database_archived` rejections, and the transactional trash/restore cascade
+ * itself all live in the choke-point, not here.
  */
 export function createItemRoutes(pool: Pool): RouteDefinition[] {
   const chokePoint = createChokePoint(pool);
@@ -88,6 +89,32 @@ export function createItemRoutes(pool: Pool): RouteDefinition[] {
           propertiesPatch,
           ifVersion,
         });
+        return { status: 200, body: toItemEnvelope(item) };
+      },
+    },
+    {
+      method: "DELETE",
+      path: "/api/items/:id",
+      handler: async (ctx) => {
+        const id = requireStringParam(ctx.params, "id");
+        const existing = await chokePoint.findItemIncludingDeleted(id);
+        if (!existing) throw new NotFoundError(`Item ${id} not found`);
+
+        const item = await chokePoint.softDeleteItem(existing.databaseId, id);
+        if (!item) throw new NotFoundError(`Item ${id} not found`);
+        return { status: 200, body: toItemEnvelope(item) };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/items/:id/restore",
+      handler: async (ctx) => {
+        const id = requireStringParam(ctx.params, "id");
+        const existing = await chokePoint.findItemIncludingDeleted(id);
+        if (!existing) throw new NotFoundError(`Item ${id} not found`);
+
+        const item = await chokePoint.restoreItem(existing.databaseId, id);
+        if (!item) throw new NotFoundError(`Item ${id} not found`);
         return { status: 200, body: toItemEnvelope(item) };
       },
     },

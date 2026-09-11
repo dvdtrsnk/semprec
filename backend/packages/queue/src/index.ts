@@ -36,6 +36,9 @@ export const CORE_TASK_NAMES = {
   // Issue #151: fans out one committed notification to every active Web Push/APNs registration
   // for its user.
   NOTIFICATION_FANOUT: "notificationFanout",
+  // Issue #156: permanently deletes trashed items (and their cascade subtree) whose
+  // `deleted_at` is older than the 30-day retention window.
+  ITEM_TRASH_PURGE_SWEEP: "itemTrashPurgeSweep",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 

@@ -169,6 +169,20 @@ export async function renameDatabase(client: PoolClient, id: string, name: strin
   return mapDatabaseRow(requireSingleRow(rows, "databases row"));
 }
 
+/**
+ * Every inline database owned by a page item (`parent_item_id = itemId`) — the child-lookup
+ * counterpart to `getDatabase`'s own `parentItemId` field, used by the choke-point's item-trash
+ * cascade (issue #156) to walk down from a page to whatever inline databases it owns, and by the
+ * purge sweep to bound how far a permanently-deleted subtree extends.
+ */
+export async function listDatabasesByParentItem(client: PoolClient, itemId: string): Promise<DatabaseRow[]> {
+  const { rows } = await client.query<DatabaseDbRow>(
+    `SELECT ${DATABASE_COLUMNS} FROM databases WHERE parent_item_id = $1`,
+    [itemId],
+  );
+  return rows.map(mapDatabaseRow);
+}
+
 export async function restoreDatabase(client: PoolClient, id: string): Promise<DatabaseRow> {
   await requireDatabase(client, id);
   const { rows } = await client.query<DatabaseDbRow>(

@@ -173,6 +173,51 @@ export async function restoreItem(client: Queryable, databaseId: string, itemId:
   return rows[0] ? mapItemRow(rows[0]) : null;
 }
 
+/**
+ * Every row in a database regardless of `deleted_at` — the cascade traversal (issue #156's
+ * transactional trash) needs to see a live row exactly as readily as an already-trashed one,
+ * since a page's inline database can itself contain a mix of both after independent edits.
+ */
+export async function getAllItemsInDatabase(client: Queryable, databaseId: string): Promise<ItemRow[]> {
+  const { rows } = await client.query<ItemDbRow>(
+    `SELECT id, database_id, properties, computed, updated_at, deleted_at FROM items WHERE database_id = $1`,
+    [databaseId],
+  );
+  return rows.map(mapItemRow);
+}
+
+/**
+ * Every item, across every database's partition, trashed longer ago than `olderThan` — the
+ * 30-day purge sweep's entry point into the subtree roots it must consider. Queried against the
+ * partitioned parent table directly (same pattern as `getItemsByIds`), so it isn't scoped to one
+ * database the way most of this module's reads are.
+ */
+export async function findItemsDeletedBefore(client: Queryable, olderThan: Date): Promise<ItemRow[]> {
+  const { rows } = await client.query<ItemDbRow>(
+    `SELECT id, database_id, properties, computed, updated_at, deleted_at
+     FROM items WHERE deleted_at IS NOT NULL AND deleted_at < $1`,
+    [olderThan],
+  );
+  return rows.map(mapItemRow);
+}
+
+/**
+ * Permanently removes one row — the purge sweep's only caller; never reachable from a request
+ * handler. Guarded by `deleted_at IS NOT NULL` so a row a concurrent `restoreItem` un-deletes
+ * between the purge's eligibility scan and this call is silently skipped rather than destroyed
+ * while live — the purge's own subtree snapshot has no lock on any of these rows, so this is the
+ * only thing standing between a race and permanently losing a freshly-restored item. Returns
+ * whether a row was actually removed, so a caller counting what it purged doesn't count a row
+ * this guard skipped.
+ */
+export async function hardDeleteItem(client: Queryable, databaseId: string, itemId: string): Promise<boolean> {
+  const result = await client.query(`DELETE FROM items WHERE database_id = $1 AND id = $2 AND deleted_at IS NOT NULL`, [
+    databaseId,
+    itemId,
+  ]);
+  return (result.rowCount ?? 0) > 0;
+}
+
 export interface ListItemsOptions {
   limit?: number;
   cursor?: string;
@@ -260,6 +305,23 @@ export async function getItemsByIds(client: Queryable, itemIds: string[]): Promi
   const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, updated_at, deleted_at
      FROM items WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL`,
+    [itemIds],
+  );
+  return rows.map(mapItemRow);
+}
+
+/**
+ * `getItemsByIds`'s counterpart that doesn't filter out a trashed row — needed wherever a caller
+ * has an item id but no `database_id` to route a partition-scoped lookup through, and the item
+ * being soft-deleted is an expected, not exceptional, case: `DELETE /api/items/:id` (idempotent
+ * replay against an already-trashed item) and `POST /api/items/:id/restore` (issue #156), both of
+ * which must resolve the item's `databaseId` before calling into `softDeleteItem`/`restoreItem`.
+ */
+export async function getItemsByIdsIncludingDeleted(client: Queryable, itemIds: string[]): Promise<ItemRow[]> {
+  if (itemIds.length === 0) return [];
+  const { rows } = await client.query<ItemDbRow>(
+    `SELECT id, database_id, properties, computed, updated_at, deleted_at
+     FROM items WHERE id = ANY($1::uuid[])`,
     [itemIds],
   );
   return rows.map(mapItemRow);

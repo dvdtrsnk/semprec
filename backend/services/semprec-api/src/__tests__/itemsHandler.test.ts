@@ -336,4 +336,133 @@ describe("item routes (issue #241)", () => {
       expect(body.error.code).toBe("database_archived");
     });
   });
+
+  describe("delete (issue #156)", () => {
+    it("rejects an unauthenticated request", async () => {
+      const res = await fetch(`${baseUrl}/api/items/${randomUUID()}`, { method: "DELETE" });
+      expect(res.status).toBe(401);
+    });
+
+    it("returns 404 deleting an unknown item", async () => {
+      const headers = await authHeader();
+      const res = await fetch(`${baseUrl}/api/items/${randomUUID()}`, { method: "DELETE", headers });
+      expect(res.status).toBe(404);
+    });
+
+    it("soft-deletes an item and returns 200 with the full row, never 204", async () => {
+      const db = await makeMoviesDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
+      const headers = await authHeader();
+
+      const res = await fetch(`${baseUrl}/api/items/${item.id}`, { method: "DELETE", headers });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as ItemBody;
+      expect(body.id).toBe(item.id);
+      expect(body.deletedAt).not.toBeNull();
+    });
+
+    it("cascades the delete through nested inline databases", async () => {
+      const headers = await authHeader();
+      const rootDb = await chokePoint.createDatabase({ name: "Root" });
+      const rootItem = await chokePoint.createItem({ databaseId: rootDb.id, properties: {} });
+      const midDb = await chokePoint.createInlineDatabase({ name: "Mid", parentItemId: rootItem.id });
+      const midItem = await chokePoint.createItem({ databaseId: midDb.id, properties: {} });
+
+      const res = await fetch(`${baseUrl}/api/items/${rootItem.id}`, { method: "DELETE", headers });
+      expect(res.status).toBe(200);
+
+      const midAfter = await chokePoint.getItem(midDb.id, midItem.id);
+      expect(midAfter?.deletedAt).not.toBeNull();
+    });
+
+    it("repeating the delete on an already-trashed item is idempotent, not a 404", async () => {
+      const db = await makeMoviesDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
+      const headers = await authHeader();
+
+      await fetch(`${baseUrl}/api/items/${item.id}`, { method: "DELETE", headers });
+      const res = await fetch(`${baseUrl}/api/items/${item.id}`, { method: "DELETE", headers });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as ItemBody;
+      expect(body.id).toBe(item.id);
+    });
+
+    it("rejects a delete against an archived database with 403 database_archived", async () => {
+      const db = await makeMoviesDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
+      await chokePoint.archiveDatabase(db.id);
+      const headers = await authHeader();
+
+      const res = await fetch(`${baseUrl}/api/items/${item.id}`, { method: "DELETE", headers });
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as ErrorBody;
+      expect(body.error.code).toBe("database_archived");
+    });
+  });
+
+  describe("restore (issue #156)", () => {
+    it("rejects an unauthenticated request", async () => {
+      const res = await fetch(`${baseUrl}/api/items/${randomUUID()}/restore`, { method: "POST" });
+      expect(res.status).toBe(401);
+    });
+
+    it("returns 404 restoring an unknown item", async () => {
+      const headers = await authHeader();
+      const res = await fetch(`${baseUrl}/api/items/${randomUUID()}/restore`, { method: "POST", headers });
+      expect(res.status).toBe(404);
+    });
+
+    it("restores a trashed item and returns 200 with the full row, never 204", async () => {
+      const db = await makeMoviesDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
+      const headers = await authHeader();
+      await fetch(`${baseUrl}/api/items/${item.id}`, { method: "DELETE", headers });
+
+      const res = await fetch(`${baseUrl}/api/items/${item.id}/restore`, { method: "POST", headers });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as ItemBody;
+      expect(body.id).toBe(item.id);
+      expect(body.deletedAt).toBeNull();
+    });
+
+    it("cascades the restore through nested inline databases", async () => {
+      const headers = await authHeader();
+      const rootDb = await chokePoint.createDatabase({ name: "Root" });
+      const rootItem = await chokePoint.createItem({ databaseId: rootDb.id, properties: {} });
+      const midDb = await chokePoint.createInlineDatabase({ name: "Mid", parentItemId: rootItem.id });
+      const midItem = await chokePoint.createItem({ databaseId: midDb.id, properties: {} });
+      await fetch(`${baseUrl}/api/items/${rootItem.id}`, { method: "DELETE", headers });
+
+      const res = await fetch(`${baseUrl}/api/items/${rootItem.id}/restore`, { method: "POST", headers });
+      expect(res.status).toBe(200);
+
+      const midAfter = await chokePoint.getItem(midDb.id, midItem.id);
+      expect(midAfter?.deletedAt).toBeNull();
+    });
+
+    it("repeating the restore on an already-live item is idempotent, not a 404", async () => {
+      const db = await makeMoviesDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
+      const headers = await authHeader();
+
+      const res = await fetch(`${baseUrl}/api/items/${item.id}/restore`, { method: "POST", headers });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as ItemBody;
+      expect(body.id).toBe(item.id);
+      expect(body.deletedAt).toBeNull();
+    });
+
+    it("rejects a restore against an archived database with 403 database_archived", async () => {
+      const db = await makeMoviesDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune" } });
+      const headers = await authHeader();
+      await fetch(`${baseUrl}/api/items/${item.id}`, { method: "DELETE", headers });
+      await chokePoint.archiveDatabase(db.id);
+
+      const res = await fetch(`${baseUrl}/api/items/${item.id}/restore`, { method: "POST", headers });
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as ErrorBody;
+      expect(body.error.code).toBe("database_archived");
+    });
+  });
 });

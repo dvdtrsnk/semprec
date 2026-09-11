@@ -34,6 +34,7 @@ import {
 import { handleApprovalRequestExecuteTask } from "./mcp/approvalRequestExecution.js";
 import { handleNotificationFanoutTask } from "./notifications/notificationFanoutJob.js";
 import type { PushSenders } from "./push/pushSenders.js";
+import { handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -70,6 +71,7 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 15 3 * * * ${CORE_TASK_NAMES.DOC_HISTORY_CLEANUP}
 */5 * * * * ${CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP}
 30 3 * * * ${CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP}
+45 3 * * * ${CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP}
 `;
 
 /**
@@ -171,6 +173,9 @@ export function createCoreTaskList(
         { notificationId: requireString(payload, "notificationId") },
         pushSenders,
       );
+    },
+    [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: async () => {
+      await handleItemTrashPurgeSweepTask(pool);
     },
   };
 }
