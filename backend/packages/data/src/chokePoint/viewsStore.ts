@@ -8,7 +8,8 @@ import { getDatabase } from "./databasesStore.js";
 import { isBuiltinViewType, isKnownViewType, type ViewTypeRegistry } from "./viewTypeRegistry.js";
 
 const CREATED_BY_VALUES: readonly CreatedBy[] = ["user", "ai_agent", "system"];
-const VIEW_COLUMNS = "id, database_id, type, name, config, is_default, owner_module_id, created_by";
+const VIEW_COLUMNS =
+  "id, database_id, type, name, config, is_default, owner_module_id, created_by, creator_project_item_id";
 
 /** The raw `views` row shape this module reads back from Postgres. */
 type ViewDbRow = {
@@ -20,6 +21,7 @@ type ViewDbRow = {
   is_default: boolean;
   owner_module_id: string | null;
   created_by: string;
+  creator_project_item_id: string | null;
 };
 
 function mapViewRow(row: ViewDbRow): ViewRow {
@@ -32,6 +34,7 @@ function mapViewRow(row: ViewDbRow): ViewRow {
     isDefault: row.is_default,
     ownerModuleId: row.owner_module_id,
     createdBy: assertKnownValue(CREATED_BY_VALUES, row.created_by, "view created_by"),
+    creatorProjectItemId: row.creator_project_item_id,
   };
 }
 
@@ -65,6 +68,8 @@ export interface CreateViewInput {
   isDefault?: boolean;
   ownerModuleId?: string;
   createdBy?: CreatedBy;
+  /** Required and non-null exactly when `createdBy === 'ai_agent'` — enforced by the choke-point, not here. Never set for a 'user'/'system' view. */
+  creatorProjectItemId?: string | null;
 }
 
 export async function createView(
@@ -110,8 +115,8 @@ export async function createView(
 
   try {
     const { rows } = await client.query<ViewDbRow>(
-      `INSERT INTO views (database_id, type, name, config, is_default, owner_module_id, created_by)
-       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
+      `INSERT INTO views (database_id, type, name, config, is_default, owner_module_id, created_by, creator_project_item_id)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
        RETURNING ${VIEW_COLUMNS}`,
       [
         input.databaseId ?? null,
@@ -121,6 +126,7 @@ export async function createView(
         input.isDefault ?? false,
         input.ownerModuleId ?? null,
         createdBy,
+        input.creatorProjectItemId ?? null,
       ],
     );
     return mapViewRow(requireSingleRow(rows, "views row"));
@@ -164,6 +170,8 @@ export interface PatchViewInput {
   isDefault?: boolean;
   /** Set only by the choke-point's ai_agent -> user adoption on a user write; never accepted directly from an API payload. */
   createdBy?: CreatedBy;
+  /** Set (to `null`) only alongside `createdBy: 'user'` on the same adoption; never accepted directly from an API payload. */
+  creatorProjectItemId?: string | null;
 }
 
 export async function patchView(
@@ -199,6 +207,7 @@ export async function patchView(
   if (nextConfig !== undefined) set("config", JSON.stringify(nextConfig), "::jsonb");
   if (patch.isDefault !== undefined) set("is_default", patch.isDefault);
   if (patch.createdBy !== undefined) set("created_by", patch.createdBy);
+  if (patch.creatorProjectItemId !== undefined) set("creator_project_item_id", patch.creatorProjectItemId);
   if (sets.length === 0) return view;
 
   params.push(id);

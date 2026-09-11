@@ -15,9 +15,9 @@ tests are written against. Speculative generality is treated as a defect here,
 not a virtue (`docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md`).
 
 If the Task genuinely requires an architectural pattern that no rule and no ADR
-covers, add an ADR under `docs/adr/` in the same pull request — the format is in
-`docs/adr/README.md`. Deciding it silently is the failure mode that rule exists
-to prevent.
+covers, add an ADR under `docs/adr/` in the same pull request — load the
+`adr-conventions` skill before writing or editing one. Deciding it silently is
+the failure mode that rule exists to prevent.
 
 ## Before you design anything
 
@@ -34,6 +34,7 @@ to prevent.
 | Skill | Load it when |
 |---|---|
 | `implement-issue` | starting any issue — the execution contract |
+| `adr-conventions` | writing a new ADR, or editing, superseding, or narrowing an existing one |
 | `state-writes` | anything that creates, updates or deletes persisted state |
 | `db-migrations` | any schema change, constraint, index or backfill |
 | `canonical-keys` | any stored key, option value, or user-facing label |

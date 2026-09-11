@@ -35,7 +35,20 @@ export const manifest: ModuleManifest = {
       converterExport: "convertFixtureGoodItem",
     },
   ],
+  customRoutes: [
+    {
+      name: "fixtureGood.customRoute",
+      method: "GET",
+      path: "/api/fixture-good/thing",
+      handlerExport: "handleCustomRoute",
+      justification: "single-consumer-read",
+    },
+  ],
 };
+
+export function handleCustomRoute(): string {
+  return "handled";
+}
 
 export function handleDoThing(): string {
   return "did the thing";

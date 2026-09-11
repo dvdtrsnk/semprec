@@ -52,7 +52,7 @@ function buildPasswordResetMailer(): PasswordResetMailer {
 
 const pool = createPool(connectionString);
 const moduleRegistry = await loadFullModuleRegistry();
-const dispatch = createDispatcher(pool, {
+const dispatch = await createDispatcher(pool, {
   passwordResetMailer: buildPasswordResetMailer(),
   appBaseUrl,
   setupToken,
