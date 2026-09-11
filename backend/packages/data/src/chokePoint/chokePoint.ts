@@ -1039,6 +1039,9 @@ export function createChokePoint(
      * whose own parent item is, transitively, back in database A) by tracking every database
      * id already walked and stopping the moment one repeats — otherwise a cycle would hang this
      * loop, and the request, forever.
+     *
+     * Iterative per-level walk rather than a single recursive CTE — the trade-off is recorded in
+     * `docs/adr/2026-09-11-iterative-parent-chain-traversal-in-choke-point.md`.
      */
     async getItemPath(itemId: string): Promise<ItemRow[]> {
       return withTransaction(pool, async (client) => {

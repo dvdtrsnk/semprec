@@ -12,6 +12,13 @@ function jsonObjectField(value: unknown, field: string): Record<string, unknown>
   return value as Record<string, unknown>;
 }
 
+function requireJsonObjectField(value: unknown, field: string): Record<string, unknown> {
+  if (value === undefined) {
+    throw new ValidationError(`'${field}' is required`, { field });
+  }
+  return jsonObjectField(value, field) as Record<string, unknown>;
+}
+
 function requestUrl(rawUrl: string | undefined): URL {
   return new URL(rawUrl ?? "/", "http://localhost");
 }
@@ -72,10 +79,7 @@ export function createItemRoutes(pool: Pool): RouteDefinition[] {
         if (!existing) throw new NotFoundError(`Item ${id} not found`);
 
         const body = requireJsonObjectBody(ctx.body);
-        if (body.properties === undefined) {
-          throw new ValidationError("'properties' is required", { field: "properties" });
-        }
-        const propertiesPatch = jsonObjectField(body.properties, "properties") ?? {};
+        const propertiesPatch = requireJsonObjectField(body.properties, "properties");
         const ifVersion = typeof body.ifVersion === "string" ? body.ifVersion : undefined;
 
         const item = await chokePoint.updateItem({
