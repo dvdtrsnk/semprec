@@ -37,7 +37,7 @@ the failure mode that rule exists to prevent.
 | `adr-conventions` | writing a new ADR, or editing, superseding, or narrowing an existing one |
 | `state-writes` | anything that creates, updates or deletes persisted state |
 | `db-migrations` | any schema change, constraint, index or backfill |
-| `canonical-keys` | any stored key, option value, or user-facing label |
+| `canonical-keys` | a stored key, option value, view type, or any string a user will see |
 | `ai-gateway` | any LLM or AI-provider call |
 | `io-hardening` | any new HTTP route, handler, or outbound call |
 | `error-handling` | any `catch`, error mapping, or failure path |
