@@ -31,7 +31,7 @@ means to "remember them as it goes" reliably does not.
 | Load | When the Task involves |
 |---|---|
 | `state-writes` | creating, updating or deleting persisted state — items, relations, blocks, rows in any table |
-| `io-hardening` | a new HTTP route or handler, a webhook receiver, or any outbound call to something you do not control |
+| `io-hardening` | a new HTTP route or handler, a webhook receiver, or any outbound call |
 | `error-handling` | a `catch`, an error mapping, a rollback path, or any decision about what happens on failure |
 | `db-migrations` | a schema change, constraint, index, or backfill |
 | `canonical-keys` | a stored key, option value, view type, or any string a user will see |
