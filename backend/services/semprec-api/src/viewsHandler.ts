@@ -13,12 +13,17 @@ function optionalConfigField(body: Record<string, unknown>): Record<string, unkn
     : undefined;
 }
 
+/** Postgres's `integer` column backing `view_items.position` holds at most this value. */
+const POSTGRES_INT4_MAX = 2147483647;
+
 /** `view_items.position` is a non-negative Postgres `integer`; an out-of-range value must fail as 400, not surface as a raw DB error. */
 function optionalPositionField(body: Record<string, unknown>): number | undefined {
   if (body.position === undefined) return undefined;
   const { position } = body;
-  if (typeof position !== "number" || !Number.isInteger(position) || position < 0) {
-    throw new ValidationError("'position' must be a non-negative integer", { field: "position" });
+  if (typeof position !== "number" || !Number.isInteger(position) || position < 0 || position > POSTGRES_INT4_MAX) {
+    throw new ValidationError(`'position' must be a non-negative integer not exceeding ${POSTGRES_INT4_MAX}`, {
+      field: "position",
+    });
   }
   return position;
 }
@@ -94,6 +99,11 @@ export function createViewRoutes(pool: Pool): RouteDefinition[] {
         const itemId = requireStringParam(ctx.params, "itemId");
         const view = await chokePoint.getView(viewId);
         if (!view) throw new NotFoundError(`View ${viewId} not found`);
+        if (view.databaseId !== null) {
+          throw new ValidationError("Only a curated view (databaseId = null) accepts view_items membership", {
+            field: "viewId",
+          });
+        }
         const members = await chokePoint.listViewItems(viewId);
         const target = members.find((member) => member.itemId === itemId);
         if (!target) throw new NotFoundError(`Item ${itemId} is not a member of view ${viewId}`);

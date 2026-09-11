@@ -233,6 +233,13 @@ describe("view routes (issue #155)", () => {
         body: JSON.stringify({ position: -1 }),
       });
       expect(negativeRes.status).toBe(400);
+
+      const outOfRangeRes = await fetch(`${baseUrl}/api/views/${view.id}/items/${item.id}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ position: 2147483648 }),
+      });
+      expect(outOfRangeRes.status).toBe(400);
     });
 
     it("removes a member from a curated view (200 with its prior representation, not 204)", async () => {
@@ -284,6 +291,16 @@ describe("view routes (issue #155)", () => {
       const item = await makeItem();
 
       const res = await fetch(`${baseUrl}/api/views/${view.id}/items/${item.id}`, { method: "PUT", headers });
+      expect(res.status).toBe(400);
+    });
+
+    it("returns 400 removing an item from a non-curated (linked) view, not a misleading 404", async () => {
+      const headers = await authHeader();
+      const database = await chokePoint.createDatabase({ name: "D" });
+      const view = await chokePoint.createView({ databaseId: database.id, type: "table", name: "All rows" });
+      const item = await makeItem();
+
+      const res = await fetch(`${baseUrl}/api/views/${view.id}/items/${item.id}`, { method: "DELETE", headers });
       expect(res.status).toBe(400);
     });
   });
