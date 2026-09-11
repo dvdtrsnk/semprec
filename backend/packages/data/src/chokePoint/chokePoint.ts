@@ -815,8 +815,15 @@ export function createChokePoint(
     async restoreDatabase(id: string): Promise<DatabaseRow> {
       return withTransaction(pool, (client) => databasesStore.restoreDatabase(client, id));
     },
+    async renameDatabase(id: string, name: string): Promise<DatabaseRow> {
+      return withTransaction(pool, (client) => databasesStore.renameDatabase(client, id, name));
+    },
     async getDatabase(id: string): Promise<DatabaseRow | null> {
       return withTransaction(pool, (client) => databasesStore.getDatabase(client, id));
+    },
+    /** Every non-archived database system-wide (issue #240's `GET /api/databases`) — see `databasesStore.listAllDatabases` for why this includes the ten system databases. */
+    async listDatabases(): Promise<DatabaseRow[]> {
+      return withTransaction(pool, (client) => databasesStore.listAllDatabases(client));
     },
 
     /** Inline database creation (issue #22, point 7): a new, independent database owned by a page. Always `system: false` — mechanically, since the input type carries no `system` field to override it. */

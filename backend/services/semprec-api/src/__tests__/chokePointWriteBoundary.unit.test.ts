@@ -36,6 +36,14 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "register push subscription": "packages/data/src/push/pushRouteHandlers.ts",
   "revoke push subscription": "packages/data/src/push/pushRouteHandlers.ts",
   "ai usage report": "packages/data/src/aiGateway/aiUsageRouteHandler.ts",
+  "list databases": "services/semprec-api/src/databasesHandler.ts",
+  "create database": "services/semprec-api/src/databasesHandler.ts",
+  "database detail": "services/semprec-api/src/databasesHandler.ts",
+  "rename database": "services/semprec-api/src/databasesHandler.ts",
+  "archive database": "services/semprec-api/src/databasesHandler.ts",
+  "create property": "services/semprec-api/src/databasesHandler.ts",
+  "update property": "services/semprec-api/src/propertiesHandler.ts",
+  "delete property": "services/semprec-api/src/propertiesHandler.ts",
 };
 
 const apiRoutes: RouteMatrixEntry[] = ROUTE_MATRIX.filter((route) => route.surface === "api");

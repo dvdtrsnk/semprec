@@ -62,6 +62,7 @@ export {
   resolveProperty,
   toManifestLocale,
   type CatalogResolver,
+  type ManifestLocale,
   type ResolvedOption,
   type ResolvedProperty,
 } from "./manifest/catalogResolution.js";
