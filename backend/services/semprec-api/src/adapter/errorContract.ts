@@ -84,16 +84,35 @@ export interface VersionConflictDetails {
 }
 
 /**
+ * `details` is `unknown` on `ChokePointError`, so nothing here stops a future call site — a
+ * `SchemaLockedError`/`PropertyLockedError`/`HeartbeatEventTriggeredError` thrown with a raw
+ * database row, a foreign key, or a file path as `details` — from having that value forwarded
+ * to an HTTP client verbatim. Only a flat record of primitive values (the shape every documented
+ * `details` payload in this contract actually has — `{ field }`, `{ approvalRequestId, link }`)
+ * is safe to serve as-is; anything else is dropped rather than risk leaking internal state.
+ */
+function safeDetails(details: unknown): Record<string, string | number | boolean | null> | undefined {
+  if (typeof details !== "object" || details === null || Array.isArray(details)) return undefined;
+  const entries = Object.entries(details as Record<string, unknown>);
+  const isPrimitive = (value: unknown): value is string | number | boolean | null =>
+    value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+  return entries.every(([, value]) => isPrimitive(value))
+    ? (details as Record<string, string | number | boolean | null>)
+    : undefined;
+}
+
+/**
  * The single place a thrown `ChokePointError` becomes the `{ error: { code, details } }` body
  * defined by issue #238's error contract — no route handler builds this shape itself.
  * `version_conflict`'s `details.currentItem` is the one code whose wire shape isn't just the
  * choke-point error's own `details` verbatim: the choke-point raises it with `{ current }` (an
- * `ItemRow`), and this is where that gets projected onto the public item envelope.
+ * `ItemRow`), and this is where that gets projected onto the public item envelope. Every other
+ * code's `details` passes through `safeDetails` rather than verbatim.
  */
 export function toErrorResponseBody(err: ChokePointError): ErrorResponseBody {
   if (err.code === "version_conflict" && isVersionConflictDetails(err.details)) {
     const details: VersionConflictDetails = { currentItem: toItemEnvelope(err.details.current) };
     return { error: { code: err.code, details } };
   }
-  return { error: { code: err.code, details: err.details } };
+  return { error: { code: err.code, details: safeDetails(err.details) } };
 }

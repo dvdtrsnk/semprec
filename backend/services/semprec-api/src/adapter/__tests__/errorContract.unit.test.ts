@@ -95,4 +95,16 @@ describe("error contract (issue #238)", () => {
     const error = new ForbiddenError("Archived", { field: "databaseId" }, "database_archived");
     expect(statusForError(error)).toBe(error.status);
   });
+
+  it("drops details that aren't a flat record of primitives, so internal state can't leak through a future call site", () => {
+    const error = new SchemaLockedError("Schema is locked", { field: "databaseId", offendingRow: SAMPLE_ITEM });
+    const body = toErrorResponseBody(error);
+    expect(body.error.details).toBeUndefined();
+  });
+
+  it("passes through details that are a flat record of primitives", () => {
+    const error = new PropertyLockedError("Property is locked", { field: "title", locked: true });
+    const body = toErrorResponseBody(error);
+    expect(body.error.details).toEqual({ field: "title", locked: true });
+  });
 });
