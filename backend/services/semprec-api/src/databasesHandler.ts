@@ -7,6 +7,8 @@ import {
   resolveProperty,
   toManifestLocale,
   NotFoundError,
+  ValidationError,
+  PROPERTY_TYPES,
   type CatalogResolver,
   type ChokePoint,
   type DatabaseRow,
@@ -116,19 +118,20 @@ export function createDatabaseRoutes(pool: Pool, moduleRegistry: ModuleRegistry)
       path: "/api/databases/:id/properties",
       handler: async (ctx) => {
         const databaseId = requireStringParam(ctx.params, "id");
+        const database = await requireDatabase(chokePoint, databaseId);
         const body = requireJsonObjectBody(ctx.body);
         const key = requireStringField(body, "key");
-        // Validity of `type` itself (one of `PROPERTY_TYPES`) is `propertiesStore.createProperty`'s
-        // own domain check, not duplicated here — this only asserts the request-shape invariant
-        // that a `type` field was sent at all.
-        const type = requireStringField(body, "type") as PropertyType;
+        const typeField = requireStringField(body, "type");
+        if (!PROPERTY_TYPES.includes(typeField as PropertyType)) {
+          throw new ValidationError(`Unknown property type '${typeField}'`, { field: "type" });
+        }
+        const type = typeField as PropertyType;
         const name = typeof body.name === "string" ? body.name : null;
         const config =
           typeof body.config === "object" && body.config !== null && !Array.isArray(body.config)
             ? (body.config as Record<string, unknown>)
             : undefined;
         const property = await chokePoint.createProperty({ databaseId, key, name, type, config });
-        const database = await requireDatabase(chokePoint, databaseId);
         const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);
         const catalogs = await catalogResolver.getCatalogsForDbKey(database.key);

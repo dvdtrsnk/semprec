@@ -161,6 +161,20 @@ describe("database routes (issue #240)", () => {
     expect(property.databaseId).toBe(database.id);
   });
 
+  it("returns 400 for an unknown property type", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const database = await chokePoint.createDatabase({ name: "Books" });
+
+    const res = await fetch(`${baseUrl}/api/databases/${database.id}/properties`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ key: "title", name: "Title", type: "bogus" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string; details?: { field?: string } } };
+    expect(body.error.details?.field).toBe("type");
+  });
+
   it("returns 403 schema_locked when creating a property on a schema-locked database", async () => {
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };
     const database = await chokePoint.createDatabase({ name: "Locked" });

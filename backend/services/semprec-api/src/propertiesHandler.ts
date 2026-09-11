@@ -6,6 +6,8 @@ import {
   resolveProperty,
   toManifestLocale,
   NotFoundError,
+  ValidationError,
+  PROPERTY_TYPES,
   type PropertyType,
 } from "@semprec/data";
 import type { RouteDefinition } from "./adapter/routeTable.js";
@@ -38,7 +40,13 @@ export function createPropertyRoutes(pool: Pool, moduleRegistry: ModuleRegistry)
           typeof body.config === "object" && body.config !== null && !Array.isArray(body.config)
             ? (body.config as Record<string, unknown>)
             : undefined;
-        const type = typeof body.type === "string" ? (body.type as PropertyType) : undefined;
+        let type: PropertyType | undefined;
+        if (typeof body.type === "string") {
+          if (!PROPERTY_TYPES.includes(body.type as PropertyType)) {
+            throw new ValidationError(`Unknown property type '${body.type}'`, { field: "type" });
+          }
+          type = body.type as PropertyType;
+        }
 
         const { property, typeChanged } = await chokePoint.updateProperty(id, { name, config, type });
         const status = typeChanged ? 202 : 200;

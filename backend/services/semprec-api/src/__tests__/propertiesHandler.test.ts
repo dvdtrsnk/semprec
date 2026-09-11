@@ -163,6 +163,26 @@ describe("property routes (issue #240)", () => {
     expect(res.status).toBe(200);
   });
 
+  it("returns 400 for an unknown property type", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const database = await chokePoint.createDatabase({ name: "D" });
+    const property = await chokePoint.createProperty({
+      databaseId: database.id,
+      key: "title",
+      name: "Title",
+      type: "text",
+    });
+
+    const res = await fetch(`${baseUrl}/api/properties/${property.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ type: "bogus" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string; details?: { field?: string } } };
+    expect(body.error.details?.field).toBe("type");
+  });
+
   it("returns 403 property_locked when changing the type of a locked property", async () => {
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };
     const database = await chokePoint.createDatabase({ name: "D" });
@@ -238,5 +258,22 @@ describe("property routes (issue #240)", () => {
     expect(res.status).toBe(403);
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("property_locked");
+  });
+
+  it("returns 403 schema_locked when deleting a property in a schema-locked database", async () => {
+    const headers = await authHeader();
+    const database = await chokePoint.createDatabase({ name: "D" });
+    const property = await chokePoint.createProperty({
+      databaseId: database.id,
+      key: "title",
+      name: "Title",
+      type: "text",
+    });
+    await pool.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [database.id]);
+
+    const res = await fetch(`${baseUrl}/api/properties/${property.id}`, { method: "DELETE", headers });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("schema_locked");
   });
 });
