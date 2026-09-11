@@ -389,4 +389,62 @@ describe("choke-point", () => {
     const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [db.id]);
     expect(rows[0].n).toBe(1);
   });
+
+  it("renameDatabase changes the name, including for a system database", async () => {
+    const db = await chokePoint.createDatabase({ name: "Before" });
+    const renamed = await chokePoint.renameDatabase(db.id, "After");
+    expect(renamed.name).toBe("After");
+    expect((await chokePoint.getDatabase(db.id))?.name).toBe("After");
+
+    const system = await chokePoint.createDatabase({ name: "System Before", system: true });
+    const renamedSystem = await chokePoint.renameDatabase(system.id, "System After");
+    expect(renamedSystem.name).toBe("System After");
+  });
+
+  it("renameDatabase on a missing database raises NotFoundError", async () => {
+    await expect(chokePoint.renameDatabase(randomUUID(), "New Name")).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("listDatabases excludes archived databases but includes everything else", async () => {
+    const kept = await chokePoint.createDatabase({ name: "Kept" });
+    const archived = await chokePoint.createDatabase({ name: "Archived" });
+    await chokePoint.archiveDatabase(archived.id);
+
+    const listed = await chokePoint.listDatabases();
+    const ids = listed.map((db) => db.id);
+    expect(ids).toContain(kept.id);
+    expect(ids).not.toContain(archived.id);
+  });
+
+  it("updateProperty applies name, config, and type together in one transaction", async () => {
+    const db = await chokePoint.createDatabase({ name: "Db" });
+    const property = await chokePoint.createProperty({ databaseId: db.id, key: "score", name: "Score", type: "text" });
+
+    const { property: updated, typeChanged } = await chokePoint.updateProperty(property.id, {
+      name: "New Score",
+      type: "number",
+    });
+    expect(updated.name).toBe("New Score");
+    expect(updated.type).toBe("number");
+    expect(typeChanged).toBe(true);
+  });
+
+  it("updateProperty rolls back a requested rename when the same call's type change is rejected as locked", async () => {
+    const db = await chokePoint.createDatabase({ name: "Db" });
+    const property = await chokePoint.createProperty({
+      databaseId: db.id,
+      key: "score",
+      name: "Score",
+      type: "text",
+      locked: true,
+    });
+
+    await expect(chokePoint.updateProperty(property.id, { name: "New Score", type: "number" })).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+
+    const reloaded = await chokePoint.getProperty(property.id);
+    expect(reloaded?.name).toBe("Score");
+    expect(reloaded?.type).toBe("text");
+  });
 });

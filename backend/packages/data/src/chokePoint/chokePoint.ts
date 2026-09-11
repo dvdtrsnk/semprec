@@ -798,6 +798,55 @@ export async function deleteRelationWithClient(
   await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
 }
 
+/**
+ * The config-update logic shared by `chokePoint.updatePropertyConfig` and `chokePoint.updateProperty`
+ * (issue #240), factored out so `updateProperty` can run it against the same client/transaction as
+ * a sibling rename/type-change instead of opening its own.
+ */
+async function updatePropertyConfigWithClient(
+  client: PoolClient,
+  id: string,
+  config: Record<string, unknown>,
+): Promise<PropertyRow> {
+  const property = await propertiesStore.updatePropertyConfig(client, id, config);
+  if (property.type === "rollup") {
+    await applyRollupConfig(client, property);
+    await enqueueRollupBackfill(client, property.id);
+  }
+  return property;
+}
+
+/**
+ * The type-change logic shared by `chokePoint.changePropertyType` and `chokePoint.updateProperty`
+ * (issue #240), factored out for the same reason as `updatePropertyConfigWithClient` above.
+ */
+async function changePropertyTypeWithClient(
+  client: PoolClient,
+  id: string,
+  newType: PropertyType,
+): Promise<PropertyRow> {
+  const property = await propertiesStore.getProperty(client, id);
+  if (!property) throw new ValidationError(`Property ${id} not found`);
+  const oldType = property.type;
+  if (oldType === newType) return property;
+
+  if ([oldType, newType].includes("relation") || [oldType, newType].includes("rollup")) {
+    throw new ValidationError("Retyping into or out of 'relation'/'rollup' is not supported via changePropertyType", {
+      field: "type",
+    });
+  }
+  await assertSourceRetypeAllowed(client, property.databaseId, property.key, newType);
+  if (!isConversionSupported(oldType, newType)) {
+    throw new ValidationError(`No conversion path from '${oldType}' to '${newType}'; create a new property instead`, {
+      field: "type",
+    });
+  }
+
+  const updated = await propertiesStore.changePropertyType(client, id, newType, "pending");
+  await enqueuePropertyTypeMigration(client, id, oldType);
+  return updated;
+}
+
 export function createChokePoint(
   pool: Pool,
   computedKeyRegistry: ComputedKeyRegistry = createComputedKeyRegistry(),
@@ -862,44 +911,40 @@ export function createChokePoint(
     },
 
     async updatePropertyConfig(id: string, config: Record<string, unknown>): Promise<PropertyRow> {
-      return withTransaction(pool, async (client) => {
-        const property = await propertiesStore.updatePropertyConfig(client, id, config);
-        if (property.type === "rollup") {
-          await applyRollupConfig(client, property);
-          await enqueueRollupBackfill(client, property.id);
-        }
-        return property;
-      });
+      return withTransaction(pool, (client) => updatePropertyConfigWithClient(client, id, config));
     },
 
     async changePropertyType(id: string, newType: PropertyType): Promise<PropertyRow> {
+      return withTransaction(pool, (client) => changePropertyTypeWithClient(client, id, newType));
+    },
+
+    /**
+     * The single entry point for `PATCH /api/properties/:id` (issue #240): applies whichever of
+     * `name`/`config`/`type` were sent in one transaction, so a 403 from the locked-schema checks
+     * inside `updatePropertyConfigWithClient`/`changePropertyTypeWithClient` rolls back a rename
+     * requested in the same call instead of leaving it silently committed against the caller's
+     * expectation that a 403 response means nothing changed.
+     */
+    async updateProperty(
+      id: string,
+      input: { name?: string; config?: Record<string, unknown>; type?: PropertyType },
+    ): Promise<{ property: PropertyRow; typeChanged: boolean }> {
       return withTransaction(pool, async (client) => {
-        const property = await propertiesStore.getProperty(client, id);
-        if (!property) throw new ValidationError(`Property ${id} not found`);
-        const oldType = property.type;
-        if (oldType === newType) return property;
+        let property = await propertiesStore.getProperty(client, id);
+        if (!property) throw new NotFoundError(`Property ${id} not found`);
 
-        if ([oldType, newType].includes("relation") || [oldType, newType].includes("rollup")) {
-          throw new ValidationError(
-            "Retyping into or out of 'relation'/'rollup' is not supported via changePropertyType",
-            {
-              field: "type",
-            },
-          );
+        if (input.name !== undefined) {
+          property = await propertiesStore.renameProperty(client, id, input.name);
         }
-        await assertSourceRetypeAllowed(client, property.databaseId, property.key, newType);
-        if (!isConversionSupported(oldType, newType)) {
-          throw new ValidationError(
-            `No conversion path from '${oldType}' to '${newType}'; create a new property instead`,
-            {
-              field: "type",
-            },
-          );
+        if (input.config !== undefined) {
+          property = await updatePropertyConfigWithClient(client, id, input.config);
         }
-
-        const updated = await propertiesStore.changePropertyType(client, id, newType, "pending");
-        await enqueuePropertyTypeMigration(client, id, oldType);
-        return updated;
+        let typeChanged = false;
+        if (input.type !== undefined && input.type !== property.type) {
+          property = await changePropertyTypeWithClient(client, id, input.type);
+          typeChanged = true;
+        }
+        return { property, typeChanged };
       });
     },
 
