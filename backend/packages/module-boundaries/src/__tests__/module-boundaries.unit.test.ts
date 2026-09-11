@@ -90,8 +90,28 @@ describe("checkModuleBoundaries", () => {
           imported: "modules/alpha/src/internal.ts",
           rules: ["no-module-service-internal-cross-import"],
         },
+        {
+          importer: "modules/beta/src/badCoreTableWrite.ts",
+          imported: "packages/data/src/chokePoint/itemsStore.ts",
+          rules: ["no-core-table-write-outside-choke-point"],
+        },
       ]),
     );
-    expect(violations).toHaveLength(4);
+    expect(violations).toHaveLength(5);
+  });
+
+  it("rejects a route handler or module importing a core-table write-capable store directly (issue #154)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const violation = violations.find((v: BoundaryViolation) => v.importer === "modules/beta/src/badCoreTableWrite.ts");
+
+    expect(violation?.imported).toBe("packages/data/src/chokePoint/itemsStore.ts");
+    expect(violation?.rules).toContain("no-core-table-write-outside-choke-point");
+  });
+
+  it("lets the choke-point package itself import its own write-capable store (issue #154)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const importers = violations.map((violation: BoundaryViolation) => violation.importer);
+
+    expect(importers).not.toContain("packages/data/src/chokePoint/usesOwnStore.ts");
   });
 });

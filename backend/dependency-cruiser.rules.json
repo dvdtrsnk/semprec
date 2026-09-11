@@ -76,6 +76,17 @@
       "to": {
         "path": "node_modules/(@anthropic-ai/|openai/)"
       }
+    },
+    {
+      "name": "no-core-table-write-outside-choke-point",
+      "severity": "error",
+      "comment": "Issue #154 / docs/adr/2026-09-10-choke-point-api-for-state-writes.md: only packages/data (the choke-point package) may write the core tables items/databases/properties. A route handler, adapter, or module anywhere else must go through the choke-point's exported service calls (@semprec/data's createChokePoint and friends), never chokePoint/itemsStore.ts, chokePoint/databasesStore.ts, or chokePoint/propertiesStore.ts directly.",
+      "from": {
+        "path": "^(?!packages/data/)"
+      },
+      "to": {
+        "path": "^packages/data/src/chokePoint/(itemsStore|databasesStore|propertiesStore)\\.ts$"
+      }
     }
   ]
 }
