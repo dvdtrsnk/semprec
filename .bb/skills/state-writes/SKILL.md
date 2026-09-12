@@ -85,12 +85,16 @@ Related checks worth doing in the same pass:
   itself, not from a lookup that ran before it.
 - A targeted `UPDATE`/`DELETE` still reports success when it matches zero rows,
   unless you check how many rows it actually touched. `WHERE id = $1` against a
-  row that is already gone returns `rowCount: 0`, not an error — check
-  `result.rowCount` (or the `requireAffectedRows` helper next to
-  `requireSingleRow` in `db/pool.ts`, once it lands) and throw `NotFoundError`
-  when it's zero, instead of letting the caller believe a no-op succeeded. This
-  is what makes the previous point actionable: the write confirms its own
-  outcome, so the stale pre-check no longer matters.
+  row that is already gone returns `rowCount: 0`, not an error. Use
+  `requireAffectedRows(result, context)` (next to `requireSingleRow` in
+  `db/pool.ts`) when the row is expected to exist by construction — a delete
+  keyed off an id just read back, an update guarded by a prior existence check.
+  When zero rows is itself a legitimate outcome the caller has to handle (a
+  bulk operation that may affect nobody, a remove that might target a
+  non-member), check `result.rowCount` yourself and turn it into the
+  domain-appropriate response — a `NotFoundError`, not a silent success. Either
+  way, this is what makes the previous point actionable: the write confirms its
+  own outcome, so the stale pre-check no longer matters.
 - A guard enforced on one direction of a paired write is not automatically
   enforced on its counterpart. If `add`/`create`/`lock` checks a precondition,
   `remove`/`delete`/`unlock` needs the same check — a rule found on one side of

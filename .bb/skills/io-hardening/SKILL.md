@@ -46,9 +46,12 @@ add one soon add the other.
   handle per failure, which is a slow outage rather than a visible one. The
   same rule applies to any acquire-then-use pair, not just HTTP: `pool.connect()`
   hands you a client before you've done anything with it, and if the query
-  that follows throws, that connection is never released — wrap the use in a
-  `try`/`catch` (`listenClient.release(true)` in the `catch`, before rethrowing)
-  so a failure still gives the connection back.
+  that follows throws, that connection is never released. Use `withClient(pool,
+  fn)` (next to `withTransaction` in `db/pool.ts`) for a client needed across
+  several non-transactional statements — it releases in a `finally` so a throw
+  between acquire and the first query can't leak the connection. Fall back to a
+  manual acquire/`try`/`finally` only when the client has to outlive a single
+  `withClient`-style call, such as a session-scoped `LISTEN`.
 - **A shutdown that waits on a handshake can wait forever.** `ws.close()` starts
   a close handshake that needs the client to acknowledge it; one unresponsive
   client (dropped network, crashed tab) means the promise waiting on it never
