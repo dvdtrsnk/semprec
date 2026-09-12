@@ -48,19 +48,23 @@ Four failure shapes account for most of the blocking findings on this
 repository's pull requests. They are worth knowing even if you load no skill at
 all:
 
-- **Rule 6 below, in its usual disguises.** A `pg` row read without a type
-  argument on the `query()` call, `res.json() as X`, a receiving variable whose
-  annotation `any[]` satisfies without checking anything. (`state-writes`)
-- **A side effect that does not wait for the commit.** A `NOTIFY`, a WebSocket
-  invalidation or an enqueue fired inside the transaction that performed the
-  write reaches a listener before the row exists — or after a rollback.
+- **Rule 6 below, in its usual disguises.** A plain `string` cast straight to a
+  narrow union (`as PropertyType`) instead of checked against the allowed
+  values — it returns the right 400 today only because a downstream layer
+  happens to validate it too, and silently stops the day that layer changes.
   (`state-writes`)
-- **A new route that trusts its caller.** Authorization checked against an
-  identifier taken from the body, an unvalidated field, an uncapped body, no
-  rate limit on something reachable without a session. (`io-hardening`)
-- **A branch nobody tested.** Every behaviour the issue's Acceptance criteria
-  promises, and every claim you write in a docstring, is something the reviewer
-  will look for a test of.
+- **A pre-check that ran outside the write's own transaction.** A lookup
+  confirms a row is there or a lock is free, then a separate transaction acts
+  on it — a concurrent write in the gap makes the lookup stale, and nothing
+  catches the write silently no-op'ing or racing another writer for the same
+  row. (`state-writes`)
+- **A resource opened and never given back on the failure path.** A pooled
+  connection acquired and then leaked when the query after it throws, or a
+  shutdown path that waits on a handshake or in-flight async step that may
+  never complete. (`io-hardening`)
+- **A branch nobody tested.** A new data-layer method covered only by an HTTP
+  integration test, a conditional path through an update never exercised, an
+  assertion on a result's length that doesn't also check its content.
 
 ## What this repository is strict about
 
