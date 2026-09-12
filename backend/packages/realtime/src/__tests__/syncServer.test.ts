@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { WebSocket, type RawData } from "ws";
 import * as encoding from "lib0/encoding";
@@ -901,6 +901,29 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(received).toEqual([]);
     client.close();
+  });
+
+  it("keeps the existing watcher live when a replacement watch cannot be authorized", async () => {
+    const owner = await createTestUser();
+    identityByToken.set("owner", { userId: owner, sessionId: "owner-session" });
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "retain watch after transient failure" });
+    await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
+    const client = await connect("owner");
+    client.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    expect((await nextFrame(client)).type).toBe("agent:event");
+
+    const query = vi.spyOn(pool, "query").mockRejectedValueOnce(new Error("transient authorization failure"));
+    try {
+      client.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const delta = nextFrame(client);
+      await publishAgentRunDelta(pool, run.id, { kind: "message_update", text: "still watching" });
+      expect((await delta).type).toBe("agent:delta");
+    } finally {
+      query.mockRestore();
+      client.close();
+    }
   });
 
   it("chunks an oversized ephemeral delta below Postgres's NOTIFY payload limit", async () => {

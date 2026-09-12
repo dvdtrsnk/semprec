@@ -113,8 +113,6 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
   return {
     async watch(ws, userId, runId, afterEventId) {
       const pendingToken = beginWatch(ws, runId);
-      const existing = watchersBySocket.get(ws)?.get(runId);
-      if (existing) remove(existing);
 
       // Semprec's data model is explicitly single-tenant: agent_runs has no per-row user
       // column, so the setup account is the one authorized human owner (the same rule
@@ -134,6 +132,11 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
       }
       finishPendingWatch(ws, runId, pendingToken);
 
+      // Keep an already-authorized watcher live until this replacement watch is authorized.
+      // A transient database failure must not silently turn a valid subscription into an
+      // unwatched socket; once authorization succeeds, replacement is synchronous.
+      const existing = watchersBySocket.get(ws)?.get(runId);
+      if (existing) remove(existing);
       const watcher: Watcher = {
         ws,
         runId,
