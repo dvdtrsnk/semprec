@@ -255,6 +255,16 @@ describe("view routes (issue #155)", () => {
         body: JSON.stringify({ position: 2147483648 }),
       });
       expect(outOfRangeRes.status).toBe(400);
+
+      // A raw literal, not `JSON.stringify(Infinity)` (which serializes to `null`): a JSON
+      // number literal wide enough to overflow float64 parses to `Infinity`, same as any other
+      // out-of-domain value a caller might send.
+      const infiniteRes = await fetch(`${baseUrl}/api/views/${view.id}/items/${item.id}`, {
+        method: "PUT",
+        headers,
+        body: '{"position":1e309}',
+      });
+      expect(infiniteRes.status).toBe(400);
     });
 
     it("removes a member from a curated view (200 with its prior representation, not 204)", async () => {
