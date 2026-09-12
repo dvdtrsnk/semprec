@@ -4,7 +4,7 @@ import type { Pool } from "pg";
 import { WebSocket } from "ws";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createUser, hashPassword, type PasswordResetMailer, type UserRow } from "@semprec/data";
-import { wireRealtimeHooks } from "@semprec/realtime";
+import { wireRealtimeHooks, type SyncServer } from "@semprec/realtime";
 import { createAuthRequestListener, SESSION_COOKIE_NAME } from "../authHandler.js";
 import { createSyncUpgradeHandler } from "../syncHandler.js";
 
@@ -38,6 +38,7 @@ function waitForOpen(client: WebSocket): Promise<void> {
 
 describe("WS /api/sync (issue #160)", () => {
   let server: Server;
+  let syncServer: SyncServer;
   let baseUrl: string;
   let wsBaseUrl: string;
 
@@ -50,7 +51,7 @@ describe("WS /api/sync (issue #160)", () => {
       passwordResetMailer: noopMailer,
       appBaseUrl: "https://app.example.test",
     });
-    const syncServer = await createSyncUpgradeHandler(pool);
+    syncServer = await createSyncUpgradeHandler(pool);
 
     server = createServer(authListener);
     server.on("upgrade", (req, socket, head) => {
@@ -61,13 +62,10 @@ describe("WS /api/sync (issue #160)", () => {
     if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
     baseUrl = `http://127.0.0.1:${address.port}`;
     wsBaseUrl = `ws://127.0.0.1:${address.port}`;
-
-    server.once("close", () => {
-      void syncServer.close();
-    });
   });
 
   afterEach(async () => {
+    await syncServer.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
