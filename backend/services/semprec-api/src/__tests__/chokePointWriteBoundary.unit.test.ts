@@ -58,6 +58,8 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "create/replace relation": "services/semprec-api/src/itemsHandler.ts",
   "delete relation": "services/semprec-api/src/itemsHandler.ts",
   "query view": "services/semprec-api/src/viewsHandler.ts",
+  "upload file": "services/semprec-api/src/filesHandler.ts",
+  "download blob": "services/semprec-api/src/blobsHandler.ts",
 };
 
 const apiRoutes: RouteMatrixEntry[] = ROUTE_MATRIX.filter((route) => route.surface === "api");

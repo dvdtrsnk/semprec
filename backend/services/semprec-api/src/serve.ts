@@ -1,13 +1,14 @@
 import { createServer } from "node:http";
-import { createTransport } from "nodemailer";
 import {
   createPool,
+  LocalFsBlobStorageWriter,
   loadFullModuleRegistry,
   NodemailerPasswordResetMailer,
   noopPasswordResetMailer,
   resolveDocHistoryRetentionDays,
   type PasswordResetMailer,
 } from "@semprec/data";
+import { createTransport } from "nodemailer";
 import { createDispatcher } from "./app.js";
 
 const connectionString = process.env.DATABASE_URL;
@@ -50,6 +51,14 @@ function buildPasswordResetMailer(): PasswordResetMailer {
   return new NodemailerPasswordResetMailer(transporter, from);
 }
 
+// Issue #158: `POST /api/files`'s hard streamed-upload cap, and where `LocalFsBlobStorageWriter`
+// keeps uploaded bytes on disk — same env-var shape as `MAIL_ATTACHMENTS_DIR` (worker.ts).
+const maxFileSizeMb = Number(process.env.MAX_FILE_SIZE_MB ?? "100");
+if (!Number.isFinite(maxFileSizeMb) || maxFileSizeMb <= 0) {
+  throw new Error(`MAX_FILE_SIZE_MB is not a valid positive number: ${process.env.MAX_FILE_SIZE_MB}`);
+}
+const blobStorage = new LocalFsBlobStorageWriter(process.env.FILES_STORAGE_DIR ?? "/tmp/semprec-files");
+
 const pool = createPool(connectionString);
 const moduleRegistry = await loadFullModuleRegistry();
 const dispatch = await createDispatcher(pool, {
@@ -57,6 +66,8 @@ const dispatch = await createDispatcher(pool, {
   appBaseUrl,
   setupToken,
   moduleRegistry,
+  blobStorage,
+  maxFileSizeBytes: maxFileSizeMb * 1024 * 1024,
 });
 
 const server = createServer(dispatch);

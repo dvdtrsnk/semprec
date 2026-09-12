@@ -1,5 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
@@ -8,6 +10,7 @@ import {
   createUser,
   hashPassword,
   loadFullModuleRegistry,
+  LocalFsBlobStorageWriter,
   login,
   type ChokePoint,
   type PasswordResetMailer,
@@ -15,6 +18,7 @@ import {
 import { createDispatcher } from "../app.js";
 
 const PASSWORD = "s3cret-password";
+const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
 
 const noopMailer: PasswordResetMailer = {
   async sendPasswordResetEmail() {},
@@ -74,6 +78,8 @@ describe("item routes (issue #241)", () => {
       appBaseUrl: "http://localhost",
       setupToken: "unused-setup-token",
       moduleRegistry,
+      blobStorage: new LocalFsBlobStorageWriter(tmpBlobDir),
+      maxFileSizeBytes: 10 * 1024 * 1024,
     });
     server = createServer(dispatch);
     await new Promise<void>((resolve) => server.listen(0, resolve));

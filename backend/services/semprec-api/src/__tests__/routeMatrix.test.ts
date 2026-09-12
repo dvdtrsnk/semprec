@@ -1,14 +1,18 @@
 import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { loadFullModuleRegistry, type PasswordResetMailer } from "@semprec/data";
+import { loadFullModuleRegistry, LocalFsBlobStorageWriter, type PasswordResetMailer } from "@semprec/data";
 import { createDispatcher } from "../app.js";
 import { ROUTE_MATRIX } from "../routeMatrix.js";
 
 let pool: Pool;
 
 const SETUP_TOKEN = "route-matrix-setup-token";
+const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
 
 const noopMailer: PasswordResetMailer = {
   async sendPasswordResetEmail() {},
@@ -38,6 +42,8 @@ describe("route matrix (issue #143)", () => {
       appBaseUrl: "https://app.example.test",
       setupToken: SETUP_TOKEN,
       moduleRegistry,
+      blobStorage: new LocalFsBlobStorageWriter(tmpBlobDir),
+      maxFileSizeBytes: 10 * 1024 * 1024,
     });
     server = createServer(dispatch);
     await new Promise<void>((resolve) => server.listen(0, resolve));

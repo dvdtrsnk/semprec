@@ -145,6 +145,11 @@ export { runDocHistoryCutoverMigration } from "./docs/docHistoryCutoverMigration
 export { manifest as docsModuleManifest } from "./docs/docsModuleManifest.js";
 
 export * from "./blobs/blobsStore.js";
+export type { IngestUploadedFileInput, IngestUploadedFileResult } from "./blobs/fileUploadStore.js";
+export { ingestUploadedFile } from "./blobs/fileUploadStore.js";
+export { findFileItemByBlobId } from "./chokePoint/itemsStore.js";
+export type { BlobStorageWriter, WriteStreamOptions } from "./mail/blobStorage.js";
+export { LocalFsBlobStorageWriter, MaxBytesExceededError } from "./mail/blobStorage.js";
 
 export * from "./tasks/taskRecurrenceRule.js";
 export { computeNextDueDate } from "./tasks/nextDueDate.js";

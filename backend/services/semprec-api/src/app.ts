@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
-import type { PasswordResetMailer, loadFullModuleRegistry } from "@semprec/data";
+import type { BlobStorageWriter, PasswordResetMailer, loadFullModuleRegistry } from "@semprec/data";
 import { mountCustomRoutes } from "./adapter/customRouteMount.js";
 import { mountRoutes } from "./adapter/routeTable.js";
 import { createDatabaseRoutes } from "./databasesHandler.js";
@@ -14,6 +14,8 @@ import { createAuthRequestListener } from "./authHandler.js";
 import { createNotificationsRequestListener } from "./notificationsHandler.js";
 import { createSetupRequestListener } from "./setupHandler.js";
 import { createSchemaRequestListener } from "./schemaHandler.js";
+import { createFilesRequestListener } from "./filesHandler.js";
+import { createBlobsRequestListener } from "./blobsHandler.js";
 
 export interface AppOptions {
   passwordResetMailer: PasswordResetMailer;
@@ -21,6 +23,10 @@ export interface AppOptions {
   setupToken: string;
   /** Backs `GET /api/schema` (issue #147) — every active module's manifest loaded once at startup. */
   moduleRegistry: Awaited<ReturnType<typeof loadFullModuleRegistry>>;
+  /** Backs `POST /api/files` and `GET /api/blobs/:id` (issue #158). */
+  blobStorage: BlobStorageWriter;
+  /** Issue #158's `maxFileSizeMb`, already resolved to bytes. */
+  maxFileSizeBytes: number;
 }
 
 /**
@@ -61,6 +67,11 @@ export async function createDispatcher(
   const notificationsListener = createNotificationsRequestListener(pool);
   const setupListener = createSetupRequestListener(pool, { setupToken: options.setupToken });
   const schemaListener = createSchemaRequestListener(pool, options.moduleRegistry);
+  const filesListener = createFilesRequestListener(pool, {
+    storage: options.blobStorage,
+    maxFileSizeBytes: options.maxFileSizeBytes,
+  });
+  const blobsListener = createBlobsRequestListener(pool, { storage: options.blobStorage });
 
   return function dispatch(req: IncomingMessage, res: ServerResponse): void {
     if (dispatchCustomRoute(req, res)) return;
@@ -89,6 +100,14 @@ export async function createDispatcher(
     }
     if (pathname === "/api/setup") {
       void setupListener(req, res);
+      return;
+    }
+    if (pathname === "/api/files" && req.method === "POST") {
+      void filesListener(req, res);
+      return;
+    }
+    if (pathname.startsWith("/api/blobs/") && req.method === "GET") {
+      void blobsListener(req, res);
       return;
     }
     void mcpAgentPageListener(req, res);
