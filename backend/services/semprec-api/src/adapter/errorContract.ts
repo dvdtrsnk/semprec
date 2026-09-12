@@ -19,6 +19,7 @@ export const ITEM_ERROR_CODES = [
   "not_found",
   "approval_required",
   "heartbeat_event_triggered",
+  "cardinality_violation",
 ] as const;
 
 export type ItemErrorCode = (typeof ITEM_ERROR_CODES)[number];
@@ -42,6 +43,7 @@ export const ITEM_ERROR_STATUS_BY_CODE: Readonly<Record<ItemErrorCode, number>> 
   not_found: 404,
   approval_required: 403,
   heartbeat_event_triggered: 409,
+  cardinality_violation: 409,
 };
 
 function isItemErrorCode(code: string): code is ItemErrorCode {

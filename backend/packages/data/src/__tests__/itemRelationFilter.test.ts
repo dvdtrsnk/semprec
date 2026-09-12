@@ -23,6 +23,9 @@ const noopStorage: BlobStorageWriter = {
     return { byteSize, contentHash: hash.digest("hex") };
   },
   async delete() {},
+  readStream() {
+    throw new Error("readStream is not used by this test");
+  },
 };
 
 async function databaseIdFor(moduleId: string): Promise<string> {
