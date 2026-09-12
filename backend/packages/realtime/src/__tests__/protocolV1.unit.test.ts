@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseBinaryFrame, parseInboundFrame } from "../protocolV1.js";
+import { buildBinaryFrame, decodeDocId, encodeDocId, parseBinaryFrame, parseInboundFrame } from "../protocolV1.js";
 
 const DOC_ID = "11111111-1111-1111-1111-111111111111";
 const RUN_ID = "22222222-2222-2222-2222-222222222222";
@@ -90,5 +90,27 @@ describe("parseBinaryFrame (issue #160)", () => {
 
   it("rejects an empty frame", () => {
     expect(parseBinaryFrame(Buffer.alloc(0))).toBeNull();
+  });
+});
+
+describe("decodeDocId/encodeDocId/buildBinaryFrame (issue #162)", () => {
+  it("round-trips a UUID through encodeDocId and decodeDocId", () => {
+    const encoded = encodeDocId(DOC_ID);
+    expect(encoded).toHaveLength(16);
+    expect(decodeDocId(encoded)).toBe(DOC_ID);
+  });
+
+  it("rejects a prefix that is not exactly 16 bytes", () => {
+    expect(decodeDocId(Buffer.alloc(15))).toBeNull();
+    expect(decodeDocId(Buffer.alloc(17))).toBeNull();
+  });
+
+  it("builds a binary frame as the encoded docId followed by the payload", () => {
+    const payload = Uint8Array.from([9, 8, 7]);
+    const frame = buildBinaryFrame(DOC_ID, payload);
+    const parsed = parseBinaryFrame(frame);
+    expect(parsed).not.toBeNull();
+    expect(decodeDocId(parsed!.docId)).toBe(DOC_ID);
+    expect(parsed?.payload).toEqual(Buffer.from(payload));
   });
 });

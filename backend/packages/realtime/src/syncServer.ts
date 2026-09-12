@@ -3,7 +3,6 @@ import type { Duplex } from "node:stream";
 import type { Pool, PoolClient } from "pg";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { getNotificationById } from "@semprec/data";
-import { createAgentRunWatchRegistry } from "./agentRunWatch.js";
 import {
   AGENT_STREAM_CHANNEL,
   REALTIME_CHANNEL,
@@ -11,7 +10,9 @@ import {
   parseRealtimeMessage,
   type RealtimeMessage,
 } from "./pgNotifyPublisher.js";
-import { parseBinaryFrame, parseInboundFrame, type OutboundFrame } from "./protocolV1.js";
+import { createAgentRunWatchRegistry } from "./agentRunWatch.js";
+import { createDocSyncRegistry } from "./docSync.js";
+import { decodeDocId, parseBinaryFrame, parseInboundFrame, type OutboundFrame } from "./protocolV1.js";
 
 /** The identity every `WS /api/sync` socket is associated with for its whole lifetime. */
 export interface SyncIdentity {
@@ -69,10 +70,10 @@ function rejectUpgrade(socket: Duplex): void {
 }
 
 /**
- * `WS /api/sync` (issue #160/#161): the one authenticated, multiplexed connection every realtime
- * stream rides — one socket per client, associated with a verified user/session identity for its
- * whole lifetime. Owns this process's single dedicated Postgres LISTEN connection on
- * `REALTIME_CHANNEL` and acts on four message kinds from it:
+ * `WS /api/sync` (issue #160/#161/#162): the one authenticated, multiplexed connection every
+ * realtime stream rides — one socket per client, associated with a verified user/session identity
+ * for its whole lifetime. Owns this process's single dedicated Postgres LISTEN connection on
+ * `REALTIME_CHANNEL` and acts on five message kinds from it:
  *
  * - `session_revoked` closes every socket authenticated as that exact session with 4401, leaving
  *   every other session's sockets untouched.
@@ -87,32 +88,52 @@ function rejectUpgrade(socket: Duplex): void {
  *   authenticated as that notification's own `userId` — the one place this server sends a full row
  *   rather than a thin reference (a notification's `title` is pre-rendered text with no second
  *   enforcement layer to fall back on).
+ * - `doc_update` fans out to `docSync`, which fetches the referenced `doc_updates` row by primary
+ *   key and forwards it only to sockets that have that document open (see `docSync.ts`).
  *
  * `agent:watch` creates an authorized, cursor-backed subscription: durable events are replayed
  * from `agent_run_events`, then the same subscription receives its thin live references without
  * a handoff gap. Ephemeral typing deltas arrive over the distinct `AGENT_STREAM_CHANNEL` and are
  * sent only to those authorized watchers.
+ * `doc:open`/`doc:close` text frames and binary y-protocols/sync frames are also handled here, via
+ * `docSync` (issue #162).
  */
 export async function createSyncServer(pool: Pool, options: SyncServerOptions): Promise<SyncServer> {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_INBOUND_FRAME_BYTES });
   const identityByClient = new WeakMap<WebSocket, SyncIdentity>();
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
   const agentRunWatch = createAgentRunWatchRegistry(pool);
+  const docSync = createDocSyncRegistry(pool);
   let closed = false;
 
   function attachClient(ws: WebSocket, identity: SyncIdentity): void {
     identityByClient.set(ws, identity);
 
     // Protocol-v1 frame validation: anything outside the closed catalog is dropped, never
-    // crashing this connection or any other client's.
+    // crashing this connection or any other client's. Binary sync-protocol frames are dispatched
+    // to `docSync`; agent frames are dispatched to the run-watch registry below.
     ws.on("message", (data: RawData, isBinary: boolean) => {
       if (isBinary) {
-        parseBinaryFrame(rawDataToBuffer(data));
+        const frame = parseBinaryFrame(rawDataToBuffer(data));
+        if (!frame) return;
+        const docId = decodeDocId(frame.docId);
+        if (!docId) return;
+        docSync.handleBinaryFrame(ws, docId, frame.payload).catch((err: unknown) => {
+          console.error("Sync server failed to handle a doc binary frame", err);
+        });
         return;
       }
       const frame = parseInboundFrame(rawDataToBuffer(data).toString("utf8"));
       if (!frame) return;
       switch (frame.type) {
+        case "doc:open":
+          docSync.handleOpen(ws, frame.docId).catch((err: unknown) => {
+            console.error("Sync server failed to handle doc:open", err);
+          });
+          return;
+        case "doc:close":
+          docSync.handleClose(ws, frame.docId);
+          return;
         case "agent:watch":
           agentRunWatch.watch(ws, identity.userId, frame.runId, frame.afterEventId).catch((err: unknown) => {
             console.error("Sync server failed to watch an agent run", err);
@@ -122,7 +143,6 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
           agentRunWatch.unwatch(ws, frame.runId);
           return;
         default:
-          // doc:open/doc:close are delivered by realtime-v1 issue #162.
           return;
       }
     });
@@ -142,6 +162,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
       clearInterval(heartbeat);
       identityByClient.delete(ws);
       agentRunWatch.handleSocketClosed(ws);
+      docSync.handleSocketClosed(ws);
     });
   }
 
@@ -275,8 +296,13 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
         enqueueAgentEvent(parsed.agentRunId, parsed.eventId);
         return;
       }
+      case "doc_update": {
+        docSync.fanOutDocUpdate(parsed.docId, parsed.updateId).catch((err: unknown) => {
+          console.error("Sync server failed to fan out a doc update", err);
+        });
+        return;
+      }
       default:
-        // doc_update is delivered by realtime-v1 issue #162.
         return;
     }
   };

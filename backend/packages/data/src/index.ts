@@ -132,10 +132,12 @@ export {
 export {
   loadDoc as loadYDoc,
   mutateDoc as mutateYDoc,
+  getDocUpdateById,
   DEFAULT_COMPACTION_THRESHOLD,
   runCompactionSweep,
   handleDocCompactionSweepTask,
 } from "./docs/docPersistence.js";
+export { getDocById } from "./docs/docsStore.js";
 export {
   cleanupExpiredDocHistory,
   rebaselineDocHistory,

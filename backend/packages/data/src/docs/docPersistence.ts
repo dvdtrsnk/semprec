@@ -131,6 +131,20 @@ export async function loadDoc(
 }
 
 /**
+ * Fetches one durable `doc_updates` row's raw bytes by primary key — the "referenced
+ * bytes" a realtime `doc_update` NOTIFY event points to (issue #162). Returns `null` when
+ * the row is gone by the time this runs: a concurrent `compact()` may have already merged
+ * it into `doc_snapshots` and deleted it, since NOTIFY delivery and this fetch race against
+ * that DELETE. The caller (the WS fan-out) treats `null` as "already compacted" and falls
+ * back to `doc_snapshots`, which retains everything this row held — never as "nothing to
+ * send".
+ */
+export async function getDocUpdateById(pool: Pool, updateId: string): Promise<Buffer | null> {
+  const { rows } = await pool.query<{ update: Buffer }>(`SELECT update FROM doc_updates WHERE id = $1`, [updateId]);
+  return rows[0]?.update ?? null;
+}
+
+/**
  * The realtime notification is deferred via `runAfterCommit` rather than fired here —
  * this runs inside the caller's still-open transaction (possibly one also writing other
  * tables, e.g. `inbox/proposalActions.ts`'s `confirmProposalWithClient`), and firing
