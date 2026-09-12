@@ -537,8 +537,19 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
     const second = await insertAgentRunEvent(pool, run.id, "message", { kind: "message", text: "replayed" });
 
     const client = await connect("owner");
+    const replayed: Record<string, unknown>[] = [];
+    let resolveReplay: (() => void) | undefined;
+    const replayComplete = new Promise<void>((resolve) => {
+      resolveReplay = resolve;
+    });
+    const collectReplay = (data: RawData) => {
+      replayed.push(JSON.parse(messageText(data)) as Record<string, unknown>);
+      if (replayed.length === 2) resolveReplay?.();
+    };
+    client.on("message", collectReplay);
     client.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
-    const replayed = [await nextFrame(client), await nextFrame(client)];
+    await replayComplete;
+    client.off("message", collectReplay);
     expect(replayed.map((frame) => (frame.event as { id: string }).id)).toEqual([first.id, second.id]);
 
     const live = await insertAgentRunEvent(pool, run.id, "turn_end", { kind: "turn_end" });
