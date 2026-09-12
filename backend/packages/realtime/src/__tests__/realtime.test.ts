@@ -7,8 +7,10 @@ import {
   setInvalidationHook,
   setNotificationCreatedHook,
   setNotificationReadStateHook,
+  setSessionRevokedHook,
   notifyDocUpdate,
   notifyNotificationCreated,
+  notifySessionRevoked,
 } from "@semprec/data";
 import { publishRealtimeMessage } from "../pgNotifyPublisher.js";
 import { wireRealtimeHooks } from "../wireHooks.js";
@@ -98,6 +100,27 @@ describe("realtime", () => {
     listenClient.release(true);
     setNotificationCreatedHook(() => {});
     setNotificationReadStateHook(() => {});
+  });
+
+  it("wireRealtimeHooks turns a session-revoked event into a Postgres NOTIFY on the shared channel (issue #160)", async () => {
+    wireRealtimeHooks(pool);
+
+    const listenClient = await pool.connect();
+    await listenClient.query("LISTEN semprec_realtime");
+    const received = new Promise<{ channel: string; payload?: string }>((resolve) => {
+      listenClient.once("notification", resolve);
+    });
+
+    notifySessionRevoked({ sessionId: "session-1" });
+
+    const notification = await received;
+    expect(JSON.parse(notification.payload ?? "{}")).toEqual({
+      type: "session_revoked",
+      sessionId: "session-1",
+    });
+
+    listenClient.release(true);
+    setSessionRevokedHook(() => {});
   });
 
   describe("startRealtimeServer", () => {

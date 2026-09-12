@@ -1,7 +1,23 @@
 import type { Pool, PoolClient } from "pg";
-import { requireSingleRow } from "../db/pool.js";
+import { requireSingleRow, runAfterCommit } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
+import { notifySessionRevoked } from "../realtimeHook.js";
 import { SESSION_PLATFORMS, type SessionRow } from "./types.js";
+
+/**
+ * Fires the realtime session-revocation event (issue #160's `WS /api/sync` closes that
+ * session's sockets with 4401 on it) for an id that was just actually revoked. Deferred via
+ * `runAfterCommit` when `client` is a transaction-scoped `PoolClient` — this store's revoke
+ * functions accept a bare `Pool` too (single auto-committed statement, so there's no later
+ * commit/rollback to wait for and the event fires immediately).
+ */
+function fireSessionRevoked(client: Pool | PoolClient, sessionId: string): void {
+  if ("release" in client) {
+    runAfterCommit(client, () => notifySessionRevoked({ sessionId }));
+  } else {
+    notifySessionRevoked({ sessionId });
+  }
+}
 
 /** The raw `sessions` row shape this module reads back from Postgres. */
 type SessionDbRow = {
@@ -70,7 +86,10 @@ export async function touchSessionLastSeen(client: Pool | PoolClient, id: string
 }
 
 export async function revokeSession(client: Pool | PoolClient, id: string): Promise<void> {
-  await client.query(`UPDATE sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`, [id]);
+  const result = await client.query(`UPDATE sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`, [
+    id,
+  ]);
+  if ((result.rowCount ?? 0) > 0) fireSessionRevoked(client, id);
 }
 
 /**
@@ -84,7 +103,9 @@ export async function revokeSessionForUser(client: Pool | PoolClient, id: string
     `UPDATE sessions SET revoked_at = now() WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL`,
     [id, userId],
   );
-  return (result.rowCount ?? 0) > 0;
+  const revoked = (result.rowCount ?? 0) > 0;
+  if (revoked) fireSessionRevoked(client, id);
+  return revoked;
 }
 
 /**
@@ -93,7 +114,25 @@ export async function revokeSessionForUser(client: Pool | PoolClient, id: string
  * calls this so a session an attacker held before the reset doesn't outlive it.
  */
 export async function revokeAllSessionsForUser(client: Pool | PoolClient, userId: string): Promise<void> {
-  await client.query(`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, [userId]);
+  const { rows } = await client.query<{ id: string }>(
+    `UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL RETURNING id`,
+    [userId],
+  );
+  for (const row of rows) fireSessionRevoked(client, row.id);
+}
+
+/**
+ * Whether `id` is still an active session — neither revoked nor expired. `WS /api/sync`'s
+ * heartbeat (issue #160) calls this as a fallback to the NOTIFY-driven close, for the case where
+ * a socket's connection to the LISTEN channel missed the revocation event (e.g. a reconnect
+ * window).
+ */
+export async function isSessionActive(client: Pool | PoolClient, id: string): Promise<boolean> {
+  const { rows } = await client.query(
+    `SELECT 1 FROM sessions WHERE id = $1 AND revoked_at IS NULL AND expires_at > now()`,
+    [id],
+  );
+  return rows.length > 0;
 }
 
 export async function listSessionsForUser(client: Pool | PoolClient, userId: string): Promise<SessionRow[]> {
