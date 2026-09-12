@@ -20,16 +20,17 @@ describe("parseInboundFrame (issue #160)", () => {
   });
 
   it("accepts a well-formed agent:watch frame", () => {
-    expect(parseInboundFrame(JSON.stringify({ type: "agent:watch", agentRunId: RUN_ID }))).toEqual({
+    expect(parseInboundFrame(JSON.stringify({ type: "agent:watch", runId: RUN_ID, afterEventId: "42" }))).toEqual({
       type: "agent:watch",
-      agentRunId: RUN_ID,
+      runId: RUN_ID,
+      afterEventId: "42",
     });
   });
 
   it("accepts a well-formed agent:unwatch frame", () => {
-    expect(parseInboundFrame(JSON.stringify({ type: "agent:unwatch", agentRunId: RUN_ID }))).toEqual({
+    expect(parseInboundFrame(JSON.stringify({ type: "agent:unwatch", runId: RUN_ID }))).toEqual({
       type: "agent:unwatch",
-      agentRunId: RUN_ID,
+      runId: RUN_ID,
     });
   });
 
@@ -54,7 +55,15 @@ describe("parseInboundFrame (issue #160)", () => {
   });
 
   it("rejects an agent:watch frame with a non-UUID agentRunId", () => {
-    expect(parseInboundFrame(JSON.stringify({ type: "agent:watch", agentRunId: 123 }))).toBeNull();
+    expect(parseInboundFrame(JSON.stringify({ type: "agent:watch", runId: 123, afterEventId: "0" }))).toBeNull();
+  });
+
+  it("rejects an agent:watch frame without a bigint-safe cursor", () => {
+    expect(parseInboundFrame(JSON.stringify({ type: "agent:watch", runId: RUN_ID }))).toBeNull();
+    expect(parseInboundFrame(JSON.stringify({ type: "agent:watch", runId: RUN_ID, afterEventId: "-1" }))).toBeNull();
+    expect(
+      parseInboundFrame(JSON.stringify({ type: "agent:watch", runId: RUN_ID, afterEventId: "9223372036854775808" })),
+    ).toBeNull();
   });
 });
 

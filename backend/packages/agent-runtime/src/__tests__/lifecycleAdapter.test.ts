@@ -52,12 +52,14 @@ describe("runAgentSession", () => {
     );
 
     expect(rows.map((r) => r.kind)).toEqual([
+      "run_status",
       "turn_start",
       "message",
       "tool_use",
       "tool_result",
       "run_status",
       "turn_end",
+      "run_status",
     ]);
 
     const ids = rows.map((r) => BigInt(r.id));
@@ -116,9 +118,10 @@ describe("runAgentSession", () => {
     expect(rows[0]!.result).toBe("boom");
   });
 
-  it("pushes every message, including message_update deltas, as a live agent_run_event NOTIFY", async () => {
+  it("announces durable events as thin references and sends message_update only on the ephemeral stream", async () => {
     const listenClient = await pool.connect();
     await listenClient.query("LISTEN semprec_events");
+    await listenClient.query("LISTEN semprec_agent_stream");
     const notifications: Array<{ channel: string; payload?: string }> = [];
     listenClient.on("notification", (msg) => notifications.push(msg));
 
@@ -135,37 +138,48 @@ describe("runAgentSession", () => {
       triggeredBy: "user",
     });
 
-    const pushedForRun = () =>
+    const durableForRun = () =>
       notifications
         .filter((n) => n.channel === "semprec_events")
+        .map((n) => JSON.parse(n.payload ?? "{}"))
+        .filter((m) => m.agentRunId === run.id);
+    const deltasForRun = () =>
+      notifications
+        .filter((n) => n.channel === "semprec_agent_stream")
         .map((n) => JSON.parse(n.payload ?? "{}"))
         .filter((m) => m.agentRunId === run.id);
 
     // NOTIFY delivery to a LISTEN-ing client is asynchronous relative to the query that
     // triggered it; poll instead of a fixed sleep so this isn't flaky under load.
-    const expectedCount = 6; // run_status(running), turn_start, message_update, message, turn_end, run_status(done)
+    const expectedCount = 5; // run_status(running), turn_start, message, turn_end, run_status(done)
     const deadline = Date.now() + 5000;
-    while (pushedForRun().length < expectedCount && Date.now() < deadline) {
+    while ((durableForRun().length < expectedCount || deltasForRun().length < 1) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
 
-    const pushed = pushedForRun();
-
-    expect(pushed.map((m) => m.kind)).toEqual([
-      "run_status",
-      "turn_start",
-      "message_update",
-      "message",
-      "turn_end",
-      "run_status",
+    const durable = durableForRun();
+    const { rows } = await pool.query<{ id: string; kind: string }>(
+      "SELECT id, kind FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id ASC",
+      [run.id],
+    );
+    expect(durable.every((m) => m.type === "agent_run_event")).toBe(true);
+    expect(durable.map((m) => m.eventId)).toEqual(rows.map((row) => row.id));
+    expect(durable.every((m) => !("payload" in m) && !("kind" in m))).toBe(true);
+    expect(deltasForRun()).toEqual([
+      {
+        type: "agent_run_delta",
+        agentRunId: run.id,
+        delta: {
+          kind: "message_update",
+          text: "partial",
+        },
+      },
     ]);
-    expect(pushed.every((m) => m.type === "agent_run_event")).toBe(true);
-    expect(pushed.find((m) => m.kind === "message_update")?.payload).toEqual({
+    expect(rows.some((row) => row.kind === "message_update")).toBe(false);
+    expect(deltasForRun()[0]?.delta).toEqual({
       kind: "message_update",
       text: "partial",
     });
-    expect(pushed[0].payload).toEqual({ kind: "run_status", status: "running" });
-    expect(pushed[5].payload).toEqual({ kind: "run_status", status: "done" });
 
     listenClient.release(true);
   });

@@ -1,4 +1,4 @@
-import type { NotificationRow } from "@semprec/data";
+import type { AgentRunEventRow, NotificationRow } from "@semprec/data";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -6,17 +6,20 @@ function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
 }
 
+function isEventCursor(value: unknown): value is string {
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]{0,18})$/.test(value)) return false;
+  return BigInt(value) <= 9_223_372_036_854_775_807n;
+}
+
 /**
- * The closed catalog of protocol-v1 inbound (client -> server) text frames (issue #160).
- * Nothing here is acted on yet — subscribing to a doc or an agent run is delivered by later
- * realtime-v1 sibling issues; this module only defines the catalog and validates shape, so
- * every later handler validates against the same one.
+ * The closed catalog of protocol-v1 inbound (client -> server) text frames. This module owns
+ * validation so document and agent-run handlers can trust one shared protocol boundary.
  */
 export type InboundFrame =
   | { type: "doc:open"; docId: string }
   | { type: "doc:close"; docId: string }
-  | { type: "agent:watch"; agentRunId: string }
-  | { type: "agent:unwatch"; agentRunId: string };
+  | { type: "agent:watch"; runId: string; afterEventId: string }
+  | { type: "agent:unwatch"; runId: string };
 
 /**
  * Parses and validates one inbound protocol-v1 text frame. Returns `null` for anything outside
@@ -42,8 +45,11 @@ export function parseInboundFrame(raw: string): InboundFrame | null {
     }
     case "agent:watch":
     case "agent:unwatch": {
-      const { agentRunId } = parsed as { agentRunId?: unknown };
-      return isUuid(agentRunId) ? { type, agentRunId } : null;
+      const { runId } = parsed as { runId?: unknown };
+      if (!isUuid(runId)) return null;
+      if (type === "agent:unwatch") return { type, runId };
+      const { afterEventId } = parsed as { afterEventId?: unknown };
+      return isEventCursor(afterEventId) ? { type, runId, afterEventId } : null;
     }
     default:
       return null;
@@ -57,8 +63,8 @@ export function parseInboundFrame(raw: string): InboundFrame | null {
  * refetches the durable row itself over REST rather than trusting a second, parallel copy of it
  * riding the socket. `notification` is the one deliberate exception and carries the complete row:
  * a notification's `title` is pre-rendered text with no second enforcement layer to fall back on.
- * `agent:event`/`agent:delta` production is out of this issue's scope (a later realtime-v1 sibling
- * issue) — kept here only so every future producer targets the same catalog from the start.
+ * `agent:event` carries the durable row resolved from its thin notification reference, while an
+ * `agent:delta` is an intentionally ephemeral typing update.
  */
 export type OutboundFrame =
   | {
@@ -71,8 +77,16 @@ export type OutboundFrame =
     }
   | { type: "invalidate"; scope: "schema"; databaseId: string }
   | { type: "notification"; notification: NotificationRow }
-  | { type: "agent:event"; agentRunId: string; kind: string; payload: unknown }
-  | { type: "agent:delta"; agentRunId: string; delta: unknown };
+  | { type: "agent:event"; agentRunId: string; event: AgentRunEventRow }
+  | { type: "agent:delta"; agentRunId: string; delta: unknown; chunk?: AgentDeltaChunk };
+
+/** A large ephemeral delta is transported as pieces of its base64-encoded JSON value. */
+export interface AgentDeltaChunk {
+  id: string;
+  index: number;
+  total: number;
+  encoding: "base64json";
+}
 
 /** Every binary frame's mandatory prefix: the 16-byte UUID of the document it belongs to. */
 export const DOC_FRAME_PREFIX_BYTES = 16;

@@ -3,7 +3,14 @@ import type { Duplex } from "node:stream";
 import type { Pool, PoolClient } from "pg";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { getNotificationById } from "@semprec/data";
-import { REALTIME_CHANNEL, parseRealtimeMessage, type RealtimeMessage } from "./pgNotifyPublisher.js";
+import { createAgentRunWatchRegistry } from "./agentRunWatch.js";
+import {
+  AGENT_STREAM_CHANNEL,
+  REALTIME_CHANNEL,
+  parseAgentStreamMessage,
+  parseRealtimeMessage,
+  type RealtimeMessage,
+} from "./pgNotifyPublisher.js";
 import { parseBinaryFrame, parseInboundFrame, type OutboundFrame } from "./protocolV1.js";
 
 /** The identity every `WS /api/sync` socket is associated with for its whole lifetime. */
@@ -81,28 +88,43 @@ function rejectUpgrade(socket: Duplex): void {
  *   rather than a thin reference (a notification's `title` is pre-rendered text with no second
  *   enforcement layer to fall back on).
  *
- * Acting on an inbound `doc:open`/`doc:close`/`agent:watch`/`agent:unwatch` frame, and streaming
- * `agent:event`/`agent:delta` content, is out of this issue's scope — delivered by later
- * realtime-v1 sibling issues on top of this lifecycle.
+ * `agent:watch` creates an authorized, cursor-backed subscription: durable events are replayed
+ * from `agent_run_events`, then the same subscription receives its thin live references without
+ * a handoff gap. Ephemeral typing deltas arrive over the distinct `AGENT_STREAM_CHANNEL` and are
+ * sent only to those authorized watchers.
  */
 export async function createSyncServer(pool: Pool, options: SyncServerOptions): Promise<SyncServer> {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_INBOUND_FRAME_BYTES });
   const identityByClient = new WeakMap<WebSocket, SyncIdentity>();
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+  const agentRunWatch = createAgentRunWatchRegistry(pool);
   let closed = false;
 
   function attachClient(ws: WebSocket, identity: SyncIdentity): void {
     identityByClient.set(ws, identity);
 
     // Protocol-v1 frame validation: anything outside the closed catalog is dropped, never
-    // crashing this connection or any other client's. Acting on a valid frame is out of scope
-    // here (see this function's doc comment).
+    // crashing this connection or any other client's.
     ws.on("message", (data: RawData, isBinary: boolean) => {
       if (isBinary) {
         parseBinaryFrame(rawDataToBuffer(data));
         return;
       }
-      parseInboundFrame(rawDataToBuffer(data).toString("utf8"));
+      const frame = parseInboundFrame(rawDataToBuffer(data).toString("utf8"));
+      if (!frame) return;
+      switch (frame.type) {
+        case "agent:watch":
+          agentRunWatch.watch(ws, identity.userId, frame.runId, frame.afterEventId).catch((err: unknown) => {
+            console.error("Sync server failed to watch an agent run", err);
+          });
+          return;
+        case "agent:unwatch":
+          agentRunWatch.unwatch(ws, frame.runId);
+          return;
+        default:
+          // doc:open/doc:close are delivered by realtime-v1 issue #162.
+          return;
+      }
     });
 
     const heartbeat = setInterval(() => {
@@ -119,12 +141,14 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     ws.on("close", () => {
       clearInterval(heartbeat);
       identityByClient.delete(ws);
+      agentRunWatch.handleSocketClosed(ws);
     });
   }
 
   const listenClient: PoolClient = await pool.connect();
   try {
     await listenClient.query(`LISTEN ${REALTIME_CHANNEL}`);
+    await listenClient.query(`LISTEN ${AGENT_STREAM_CHANNEL}`);
   } catch (err) {
     listenClient.release(true);
     throw err;
@@ -164,8 +188,33 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     sendToUser(userId, { type: "notification", notification });
   }
 
+  let pendingAgentEventDelivery = Promise.resolve();
+
+  function enqueueAgentEvent(runId: string, eventId: string): void {
+    const delivery = pendingAgentEventDelivery.then(() => agentRunWatch.forwardEvent(runId, eventId));
+    // Keep the serialized queue usable after a failed row fetch, while surfacing the original
+    // infrastructure fault rather than pretending the event was forwarded.
+    pendingAgentEventDelivery = delivery.catch((err: unknown) => {
+      console.error("Sync server failed to forward an agent run event", err);
+    });
+  }
+
   const onNotification = (msg: { channel: string; payload?: string }) => {
-    if (msg.channel !== REALTIME_CHANNEL || msg.payload === undefined) return;
+    if (msg.payload === undefined) return;
+
+    if (msg.channel === AGENT_STREAM_CHANNEL) {
+      let rawParsed: unknown;
+      try {
+        rawParsed = JSON.parse(msg.payload);
+      } catch {
+        return;
+      }
+      const parsed = parseAgentStreamMessage(rawParsed);
+      if (parsed) agentRunWatch.forwardDelta(parsed);
+      return;
+    }
+
+    if (msg.channel !== REALTIME_CHANNEL) return;
 
     let rawParsed: unknown;
     try {
@@ -222,9 +271,12 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
         }
         return;
       }
+      case "agent_run_event": {
+        enqueueAgentEvent(parsed.agentRunId, parsed.eventId);
+        return;
+      }
       default:
-        // doc_update/agent_run_event: out of this issue's scope, delivered by later realtime-v1
-        // sibling issues (#162, #163).
+        // doc_update is delivered by realtime-v1 issue #162.
         return;
     }
   };

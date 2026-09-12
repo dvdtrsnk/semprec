@@ -1,11 +1,17 @@
 import type { Pool, PoolClient } from "pg";
+import { randomUUID } from "node:crypto";
+import type { AgentDeltaChunk } from "./protocolV1.js";
 
 /**
- * One channel for every realtime message kind — structured-data invalidation and
- * binary CRDT update frames are distinguished only by `type` on this shared channel,
- * not by separate mechanisms (issue #23, point 8).
+ * One durable channel for every recoverable realtime message kind — structured-data
+ * invalidation and binary CRDT update references are distinguished only by `type` on this shared
+ * channel. The ephemeral agent typing stream intentionally has its own channel below.
  */
 export const REALTIME_CHANNEL = "semprec_events";
+/** Ephemeral typing traffic is deliberately isolated from durable realtime references. */
+export const AGENT_STREAM_CHANNEL = "semprec_agent_stream";
+const MAX_AGENT_STREAM_NOTIFY_BYTES = 7_500;
+const AGENT_STREAM_CHUNK_BYTES = 7_000;
 
 /**
  * Every message here stays a thin reference — an identifier plus just enough to let a
@@ -27,7 +33,7 @@ export type RealtimeMessage =
     }
   | { type: "invalidation"; scope: "schema"; databaseId: string; userId?: string }
   | { type: "doc_update"; docId: string; updateId: string; createdBy: string }
-  | { type: "agent_run_event"; agentRunId: string; kind: string; payload: unknown }
+  | { type: "agent_run_event"; agentRunId: string; eventId: string }
   | { type: "notification_created"; userId: string; notificationId: string }
   | { type: "notification_read_state"; userId: string; notificationIds: string[] }
   | { type: "session_revoked"; sessionId: string };
@@ -39,6 +45,46 @@ export type RealtimeMessage =
  */
 export async function publishRealtimeMessage(pool: Pool | PoolClient, message: RealtimeMessage): Promise<void> {
   await pool.query(`SELECT pg_notify($1, $2)`, [REALTIME_CHANNEL, JSON.stringify(message)]);
+}
+
+export type AgentStreamMessage =
+  | { type: "agent_run_delta"; agentRunId: string; delta: unknown }
+  | { type: "agent_run_delta"; agentRunId: string; delta: string; chunk: AgentDeltaChunk };
+
+function serializedBytes(message: AgentStreamMessage): number {
+  return Buffer.byteLength(JSON.stringify(message), "utf8");
+}
+
+/**
+ * Sends an intentionally non-durable typing delta. A single Postgres NOTIFY payload must stay
+ * below its ~8 KiB ceiling, so unusually large JSON values are split into independently valid
+ * base64 pieces. The receiver forwards the chunk metadata unchanged for the client to reassemble.
+ */
+export async function publishAgentRunDelta(pool: Pool | PoolClient, agentRunId: string, delta: unknown): Promise<void> {
+  const single: AgentStreamMessage = { type: "agent_run_delta", agentRunId, delta };
+  if (serializedBytes(single) < MAX_AGENT_STREAM_NOTIFY_BYTES) {
+    await pool.query(`SELECT pg_notify($1, $2)`, [AGENT_STREAM_CHANNEL, JSON.stringify(single)]);
+    return;
+  }
+
+  const serialized = JSON.stringify(delta);
+  if (serialized === undefined) throw new Error("Agent run delta is not JSON-serializable");
+  const encoded = Buffer.from(serialized, "utf8").toString("base64");
+  const total = Math.ceil(encoded.length / AGENT_STREAM_CHUNK_BYTES);
+  const id = randomUUID();
+  for (let index = 0; index < total; index += 1) {
+    const chunk: AgentDeltaChunk = { id, index, total, encoding: "base64json" };
+    const message: AgentStreamMessage = {
+      type: "agent_run_delta",
+      agentRunId,
+      delta: encoded.slice(index * AGENT_STREAM_CHUNK_BYTES, (index + 1) * AGENT_STREAM_CHUNK_BYTES),
+      chunk,
+    };
+    if (serializedBytes(message) >= MAX_AGENT_STREAM_NOTIFY_BYTES) {
+      throw new Error("Agent run delta chunk exceeds the NOTIFY payload limit");
+    }
+    await pool.query(`SELECT pg_notify($1, $2)`, [AGENT_STREAM_CHANNEL, JSON.stringify(message)]);
+  }
 }
 
 function isOptionalString(value: unknown): value is string | undefined {
@@ -97,8 +143,8 @@ export function parseRealtimeMessage(raw: unknown): RealtimeMessage | null {
       return null;
     }
     case "agent_run_event": {
-      if (typeof value.agentRunId === "string" && typeof value.kind === "string") {
-        return { type: "agent_run_event", agentRunId: value.agentRunId, kind: value.kind, payload: value.payload };
+      if (typeof value.agentRunId === "string" && typeof value.eventId === "string") {
+        return { type: "agent_run_event", agentRunId: value.agentRunId, eventId: value.eventId };
       }
       return null;
     }
@@ -131,4 +177,34 @@ export function parseRealtimeMessage(raw: unknown): RealtimeMessage | null {
     default:
       return null;
   }
+}
+
+/** Validates a payload from the separate ephemeral agent stream channel before it reaches a socket. */
+export function parseAgentStreamMessage(raw: unknown): AgentStreamMessage | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const value = raw as Record<string, unknown>;
+  if (value.type !== "agent_run_delta" || typeof value.agentRunId !== "string" || !("delta" in value)) return null;
+  if (value.chunk === undefined) return { type: "agent_run_delta", agentRunId: value.agentRunId, delta: value.delta };
+  if (typeof value.chunk !== "object" || value.chunk === null || Array.isArray(value.chunk)) return null;
+  const chunk = value.chunk as Record<string, unknown>;
+  if (
+    typeof value.delta !== "string" ||
+    typeof chunk.id !== "string" ||
+    typeof chunk.index !== "number" ||
+    typeof chunk.total !== "number" ||
+    !Number.isInteger(chunk.index) ||
+    !Number.isInteger(chunk.total) ||
+    chunk.index < 0 ||
+    chunk.total <= 0 ||
+    chunk.index >= chunk.total ||
+    chunk.encoding !== "base64json"
+  ) {
+    return null;
+  }
+  return {
+    type: "agent_run_delta",
+    agentRunId: value.agentRunId,
+    delta: value.delta,
+    chunk: { id: chunk.id, index: chunk.index, total: chunk.total, encoding: "base64json" },
+  };
 }

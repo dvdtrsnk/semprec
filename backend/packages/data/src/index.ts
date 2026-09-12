@@ -1,4 +1,11 @@
-export { createPool, withTransaction, withClient, requireAffectedRows, type Queryable } from "./db/pool.js";
+export {
+  createPool,
+  withTransaction,
+  withClient,
+  runAfterCommit,
+  requireAffectedRows,
+  type Queryable,
+} from "./db/pool.js";
 export { runMigrations } from "./db/migrate.js";
 export * from "./errors.js";
 export * from "./types.js";
