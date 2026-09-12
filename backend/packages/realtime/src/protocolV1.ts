@@ -90,3 +90,26 @@ export function parseBinaryFrame(data: Buffer): BinaryFrame | null {
   if (data.length < DOC_FRAME_PREFIX_BYTES) return null;
   return { docId: data.subarray(0, DOC_FRAME_PREFIX_BYTES), payload: data.subarray(DOC_FRAME_PREFIX_BYTES) };
 }
+
+/**
+ * Decodes a binary frame's 16-byte doc UUID prefix back into the hyphenated string form
+ * `docs.id`/every other doc-identifying value in this codebase uses. Returns `null` for a
+ * malformed prefix (only reachable via `isUuid`-validated `docId`s once decoded, so a caller
+ * skips a frame this fails on rather than trusting a garbled document reference).
+ */
+export function decodeDocId(bytes: Buffer): string | null {
+  if (bytes.length !== DOC_FRAME_PREFIX_BYTES) return null;
+  const hex = bytes.toString("hex");
+  const candidate = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  return isUuid(candidate) ? candidate : null;
+}
+
+/** Encodes a validated doc UUID string into its 16 raw bytes for the binary frame prefix. */
+export function encodeDocId(docId: string): Buffer {
+  return Buffer.from(docId.replace(/-/g, ""), "hex");
+}
+
+/** Builds one outbound binary WS frame: the 16-byte doc UUID prefix followed by `payload`. */
+export function buildBinaryFrame(docId: string, payload: Uint8Array): Buffer {
+  return Buffer.concat([encodeDocId(docId), payload]);
+}
