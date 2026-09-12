@@ -1,6 +1,6 @@
 ---
 name: adr-conventions
-description: Rules for deciding whether a change needs an Architecture Decision Record, and for writing, superseding, or narrowing one under docs/adr/. Use this skill whenever you introduce a pattern not already covered by an existing ADR or review-rules/, whenever you need to reverse, narrow, or carve an exception into an existing accepted decision, or whenever you are about to touch any file under docs/adr/ for any reason.
+description: "When a decision needs an Architecture Decision Record, and the append-only rules for writing, superseding or narrowing one. Load this BEFORE introducing a pattern that no existing ADR and no review-rules/ line covers - deciding it silently is the exact failure this convention exists to prevent, and it is this repository's most repeated review finding. Triggers on: docs/adr/, any file you are about to add or edit there, a new cross-cutting mechanism, a new package, a traversal or protocol or lifecycle contract documented only in code comments, and any wish to reverse or carve an exception into an accepted decision. Skip only when an existing ADR or rule already covers the pattern."
 ---
 
 # ADRs: append-only, superseded not edited

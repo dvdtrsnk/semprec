@@ -1,6 +1,6 @@
 ---
 name: canonical-keys
-description: Naming and localization rules for all stored identifiers and user-facing text in the Semprec backend. Use this skill whenever defining or seeding a database key, property key, select-option value, settings key, view type, i18n entry, or any string a user will see — including when transcribing names from the Czech spec/mock, where the temptation to keep Czech keys is strongest.
+description: "Naming and localization rules for every stored identifier and every string a user will read. Load this BEFORE inventing a key or typing a literal label - a wrong key is expensive to change once rows carry it. Triggers on: databases.key, property key, select-option value, settings key, view type, kebab-case view names such as mailbox-client, i18n, cs.json, en.json, users.locale, any user-visible string, and any name transcribed from the Czech spec or mock, where keeping the Czech word is the tempting mistake. Skip only when the change introduces no new identifier and no user-facing text."
 ---
 
 # Canonical keys are English. Labels are localized.

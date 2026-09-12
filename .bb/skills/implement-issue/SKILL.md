@@ -1,6 +1,6 @@
 ---
 name: implement-issue
-description: The execution contract for implementing one Semprec issue end to end — read the issue, check the ADRs, build exactly the Task, self-review the diff against the platform's review-rules, and verify locally before pushing. Use this at the start of any issue-driven change in this repository, whether dispatched automatically or started by hand.
+description: "The execution contract for implementing one Semprec issue end to end - read the issue, check the ADRs, load the topic skills the Task touches, build exactly the Task, self-review the diff against review-rules, and verify locally before pushing. Load this FIRST in any issue-driven change in this repository, before reading the code, whether the issue was dispatched automatically by relay or started by hand. Triggers on: an issue number, a Task section, Acceptance criteria, Out of scope, a relay dispatch prompt, or any instruction to implement, fix or extend something in this repository."
 ---
 
 # Implementing one issue
