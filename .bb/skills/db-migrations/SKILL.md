@@ -1,6 +1,6 @@
 ---
 name: db-migrations
-description: Expand/contract discipline for every Postgres schema change in the Semprec backend. Use this skill whenever writing or editing a migration, adding/renaming/dropping a column or table, changing a column type or nullability, adding an index or constraint, or writing a data backfill — even if the change looks trivially safe.
+description: "Expand/contract discipline for every Postgres schema change. Load this BEFORE writing the migration file, because the ordering constraints decide what the migration is allowed to contain at all. Triggers on: backend/packages/data/src/db/migrations/, a new NNNN_name.sql file, ALTER TABLE, CREATE TABLE, DROP COLUMN, ADD COLUMN, NOT NULL, DEFAULT, CREATE INDEX, CONSTRAINT, a column type change, a rename, and any data backfill - including one that looks trivially safe. Skip only when the change touches no schema and no stored data shape."
 ---
 
 # Migrations: expand/contract, forward-only

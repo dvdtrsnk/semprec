@@ -1,6 +1,6 @@
 ---
 name: ai-gateway
-description: How to call LLMs and AI providers from Semprec backend code. Use this skill whenever code needs a model call of any kind — chat completion, transcription (Whisper/DeepInfra), diarization (pyannoteAI), embeddings, or a new provider — and also when tempted to import a provider SDK, add a provider API key, or make a direct HTTP call to a model API from anywhere.
+description: "Every model call in this backend goes through semprec-ai-gateway, which enforces the budget caps and records ai_gateway_calls. Load this BEFORE reaching for a provider SDK, not after the call works. Triggers on: chat completion, prompt, embedding, transcription, Whisper, DeepInfra, pyannote, diarization, openai, @anthropic-ai, a provider API key, a new model id, and any HTTP call to a model endpoint from anywhere. Skip only when the diff is inside semprec-ai-gateway itself."
 ---
 
 # AI calls go through semprec-ai-gateway. All of them.
