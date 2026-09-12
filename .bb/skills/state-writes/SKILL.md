@@ -1,6 +1,6 @@
 ---
 name: state-writes
-description: Rules for writing any code that creates, updates, or deletes persisted Semprec state — items, relations, blocks, or rows in any table. Use this skill whenever adding an endpoint, worker, heartbeat handler, migration backfill, agent tool, or any function that mutates the database, even for a "small" internal write or a one-off script. Also use it when reviewing or refactoring existing write paths.
+description: "How every write to persisted Semprec state must be built - through the choke point, by the single owner, with side effects after the commit, and an affected-row check on every targeted write. Load this BEFORE writing the first line of a function that mutates data, not while reviewing it afterwards. Triggers on: DELETE FROM, UPDATE ... SET, INSERT INTO, rowCount, requireAffectedRows, withTransaction, runAfterCommit, chokePoint., createItem, patchItem, addViewItem, removeViewItem, notifyInvalidation, pg_notify, NOTIFY, any *Store.ts file, a seed or backfill, an agent tool that writes, and any handler whose verb is POST, PATCH, PUT or DELETE. Skip only when nothing in the change can reach the database."
 ---
 
 # State writes: choke-point, ownership, approval

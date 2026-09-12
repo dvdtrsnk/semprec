@@ -1,6 +1,6 @@
 ---
 name: error-handling
-description: How failure paths are written in the Semprec backend — never swallow an error, never map an unknown exception onto a domain error, never let a secondary failure replace the primary one, and never report success for work that did not happen. Use this whenever writing or changing a catch block, an error mapping, a rollback path, or any code that decides what happens when something fails.
+description: "How failure paths are written here - never swallow, never map an unknown exception onto a domain error, never let a cleanup failure replace the real one, never report success for work that did not happen. Load this BEFORE writing the catch, not after the happy path already works. Triggers on: catch, finally, .catch(, throw, rethrow, rollback, console.error, NotFoundError, ValidationError, ConflictError, Promise.allSettled, a retry loop, and any branch that decides what happens when something fails. Skip only when the change adds no failure path at all."
 ---
 
 # The failure path is a feature

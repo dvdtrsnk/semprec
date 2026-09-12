@@ -1,6 +1,6 @@
 ---
 name: io-hardening
-description: What every edge of the Semprec backend must do before it is safe — inbound HTTP routes and handlers (auth, validation, body size, rate limiting, secrets) and outbound calls to any external service (timeout, response size cap, resource cleanup). Use this whenever adding or changing a route handler, a webhook receiver, or any code that calls out to IMAP, APNs, an MCP server, a provider, or any other network endpoint.
+description: "What every edge of the Semprec backend must do before it is safe - inbound requests (auth, validation against the storage domain, body and header caps, rate limits) and every resource opened on the way (timeout, size cap, release on the failure path, shutdown that cannot hang). Load this BEFORE writing the first line of an edge, and do not skip it because the endpoint is internal or the connection is local. Triggers on: RouteDefinition, req.method, req.headers, res.json, any *Handler.ts file, webhook, handleUpgrade, WebSocket, wss, broadcast, pool.connect, withClient, client.release, close(), terminate(), LISTEN, JSON.parse of anything that arrived from outside, fetch, IMAP, APNs, MCP, and any provider or network call. Skip only when nothing in the change crosses a process boundary."
 ---
 
 # Both edges: what comes in, and what goes out

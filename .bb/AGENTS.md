@@ -34,12 +34,12 @@ the failure mode that rule exists to prevent.
 | Skill | Load it when |
 |---|---|
 | `implement-issue` | starting any issue — the execution contract |
-| `adr-conventions` | adding an ADR, or editing, superseding or narrowing an existing one |
-| `state-writes` | creating, updating or deleting persisted state — items, relations, blocks, rows in any table |
+| `adr-conventions` | introducing a cross-cutting pattern no ADR covers — or adding, editing, superseding or narrowing an ADR |
+| `state-writes` | creating, updating or deleting persisted state — items, relations, blocks, rows in any table, or a `NOTIFY` that follows one |
 | `db-migrations` | a schema change, constraint, index, or backfill |
 | `canonical-keys` | a stored key, option value, view type, or any string a user will see |
 | `ai-gateway` | any model call, provider SDK, or provider credential |
-| `io-hardening` | a new HTTP route or handler, a webhook receiver, or any outbound call |
+| `io-hardening` | a new HTTP route, handler, WebSocket upgrade, `LISTEN` consumer, pooled-connection consumer, or any network call |
 | `error-handling` | a `catch`, an error mapping, a rollback path, or any decision about what happens on failure |
 
 ## What the review actually reports
@@ -52,8 +52,10 @@ all:
   narrow union (`as PropertyType`) instead of checked against the allowed
   values — it returns the right 400 today only because a downstream layer
   happens to validate it too, and stops the day that layer changes. The same
-  shape shows up as a `pg` row read without a type argument, or `res.json() as
-  X`. (`state-writes`)
+  shape shows up as a `pg` row read without a type argument, `res.json() as X`,
+  or `JSON.parse(payload) as Frame` on a `NOTIFY` or socket message — that last
+  one landed in a diff that replaced safer code (`{ type?: unknown }` plus
+  `typeof` guards) with the cast. (`state-writes`)
 - **A pre-check that ran outside the write's own transaction.** A lookup
   confirms a row is there or a lock is free, then a separate transaction acts
   on it — a concurrent write in the gap makes the lookup stale, and nothing
@@ -75,9 +77,12 @@ all:
 4. Every AI/provider call goes through `semprec-ai-gateway`.
 5. Canonical stored keys are English camelCase (view types kebab-case); labels
    resolve through i18n and are never hardcoded.
-6. Nothing crossing a boundary — a DB row, a JSONB column, an API payload, a
-   model's tool-call arguments — stays `any` or an unchecked `as`. Type it or
-   validate it at the edge, then trust it inside.
+6. Nothing crossing a boundary stays `any` or an unchecked `as` — type it or
+   validate it at the edge, then trust it inside. The list of boundaries is
+   open, not the examples: a DB row, a JSONB column, an API payload, a model's
+   tool-call arguments, a `NOTIFY` payload you `JSON.parse`, a frame off a
+   socket. If the value did not come from this codebase's own types, it is a
+   boundary.
 7. Agent-originated changes are proposals that go through approval/`confirm`,
    never direct writes.
 
