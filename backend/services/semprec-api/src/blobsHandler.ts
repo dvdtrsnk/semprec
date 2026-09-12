@@ -60,7 +60,7 @@ function parseRange(header: string | undefined, size: number): ParsedRange | "un
   let end: number;
   if (startStr === "") {
     const suffixLength = Number(endStr);
-    if (!Number.isFinite(suffixLength) || suffixLength <= 0) return undefined;
+    if (suffixLength === 0) return "unsatisfiable";
     start = Math.max(0, size - suffixLength);
     end = size - 1;
   } else {

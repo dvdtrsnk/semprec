@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import {
   ChokePointError,
   MaxBytesExceededError,
+  ValidationError,
   withTransaction,
   getDatabaseByModuleId,
   FILES_MODULE_ID,
@@ -13,6 +14,14 @@ import { authenticateRequest } from "./authHandler.js";
 import { requireHeader } from "./adapter/requestValidation.js";
 import { toItemEnvelope } from "./adapter/itemEnvelope.js";
 import { statusForError, toErrorResponseBody } from "./adapter/errorContract.js";
+
+/**
+ * `fileUploadStore.ts` builds the storage key's last path component as `<uuid>-<safeFilename>`
+ * (37 bytes for the uuid and separator) — `safeStorageFilename` sanitizes characters but not
+ * length, so this leaves headroom under Linux's 255-byte `NAME_MAX` per path component and
+ * rejects here rather than surfacing as an `ENAMETOOLONG` 500 once it reaches the filesystem.
+ */
+const MAX_FILENAME_BYTES = 200;
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
@@ -57,6 +66,9 @@ export function createFilesRequestListener(pool: Pool, options: FilesRequestList
 
       const contentType = requireHeader(req, "Content-Type");
       const filename = requireHeader(req, "X-Filename");
+      if (Buffer.byteLength(filename, "utf8") > MAX_FILENAME_BYTES) {
+        throw new ValidationError(`'X-Filename' must be at most ${MAX_FILENAME_BYTES} bytes`, { field: "X-Filename" });
+      }
 
       const filesDatabase = await withTransaction(pool, (client) => getDatabaseByModuleId(client, FILES_MODULE_ID));
       if (!filesDatabase) throw new Error("The 'files' system database is missing");

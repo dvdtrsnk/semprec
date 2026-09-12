@@ -116,6 +116,13 @@ describe("files and blobs routes (issue #158)", () => {
       expect(body.error.code).toBe("payload_too_large");
     });
 
+    it("rejects an X-Filename over the safe storage-key length with 400, not a filesystem error", async () => {
+      const res = await uploadFile("hi", { filename: "x".repeat(500) });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as ErrorBody;
+      expect(body.error.code).toBe("validation_failed");
+    });
+
     it("rejects a chunked upload with no Content-Length that exceeds the limit via the streaming counter, leaving no partial blob or row", async () => {
       const headers = {
         ...(await authHeader()),
@@ -200,6 +207,19 @@ describe("files and blobs routes (issue #158)", () => {
       expect(res.status).toBe(404);
     });
 
+    it("does not dispatch DELETE or PATCH to the download handler", async () => {
+      const headers = await authHeader();
+      const blobId = await uploadAndGetBlobId("do not delete me");
+
+      const deleteRes = await fetch(`${baseUrl}/api/blobs/${blobId}`, { method: "DELETE", headers });
+      expect(deleteRes.status).not.toBe(200);
+      expect(deleteRes.status).not.toBe(206);
+
+      const patchRes = await fetch(`${baseUrl}/api/blobs/${blobId}`, { method: "PATCH", headers });
+      expect(patchRes.status).not.toBe(200);
+      expect(patchRes.status).not.toBe(206);
+    });
+
     it("downloads the full blob with a safe attachment Content-Disposition and nosniff", async () => {
       const headers = await authHeader();
       const blobId = await uploadAndGetBlobId("hello world", { filename: "hello.txt", contentType: "text/plain" });
@@ -227,6 +247,15 @@ describe("files and blobs routes (issue #158)", () => {
       const blobId = await uploadAndGetBlobId("0123456789", { filename: "digits.txt" });
 
       const res = await fetch(`${baseUrl}/api/blobs/${blobId}`, { headers: { ...headers, Range: "bytes=100-200" } });
+      expect(res.status).toBe(416);
+      expect(res.headers.get("content-range")).toBe("bytes */10");
+    });
+
+    it("rejects a zero-length suffix range (bytes=-0) with 416, per RFC 7233 §2.1", async () => {
+      const headers = await authHeader();
+      const blobId = await uploadAndGetBlobId("0123456789", { filename: "digits.txt" });
+
+      const res = await fetch(`${baseUrl}/api/blobs/${blobId}`, { headers: { ...headers, Range: "bytes=-0" } });
       expect(res.status).toBe(416);
       expect(res.headers.get("content-range")).toBe("bytes */10");
     });

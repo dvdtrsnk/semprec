@@ -106,7 +106,7 @@ export async function createDispatcher(
       void filesListener(req, res);
       return;
     }
-    if (pathname.startsWith("/api/blobs/")) {
+    if (pathname.startsWith("/api/blobs/") && req.method === "GET") {
       void blobsListener(req, res);
       return;
     }
