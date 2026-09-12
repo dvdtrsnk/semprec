@@ -157,6 +157,10 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     // (or active-view refetch) on reconnect still converges the client, so dropping this frame is
     // safe rather than sending a stale/missing row.
     if (!notification) return;
+    // Re-check ownership against the fetched row rather than trusting the NOTIFY payload's userId
+    // outright — a malformed or tampered payload with a mismatched userId/notificationId pair must
+    // never cause cross-user delivery, the same invariant `invalidation`'s actingUserId upholds.
+    if (notification.userId !== userId) return;
     sendToUser(userId, { type: "notification", notification });
   }
 

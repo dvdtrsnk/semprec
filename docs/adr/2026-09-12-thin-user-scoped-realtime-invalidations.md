@@ -56,6 +56,30 @@ scoped to one, so this is not the cross-user leak the acceptance criteria
 are about — it is the same "any authenticated user can already read this
 over REST" surface the rest of the system already accepts.
 
+**Reconnect protocol (issue #161's AC on healing).** The server never buffers
+or replays a frame missed while a socket was closed — a reconnecting client
+heals two different kinds of state two different ways. Active views/open
+items refetch their current row over the ordinary item/database/property/view
+REST endpoints, which already return current state regardless of what was
+missed. Unread notifications refetch through the `GET
+/api/notifications/unread` endpoint issue #152 built on top of issue #36's
+`notifications` table (`identity.user.id`-scoped, ordered deterministically so
+a client can tell frames it already applied from ones it missed) — the same
+endpoint issue #36 already specified a connecting client calls once on
+connect, which a reconnect is just another instance of. Neither path is new
+work introduced by this issue; this ADR only records that the WS layer
+deliberately does not try to duplicate either of them with a replay buffer.
+
+**Trusting a NOTIFY payload's `userId`.** A payload on `semprec_events` is
+otherwise-untrusted input the moment it's off this process's own write path —
+Postgres's `NOTIFY` has no per-channel ACL narrower than "can connect to this
+database," so a compromised or buggy writer elsewhere in the system could, in
+principle, emit a `notification_created` message with a `userId`/
+`notificationId` pair that don't actually belong together. `forwardNotification`
+therefore re-checks the fetched `notifications` row's own `userId` against the
+payload's claimed `userId` before sending, rather than trusting the payload's
+`userId` outright to pick a socket to send to.
+
 ## Decision
 
 - Every `RealtimeMessage`/`InvalidationEvent` payload stays thin: identifiers
@@ -70,6 +94,13 @@ over REST" surface the rest of the system already accepts.
   must accept and forward `actingUserId` the same way the existing ~13 do —
   this is the mechanical rule that keeps a future REST addition from silently
   becoming a broadcast-to-everyone regression.
+- `forwardNotification` sends a notification frame only to `userId`'s sockets
+  after confirming the fetched row's own `userId` matches — never on the
+  strength of the NOTIFY payload's `userId` field alone.
+- The server never buffers or replays a missed frame of either kind. A
+  reconnecting client heals by REST refetch: active views/open items through
+  their normal endpoints, unread notifications through `GET
+/api/notifications/unread` (issue #36/#152).
 
 ## Consequences
 
@@ -80,8 +111,11 @@ over REST" surface the rest of the system already accepts.
   data — narrowing that surface (e.g. resolving ownership through
   `resource_grants`) is a separate, currently-unused authorization mechanism
   this issue does not introduce.
+- A malformed or tampered NOTIFY payload can, at worst, cause a notification
+  frame to be silently dropped (row/payload `userId` mismatch) — never
+  cross-user delivery.
 - Client-side convergence for a missed frame (a disconnected socket, or the
   broadcast-fallback path landing on a socket for data its user cannot
   actually see) always goes through the client's own REST refetch on
   connect/reconnect — the server never buffers or replays a missed
-  invalidation.
+  invalidation or notification.

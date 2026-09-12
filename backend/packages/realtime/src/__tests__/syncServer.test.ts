@@ -363,6 +363,78 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
     bystanderClient.close();
   });
 
+  it("drops a notification_created NOTIFY whose userId does not match the fetched row's own owner, rather than delivering cross-user (medium finding on PR #392)", async () => {
+    const owner = await createTestUser();
+    const impostor = await createTestUser();
+    identityByToken.set("impostor", { userId: impostor, sessionId: "session-impostor" });
+    const impostorClient = await connect("impostor");
+
+    let impostorMessage: string | undefined;
+    impostorClient.once("message", (d) => {
+      impostorMessage = messageText(d);
+    });
+
+    const notificationId = await withTransaction(pool, (client) =>
+      writeNotification(client, {
+        userId: owner,
+        kind: "heartbeat_error",
+        titleParams: { name: "Daily digest" },
+        linkHref: null,
+        sourceTable: "project_heartbeats",
+        sourceId: "hb-3",
+        transitionInstance: "job-3",
+      }),
+    );
+    // A malformed/tampered NOTIFY payload naming a real notificationId but a mismatched userId —
+    // must never reach the impostor's socket even though the payload claims it's theirs.
+    await publishRealtimeMessage(pool, { type: "notification_created", userId: impostor, notificationId });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(impostorMessage).toBeUndefined();
+
+    impostorClient.close();
+  });
+
+  it("never replays a notification published while a socket was disconnected — reconnecting relies on the client's own GET /api/notifications/unread fetch to heal, not a server-side replay (issue #161, AC referencing #36)", async () => {
+    const owner = await createTestUser();
+    identityByToken.set("owner", { userId: owner, sessionId: "session-owner" });
+
+    const droppedClient = await connect("owner");
+    droppedClient.close();
+    await new Promise<void>((resolve) => droppedClient.once("close", () => resolve()));
+
+    const notificationId = await withTransaction(pool, (client) =>
+      writeNotification(client, {
+        userId: owner,
+        kind: "heartbeat_error",
+        titleParams: { name: "Daily digest" },
+        linkHref: null,
+        sourceTable: "project_heartbeats",
+        sourceId: "hb-4",
+        transitionInstance: "job-4",
+      }),
+    );
+    await publishRealtimeMessage(pool, { type: "notification_created", userId: owner, notificationId });
+
+    // Reconnecting afterwards opens a brand-new socket with no queued/replayed backlog — the
+    // notification published above must never surface on it. A reconnecting client converges by
+    // calling GET /api/notifications/unread itself, which still returns this row since it's
+    // unread, never by the server buffering and replaying the missed WS frame.
+    const reconnected = await connect("owner");
+    let reconnectedMessage: string | undefined;
+    reconnected.once("message", (d) => {
+      reconnectedMessage = messageText(d);
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(reconnectedMessage).toBeUndefined();
+
+    const unread = await pool.query("SELECT id FROM notifications WHERE id = $1 AND read_at IS NULL", [notificationId]);
+    expect(unread.rows).toHaveLength(1);
+
+    reconnected.close();
+  });
+
   it("re-fetches and delivers the current row to the owning user on a notification_read_state NOTIFY", async () => {
     const owner = await createTestUser();
     identityByToken.set("owner", { userId: owner, sessionId: "session-owner" });
