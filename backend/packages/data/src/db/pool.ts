@@ -74,3 +74,29 @@ export function requireSingleRow<T>(rows: T[], context: string): T {
   }
   return row;
 }
+
+/**
+ * Unwraps the affected-row count of a `DELETE`/`UPDATE` that is expected to hit a row by
+ * construction — a delete keyed on an id just read back, an update guarded by a prior
+ * existence check. A `rowCount` of `0` (the row was already gone, e.g. deleted by a
+ * concurrent request) or `null` (the driver couldn't report a count) both mean the write
+ * never happened; treating either as success is how a no-op write gets reported upstream as
+ * having succeeded. `context` names the query so the resulting error is diagnosable.
+ */
+export function requireAffectedRows(result: { rowCount: number | null }, context: string): number {
+  const { rowCount } = result;
+  if (rowCount === null || rowCount === 0) {
+    throw new Error(`Expected ${context} to affect at least one row, got ${rowCount ?? "null"}`);
+  }
+  return rowCount;
+}
+
+/** Runs `fn` on a dedicated client, releasing it in a `finally` so a throw between acquire and the first query cannot leak a pool connection. The non-transactional sibling of `withTransaction` — use this for a client needed across several statements that do not need to be atomic (e.g. a session-scoped `LISTEN`). */
+export async function withClient<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    return await fn(client);
+  } finally {
+    client.release();
+  }
+}
