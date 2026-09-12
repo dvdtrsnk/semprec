@@ -227,7 +227,7 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
   });
 
-  it("broadcasts an item-scope invalidation to every connected socket, not just the acting user's", async () => {
+  it("delivers a user-scoped item invalidation only to the acting user's own socket, never a bystander's (issue #161)", async () => {
     const userA = await createTestUser();
     const userB = await createTestUser();
     identityByToken.set("a", { userId: userA, sessionId: "session-a" });
@@ -235,8 +235,11 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
     const clientA = await connect("a");
     const clientB = await connect("b");
 
+    let bystanderMessage: string | undefined;
+    clientB.once("message", (d) => {
+      bystanderMessage = messageText(d);
+    });
     const receivedA = new Promise<string>((resolve) => clientA.once("message", (d) => resolve(messageText(d))));
-    const receivedB = new Promise<string>((resolve) => clientB.once("message", (d) => resolve(messageText(d))));
 
     await publishRealtimeMessage(pool, {
       type: "invalidation",
@@ -245,6 +248,7 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
       itemId: "item-1",
       op: "update",
       updatedAt: "2026-01-01T00:00:00.000Z",
+      userId: userA,
     });
 
     const expected = {
@@ -256,24 +260,68 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
       updatedAt: "2026-01-01T00:00:00.000Z",
     };
     expect(JSON.parse(await receivedA)).toEqual(expected);
+
+    // Give clientB's socket a beat to (not) receive anything before asserting silence.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(bystanderMessage).toBeUndefined();
+
+    clientA.close();
+    clientB.close();
+  });
+
+  it("falls back to broadcasting an item/schema invalidation to every connected socket when it carries no acting user (a system/background-triggered write)", async () => {
+    const userA = await createTestUser();
+    const userB = await createTestUser();
+    identityByToken.set("a", { userId: userA, sessionId: "session-a" });
+    identityByToken.set("b", { userId: userB, sessionId: "session-b" });
+    const clientA = await connect("a");
+    const clientB = await connect("b");
+
+    const receivedA = new Promise<string>((resolve) => clientA.once("message", (d) => resolve(messageText(d))));
+    const receivedB = new Promise<string>((resolve) => clientB.once("message", (d) => resolve(messageText(d))));
+
+    await publishRealtimeMessage(pool, { type: "invalidation", scope: "schema", databaseId: "db-1" });
+
+    const expected = { type: "invalidate", scope: "schema", databaseId: "db-1" };
+    expect(JSON.parse(await receivedA)).toEqual(expected);
     expect(JSON.parse(await receivedB)).toEqual(expected);
 
     clientA.close();
     clientB.close();
   });
 
-  it("broadcasts a schema-scope invalidation to every connected socket", async () => {
+  it("never replays an invalidation published while a socket was disconnected — reconnecting relies on the client's own bounded active-state refetch to heal, not a server-side replay (issue #161)", async () => {
     const userA = await createTestUser();
     identityByToken.set("a", { userId: userA, sessionId: "session-a" });
-    const clientA = await connect("a");
 
-    const received = new Promise<string>((resolve) => clientA.once("message", (d) => resolve(messageText(d))));
+    // A socket that was open, then dropped, before the invalidation below is published.
+    const droppedClient = await connect("a");
+    droppedClient.close();
+    await new Promise<void>((resolve) => droppedClient.once("close", () => resolve()));
 
-    await publishRealtimeMessage(pool, { type: "invalidation", scope: "schema", databaseId: "db-1" });
+    await publishRealtimeMessage(pool, {
+      type: "invalidation",
+      scope: "item",
+      databaseId: "db-1",
+      itemId: "item-1",
+      op: "update",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      userId: userA,
+    });
 
-    expect(JSON.parse(await received)).toEqual({ type: "invalidate", scope: "schema", databaseId: "db-1" });
+    // Reconnecting afterwards opens a brand-new socket with no queued/replayed backlog — the
+    // invalidation published above must never surface on it. A live socket converges only
+    // through its own REST refetch on connect, never by the server buffering missed frames.
+    const reconnected = await connect("a");
+    let reconnectedMessage: string | undefined;
+    reconnected.once("message", (d) => {
+      reconnectedMessage = messageText(d);
+    });
 
-    clientA.close();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(reconnectedMessage).toBeUndefined();
+
+    reconnected.close();
   });
 
   it("delivers the complete notification row only to its own user's socket (issue #161)", async () => {

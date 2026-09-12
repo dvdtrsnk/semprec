@@ -11,10 +11,24 @@ import type { CreatedBy } from "./types.js";
  * database whose properties/views changed, since databases/properties/views carry no
  * `updated_at` column to compare against. Either way the API refetches the durable row
  * over REST — this event only says "something changed", never what changed to.
+ *
+ * `userId`, when present, is the user whose write caused this event — `@semprec/realtime`
+ * fans it out only to that user's own connected sockets, the same as `NotificationCreatedEvent`
+ * below, so cross-user delivery never happens for a REST-driven write. It is absent for a
+ * system/background-triggered write (a rollup recompute, a mail-sync job, ...) that has no
+ * single acting user to attribute; those fall back to every connected socket, since there is
+ * no user to exclude and the underlying data is not scoped to one.
  */
 export type InvalidationEvent =
-  | { scope: "item"; databaseId: string; itemId: string; op: "create" | "update" | "delete"; updatedAt: string }
-  | { scope: "schema"; databaseId: string };
+  | {
+      scope: "item";
+      databaseId: string;
+      itemId: string;
+      op: "create" | "update" | "delete";
+      updatedAt: string;
+      userId?: string;
+    }
+  | { scope: "schema"; databaseId: string; userId?: string };
 
 export type InvalidationHook = (event: InvalidationEvent) => void;
 

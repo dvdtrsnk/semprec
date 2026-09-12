@@ -3,7 +3,7 @@ import type { Duplex } from "node:stream";
 import type { Pool, PoolClient } from "pg";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { getNotificationById } from "@semprec/data";
-import { REALTIME_CHANNEL, type RealtimeMessage } from "./pgNotifyPublisher.js";
+import { REALTIME_CHANNEL, parseRealtimeMessage, type RealtimeMessage } from "./pgNotifyPublisher.js";
 import { parseBinaryFrame, parseInboundFrame, type OutboundFrame } from "./protocolV1.js";
 
 /** The identity every `WS /api/sync` socket is associated with for its whole lifetime. */
@@ -69,10 +69,12 @@ function rejectUpgrade(socket: Duplex): void {
  *
  * - `session_revoked` closes every socket authenticated as that exact session with 4401, leaving
  *   every other session's sockets untouched.
- * - `invalidation` (item- or schema-scoped) broadcasts a thin `invalidate` frame to every
- *   connected socket — Semprec is a one- to two-user system, so this deliberately does not filter
- *   by "owns this row"; every client refetches the referenced row itself over REST and a client
- *   with nothing cached for it just ignores the frame.
+ * - `invalidation` (item- or schema-scoped) sends a thin `invalidate` frame only to the sockets of
+ *   the user whose write caused it, when the underlying event identifies one — cross-user delivery
+ *   is impossible for a REST-driven write. A system/background-triggered write (a rollup recompute,
+ *   a mail-sync job, ...) carries no single acting user, so it falls back to every connected
+ *   socket. Either way every client refetches the referenced row itself over REST and a client with
+ *   nothing cached for it just ignores the frame.
  * - `notification_created` and `notification_read_state` fetch the referenced row(s)' current,
  *   complete state via `getNotificationById` and broadcast a `notification` frame only to sockets
  *   authenticated as that notification's own `userId` — the one place this server sends a full row
@@ -161,12 +163,14 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   const onNotification = (msg: { channel: string; payload?: string }) => {
     if (msg.channel !== REALTIME_CHANNEL || msg.payload === undefined) return;
 
-    let parsed: RealtimeMessage;
+    let rawParsed: unknown;
     try {
-      parsed = JSON.parse(msg.payload) as RealtimeMessage;
+      rawParsed = JSON.parse(msg.payload);
     } catch {
       return;
     }
+    const parsed: RealtimeMessage | null = parseRealtimeMessage(rawParsed);
+    if (!parsed) return;
 
     switch (parsed.type) {
       case "session_revoked": {
@@ -191,7 +195,13 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
                 updatedAt: parsed.updatedAt,
               }
             : { type: "invalidate", scope: "schema", databaseId: parsed.databaseId };
-        broadcast(frame);
+        // Scoped to the acting user's own sockets when the write that caused it identifies one
+        // (every REST-driven item/database/property/view write does) — cross-user delivery is
+        // impossible for those. A system/background-triggered write (rollup recompute, mail sync,
+        // ...) carries no acting user, so it falls back to every socket: there is no user to
+        // exclude, and that data is not scoped to one.
+        if (parsed.userId) sendToUser(parsed.userId, frame);
+        else broadcast(frame);
         return;
       }
       case "notification_created": {
