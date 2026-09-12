@@ -108,7 +108,12 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   }
 
   const listenClient: PoolClient = await pool.connect();
-  await listenClient.query(`LISTEN ${REALTIME_CHANNEL}`);
+  try {
+    await listenClient.query(`LISTEN ${REALTIME_CHANNEL}`);
+  } catch (err) {
+    listenClient.release(true);
+    throw err;
+  }
 
   const onNotification = (msg: { channel: string; payload?: string }) => {
     if (msg.channel !== REALTIME_CHANNEL || msg.payload === undefined) return;

@@ -1,6 +1,6 @@
 import type { IncomingMessage } from "node:http";
 import type { Pool } from "pg";
-import { UnauthorizedError, isSessionActive, withTransaction } from "@semprec/data";
+import { UnauthorizedError, isSessionActive } from "@semprec/data";
 import { createSyncServer, type SyncServer } from "@semprec/realtime";
 import { authenticateRequest } from "./authHandler.js";
 
@@ -21,6 +21,6 @@ export async function createSyncUpgradeHandler(pool: Pool): Promise<SyncServer> 
         throw err;
       }
     },
-    revalidateSession: (sessionId: string) => withTransaction(pool, (client) => isSessionActive(client, sessionId)),
+    revalidateSession: (sessionId: string) => isSessionActive(pool, sessionId),
   });
 }
