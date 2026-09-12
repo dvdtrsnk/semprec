@@ -879,6 +879,30 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
     otherClient.close();
   });
 
+  it("cancels a watch when agent:unwatch arrives while its authorization query is pending", async () => {
+    const owner = await createTestUser();
+    identityByToken.set("owner", { userId: owner, sessionId: "owner-session" });
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "cancel pending watch" });
+    await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
+    const client = await connect("owner");
+    const received: Record<string, unknown>[] = [];
+    client.on("message", (data) => received.push(JSON.parse(messageText(data)) as Record<string, unknown>));
+
+    await withTransaction(pool, async (locker) => {
+      // `watch()` authorizes through `users`; keep that SELECT waiting while the second frame
+      // arrives, then commit to let the older watch prove it cannot overtake the unwatch.
+      await locker.query("LOCK TABLE users IN ACCESS EXCLUSIVE MODE");
+      client.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      client.send(JSON.stringify({ type: "agent:unwatch", runId: run.id }));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(received).toEqual([]);
+    client.close();
+  });
+
   it("chunks an oversized ephemeral delta below Postgres's NOTIFY payload limit", async () => {
     const owner = await createTestUser();
     identityByToken.set("owner", { userId: owner, sessionId: "owner-session" });

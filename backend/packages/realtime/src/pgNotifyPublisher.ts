@@ -18,6 +18,11 @@ function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
 }
 
+function isEventId(value: unknown): value is string {
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]{0,18})$/.test(value)) return false;
+  return BigInt(value) <= 9_223_372_036_854_775_807n;
+}
+
 /**
  * Every message here stays a thin reference — an identifier plus just enough to let a
  * client skip a stale echo, never a durable row's content (issue #161). The API fetches
@@ -148,7 +153,7 @@ export function parseRealtimeMessage(raw: unknown): RealtimeMessage | null {
       return null;
     }
     case "agent_run_event": {
-      if (typeof value.agentRunId === "string" && typeof value.eventId === "string") {
+      if (isUuid(value.agentRunId) && isEventId(value.eventId)) {
         return { type: "agent_run_event", agentRunId: value.agentRunId, eventId: value.eventId };
       }
       return null;

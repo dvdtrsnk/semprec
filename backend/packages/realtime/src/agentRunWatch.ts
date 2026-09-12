@@ -52,6 +52,9 @@ function deltaFrame(message: AgentStreamMessage): OutboundFrame {
 export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
   const watchersByRun = new Map<string, Set<Watcher>>();
   const watchersBySocket = new WeakMap<WebSocket, Map<string, Watcher>>();
+  // A watch awaits authorization before it can register. Keep only those in-flight intents so an
+  // `agent:unwatch` (or a newer watch for the same run) cannot be overtaken by the older await.
+  const pendingWatchesBySocket = new WeakMap<WebSocket, Map<string, symbol>>();
 
   function isCurrent(watcher: Watcher): boolean {
     return watchersBySocket.get(watcher.ws)?.get(watcher.runId) === watcher;
@@ -81,6 +84,26 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
     if (byRun?.get(watcher.runId) === watcher) byRun.delete(watcher.runId);
   }
 
+  function beginWatch(ws: WebSocket, runId: string): symbol {
+    let pending = pendingWatchesBySocket.get(ws);
+    if (!pending) {
+      pending = new Map();
+      pendingWatchesBySocket.set(ws, pending);
+    }
+    const token = Symbol(runId);
+    pending.set(runId, token);
+    return token;
+  }
+
+  function isPendingWatch(ws: WebSocket, runId: string, token: symbol): boolean {
+    return pendingWatchesBySocket.get(ws)?.get(runId) === token;
+  }
+
+  function finishPendingWatch(ws: WebSocket, runId: string, token: symbol): void {
+    const pending = pendingWatchesBySocket.get(ws);
+    if (pending?.get(runId) === token) pending.delete(runId);
+  }
+
   async function deliver(watcher: Watcher, event: AgentRunEventRow): Promise<void> {
     if (!isCurrent(watcher) || !isLater(event.id, watcher.lastEventId)) return;
     send(watcher.ws, eventFrame(event));
@@ -89,14 +112,27 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
 
   return {
     async watch(ws, userId, runId, afterEventId) {
-      this.unwatch(ws, runId);
+      const pendingToken = beginWatch(ws, runId);
+      const existing = watchersBySocket.get(ws)?.get(runId);
+      if (existing) remove(existing);
 
       // Semprec's data model is explicitly single-tenant: agent_runs has no per-row user
       // column, so the setup account is the one authorized human owner (the same rule
       // background agent-run notifications use). A different authenticated user gets neither a
       // replay nor a live subscription, and an unknown run is indistinguishable from it.
-      const [ownerUserId, run] = await Promise.all([getEarliestUserId(pool), getAgentRun(pool, runId)]);
-      if (ownerUserId !== userId || !run || ws.readyState !== ws.OPEN) return;
+      let ownerUserId: string | null;
+      let run: Awaited<ReturnType<typeof getAgentRun>>;
+      try {
+        [ownerUserId, run] = await Promise.all([getEarliestUserId(pool), getAgentRun(pool, runId)]);
+      } catch (err) {
+        finishPendingWatch(ws, runId, pendingToken);
+        throw err;
+      }
+      if (!isPendingWatch(ws, runId, pendingToken) || ownerUserId !== userId || !run || ws.readyState !== ws.OPEN) {
+        finishPendingWatch(ws, runId, pendingToken);
+        return;
+      }
+      finishPendingWatch(ws, runId, pendingToken);
 
       const watcher: Watcher = {
         ws,
@@ -129,17 +165,20 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
         }
         watcher.replaying = false;
       } catch (err) {
+        finishPendingWatch(ws, runId, pendingToken);
         remove(watcher);
         throw err;
       }
     },
 
     unwatch(ws, runId) {
+      pendingWatchesBySocket.get(ws)?.delete(runId);
       const watcher = watchersBySocket.get(ws)?.get(runId);
       if (watcher) remove(watcher);
     },
 
     handleSocketClosed(ws) {
+      pendingWatchesBySocket.delete(ws);
       const watchers = watchersBySocket.get(ws);
       if (!watchers) return;
       for (const watcher of [...watchers.values()]) remove(watcher);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildBinaryFrame, decodeDocId, encodeDocId, parseBinaryFrame, parseInboundFrame } from "../protocolV1.js";
-import { parseAgentStreamMessage } from "../pgNotifyPublisher.js";
+import { parseAgentStreamMessage, parseRealtimeMessage } from "../pgNotifyPublisher.js";
 
 const DOC_ID = "11111111-1111-1111-1111-111111111111";
 const RUN_ID = "22222222-2222-2222-2222-222222222222";
@@ -119,5 +119,11 @@ describe("decodeDocId/encodeDocId/buildBinaryFrame (issue #162)", () => {
 describe("parseAgentStreamMessage (issue #163)", () => {
   it("rejects an ephemeral delta with a malformed agentRunId", () => {
     expect(parseAgentStreamMessage({ type: "agent_run_delta", agentRunId: "not-a-uuid", delta: {} })).toBeNull();
+  });
+});
+
+describe("parseRealtimeMessage (issue #163)", () => {
+  it("rejects an agent-run reference with a malformed eventId", () => {
+    expect(parseRealtimeMessage({ type: "agent_run_event", agentRunId: RUN_ID, eventId: "abc" })).toBeNull();
   });
 });

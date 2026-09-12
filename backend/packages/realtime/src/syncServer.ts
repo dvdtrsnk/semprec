@@ -209,26 +209,22 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     sendToUser(userId, { type: "notification", notification });
   }
 
-  const agentEventDeliveryTails = new Map<string, Promise<void>>();
+  const agentEventDeliveryTails = new Map<string, { promise: Promise<void> }>();
 
   function enqueueAgentEvent(runId: string, eventId: string): void {
-    const preceding = agentEventDeliveryTails.get(runId) ?? Promise.resolve();
-    const queued = preceding
+    const entry = { promise: Promise.resolve() };
+    const preceding = agentEventDeliveryTails.get(runId)?.promise ?? Promise.resolve();
+    entry.promise = preceding
       .then(() => agentRunWatch.forwardEvent(runId, eventId))
       .catch((err: unknown) => {
         // Keep this run's delivery queue usable after a failed row fetch, without delaying a
         // different run's events or pretending the original infrastructure fault was forwarded.
         console.error("Sync server failed to forward an agent run event", err);
+      })
+      .then(() => {
+        if (agentEventDeliveryTails.get(runId) === entry) agentEventDeliveryTails.delete(runId);
       });
-    agentEventDeliveryTails.set(runId, queued);
-    queued.then(
-      () => {
-        if (agentEventDeliveryTails.get(runId) === queued) agentEventDeliveryTails.delete(runId);
-      },
-      (err: unknown) => {
-        console.error("Sync server failed to finish agent run event delivery", err);
-      },
-    );
+    agentEventDeliveryTails.set(runId, entry);
   }
 
   const onNotification = (msg: { channel: string; payload?: string }) => {

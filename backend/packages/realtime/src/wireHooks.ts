@@ -16,24 +16,20 @@ import { publishRealtimeMessage } from "./pgNotifyPublisher.js";
  * and writes across processes, at which point this call moves with the writer.
  */
 export function wireRealtimeHooks(pool: Pool): void {
-  const agentRunPublishTails = new Map<string, Promise<void>>();
+  const agentRunPublishTails = new Map<string, { promise: Promise<void> }>();
 
   function enqueueAgentRunEvent(event: { agentRunId: string; eventId: string }): void {
-    const preceding = agentRunPublishTails.get(event.agentRunId) ?? Promise.resolve();
-    const queued = preceding
+    const entry = { promise: Promise.resolve() };
+    const preceding = agentRunPublishTails.get(event.agentRunId)?.promise ?? Promise.resolve();
+    entry.promise = preceding
       .then(() => publishRealtimeMessage(pool, { type: "agent_run_event", ...event }))
       .catch((err: unknown) => {
         console.error("Failed to publish agent_run_event realtime message", err);
+      })
+      .then(() => {
+        if (agentRunPublishTails.get(event.agentRunId) === entry) agentRunPublishTails.delete(event.agentRunId);
       });
-    agentRunPublishTails.set(event.agentRunId, queued);
-    queued.then(
-      () => {
-        if (agentRunPublishTails.get(event.agentRunId) === queued) agentRunPublishTails.delete(event.agentRunId);
-      },
-      (err: unknown) => {
-        console.error("Failed to finish agent_run_event realtime publication", err);
-      },
-    );
+    agentRunPublishTails.set(event.agentRunId, entry);
   }
 
   setInvalidationHook((event) => {
