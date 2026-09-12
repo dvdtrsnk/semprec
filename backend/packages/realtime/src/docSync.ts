@@ -18,6 +18,16 @@ import { buildBinaryFrame } from "./protocolV1.js";
 const DOC_SYNC_CREATED_BY: CreatedBy = "user";
 
 /**
+ * Per-socket cap on accepted SyncStep2/Update frames: a legitimately authenticated socket
+ * could otherwise send updates fast enough to monopolize the Postgres connection pool with
+ * `mutateYDoc` transactions, degrading every other document on this process. A frame beyond
+ * the cap is dropped (never queued or buffered) — the client's own Yjs state is untouched, so
+ * a later accepted update still carries everything a dropped one would have.
+ */
+const MAX_UPDATES_PER_WINDOW = 50;
+const RATE_LIMIT_WINDOW_MS = 1000;
+
+/**
  * Per-process registry of which open `WS /api/sync` sockets have which documents open
  * (issue #162's `doc:open`/`doc:close` subscription state) plus the y-protocols/sync
  * handshake and update persistence those subscriptions ride on.
@@ -49,6 +59,21 @@ function sendFrame(ws: WebSocket, docId: string, payload: Uint8Array): void {
 export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
   const subscribersByDoc = new Map<string, Set<WebSocket>>();
   const openDocsByClient = new WeakMap<WebSocket, Set<string>>();
+  const updateRateByClient = new WeakMap<WebSocket, { count: number; windowStart: number }>();
+
+  function isRateLimited(ws: WebSocket): boolean {
+    const now = Date.now();
+    const state = updateRateByClient.get(ws);
+    if (!state || now - state.windowStart >= RATE_LIMIT_WINDOW_MS) {
+      updateRateByClient.set(ws, { count: 1, windowStart: now });
+      return false;
+    }
+    state.count += 1;
+    if (state.count === MAX_UPDATES_PER_WINDOW + 1) {
+      console.warn("Sync server dropped a doc update: socket exceeded the per-second rate limit");
+    }
+    return state.count > MAX_UPDATES_PER_WINDOW;
+  }
 
   function subscribe(ws: WebSocket, docId: string): void {
     let subscribers = subscribersByDoc.get(docId);
@@ -82,6 +107,13 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
       const doc = await getDocById(pool, docId);
       if (!doc) return;
 
+      // The socket may have closed while the query above was in flight — its own `close`
+      // handler already ran `handleSocketClosed`, which found no subscription yet and did
+      // nothing. Subscribing now, after that, would leave a dead socket permanently held by
+      // `subscribersByDoc` with no future close event left to clean it up. No `await` follows
+      // this check before `subscribe`, so nothing can close the socket in between.
+      if (ws.readyState !== ws.OPEN) return;
+
       subscribe(ws, docId);
 
       // Same handshake `y-websocket`'s reference server implementation uses: send this
@@ -104,8 +136,12 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
     handleSocketClosed(ws) {
       const openDocs = openDocsByClient.get(ws);
       if (!openDocs) return;
-      for (const docId of openDocs) {
-        subscribersByDoc.get(docId)?.delete(ws);
+      // `unsubscribe` (not an inline delete) so an emptied `subscribersByDoc` entry is dropped
+      // here exactly as it is on an explicit `doc:close` — otherwise a doc whose last subscriber
+      // disconnects via socket close, rather than `doc:close`, leaves a permanently empty `Set`
+      // behind. Copy `openDocs` first: `unsubscribe` mutates the very set being iterated.
+      for (const docId of [...openDocs]) {
+        unsubscribe(ws, docId);
       }
       openDocsByClient.delete(ws);
     },
@@ -146,6 +182,7 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
         }
         case syncProtocol.messageYjsSyncStep2:
         case syncProtocol.messageYjsUpdate: {
+          if (isRateLimited(ws)) return;
           let update: Uint8Array;
           try {
             update = decoding.readVarUint8Array(decoder);
