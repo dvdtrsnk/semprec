@@ -74,6 +74,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_INBOUND_FRAME_BYTES });
   const identityByClient = new WeakMap<WebSocket, SyncIdentity>();
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+  let closed = false;
 
   function attachClient(ws: WebSocket, identity: SyncIdentity): void {
     identityByClient.set(ws, identity);
@@ -146,6 +147,13 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
             rejectUpgrade(socket);
             return;
           }
+          // `close()` may have run while this authentication was in flight (a graceful shutdown
+          // race): its close-frame loop has already finished, so a client attached now would
+          // never receive one, and `wss.close()` would wait on it forever.
+          if (closed) {
+            rejectUpgrade(socket);
+            return;
+          }
           wss.handleUpgrade(req, socket, head, (ws) => attachClient(ws, identity));
         })
         .catch((err: unknown) => {
@@ -154,9 +162,12 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
         });
     },
     async close() {
+      closed = true;
       listenClient.off("notification", onNotification);
       listenClient.off("error", onError);
-      for (const client of wss.clients) client.close();
+      // `terminate()`, not `close()`: an unresponsive client (dropped network, crashed tab) would
+      // otherwise never complete the close handshake, hanging `wss.close()` below indefinitely.
+      for (const client of wss.clients) client.terminate();
       // A client that has issued LISTEN carries session state the pool must not silently
       // reuse — release(true) destroys the underlying connection instead of pooling it.
       listenClient.release(true);
