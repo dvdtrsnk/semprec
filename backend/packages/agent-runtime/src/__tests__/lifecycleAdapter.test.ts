@@ -1,7 +1,8 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { setAgentRunEventHook } from "@semprec/data";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { wireRealtimeHooks } from "@semprec/realtime";
+import { publishRealtimeMessage } from "@semprec/realtime";
 import { runAgentSession } from "../lifecycleAdapter.js";
 import type { AgentMessage, AgentSession, CreateAgentSession } from "../types.js";
 
@@ -19,7 +20,15 @@ describe("runAgentSession", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
-    wireRealtimeHooks(pool);
+    setAgentRunEventHook((event) => {
+      publishRealtimeMessage(pool, { type: "agent_run_event", ...event }).catch((err: unknown) => {
+        console.error("Failed to publish agent_run_event realtime message", err);
+      });
+    });
+  });
+
+  afterEach(() => {
+    setAgentRunEventHook(() => {});
   });
 
   afterAll(async () => {
