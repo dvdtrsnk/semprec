@@ -17,8 +17,8 @@ import { publishRealtimeMessage } from "./pgNotifyPublisher.js";
 export function wireRealtimeHooks(pool: Pool): void {
   setInvalidationHook((event) => {
     // Best-effort fan-out: a failed NOTIFY must not fail (or roll back) the write that triggered it.
-    publishRealtimeMessage(pool, { type: "item_invalidation", ...event }).catch((err: unknown) => {
-      console.error("Failed to publish item_invalidation realtime message", err);
+    publishRealtimeMessage(pool, { type: "invalidation", ...event }).catch((err: unknown) => {
+      console.error("Failed to publish invalidation realtime message", err);
     });
   });
   setDocUpdateHook((event) => {

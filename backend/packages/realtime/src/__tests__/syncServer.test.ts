@@ -1,11 +1,17 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { WebSocket } from "ws";
+import { WebSocket, type RawData } from "ws";
+import { withTransaction, createUser, hashPassword, writeNotification } from "@semprec/data";
+import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { publishRealtimeMessage } from "../pgNotifyPublisher.js";
 import { createSyncServer, type SyncIdentity, type SyncServer } from "../syncServer.js";
 
 let pool: Pool;
+
+afterAll(async () => {
+  await pool?.end();
+});
 
 /** Resolves once `client` opens, rejecting on `error` — a rejected upgrade must reach the other branch instead. */
 function waitForOpen(client: WebSocket): Promise<void> {
@@ -13,6 +19,17 @@ function waitForOpen(client: WebSocket): Promise<void> {
     client.once("open", () => resolve());
     client.once("error", reject);
   });
+}
+
+/**
+ * `ws` hands a message over as `Buffer | ArrayBuffer | Buffer[]`, and the array case is a
+ * fragmented frame — its default `toString()` joins the fragments with commas instead of
+ * concatenating them, which would corrupt the JSON these tests parse.
+ */
+function messageText(data: RawData): string {
+  if (Array.isArray(data)) return Buffer.concat(data).toString("utf8");
+  if (Buffer.isBuffer(data)) return data.toString("utf8");
+  return Buffer.from(data).toString("utf8");
 }
 
 describe("createSyncServer (issue #160)", () => {
@@ -28,7 +45,7 @@ describe("createSyncServer (issue #160)", () => {
   }
 
   beforeEach(async () => {
-    pool ??= new Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    pool ??= getTestPool();
     identityByToken = new Map();
     activeSessionIds = new Set();
 
@@ -56,10 +73,6 @@ describe("createSyncServer (issue #160)", () => {
   afterEach(async () => {
     await syncServer.close();
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
-  });
-
-  afterAll(async () => {
-    await pool?.end();
   });
 
   it("opens a socket for a valid credential", async () => {
@@ -165,5 +178,293 @@ describe("createSyncServer heartbeat fallback (issue #160)", () => {
     await waitForOpen(client);
 
     expect(await closed).toBe(4401);
+  });
+});
+
+describe("createSyncServer realtime fan-out (issue #161)", () => {
+  let httpServer: Server;
+  let syncServer: SyncServer;
+  let port: number;
+  let identityByToken: Map<string, SyncIdentity>;
+
+  async function createTestUser(): Promise<string> {
+    const passwordHash = await hashPassword("s3cret-password");
+    const user = await createUser(pool, { email: `sync-${Math.random()}@example.test`, passwordHash, locale: "en" });
+    return user.id;
+  }
+
+  async function connect(token: string): Promise<WebSocket> {
+    const client = new WebSocket(`ws://127.0.0.1:${port}/api/sync?token=${token}`);
+    await waitForOpen(client);
+    return client;
+  }
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    identityByToken = new Map();
+
+    syncServer = await createSyncServer(pool, {
+      authenticate: async (req: IncomingMessage) => {
+        const token = new URL(req.url ?? "/", "http://localhost").searchParams.get("token");
+        if (!token) return null;
+        return identityByToken.get(token) ?? null;
+      },
+      revalidateSession: async () => true,
+      heartbeatIntervalMs: 30_000,
+    });
+
+    httpServer = createServer();
+    httpServer.on("upgrade", (req, socket, head) => syncServer.handleUpgrade(req, socket, head));
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const address = httpServer.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    port = address.port;
+  });
+
+  afterEach(async () => {
+    await syncServer.close();
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+  });
+
+  it("delivers a user-scoped item invalidation only to the acting user's own socket, never a bystander's (issue #161)", async () => {
+    const userA = await createTestUser();
+    const userB = await createTestUser();
+    identityByToken.set("a", { userId: userA, sessionId: "session-a" });
+    identityByToken.set("b", { userId: userB, sessionId: "session-b" });
+    const clientA = await connect("a");
+    const clientB = await connect("b");
+
+    let bystanderMessage: string | undefined;
+    clientB.once("message", (d) => {
+      bystanderMessage = messageText(d);
+    });
+    const receivedA = new Promise<string>((resolve) => clientA.once("message", (d) => resolve(messageText(d))));
+
+    await publishRealtimeMessage(pool, {
+      type: "invalidation",
+      scope: "item",
+      databaseId: "db-1",
+      itemId: "item-1",
+      op: "update",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      userId: userA,
+    });
+
+    const expected = {
+      type: "invalidate",
+      scope: "item",
+      databaseId: "db-1",
+      itemId: "item-1",
+      op: "update",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    expect(JSON.parse(await receivedA)).toEqual(expected);
+
+    // Give clientB's socket a beat to (not) receive anything before asserting silence.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(bystanderMessage).toBeUndefined();
+
+    clientA.close();
+    clientB.close();
+  });
+
+  it("falls back to broadcasting an item/schema invalidation to every connected socket when it carries no acting user (a system/background-triggered write)", async () => {
+    const userA = await createTestUser();
+    const userB = await createTestUser();
+    identityByToken.set("a", { userId: userA, sessionId: "session-a" });
+    identityByToken.set("b", { userId: userB, sessionId: "session-b" });
+    const clientA = await connect("a");
+    const clientB = await connect("b");
+
+    const receivedA = new Promise<string>((resolve) => clientA.once("message", (d) => resolve(messageText(d))));
+    const receivedB = new Promise<string>((resolve) => clientB.once("message", (d) => resolve(messageText(d))));
+
+    await publishRealtimeMessage(pool, { type: "invalidation", scope: "schema", databaseId: "db-1" });
+
+    const expected = { type: "invalidate", scope: "schema", databaseId: "db-1" };
+    expect(JSON.parse(await receivedA)).toEqual(expected);
+    expect(JSON.parse(await receivedB)).toEqual(expected);
+
+    clientA.close();
+    clientB.close();
+  });
+
+  it("never replays an invalidation published while a socket was disconnected — reconnecting relies on the client's own bounded active-state refetch to heal, not a server-side replay (issue #161)", async () => {
+    const userA = await createTestUser();
+    identityByToken.set("a", { userId: userA, sessionId: "session-a" });
+
+    // A socket that was open, then dropped, before the invalidation below is published.
+    const droppedClient = await connect("a");
+    droppedClient.close();
+    await new Promise<void>((resolve) => droppedClient.once("close", () => resolve()));
+
+    await publishRealtimeMessage(pool, {
+      type: "invalidation",
+      scope: "item",
+      databaseId: "db-1",
+      itemId: "item-1",
+      op: "update",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      userId: userA,
+    });
+
+    // Reconnecting afterwards opens a brand-new socket with no queued/replayed backlog — the
+    // invalidation published above must never surface on it. A live socket converges only
+    // through its own REST refetch on connect, never by the server buffering missed frames.
+    const reconnected = await connect("a");
+    let reconnectedMessage: string | undefined;
+    reconnected.once("message", (d) => {
+      reconnectedMessage = messageText(d);
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(reconnectedMessage).toBeUndefined();
+
+    reconnected.close();
+  });
+
+  it("delivers the complete notification row only to its own user's socket (issue #161)", async () => {
+    const owner = await createTestUser();
+    const bystanderUser = await createTestUser();
+    identityByToken.set("owner", { userId: owner, sessionId: "session-owner" });
+    identityByToken.set("bystander", { userId: bystanderUser, sessionId: "session-bystander" });
+    const ownerClient = await connect("owner");
+    const bystanderClient = await connect("bystander");
+
+    let bystanderMessage: string | undefined;
+    bystanderClient.once("message", (d) => {
+      bystanderMessage = messageText(d);
+    });
+    const receivedByOwner = new Promise<string>((resolve) =>
+      ownerClient.once("message", (d) => resolve(messageText(d))),
+    );
+
+    const notificationId = await withTransaction(pool, (client) =>
+      writeNotification(client, {
+        userId: owner,
+        kind: "heartbeat_error",
+        titleParams: { name: "Daily digest" },
+        linkHref: null,
+        sourceTable: "project_heartbeats",
+        sourceId: "hb-1",
+        transitionInstance: "job-1",
+      }),
+    );
+    await publishRealtimeMessage(pool, { type: "notification_created", userId: owner, notificationId });
+
+    const message = JSON.parse(await receivedByOwner) as { type: string; notification: { id: string; userId: string } };
+    expect(message).toMatchObject({ type: "notification", notification: { id: notificationId, userId: owner } });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(bystanderMessage).toBeUndefined();
+
+    ownerClient.close();
+    bystanderClient.close();
+  });
+
+  it("drops a notification_created NOTIFY whose userId does not match the fetched row's own owner, rather than delivering cross-user (medium finding on PR #392)", async () => {
+    const owner = await createTestUser();
+    const impostor = await createTestUser();
+    identityByToken.set("impostor", { userId: impostor, sessionId: "session-impostor" });
+    const impostorClient = await connect("impostor");
+
+    let impostorMessage: string | undefined;
+    impostorClient.once("message", (d) => {
+      impostorMessage = messageText(d);
+    });
+
+    const notificationId = await withTransaction(pool, (client) =>
+      writeNotification(client, {
+        userId: owner,
+        kind: "heartbeat_error",
+        titleParams: { name: "Daily digest" },
+        linkHref: null,
+        sourceTable: "project_heartbeats",
+        sourceId: "hb-3",
+        transitionInstance: "job-3",
+      }),
+    );
+    // A malformed/tampered NOTIFY payload naming a real notificationId but a mismatched userId —
+    // must never reach the impostor's socket even though the payload claims it's theirs.
+    await publishRealtimeMessage(pool, { type: "notification_created", userId: impostor, notificationId });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(impostorMessage).toBeUndefined();
+
+    impostorClient.close();
+  });
+
+  it("never replays a notification published while a socket was disconnected — reconnecting relies on the client's own GET /api/notifications/unread fetch to heal, not a server-side replay (issue #161, AC referencing #36)", async () => {
+    const owner = await createTestUser();
+    identityByToken.set("owner", { userId: owner, sessionId: "session-owner" });
+
+    const droppedClient = await connect("owner");
+    droppedClient.close();
+    await new Promise<void>((resolve) => droppedClient.once("close", () => resolve()));
+
+    const notificationId = await withTransaction(pool, (client) =>
+      writeNotification(client, {
+        userId: owner,
+        kind: "heartbeat_error",
+        titleParams: { name: "Daily digest" },
+        linkHref: null,
+        sourceTable: "project_heartbeats",
+        sourceId: "hb-4",
+        transitionInstance: "job-4",
+      }),
+    );
+    await publishRealtimeMessage(pool, { type: "notification_created", userId: owner, notificationId });
+
+    // Reconnecting afterwards opens a brand-new socket with no queued/replayed backlog — the
+    // notification published above must never surface on it. A reconnecting client converges by
+    // calling GET /api/notifications/unread itself, which still returns this row since it's
+    // unread, never by the server buffering and replaying the missed WS frame.
+    const reconnected = await connect("owner");
+    let reconnectedMessage: string | undefined;
+    reconnected.once("message", (d) => {
+      reconnectedMessage = messageText(d);
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(reconnectedMessage).toBeUndefined();
+
+    const unread = await pool.query("SELECT id FROM notifications WHERE id = $1 AND read_at IS NULL", [notificationId]);
+    expect(unread.rows).toHaveLength(1);
+
+    reconnected.close();
+  });
+
+  it("re-fetches and delivers the current row to the owning user on a notification_read_state NOTIFY", async () => {
+    const owner = await createTestUser();
+    identityByToken.set("owner", { userId: owner, sessionId: "session-owner" });
+    const ownerClient = await connect("owner");
+
+    const notificationId = await withTransaction(pool, (client) =>
+      writeNotification(client, {
+        userId: owner,
+        kind: "heartbeat_error",
+        titleParams: { name: "Daily digest" },
+        linkHref: null,
+        sourceTable: "project_heartbeats",
+        sourceId: "hb-2",
+        transitionInstance: "job-2",
+      }),
+    );
+    await pool.query("UPDATE notifications SET read_at = now() WHERE id = $1", [notificationId]);
+
+    const received = new Promise<string>((resolve) => ownerClient.once("message", (d) => resolve(messageText(d))));
+    await publishRealtimeMessage(pool, {
+      type: "notification_read_state",
+      userId: owner,
+      notificationIds: [notificationId],
+    });
+
+    const message = JSON.parse(await received) as { type: string; notification: { id: string; readAt: string | null } };
+    expect(message.type).toBe("notification");
+    expect(message.notification.id).toBe(notificationId);
+    expect(message.notification.readAt).not.toBeNull();
+
+    ownerClient.close();
   });
 });

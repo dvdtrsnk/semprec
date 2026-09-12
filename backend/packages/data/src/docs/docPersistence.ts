@@ -161,7 +161,7 @@ async function appendDocUpdateWithClient(
      VALUES ($1, $2, $3, $4, $5::timestamptz, $5::timestamptz + make_interval(hours => $6::int))`,
     [id, docId, updateBuffer, createdBy, created_at, retentionHours(retentionDays)],
   );
-  runAfterCommit(client, () => notifyDocUpdate({ docId, update: updateBuffer.toString("base64"), createdBy }));
+  runAfterCommit(client, () => notifyDocUpdate({ docId, updateId: id, createdBy }));
 }
 
 /**

@@ -43,7 +43,11 @@ export function createViewRoutes(pool: Pool): RouteDefinition[] {
         const name = requireStringField(body, "name");
         const config = optionalConfigField(body);
         const isDefault = typeof body.isDefault === "boolean" ? body.isDefault : undefined;
-        const view = await chokePoint.createView({ databaseId, type, name, config, isDefault }, USER_ACTOR);
+        const view = await chokePoint.createView(
+          { databaseId, type, name, config, isDefault },
+          USER_ACTOR,
+          ctx.identity.user.id,
+        );
         return { status: 201, body: toViewEnvelope(view) };
       },
     },
@@ -56,7 +60,14 @@ export function createViewRoutes(pool: Pool): RouteDefinition[] {
         const name = typeof body.name === "string" ? body.name : undefined;
         const config = optionalConfigField(body);
         const isDefault = typeof body.isDefault === "boolean" ? body.isDefault : undefined;
-        const view = await chokePoint.patchView({ id, actor: USER_ACTOR, name, config, isDefault });
+        const view = await chokePoint.patchView({
+          id,
+          actor: USER_ACTOR,
+          name,
+          config,
+          isDefault,
+          actingUserId: ctx.identity.user.id,
+        });
         return { status: 200, body: toViewEnvelope(view) };
       },
     },
@@ -67,7 +78,7 @@ export function createViewRoutes(pool: Pool): RouteDefinition[] {
         const id = requireStringParam(ctx.params, "id");
         const view = await chokePoint.getView(id);
         if (!view) throw new NotFoundError(`View ${id} not found`);
-        await chokePoint.deleteView({ id, actor: USER_ACTOR });
+        await chokePoint.deleteView({ id, actor: USER_ACTOR, actingUserId: ctx.identity.user.id });
         return { status: 200, body: toViewEnvelope(view) };
       },
     },

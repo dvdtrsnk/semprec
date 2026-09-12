@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
-import { withTransaction } from "../db/pool.js";
+import { runAfterCommit, withTransaction } from "../db/pool.js";
+import { notifyInvalidation } from "../realtimeHook.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { assertValidTimezone } from "../timezone.js";
 import type {
@@ -492,6 +493,8 @@ async function resolveFilterSql(
 export interface CreateItemWithClientOptions extends AssertWritablePropertiesOptions {
   /** Queue affinity to route the onItemEvent heartbeat-fire job to, looked up by the matched heartbeat's action id. */
   queueAffinity?: ActionQueueAffinity;
+  /** The user whose write this is, when there is one — see `InvalidationEvent`'s doc comment. Absent for a system/background caller. */
+  actingUserId?: string;
 }
 
 export interface CreateItemInput {
@@ -526,6 +529,16 @@ export async function createItemWithClient(
     idempotencyKey: input.idempotencyKey,
   });
   await triggerOnItemEventHeartbeats(client, input.databaseId, "create", item.id, options.queueAffinity);
+  runAfterCommit(client, () =>
+    notifyInvalidation({
+      scope: "item",
+      databaseId: item.databaseId,
+      itemId: item.id,
+      op: "create",
+      updatedAt: item.updatedAt,
+      userId: options.actingUserId,
+    }),
+  );
   return item;
 }
 
@@ -539,6 +552,8 @@ export interface UpdateItemInput {
 export interface UpdateItemWithClientOptions extends AssertWritablePropertiesOptions {
   /** Queue affinity to route the onItemEvent heartbeat-fire job to, looked up by the matched heartbeat's action id. */
   queueAffinity?: ActionQueueAffinity;
+  /** The user whose write this is, when there is one — see `InvalidationEvent`'s doc comment. Absent for a system/background caller. */
+  actingUserId?: string;
 }
 
 /**
@@ -589,6 +604,16 @@ export async function updateItemWithClient(
     await recomputeAllForTimezoneChange(client, timezone);
   }
 
+  runAfterCommit(client, () =>
+    notifyInvalidation({
+      scope: "item",
+      databaseId: item.databaseId,
+      itemId: item.id,
+      op: "update",
+      updatedAt: item.updatedAt,
+      userId: options.actingUserId,
+    }),
+  );
   return item;
 }
 
@@ -897,17 +922,41 @@ export function createChokePoint(
 ) {
   return {
     // ---- databases ----
-    async createDatabase(input: databasesStore.CreateDatabaseInput): Promise<DatabaseRow> {
-      return withTransaction(pool, (client) => databasesStore.createDatabase(client, input));
+    async createDatabase(input: databasesStore.CreateDatabaseInput, actingUserId?: string): Promise<DatabaseRow> {
+      return withTransaction(pool, async (client) => {
+        const database = await databasesStore.createDatabase(client, input);
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
+        );
+        return database;
+      });
     },
-    async archiveDatabase(id: string): Promise<DatabaseRow> {
-      return withTransaction(pool, (client) => databasesStore.archiveDatabase(client, id));
+    async archiveDatabase(id: string, actingUserId?: string): Promise<DatabaseRow> {
+      return withTransaction(pool, async (client) => {
+        const database = await databasesStore.archiveDatabase(client, id);
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
+        );
+        return database;
+      });
     },
-    async restoreDatabase(id: string): Promise<DatabaseRow> {
-      return withTransaction(pool, (client) => databasesStore.restoreDatabase(client, id));
+    async restoreDatabase(id: string, actingUserId?: string): Promise<DatabaseRow> {
+      return withTransaction(pool, async (client) => {
+        const database = await databasesStore.restoreDatabase(client, id);
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
+        );
+        return database;
+      });
     },
-    async renameDatabase(id: string, name: string): Promise<DatabaseRow> {
-      return withTransaction(pool, (client) => databasesStore.renameDatabase(client, id, name));
+    async renameDatabase(id: string, name: string, actingUserId?: string): Promise<DatabaseRow> {
+      return withTransaction(pool, async (client) => {
+        const database = await databasesStore.renameDatabase(client, id, name);
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
+        );
+        return database;
+      });
     },
     async getDatabase(id: string): Promise<DatabaseRow | null> {
       return withTransaction(pool, (client) => databasesStore.getDatabase(client, id));
@@ -918,13 +967,22 @@ export function createChokePoint(
     },
 
     /** Inline database creation (issue #22, point 7): a new, independent database owned by a page. Always `system: false` — mechanically, since the input type carries no `system` field to override it. */
-    async createInlineDatabase(input: {
-      name: string;
-      parentItemId: string;
-      ownerProjectItemId?: string;
-      ownerModuleId?: string;
-    }): Promise<DatabaseRow> {
-      return withTransaction(pool, (client) => databasesStore.createDatabase(client, { ...input, system: false }));
+    async createInlineDatabase(
+      input: {
+        name: string;
+        parentItemId: string;
+        ownerProjectItemId?: string;
+        ownerModuleId?: string;
+      },
+      actingUserId?: string,
+    ): Promise<DatabaseRow> {
+      return withTransaction(pool, async (client) => {
+        const database = await databasesStore.createDatabase(client, { ...input, system: false });
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
+        );
+        return database;
+      });
     },
 
     // ---- properties ----
@@ -940,29 +998,61 @@ export function createChokePoint(
       return withTransaction(pool, (client) => propertiesStore.getPropertyByKey(client, databaseId, key));
     },
 
-    async createProperty(input: propertiesStore.CreatePropertyInput): Promise<PropertyRow> {
+    async createProperty(input: propertiesStore.CreatePropertyInput, actingUserId?: string): Promise<PropertyRow> {
       assertNoComputedKeyCollision(computedKeyRegistry, input.key);
       if (input.type === "rollup") {
         return withTransaction(pool, async (client) => {
           const property = await propertiesStore.createProperty(client, input);
           await applyRollupConfig(client, property);
           await enqueueRollupBackfill(client, property.id);
-          return propertiesStore.getProperty(client, property.id) as Promise<PropertyRow>;
+          const finalProperty = (await propertiesStore.getProperty(client, property.id)) as PropertyRow;
+          runAfterCommit(client, () =>
+            notifyInvalidation({ scope: "schema", databaseId: finalProperty.databaseId, userId: actingUserId }),
+          );
+          return finalProperty;
         });
       }
-      return withTransaction(pool, (client) => propertiesStore.createProperty(client, input));
+      return withTransaction(pool, async (client) => {
+        const property = await propertiesStore.createProperty(client, input);
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
+        );
+        return property;
+      });
     },
 
-    async renameProperty(id: string, name: string): Promise<PropertyRow> {
-      return withTransaction(pool, (client) => propertiesStore.renameProperty(client, id, name));
+    async renameProperty(id: string, name: string, actingUserId?: string): Promise<PropertyRow> {
+      return withTransaction(pool, async (client) => {
+        const property = await propertiesStore.renameProperty(client, id, name);
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
+        );
+        return property;
+      });
     },
 
-    async updatePropertyConfig(id: string, config: Record<string, unknown>): Promise<PropertyRow> {
-      return withTransaction(pool, (client) => updatePropertyConfigWithClient(client, id, config));
+    async updatePropertyConfig(
+      id: string,
+      config: Record<string, unknown>,
+      actingUserId?: string,
+    ): Promise<PropertyRow> {
+      return withTransaction(pool, async (client) => {
+        const property = await updatePropertyConfigWithClient(client, id, config);
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
+        );
+        return property;
+      });
     },
 
-    async changePropertyType(id: string, newType: PropertyType): Promise<PropertyRow> {
-      return withTransaction(pool, (client) => changePropertyTypeWithClient(client, id, newType));
+    async changePropertyType(id: string, newType: PropertyType, actingUserId?: string): Promise<PropertyRow> {
+      return withTransaction(pool, async (client) => {
+        const property = await changePropertyTypeWithClient(client, id, newType);
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
+        );
+        return property;
+      });
     },
 
     /**
@@ -975,6 +1065,7 @@ export function createChokePoint(
     async updateProperty(
       id: string,
       input: { name?: string; config?: Record<string, unknown>; type?: PropertyType },
+      actingUserId?: string,
     ): Promise<{ property: PropertyRow; typeChanged: boolean }> {
       return withTransaction(pool, async (client) => {
         let property = await propertiesStore.getProperty(client, id);
@@ -991,15 +1082,19 @@ export function createChokePoint(
           property = await changePropertyTypeWithClient(client, id, input.type);
           typeChanged = true;
         }
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
+        );
         return { property, typeChanged };
       });
     },
 
-    async deleteProperty(id: string): Promise<void> {
+    async deleteProperty(id: string, actingUserId?: string): Promise<void> {
       return withTransaction(pool, async (client) => {
         const property = await propertiesStore.getProperty(client, id);
         if (!property) return;
 
+        const invalidatedDatabaseIds = new Set([property.databaseId]);
         if (property.type === "relation") {
           const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, id);
           if (reldef) {
@@ -1010,11 +1105,16 @@ export function createChokePoint(
               if (otherProperty?.locked) {
                 throw new ForbiddenError(`Cannot delete: the paired relation property ${otherPropertyId} is locked`);
               }
+              if (otherProperty) invalidatedDatabaseIds.add(otherProperty.databaseId);
               await propertiesStore.deleteProperty(client, otherPropertyId);
             }
           }
         }
         await propertiesStore.deleteProperty(client, id);
+        runAfterCommit(client, () => {
+          for (const databaseId of invalidatedDatabaseIds)
+            notifyInvalidation({ scope: "schema", databaseId, userId: actingUserId });
+        });
       });
     },
 
@@ -1023,9 +1123,15 @@ export function createChokePoint(
     async createRelationProperty(
       input: CreateRelationPropertyInput,
     ): Promise<{ property: PropertyRow; inverseProperty: PropertyRow | null }> {
-      return withTransaction(pool, (client) =>
-        createRelationPropertyWithClient(client, input, undefined, computedKeyRegistry),
-      );
+      return withTransaction(pool, async (client) => {
+        const result = await createRelationPropertyWithClient(client, input, undefined, computedKeyRegistry);
+        const invalidatedDatabaseIds = new Set([result.property.databaseId]);
+        if (result.inverseProperty) invalidatedDatabaseIds.add(result.inverseProperty.databaseId);
+        runAfterCommit(client, () => {
+          for (const databaseId of invalidatedDatabaseIds) notifyInvalidation({ scope: "schema", databaseId });
+        });
+        return result;
+      });
     },
 
     // ---- relations (data side: linking two items) ----
@@ -1042,12 +1148,12 @@ export function createChokePoint(
     },
 
     // ---- items ----
-    async createItem(input: CreateItemInput): Promise<ItemRow> {
-      return withTransaction(pool, (client) => createItemWithClient(client, input, { queueAffinity }));
+    async createItem(input: CreateItemInput, actingUserId?: string): Promise<ItemRow> {
+      return withTransaction(pool, (client) => createItemWithClient(client, input, { queueAffinity, actingUserId }));
     },
 
-    async updateItem(input: UpdateItemInput): Promise<ItemRow> {
-      return withTransaction(pool, (client) => updateItemWithClient(client, input, { queueAffinity }));
+    async updateItem(input: UpdateItemInput, actingUserId?: string): Promise<ItemRow> {
+      return withTransaction(pool, (client) => updateItemWithClient(client, input, { queueAffinity, actingUserId }));
     },
 
     async getItem(databaseId: string, itemId: string): Promise<ItemRow | null> {
@@ -1144,7 +1250,7 @@ export function createChokePoint(
      * anywhere in that subtree must be unarchived, or the entire cascade is rejected and nothing
      * is written; a database midway down the tree being archived is not a partial success.
      */
-    async softDeleteItem(databaseId: string, itemId: string): Promise<ItemRow | null> {
+    async softDeleteItem(databaseId: string, itemId: string, actingUserId?: string): Promise<ItemRow | null> {
       return withTransaction(pool, async (client) => {
         await assertDatabaseNotArchived(client, databaseId);
         // A system-module project (issue #24's Projects.systemActive) "can only be
@@ -1176,6 +1282,16 @@ export function createChokePoint(
           await triggerOnItemEventHeartbeats(client, row.databaseId, "delete", row.id, queueAffinity);
           const edges = await relationsStore.listAllRelationsForItem(client, row.id);
           for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
+          runAfterCommit(client, () =>
+            notifyInvalidation({
+              scope: "item",
+              databaseId: item.databaseId,
+              itemId: item.id,
+              op: "delete",
+              updatedAt: item.updatedAt,
+              userId: actingUserId,
+            }),
+          );
         }
         return rootResult;
       });
@@ -1191,7 +1307,7 @@ export function createChokePoint(
      * (earlier or later) before this subtree was ever cascaded — restoring the latter would
      * silently resurrect data the user deleted on purpose.
      */
-    async restoreItem(databaseId: string, itemId: string): Promise<ItemRow | null> {
+    async restoreItem(databaseId: string, itemId: string, actingUserId?: string): Promise<ItemRow | null> {
       return withTransaction(pool, async (client) => {
         await assertDatabaseNotArchived(client, databaseId);
         // Locked for the same reason `softDeleteItem` locks its root: without it, two concurrent
@@ -1214,6 +1330,16 @@ export function createChokePoint(
           if (row.id === itemId) rootResult = item;
           const edges = await relationsStore.listAllRelationsForItem(client, row.id);
           for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
+          runAfterCommit(client, () =>
+            notifyInvalidation({
+              scope: "item",
+              databaseId: item.databaseId,
+              itemId: item.id,
+              op: "update",
+              updatedAt: item.updatedAt,
+              userId: actingUserId,
+            }),
+          );
         }
         return rootResult;
       });
@@ -1287,10 +1413,11 @@ export function createChokePoint(
     async createView(
       input: Omit<viewsStore.CreateViewInput, "createdBy" | "creatorProjectItemId">,
       actor: Actor = { type: "user" },
+      actingUserId?: string,
     ): Promise<ViewRow> {
       return withTransaction(pool, async (client) => {
         await assertAuthenticatedAgentIdentity(client, actor);
-        return viewsStore.createView(
+        const view = await viewsStore.createView(
           client,
           {
             ...input,
@@ -1299,6 +1426,13 @@ export function createChokePoint(
           },
           viewTypeRegistry,
         );
+        // Curated views (databaseId === null) have no schema to invalidate — nothing else's REST
+        // fetch is keyed by one, so there is no client-visible "database changed" to signal here.
+        if (view.databaseId !== null) {
+          const databaseId = view.databaseId;
+          runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId, userId: actingUserId }));
+        }
+        return view;
       });
     },
 
@@ -1321,6 +1455,7 @@ export function createChokePoint(
       name?: string;
       config?: Record<string, unknown>;
       isDefault?: boolean;
+      actingUserId?: string;
     }): Promise<ViewRow> {
       return withTransaction(pool, async (client) => {
         await assertAuthenticatedAgentIdentity(client, input.actor);
@@ -1337,7 +1472,7 @@ export function createChokePoint(
         // One-way adoption: a user's write to an agent's view flips it to 'user' and clears the
         // creator identity; a system view is never flipped by a user write.
         const adopt = input.actor.type === "user" && view.createdBy === "ai_agent";
-        return viewsStore.patchView(
+        const patched = await viewsStore.patchView(
           client,
           input.id,
           {
@@ -1349,16 +1484,25 @@ export function createChokePoint(
           },
           viewTypeRegistry,
         );
+        if (patched.databaseId !== null) {
+          const databaseId = patched.databaseId;
+          runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId, userId: input.actingUserId }));
+        }
+        return patched;
       });
     },
 
-    async deleteView(input: { id: string; actor: Actor }): Promise<void> {
+    async deleteView(input: { id: string; actor: Actor; actingUserId?: string }): Promise<void> {
       return withTransaction(pool, async (client) => {
         await assertAuthenticatedAgentIdentity(client, input.actor);
         const view = await viewsStore.getView(client, input.id);
         if (!view) throw new NotFoundError(`View ${input.id} not found`);
         assertViewWritable(view, input.actor);
         await viewsStore.deleteView(client, input.id);
+        if (view.databaseId !== null) {
+          const databaseId = view.databaseId;
+          runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId, userId: input.actingUserId }));
+        }
       });
     },
 

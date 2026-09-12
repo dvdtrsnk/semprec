@@ -61,7 +61,7 @@ export function createItemRoutes(pool: Pool): RouteDefinition[] {
         const idempotencyKey = requireHeader(ctx.req, "Idempotency-Key");
         const body = requireJsonObjectBody(ctx.body);
         const properties = jsonObjectField(body.properties, "properties") ?? {};
-        const item = await chokePoint.createItem({ databaseId, properties, idempotencyKey });
+        const item = await chokePoint.createItem({ databaseId, properties, idempotencyKey }, ctx.identity.user.id);
         return { status: 201, body: toItemEnvelope(item) };
       },
     },
@@ -100,12 +100,15 @@ export function createItemRoutes(pool: Pool): RouteDefinition[] {
         const propertiesPatch = requireJsonObjectField(body.properties, "properties");
         const ifVersion = typeof body.ifVersion === "string" ? body.ifVersion : undefined;
 
-        const item = await chokePoint.updateItem({
-          databaseId: existing.databaseId,
-          itemId: id,
-          propertiesPatch,
-          ifVersion,
-        });
+        const item = await chokePoint.updateItem(
+          {
+            databaseId: existing.databaseId,
+            itemId: id,
+            propertiesPatch,
+            ifVersion,
+          },
+          ctx.identity.user.id,
+        );
         return { status: 200, body: toItemEnvelope(item) };
       },
     },
@@ -117,7 +120,7 @@ export function createItemRoutes(pool: Pool): RouteDefinition[] {
         const existing = await chokePoint.findItemIncludingDeleted(id);
         if (!existing) throw new NotFoundError(`Item ${id} not found`);
 
-        const item = await chokePoint.softDeleteItem(existing.databaseId, id);
+        const item = await chokePoint.softDeleteItem(existing.databaseId, id, ctx.identity.user.id);
         if (!item) throw new NotFoundError(`Item ${id} not found`);
         return { status: 200, body: toItemEnvelope(item) };
       },
@@ -130,7 +133,7 @@ export function createItemRoutes(pool: Pool): RouteDefinition[] {
         const existing = await chokePoint.findItemIncludingDeleted(id);
         if (!existing) throw new NotFoundError(`Item ${id} not found`);
 
-        const item = await chokePoint.restoreItem(existing.databaseId, id);
+        const item = await chokePoint.restoreItem(existing.databaseId, id, ctx.identity.user.id);
         if (!item) throw new NotFoundError(`Item ${id} not found`);
         return { status: 200, body: toItemEnvelope(item) };
       },

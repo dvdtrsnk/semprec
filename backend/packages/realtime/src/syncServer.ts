@@ -2,8 +2,9 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import type { Pool, PoolClient } from "pg";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
-import { REALTIME_CHANNEL } from "./pgNotifyPublisher.js";
-import { parseBinaryFrame, parseInboundFrame } from "./protocolV1.js";
+import { getNotificationById } from "@semprec/data";
+import { REALTIME_CHANNEL, parseRealtimeMessage, type RealtimeMessage } from "./pgNotifyPublisher.js";
+import { parseBinaryFrame, parseInboundFrame, type OutboundFrame } from "./protocolV1.js";
 
 /** The identity every `WS /api/sync` socket is associated with for its whole lifetime. */
 export interface SyncIdentity {
@@ -61,14 +62,28 @@ function rejectUpgrade(socket: Duplex): void {
 }
 
 /**
- * `WS /api/sync` (issue #160): the one authenticated, multiplexed connection every realtime
+ * `WS /api/sync` (issue #160/#161): the one authenticated, multiplexed connection every realtime
  * stream rides — one socket per client, associated with a verified user/session identity for its
  * whole lifetime. Owns this process's single dedicated Postgres LISTEN connection on
- * `REALTIME_CHANNEL`; the only message kind it acts on here is `session_revoked`, closing every
- * socket authenticated as that exact session with 4401 and leaving every other session's sockets
- * untouched. Actually streaming `invalidate`/`notification`/`agent:event`/`agent:delta` content,
- * and acting on an inbound `doc:open`/`doc:close`/`agent:watch`/`agent:unwatch` frame, is out of
- * this issue's scope — delivered by later realtime-v1 sibling issues on top of this lifecycle.
+ * `REALTIME_CHANNEL` and acts on four message kinds from it:
+ *
+ * - `session_revoked` closes every socket authenticated as that exact session with 4401, leaving
+ *   every other session's sockets untouched.
+ * - `invalidation` (item- or schema-scoped) sends a thin `invalidate` frame only to the sockets of
+ *   the user whose write caused it, when the underlying event identifies one — cross-user delivery
+ *   is impossible for a REST-driven write. A system/background-triggered write (a rollup recompute,
+ *   a mail-sync job, ...) carries no single acting user, so it falls back to every connected
+ *   socket. Either way every client refetches the referenced row itself over REST and a client with
+ *   nothing cached for it just ignores the frame.
+ * - `notification_created` and `notification_read_state` fetch the referenced row(s)' current,
+ *   complete state via `getNotificationById` and broadcast a `notification` frame only to sockets
+ *   authenticated as that notification's own `userId` — the one place this server sends a full row
+ *   rather than a thin reference (a notification's `title` is pre-rendered text with no second
+ *   enforcement layer to fall back on).
+ *
+ * Acting on an inbound `doc:open`/`doc:close`/`agent:watch`/`agent:unwatch` frame, and streaming
+ * `agent:event`/`agent:delta` content, is out of this issue's scope — delivered by later
+ * realtime-v1 sibling issues on top of this lifecycle.
  */
 export async function createSyncServer(pool: Pool, options: SyncServerOptions): Promise<SyncServer> {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_INBOUND_FRAME_BYTES });
@@ -115,23 +130,102 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     throw err;
   }
 
+  function broadcast(frame: OutboundFrame): void {
+    const payload = JSON.stringify(frame);
+    for (const client of wss.clients) {
+      if (client.readyState === client.OPEN) client.send(payload);
+    }
+  }
+
+  function sendToUser(userId: string, frame: OutboundFrame): void {
+    const payload = JSON.stringify(frame);
+    for (const client of wss.clients) {
+      const identity = identityByClient.get(client);
+      if (identity?.userId === userId && client.readyState === client.OPEN) client.send(payload);
+    }
+  }
+
+  /**
+   * Fetches the current full row for `notificationId` and broadcasts it to `userId`'s sockets —
+   * shared by `notification_created` and `notification_read_state`, since both ultimately need the
+   * same "here is this notification's current state" frame (a read-state change just carries a
+   * non-null `readAt` back).
+   */
+  async function forwardNotification(userId: string, notificationId: string): Promise<void> {
+    const notification = await getNotificationById(pool, notificationId);
+    // Already deleted, or the fetch lost a race with a much later state — the next unread-fetch
+    // (or active-view refetch) on reconnect still converges the client, so dropping this frame is
+    // safe rather than sending a stale/missing row.
+    if (!notification) return;
+    // Re-check ownership against the fetched row rather than trusting the NOTIFY payload's userId
+    // outright — a malformed or tampered payload with a mismatched userId/notificationId pair must
+    // never cause cross-user delivery, the same invariant `invalidation`'s actingUserId upholds.
+    if (notification.userId !== userId) return;
+    sendToUser(userId, { type: "notification", notification });
+  }
+
   const onNotification = (msg: { channel: string; payload?: string }) => {
     if (msg.channel !== REALTIME_CHANNEL || msg.payload === undefined) return;
 
-    let parsed: { type?: unknown; sessionId?: unknown };
+    let rawParsed: unknown;
     try {
-      parsed = JSON.parse(msg.payload) as { type?: unknown; sessionId?: unknown };
+      rawParsed = JSON.parse(msg.payload);
     } catch {
       return;
     }
-    if (parsed.type !== "session_revoked" || typeof parsed.sessionId !== "string") return;
-    const revokedSessionId = parsed.sessionId;
+    const parsed: RealtimeMessage | null = parseRealtimeMessage(rawParsed);
+    if (!parsed) return;
 
-    for (const client of wss.clients) {
-      const identity = identityByClient.get(client);
-      if (identity?.sessionId === revokedSessionId && client.readyState === client.OPEN) {
-        client.close(SESSION_REVOKED_CLOSE_CODE, "session revoked");
+    switch (parsed.type) {
+      case "session_revoked": {
+        const revokedSessionId = parsed.sessionId;
+        for (const client of wss.clients) {
+          const identity = identityByClient.get(client);
+          if (identity?.sessionId === revokedSessionId && client.readyState === client.OPEN) {
+            client.close(SESSION_REVOKED_CLOSE_CODE, "session revoked");
+          }
+        }
+        return;
       }
+      case "invalidation": {
+        const frame: OutboundFrame =
+          parsed.scope === "item"
+            ? {
+                type: "invalidate",
+                scope: "item",
+                databaseId: parsed.databaseId,
+                itemId: parsed.itemId,
+                op: parsed.op,
+                updatedAt: parsed.updatedAt,
+              }
+            : { type: "invalidate", scope: "schema", databaseId: parsed.databaseId };
+        // Scoped to the acting user's own sockets when the write that caused it identifies one
+        // (every REST-driven item/database/property/view write does) — cross-user delivery is
+        // impossible for those. A system/background-triggered write (rollup recompute, mail sync,
+        // ...) carries no acting user, so it falls back to every socket: there is no user to
+        // exclude, and that data is not scoped to one.
+        if (parsed.userId) sendToUser(parsed.userId, frame);
+        else broadcast(frame);
+        return;
+      }
+      case "notification_created": {
+        forwardNotification(parsed.userId, parsed.notificationId).catch((err: unknown) => {
+          console.error("Sync server failed to forward a created notification", err);
+        });
+        return;
+      }
+      case "notification_read_state": {
+        for (const notificationId of parsed.notificationIds) {
+          forwardNotification(parsed.userId, notificationId).catch((err: unknown) => {
+            console.error("Sync server failed to forward a notification read-state update", err);
+          });
+        }
+        return;
+      }
+      default:
+        // doc_update/agent_run_event: out of this issue's scope, delivered by later realtime-v1
+        // sibling issues (#162, #163).
+        return;
     }
   };
   listenClient.on("notification", onNotification);

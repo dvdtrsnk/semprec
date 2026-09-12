@@ -2,7 +2,7 @@ import type { Pool } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import type { Queryable } from "../db/pool.js";
 import { getProperty } from "../chokePoint/propertiesStore.js";
-import { writeComputed } from "../chokePoint/itemsStore.js";
+import { getItemById, writeComputed } from "../chokePoint/itemsStore.js";
 import { getRollupDependency } from "./dependencies.js";
 import { parseRollupConfig, type RollupAggregation } from "./config.js";
 import { notifyInvalidation } from "../realtimeHook.js";
@@ -108,7 +108,19 @@ export async function recomputeRollupCell(pool: Pool, rollupPropertyId: string, 
 
     const value = rows[0]?.value ?? (config.aggregation === "count" ? 0 : null);
     await writeComputed(client, rollupProperty.databaseId, itemId, rollupProperty.key, value);
-    notifyInvalidation({ databaseId: rollupProperty.databaseId, itemId, key: rollupProperty.key });
+    // No `withTransaction`/`runAfterCommit` here (see this function's doc comment: each statement
+    // above auto-commits on its own plain-connection client) — reading `updatedAt` back after the
+    // write above is already safe to announce immediately.
+    const item = await getItemById(client, rollupProperty.databaseId, itemId);
+    if (item) {
+      notifyInvalidation({
+        scope: "item",
+        databaseId: rollupProperty.databaseId,
+        itemId,
+        op: "update",
+        updatedAt: item.updatedAt,
+      });
+    }
   } finally {
     client.release();
   }
