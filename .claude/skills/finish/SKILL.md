@@ -129,7 +129,18 @@ Three checks are required on `develop`: **`ci`**, **`review`** and
 **`required_conversation_resolution` is on**, so every inline review thread
 must also be resolved before the merge button unblocks.
 
-1. Wait in the **foreground**: `gh pr checks <n> --watch --interval 30`.
+1. Wait in the **background**, never the foreground: `ci` alone runs about
+   seven minutes on this repository, which outlives the shell tool's timeout,
+   so a foreground `--watch` is killed mid-run every time. Start it detached
+   and let the completion re-invoke you:
+
+   ```
+   gh pr checks <n> --watch --interval 30   # run_in_background: true
+   ```
+
+   Do not end your turn believing the work is done while that wait is still
+   armed. A pull request left green but unmerged goes stale the moment another
+   branch lands, and nothing wakes you to notice.
 2. Read the findings:
    - summary comment:
      `gh api repos/dvdtrsnk/semprec/issues/<n>/comments --jq '.[] | select(.user.login=="github-actions[bot]") | .body'`
@@ -196,7 +207,10 @@ Confirm with `gh pr view <n> --json state,mergedAt,baseRefName` and check that
 
 If GitHub refuses the merge:
 
-- *"not up to date"* / behind base → back to §2.
+- *"not up to date"* / behind base → back to §2. Expect this whenever a
+  sibling pull request merged while your checks were running: your branch was
+  green and is now behind. It costs one merge from `develop` and one more pass
+  through §5 — it is not a reason to hand the branch back to the user.
 - *unresolved conversations* → back to §5.6.
 - If the **tool layer** blocks the command (a permission gate, not a GitHub
   refusal), retry the exact same command once. If it is still blocked, stop and
