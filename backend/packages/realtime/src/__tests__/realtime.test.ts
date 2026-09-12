@@ -27,6 +27,12 @@ describe("realtime", () => {
   });
 
   afterAll(async () => {
+    setInvalidationHook(() => {});
+    setDocUpdateHook(() => {});
+    setNotificationCreatedHook(() => {});
+    setNotificationReadStateHook(() => {});
+    setSessionRevokedHook(() => {});
+    setAgentRunEventHook(() => {});
     await pool?.end();
   });
 

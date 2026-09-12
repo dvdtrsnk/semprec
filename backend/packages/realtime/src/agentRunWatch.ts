@@ -165,7 +165,6 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
         }
         watcher.replaying = false;
       } catch (err) {
-        finishPendingWatch(ws, runId, pendingToken);
         remove(watcher);
         throw err;
       }
