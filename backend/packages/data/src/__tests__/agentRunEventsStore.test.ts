@@ -1,8 +1,14 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { withTransaction } from "../db/pool.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
-import { insertAgentRunEvent, listAgentRunEvents } from "../agentRuns/agentRunEventsStore.js";
+import {
+  insertAgentRunEvent,
+  insertAndNotifyAgentRunEvent,
+  listAgentRunEvents,
+} from "../agentRuns/agentRunEventsStore.js";
+import { setAgentRunEventHook } from "../realtimeHook.js";
 
 let pool: Pool;
 
@@ -14,6 +20,10 @@ describe("agentRunEventsStore", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  afterEach(() => {
+    setAgentRunEventHook(() => {});
   });
 
   it("lists events for a run in monotonic id order with fields mapped from the raw row", async () => {
@@ -51,5 +61,34 @@ describe("agentRunEventsStore", () => {
     const listedA = await listAgentRunEvents(pool, runA.id);
     expect(listedA).toHaveLength(1);
     expect(listedA[0]!.agentRunId).toBe(runA.id);
+  });
+
+  it("announces a thin event reference only after its transaction commits", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "announce" });
+    const announced: Array<{ agentRunId: string; eventId: string }> = [];
+    setAgentRunEventHook((event) => announced.push(event));
+
+    const event = await withTransaction(pool, async (client) => {
+      const inserted = await insertAndNotifyAgentRunEvent(client, run.id, "turn_start", { kind: "turn_start" });
+      expect(announced).toEqual([]);
+      return inserted;
+    });
+
+    expect(announced).toEqual([{ agentRunId: run.id, eventId: event.id }]);
+  });
+
+  it("does not announce a durable event when its transaction rolls back", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "rollback announcement" });
+    const announced: Array<{ agentRunId: string; eventId: string }> = [];
+    setAgentRunEventHook((event) => announced.push(event));
+
+    await expect(
+      withTransaction(pool, async (client) => {
+        await insertAndNotifyAgentRunEvent(client, run.id, "turn_start", { kind: "turn_start" });
+        throw new Error("rollback");
+      }),
+    ).rejects.toThrow("rollback");
+
+    expect(announced).toEqual([]);
   });
 });

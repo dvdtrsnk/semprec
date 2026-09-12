@@ -1,17 +1,16 @@
-import { Pool, type PoolClient } from "pg";
+import type { Pool, PoolClient } from "pg";
 import {
   createAgentRun,
   finishAgentRun,
   finishAgentRunWithErrorNotification,
   getAgentRun,
-  insertAgentRunEvent,
-  runAfterCommit,
+  insertAndNotifyAgentRunEvent,
   type AgentRunEventKind,
   type AgentRunRow,
   type AgentRunUnit,
   type TriggeredBy,
 } from "@semprec/data";
-import { publishAgentRunDelta, publishRealtimeMessage } from "@semprec/realtime";
+import { publishAgentRunDelta } from "@semprec/realtime";
 import type { AgentMessage, CreateAgentSession } from "./types.js";
 
 const PERSISTED_EVENT_KINDS: ReadonlySet<string> = new Set<AgentRunEventKind>([
@@ -22,20 +21,6 @@ const PERSISTED_EVENT_KINDS: ReadonlySet<string> = new Set<AgentRunEventKind>([
   "turn_end",
   "run_status",
 ]);
-
-// A bare pool commits each event before this function continues. Serialize this process's
-// reference publishes so a later event id cannot overtake an earlier one between pool clients.
-let persistentPublishTail: Promise<void> = Promise.resolve();
-
-function enqueuePersistentPublish(client: Pool | PoolClient, agentRunId: string, eventId: string): Promise<void> {
-  const publish = persistentPublishTail.then(() =>
-    publishRealtimeMessage(client, { type: "agent_run_event", agentRunId, eventId }),
-  );
-  persistentPublishTail = publish.catch((err: unknown) => {
-    console.error("Failed to publish agent_run_event realtime message", err);
-  });
-  return persistentPublishTail;
-}
 
 export interface RunAgentSessionInput {
   /** Seam for the real `pi-agent-core` `createAgentSession` (or a fake, in tests). */
@@ -59,9 +44,8 @@ export function extractResultSnapshot(lastMessage: AgentMessage | null): string 
 }
 
 /**
- * Appends a recovery event first, then announces only its identifier after the write commits.
- * A transaction-owned client uses the data layer's after-commit hook; a bare pool query has
- * already committed by the time `insertAgentRunEvent` resolves.
+ * Appends a recovery event first, then delegates its post-commit thin-reference announcement to
+ * the data layer that owns both the row and the after-commit hook.
  */
 async function recordPersistentEvent(
   client: Pool | PoolClient,
@@ -69,20 +53,7 @@ async function recordPersistentEvent(
   kind: AgentRunEventKind,
   payload: unknown,
 ): Promise<void> {
-  const event = await insertAgentRunEvent(client, agentRunId, kind, payload);
-  if (client instanceof Pool) await enqueuePersistentPublish(client, agentRunId, event.id);
-  else {
-    runAfterCommit(client, () => {
-      // `withTransaction` runs callbacks immediately after COMMIT and before releasing this
-      // client. The query is therefore started while its transaction has definitely committed;
-      // an error is logged rather than making committed agent work look failed.
-      publishRealtimeMessage(client, { type: "agent_run_event", agentRunId, eventId: event.id }).catch(
-        (err: unknown) => {
-          console.error("Failed to publish agent_run_event realtime message", err);
-        },
-      );
-    });
-  }
+  await insertAndNotifyAgentRunEvent(client, agentRunId, kind, payload);
 }
 
 /** Best-effort: a lost typing delta affects animation only; the completed message is durable. */

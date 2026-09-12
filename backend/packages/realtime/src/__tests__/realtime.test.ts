@@ -2,11 +2,13 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import {
   setDocUpdateHook,
+  setAgentRunEventHook,
   setInvalidationHook,
   setNotificationCreatedHook,
   setNotificationReadStateHook,
   setSessionRevokedHook,
   notifyDocUpdate,
+  notifyAgentRunEvent,
   notifyInvalidation,
   notifyNotificationCreated,
   notifySessionRevoked,
@@ -155,6 +157,33 @@ describe("realtime", () => {
     } finally {
       listenClient.release(true);
       setSessionRevokedHook(() => {});
+    }
+  });
+
+  it("wireRealtimeHooks turns a durable agent-run reference into a thin Postgres NOTIFY (issue #163)", async () => {
+    wireRealtimeHooks(pool);
+
+    const listenClient = await pool.connect();
+    try {
+      await listenClient.query("LISTEN semprec_events");
+      const received = new Promise<{ channel: string; payload?: string }>((resolve) => {
+        listenClient.once("notification", resolve);
+      });
+
+      notifyAgentRunEvent({
+        agentRunId: "11111111-1111-1111-1111-111111111111",
+        eventId: "42",
+      });
+
+      const notification = await received;
+      expect(JSON.parse(notification.payload ?? "{}")).toEqual({
+        type: "agent_run_event",
+        agentRunId: "11111111-1111-1111-1111-111111111111",
+        eventId: "42",
+      });
+    } finally {
+      listenClient.release(true);
+      setAgentRunEventHook(() => {});
     }
   });
 });

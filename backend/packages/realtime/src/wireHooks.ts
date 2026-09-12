@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import {
   setInvalidationHook,
   setDocUpdateHook,
+  setAgentRunEventHook,
   setNotificationCreatedHook,
   setNotificationReadStateHook,
   setSessionRevokedHook,
@@ -15,6 +16,26 @@ import { publishRealtimeMessage } from "./pgNotifyPublisher.js";
  * and writes across processes, at which point this call moves with the writer.
  */
 export function wireRealtimeHooks(pool: Pool): void {
+  const agentRunPublishTails = new Map<string, Promise<void>>();
+
+  function enqueueAgentRunEvent(event: { agentRunId: string; eventId: string }): void {
+    const preceding = agentRunPublishTails.get(event.agentRunId) ?? Promise.resolve();
+    const queued = preceding
+      .then(() => publishRealtimeMessage(pool, { type: "agent_run_event", ...event }))
+      .catch((err: unknown) => {
+        console.error("Failed to publish agent_run_event realtime message", err);
+      });
+    agentRunPublishTails.set(event.agentRunId, queued);
+    queued.then(
+      () => {
+        if (agentRunPublishTails.get(event.agentRunId) === queued) agentRunPublishTails.delete(event.agentRunId);
+      },
+      (err: unknown) => {
+        console.error("Failed to finish agent_run_event realtime publication", err);
+      },
+    );
+  }
+
   setInvalidationHook((event) => {
     // Best-effort fan-out: a failed NOTIFY must not fail (or roll back) the write that triggered it.
     publishRealtimeMessage(pool, { type: "invalidation", ...event }).catch((err: unknown) => {
@@ -41,4 +62,5 @@ export function wireRealtimeHooks(pool: Pool): void {
       console.error("Failed to publish session_revoked realtime message", err);
     });
   });
+  setAgentRunEventHook(enqueueAgentRunEvent);
 }

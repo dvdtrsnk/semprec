@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { wireRealtimeHooks } from "@semprec/realtime";
 import { runAgentSession } from "../lifecycleAdapter.js";
 import type { AgentMessage, AgentSession, CreateAgentSession } from "../types.js";
 
@@ -18,6 +19,7 @@ describe("runAgentSession", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    wireRealtimeHooks(pool);
   });
 
   afterAll(async () => {
