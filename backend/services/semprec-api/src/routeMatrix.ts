@@ -9,12 +9,14 @@
  * to fetch-test — this service doesn't serve the SPA — so they're listed for the record only;
  * the "documents a reason for every public entry" test still covers them.
  *
+ * `surface: "ws"` (issue #160's `WS /api/sync`) is listed for the same documentation purpose as
+ * `"view"`, but isn't fetch-tested here either — a plain HTTP fetch with no `Upgrade` header never
+ * reaches `syncHandler.ts`'s authentication at all, it just falls through this dispatcher's normal
+ * 404. Its "invalid credential never completes the handshake" behavior is covered instead by a
+ * real WS-upgrade test in `syncHandler`'s own test file.
+ *
  * Non-HTTP surfaces inventoried for issue #143 and found not to apply, so they have no entries
  * below:
- * - WS-upgrade: `@semprec/realtime`'s `startRealtimeServer` (`backend/packages/realtime`) wires
- *   Postgres LISTEN/NOTIFY to a caller-supplied `WebSocketServer`, but nothing in this service
- *   (or anywhere else in the repo) actually constructs one or handles the HTTP `upgrade` event —
- *   there is no live WS route to protect yet.
  * - Module routes: `ModuleRegistry` (`backend/packages/module-registry`) is in-process only —
  *   `loadModule()` does a plain dynamic `import()` of caller-supplied file paths, and every
  *   other method returns typed data to other backend code. It never opens a socket.
@@ -36,8 +38,10 @@ export interface RouteMatrixEntry {
    * `"api"` entries are fetch-tested against this service's real dispatcher. `"view"` entries
    * are client-side-only paths this backend doesn't serve, kept here for the documented
    * exceptions list but not fetch-tested — there's no server for `routeMatrix.test.ts` to hit.
+   * `"ws"` is the one WS-upgrade route (issue #160); see this file's top comment for why it isn't
+   * fetch-tested here either.
    */
-  surface: "api" | "view";
+  surface: "api" | "view" | "ws";
   /** `false` (the default expectation) means an unauthenticated request must get a 401. */
   public: boolean;
   /** Required when `public` is true — why this route is one of the documented exceptions. */
@@ -304,6 +308,55 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     method: "POST",
     path: `/api/items/${EXAMPLE_ID}/restore`,
     surface: "api",
+    public: false,
+  },
+  {
+    name: "query database",
+    method: "POST",
+    path: `/api/databases/${EXAMPLE_ID}/query`,
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "query view",
+    method: "POST",
+    path: `/api/views/${EXAMPLE_ID}/query`,
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "create/replace relation",
+    method: "PUT",
+    path: `/api/items/${EXAMPLE_ID}/relations/exampleKey/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "delete relation",
+    method: "DELETE",
+    path: `/api/items/${EXAMPLE_ID}/relations/exampleKey/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "upload file",
+    method: "POST",
+    path: "/api/files",
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "download blob",
+    method: "GET",
+    path: `/api/blobs/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "sync (WS upgrade)",
+    method: "GET",
+    path: "/api/sync",
+    surface: "ws",
     public: false,
   },
 ];

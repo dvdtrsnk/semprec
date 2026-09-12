@@ -666,6 +666,9 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
             return { byteSize: 0, contentHash: "" };
           },
           async delete() {},
+          readStream() {
+            throw new Error("readStream is not used by this test");
+          },
         },
         storageKeyPrefix: "test",
       }),

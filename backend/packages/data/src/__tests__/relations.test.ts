@@ -263,25 +263,26 @@ describe("relation edge contract", () => {
     expect(rows[0].n).toBe(0);
   });
 
-  it("delete is idempotent and returns void whether or not the edge existed", async () => {
+  it("delete is idempotent, returning the deleted edge or null whether or not it existed", async () => {
     const { assignedTo, task, person } = await makeParticipantsAndTasks();
     await expect(
       chokePoint.deleteRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBeNull();
 
-    await chokePoint.createRelation({
+    const created = await chokePoint.createRelation({
       relationPropertyId: assignedTo.id,
       callerItemId: task.id,
       targetItemId: person.id,
     });
-    await chokePoint.deleteRelation({
+    const deleted = await chokePoint.deleteRelation({
       relationPropertyId: assignedTo.id,
       callerItemId: task.id,
       targetItemId: person.id,
     });
+    expect(deleted?.id).toBe(created.id);
     await expect(
       chokePoint.deleteRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBeNull();
 
     const { rows } = await pool.query("SELECT count(*)::int AS n FROM item_relations");
     expect(rows[0].n).toBe(0);
@@ -299,9 +300,12 @@ describe("relation edge contract", () => {
     // Cleanup callers (e.g. inboxTypesStore's deleteInboxTypeWithClient, the Gmail/Graph/IMAP
     // reconcilers) routinely delete an edge whose endpoint was already soft-deleted — this must
     // never fail validation, only create/update endpoint validity.
-    await expect(
-      chokePoint.deleteRelation({ relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id }),
-    ).resolves.toBeUndefined();
+    const deleted = await chokePoint.deleteRelation({
+      relationPropertyId: assignedTo.id,
+      callerItemId: task.id,
+      targetItemId: person.id,
+    });
+    expect(deleted).not.toBeNull();
 
     const { rows } = await pool.query("SELECT count(*)::int AS n FROM item_relations");
     expect(rows[0].n).toBe(0);

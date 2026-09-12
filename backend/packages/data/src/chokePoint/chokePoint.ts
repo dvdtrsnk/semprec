@@ -790,7 +790,7 @@ export async function deleteRelationWithClient(
   client: PoolClient,
   input: DeleteRelationInput,
   context?: SystemRelationWriteContext,
-): Promise<void> {
+): Promise<RelationEdge | null> {
   const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
   await assertRelationDatabasesNotArchived(client, edgeContext);
   assertRelationPropertyWritable(edgeContext.property, context);
@@ -800,8 +800,9 @@ export async function deleteRelationWithClient(
     input.callerItemId,
     input.targetItemId,
   );
-  await relationsStore.deleteItemRelation(client, edgeContext.reldef.id, itemA, itemB);
+  const edge = await relationsStore.deleteItemRelation(client, edgeContext.reldef.id, itemA, itemB);
   await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
+  return edge;
 }
 
 /**
@@ -934,6 +935,11 @@ export function createChokePoint(
       return withTransaction(pool, (client) => propertiesStore.getProperty(client, id));
     },
 
+    /** Resolves a relation route's `:propertyKey` path segment (issue #157) — the choke-point's edge calls take a property id, never a key, so a REST caller must go through this first. */
+    async getPropertyByKey(databaseId: string, key: string): Promise<PropertyRow | null> {
+      return withTransaction(pool, (client) => propertiesStore.getPropertyByKey(client, databaseId, key));
+    },
+
     async createProperty(input: propertiesStore.CreatePropertyInput): Promise<PropertyRow> {
       assertNoComputedKeyCollision(computedKeyRegistry, input.key);
       if (input.type === "rollup") {
@@ -1031,7 +1037,7 @@ export function createChokePoint(
       return withTransaction(pool, (client) => updateRelationWithClient(client, input));
     },
 
-    async deleteRelation(input: DeleteRelationInput): Promise<void> {
+    async deleteRelation(input: DeleteRelationInput): Promise<RelationEdge | null> {
       return withTransaction(pool, (client) => deleteRelationWithClient(client, input));
     },
 
@@ -1419,6 +1425,19 @@ export function createChokePoint(
     // ---- reading through a view: filter/sort/visibility push-down ----
     async queryView(viewId: string, options?: viewQuery.QueryViewOptions): Promise<viewQuery.QueryViewResult> {
       return withTransaction(pool, (client) => viewQuery.queryView(client, viewId, options));
+    },
+
+    /** `POST /api/databases/:id/query` (issue #157): raw, request-boundary-validated filter/sort/cursor/limit/inTrash. */
+    async queryDatabaseItems(
+      databaseId: string,
+      input: viewQuery.DatabaseQueryInput,
+    ): Promise<viewQuery.QueryViewResult> {
+      return withTransaction(pool, (client) => viewQuery.queryDatabaseItems(client, databaseId, input));
+    },
+
+    /** `POST /api/views/:id/query` (issue #157): same raw request shape as `queryDatabaseItems`, resolved against a stored view. */
+    async queryViewItems(viewId: string, input: viewQuery.ViewQueryInput): Promise<viewQuery.QueryViewResult> {
+      return withTransaction(pool, (client) => viewQuery.queryViewItems(client, viewId, input));
     },
   };
 }
