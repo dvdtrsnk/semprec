@@ -36,6 +36,15 @@ jobs:
       - name: Review-rules scope sanity
         run: node .github/scripts/check-review-scope.mjs
 
+      # Regression gate for two write-safety shapes (an unchecked DELETE/UPDATE result, a
+      # pool.connect() outside db/pool.ts) found on PRs #380 and #386. Fails only on a
+      # violation absent from the committed baseline — see the script's header comment.
+      # No dependency on `node_modules`, so it runs before install alongside the other
+      # dependency-free repo scan above.
+      - name: Backend — check write safety
+        working-directory: backend
+        run: pnpm run check:write-safety
+
       # Backend static checks plus the unit tier; the database-backed tiers are
       # added to this same job further down.
       - name: Backend — install
