@@ -58,7 +58,7 @@ export interface IngestAttachmentsInput {
  * `../../etc/passwd` would escape the storage root. Strips path separators and traversal
  * sequences down to a safe basename before it ever reaches a storage key.
  */
-function safeStorageFilename(filename: string): string {
+export function safeStorageFilename(filename: string): string {
   const base = filename.replace(/^.*[/\\]/, "");
   const safe = base.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "");
   return safe.length > 0 ? safe : "attachment";

@@ -101,3 +101,25 @@ export function setNotificationReadStateHook(next: NotificationReadStateHook): v
 export function notifyNotificationReadState(event: NotificationReadStateEvent): void {
   notificationReadStateHook(event);
 }
+
+/**
+ * Fired whenever a session is actually revoked — logout, remote device revocation, or a
+ * password reset's "kick every other session" cascade (issue #160). `WS /api/sync` uses this to
+ * close every socket authenticated as that exact session with close code 4401, leaving every
+ * other session's sockets untouched.
+ */
+export interface SessionRevokedEvent {
+  sessionId: string;
+}
+
+export type SessionRevokedHook = (event: SessionRevokedEvent) => void;
+
+let sessionRevokedHook: SessionRevokedHook = () => {};
+
+export function setSessionRevokedHook(next: SessionRevokedHook): void {
+  sessionRevokedHook = next;
+}
+
+export function notifySessionRevoked(event: SessionRevokedEvent): void {
+  sessionRevokedHook(event);
+}

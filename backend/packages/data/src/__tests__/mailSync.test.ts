@@ -110,6 +110,9 @@ const noopStorage: BlobStorageWriter = {
     return { byteSize, contentHash: hash.digest("hex") };
   },
   async delete() {},
+  readStream() {
+    throw new Error("readStream is not used by this test");
+  },
 };
 
 function mailRegistry() {
@@ -1619,6 +1622,9 @@ describe("mail sync job error handling (issue #26)", () => {
       },
       async delete(storageKey) {
         deletedKeys.push(storageKey);
+      },
+      readStream() {
+        throw new Error("readStream is not used by this test");
       },
     };
 
