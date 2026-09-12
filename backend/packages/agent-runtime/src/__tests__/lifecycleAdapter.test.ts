@@ -118,7 +118,7 @@ describe("runAgentSession", () => {
 
   it("pushes every message, including message_update deltas, as a live agent_run_event NOTIFY", async () => {
     const listenClient = await pool.connect();
-    await listenClient.query("LISTEN semprec_realtime");
+    await listenClient.query("LISTEN semprec_events");
     const notifications: Array<{ channel: string; payload?: string }> = [];
     listenClient.on("notification", (msg) => notifications.push(msg));
 
@@ -137,7 +137,7 @@ describe("runAgentSession", () => {
 
     const pushedForRun = () =>
       notifications
-        .filter((n) => n.channel === "semprec_realtime")
+        .filter((n) => n.channel === "semprec_events")
         .map((n) => JSON.parse(n.payload ?? "{}"))
         .filter((m) => m.agentRunId === run.id);
 

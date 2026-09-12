@@ -161,10 +161,7 @@ describe("writeNotification", () => {
     );
 
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
-      userId,
-      notification: { title: `Heartbeat "Daily digest" failed`, linkHref: "?page=heartbeats", readAt: null },
-    });
+    expect(events[0]).toMatchObject({ userId, notificationId: expect.any(String) });
   });
 
   it("never fires the realtime hook when the caller's transaction rolls back", async () => {

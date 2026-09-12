@@ -48,7 +48,11 @@ export function createPropertyRoutes(pool: Pool, moduleRegistry: ModuleRegistry)
           type = body.type as PropertyType;
         }
 
-        const { property, typeChanged } = await chokePoint.updateProperty(id, { name, config, type });
+        const { property, typeChanged } = await chokePoint.updateProperty(
+          id,
+          { name, config, type },
+          ctx.identity.user.id,
+        );
         const status = typeChanged ? 202 : 200;
 
         const locale = toManifestLocale(ctx.identity.user.locale);
@@ -74,7 +78,7 @@ export function createPropertyRoutes(pool: Pool, moduleRegistry: ModuleRegistry)
         const resolved = resolveProperty(property, database?.key ?? null, catalogs, locale);
         const body = toPropertyEnvelope(property, resolved);
 
-        await chokePoint.deleteProperty(id);
+        await chokePoint.deleteProperty(id, ctx.identity.user.id);
         return { status: 200, body };
       },
     },

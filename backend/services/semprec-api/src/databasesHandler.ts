@@ -74,7 +74,10 @@ export function createDatabaseRoutes(pool: Pool, moduleRegistry: ModuleRegistry)
         const name = typeof body.name === "string" ? body.name : null;
         const parentItemId = typeof body.parentItemId === "string" ? body.parentItemId : undefined;
         const ownerProjectItemId = typeof body.ownerProjectItemId === "string" ? body.ownerProjectItemId : undefined;
-        const database = await chokePoint.createDatabase({ name, parentItemId, ownerProjectItemId });
+        const database = await chokePoint.createDatabase(
+          { name, parentItemId, ownerProjectItemId },
+          ctx.identity.user.id,
+        );
         const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);
         return { status: 201, body: await resolvedDatabaseBody(catalogResolver, database, locale) };
@@ -97,7 +100,7 @@ export function createDatabaseRoutes(pool: Pool, moduleRegistry: ModuleRegistry)
         const id = requireStringParam(ctx.params, "id");
         const body = requireJsonObjectBody(ctx.body);
         const name = requireStringField(body, "name");
-        const database = await chokePoint.renameDatabase(id, name);
+        const database = await chokePoint.renameDatabase(id, name, ctx.identity.user.id);
         const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);
         return { status: 200, body: await resolvedDatabaseBody(catalogResolver, database, locale) };
@@ -107,7 +110,7 @@ export function createDatabaseRoutes(pool: Pool, moduleRegistry: ModuleRegistry)
       method: "DELETE",
       path: "/api/databases/:id",
       handler: async (ctx) => {
-        const database = await chokePoint.archiveDatabase(requireStringParam(ctx.params, "id"));
+        const database = await chokePoint.archiveDatabase(requireStringParam(ctx.params, "id"), ctx.identity.user.id);
         const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);
         return { status: 200, body: await resolvedDatabaseBody(catalogResolver, database, locale) };
@@ -131,7 +134,7 @@ export function createDatabaseRoutes(pool: Pool, moduleRegistry: ModuleRegistry)
           typeof body.config === "object" && body.config !== null && !Array.isArray(body.config)
             ? (body.config as Record<string, unknown>)
             : undefined;
-        const property = await chokePoint.createProperty({ databaseId, key, name, type, config });
+        const property = await chokePoint.createProperty({ databaseId, key, name, type, config }, ctx.identity.user.id);
         const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);
         const catalogs = await catalogResolver.getCatalogsForDbKey(database.key);

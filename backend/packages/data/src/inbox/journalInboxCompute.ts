@@ -213,7 +213,19 @@ export async function recomputeJournalInboxDay(pool: Pool, journalDayItemId: str
     if (!databases) return;
     const items = await computeJournalInboxItems(client, databases, journalDayItemId);
     await writeComputed(client, databases.journal.id, journalDayItemId, JOURNAL_INBOX_COMPUTED_KEY, items);
-    notifyInvalidation({ databaseId: databases.journal.id, itemId: journalDayItemId, key: JOURNAL_INBOX_COMPUTED_KEY });
+    // No `withTransaction`/`runAfterCommit` here (mirrors rollup/recompute.ts's
+    // `recomputeRollupCell`) — each statement above auto-commits on its own plain-connection
+    // client, so reading `updatedAt` back after the write above is already safe to announce.
+    const item = await itemsStore.getItemById(client, databases.journal.id, journalDayItemId);
+    if (item) {
+      notifyInvalidation({
+        scope: "item",
+        databaseId: databases.journal.id,
+        itemId: journalDayItemId,
+        op: "update",
+        updatedAt: item.updatedAt,
+      });
+    }
   } finally {
     client.release();
   }
