@@ -40,10 +40,31 @@ add one soon add the other.
   both read an unbounded body into memory. Cap it, and make sure any fallback
   path (the one taken when the stream is missing) is capped too — an escape
   hatch that skips the limit is the same bug with extra steps.
-- **Clean up what you opened.** When a timeout wins the race, the underlying
-  request keeps running unless you abort it; when a socket errors, the session
-  stays open unless you close it. Both leak a handle per failure, which is a
-  slow outage rather than a visible one.
+- **Clean up what you opened, on every path out.** When a timeout wins the
+  race, the underlying request keeps running unless you abort it; when a
+  socket errors, the session stays open unless you close it. Both leak a
+  handle per failure, which is a slow outage rather than a visible one. The
+  same rule applies to any acquire-then-use pair, not just HTTP: `pool.connect()`
+  hands you a client before you've done anything with it, and if the query
+  that follows throws, that connection is never released. Use `withClient(pool,
+  fn)` (next to `withTransaction` in `db/pool.ts`) for a client needed across
+  several non-transactional statements — it releases in a `finally` so a throw
+  between acquire and the first query can't leak the connection. Fall back to a
+  manual acquire/`try`/`finally` only when the client has to outlive a single
+  `withClient`-style call, such as a session-scoped `LISTEN`.
+- **A shutdown that waits on a handshake can wait forever.** `ws.close()` starts
+  a close handshake that needs the client to acknowledge it; one unresponsive
+  client (dropped network, crashed tab) means the promise waiting on it never
+  resolves. When you are the one tearing the server down, use `terminate()` —
+  which drops the socket with no round-trip — and reserve `close()` for a
+  single connection's own graceful exit.
+- **Work already in flight when shutdown starts can still land after it.** An
+  async step that began before the shutdown loop ran — an in-flight
+  authentication that attaches its connection once it resolves, a callback
+  that finishes late — is not covered by that loop just because it started
+  earlier. Set a `closed` flag before the shutdown loop runs, and check it when
+  the in-flight work resolves, so a late completion is rejected instead of
+  attaching after the server already considers itself closed.
 - **Handle the refusal you asked for.** The AI gateway refuses calls over
   budget; a provider returns 429. Surface it — do not retry-loop against a
   closed door.
