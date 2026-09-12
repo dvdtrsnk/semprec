@@ -52,28 +52,18 @@ function deltaFrame(message: AgentStreamMessage): OutboundFrame {
 export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
   const watchersByRun = new Map<string, Set<Watcher>>();
   const watchersBySocket = new WeakMap<WebSocket, Map<string, Watcher>>();
+  // A replacement replays alongside the current watcher. It is not made active until replay has
+  // succeeded, so a transient replay failure cannot silently drop an established subscription.
+  const replacementsBySocket = new WeakMap<WebSocket, Map<string, Watcher>>();
   // A watch awaits authorization before it can register. Keep only those in-flight intents so an
   // `agent:unwatch` (or a newer watch for the same run) cannot be overtaken by the older await.
   const pendingWatchesBySocket = new WeakMap<WebSocket, Map<string, symbol>>();
 
   function isCurrent(watcher: Watcher): boolean {
-    return watchersBySocket.get(watcher.ws)?.get(watcher.runId) === watcher;
-  }
-
-  function add(watcher: Watcher): void {
-    let watchers = watchersByRun.get(watcher.runId);
-    if (!watchers) {
-      watchers = new Set();
-      watchersByRun.set(watcher.runId, watchers);
-    }
-    watchers.add(watcher);
-
-    let byRun = watchersBySocket.get(watcher.ws);
-    if (!byRun) {
-      byRun = new Map();
-      watchersBySocket.set(watcher.ws, byRun);
-    }
-    byRun.set(watcher.runId, watcher);
+    return (
+      watchersBySocket.get(watcher.ws)?.get(watcher.runId) === watcher ||
+      replacementsBySocket.get(watcher.ws)?.get(watcher.runId) === watcher
+    );
   }
 
   function remove(watcher: Watcher): void {
@@ -82,6 +72,36 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
     if (watchers?.size === 0) watchersByRun.delete(watcher.runId);
     const byRun = watchersBySocket.get(watcher.ws);
     if (byRun?.get(watcher.runId) === watcher) byRun.delete(watcher.runId);
+    const replacements = replacementsBySocket.get(watcher.ws);
+    if (replacements?.get(watcher.runId) === watcher) replacements.delete(watcher.runId);
+  }
+
+  function addReplacement(watcher: Watcher): void {
+    let replacements = replacementsBySocket.get(watcher.ws);
+    if (!replacements) {
+      replacements = new Map();
+      replacementsBySocket.set(watcher.ws, replacements);
+    }
+    replacements.set(watcher.runId, watcher);
+    let watchers = watchersByRun.get(watcher.runId);
+    if (!watchers) {
+      watchers = new Set();
+      watchersByRun.set(watcher.runId, watchers);
+    }
+    watchers.add(watcher);
+  }
+
+  function promoteReplacement(watcher: Watcher): void {
+    const existing = watchersBySocket.get(watcher.ws)?.get(watcher.runId);
+    if (existing && existing !== watcher) remove(existing);
+    let byRun = watchersBySocket.get(watcher.ws);
+    if (!byRun) {
+      byRun = new Map();
+      watchersBySocket.set(watcher.ws, byRun);
+    }
+    byRun.set(watcher.runId, watcher);
+    const replacements = replacementsBySocket.get(watcher.ws);
+    if (replacements?.get(watcher.runId) === watcher) replacements.delete(watcher.runId);
   }
 
   function beginWatch(ws: WebSocket, runId: string): symbol {
@@ -132,11 +152,11 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
       }
       finishPendingWatch(ws, runId, pendingToken);
 
-      // Keep an already-authorized watcher live until this replacement watch is authorized.
+      // Keep an already-authorized watcher live until this replacement watch has replayed.
       // A transient database failure must not silently turn a valid subscription into an
-      // unwatched socket; once authorization succeeds, replacement is synchronous.
-      const existing = watchersBySocket.get(ws)?.get(runId);
-      if (existing) remove(existing);
+      // unwatched socket.
+      const formerReplacement = replacementsBySocket.get(ws)?.get(runId);
+      if (formerReplacement) remove(formerReplacement);
       const watcher: Watcher = {
         ws,
         runId,
@@ -146,7 +166,9 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
       };
       // Register synchronously before awaiting the cursor query. Notifications received while it
       // runs are held in `queuedEventIds`, closing the replay/live handoff gap.
-      add(watcher);
+      // Keep the old watcher active until this replay completes. The candidate is still in the
+      // per-run set, so it records every NOTIFY that arrives during its replay window.
+      addReplacement(watcher);
 
       try {
         const replay = await listAgentRunEventsAfter(pool, runId, afterEventId);
@@ -166,7 +188,13 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
             if (event) await deliver(watcher, event);
           }
         }
+        if (!isCurrent(watcher)) return;
+        // The existing watcher has been forwarding the same socket while this candidate replayed.
+        // Its cursor is therefore the lower bound for future candidate delivery at promotion.
+        const existing = watchersBySocket.get(ws)?.get(runId);
+        if (existing && isLater(existing.lastEventId, watcher.lastEventId)) watcher.lastEventId = existing.lastEventId;
         watcher.replaying = false;
+        promoteReplacement(watcher);
       } catch (err) {
         remove(watcher);
         throw err;
@@ -177,10 +205,16 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
       pendingWatchesBySocket.get(ws)?.delete(runId);
       const watcher = watchersBySocket.get(ws)?.get(runId);
       if (watcher) remove(watcher);
+      const replacement = replacementsBySocket.get(ws)?.get(runId);
+      if (replacement) remove(replacement);
     },
 
     handleSocketClosed(ws) {
       pendingWatchesBySocket.delete(ws);
+      const replacements = replacementsBySocket.get(ws);
+      if (replacements) {
+        for (const watcher of [...replacements.values()]) remove(watcher);
+      }
       const watchers = watchersBySocket.get(ws);
       if (!watchers) return;
       for (const watcher of [...watchers.values()]) remove(watcher);

@@ -2,11 +2,13 @@ import type { AgentRunEventRow, NotificationRow } from "@semprec/data";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function isUuid(value: unknown): value is string {
+/** Shared validation for UUIDs crossing the WebSocket and NOTIFY boundaries. */
+export function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
 }
 
-function isEventCursor(value: unknown): value is string {
+/** A bigint-safe, non-negative `agent_run_events.id` cursor. */
+export function isAgentRunEventId(value: unknown): value is string {
   if (typeof value !== "string" || !/^(0|[1-9][0-9]{0,18})$/.test(value)) return false;
   return BigInt(value) <= 9_223_372_036_854_775_807n;
 }
@@ -49,7 +51,7 @@ export function parseInboundFrame(raw: string): InboundFrame | null {
       if (!isUuid(runId)) return null;
       if (type === "agent:unwatch") return { type, runId };
       const { afterEventId } = parsed as { afterEventId?: unknown };
-      return isEventCursor(afterEventId) ? { type, runId, afterEventId } : null;
+      return isAgentRunEventId(afterEventId) ? { type, runId, afterEventId } : null;
     }
     default:
       return null;

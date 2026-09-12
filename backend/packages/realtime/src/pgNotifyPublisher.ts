@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { randomUUID } from "node:crypto";
-import type { AgentDeltaChunk } from "./protocolV1.js";
+import { isAgentRunEventId, isUuid, type AgentDeltaChunk } from "./protocolV1.js";
 
 /**
  * One durable channel for every recoverable realtime message kind — structured-data
@@ -12,16 +12,6 @@ export const REALTIME_CHANNEL = "semprec_events";
 export const AGENT_STREAM_CHANNEL = "semprec_agent_stream";
 const MAX_AGENT_STREAM_NOTIFY_BYTES = 7_500;
 const AGENT_STREAM_CHUNK_BYTES = 7_000;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function isUuid(value: unknown): value is string {
-  return typeof value === "string" && UUID_PATTERN.test(value);
-}
-
-function isEventId(value: unknown): value is string {
-  if (typeof value !== "string" || !/^(0|[1-9][0-9]{0,18})$/.test(value)) return false;
-  return BigInt(value) <= 9_223_372_036_854_775_807n;
-}
 
 /**
  * Every message here stays a thin reference — an identifier plus just enough to let a
@@ -153,7 +143,7 @@ export function parseRealtimeMessage(raw: unknown): RealtimeMessage | null {
       return null;
     }
     case "agent_run_event": {
-      if (isUuid(value.agentRunId) && isEventId(value.eventId)) {
+      if (isUuid(value.agentRunId) && isAgentRunEventId(value.eventId)) {
         return { type: "agent_run_event", agentRunId: value.agentRunId, eventId: value.eventId };
       }
       return null;

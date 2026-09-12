@@ -926,6 +926,37 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
     }
   });
 
+  it("keeps the existing watcher live when a replacement replay fails", async () => {
+    const owner = await createTestUser();
+    identityByToken.set("owner", { userId: owner, sessionId: "owner-session" });
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "retain watch after replay failure" });
+    await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
+    const client = await connect("owner");
+    client.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    expect((await nextFrame(client)).type).toBe("agent:event");
+
+    const originalQuery = pool.query.bind(pool);
+    // The first two calls are the replacement's authorization reads. The test only needs to
+    // reject the subsequent replay query, while preserving those real query results at runtime.
+    const passThroughQuery = originalQuery as unknown as () => void;
+    const query = vi
+      .spyOn(pool, "query")
+      .mockImplementationOnce(passThroughQuery)
+      .mockImplementationOnce(passThroughQuery)
+      .mockRejectedValueOnce(new Error("transient replay failure"));
+    try {
+      client.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const delta = nextFrame(client);
+      await publishAgentRunDelta(pool, run.id, { kind: "message_update", text: "still watching" });
+      expect((await delta).type).toBe("agent:delta");
+    } finally {
+      query.mockRestore();
+      client.close();
+    }
+  });
+
   it("chunks an oversized ephemeral delta below Postgres's NOTIFY payload limit", async () => {
     const owner = await createTestUser();
     identityByToken.set("owner", { userId: owner, sessionId: "owner-session" });
