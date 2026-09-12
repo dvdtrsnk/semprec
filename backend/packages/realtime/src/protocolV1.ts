@@ -1,3 +1,5 @@
+import type { NotificationRow } from "@semprec/data";
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function isUuid(value: unknown): value is string {
@@ -49,13 +51,26 @@ export function parseInboundFrame(raw: string): InboundFrame | null {
 }
 
 /**
- * The closed catalog of protocol-v1 outbound (server -> client) text frames. Producing any of
- * these is out of this issue's scope (delivered by later realtime-v1 sibling issues) — this type
- * exists so every future producer targets the same catalog from the start.
+ * The closed catalog of protocol-v1 outbound (server -> client) text frames. `invalidate` stays a
+ * thin reference (issue #161) — `scope: "item"` names one item's identifiers/op/`updatedAt`,
+ * `scope: "schema"` names only the database whose properties/views changed — so the client always
+ * refetches the durable row itself over REST rather than trusting a second, parallel copy of it
+ * riding the socket. `notification` is the one deliberate exception and carries the complete row:
+ * a notification's `title` is pre-rendered text with no second enforcement layer to fall back on.
+ * `agent:event`/`agent:delta` production is out of this issue's scope (a later realtime-v1 sibling
+ * issue) — kept here only so every future producer targets the same catalog from the start.
  */
 export type OutboundFrame =
-  | { type: "invalidate"; databaseId: string; itemId: string; key: string }
-  | { type: "notification"; notification: unknown }
+  | {
+      type: "invalidate";
+      scope: "item";
+      databaseId: string;
+      itemId: string;
+      op: "create" | "update" | "delete";
+      updatedAt: string;
+    }
+  | { type: "invalidate"; scope: "schema"; databaseId: string }
+  | { type: "notification"; notification: NotificationRow }
   | { type: "agent:event"; agentRunId: string; kind: string; payload: unknown }
   | { type: "agent:delta"; agentRunId: string; delta: unknown };
 

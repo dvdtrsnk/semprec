@@ -5,39 +5,36 @@ import type { Pool, PoolClient } from "pg";
  * binary CRDT update frames are distinguished only by `type` on this shared channel,
  * not by separate mechanisms (issue #23, point 8).
  */
-export const REALTIME_CHANNEL = "semprec_realtime";
+export const REALTIME_CHANNEL = "semprec_events";
 
+/**
+ * Every message here stays a thin reference — an identifier plus just enough to let a
+ * client skip a stale echo, never a durable row's content (issue #161). The API fetches
+ * whatever a client needs from REST after receiving one of these, with one deliberate
+ * exception: `notification_created` carries only `notificationId` on this channel, but
+ * `@semprec/realtime`'s WS fan-out fetches the full row before broadcasting it, since a
+ * notification's `title` is pre-rendered text with no second enforcement layer.
+ */
 export type RealtimeMessage =
-  | { type: "item_invalidation"; databaseId: string; itemId: string; key: string }
-  | { type: "doc_update"; docId: string; update: string; createdBy: string }
-  | { type: "agent_run_event"; agentRunId: string; kind: string; payload: unknown }
   | {
-      type: "notification_created";
-      userId: string;
-      notification: {
-        id: string;
-        kind: string;
-        title: string;
-        linkHref: string | null;
-        sourceTable: string;
-        sourceId: string;
-        transitionInstance: string;
-        payload: Record<string, unknown>;
-        createdAt: string;
-        readAt: string | null;
-      };
+      type: "invalidation";
+      scope: "item";
+      databaseId: string;
+      itemId: string;
+      op: "create" | "update" | "delete";
+      updatedAt: string;
     }
+  | { type: "invalidation"; scope: "schema"; databaseId: string }
+  | { type: "doc_update"; docId: string; updateId: string; createdBy: string }
+  | { type: "agent_run_event"; agentRunId: string; kind: string; payload: unknown }
+  | { type: "notification_created"; userId: string; notificationId: string }
   | { type: "notification_read_state"; userId: string; notificationIds: string[] }
   | { type: "session_revoked"; sessionId: string };
 
 /**
- * Postgres caps a NOTIFY payload at ~8000 bytes; a `doc_update` message whose
- * base64-encoded Yjs update doesn't fit will reject here. That only drops the live
- * push — the update itself is already durably committed to `doc_updates` before this
- * is called (see docPersistence.ts's appendDocUpdate), so a client that misses the
- * live frame still converges by reloading the doc. Chunking oversized frames is
- * deliberately not built here — out of scope for the "minimal fan-out" this issue asks
- * for; revisit if large pastes/bulk agent writes make this a real-world problem.
+ * Postgres caps a NOTIFY payload at ~8000 bytes; every message here stays a couple
+ * hundred bytes at most, well under that cap, since none of them carry a durable row's
+ * content — see `RealtimeMessage`'s doc comment.
  */
 export async function publishRealtimeMessage(pool: Pool | PoolClient, message: RealtimeMessage): Promise<void> {
   await pool.query(`SELECT pg_notify($1, $2)`, [REALTIME_CHANNEL, JSON.stringify(message)]);

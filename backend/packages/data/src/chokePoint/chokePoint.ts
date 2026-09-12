@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
-import { withTransaction } from "../db/pool.js";
+import { runAfterCommit, withTransaction } from "../db/pool.js";
+import { notifyInvalidation } from "../realtimeHook.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { assertValidTimezone } from "../timezone.js";
 import type {
@@ -526,6 +527,15 @@ export async function createItemWithClient(
     idempotencyKey: input.idempotencyKey,
   });
   await triggerOnItemEventHeartbeats(client, input.databaseId, "create", item.id, options.queueAffinity);
+  runAfterCommit(client, () =>
+    notifyInvalidation({
+      scope: "item",
+      databaseId: item.databaseId,
+      itemId: item.id,
+      op: "create",
+      updatedAt: item.updatedAt,
+    }),
+  );
   return item;
 }
 
@@ -589,6 +599,15 @@ export async function updateItemWithClient(
     await recomputeAllForTimezoneChange(client, timezone);
   }
 
+  runAfterCommit(client, () =>
+    notifyInvalidation({
+      scope: "item",
+      databaseId: item.databaseId,
+      itemId: item.id,
+      op: "update",
+      updatedAt: item.updatedAt,
+    }),
+  );
   return item;
 }
 
@@ -898,16 +917,32 @@ export function createChokePoint(
   return {
     // ---- databases ----
     async createDatabase(input: databasesStore.CreateDatabaseInput): Promise<DatabaseRow> {
-      return withTransaction(pool, (client) => databasesStore.createDatabase(client, input));
+      return withTransaction(pool, async (client) => {
+        const database = await databasesStore.createDatabase(client, input);
+        runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: database.id }));
+        return database;
+      });
     },
     async archiveDatabase(id: string): Promise<DatabaseRow> {
-      return withTransaction(pool, (client) => databasesStore.archiveDatabase(client, id));
+      return withTransaction(pool, async (client) => {
+        const database = await databasesStore.archiveDatabase(client, id);
+        runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: database.id }));
+        return database;
+      });
     },
     async restoreDatabase(id: string): Promise<DatabaseRow> {
-      return withTransaction(pool, (client) => databasesStore.restoreDatabase(client, id));
+      return withTransaction(pool, async (client) => {
+        const database = await databasesStore.restoreDatabase(client, id);
+        runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: database.id }));
+        return database;
+      });
     },
     async renameDatabase(id: string, name: string): Promise<DatabaseRow> {
-      return withTransaction(pool, (client) => databasesStore.renameDatabase(client, id, name));
+      return withTransaction(pool, async (client) => {
+        const database = await databasesStore.renameDatabase(client, id, name);
+        runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: database.id }));
+        return database;
+      });
     },
     async getDatabase(id: string): Promise<DatabaseRow | null> {
       return withTransaction(pool, (client) => databasesStore.getDatabase(client, id));
@@ -924,7 +959,11 @@ export function createChokePoint(
       ownerProjectItemId?: string;
       ownerModuleId?: string;
     }): Promise<DatabaseRow> {
-      return withTransaction(pool, (client) => databasesStore.createDatabase(client, { ...input, system: false }));
+      return withTransaction(pool, async (client) => {
+        const database = await databasesStore.createDatabase(client, { ...input, system: false });
+        runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: database.id }));
+        return database;
+      });
     },
 
     // ---- properties ----
@@ -947,22 +986,40 @@ export function createChokePoint(
           const property = await propertiesStore.createProperty(client, input);
           await applyRollupConfig(client, property);
           await enqueueRollupBackfill(client, property.id);
-          return propertiesStore.getProperty(client, property.id) as Promise<PropertyRow>;
+          const finalProperty = (await propertiesStore.getProperty(client, property.id)) as PropertyRow;
+          runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: finalProperty.databaseId }));
+          return finalProperty;
         });
       }
-      return withTransaction(pool, (client) => propertiesStore.createProperty(client, input));
+      return withTransaction(pool, async (client) => {
+        const property = await propertiesStore.createProperty(client, input);
+        runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: property.databaseId }));
+        return property;
+      });
     },
 
     async renameProperty(id: string, name: string): Promise<PropertyRow> {
-      return withTransaction(pool, (client) => propertiesStore.renameProperty(client, id, name));
+      return withTransaction(pool, async (client) => {
+        const property = await propertiesStore.renameProperty(client, id, name);
+        runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: property.databaseId }));
+        return property;
+      });
     },
 
     async updatePropertyConfig(id: string, config: Record<string, unknown>): Promise<PropertyRow> {
-      return withTransaction(pool, (client) => updatePropertyConfigWithClient(client, id, config));
+      return withTransaction(pool, async (client) => {
+        const property = await updatePropertyConfigWithClient(client, id, config);
+        runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: property.databaseId }));
+        return property;
+      });
     },
 
     async changePropertyType(id: string, newType: PropertyType): Promise<PropertyRow> {
-      return withTransaction(pool, (client) => changePropertyTypeWithClient(client, id, newType));
+      return withTransaction(pool, async (client) => {
+        const property = await changePropertyTypeWithClient(client, id, newType);
+        runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: property.databaseId }));
+        return property;
+      });
     },
 
     /**
@@ -991,6 +1048,7 @@ export function createChokePoint(
           property = await changePropertyTypeWithClient(client, id, input.type);
           typeChanged = true;
         }
+        runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: property.databaseId }));
         return { property, typeChanged };
       });
     },
@@ -1000,6 +1058,7 @@ export function createChokePoint(
         const property = await propertiesStore.getProperty(client, id);
         if (!property) return;
 
+        const invalidatedDatabaseIds = new Set([property.databaseId]);
         if (property.type === "relation") {
           const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, id);
           if (reldef) {
@@ -1010,11 +1069,15 @@ export function createChokePoint(
               if (otherProperty?.locked) {
                 throw new ForbiddenError(`Cannot delete: the paired relation property ${otherPropertyId} is locked`);
               }
+              if (otherProperty) invalidatedDatabaseIds.add(otherProperty.databaseId);
               await propertiesStore.deleteProperty(client, otherPropertyId);
             }
           }
         }
         await propertiesStore.deleteProperty(client, id);
+        runAfterCommit(client, () => {
+          for (const databaseId of invalidatedDatabaseIds) notifyInvalidation({ scope: "schema", databaseId });
+        });
       });
     },
 
@@ -1023,9 +1086,15 @@ export function createChokePoint(
     async createRelationProperty(
       input: CreateRelationPropertyInput,
     ): Promise<{ property: PropertyRow; inverseProperty: PropertyRow | null }> {
-      return withTransaction(pool, (client) =>
-        createRelationPropertyWithClient(client, input, undefined, computedKeyRegistry),
-      );
+      return withTransaction(pool, async (client) => {
+        const result = await createRelationPropertyWithClient(client, input, undefined, computedKeyRegistry);
+        const invalidatedDatabaseIds = new Set([result.property.databaseId]);
+        if (result.inverseProperty) invalidatedDatabaseIds.add(result.inverseProperty.databaseId);
+        runAfterCommit(client, () => {
+          for (const databaseId of invalidatedDatabaseIds) notifyInvalidation({ scope: "schema", databaseId });
+        });
+        return result;
+      });
     },
 
     // ---- relations (data side: linking two items) ----
@@ -1176,6 +1245,15 @@ export function createChokePoint(
           await triggerOnItemEventHeartbeats(client, row.databaseId, "delete", row.id, queueAffinity);
           const edges = await relationsStore.listAllRelationsForItem(client, row.id);
           for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
+          runAfterCommit(client, () =>
+            notifyInvalidation({
+              scope: "item",
+              databaseId: item.databaseId,
+              itemId: item.id,
+              op: "delete",
+              updatedAt: item.updatedAt,
+            }),
+          );
         }
         return rootResult;
       });
@@ -1214,6 +1292,15 @@ export function createChokePoint(
           if (row.id === itemId) rootResult = item;
           const edges = await relationsStore.listAllRelationsForItem(client, row.id);
           for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
+          runAfterCommit(client, () =>
+            notifyInvalidation({
+              scope: "item",
+              databaseId: item.databaseId,
+              itemId: item.id,
+              op: "update",
+              updatedAt: item.updatedAt,
+            }),
+          );
         }
         return rootResult;
       });
@@ -1290,7 +1377,7 @@ export function createChokePoint(
     ): Promise<ViewRow> {
       return withTransaction(pool, async (client) => {
         await assertAuthenticatedAgentIdentity(client, actor);
-        return viewsStore.createView(
+        const view = await viewsStore.createView(
           client,
           {
             ...input,
@@ -1299,6 +1386,13 @@ export function createChokePoint(
           },
           viewTypeRegistry,
         );
+        // Curated views (databaseId === null) have no schema to invalidate — nothing else's REST
+        // fetch is keyed by one, so there is no client-visible "database changed" to signal here.
+        if (view.databaseId !== null) {
+          const databaseId = view.databaseId;
+          runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId }));
+        }
+        return view;
       });
     },
 
@@ -1337,7 +1431,7 @@ export function createChokePoint(
         // One-way adoption: a user's write to an agent's view flips it to 'user' and clears the
         // creator identity; a system view is never flipped by a user write.
         const adopt = input.actor.type === "user" && view.createdBy === "ai_agent";
-        return viewsStore.patchView(
+        const patched = await viewsStore.patchView(
           client,
           input.id,
           {
@@ -1349,6 +1443,11 @@ export function createChokePoint(
           },
           viewTypeRegistry,
         );
+        if (patched.databaseId !== null) {
+          const databaseId = patched.databaseId;
+          runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId }));
+        }
+        return patched;
       });
     },
 
@@ -1359,6 +1458,10 @@ export function createChokePoint(
         if (!view) throw new NotFoundError(`View ${input.id} not found`);
         assertViewWritable(view, input.actor);
         await viewsStore.deleteView(client, input.id);
+        if (view.databaseId !== null) {
+          const databaseId = view.databaseId;
+          runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId }));
+        }
       });
     },
 

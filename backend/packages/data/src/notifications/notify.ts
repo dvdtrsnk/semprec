@@ -109,23 +109,7 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
 
   if (row.inserted) {
     await enqueueNotificationFanout(client, row.id);
-    runAfterCommit(client, () =>
-      notifyNotificationCreated({
-        userId: input.userId,
-        notification: {
-          id: row.id,
-          kind: input.kind,
-          title,
-          linkHref: input.linkHref,
-          sourceTable: input.sourceTable,
-          sourceId: input.sourceId,
-          transitionInstance: input.transitionInstance,
-          payload: input.payload ?? {},
-          createdAt: row.created_at.toISOString(),
-          readAt: null,
-        },
-      }),
-    );
+    runAfterCommit(client, () => notifyNotificationCreated({ userId: input.userId, notificationId: row.id }));
   }
 
   return row.id;

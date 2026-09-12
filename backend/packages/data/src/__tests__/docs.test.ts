@@ -163,7 +163,7 @@ describe("docs (CRDT layer)", () => {
       expect(rows[0]!.created_by).toBe("ai_agent");
     });
 
-    it("notifies the realtime doc-update hook with the doc id, origin, and a base64 update", async () => {
+    it("notifies the realtime doc-update hook with the doc id, origin, and the persisted update's id", async () => {
       const events: DocUpdateEvent[] = [];
       setDocUpdateHook((event) => events.push(event));
 
@@ -172,8 +172,11 @@ describe("docs (CRDT layer)", () => {
 
       expect(events).toHaveLength(1);
       expect(events[0]!.createdBy).toBe("user");
-      expect(typeof events[0]!.update).toBe("string");
-      expect(Buffer.from(events[0]!.update, "base64").length).toBeGreaterThan(0);
+      expect(typeof events[0]!.updateId).toBe("string");
+
+      const doc = await docStore.getDoc(item.id);
+      const { rows } = await pool.query<{ id: string }>(`SELECT id FROM doc_updates WHERE doc_id = $1`, [doc?.id]);
+      expect(rows.map((r) => r.id)).toContain(events[0]!.updateId);
     });
 
     it("does not fire the realtime doc-update hook if the enclosing transaction rolls back (issue #105 review fix)", async () => {
