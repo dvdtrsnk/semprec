@@ -51,8 +51,9 @@ all:
 - **Rule 6 below, in its usual disguises.** A plain `string` cast straight to a
   narrow union (`as PropertyType`) instead of checked against the allowed
   values — it returns the right 400 today only because a downstream layer
-  happens to validate it too, and silently stops the day that layer changes.
-  (`state-writes`)
+  happens to validate it too, and stops the day that layer changes. The same
+  shape shows up as a `pg` row read without a type argument, or `res.json() as
+  X`. (`state-writes`)
 - **A pre-check that ran outside the write's own transaction.** A lookup
   confirms a row is there or a lock is free, then a separate transaction acts
   on it — a concurrent write in the gap makes the lookup stale, and nothing

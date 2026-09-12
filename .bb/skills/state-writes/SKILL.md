@@ -109,7 +109,8 @@ Related checks worth doing in the same pass:
       internals.
 - [ ] Every notification, invalidation or enqueue fires after the commit, not
       inside the transaction.
-- [ ] Every targeted `UPDATE`/`DELETE` checks its affected-row count and treats
-      zero as `NotFoundError`, rather than trusting a pre-fetch that ran before it.
+- [ ] Every targeted `UPDATE`/`DELETE` checks its affected-row count
+      (`requireAffectedRows`, or a manual `NotFoundError` when zero is a
+      legitimate outcome) rather than trusting a pre-fetch that ran before it.
 - [ ] Every guard the "add"/"create"/"lock" side of a pair enforces is enforced
       by its "remove"/"delete"/"unlock" counterpart too.
