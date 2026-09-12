@@ -34,12 +34,12 @@ the failure mode that rule exists to prevent.
 | Skill | Load it when |
 |---|---|
 | `implement-issue` | starting any issue — the execution contract |
-| `adr-conventions` | adding an ADR, or editing, superseding or narrowing an existing one |
-| `state-writes` | creating, updating or deleting persisted state — items, relations, blocks, rows in any table |
+| `adr-conventions` | introducing a cross-cutting pattern no ADR covers — or adding, editing, superseding or narrowing an ADR |
+| `state-writes` | creating, updating or deleting persisted state — items, relations, blocks, rows in any table, or a `NOTIFY` that follows one |
 | `db-migrations` | a schema change, constraint, index, or backfill |
 | `canonical-keys` | a stored key, option value, view type, or any string a user will see |
 | `ai-gateway` | any model call, provider SDK, or provider credential |
-| `io-hardening` | a new HTTP route or handler, a webhook receiver, or any outbound call |
+| `io-hardening` | a new HTTP route, handler, WebSocket upgrade, `LISTEN` consumer, pooled-connection consumer, or any network call |
 | `error-handling` | a `catch`, an error mapping, a rollback path, or any decision about what happens on failure |
 
 ## What the review actually reports

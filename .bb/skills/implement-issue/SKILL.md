@@ -30,13 +30,13 @@ means to "remember them as it goes" reliably does not.
 
 | Load | When the Task involves |
 |---|---|
-| `state-writes` | creating, updating or deleting persisted state — items, relations, blocks, rows in any table |
-| `io-hardening` | a new HTTP route or handler, a webhook receiver, or any outbound call |
+| `state-writes` | creating, updating or deleting persisted state — items, relations, blocks, rows in any table, or a `NOTIFY` that follows one |
+| `io-hardening` | a new HTTP route, handler, WebSocket upgrade, `LISTEN` consumer, pooled-connection consumer, or any network call |
 | `error-handling` | a `catch`, an error mapping, a rollback path, or any decision about what happens on failure |
 | `db-migrations` | a schema change, constraint, index, or backfill |
 | `canonical-keys` | a stored key, option value, view type, or any string a user will see |
 | `ai-gateway` | any model call, provider SDK, or provider credential |
-| `adr-conventions` | adding an ADR, or editing, superseding or narrowing an existing one |
+| `adr-conventions` | introducing a cross-cutting pattern no ADR covers — or adding, editing, superseding or narrowing an ADR |
 
 Most issues match more than one. Load all that apply — they are short, and the
 cost of reading one is far below the cost of the finding it prevents.
