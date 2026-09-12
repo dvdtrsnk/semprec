@@ -54,6 +54,10 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "patch item": "services/semprec-api/src/itemsHandler.ts",
   "delete item": "services/semprec-api/src/itemsHandler.ts",
   "restore item": "services/semprec-api/src/itemsHandler.ts",
+  "query database": "services/semprec-api/src/itemsHandler.ts",
+  "create/replace relation": "services/semprec-api/src/itemsHandler.ts",
+  "delete relation": "services/semprec-api/src/itemsHandler.ts",
+  "query view": "services/semprec-api/src/viewsHandler.ts",
   "upload file": "services/semprec-api/src/filesHandler.ts",
   "download blob": "services/semprec-api/src/blobsHandler.ts",
 };
