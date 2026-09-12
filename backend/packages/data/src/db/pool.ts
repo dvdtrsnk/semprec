@@ -91,7 +91,7 @@ export function requireAffectedRows(result: { rowCount: number | null }, context
   return rowCount;
 }
 
-/** Runs `fn` on a dedicated client, releasing it in a `finally` so a throw between acquire and the first query cannot leak a pool connection. The non-transactional sibling of `withTransaction` — use this for a client needed across several statements that do not need to be atomic (e.g. a session-scoped `LISTEN`). */
+/** Runs `fn` on a dedicated client, releasing it in a `finally` so a throw between acquire and the first query cannot leak a pool connection. The non-transactional sibling of `withTransaction` — use this for a handful of related statements against one connection that don't need to be atomic. Not a fit for a client that must outlive `fn` itself, such as a `LISTEN` held open for a connection's lifetime and released from a separate code path. */
 export async function withClient<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await pool.connect();
   try {
