@@ -52,3 +52,42 @@ export function requireStringField(body: Record<string, unknown>, field: string)
   }
   return value;
 }
+
+/** Postgres's `integer` column type holds values in this range; a body field backing one must fail as 400, not reach the database and surface as a raw DB error. */
+export const POSTGRES_INT4_MIN = -2147483648;
+export const POSTGRES_INT4_MAX = 2147483647;
+
+export interface IntegerFieldOptions {
+  /** Also reject negative values, for a column that only ever holds a non-negative integer (e.g. a position). */
+  nonNegative?: boolean;
+}
+
+function integerFieldRange(options: IntegerFieldOptions): { min: number; max: number } {
+  return { min: options.nonNegative ? 0 : POSTGRES_INT4_MIN, max: POSTGRES_INT4_MAX };
+}
+
+/** `Number.isInteger` already excludes `NaN` and `Infinity`, so this one check covers integer, finite, and (with the range test) in-bounds. */
+function assertIntegerField(value: unknown, field: string, options: IntegerFieldOptions): number {
+  const { min, max } = integerFieldRange(options);
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+    throw new ValidationError(`'${field}' must be an integer between ${min} and ${max}`, { field });
+  }
+  return value;
+}
+
+export function requireIntegerField(
+  body: Record<string, unknown>,
+  field: string,
+  options: IntegerFieldOptions = {},
+): number {
+  return assertIntegerField(body[field], field, options);
+}
+
+export function optionalIntegerField(
+  body: Record<string, unknown>,
+  field: string,
+  options: IntegerFieldOptions = {},
+): number | undefined {
+  const value = body[field];
+  return value === undefined ? undefined : assertIntegerField(value, field, options);
+}
