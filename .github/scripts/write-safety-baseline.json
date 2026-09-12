@@ -2,8 +2,7 @@
   "unsafeWrites": [
     "packages/data/src/agentRuns/agentRunsStore.ts::53e2a5a7b0fa",
     "packages/data/src/auth/passwordResetStore.ts::88c2b33a30ad",
-    "packages/data/src/auth/sessionsStore.ts::558ff6638edc",
-    "packages/data/src/auth/sessionsStore.ts::b81fba902136",
+    "packages/data/src/auth/sessionsStore.ts::faa37856cf24",
     "packages/data/src/auth/sessionsStore.ts::ff4f1eaf5f74",
     "packages/data/src/auth/usersStore.ts::8b558d3e6405",
     "packages/data/src/chokePoint/databasesStore.ts::2d30df8b001f",
@@ -114,6 +113,7 @@
     "packages/data/src/rollup/recompute.ts::278164cbdd45",
     "packages/data/src/rollup/recompute.ts::7df2c2d63510",
     "packages/data/src/scheduler/sweep.ts::a5f226914063",
+    "packages/realtime/src/syncServer.ts::a1831e43b4b5",
     "packages/realtime/src/wsServer.ts::a1831e43b4b5"
   ]
 }
