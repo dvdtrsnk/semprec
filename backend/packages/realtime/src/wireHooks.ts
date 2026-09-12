@@ -4,6 +4,7 @@ import {
   setDocUpdateHook,
   setNotificationCreatedHook,
   setNotificationReadStateHook,
+  setSessionRevokedHook,
 } from "@semprec/data";
 import { publishRealtimeMessage } from "./pgNotifyPublisher.js";
 
@@ -33,6 +34,11 @@ export function wireRealtimeHooks(pool: Pool): void {
   setNotificationReadStateHook((event) => {
     publishRealtimeMessage(pool, { type: "notification_read_state", ...event }).catch((err: unknown) => {
       console.error("Failed to publish notification_read_state realtime message", err);
+    });
+  });
+  setSessionRevokedHook((event) => {
+    publishRealtimeMessage(pool, { type: "session_revoked", ...event }).catch((err: unknown) => {
+      console.error("Failed to publish session_revoked realtime message", err);
     });
   });
 }

@@ -9,7 +9,9 @@ import {
   type PasswordResetMailer,
 } from "@semprec/data";
 import { createTransport } from "nodemailer";
+import { wireRealtimeHooks } from "@semprec/realtime";
 import { createDispatcher } from "./app.js";
+import { createSyncUpgradeHandler } from "./syncHandler.js";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("DATABASE_URL is not set");
@@ -60,6 +62,8 @@ if (!Number.isFinite(maxFileSizeMb) || maxFileSizeMb <= 0) {
 const blobStorage = new LocalFsBlobStorageWriter(process.env.FILES_STORAGE_DIR ?? "/tmp/semprec-files");
 
 const pool = createPool(connectionString);
+wireRealtimeHooks(pool);
+
 const moduleRegistry = await loadFullModuleRegistry();
 const dispatch = await createDispatcher(pool, {
   passwordResetMailer: buildPasswordResetMailer(),
@@ -69,8 +73,20 @@ const dispatch = await createDispatcher(pool, {
   blobStorage,
   maxFileSizeBytes: maxFileSizeMb * 1024 * 1024,
 });
+const syncServer = await createSyncUpgradeHandler(pool);
 
 const server = createServer(dispatch);
+
+// `WS /api/sync` (issue #160) is the one WS upgrade route this service serves; anything else
+// requesting a protocol upgrade gets its socket destroyed rather than silently ignored.
+server.on("upgrade", (req, socket, head) => {
+  const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+  if (pathname === "/api/sync") {
+    syncServer.handleUpgrade(req, socket, head);
+    return;
+  }
+  socket.destroy();
+});
 
 server.listen(port, () => {
   console.log(`semprec-api listening on port ${port}`);

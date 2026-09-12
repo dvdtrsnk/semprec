@@ -27,7 +27,8 @@ export type RealtimeMessage =
         readAt: string | null;
       };
     }
-  | { type: "notification_read_state"; userId: string; notificationIds: string[] };
+  | { type: "notification_read_state"; userId: string; notificationIds: string[] }
+  | { type: "session_revoked"; sessionId: string };
 
 /**
  * Postgres caps a NOTIFY payload at ~8000 bytes; a `doc_update` message whose
