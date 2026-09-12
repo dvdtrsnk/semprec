@@ -4,7 +4,13 @@ export * from "./errors.js";
 export * from "./types.js";
 
 export { createChokePoint, createItemWithClient, type ChokePoint, type Actor } from "./chokePoint/chokePoint.js";
-export type { CreateItemInput } from "./chokePoint/chokePoint.js";
+export type {
+  CreateItemInput,
+  CreateRelationInput,
+  UpdateRelationInput,
+  DeleteRelationInput,
+  RelationEdge,
+} from "./chokePoint/chokePoint.js";
 export type { CreateDatabaseInput } from "./chokePoint/databasesStore.js";
 export { getDatabaseByModuleId } from "./chokePoint/databasesStore.js";
 export type { CreatePropertyInput } from "./chokePoint/propertiesStore.js";
@@ -22,7 +28,7 @@ export * from "./views/viewConfig.js";
 export * from "./views/mailboxClientViewType.js";
 export type { FilterProperty, FilterProperties } from "./views/filterCompiler.js";
 export { buildFilterProperties } from "./views/filterProperties.js";
-export type { QueryViewOptions, QueryViewResult } from "./views/viewQuery.js";
+export type { QueryViewOptions, QueryViewResult, DatabaseQueryInput, ViewQueryInput } from "./views/viewQuery.js";
 export { manifest as viewsModuleManifest } from "./views/viewsModuleManifest.js";
 
 export * from "./scheduler/rule.js";
@@ -139,6 +145,11 @@ export { runDocHistoryCutoverMigration } from "./docs/docHistoryCutoverMigration
 export { manifest as docsModuleManifest } from "./docs/docsModuleManifest.js";
 
 export * from "./blobs/blobsStore.js";
+export type { IngestUploadedFileInput, IngestUploadedFileResult } from "./blobs/fileUploadStore.js";
+export { ingestUploadedFile } from "./blobs/fileUploadStore.js";
+export { findFileItemByBlobId } from "./chokePoint/itemsStore.js";
+export type { BlobStorageWriter, WriteStreamOptions } from "./mail/blobStorage.js";
+export { LocalFsBlobStorageWriter, MaxBytesExceededError } from "./mail/blobStorage.js";
 
 export * from "./tasks/taskRecurrenceRule.js";
 export { computeNextDueDate } from "./tasks/nextDueDate.js";

@@ -126,6 +126,7 @@ function trackWrittenKeys(storage: BlobStorageWriter): { storage: BlobStorageWri
         return storage.writeStream(storageKey, source);
       },
       delete: (storageKey: string) => storage.delete(storageKey),
+      readStream: (storageKey: string, range?: { start: number; end: number }) => storage.readStream(storageKey, range),
     },
   };
 }

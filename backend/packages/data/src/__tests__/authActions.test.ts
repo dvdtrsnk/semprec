@@ -1,9 +1,10 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { createUser } from "../auth/usersStore.js";
-import { getActiveSessionByTokenHash, listSessionsForUser } from "../auth/sessionsStore.js";
+import { getActiveSessionByTokenHash, isSessionActive, listSessionsForUser } from "../auth/sessionsStore.js";
+import { setSessionRevokedHook, type SessionRevokedEvent } from "../realtimeHook.js";
 import { countRecentFailedAttempts } from "../auth/loginAttemptsStore.js";
 import { login, verifySessionToken, logout, revokeUserSession, bootstrapFirstAccount } from "../auth/authActions.js";
 import { LOCKOUT_THRESHOLD } from "../auth/loginLockout.js";
@@ -237,6 +238,10 @@ describe("auth actions (issue #140)", () => {
   });
 
   describe("logout", () => {
+    afterEach(() => {
+      setSessionRevokedHook(() => {});
+    });
+
     it("revokes only the caller's own session, leaving other sessions for the same user valid", async () => {
       const user = await makeUser();
       const a = await login(pool, { email: user.email, password: "s3cret-password", platform: "web", ip: "1.1.1.1" });
@@ -248,9 +253,25 @@ describe("auth actions (issue #140)", () => {
       const stillValid = await verifySessionToken(pool, b.token);
       expect(stillValid.session.id).toBe(b.session.id);
     });
+
+    it("fires the session-revoked realtime hook (issue #160) for the logged-out session only", async () => {
+      const user = await makeUser();
+      const a = await login(pool, { email: user.email, password: "s3cret-password", platform: "web", ip: "1.1.1.1" });
+      const events: SessionRevokedEvent[] = [];
+      setSessionRevokedHook((event) => events.push(event));
+
+      await logout(pool, a.session.id);
+
+      expect(events).toEqual([{ sessionId: a.session.id }]);
+      expect(await isSessionActive(pool, a.session.id)).toBe(false);
+    });
   });
 
   describe("revokeUserSession", () => {
+    afterEach(() => {
+      setSessionRevokedHook(() => {});
+    });
+
     it("revokes a different session belonging to the same user", async () => {
       const user = await makeUser();
       const a = await login(pool, { email: user.email, password: "s3cret-password", platform: "web", ip: "1.1.1.1" });
@@ -262,6 +283,29 @@ describe("auth actions (issue #140)", () => {
       await expect(verifySessionToken(pool, b.token)).rejects.toThrow(UnauthorizedError);
       const stillValid = await verifySessionToken(pool, a.token);
       expect(stillValid.session.id).toBe(a.session.id);
+    });
+
+    it("fires the session-revoked realtime hook for the revoked session only, not the caller's own", async () => {
+      const user = await makeUser();
+      const a = await login(pool, { email: user.email, password: "s3cret-password", platform: "web", ip: "1.1.1.1" });
+      const b = await login(pool, { email: user.email, password: "s3cret-password", platform: "ios", ip: "1.1.1.1" });
+      const events: SessionRevokedEvent[] = [];
+      setSessionRevokedHook((event) => events.push(event));
+
+      await revokeUserSession(pool, user.id, b.session.id);
+
+      expect(events).toEqual([{ sessionId: b.session.id }]);
+      expect(await isSessionActive(pool, a.session.id)).toBe(true);
+    });
+
+    it("fires no realtime hook for an unknown session id", async () => {
+      const user = await makeUser();
+      const events: SessionRevokedEvent[] = [];
+      setSessionRevokedHook((event) => events.push(event));
+
+      await revokeUserSession(pool, user.id, "00000000-0000-0000-0000-000000000000");
+
+      expect(events).toEqual([]);
     });
 
     it("refuses to revoke a session belonging to a different user", async () => {

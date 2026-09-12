@@ -5,6 +5,7 @@ import { withTransaction } from "../db/pool.js";
 import { hashPassword, verifyPassword } from "../auth/passwordHash.js";
 import { createUser, getUserByEmail } from "../auth/usersStore.js";
 import { createSession, getActiveSessionByTokenHash } from "../auth/sessionsStore.js";
+import { setSessionRevokedHook, type SessionRevokedEvent } from "../realtimeHook.js";
 import { generateOpaqueToken, hashToken } from "../auth/token.js";
 import {
   PASSWORD_RESET_MAX_REQUESTS_PER_WINDOW,
@@ -203,6 +204,33 @@ describe("password reset actions (issue #142)", () => {
       await resetPasswordInTransaction(pool, { token, newPassword: "a-brand-new-password" });
 
       expect(await getActiveSessionByTokenHash(pool, tokenHash)).toBeNull();
+    });
+
+    it("fires the session-revoked realtime hook (issue #160) for every session it revokes", async () => {
+      const user = await makeUser();
+      const sessionA = await createSession(pool, {
+        userId: user.id,
+        tokenHash: generateOpaqueToken().tokenHash,
+        platform: "web",
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      const sessionB = await createSession(pool, {
+        userId: user.id,
+        tokenHash: generateOpaqueToken().tokenHash,
+        platform: "ios",
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+
+      const events: SessionRevokedEvent[] = [];
+      setSessionRevokedHook((event) => events.push(event));
+      try {
+        const token = await requestAndGetToken(user.email);
+        await resetPasswordInTransaction(pool, { token, newPassword: "a-brand-new-password" });
+
+        expect(events.map((event) => event.sessionId).sort()).toEqual([sessionA.id, sessionB.id].sort());
+      } finally {
+        setSessionRevokedHook(() => {});
+      }
     });
   });
 });
