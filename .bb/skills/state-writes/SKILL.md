@@ -73,12 +73,32 @@ deliberate, and it cuts both ways: a callback whose delivery matters has to
 report its own failure, since nothing above it will. Anything needing a real
 delivery guarantee belongs in a queue job written inside the same transaction.
 
-Two related orderings worth checking in the same pass:
+Related checks worth doing in the same pass:
 
 - A guard that decides whether to write must run *before* the write, not after
   it. A validity check placed after the insert is not a guard, it is a comment.
-- An idempotency check read outside the transaction that protects it is not
-  idempotent: two callers both read "not done yet" and both proceed.
+- A check read outside the transaction that performs the write is not a guard —
+  idempotency or otherwise. Two callers can both read "not done yet" and both
+  proceed; a `getView`/`listX`-style pre-fetch that confirms a row exists can be
+  stale by the time the delete or update that follows it actually runs, because
+  a concurrent write committed in the gap. Confirm the condition from the write
+  itself, not from a lookup that ran before it.
+- A targeted `UPDATE`/`DELETE` still reports success when it matches zero rows,
+  unless you check how many rows it actually touched. `WHERE id = $1` against a
+  row that is already gone returns `rowCount: 0`, not an error. Use
+  `requireAffectedRows(result, context)` (next to `requireSingleRow` in
+  `db/pool.ts`) when the row is expected to exist by construction — a delete
+  keyed off an id just read back, an update guarded by a prior existence check.
+  When zero rows is itself a legitimate outcome the caller has to handle (a
+  bulk operation that may affect nobody, a remove that might target a
+  non-member), check `result.rowCount` yourself and turn it into the
+  domain-appropriate response — a `NotFoundError`, not a silent success. Either
+  way, this is what makes the previous point actionable: the write confirms its
+  own outcome, so the stale pre-check no longer matters.
+- A guard enforced on one direction of a paired write is not automatically
+  enforced on its counterpart. If `add`/`create`/`lock` checks a precondition,
+  `remove`/`delete`/`unlock` needs the same check — a rule found on one side of
+  a pair is exactly where a reviewer looks for it on the other.
 
 ## Before committing, check
 
@@ -89,3 +109,8 @@ Two related orderings worth checking in the same pass:
       internals.
 - [ ] Every notification, invalidation or enqueue fires after the commit, not
       inside the transaction.
+- [ ] Every targeted `UPDATE`/`DELETE` checks its affected-row count
+      (`requireAffectedRows`, or a manual `NotFoundError` when zero is a
+      legitimate outcome) rather than trusting a pre-fetch that ran before it.
+- [ ] Every guard the "add"/"create"/"lock" side of a pair enforces is enforced
+      by its "remove"/"delete"/"unlock" counterpart too.

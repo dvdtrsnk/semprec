@@ -41,3 +41,26 @@
   existing rule here or by an ADR must add one under `docs/adr/` (see
   `docs/adr/README.md` for the format) — a new cross-cutting pattern with no ADR
   and no rule covering it is a medium-severity finding.
+- A targeted `DELETE`/`UPDATE` (by id, or any `WHERE` narrow enough to match at
+  most one row) must check how many rows it actually affected — `rowCount` on
+  the `pg` result, or an equivalent `RETURNING`-based check — and the caller must
+  act on that count. A query that runs, matches zero rows, and is still reported
+  to the caller as a successful write is a high-severity finding: the caller
+  can't tell "the delete/update happened" from "there was nothing there," and a
+  client that trusted a false success will not retry.
+- A pre-check used to decide whether a write is allowed, or to build the "prior
+  state" a response body reports, is only a guard if it runs inside the same
+  transaction as the write it protects. A check performed before `BEGIN` (or in
+  a separate statement/connection from the one doing the write) is a
+  high-severity finding regardless of how correct the check itself is — the row
+  it inspected can be deleted, updated, or reassigned by a concurrent request in
+  the gap between the check and the write, and the response ends up describing
+  a state that was never true.
+- A numeric field taken from a request body must be validated against the
+  domain of the column that stores it — the column's integer width, sign, and
+  any range the schema or business logic implies — not merely checked to be a
+  JavaScript `number`. Accepting a value that `typeof` calls a number but Postgres
+  will reject (out of `int4` range, negative where the column can't be, a
+  non-integer for an integer column) and letting it reach the query is a
+  high-severity finding: the caller sees an unhandled 500 from the database
+  instead of a 400 that names the field.
