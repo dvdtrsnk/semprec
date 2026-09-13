@@ -140,3 +140,24 @@ export function setSessionRevokedHook(next: SessionRevokedHook): void {
 export function notifySessionRevoked(event: SessionRevokedEvent): void {
   sessionRevokedHook(event);
 }
+
+/**
+ * Fired for a committed durable agent-run event. It carries only the run and event identifiers:
+ * `@semprec/realtime` fetches the durable row before delivering it to an authorized watcher.
+ */
+export interface AgentRunEventNotification {
+  agentRunId: string;
+  eventId: string;
+}
+
+export type AgentRunEventHook = (event: AgentRunEventNotification) => void;
+
+let agentRunEventHook: AgentRunEventHook = () => {};
+
+export function setAgentRunEventHook(next: AgentRunEventHook): void {
+  agentRunEventHook = next;
+}
+
+export function notifyAgentRunEvent(event: AgentRunEventNotification): void {
+  agentRunEventHook(event);
+}

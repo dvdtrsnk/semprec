@@ -2,7 +2,7 @@ import { Pool, type PoolClient } from "pg";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { getEarliestUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
-import { withTransaction, requireSingleRow } from "../db/pool.js";
+import { withTransaction, requireAffectedRows, requireSingleRow } from "../db/pool.js";
 
 export type TriggeredBy = "user" | "heartbeat" | "supervisor" | "mcp";
 export type AgentRunUnit = "invocation" | "session";
@@ -89,11 +89,11 @@ export async function finishAgentRun(
   status: "done" | "error",
   result: string | null,
 ): Promise<void> {
-  await client.query(`UPDATE agent_runs SET status = $2, result = $3, finished_at = now() WHERE id = $1`, [
-    agentRunId,
-    status,
-    result,
-  ]);
+  const resultRow = await client.query(
+    `UPDATE agent_runs SET status = $2, result = $3, finished_at = now() WHERE id = $1`,
+    [agentRunId, status, result],
+  );
+  requireAffectedRows(resultRow, "agent run finish");
 }
 
 /**
