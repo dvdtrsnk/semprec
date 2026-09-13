@@ -61,7 +61,10 @@ function serializedBytes(message: AgentStreamMessage): number {
  * base64 pieces. The receiver forwards the chunk metadata unchanged for the client to reassemble.
  */
 export async function publishAgentRunDelta(pool: Pool | PoolClient, agentRunId: string, delta: unknown): Promise<void> {
-  const single: AgentStreamMessage = { type: "agent_run_delta", agentRunId, delta };
+  // `JSON.stringify` drops an object key whose value is `undefined`, and `parseAgentStreamMessage`
+  // requires a `delta` key to be present — normalize so an explicit `undefined` delta still
+  // round-trips instead of being silently dropped on the fast (unchunked) path below.
+  const single: AgentStreamMessage = { type: "agent_run_delta", agentRunId, delta: delta === undefined ? null : delta };
   if (serializedBytes(single) < MAX_AGENT_STREAM_NOTIFY_BYTES) {
     await pool.query(`SELECT pg_notify($1, $2)`, [AGENT_STREAM_CHANNEL, JSON.stringify(single)]);
     return;

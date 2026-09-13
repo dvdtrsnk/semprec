@@ -17,6 +17,18 @@ import { wireRealtimeHooks } from "../wireHooks.js";
 
 let pool: Pool;
 
+// wireRealtimeHooks(pool) installs every hook, not just the one a given test exercises. Reset
+// all of them so a test that only unsets its own hook can never leave the rest wired to `pool`
+// for a later test in this file to trip over.
+function resetHooks(): void {
+  setInvalidationHook(() => {});
+  setDocUpdateHook(() => {});
+  setNotificationCreatedHook(() => {});
+  setNotificationReadStateHook(() => {});
+  setSessionRevokedHook(() => {});
+  setAgentRunEventHook(() => {});
+}
+
 describe("realtime", () => {
   beforeEach(() => {
     // The shared embedded-Postgres instance (vitest globalSetup, packages/data) already
@@ -27,12 +39,7 @@ describe("realtime", () => {
   });
 
   afterAll(async () => {
-    setInvalidationHook(() => {});
-    setDocUpdateHook(() => {});
-    setNotificationCreatedHook(() => {});
-    setNotificationReadStateHook(() => {});
-    setSessionRevokedHook(() => {});
-    setAgentRunEventHook(() => {});
+    resetHooks();
     await pool?.end();
   });
 
@@ -189,7 +196,7 @@ describe("realtime", () => {
       });
     } finally {
       listenClient.release(true);
-      setAgentRunEventHook(() => {});
+      resetHooks();
     }
   });
 });

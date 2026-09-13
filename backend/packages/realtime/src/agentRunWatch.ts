@@ -124,7 +124,7 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
     if (pending?.get(runId) === token) pending.delete(runId);
   }
 
-  async function deliver(watcher: Watcher, event: AgentRunEventRow): Promise<void> {
+  function deliver(watcher: Watcher, event: AgentRunEventRow): void {
     if (!isCurrent(watcher) || !isLater(event.id, watcher.lastEventId)) return;
     send(watcher.ws, eventFrame(event));
     watcher.lastEventId = event.id;
@@ -173,7 +173,7 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
       try {
         const replay = await listAgentRunEventsAfter(pool, runId, afterEventId);
         if (!isCurrent(watcher)) return;
-        for (const event of replay) await deliver(watcher, event);
+        for (const event of replay) deliver(watcher, event);
         // Keep the watcher in replay mode until every reference collected during replay has
         // drained. A NOTIFY arriving while one queued row is being fetched is collected by the
         // next loop instead of bypassing an earlier id as an ordinary live delivery.
@@ -185,7 +185,7 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
           for (const eventId of queued) {
             if (!isCurrent(watcher) || !isLater(eventId, watcher.lastEventId)) continue;
             const event = await getAgentRunEventById(pool, runId, eventId);
-            if (event) await deliver(watcher, event);
+            if (event) deliver(watcher, event);
           }
         }
         if (!isCurrent(watcher)) return;
@@ -234,7 +234,7 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
       // watcher of another run receive a row merely because it guessed an event id.
       const event = await getAgentRunEventById(pool, runId, eventId);
       if (!event) return;
-      for (const watcher of liveWatchers) await deliver(watcher, event);
+      for (const watcher of liveWatchers) deliver(watcher, event);
     },
 
     forwardDelta(message) {
