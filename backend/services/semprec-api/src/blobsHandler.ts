@@ -186,16 +186,14 @@ export function createBlobsRequestListener(pool: Pool, options: BlobsRequestList
         sendJson(res, statusForError(err), toErrorResponseBody(err));
         return;
       }
-      const errInfo = err instanceof Error ? (err.stack ?? err.message) : err;
-      logger.error({ err: errInfo, method: req.method, path: url.pathname }, "Unexpected error handling request");
+      logger.error({ err, method: req.method, path: url.pathname }, "Unexpected error handling request");
       sendJson(res, 500, { error: { code: "internal_error" } });
     }
   }
 
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {
-      const errInfo = err instanceof Error ? (err.stack ?? err.message) : err;
-      logger.error({ err: errInfo }, "Unhandled error in the request listener");
+      logger.error({ err }, "Unhandled error in the request listener");
       if (res.headersSent) {
         res.end();
         return;

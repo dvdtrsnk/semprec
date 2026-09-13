@@ -124,8 +124,7 @@ export function createAdapterRequestListener(
         return;
       }
       const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
-      const errInfo = err instanceof Error ? (err.stack ?? err.message) : err;
-      logger.error({ err: errInfo, method: req.method, path: pathname }, "Unexpected error handling request");
+      logger.error({ err, method: req.method, path: pathname }, "Unexpected error handling request");
       sendJson(res, 500, { error: { code: "internal_error" } });
     }
   }
@@ -135,8 +134,7 @@ export function createAdapterRequestListener(
   // crash the process on any rejection escaping the try/catch above.
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {
-      const errInfo = err instanceof Error ? (err.stack ?? err.message) : err;
-      logger.error({ err: errInfo }, "Unhandled error in the request listener");
+      logger.error({ err }, "Unhandled error in the request listener");
       if (res.headersSent) {
         res.end();
         return;
