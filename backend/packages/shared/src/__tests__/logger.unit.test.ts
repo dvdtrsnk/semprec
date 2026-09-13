@@ -107,7 +107,14 @@ describe("createLogger", () => {
     let output: unknown;
     try {
       logger.info(
-        { headers: { authorization: "Bearer super-secret-token" }, password: "hunter2", token: "abc123" },
+        {
+          headers: {
+            authorization: "Bearer super-secret-token",
+            Authorization: "Bearer canonical-header-secret",
+          },
+          password: "hunter2",
+          token: "abc123",
+        },
         "no content leaks",
       );
       output = writeSpy.mock.calls[0]![0];
@@ -117,9 +124,11 @@ describe("createLogger", () => {
 
     const record = JSON.parse(String(output)) as Record<string, unknown>;
     expect(JSON.stringify(record)).not.toContain("super-secret-token");
+    expect(JSON.stringify(record)).not.toContain("canonical-header-secret");
     expect(JSON.stringify(record)).not.toContain("hunter2");
     expect(JSON.stringify(record)).not.toContain("abc123");
     expect((record.headers as Record<string, unknown>).authorization).toBe("[REDACTED]");
+    expect((record.headers as Record<string, unknown>).Authorization).toBe("[REDACTED]");
     expect(record.password).toBe("[REDACTED]");
     expect(record.token).toBe("[REDACTED]");
   });
