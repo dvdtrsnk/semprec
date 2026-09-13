@@ -102,7 +102,7 @@ describe("createLogger", () => {
   });
 
   it("the factory redacts real request-shaped secrets", () => {
-    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation((() => true) as never);
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const logger = createLogger("semprec-api");
     let output: unknown;
     try {
