@@ -18,6 +18,16 @@ reconnect. `agent_run_events` is instead an ordered, durable event log: a
 watcher needs every event after its cursor to reconstruct a run's progress, and
 there is no equivalent REST refetch that supplies that cursor-relative stream.
 
+Issue #162's [[2026-09-12-per-process-doc-sync-subscription-registry]] is the
+structurally parallel precedent: a second per-process, per-socket fan-out
+registry layered onto the same `WS /api/sync` connection alongside the
+thin-invalidation channel. That registry tracks open-document subscriptions;
+this one tracks watched-run cursors and replay state. Both diverge from the
+thin-invalidation ADR for the same underlying reason — a payload or a replay
+requirement the invalidation channel was never shaped to carry — and both keep
+that state process-local, rebuilt from the client's next `open`/`watch` rather
+than persisted across a restart.
+
 The same run has two materially different kinds of traffic. Completed
 turn-level events are durable rows and can be recovered by cursor replay;
 `message_update` typing deltas are transient animation data. Sending both over
