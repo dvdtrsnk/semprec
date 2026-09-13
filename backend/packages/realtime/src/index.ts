@@ -1,4 +1,11 @@
-export { REALTIME_CHANNEL, publishRealtimeMessage, type RealtimeMessage } from "./pgNotifyPublisher.js";
+export {
+  REALTIME_CHANNEL,
+  AGENT_STREAM_CHANNEL,
+  publishRealtimeMessage,
+  publishAgentRunDelta,
+  type RealtimeMessage,
+  type AgentStreamMessage,
+} from "./pgNotifyPublisher.js";
 export { wireRealtimeHooks } from "./wireHooks.js";
 export { createSyncServer, type SyncServer, type SyncServerOptions, type SyncIdentity } from "./syncServer.js";
 export {

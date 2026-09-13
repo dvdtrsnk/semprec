@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildBinaryFrame, decodeDocId, encodeDocId, parseBinaryFrame, parseInboundFrame } from "../protocolV1.js";
+import { parseAgentStreamMessage, parseRealtimeMessage } from "../pgNotifyPublisher.js";
 
 const DOC_ID = "11111111-1111-1111-1111-111111111111";
 const RUN_ID = "22222222-2222-2222-2222-222222222222";
@@ -20,16 +21,17 @@ describe("parseInboundFrame (issue #160)", () => {
   });
 
   it("accepts a well-formed agent:watch frame", () => {
-    expect(parseInboundFrame(JSON.stringify({ type: "agent:watch", agentRunId: RUN_ID }))).toEqual({
+    expect(parseInboundFrame(JSON.stringify({ type: "agent:watch", runId: RUN_ID, afterEventId: "42" }))).toEqual({
       type: "agent:watch",
-      agentRunId: RUN_ID,
+      runId: RUN_ID,
+      afterEventId: "42",
     });
   });
 
   it("accepts a well-formed agent:unwatch frame", () => {
-    expect(parseInboundFrame(JSON.stringify({ type: "agent:unwatch", agentRunId: RUN_ID }))).toEqual({
+    expect(parseInboundFrame(JSON.stringify({ type: "agent:unwatch", runId: RUN_ID }))).toEqual({
       type: "agent:unwatch",
-      agentRunId: RUN_ID,
+      runId: RUN_ID,
     });
   });
 
@@ -54,7 +56,15 @@ describe("parseInboundFrame (issue #160)", () => {
   });
 
   it("rejects an agent:watch frame with a non-UUID agentRunId", () => {
-    expect(parseInboundFrame(JSON.stringify({ type: "agent:watch", agentRunId: 123 }))).toBeNull();
+    expect(parseInboundFrame(JSON.stringify({ type: "agent:watch", runId: 123, afterEventId: "0" }))).toBeNull();
+  });
+
+  it("rejects an agent:watch frame without a bigint-safe cursor", () => {
+    expect(parseInboundFrame(JSON.stringify({ type: "agent:watch", runId: RUN_ID }))).toBeNull();
+    expect(parseInboundFrame(JSON.stringify({ type: "agent:watch", runId: RUN_ID, afterEventId: "-1" }))).toBeNull();
+    expect(
+      parseInboundFrame(JSON.stringify({ type: "agent:watch", runId: RUN_ID, afterEventId: "9223372036854775808" })),
+    ).toBeNull();
   });
 });
 
@@ -103,5 +113,17 @@ describe("decodeDocId/encodeDocId/buildBinaryFrame (issue #162)", () => {
     expect(parsed).not.toBeNull();
     expect(decodeDocId(parsed!.docId)).toBe(DOC_ID);
     expect(parsed?.payload).toEqual(Buffer.from(payload));
+  });
+});
+
+describe("parseAgentStreamMessage (issue #163)", () => {
+  it("rejects an ephemeral delta with a malformed agentRunId", () => {
+    expect(parseAgentStreamMessage({ type: "agent_run_delta", agentRunId: "not-a-uuid", delta: {} })).toBeNull();
+  });
+});
+
+describe("parseRealtimeMessage (issue #163)", () => {
+  it("rejects an agent-run reference with a malformed eventId", () => {
+    expect(parseRealtimeMessage({ type: "agent_run_event", agentRunId: RUN_ID, eventId: "abc" })).toBeNull();
   });
 });

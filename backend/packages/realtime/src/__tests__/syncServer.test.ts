@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { WebSocket, type RawData } from "ws";
 import * as encoding from "lib0/encoding";
@@ -8,8 +8,10 @@ import * as Y from "yjs";
 import * as syncProtocol from "y-protocols/sync.js";
 import {
   withTransaction,
+  createAgentRun,
   createUser,
   hashPassword,
+  insertAgentRunEvent,
   writeNotification,
   createChokePoint,
   createDocStore,
@@ -17,7 +19,7 @@ import {
   type DocStore,
 } from "@semprec/data";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { publishRealtimeMessage } from "../pgNotifyPublisher.js";
+import { publishAgentRunDelta, publishRealtimeMessage } from "../pgNotifyPublisher.js";
 import { createSyncServer, type SyncIdentity, type SyncServer } from "../syncServer.js";
 import { buildBinaryFrame, decodeDocId, parseBinaryFrame } from "../protocolV1.js";
 import { wireRealtimeHooks } from "../wireHooks.js";
@@ -616,7 +618,6 @@ describe("createSyncServer doc sync (issue #162)", () => {
       revalidateSession: async () => true,
       heartbeatIntervalMs: 30_000,
     });
-
     httpServer = createServer();
     httpServer.on("upgrade", (req, socket, head) => syncServer.handleUpgrade(req, socket, head));
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
@@ -756,5 +757,225 @@ describe("createSyncServer doc sync (issue #162)", () => {
 
     wsA.close();
     wsB.close();
+  });
+});
+
+describe("createSyncServer watched agent runs (issue #163)", () => {
+  let httpServer: Server;
+  let syncServer: SyncServer;
+  let port: number;
+  let identityByToken: Map<string, SyncIdentity>;
+
+  async function createTestUser(): Promise<string> {
+    const passwordHash = await hashPassword("s3cret-password");
+    const user = await createUser(pool, {
+      email: `agent-watch-${Math.random()}@example.test`,
+      passwordHash,
+      locale: "en",
+    });
+    return user.id;
+  }
+
+  async function connect(token: string): Promise<WebSocket> {
+    const client = new WebSocket(`ws://127.0.0.1:${port}/api/sync?token=${token}`);
+    await waitForOpen(client);
+    return client;
+  }
+
+  function nextFrame(client: WebSocket): Promise<Record<string, unknown>> {
+    return new Promise((resolve) =>
+      client.once("message", (data) => resolve(JSON.parse(messageText(data)) as Record<string, unknown>)),
+    );
+  }
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    identityByToken = new Map();
+    syncServer = await createSyncServer(pool, {
+      authenticate: async (req: IncomingMessage) => {
+        const token = new URL(req.url ?? "/", "http://localhost").searchParams.get("token");
+        return token ? (identityByToken.get(token) ?? null) : null;
+      },
+      revalidateSession: async () => true,
+      heartbeatIntervalMs: 30_000,
+    });
+    httpServer = createServer();
+    httpServer.on("upgrade", (req, socket, head) => syncServer.handleUpgrade(req, socket, head));
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const address = httpServer.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    port = address.port;
+  });
+
+  afterEach(async () => {
+    await syncServer.close();
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+  });
+
+  it("replays cursor events in id order, then delivers a later thin-reference event without a handoff gap", async () => {
+    const owner = await createTestUser();
+    identityByToken.set("owner", { userId: owner, sessionId: "owner-session" });
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "watch me" });
+    const first = await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
+    const second = await insertAgentRunEvent(pool, run.id, "message", { kind: "message", text: "replayed" });
+
+    const client = await connect("owner");
+    const replayed: Record<string, unknown>[] = [];
+    let resolveReplay: (() => void) | undefined;
+    const replayComplete = new Promise<void>((resolve) => {
+      resolveReplay = resolve;
+    });
+    const collectReplay = (data: RawData) => {
+      replayed.push(JSON.parse(messageText(data)) as Record<string, unknown>);
+      if (replayed.length === 2) resolveReplay?.();
+    };
+    client.on("message", collectReplay);
+    client.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    await replayComplete;
+    client.off("message", collectReplay);
+    expect(replayed.map((frame) => (frame.event as { id: string }).id)).toEqual([first.id, second.id]);
+
+    const live = await insertAgentRunEvent(pool, run.id, "turn_end", { kind: "turn_end" });
+    const receivedLive = nextFrame(client);
+    await publishRealtimeMessage(pool, { type: "agent_run_event", agentRunId: run.id, eventId: live.id });
+    const frame = await receivedLive;
+    expect(frame.type).toBe("agent:event");
+    expect((frame.event as { id: string; kind: string }).id).toBe(live.id);
+    expect((frame.event as { id: string; kind: string }).kind).toBe("turn_end");
+    client.close();
+  });
+
+  it("never sends durable events or ephemeral deltas to an unwatched or unauthorized socket", async () => {
+    const owner = await createTestUser();
+    const otherUser = await createTestUser();
+    identityByToken.set("owner", { userId: owner, sessionId: "owner-session" });
+    identityByToken.set("other", { userId: otherUser, sessionId: "other-session" });
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "private run" });
+    const ownerClient = await connect("owner");
+    const otherClient = await connect("other");
+    ownerClient.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    otherClient.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+
+    let otherReceived = false;
+    otherClient.once("message", () => (otherReceived = true));
+    const event = await insertAgentRunEvent(pool, run.id, "message", { kind: "message", text: "complete" });
+    const ownerEvent = nextFrame(ownerClient);
+    await publishRealtimeMessage(pool, { type: "agent_run_event", agentRunId: run.id, eventId: event.id });
+    expect((await ownerEvent).type).toBe("agent:event");
+
+    await publishAgentRunDelta(pool, run.id, { kind: "message_update", text: "typing" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(otherReceived).toBe(false);
+
+    ownerClient.send(JSON.stringify({ type: "agent:unwatch", runId: run.id }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    let ownerReceivedAfterUnwatch = false;
+    ownerClient.once("message", () => (ownerReceivedAfterUnwatch = true));
+    await publishAgentRunDelta(pool, run.id, { kind: "message_update", text: "not delivered" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(ownerReceivedAfterUnwatch).toBe(false);
+    ownerClient.close();
+    otherClient.close();
+  });
+
+  it("cancels a watch when agent:unwatch arrives while its authorization query is pending", async () => {
+    const owner = await createTestUser();
+    identityByToken.set("owner", { userId: owner, sessionId: "owner-session" });
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "cancel pending watch" });
+    await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
+    const client = await connect("owner");
+    const received: Record<string, unknown>[] = [];
+    client.on("message", (data) => received.push(JSON.parse(messageText(data)) as Record<string, unknown>));
+
+    await withTransaction(pool, async (locker) => {
+      // `watch()` authorizes through `users`; keep that SELECT waiting while the second frame
+      // arrives, then commit to let the older watch prove it cannot overtake the unwatch.
+      await locker.query("LOCK TABLE users IN ACCESS EXCLUSIVE MODE");
+      client.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      client.send(JSON.stringify({ type: "agent:unwatch", runId: run.id }));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(received).toEqual([]);
+    client.close();
+  });
+
+  it("keeps the existing watcher live when a replacement watch cannot be authorized", async () => {
+    const owner = await createTestUser();
+    identityByToken.set("owner", { userId: owner, sessionId: "owner-session" });
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "retain watch after transient failure" });
+    await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
+    const client = await connect("owner");
+    client.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    expect((await nextFrame(client)).type).toBe("agent:event");
+
+    const query = vi.spyOn(pool, "query").mockRejectedValueOnce(new Error("transient authorization failure"));
+    try {
+      client.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const delta = nextFrame(client);
+      await publishAgentRunDelta(pool, run.id, { kind: "message_update", text: "still watching" });
+      expect((await delta).type).toBe("agent:delta");
+    } finally {
+      query.mockRestore();
+      client.close();
+    }
+  });
+
+  it("keeps the existing watcher live when a replacement replay fails", async () => {
+    const owner = await createTestUser();
+    identityByToken.set("owner", { userId: owner, sessionId: "owner-session" });
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "retain watch after replay failure" });
+    await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
+    const client = await connect("owner");
+    client.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    expect((await nextFrame(client)).type).toBe("agent:event");
+
+    const originalQuery = pool.query.bind(pool);
+    // The first two calls are the replacement's authorization reads. The test only needs to
+    // reject the subsequent replay query, while preserving those real query results at runtime.
+    const passThroughQuery = originalQuery as unknown as () => void;
+    const query = vi
+      .spyOn(pool, "query")
+      .mockImplementationOnce(passThroughQuery)
+      .mockImplementationOnce(passThroughQuery)
+      .mockRejectedValueOnce(new Error("transient replay failure"));
+    try {
+      client.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const delta = nextFrame(client);
+      await publishAgentRunDelta(pool, run.id, { kind: "message_update", text: "still watching" });
+      expect((await delta).type).toBe("agent:delta");
+    } finally {
+      query.mockRestore();
+      client.close();
+    }
+  });
+
+  it("chunks an oversized ephemeral delta below Postgres's NOTIFY payload limit", async () => {
+    const owner = await createTestUser();
+    identityByToken.set("owner", { userId: owner, sessionId: "owner-session" });
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "large delta" });
+    await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
+    const client = await connect("owner");
+    client.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    expect((await nextFrame(client)).type).toBe("agent:event");
+
+    const frames: Record<string, unknown>[] = [];
+    client.on("message", (data) => frames.push(JSON.parse(messageText(data)) as Record<string, unknown>));
+    await publishAgentRunDelta(pool, run.id, { kind: "message_update", text: "x".repeat(12_000) });
+    const deadline = Date.now() + 5_000;
+    while (frames.length < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(frames.length).toBeGreaterThan(1);
+    expect(frames.every((frame) => frame.type === "agent:delta")).toBe(true);
+    expect(frames.every((frame) => Buffer.byteLength(JSON.stringify(frame), "utf8") < 7_500)).toBe(true);
+    expect(frames.every((frame) => typeof frame.chunk === "object")).toBe(true);
+    client.close();
   });
 });
