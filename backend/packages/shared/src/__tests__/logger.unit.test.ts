@@ -152,6 +152,22 @@ describe("createLogger", () => {
     expect(record.err.message).toContain("[REDACTED]");
     expect(record.err.stack).toContain("[REDACTED]");
   });
+
+  it("redacts credential values from a non-Error value logged as err", () => {
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const logger = createLogger("mail-sync");
+    let output: unknown;
+    try {
+      logger.error({ err: "Authentication failed: Authorization: Bearer provider-access-secret" }, "Mail sync failed");
+      output = writeSpy.mock.calls[0]![0];
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    const record = JSON.parse(String(output)) as { err: string };
+    expect(JSON.stringify(record)).not.toContain("provider-access-secret");
+    expect(record.err).toContain("[REDACTED]");
+  });
 });
 
 describe("installFatalHandlers", () => {

@@ -57,7 +57,9 @@ function redactErrorText(value: string): string {
 }
 
 function serializeError(value: unknown): unknown {
-  if (!(value instanceof Error)) return value;
+  if (!(value instanceof Error)) {
+    return typeof value === "string" ? redactErrorText(value) : value;
+  }
 
   const serialized = pino.stdSerializers.err(value);
   return {
