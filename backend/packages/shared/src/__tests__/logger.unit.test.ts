@@ -156,6 +156,8 @@ describe("createLogger", () => {
 
 describe("installFatalHandlers", () => {
   let exitSpy: MockInstance<typeof process.exit>;
+  const originalUncaughtExceptionListeners = new Set(process.listeners("uncaughtException"));
+  const originalUnhandledRejectionListeners = new Set(process.listeners("unhandledRejection"));
 
   beforeEach(() => {
     exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
@@ -163,8 +165,16 @@ describe("installFatalHandlers", () => {
 
   afterEach(() => {
     exitSpy.mockRestore();
-    process.removeAllListeners("uncaughtException");
-    process.removeAllListeners("unhandledRejection");
+    for (const listener of process.listeners("uncaughtException")) {
+      if (!originalUncaughtExceptionListeners.has(listener)) {
+        process.removeListener("uncaughtException", listener);
+      }
+    }
+    for (const listener of process.listeners("unhandledRejection")) {
+      if (!originalUnhandledRejectionListeners.has(listener)) {
+        process.removeListener("unhandledRejection", listener);
+      }
+    }
   });
 
   it("logs one fatal record and exits non-zero on an uncaught exception", () => {
