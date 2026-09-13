@@ -101,15 +101,27 @@ describe("createLogger", () => {
     expect(serialized).not.toContain("imap-secret");
   });
 
-  it("actually installed logger redacts real request-shaped secrets", () => {
+  it("the factory redacts real request-shaped secrets", () => {
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation((() => true) as never);
     const logger = createLogger("semprec-api");
-    // The construction itself must not throw for any of the process types this issue wires
-    // into, and the redact config must be a real, applied option (not a value the caller
-    // could override or forget to pass) — exercised end-to-end via the public factory here,
-    // with pino's own redaction behavior covered in isolation by the cases above.
-    expect(() =>
-      logger.info({ headers: { authorization: "Bearer x" }, password: "y" }, "no content leaks"),
-    ).not.toThrow();
+    let output: unknown;
+    try {
+      logger.info(
+        { headers: { authorization: "Bearer super-secret-token" }, password: "hunter2", token: "abc123" },
+        "no content leaks",
+      );
+      output = writeSpy.mock.calls[0]![0];
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    const record = JSON.parse(String(output)) as Record<string, unknown>;
+    expect(JSON.stringify(record)).not.toContain("super-secret-token");
+    expect(JSON.stringify(record)).not.toContain("hunter2");
+    expect(JSON.stringify(record)).not.toContain("abc123");
+    expect((record.headers as Record<string, unknown>).authorization).toBe("[REDACTED]");
+    expect(record.password).toBe("[REDACTED]");
+    expect(record.token).toBe("[REDACTED]");
   });
 });
 
