@@ -3,8 +3,15 @@ import type { Duplex } from "node:stream";
 import type { Pool, PoolClient } from "pg";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { getNotificationById } from "@semprec/data";
+import {
+  AGENT_STREAM_CHANNEL,
+  REALTIME_CHANNEL,
+  parseAgentStreamMessage,
+  parseRealtimeMessage,
+  type RealtimeMessage,
+} from "./pgNotifyPublisher.js";
+import { createAgentRunWatchRegistry } from "./agentRunWatch.js";
 import { createDocSyncRegistry } from "./docSync.js";
-import { REALTIME_CHANNEL, parseRealtimeMessage, type RealtimeMessage } from "./pgNotifyPublisher.js";
 import { decodeDocId, parseBinaryFrame, parseInboundFrame, type OutboundFrame } from "./protocolV1.js";
 
 /** The identity every `WS /api/sync` socket is associated with for its whole lifetime. */
@@ -84,14 +91,18 @@ function rejectUpgrade(socket: Duplex): void {
  * - `doc_update` fans out to `docSync`, which fetches the referenced `doc_updates` row by primary
  *   key and forwards it only to sockets that have that document open (see `docSync.ts`).
  *
+ * `agent:watch` creates an authorized, cursor-backed subscription: durable events are replayed
+ * from `agent_run_events`, then the same subscription receives its thin live references without
+ * a handoff gap. Ephemeral typing deltas arrive over the distinct `AGENT_STREAM_CHANNEL` and are
+ * sent only to those authorized watchers.
  * `doc:open`/`doc:close` text frames and binary y-protocols/sync frames are also handled here, via
- * `docSync` (issue #162). `agent:watch`/`agent:unwatch` and streaming `agent:event`/`agent:delta`
- * content remain out of this issue's scope — a later realtime-v1 sibling issue.
+ * `docSync` (issue #162).
  */
 export async function createSyncServer(pool: Pool, options: SyncServerOptions): Promise<SyncServer> {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_INBOUND_FRAME_BYTES });
   const identityByClient = new WeakMap<WebSocket, SyncIdentity>();
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+  const agentRunWatch = createAgentRunWatchRegistry(pool);
   const docSync = createDocSyncRegistry(pool);
   let closed = false;
 
@@ -99,9 +110,8 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     identityByClient.set(ws, identity);
 
     // Protocol-v1 frame validation: anything outside the closed catalog is dropped, never
-    // crashing this connection or any other client's. `doc:open`/`doc:close` and binary
-    // sync-protocol frames (issue #162) are acted on via `docSync`; `agent:watch`/`agent:unwatch`
-    // and streaming `agent:event`/`agent:delta` content remain out of this issue's scope.
+    // crashing this connection or any other client's. Binary sync-protocol frames are dispatched
+    // to `docSync`; agent frames are dispatched to the run-watch registry below.
     ws.on("message", (data: RawData, isBinary: boolean) => {
       if (isBinary) {
         const frame = parseBinaryFrame(rawDataToBuffer(data));
@@ -124,9 +134,15 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
         case "doc:close":
           docSync.handleClose(ws, frame.docId);
           return;
+        case "agent:watch":
+          agentRunWatch.watch(ws, identity.userId, frame.runId, frame.afterEventId).catch((err: unknown) => {
+            console.error("Sync server failed to watch an agent run", err);
+          });
+          return;
+        case "agent:unwatch":
+          agentRunWatch.unwatch(ws, frame.runId);
+          return;
         default:
-          // agent:watch/agent:unwatch: out of this issue's scope, delivered by a later
-          // realtime-v1 sibling issue.
           return;
       }
     });
@@ -145,6 +161,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     ws.on("close", () => {
       clearInterval(heartbeat);
       identityByClient.delete(ws);
+      agentRunWatch.handleSocketClosed(ws);
       docSync.handleSocketClosed(ws);
     });
   }
@@ -152,6 +169,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   const listenClient: PoolClient = await pool.connect();
   try {
     await listenClient.query(`LISTEN ${REALTIME_CHANNEL}`);
+    await listenClient.query(`LISTEN ${AGENT_STREAM_CHANNEL}`);
   } catch (err) {
     listenClient.release(true);
     throw err;
@@ -191,8 +209,40 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     sendToUser(userId, { type: "notification", notification });
   }
 
+  const agentEventDeliveryTails = new Map<string, { promise: Promise<void> }>();
+
+  function enqueueAgentEvent(runId: string, eventId: string): void {
+    const entry = { promise: Promise.resolve() };
+    const preceding = agentEventDeliveryTails.get(runId)?.promise ?? Promise.resolve();
+    entry.promise = preceding
+      .then(() => agentRunWatch.forwardEvent(runId, eventId))
+      .catch((err: unknown) => {
+        // Keep this run's delivery queue usable after a failed row fetch, without delaying a
+        // different run's events or pretending the original infrastructure fault was forwarded.
+        console.error("Sync server failed to forward an agent run event", err);
+      })
+      .then(() => {
+        if (agentEventDeliveryTails.get(runId) === entry) agentEventDeliveryTails.delete(runId);
+      });
+    agentEventDeliveryTails.set(runId, entry);
+  }
+
   const onNotification = (msg: { channel: string; payload?: string }) => {
-    if (msg.channel !== REALTIME_CHANNEL || msg.payload === undefined) return;
+    if (msg.payload === undefined) return;
+
+    if (msg.channel === AGENT_STREAM_CHANNEL) {
+      let rawParsed: unknown;
+      try {
+        rawParsed = JSON.parse(msg.payload);
+      } catch {
+        return;
+      }
+      const parsed = parseAgentStreamMessage(rawParsed);
+      if (parsed) agentRunWatch.forwardDelta(parsed);
+      return;
+    }
+
+    if (msg.channel !== REALTIME_CHANNEL) return;
 
     let rawParsed: unknown;
     try {
@@ -249,6 +299,10 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
         }
         return;
       }
+      case "agent_run_event": {
+        enqueueAgentEvent(parsed.agentRunId, parsed.eventId);
+        return;
+      }
       case "doc_update": {
         docSync.fanOutDocUpdate(parsed.docId, parsed.updateId).catch((err: unknown) => {
           console.error("Sync server failed to fan out a doc update", err);
@@ -256,8 +310,6 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
         return;
       }
       default:
-        // agent_run_event: out of this issue's scope, delivered by a later realtime-v1 sibling
-        // issue (#163).
         return;
     }
   };
