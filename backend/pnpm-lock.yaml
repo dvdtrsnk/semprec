@@ -78,6 +78,9 @@ importers:
       '@semprec/data':
         specifier: workspace:*
         version: link:../data
+      '@semprec/shared':
+        specifier: workspace:*
+        version: link:../shared
       pg:
         specifier: ^8.23.0
         version: 8.23.0
