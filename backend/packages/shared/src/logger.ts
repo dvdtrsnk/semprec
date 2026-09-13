@@ -12,12 +12,18 @@ export type { Logger } from "pino";
  */
 const REDACT_PATHS = [
   "headers.authorization",
+  "headers.Authorization",
   "*.headers.authorization",
+  "*.headers.Authorization",
   "*.*.headers.authorization",
+  "*.*.headers.Authorization",
   "req.headers.authorization",
   "authorization",
+  "Authorization",
   "*.authorization",
+  "*.Authorization",
   "*.*.authorization",
+  "*.*.Authorization",
   "password",
   "*.password",
   "*.*.password",
