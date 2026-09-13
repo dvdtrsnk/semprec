@@ -28,6 +28,7 @@ import {
   type ImapConnectionLimiter,
 } from "./imapConnectionLimiter.js";
 import { findEmailsMissingSearchIndex, reindexItemSearch } from "./search.js";
+import { logger } from "./logger.js";
 
 /**
  * Real transport connections (imapflow / Gmail REST / Graph REST) are out of `@semprec/data`
@@ -221,6 +222,8 @@ export async function handleSyncMailAccountTask(
     });
     if (!credential) throw new Error(`Mailbox ${payload.mailboxItemId} has no stored credential`);
 
+    logger.info({ mailboxItemId: payload.mailboxItemId, syncMode: state.syncMode }, "Mail sync starting");
+
     const shared = {
       mailboxItemId: payload.mailboxItemId,
       emailsDatabaseId: moduleIds.emailsDatabaseId,
@@ -289,6 +292,7 @@ export async function handleSyncMailAccountTask(
         );
       });
     }
+    logger.info({ mailboxItemId: payload.mailboxItemId, syncMode: state.syncMode }, "Mail sync completed");
   } catch (err) {
     // Any attachment bytes already written to disk this pass (mail/attachments.ts writes
     // before the DB transaction that references them commits, see trackWrittenKeys above) are
@@ -302,6 +306,7 @@ export async function handleSyncMailAccountTask(
     // failure needs its own, separate transaction, or an UPDATE inside the aborted one would
     // itself be rolled back along with everything else `withTransaction` undoes.
     const message = err instanceof Error ? err.message : String(err);
+    logger.error({ err, mailboxItemId: payload.mailboxItemId, mailboxProvider }, "Mail sync failed");
 
     if (err instanceof MailConnectionLimitError) {
       // The provider rejected this connection purely for having too many of this account's

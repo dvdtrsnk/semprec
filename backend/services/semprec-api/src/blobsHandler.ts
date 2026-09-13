@@ -13,6 +13,7 @@ import {
 } from "@semprec/data";
 import { authenticateRequest } from "./authHandler.js";
 import { statusForError, toErrorResponseBody } from "./adapter/errorContract.js";
+import { logger } from "./logger.js";
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
@@ -163,7 +164,7 @@ export function createBlobsRequestListener(pool: Pool, options: BlobsRequestList
 
       const stream = options.storage.readStream(blob.storageKey, range);
       stream.once("error", (streamErr) => {
-        console.error(`Error streaming blob ${blobId}:`, streamErr);
+        logger.error({ err: streamErr, blobId }, "Error streaming blob");
         if (res.headersSent) {
           res.destroy();
         } else {
@@ -186,7 +187,7 @@ export function createBlobsRequestListener(pool: Pool, options: BlobsRequestList
         return;
       }
       const errInfo = err instanceof Error ? (err.stack ?? err.message) : err;
-      console.error(`Unexpected error in ${req.method} ${url.pathname}:`, errInfo);
+      logger.error({ err: errInfo, method: req.method, path: url.pathname }, "Unexpected error handling request");
       sendJson(res, 500, { error: { code: "internal_error" } });
     }
   }
@@ -194,7 +195,7 @@ export function createBlobsRequestListener(pool: Pool, options: BlobsRequestList
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {
       const errInfo = err instanceof Error ? (err.stack ?? err.message) : err;
-      console.error("Unhandled error in the request listener:", errInfo);
+      logger.error({ err: errInfo }, "Unhandled error in the request listener");
       if (res.headersSent) {
         res.end();
         return;

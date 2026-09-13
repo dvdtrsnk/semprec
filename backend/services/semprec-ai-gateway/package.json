@@ -11,6 +11,7 @@
   "dependencies": {
     "@semprec/ai-gateway": "workspace:*",
     "@semprec/data": "workspace:*",
+    "@semprec/shared": "workspace:*",
     "ajv": "^8.20.0",
     "pg": "^8.23.0"
   },

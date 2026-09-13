@@ -19,6 +19,7 @@ import {
   type PasswordResetMailer,
 } from "@semprec/data";
 import type { Pool } from "pg";
+import { logger } from "./logger.js";
 
 /** Name of the cookie a web client's login response carries the session token in. */
 export const SESSION_COOKIE_NAME = "semprec_session";
@@ -249,7 +250,7 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
         sendJson(res, err.status, { error: err.message, code: err.code, details: err.details });
         return;
       }
-      console.error(`Unexpected error in ${req.method} ${url.pathname}:`, err);
+      logger.error({ err, method: req.method, path: url.pathname }, "Unexpected error handling request");
       sendJson(res, 500, { error: "Internal server error" });
     }
   }
@@ -262,7 +263,7 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
    */
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {
-      console.error("Unhandled error in the request listener:", err);
+      logger.error({ err }, "Unhandled error in the request listener");
       if (res.headersSent) {
         res.end();
         return;

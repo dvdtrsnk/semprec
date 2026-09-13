@@ -14,6 +14,7 @@ import { authenticateRequest } from "./authHandler.js";
 import { requireHeader } from "./adapter/requestValidation.js";
 import { toItemEnvelope } from "./adapter/itemEnvelope.js";
 import { statusForError, toErrorResponseBody } from "./adapter/errorContract.js";
+import { logger } from "./logger.js";
 
 /**
  * `fileUploadStore.ts` builds the storage key's last path component as `<uuid>-<safeFilename>`
@@ -96,7 +97,7 @@ export function createFilesRequestListener(pool: Pool, options: FilesRequestList
       }
       const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
       const errInfo = err instanceof Error ? (err.stack ?? err.message) : err;
-      console.error(`Unexpected error in ${req.method} ${pathname}:`, errInfo);
+      logger.error({ err: errInfo, method: req.method, path: pathname }, "Unexpected error handling request");
       sendJson(res, 500, { error: { code: "internal_error" } });
     }
   }
@@ -107,7 +108,7 @@ export function createFilesRequestListener(pool: Pool, options: FilesRequestList
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {
       const errInfo = err instanceof Error ? (err.stack ?? err.message) : err;
-      console.error("Unhandled error in the request listener:", errInfo);
+      logger.error({ err: errInfo }, "Unhandled error in the request listener");
       if (res.headersSent) {
         res.end();
         return;

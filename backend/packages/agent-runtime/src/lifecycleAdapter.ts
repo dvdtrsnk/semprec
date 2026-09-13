@@ -12,6 +12,7 @@ import {
 } from "@semprec/data";
 import { publishRealtimeMessage } from "@semprec/realtime";
 import type { AgentMessage, CreateAgentSession } from "./types.js";
+import { logger } from "./logger.js";
 
 const PERSISTED_EVENT_KINDS: ReadonlySet<string> = new Set<AgentRunEventKind>([
   "turn_start",
@@ -53,7 +54,7 @@ export async function pushLiveEvent(
   try {
     await publishRealtimeMessage(client, { type: "agent_run_event", agentRunId, kind, payload });
   } catch (err) {
-    console.error("Failed to publish agent_run_event realtime message", err);
+    logger.error({ err, agentRunId, kind }, "Failed to publish agent_run_event realtime message");
   }
 }
 
