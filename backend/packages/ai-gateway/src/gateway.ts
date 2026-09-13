@@ -101,10 +101,7 @@ export async function transcribe<T extends AudioCallResult>(
   invoke: () => Promise<T>,
 ): Promise<T> {
   const result = await withAudioAccounting(client, ctx, invoke);
-  logger.info(
-    { provider: ctx.provider, model: ctx.model, agentRunId: ctx.agentRunId },
-    "Transcription completed",
-  );
+  logger.info({ provider: ctx.provider, model: ctx.model, agentRunId: ctx.agentRunId }, "Transcription completed");
   return result;
 }
 
