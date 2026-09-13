@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import pino from "pino";
 import { createLogger, installFatalHandlers } from "../logger.js";
 
@@ -114,7 +114,7 @@ describe("createLogger", () => {
 });
 
 describe("installFatalHandlers", () => {
-  let exitSpy: ReturnType<typeof vi.spyOn<typeof process, "exit">>;
+  let exitSpy: MockInstance<typeof process.exit>;
 
   beforeEach(() => {
     exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
