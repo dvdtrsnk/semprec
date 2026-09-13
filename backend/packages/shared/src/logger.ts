@@ -50,6 +50,24 @@ const REDACT_PATHS = [
 const DEFAULT_LEVEL = "info";
 const VALID_LEVELS = new Set(["fatal", "error", "warn", "info", "debug", "trace", "silent"]);
 
+const SECRET_IN_ERROR_TEXT =
+  /\b(authorization\s*[:=]\s*(?:bearer\s+)?|(?:access[_-]?token|refresh[_-]?token|api[_-]?key|password|credential|token)\s*[:=]\s*)([^\s,;"']+)/gi;
+
+function redactErrorText(value: string): string {
+  return value.replace(SECRET_IN_ERROR_TEXT, "$1[REDACTED]");
+}
+
+function serializeError(value: unknown): unknown {
+  if (!(value instanceof Error)) return value;
+
+  const serialized = pino.stdSerializers.err(value);
+  return {
+    ...serialized,
+    ...(typeof serialized.message === "string" ? { message: redactErrorText(serialized.message) } : {}),
+    ...(typeof serialized.stack === "string" ? { stack: redactErrorText(serialized.stack) } : {}),
+  };
+}
+
 /**
  * Log-level semantics for every Semprec process:
  *
@@ -85,6 +103,7 @@ export function createLogger(name: string): Logger {
     name,
     level: resolveLogLevel(),
     redact: { paths: REDACT_PATHS, censor: "[REDACTED]" },
+    serializers: { err: serializeError },
   });
 }
 

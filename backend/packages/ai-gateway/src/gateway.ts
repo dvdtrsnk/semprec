@@ -7,6 +7,7 @@ import {
   recordTokenGatewayCall,
 } from "@semprec/data";
 import type { AudioCallResult, GatewayCallContext, TokenCallResult } from "./types.js";
+import "./logger.js";
 
 /** Thrown by `assertWithinBudget` when a non-null daily/monthly cap is already reached. */
 export class BudgetExceededError extends Error {
