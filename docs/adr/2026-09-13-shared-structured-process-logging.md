@@ -20,8 +20,11 @@ runtime state.
 ## Decision
 
 All process types use the logger factory in `@semprec/shared` to create a named
-root logger. The logger emits newline-delimited JSON to stdout only, with the
-process name on every record.
+root logger. The logger belongs to the process-specific implementation unit:
+an executable service entrypoint where one exists, or the private package
+module that currently implements an unsplit process type. It is never exported
+as a package API for another process to reuse. The logger emits newline-delimited
+JSON to stdout only, with the process name on every record.
 
 The factory centrally redacts authorization headers and password, token, and
 credential fields. `LOG_LEVEL` selects the active level at process startup;
@@ -38,4 +41,6 @@ restart it.
   per-service file transports or a logging side channel.
 - Process restarts pick up a changed `LOG_LEVEL` without rebuilding an image.
 - A future executable process must create its named root logger and install the
-  fatal handlers in its own entrypoint before performing startup work.
+  fatal handlers in its own entrypoint before performing startup work. Once an
+  unsplit process type receives an executable entrypoint, ownership of its
+  private package logger moves to that entrypoint.
