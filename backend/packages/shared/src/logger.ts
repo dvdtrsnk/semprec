@@ -45,6 +45,18 @@ const DEFAULT_LEVEL = "info";
 const VALID_LEVELS = new Set(["fatal", "error", "warn", "info", "debug", "trace", "silent"]);
 
 /**
+ * Log-level semantics for every Semprec process:
+ *
+ * - `info` records normal lifecycle milestones and completed work.
+ * - `warn` records an unexpected but recoverable degradation or retry.
+ * - `error` records failed work that the current request or job cannot complete.
+ * - `fatal` records a process-terminating failure, exclusively via the shared
+ *   fatal handlers below.
+ * - `debug` and `trace` are opt-in diagnostics, enabled only through
+ *   `LOG_LEVEL`; they must follow the same identity-not-content rule.
+ */
+
+/**
  * Read fresh on every `createLogger` call (never cached at module scope) so a
  * changed `LOG_LEVEL` takes effect on the next process restart without a rebuild.
  */
