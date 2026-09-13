@@ -21,8 +21,7 @@ runtime state.
 
 All process types use the logger factory in `@semprec/shared` to create a named
 root logger. The logger emits newline-delimited JSON to stdout only, with the
-process name on every record. Callers log stable identifiers and error objects,
-never user content, mail content, tool arguments, or decrypted credentials.
+process name on every record.
 
 The factory centrally redacts authorization headers and password, token, and
 credential fields. `LOG_LEVEL` selects the active level at process startup;
@@ -38,7 +37,5 @@ restart it.
 - Logs can be queried and correlated consistently across process types without
   per-service file transports or a logging side channel.
 - Process restarts pick up a changed `LOG_LEVEL` without rebuilding an image.
-- Callers must preserve the identity-not-content boundary even when logging at
-  debug level; redaction is a safeguard, not permission to log secrets.
 - A future executable process must create its named root logger and install the
   fatal handlers in its own entrypoint before performing startup work.
