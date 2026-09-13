@@ -17,7 +17,6 @@ const REDACT_PATHS = [
   "*.headers.Authorization",
   "*.*.headers.authorization",
   "*.*.headers.Authorization",
-  "req.headers.authorization",
   "authorization",
   "Authorization",
   "*.authorization",
@@ -115,11 +114,11 @@ export function createLogger(name: string): Logger {
  * also imports, or a test's own uncaught rejection would kill the test runner.
  */
 export function installFatalHandlers(logger: Logger): void {
-  process.on("uncaughtException", (err) => {
+  process.once("uncaughtException", (err) => {
     logger.fatal({ err }, "Uncaught exception — terminating process");
     process.exit(1);
   });
-  process.on("unhandledRejection", (reason) => {
+  process.once("unhandledRejection", (reason) => {
     const err = reason instanceof Error ? reason : new Error(String(reason));
     logger.fatal({ err }, "Unhandled promise rejection — terminating process");
     process.exit(1);
