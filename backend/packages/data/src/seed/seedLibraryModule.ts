@@ -28,19 +28,20 @@ function selectConfig(options: string[]): Record<string, unknown> {
 
 interface PropSpec {
   key: string;
-  name: string;
+  name: string | null;
   type: PropertyType;
   owner?: PropertyOwner;
   config?: Record<string, unknown>;
 }
 
-async function createDb(
-  client: PoolClient,
-  name: string,
-  ownerModuleId: string,
-  ownerProjectItemId: string,
-): Promise<DatabaseRow> {
-  return databasesStore.createDatabase(client, { name, system: true, ownerModuleId, ownerProjectItemId });
+async function createDb(client: PoolClient, ownerModuleId: string, ownerProjectItemId: string): Promise<DatabaseRow> {
+  return databasesStore.createDatabase(client, {
+    name: null,
+    key: ownerModuleId,
+    system: true,
+    ownerModuleId,
+    ownerProjectItemId,
+  });
 }
 
 async function createProps(client: PoolClient, databaseId: string, specs: PropSpec[]): Promise<void> {
@@ -109,16 +110,16 @@ export async function seedLibraryModuleInTransaction(
         "General instructions: use the same create-item path as the UI; there is no separate AI path.",
     },
   });
-  const books = await createDb(client, "Books", BOOKS_MODULE_ID, booksProject.id);
+  const books = await createDb(client, BOOKS_MODULE_ID, booksProject.id);
   await createProps(client, books.id, [
-    { key: "name", name: "Name", type: "title", owner: "user" },
-    { key: "author", name: "Author", type: "text", owner: "user" },
+    { key: "name", name: null, type: "title", owner: "user" },
+    { key: "author", name: null, type: "text", owner: "user" },
     // { blobId } over the shared `blobs` table (0004_ten_databases.sql) — coverKey.
-    { key: "cover", name: "Cover", type: "image", owner: "system" },
-    { key: "rating", name: "Rating", type: "number", owner: "user" },
+    { key: "cover", name: null, type: "image", owner: "system" },
+    { key: "rating", name: null, type: "number", owner: "user" },
     {
       key: "status",
-      name: "Status",
+      name: null,
       type: "select",
       owner: "user",
       config: selectConfig(["toRead", "reading", "read"]),
@@ -137,27 +138,27 @@ export async function seedLibraryModuleInTransaction(
         "General instructions: use the same create-item path as the UI; there is no separate AI path.",
     },
   });
-  const movies = await createDb(client, "Movies/TV", MOVIES_MODULE_ID, moviesProject.id);
+  const movies = await createDb(client, MOVIES_MODULE_ID, moviesProject.id);
   await createProps(client, movies.id, [
-    { key: "name", name: "Name", type: "title", owner: "user" },
+    { key: "name", name: null, type: "title", owner: "user" },
     // Deviation from the previous (mock) model: sortable/filterable as a range, not text.
-    { key: "year", name: "Year", type: "number", owner: "user" },
+    { key: "year", name: null, type: "number", owner: "user" },
     // "Movie" vs. "Series" stays just a label next to statusKey — no season/episode structure.
-    { key: "type", name: "Type", type: "select", owner: "user", config: selectConfig(["movie", "series"]) },
+    { key: "type", name: null, type: "select", owner: "user", config: selectConfig(["movie", "series"]) },
     // { blobId } over the shared `blobs` table (0004_ten_databases.sql) — coverKey.
-    { key: "cover", name: "Cover", type: "image", owner: "system" },
-    { key: "rating", name: "Rating", type: "number", owner: "user" },
-    { key: "secondaryRating", name: "Critics' rating", type: "number", owner: "system" },
-    { key: "sourceUrl", name: "Source", type: "url", owner: "system" },
+    { key: "cover", name: null, type: "image", owner: "system" },
+    { key: "rating", name: null, type: "number", owner: "user" },
+    { key: "secondaryRating", name: null, type: "number", owner: "system" },
+    { key: "sourceUrl", name: null, type: "url", owner: "system" },
     {
       key: "status",
-      name: "Status",
+      name: null,
       type: "select",
       owner: "user",
       config: selectConfig(["planned", "watching", "watched"]),
     },
     // In-progress series stay free text here — no dedicated season/episode structure (out of scope).
-    { key: "notes", name: "Notes", type: "longText", owner: "user" },
+    { key: "notes", name: null, type: "longText", owner: "user" },
   ]);
 
   // Movies -> People ("Watched with"): the 1-5 rating belongs to the relationship itself,
@@ -166,7 +167,7 @@ export async function seedLibraryModuleInTransaction(
   await relate({
     sourceDatabaseId: movies.id,
     key: "watchedWith",
-    name: "Watched with",
+    name: null,
     targetDatabaseId: peopleDatabaseId,
     cardinality: "many_to_many",
   });

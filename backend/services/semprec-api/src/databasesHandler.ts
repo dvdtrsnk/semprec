@@ -20,6 +20,38 @@ import { requireJsonObjectBody, requireStringField, requireStringParam } from ".
 import { toDatabaseEnvelope } from "./adapter/databaseEnvelope.js";
 import { toPropertyEnvelope } from "./adapter/propertyEnvelope.js";
 
+interface PropertyCatalogEntry {
+  id: string;
+  databaseId: string;
+  key: string;
+  type: PropertyType;
+  label: string;
+  options?: { key: string; label: string }[];
+  locked: boolean;
+  owner: "user" | "system";
+  ownerProcess: string | null;
+  migrationStatus: string;
+}
+
+function toPropertyCatalogEntry(
+  property: Awaited<ReturnType<ChokePoint["listProperties"]>>[number],
+  label: string,
+  options: PropertyCatalogEntry["options"],
+): PropertyCatalogEntry {
+  return {
+    id: property.id,
+    databaseId: property.databaseId,
+    key: property.key,
+    type: property.type,
+    label,
+    ...(options === undefined ? {} : { options }),
+    locked: property.locked,
+    owner: property.owner,
+    ownerProcess: property.ownerProcess,
+    migrationStatus: property.migrationStatus,
+  };
+}
+
 /**
  * Resolves `database`'s display name through issue #35's localized-metadata catalog and projects
  * it onto the #240 wire envelope — the one place every database route (list/create/detail/patch/
@@ -114,6 +146,22 @@ export function createDatabaseRoutes(pool: Pool, moduleRegistry: ModuleRegistry)
         const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);
         return { status: 200, body: await resolvedDatabaseBody(catalogResolver, database, locale) };
+      },
+    },
+    {
+      method: "GET",
+      path: "/api/databases/:id/properties",
+      handler: async (ctx) => {
+        const database = await requireDatabase(chokePoint, requireStringParam(ctx.params, "id"));
+        const locale = toManifestLocale(ctx.identity.user.locale);
+        const catalogResolver = await createCatalogResolver(moduleRegistry);
+        const catalogs = await catalogResolver.getCatalogsForDbKey(database.key);
+        const properties = await chokePoint.listProperties(database.id);
+        const body = properties.map((property) => {
+          const resolved = resolveProperty(property, database.key, catalogs, locale);
+          return toPropertyCatalogEntry(property, resolved.name, resolved.options);
+        });
+        return { status: 200, body: { properties: body } };
       },
     },
     {

@@ -220,6 +220,13 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
   },
   {
+    name: "property catalog",
+    method: "GET",
+    path: `/api/databases/${EXAMPLE_ID}/properties`,
+    surface: "api",
+    public: false,
+  },
+  {
     name: "create property",
     method: "POST",
     path: `/api/databases/${EXAMPLE_ID}/properties`,
