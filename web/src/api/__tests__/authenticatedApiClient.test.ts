@@ -73,4 +73,13 @@ describe("authenticated API client", () => {
     expect(api.blobUrl("blob-1")).toBe("/api/blobs/blob-1?disposition=inline");
     expect(api.blobUrl("weird id/1")).toBe("/api/blobs/weird%20id%2F1?disposition=inline");
   });
+
+  it("rejects a malformed failed query response as an API error", async () => {
+    const api = createAuthenticatedApiClient({
+      baseUrl: "/api",
+      fetchImpl: async () => jsonResponse({ error: "unexpected response" }, 500),
+    });
+
+    await expect(api.queryView("view-1", { cursor: null, limit: 20 })).rejects.toMatchObject({ status: 500 });
+  });
 });
