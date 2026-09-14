@@ -28,6 +28,7 @@ import {
   type ImapConnectionLimiter,
 } from "./imapConnectionLimiter.js";
 import { findEmailsMissingSearchIndex, reindexItemSearch } from "./search.js";
+import { logger } from "./logger.js";
 
 /**
  * Real transport connections (imapflow / Gmail REST / Graph REST) are out of `@semprec/data`
@@ -53,6 +54,12 @@ export interface MailModuleIds {
 
 /** The only key this job is allowed to write on a Mailbox item — `syncStatus` is `owner: 'system'`, and the sync worker is its declared owning process (seedEmailModule.ts). */
 const MAILBOX_SYNC_STATUS_ALLOWED_KEYS = ["syncStatus"] as const;
+
+function mailSyncFailureKind(error: unknown): "connectionLimit" | "reauthorizationRequired" | "unexpected" {
+  if (error instanceof MailConnectionLimitError) return "connectionLimit";
+  if (error instanceof MailReauthorizationRequiredError) return "reauthorizationRequired";
+  return "unexpected";
+}
 
 export function mailAccountSyncJobKey(mailboxItemId: string): string {
   return `mail-account-sync:${mailboxItemId}`;
@@ -221,6 +228,8 @@ export async function handleSyncMailAccountTask(
     });
     if (!credential) throw new Error(`Mailbox ${payload.mailboxItemId} has no stored credential`);
 
+    logger.info({ mailboxItemId: payload.mailboxItemId, syncMode: state.syncMode }, "Mail sync starting");
+
     const shared = {
       mailboxItemId: payload.mailboxItemId,
       emailsDatabaseId: moduleIds.emailsDatabaseId,
@@ -289,6 +298,7 @@ export async function handleSyncMailAccountTask(
         );
       });
     }
+    logger.info({ mailboxItemId: payload.mailboxItemId, syncMode: state.syncMode }, "Mail sync completed");
   } catch (err) {
     // Any attachment bytes already written to disk this pass (mail/attachments.ts writes
     // before the DB transaction that references them commits, see trackWrittenKeys above) are
@@ -302,6 +312,13 @@ export async function handleSyncMailAccountTask(
     // failure needs its own, separate transaction, or an UPDATE inside the aborted one would
     // itself be rolled back along with everything else `withTransaction` undoes.
     const message = err instanceof Error ? err.message : String(err);
+    // Provider errors can include complete IMAP/OAuth authentication exchanges. Keep this
+    // record diagnosable using stable identifiers and a fixed classification, but never pass
+    // the provider's raw error object or message to the logger.
+    logger.error(
+      { mailboxItemId: payload.mailboxItemId, mailboxProvider, failureKind: mailSyncFailureKind(err) },
+      "Mail sync failed",
+    );
 
     if (err instanceof MailConnectionLimitError) {
       // The provider rejected this connection purely for having too many of this account's

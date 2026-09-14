@@ -9,6 +9,7 @@ import {
 } from "@semprec/data";
 import type { Pool } from "pg";
 import { authenticateRequest } from "./authHandler.js";
+import { logger } from "./logger.js";
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
@@ -133,7 +134,7 @@ export function createApprovalRequestsRequestListener(pool: Pool) {
         sendJson(res, err.status, { error: err.message, code: err.code, details: err.details });
         return;
       }
-      console.error(`Unexpected error in ${req.method} ${url.pathname}:`, err);
+      logger.error({ err, method: req.method, path: url.pathname }, "Unexpected error handling request");
       sendJson(res, 500, { error: "Internal server error" });
     }
   }
@@ -146,7 +147,7 @@ export function createApprovalRequestsRequestListener(pool: Pool) {
    */
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {
-      console.error("Unhandled error in the request listener:", err);
+      logger.error({ err }, "Unhandled error in the request listener");
       if (res.headersSent) {
         res.end();
         return;

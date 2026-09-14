@@ -9,6 +9,7 @@ import {
   type StructuredCompletionMessage,
   type StructuredCompletionProvider,
 } from "./structuredProviders/types.js";
+import { logger } from "./logger.js";
 
 /**
  * #85 is this batch's only consumer of `POST /internal/complete`, and it always sends this exact
@@ -213,7 +214,7 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
         if (err instanceof ProviderCallError) {
           // Standard failed-call observability event: no ai_gateway_calls row exists for a
           // transport failure (see the comment above), so this log is the only trace it happened.
-          console.error(`Provider call failed for ${options.provider.id}/${options.model}:`, err.message);
+          logger.error({ err, provider: options.provider.id, model: options.model }, "Provider call failed");
           sendJson(res, 502, { error: "Provider call failed", code: "provider_failed" });
           return;
         }
@@ -238,7 +239,7 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
         sendJson(res, err.status, { error: err.message, code: err.code, details: err.details });
         return;
       }
-      console.error(`Unexpected error in ${req.method} ${url.pathname}:`, err);
+      logger.error({ err, method: req.method, path: url.pathname }, "Unexpected error handling request");
       sendJson(res, 500, { error: "Internal server error" });
     }
   }
@@ -250,7 +251,7 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
    */
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {
-      console.error("Unhandled error in the complete request listener:", err);
+      logger.error({ err }, "Unhandled error in the complete request listener");
       if (res.headersSent) {
         res.end();
         return;

@@ -4,6 +4,7 @@ import { ChokePointError, ValidationError, type AuthenticatedIdentity, type Item
 import { authenticateRequest } from "../authHandler.js";
 import { toErrorResponseBody, statusForError } from "./errorContract.js";
 import { toItemEnvelope } from "./itemEnvelope.js";
+import { logger } from "../logger.js";
 
 /**
  * The `semprec-api` REST adapter foundation (issue #238): the one place a mounted route's
@@ -123,8 +124,7 @@ export function createAdapterRequestListener(
         return;
       }
       const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
-      const errInfo = err instanceof Error ? (err.stack ?? err.message) : err;
-      console.error(`Unexpected error in ${req.method} ${pathname}:`, errInfo);
+      logger.error({ err, method: req.method, path: pathname }, "Unexpected error handling request");
       sendJson(res, 500, { error: { code: "internal_error" } });
     }
   }
@@ -134,8 +134,7 @@ export function createAdapterRequestListener(
   // crash the process on any rejection escaping the try/catch above.
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {
-      const errInfo = err instanceof Error ? (err.stack ?? err.message) : err;
-      console.error("Unhandled error in the request listener:", errInfo);
+      logger.error({ err }, "Unhandled error in the request listener");
       if (res.headersSent) {
         res.end();
         return;

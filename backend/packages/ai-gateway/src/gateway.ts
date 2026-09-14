@@ -6,6 +6,7 @@ import {
   recordAudioGatewayCall,
   recordTokenGatewayCall,
 } from "@semprec/data";
+import { logger } from "./logger.js";
 import type { AudioCallResult, GatewayCallContext, TokenCallResult } from "./types.js";
 
 /** Thrown by `assertWithinBudget` when a non-null daily/monthly cap is already reached. */
@@ -94,12 +95,14 @@ export function embed<T extends TokenCallResult>(
 }
 
 /** Transcription egress point. Records exactly one ai_gateway_calls row per invocation. */
-export function transcribe<T extends AudioCallResult>(
+export async function transcribe<T extends AudioCallResult>(
   client: Pool | PoolClient,
   ctx: GatewayCallContext,
   invoke: () => Promise<T>,
 ): Promise<T> {
-  return withAudioAccounting(client, ctx, invoke);
+  const result = await withAudioAccounting(client, ctx, invoke);
+  logger.info({ agentRunId: ctx.agentRunId, provider: ctx.provider, model: ctx.model }, "Transcription completed");
+  return result;
 }
 
 /** Diarization egress point. Records exactly one ai_gateway_calls row per invocation. */

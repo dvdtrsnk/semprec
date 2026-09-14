@@ -8,6 +8,7 @@ import {
 } from "./conversationReconstruction.js";
 import { extractResultSnapshot, pushRunStatus, runAgentTurn } from "./lifecycleAdapter.js";
 import type { AgentMessage, AgentSession, CreateAgentSession } from "./types.js";
+import { logger } from "./logger.js";
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -76,7 +77,7 @@ async function failRun(pool: Pool, agentRunId: string, err: unknown): Promise<vo
     await withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, agentRunId, message));
     await pushRunStatus(pool, agentRunId, "error");
   } catch (closeErr) {
-    console.error("DelegationRegistry: failed to close errored run", agentRunId, closeErr);
+    logger.error({ err: closeErr, agentRunId }, "DelegationRegistry: failed to close errored run");
   }
 }
 
@@ -219,7 +220,7 @@ export class DelegationRegistry {
   private scheduleTtl(entryKey: string): ReturnType<typeof setTimeout> {
     const timer = setTimeout(() => {
       this.expire(entryKey).catch((err) => {
-        console.error("DelegationRegistry: expire failed for", entryKey, err);
+        logger.error({ err, entryKey }, "DelegationRegistry: expire failed");
       });
     }, this.ttlMs);
     // Never keep a process alive solely to fire a TTL sweep.
@@ -246,7 +247,7 @@ export class DelegationRegistry {
       await pushRunStatus(this.pool, entry.agentRunId, "done");
       this.entries.delete(entryKey);
     } catch (err) {
-      console.error("DelegationRegistry: failed to close expired session, will retry", entryKey, err);
+      logger.error({ err, entryKey }, "DelegationRegistry: failed to close expired session, will retry");
       entry.ttlTimer = this.scheduleTtl(entryKey);
     }
   }

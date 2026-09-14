@@ -12,6 +12,7 @@ import {
 } from "@semprec/data";
 import { publishAgentRunDelta } from "@semprec/realtime";
 import type { AgentMessage, CreateAgentSession } from "./types.js";
+import { logger } from "./logger.js";
 
 const PERSISTED_EVENT_KINDS: ReadonlySet<string> = new Set<AgentRunEventKind>([
   "turn_start",
@@ -61,7 +62,7 @@ async function pushLiveDelta(client: Pool | PoolClient, agentRunId: string, delt
   try {
     await publishAgentRunDelta(client, agentRunId, delta);
   } catch (err) {
-    console.error("Failed to publish agent_run_delta realtime message", err);
+    logger.error({ err, agentRunId, kind: delta.kind }, "Failed to publish agent_run_delta realtime message");
   }
 }
 
@@ -149,7 +150,7 @@ export async function runAgentSession(client: Pool | PoolClient, input: RunAgent
     } catch (finishErr) {
       // Preserve the session failure for the caller, but do not erase evidence that the
       // secondary lifecycle close failed and left the row running.
-      console.error("Failed to record failed agent run lifecycle", finishErr);
+      logger.error({ err: finishErr, agentRunId: run.id }, "Failed to record failed agent run lifecycle");
     }
     throw err;
   }

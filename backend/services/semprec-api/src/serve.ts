@@ -10,8 +10,15 @@ import {
 } from "@semprec/data";
 import { createTransport } from "nodemailer";
 import { wireRealtimeHooks } from "@semprec/realtime";
+import { installFatalHandlers } from "@semprec/shared";
 import { createDispatcher } from "./app.js";
 import { createSyncUpgradeHandler } from "./syncHandler.js";
+import { logger } from "./logger.js";
+
+// Installed before anything else runs: an uncaught exception or unhandled rejection during
+// startup (the env-var checks below, pool creation, module-registry load) must still log
+// fatally and exit non-zero rather than crash silently or hang.
+installFatalHandlers(logger);
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("DATABASE_URL is not set");
@@ -89,5 +96,5 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(port, () => {
-  console.log(`semprec-api listening on port ${port}`);
+  logger.info({ port }, "semprec-api listening");
 });

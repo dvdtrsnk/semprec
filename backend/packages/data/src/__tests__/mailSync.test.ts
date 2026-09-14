@@ -50,6 +50,7 @@ import {
 } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { MailConnectionLimitError, MailReauthorizationRequiredError } from "../mail/providerTypes.js";
+import { logger } from "../mail/logger.js";
 import {
   walkBodyStructure,
   parseHeaderBlock,
@@ -1768,24 +1769,35 @@ describe("mail sync job error handling (issue #26)", () => {
 
     const adapters: MailSyncAdapterFactory = {
       createImapClient: async () => {
-        throw new MailReauthorizationRequiredError("refresh token revoked");
+        throw new MailReauthorizationRequiredError(
+          "OAuth exchange failed: refresh_token=provider-auth-exchange-secret",
+        );
       },
     };
 
-    await expect(
-      handleSyncMailAccountTask(
-        pool,
-        { mailboxItemId: mailbox.id },
-        adapters,
-        {
-          emailsDatabaseId: emailsId,
-          filesDatabaseId: filesId,
-          foldersDatabaseId: foldersId,
-          mailboxesDatabaseId: mailboxesId,
-        },
-        noopStorage,
-      ),
-    ).rejects.toThrow("refresh token revoked");
+    const errorSpy = vi.spyOn(logger, "error");
+    try {
+      await expect(
+        handleSyncMailAccountTask(
+          pool,
+          { mailboxItemId: mailbox.id },
+          adapters,
+          {
+            emailsDatabaseId: emailsId,
+            filesDatabaseId: filesId,
+            foldersDatabaseId: foldersId,
+            mailboxesDatabaseId: mailboxesId,
+          },
+          noopStorage,
+        ),
+      ).rejects.toThrow("provider-auth-exchange-secret");
+
+      const logArguments = JSON.stringify(errorSpy.mock.calls);
+      expect(logArguments).not.toContain("provider-auth-exchange-secret");
+      expect(logArguments).toContain("reauthorizationRequired");
+    } finally {
+      errorSpy.mockRestore();
+    }
 
     const item = await withTransaction(pool, (client) =>
       client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]),

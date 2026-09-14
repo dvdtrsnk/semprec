@@ -8,6 +8,7 @@ import {
 } from "./conversationReconstruction.js";
 import { extractResultSnapshot, pushRunStatus, runAgentTurn } from "./lifecycleAdapter.js";
 import type { AgentMessage, AgentSession, CreateAgentSession } from "./types.js";
+import { logger } from "./logger.js";
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -57,7 +58,7 @@ async function failRun(pool: Pool, agentRunId: string, err: unknown): Promise<vo
     await withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, agentRunId, message));
     await pushRunStatus(pool, agentRunId, "error");
   } catch (closeErr) {
-    console.error("SempConversation: failed to close errored run", agentRunId, closeErr);
+    logger.error({ err: closeErr, agentRunId }, "SempConversation: failed to close errored run");
   }
 }
 
@@ -195,7 +196,7 @@ export class SempConversation {
   private scheduleTtl(): ReturnType<typeof setTimeout> {
     const timer = setTimeout(() => {
       this.pause().catch((err) => {
-        console.error("SempConversation: pause failed", err);
+        logger.error({ err }, "SempConversation: pause failed");
       });
     }, this.ttlMs);
     // Never keep a process alive solely to fire a TTL sweep.
@@ -230,7 +231,7 @@ export class SempConversation {
       await pushRunStatus(this.pool, entry.agentRunId, "done");
       this.entry = null;
     } catch (err) {
-      console.error("SempConversation: failed to close paused run, will retry", err);
+      logger.error({ err, agentRunId: entry.agentRunId }, "SempConversation: failed to close paused run, will retry");
       entry.busy = false;
       entry.ttlTimer = this.scheduleTtl();
     }
