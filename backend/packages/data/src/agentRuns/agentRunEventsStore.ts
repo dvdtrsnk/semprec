@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from "pg";
-import { requireSingleRow } from "../db/pool.js";
+import { requireSingleRow, runAfterCommit } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
+import { notifyAgentRunEvent } from "../realtimeHook.js";
 
 export type AgentRunEventKind =
   "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status" | "compaction";
@@ -57,6 +58,24 @@ export async function insertAgentRunEvent(
   return mapRow(requireSingleRow(rows, "agent_run_events row"));
 }
 
+/**
+ * Appends one durable event and announces its thin reference only after the surrounding
+ * transaction commits. The hook belongs to this data owner: realtime wires it to Postgres
+ * NOTIFY, so callers never receive or reuse a transaction-scoped client after commit.
+ */
+export async function insertAndNotifyAgentRunEvent(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  kind: AgentRunEventKind,
+  payload: unknown,
+): Promise<AgentRunEventRow> {
+  const event = await insertAgentRunEvent(client, agentRunId, kind, payload);
+  const notify = () => notifyAgentRunEvent({ agentRunId, eventId: event.id });
+  if ("release" in client) runAfterCommit(client, notify);
+  else notify();
+  return event;
+}
+
 /** Transcript reconstruction source: every row for a run, in monotonic event-id order. */
 export async function listAgentRunEvents(client: Pool | PoolClient, agentRunId: string): Promise<AgentRunEventRow[]> {
   const { rows } = await client.query<AgentRunEventDbRow>(
@@ -64,6 +83,40 @@ export async function listAgentRunEvents(client: Pool | PoolClient, agentRunId: 
     [agentRunId],
   );
   return rows.map(mapRow);
+}
+
+/**
+ * The cursor form used by a realtime agent-run watcher. `id` is a Postgres bigint and is kept as
+ * a string at the TypeScript boundary so a browser client never loses precision while resuming.
+ */
+export async function listAgentRunEventsAfter(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  afterEventId: string,
+): Promise<AgentRunEventRow[]> {
+  const { rows } = await client.query<AgentRunEventDbRow>(
+    `SELECT id, agent_run_id, kind, payload, at
+     FROM agent_run_events
+     WHERE agent_run_id = $1 AND id > $2::bigint
+     ORDER BY id ASC`,
+    [agentRunId, afterEventId],
+  );
+  return rows.map(mapRow);
+}
+
+/** Fetches one durable event only when it belongs to the run named by its thin realtime reference. */
+export async function getAgentRunEventById(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  eventId: string,
+): Promise<AgentRunEventRow | null> {
+  const { rows } = await client.query<AgentRunEventDbRow>(
+    `SELECT id, agent_run_id, kind, payload, at
+     FROM agent_run_events
+     WHERE agent_run_id = $1 AND id = $2::bigint`,
+    [agentRunId, eventId],
+  );
+  return rows[0] ? mapRow(rows[0]) : null;
 }
 
 /**
