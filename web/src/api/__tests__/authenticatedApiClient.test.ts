@@ -66,4 +66,11 @@ describe("authenticated API client", () => {
     await expect(api.queryView("view-1", { cursor: null, limit: 20 })).rejects.toBeInstanceOf(ApiRequestError);
     await expect(api.queryView("view-1", { cursor: null, limit: 20 })).rejects.toMatchObject({ status: 401 });
   });
+
+  it("builds a safe-inline blob URL without issuing a request", () => {
+    const api = createAuthenticatedApiClient({ baseUrl: "/api", fetchImpl: async () => jsonResponse({}) });
+
+    expect(api.blobUrl("blob-1")).toBe("/api/blobs/blob-1?disposition=inline");
+    expect(api.blobUrl("weird id/1")).toBe("/api/blobs/weird%20id%2F1?disposition=inline");
+  });
 });

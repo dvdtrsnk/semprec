@@ -1,3 +1,10 @@
 {
-  "common.loading": "Načítání"
+  "common.loading": "Načítání",
+  "library.add": "Přidat",
+  "library.empty": "Zatím žádné položky.",
+  "library.createError": "Něco se pokazilo. Zkuste to znovu.",
+  "library.retry": "Zkusit znovu",
+  "library.loadMore": "Načíst další",
+  "library.loadMoreError": "Nepodařilo se načíst další položky. Zkuste to znovu.",
+  "property.movies.secondaryRating.name": "Hodnocení kritiků"
 }

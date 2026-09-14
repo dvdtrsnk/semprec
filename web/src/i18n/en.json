@@ -1,3 +1,10 @@
 {
-  "common.loading": "Loading"
+  "common.loading": "Loading",
+  "library.add": "Add",
+  "library.empty": "No items yet.",
+  "library.createError": "Something went wrong. Try again.",
+  "library.retry": "Retry",
+  "library.loadMore": "Load more",
+  "library.loadMoreError": "Couldn't load more items. Try again.",
+  "property.movies.secondaryRating.name": "Critics' rating"
 }
