@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createAuthenticatedApiClient } from "../authenticatedApiClient.js";
+import { ApiRequestError, createAuthenticatedApiClient } from "../authenticatedApiClient.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -44,5 +44,26 @@ describe("authenticated API client", () => {
     });
 
     await expect(api.queryView("missing", { cursor: null, limit: 20 })).resolves.toEqual({ code: "not_found" });
+  });
+
+  it("preserves non-query request failures as API errors", async () => {
+    const api = createAuthenticatedApiClient({
+      baseUrl: "/api",
+      fetchImpl: async () => jsonResponse({ error: { code: "internal_error" } }, 500),
+    });
+
+    await expect(api.getView("view-1")).rejects.toMatchObject({ status: 500 });
+    await expect(api.listProperties("db-1")).rejects.toMatchObject({ status: 500 });
+    await expect(api.createItem("db-1", {})).rejects.toMatchObject({ status: 500 });
+  });
+
+  it("preserves an unauthenticated query response as a 401 API error", async () => {
+    const api = createAuthenticatedApiClient({
+      baseUrl: "/api",
+      fetchImpl: async () => jsonResponse({ error: { code: "unauthorized" } }, 401),
+    });
+
+    await expect(api.queryView("view-1", { cursor: null, limit: 20 })).rejects.toBeInstanceOf(ApiRequestError);
+    await expect(api.queryView("view-1", { cursor: null, limit: 20 })).rejects.toMatchObject({ status: 401 });
   });
 });

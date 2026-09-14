@@ -108,6 +108,9 @@ export function createAuthenticatedApiClient(options: AuthenticatedApiClientOpti
         body: JSON.stringify(query),
       });
       if (!response.ok) {
+        // Authentication is a distinct outcome from a view-query rejection: callers need the
+        // original 401 to restart the session rather than displaying it as a query error state.
+        if (response.status === 401) throw new ApiRequestError(response.status);
         if (isQueryFailure(body)) return body.error;
         throw new ApiRequestError(response.status);
       }
