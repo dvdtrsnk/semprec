@@ -133,6 +133,41 @@ describe("createLogger", () => {
     expect(record.token).toBe("[REDACTED]");
   });
 
+  it("redacts secret fields and authorization headers through the supported eight object levels", () => {
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const logger = createLogger("semprec-api");
+    let output: unknown;
+    try {
+      logger.info(
+        {
+          one: {
+            two: {
+              three: {
+                four: {
+                  five: {
+                    six: {
+                      seven: {
+                        eight: { token: "deep-token-secret", headers: { authorization: "Bearer deep-header-secret" } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        "deep payload",
+      );
+      output = writeSpy.mock.calls[0]![0];
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    const serialized = String(output);
+    expect(serialized).not.toContain("deep-token-secret");
+    expect(serialized).not.toContain("deep-header-secret");
+  });
+
   it("redacts credential values embedded in an error message and stack", () => {
     const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const logger = createLogger("mail-sync");
@@ -151,6 +186,28 @@ describe("createLogger", () => {
     expect(JSON.stringify(record)).not.toContain("provider-access-secret");
     expect(record.err.message).toContain("[REDACTED]");
     expect(record.err.stack).toContain("[REDACTED]");
+  });
+
+  it("redacts credential-bearing text in every serialized Error cause", () => {
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const logger = createLogger("mail-sync");
+    let output: unknown;
+    try {
+      const root = new Error("Mail sync failed", {
+        cause: new Error("OAuth exchange failed: refresh_token=deep-cause-secret", {
+          cause: new Error("IMAP failed: Authorization: Bearer nested-cause-secret"),
+        }),
+      });
+      logger.error({ err: root }, "Mail sync failed");
+      output = writeSpy.mock.calls[0]![0];
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    const serialized = String(output);
+    expect(serialized).not.toContain("deep-cause-secret");
+    expect(serialized).not.toContain("nested-cause-secret");
+    expect(serialized).toContain("[REDACTED]");
   });
 
   it("redacts credential values from a non-Error value logged as err", () => {

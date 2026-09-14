@@ -10,41 +10,30 @@ export type { Logger } from "pino";
  * field, however deep it sits in a logged object — using pino's wildcard
  * (`*`) path segments so a new nesting level doesn't silently bypass them.
  */
-const REDACT_PATHS = [
-  "headers.authorization",
-  "headers.Authorization",
-  "*.headers.authorization",
-  "*.headers.Authorization",
-  "*.*.headers.authorization",
-  "*.*.headers.Authorization",
+const SECRET_FIELD_NAMES = [
   "authorization",
   "Authorization",
-  "*.authorization",
-  "*.Authorization",
-  "*.*.authorization",
-  "*.*.Authorization",
   "password",
-  "*.password",
-  "*.*.password",
   "token",
-  "*.token",
-  "*.*.token",
   "accessToken",
-  "*.accessToken",
-  "*.*.accessToken",
   "refreshToken",
-  "*.refreshToken",
-  "*.*.refreshToken",
   "apiKey",
-  "*.apiKey",
-  "*.*.apiKey",
   "credential",
-  "*.credential",
-  "*.*.credential",
   "credentials",
-  "*.credentials",
-  "*.*.credentials",
 ];
+const AUTHORIZATION_HEADER_NAMES = ["authorization", "Authorization"];
+
+// `fast-redact`, which pino uses, supports a wildcard segment but not an unbounded
+// recursive wildcard. Keep the supported nesting deliberately bounded and explicit:
+// application log payloads have at most eight object wrappers before sensitive data.
+const MAX_REDACTION_DEPTH = 8;
+const REDACT_PATHS = Array.from({ length: MAX_REDACTION_DEPTH + 1 }, (_, depth) => {
+  const prefix = Array.from({ length: depth }, () => "*");
+  return [
+    ...SECRET_FIELD_NAMES.map((field) => [...prefix, field].join(".")),
+    ...AUTHORIZATION_HEADER_NAMES.map((header) => [...prefix, "headers", header].join(".")),
+  ];
+}).flat();
 
 const DEFAULT_LEVEL = "info";
 const VALID_LEVELS = new Set(["fatal", "error", "warn", "info", "debug", "trace", "silent"]);
@@ -56,17 +45,23 @@ function redactErrorText(value: string): string {
   return value.replace(SECRET_IN_ERROR_TEXT, "$1[REDACTED]");
 }
 
+function redactSerializedError(value: unknown, visited = new WeakSet<object>()): unknown {
+  if (typeof value === "string") return redactErrorText(value);
+  if (typeof value !== "object" || value === null) return value;
+  if (visited.has(value)) return "[Circular]";
+  visited.add(value);
+  if (Array.isArray(value)) return value.map((entry) => redactSerializedError(entry, visited));
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactSerializedError(entry, visited)]));
+}
+
 function serializeError(value: unknown): unknown {
   if (!(value instanceof Error)) {
     return typeof value === "string" ? redactErrorText(value) : value;
   }
 
-  const serialized = pino.stdSerializers.err(value);
-  return {
-    ...serialized,
-    ...(typeof serialized.message === "string" ? { message: redactErrorText(serialized.message) } : {}),
-    ...(typeof serialized.stack === "string" ? { stack: redactErrorText(serialized.stack) } : {}),
-  };
+  // pino's standard serializer retains `Error.cause` objects. Redact every string
+  // in that serialized tree, not merely the top-level message and stack.
+  return redactSerializedError(pino.stdSerializers.err(value));
 }
 
 /**
