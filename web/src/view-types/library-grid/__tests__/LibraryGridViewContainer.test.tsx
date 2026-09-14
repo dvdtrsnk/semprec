@@ -188,6 +188,35 @@ describe("LibraryGridViewContainer", () => {
     expect(screen.queryByText("No items yet.")).not.toBeInTheDocument();
   });
 
+  it("picks up a locale change that arrives during the initial load once it settles, instead of dropping it", async () => {
+    let resolveQuery: (value: ViewQuery) => void = () => {};
+    const queryView = vi.fn(() => new Promise<ViewQuery>((resolve) => (resolveQuery = resolve)));
+    const listProperties = vi
+      .fn()
+      .mockResolvedValueOnce(catalog("Status (en)"))
+      .mockResolvedValueOnce(catalog("Status (cs)"));
+    const api = fakeApi({
+      queryView: queryView as unknown as AuthenticatedApiClient["queryView"],
+      listProperties: listProperties as unknown as AuthenticatedApiClient["listProperties"],
+    });
+    render(<LocaleSwitcher api={api} initialLocale="en" />);
+
+    // The initial load is still in flight (queryView hasn't resolved yet).
+    expect(screen.getByRole("status")).toHaveTextContent("Loading");
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "switch to cs" }));
+
+    // The locale effect defers instead of racing the still-loading initial load.
+    expect(listProperties).toHaveBeenCalledTimes(1);
+
+    resolveQuery(queryResult([itemRow("item-1", "Dune")]));
+
+    await waitFor(() => expect(listProperties).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByText("Status (cs)")).toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "Dune" })).toBeInTheDocument();
+  });
+
   it("re-resolves only the property catalog on a locale change, not the view or items", async () => {
     const api = fakeApi();
     render(<LocaleSwitcher api={api} initialLocale="en" />);

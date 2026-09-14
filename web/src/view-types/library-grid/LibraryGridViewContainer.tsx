@@ -43,6 +43,7 @@ export function LibraryGridViewContainer({ viewId, databaseId }: ViewRendererPro
   const generationRef = useRef(0);
   const localeRef = useRef<string | null>(null);
   const phaseRef = useRef<Phase>(phase);
+  const initialLoadCompleteRef = useRef(false);
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -53,6 +54,7 @@ export function LibraryGridViewContainer({ viewId, databaseId }: ViewRendererPro
     const generation = generationRef.current + 1;
     generationRef.current = generation;
     localeRef.current = user.locale;
+    initialLoadCompleteRef.current = false;
     setPhase({ status: "loading" });
 
     void (async () => {
@@ -66,10 +68,12 @@ export function LibraryGridViewContainer({ viewId, databaseId }: ViewRendererPro
 
         const parsedContract = libraryModuleContractSchema.safeParse(view.config);
         if (!parsedContract.success) {
+          initialLoadCompleteRef.current = true;
           setPhase({ status: "error", error: { code: "invalid_contract" } });
           return;
         }
         if ("code" in query) {
+          initialLoadCompleteRef.current = true;
           setPhase({ status: "error", error: { code: query.code } });
           return;
         }
@@ -77,18 +81,25 @@ export function LibraryGridViewContainer({ viewId, databaseId }: ViewRendererPro
         setContract(parsedContract.data);
         setProperties(catalog.properties.map(toPropertyDisplay));
         setItems(query.items);
+        initialLoadCompleteRef.current = true;
         setPhase({ status: "ready" });
       } catch {
         if (generationRef.current !== generation) return;
+        initialLoadCompleteRef.current = true;
         setPhase({ status: "error", error: { code: "unavailable" } });
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- locale is handled by the effect below, deliberately not here.
   }, [viewId, databaseId, api]);
 
-  // Locale change only: re-resolve the property catalog, never re-fetching the view or items.
+  // Locale change only: re-resolve the property catalog, never re-fetching the view or items. Also
+  // re-runs whenever `phase.status` settles, so a locale change that arrived mid-initial-load is
+  // picked up once that load finishes instead of being silently dropped.
   useEffect(() => {
     if (localeRef.current === null || localeRef.current === user.locale) return;
+    // The initial load owns the current generation until it settles; deferring avoids racing it,
+    // and this effect re-runs once `phase.status` changes to pick the locale change back up.
+    if (!initialLoadCompleteRef.current) return;
     // A failed initial load leaves nothing to re-project; retrying it is the initial effect's job.
     if (phaseRef.current.status === "error") return;
     localeRef.current = user.locale;
@@ -108,7 +119,7 @@ export function LibraryGridViewContainer({ viewId, databaseId }: ViewRendererPro
         setPhase({ status: "error", error: { code: "unavailable" } });
       }
     })();
-  }, [user.locale, databaseId, api]);
+  }, [user.locale, databaseId, api, phase.status]);
 
   function handleCreated(item: LibraryGridItem): void {
     setItems((current) => {
