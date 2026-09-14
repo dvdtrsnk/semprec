@@ -195,10 +195,9 @@ describe("database routes (issue #240)", () => {
   it("lets a property label override win and falls back to a raw key without a catalog", async () => {
     const movies = (await chokePoint.listDatabases()).find((database) => database.key === "movies");
     if (!movies) throw new Error("expected Movies database from seedSystem");
-    await pool.query(`UPDATE properties SET name = $1 WHERE database_id = $2 AND key = 'rating'`, [
-      "My rating",
-      movies.id,
-    ]);
+    const ratingProperty = (await chokePoint.listProperties(movies.id)).find((property) => property.key === "rating");
+    if (!ratingProperty) throw new Error("expected rating property on the Movies database");
+    await chokePoint.updateProperty(ratingProperty.id, { name: "My rating" });
 
     const overridden = await fetch(`${baseUrl}/api/databases/${movies.id}/properties`, {
       headers: await authHeader("cs"),
