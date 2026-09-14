@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { ForbiddenError } from "../errors.js";
@@ -28,6 +29,7 @@ import {
 } from "../library/libraryMetadataJob.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
+import { LIBRARY_GRID_VIEW_TYPE, registerLibraryGridViewType } from "../views/libraryGridViewType.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -91,13 +93,45 @@ describe("library module (issue #25)", () => {
     expect(booksViews).toHaveLength(1);
     expect(booksViews[0]!.type).toBe("library-grid");
     expect(booksViews[0]!.config).toMatchObject({ coverKey: "cover", subtitleKey: "author", statusKey: "status" });
+    expect(booksViews[0]!.config).not.toHaveProperty("secondaryRatingLabel");
 
     const moviesViews = await chokePoint.listViewsByDatabase(moviesId);
     expect(moviesViews[0]!.config).toMatchObject({
       coverKey: "cover",
       subtitleKey: "year",
+      ratingKey: "rating",
       secondaryRatingKey: "secondaryRating",
+      secondaryRatingLabel: "property.movies.secondaryRating.name",
+      sourceUrlKey: "sourceUrl",
+      statusKey: "status",
+      coverGlyph: "🎬",
     });
+  });
+
+  it("runtime-validates every library-grid contract field", () => {
+    const registry = createViewTypeRegistry();
+    const definition = registry.get(LIBRARY_GRID_VIEW_TYPE);
+    expect(definition).toBeUndefined();
+
+    // Registration is the runtime boundary for persisted view configs.
+    registerLibraryGridViewType(registry);
+    const schema = registry.get(LIBRARY_GRID_VIEW_TYPE)?.configSchema;
+    expect(
+      schema?.safeParse({
+        coverKey: "cover",
+        subtitleKey: "year",
+        ratingKey: "rating",
+        secondaryRatingKey: "secondaryRating",
+        secondaryRatingLabel: "property.movies.secondaryRating.name",
+        sourceUrlKey: "sourceUrl",
+        statusKey: "status",
+        coverGlyph: "🎬",
+      }).success,
+    ).toBe(true);
+    expect(schema?.safeParse({ coverKey: "cover", subtitleKey: "year", ratingKey: "rating" }).success).toBe(false);
+    expect(
+      schema?.safeParse({ coverKey: "cover", subtitleKey: "year", ratingKey: "rating", statusKey: 1 }).success,
+    ).toBe(false);
   });
 
   it("rejects writing owner:'system' library fields through the generic create/update path", async () => {

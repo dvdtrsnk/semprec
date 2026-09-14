@@ -31,14 +31,12 @@ describe("smoke: choke-point end to end", () => {
     keyed.sort();
 
     expect(named).toEqual([
-      "Books",
       "Emails",
       "Folders",
       "Inbox",
       "Inbox item types",
       "MCP servers",
       "Mailboxes",
-      "Movies/TV",
       "Processing proposals",
       "System settings",
     ]);
@@ -47,11 +45,13 @@ describe("smoke: choke-point end to end", () => {
     expect(keyed).toEqual(
       [
         "areas",
+        "books",
         "companies",
         "events",
         "files",
         "healthRecords",
         "journal",
+        "movies",
         "people",
         "projects",
         "tasks",
