@@ -294,6 +294,11 @@ export function LibraryGridView({
             {t("library.loadMore")}
           </button>
         ) : null}
+        {state.loadMoreError ? (
+          <p className="library-grid__load-more-error" role="alert" aria-live="polite">
+            {t("library.loadMoreError")}
+          </p>
+        ) : null}
       </>
     );
   }

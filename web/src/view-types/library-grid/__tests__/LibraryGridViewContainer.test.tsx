@@ -291,6 +291,49 @@ describe("LibraryGridViewContainer", () => {
     expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
   });
 
+  it("surfaces a load-more failure without losing existing items, and lets the user retry", async () => {
+    const user = userEvent.setup();
+    const queryView = vi
+      .fn()
+      .mockResolvedValueOnce(queryResult([itemRow("item-1", "Dune")], "cursor-2"))
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockResolvedValueOnce(queryResult([itemRow("item-2", "Chinatown")], null));
+    const api = fakeApi({ queryView: queryView as unknown as AuthenticatedApiClient["queryView"] });
+    renderContainer(api);
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Dune" })).toBeInTheDocument());
+
+    const loadMore = screen.getByRole("button", { name: "Load more" });
+    await user.click(loadMore);
+
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "Dune" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Chinatown" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Load more" })).not.toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Load more" }));
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Chinatown" })).toBeInTheDocument());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(queryView).toHaveBeenCalledTimes(3);
+  });
+
+  it("surfaces a load-more failure returned as a stable failure code", async () => {
+    const user = userEvent.setup();
+    const queryView = vi
+      .fn()
+      .mockResolvedValueOnce(queryResult([itemRow("item-1", "Dune")], "cursor-2"))
+      .mockResolvedValueOnce({ code: "unavailable" });
+    const api = fakeApi({ queryView: queryView as unknown as AuthenticatedApiClient["queryView"] });
+    renderContainer(api);
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Dune" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Load more" }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "Dune" })).toBeInTheDocument();
+  });
+
   it("aborts an older in-flight property request when a newer locale change starts", async () => {
     const signals: AbortSignal[] = [];
     const listProperties = vi

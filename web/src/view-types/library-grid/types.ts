@@ -40,7 +40,13 @@ export interface LibraryPropertyDisplay {
 export type LibraryGridState =
   | { status: "loading" }
   | { status: "error"; error: { code: string } }
-  | { status: "ready"; items: LibraryGridItem[]; nextCursor: string | null; loadingMore: boolean };
+  | {
+      status: "ready";
+      items: LibraryGridItem[];
+      nextCursor: string | null;
+      loadingMore: boolean;
+      loadMoreError: boolean;
+    };
 
 export interface LibraryGridViewProps {
   viewId: string;

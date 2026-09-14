@@ -47,6 +47,7 @@ export function LibraryGridViewContainer({ viewId, databaseId }: ViewRendererPro
   const [items, setItems] = useState<LibraryGridItem[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState(false);
   const [phase, setPhase] = useState<Phase>({ status: "loading" });
   const [retryTick, setRetryTick] = useState(0);
   const generationRef = useRef(0);
@@ -157,6 +158,7 @@ export function LibraryGridViewContainer({ viewId, databaseId }: ViewRendererPro
   function handleLoadMore(): void {
     if (nextCursor === null || loadingMore) return;
     setLoadingMore(true);
+    setLoadMoreError(false);
     const generation = generationRef.current;
 
     void (async () => {
@@ -165,6 +167,7 @@ export function LibraryGridViewContainer({ viewId, databaseId }: ViewRendererPro
         if (generationRef.current !== generation) return;
         if ("code" in query) {
           setLoadingMore(false);
+          setLoadMoreError(true);
           return;
         }
         setItems((current) => [...current, ...query.items]);
@@ -173,6 +176,7 @@ export function LibraryGridViewContainer({ viewId, databaseId }: ViewRendererPro
       } catch {
         if (generationRef.current !== generation) return;
         setLoadingMore(false);
+        setLoadMoreError(true);
       }
     })();
   }
@@ -188,7 +192,7 @@ export function LibraryGridViewContainer({ viewId, databaseId }: ViewRendererPro
 
   const state: LibraryGridState =
     phase.status === "ready"
-      ? { status: "ready", items, nextCursor, loadingMore }
+      ? { status: "ready", items, nextCursor, loadingMore, loadMoreError }
       : phase.status === "error"
         ? { status: "error", error: phase.error }
         : { status: "loading" };

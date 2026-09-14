@@ -67,7 +67,13 @@ function fakeApi(overrides: Partial<AuthenticatedApiClient> = {}): Authenticated
 type TestState =
   | { status: "loading" }
   | { status: "error"; error: { code: string } }
-  | { status: "ready"; items: LibraryGridItem[]; nextCursor?: string | null; loadingMore?: boolean };
+  | {
+      status: "ready";
+      items: LibraryGridItem[];
+      nextCursor?: string | null;
+      loadingMore?: boolean;
+      loadMoreError?: boolean;
+    };
 
 function renderView({
   state,
@@ -95,6 +101,7 @@ function renderView({
           items: state.items,
           nextCursor: state.nextCursor ?? null,
           loadingMore: state.loadingMore ?? false,
+          loadMoreError: state.loadMoreError ?? false,
         }
       : state;
   const wrapper = ({ children }: { children: ReactNode }) => (
@@ -173,6 +180,21 @@ describe("LibraryGridView", () => {
     });
 
     expect(screen.getByRole("button", { name: "Load more" })).toBeDisabled();
+  });
+
+  it("shows library.loadMoreError and keeps the load-more button enabled when a page fails to load", () => {
+    renderView({
+      state: {
+        status: "ready",
+        items: [item({ properties: { name: "Dune" } })],
+        nextCursor: "cursor-2",
+        loadingMore: false,
+        loadMoreError: true,
+      },
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't load more items. Try again.");
+    expect(screen.getByRole("button", { name: "Load more" })).not.toBeDisabled();
   });
 
   it("renders the empty state only for ready with zero items", () => {
