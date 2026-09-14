@@ -10,6 +10,7 @@ import type {
   View,
   ViewQuery,
 } from "../../../api/authenticatedApiClient.js";
+import { GenericViewRoute } from "../../GenericViewRoute.js";
 import { LibraryGridViewContainer } from "../LibraryGridViewContainer.js";
 
 const CONTRACT_CONFIG = {
@@ -170,6 +171,23 @@ describe("LibraryGridViewContainer", () => {
     expect(api.queryView).toHaveBeenCalledTimes(1);
   });
 
+  it("a locale change after a failed initial load does not overwrite the error state", async () => {
+    const api = fakeApi({ getView: vi.fn(async () => view({ notAContract: true })) });
+    render(<LocaleSwitcher api={api} initialLocale="en" />);
+
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    expect(api.listProperties).toHaveBeenCalledTimes(1);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "switch to cs" }));
+
+    // The locale-only effect bails out instead of re-fetching properties and clobbering the error.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(api.listProperties).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    expect(screen.queryByText("No items yet.")).not.toBeInTheDocument();
+  });
+
   it("re-resolves only the property catalog on a locale change, not the view or items", async () => {
     const api = fakeApi();
     render(<LocaleSwitcher api={api} initialLocale="en" />);
@@ -222,4 +240,21 @@ describe("LibraryGridViewContainer", () => {
     expect(screen.getByText("Status (en-2)")).toBeInTheDocument();
     expect(screen.queryByText("Status (cs, stale)")).not.toBeInTheDocument();
   });
+
+  it.each(["en", "cs"] as const)(
+    "dispatches to this container through GenericViewRoute and the real registry under locale %s",
+    async (locale) => {
+      const api = fakeApi();
+      render(
+        <AuthenticatedWebProvider value={{ user: { locale }, api }}>
+          <GenericViewRoute search="?view=view-1&database=db-1&type=library-grid" />
+        </AuthenticatedWebProvider>,
+      );
+
+      await waitFor(() => expect(screen.getByRole("heading", { name: "Dune" })).toBeInTheDocument());
+      expect(api.getView).toHaveBeenCalledWith("view-1");
+      expect(api.listProperties).toHaveBeenCalledWith("db-1");
+      expect(api.queryView).toHaveBeenCalledWith("view-1", { cursor: null, limit: 50 });
+    },
+  );
 });

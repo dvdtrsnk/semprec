@@ -42,6 +42,11 @@ export function LibraryGridViewContainer({ viewId, databaseId }: ViewRendererPro
   const [phase, setPhase] = useState<Phase>({ status: "loading" });
   const generationRef = useRef(0);
   const localeRef = useRef<string | null>(null);
+  const phaseRef = useRef<Phase>(phase);
+
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
 
   // Initial load / view or database change: view, properties, and the first item page concurrently.
   useEffect(() => {
@@ -84,6 +89,8 @@ export function LibraryGridViewContainer({ viewId, databaseId }: ViewRendererPro
   // Locale change only: re-resolve the property catalog, never re-fetching the view or items.
   useEffect(() => {
     if (localeRef.current === null || localeRef.current === user.locale) return;
+    // A failed initial load leaves nothing to re-project; retrying it is the initial effect's job.
+    if (phaseRef.current.status === "error") return;
     localeRef.current = user.locale;
 
     const generation = generationRef.current + 1;

@@ -196,6 +196,47 @@ describe("LibraryGridView", () => {
     );
   });
 
+  it("omits the source link for an unsafe URL scheme instead of rendering it", () => {
+    renderView({
+      state: {
+        status: "ready",
+        items: [
+          item({
+            properties: {
+              name: "Dune",
+              year: 2021,
+              rating: 9,
+              status: "watched",
+              sourceUrl: "javascript:alert(1)",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the property's own label when the secondaryRatingLabel key has no translation", () => {
+    renderView({
+      contract: { ...CONTRACT, secondaryRatingLabel: "no.such.i18n.key" },
+      properties: PROPERTIES.map((property) =>
+        property.key === "secondaryRating" ? { ...property, label: "Critic score" } : property,
+      ),
+      state: {
+        status: "ready",
+        items: [
+          item({
+            properties: { name: "Dune", year: 2021, rating: 9, secondaryRating: 87, status: "watched" },
+          }),
+        ],
+      },
+    });
+
+    expect(screen.getByText("Critic score")).toBeInTheDocument();
+    expect(screen.queryByText("no.such.i18n.key")).not.toBeInTheDocument();
+  });
+
   it("renders the fallback color and glyph for a malformed cover value", () => {
     renderView({
       state: {

@@ -32,6 +32,30 @@ function readValue(item: LibraryGridItem, key: string | undefined): unknown {
   return value === null || value === undefined ? undefined : value;
 }
 
+/** `http(s)` only — a stored `sourceUrl` is user data and must not reach `href` unvalidated. */
+function isSafeUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/** Label fallback chain: locale translation → English translation → property metadata → raw key. */
+function resolveFieldLabel(
+  labelOverrideKey: string | undefined,
+  property: LibraryPropertyDisplay | undefined,
+  key: string | undefined,
+  t: (key: string) => string,
+): string {
+  if (labelOverrideKey) {
+    const translated = t(labelOverrideKey);
+    return translated !== labelOverrideKey ? translated : (property?.label ?? translated);
+  }
+  return property?.label ?? key ?? "";
+}
+
 function CardCover({
   item,
   contract,
@@ -89,7 +113,7 @@ function CardField({
   if (rawValue === undefined) return null;
 
   const property = field.key ? findProperty(properties, field.key) : undefined;
-  const label = field.labelOverrideKey ? t(field.labelOverrideKey) : (property?.label ?? field.key ?? "");
+  const label = resolveFieldLabel(field.labelOverrideKey, property, field.key, t);
 
   return (
     <p className="library-card__field">
@@ -130,7 +154,7 @@ function LibraryCard({
         item={item}
       />
       <CardField properties={properties} field={{ key: contract.statusKey }} t={t} item={item} />
-      {typeof sourceUrl === "string" && sourceUrl ? (
+      {typeof sourceUrl === "string" && isSafeUrl(sourceUrl) ? (
         <p className="library-card__field">
           <a className="library-card__source-link" href={sourceUrl} target="_blank" rel="noreferrer">
             {sourceUrl}
@@ -215,7 +239,7 @@ function AddForm({
 }
 
 /** The shared card-grid renderer for `library-grid` views (Books, Movies/TV — issue #25). */
-export function LibraryGridView({ databaseId, contract, properties, state, onCreated }: LibraryGridViewProps) {
+export function LibraryGridView({ viewId, databaseId, contract, properties, state, onCreated }: LibraryGridViewProps) {
   const t = useLocalizedString();
   const { api } = useAuthenticatedWebContext();
   const titleProperty = state.status === "ready" ? findTitleProperty(properties) : null;
@@ -264,7 +288,7 @@ export function LibraryGridView({ databaseId, contract, properties, state, onCre
   }
 
   return (
-    <section className="library-grid">
+    <section className="library-grid" data-view-id={viewId}>
       {state.status === "ready" && titleProperty ? (
         <AddForm databaseId={databaseId} titleKey={titleProperty.key} onCreated={onCreated} t={t} />
       ) : null}
