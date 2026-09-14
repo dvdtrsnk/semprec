@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
+import { getTraceContext } from "@semprec/shared";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -258,6 +259,40 @@ describe("scheduler", () => {
     expect(runs[0]!.status).toBe("done");
     expect(runs[0]!.result).toBe("handled: process the inbox");
     expect(runs[0]!.triggeredBy).toBe("heartbeat");
+  });
+
+  it("core.agentRun binds the new run's id into the trace context the injected runner executes under (#167)", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    const observed: { traceId: string | undefined; agentRunId: string | undefined }[] = [];
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async ({ task, agentRunId }) => {
+        const ctx = getTraceContext();
+        observed.push({ traceId: ctx?.traceId, agentRunId: ctx?.agentRunId });
+        return { result: `handled: ${task}, run=${agentRunId}` };
+      }),
+    );
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Process inbox",
+        rule: { kind: "interval", minutes: 1 },
+        actionId: CORE_AGENT_RUN_ACTION_ID,
+        actionConfig: { task: "process the inbox" },
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+    await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    await drainQueue(registry);
+
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
+    expect(runs).toHaveLength(1);
+    expect(observed).toHaveLength(1);
+    expect(observed[0]!.agentRunId).toBe(runs[0]!.id);
+    expect(observed[0]!.traceId).toMatch(/^[0-9a-f-]{36}$/i);
   });
 
   it("heartbeat.trigger's manual fire attributes the child run's parent_run_id to the invoking run, without touching next_fire_at/last_fired_at", async () => {

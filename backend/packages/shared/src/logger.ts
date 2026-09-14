@@ -1,4 +1,5 @@
 import pino, { type Logger } from "pino";
+import { getTraceContext } from "./traceContext.js";
 
 export type { Logger } from "pino";
 
@@ -100,6 +101,11 @@ export function createLogger(name: string): Logger {
     level: resolveLogLevel(),
     redact: { paths: REDACT_PATHS, censor: "[REDACTED]" },
     serializers: { err: serializeError },
+    // Issue #167: every record picks up the active trace context (traceId and whichever of
+    // agentRunId/jobName/jobId/mailboxId are bound) without every call site passing it explicitly.
+    // A field a call site also passes explicitly (e.g. gateway.ts's own `agentRunId`) wins, since
+    // pino merges the log object over the mixin result.
+    mixin: () => getTraceContext() ?? {},
   });
 }
 

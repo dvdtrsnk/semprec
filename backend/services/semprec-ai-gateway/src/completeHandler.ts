@@ -3,6 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { Pool } from "pg";
 import { ChokePointError, ValidationError } from "@semprec/data";
 import { BudgetExceededError, complete } from "@semprec/ai-gateway";
+import { withTraceContext } from "@semprec/shared";
 import { compileResponseSchema, InvalidResponseSchemaError } from "./schemaValidation.js";
 import {
   ProviderCallError,
@@ -79,6 +80,17 @@ function extractBearerToken(req: IncomingMessage): string {
   return header.slice("Bearer ".length);
 }
 
+/**
+ * Issue #167: an `x-trace-id` the caller forwarded (`httpAiGatewayClient.ts`) continues that
+ * caller's trace; an absent or malformed one (a direct call, or a caller with no trace set up)
+ * gives `withTraceContext` nothing to key off, so it mints a fresh one for this request instead.
+ */
+function extractTraceId(req: IncomingMessage): string | undefined {
+  const header = req.headers["x-trace-id"];
+  const value = Array.isArray(header) ? header[0] : header;
+  return value !== undefined && UUID_PATTERN.test(value) ? value : undefined;
+}
+
 function isStructuredCompletionMessage(value: unknown): value is StructuredCompletionMessage {
   return (
     typeof value === "object" &&
@@ -140,7 +152,11 @@ function validateBody(raw: unknown): CompleteRequestBody {
  * validates the provider's response against the caller's own schema before answering.
  */
 export function createCompleteRequestListener(pool: Pool, options: CompleteHandlerOptions) {
-  async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    return withTraceContext({ traceId: extractTraceId(req) }, () => handleRequestTraced(req, res));
+  }
+
+  async function handleRequestTraced(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
 
     try {

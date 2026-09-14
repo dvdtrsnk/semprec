@@ -49,7 +49,7 @@ async function countPropertyTypeMigrationJobs(propertyId: string): Promise<numbe
     `SELECT count(*)::text AS count
      FROM graphile_worker._private_jobs jobs
      JOIN graphile_worker._private_tasks tasks ON tasks.id = jobs.task_id
-     WHERE tasks.identifier = 'propertyTypeMigration' AND jobs.payload->>'propertyId' = $1`,
+     WHERE tasks.identifier = 'propertyTypeMigration' AND jobs.payload->'payload'->>'propertyId' = $1`,
     [propertyId],
   );
   return Number(rows[0]!.count);

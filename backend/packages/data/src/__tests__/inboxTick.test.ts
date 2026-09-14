@@ -31,7 +31,9 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 interface TickJobRow {
   key: string;
   queue_name: string | null;
-  payload: { heartbeatId: string; itemId: string };
+  // Issue #167: `enqueueJob` wraps every job payload in a `{ traceId, payload }` envelope before
+  // it reaches `graphile_worker`'s own `jobs` table.
+  payload: { traceId: string; payload: { heartbeatId: string; itemId: string } };
 }
 
 async function pendingTickJobs(): Promise<TickJobRow[]> {
@@ -120,7 +122,7 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
     const jobs = await pendingTickJobs();
     expect(jobs).toHaveLength(1);
-    expect(jobs[0]!.payload.itemId).toBe(item.id);
+    expect(jobs[0]!.payload.payload.itemId).toBe(item.id);
     expect(jobs[0]!.key.endsWith(`:${item.id}`)).toBe(true);
   });
 
@@ -216,7 +218,7 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
     const jobs = await pendingTickJobs();
     expect(jobs).toHaveLength(1);
-    expect(jobs[0]!.payload.itemId).toBe(item.id);
+    expect(jobs[0]!.payload.payload.itemId).toBe(item.id);
     expect(jobs[0]!.queue_name).toBe(SEMPREC_TICK_QUEUE_NAME);
   });
 

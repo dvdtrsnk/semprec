@@ -1,9 +1,25 @@
 import type { Pool, PoolClient } from "pg";
 import { runMigrations, runOnce as graphileRunOnce, run as graphileRun } from "graphile-worker";
-import type { RunnerOptions, TaskList, Runner } from "graphile-worker";
+import type { RunnerOptions, TaskList, Runner, Task } from "graphile-worker";
+import { z } from "zod";
+import { getTraceId, mintTraceId, withTraceContext } from "@semprec/shared";
 
 export type { TaskList, Task, Runner } from "graphile-worker";
 type Queryable = Pool | PoolClient;
+
+/**
+ * Issue #167's one queue envelope: every job `enqueueJob` sends is wrapped in this shape, with
+ * `traceId` stamped from the enqueuing process's own active trace (minting one if it isn't
+ * already inside one). A public producer only ever supplies the business `payload` — it has no
+ * way to set the top-level `traceId` itself, so it can neither omit nor spoof the queue trace.
+ * `payload` stays `unknown` here (validated against each task's own shape once `registerTask`
+ * unwraps it), matching how `mergeModuleTaskList` already re-validates module task payloads.
+ */
+export const queueJobEnvelopeSchema = z.object({
+  traceId: z.string().uuid(),
+  payload: z.unknown(),
+});
+export type QueueJobEnvelope = z.infer<typeof queueJobEnvelopeSchema>;
 
 /**
  * Task identifiers this issue's core registers. The runtime merge of CORE +
@@ -69,6 +85,7 @@ export async function enqueueJob(
   payload: Record<string, unknown>,
   options: EnqueueJobOptions = {},
 ): Promise<void> {
+  const envelope: QueueJobEnvelope = { traceId: getTraceId() ?? mintTraceId(), payload };
   await client.query(
     `SELECT graphile_worker.add_job(
        identifier => $1,
@@ -81,7 +98,7 @@ export async function enqueueJob(
      )`,
     [
       identifier,
-      JSON.stringify(payload),
+      JSON.stringify(envelope),
       options.queueName ?? null,
       options.runAt ?? null,
       options.maxAttempts ?? null,
@@ -89,6 +106,27 @@ export async function enqueueJob(
       options.jobKeyMode ?? "replace",
     ],
   );
+}
+
+/**
+ * Wraps a task handler so it restores the trace context its `enqueueJob` producer stamped,
+ * instead of the handler seeing that envelope shape directly. A payload that isn't a valid
+ * envelope (graphile-worker's own `crontab` calls a task with its raw configured payload, e.g.
+ * `{}` for a sweep — there is no `enqueueJob` producer to have stamped one) mints a fresh trace
+ * for that tick instead of rejecting it: crontab-fired jobs are themselves trace entry points
+ * (issue #167's "scheduler ticks"), not queue producers subject to the envelope contract.
+ */
+export function registerTask(name: string, handler: Task): Task {
+  return (rawPayload, helpers) => {
+    const jobId = helpers.job?.id !== undefined ? String(helpers.job.id) : undefined;
+    const envelope = queueJobEnvelopeSchema.safeParse(rawPayload);
+    if (envelope.success) {
+      return withTraceContext({ traceId: envelope.data.traceId, jobName: name, jobId }, () =>
+        handler(envelope.data.payload, helpers),
+      );
+    }
+    return withTraceContext({ jobName: name, jobId }, () => handler(rawPayload, helpers));
+  };
 }
 
 /** Runs the worker loop; resolves a `Runner` whose `.stop()` shuts it down. */

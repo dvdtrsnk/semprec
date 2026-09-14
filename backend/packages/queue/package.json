@@ -9,8 +9,10 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@semprec/shared": "workspace:*",
     "graphile-worker": "^0.17.3",
-    "pg": "^8.23.0"
+    "pg": "^8.23.0",
+    "zod": "^4.1.11"
   },
   "devDependencies": {
     "@types/pg": "^8.23.1"
