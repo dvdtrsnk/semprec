@@ -12,14 +12,16 @@ const propertySchema = z.object({
   id: z.string(),
   databaseId: z.string(),
   key: z.string(),
-  name: z.string(),
   type: z.string(),
-  config: z.record(z.string(), z.unknown()),
+  label: z.string(),
+  options: z.array(z.object({ key: z.string(), label: z.string() })).optional(),
   locked: z.boolean(),
   owner: z.enum(["user", "system"]),
   ownerProcess: z.string().nullable(),
   migrationStatus: z.string(),
 });
+
+const propertyCatalogSchema = z.object({ properties: z.array(propertySchema) });
 
 const itemSchema = z.object({
   id: z.string(),
@@ -39,6 +41,7 @@ const queryErrorSchema = z.object({ error: z.object({ code: z.string() }) });
 
 export type View = z.infer<typeof viewSchema>;
 export type Property = z.infer<typeof propertySchema>;
+export type PropertyCatalog = z.infer<typeof propertyCatalogSchema>;
 export type Item = z.infer<typeof itemSchema>;
 export type ViewQuery = z.infer<typeof viewQuerySchema>;
 export interface QueryFailure {
@@ -47,7 +50,7 @@ export interface QueryFailure {
 
 export interface AuthenticatedApiClient {
   getView(viewId: string): Promise<View>;
-  listProperties(databaseId: string): Promise<Property[]>;
+  listProperties(databaseId: string): Promise<PropertyCatalog>;
   queryView(viewId: string, request: { cursor: string | null; limit: number }): Promise<ViewQuery | QueryFailure>;
   createItem(databaseId: string, properties: Record<string, unknown>): Promise<Item>;
 }
@@ -99,7 +102,7 @@ export function createAuthenticatedApiClient(options: AuthenticatedApiClientOpti
     async listProperties(databaseId) {
       const { response, body } = await request(`/databases/${encodeURIComponent(databaseId)}/properties`);
       if (!response.ok) throw new ApiRequestError(response.status);
-      return z.array(propertySchema).parse(body);
+      return propertyCatalogSchema.parse(body);
     },
 
     async queryView(viewId, query) {

@@ -12,7 +12,7 @@ describe("authenticated API client", () => {
       baseUrl: "/api",
       fetchImpl: async (input, init) => {
         calls.push({ url: String(input), init });
-        if (String(input).endsWith("/properties")) return jsonResponse([]);
+        if (String(input).endsWith("/properties")) return jsonResponse({ properties: [] });
         if (String(input).endsWith("/query")) return jsonResponse({ items: [], nextCursor: null });
         if (init?.method === "POST") {
           return jsonResponse({ id: "item-1", databaseId: "db-1", properties: {}, updatedAt: "2026-01-01" });

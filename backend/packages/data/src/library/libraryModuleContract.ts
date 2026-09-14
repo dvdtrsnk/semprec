@@ -3,8 +3,8 @@ import { z } from "zod";
 /**
  * The generic "library module" contract (issue #25): a named set of property-key slots
  * that Books and Movies/TV each fill in with their own keys and ownership — two instances
- * of one contract, not two separate implementations. `coverGlyph`/`secondaryRatingLabel`
- * are literal display values (an emoji, a label string), not property keys.
+ * of one contract, not two separate implementations. `coverGlyph` is a literal emoji fallback;
+ * `secondaryRatingLabel` is an i18n catalog key, not display text or a property key.
  */
 export interface LibraryModuleContract {
   /** `type: 'image'`, `owner: 'system'` — `{ blobId }` over the shared `blobs` table. */
@@ -48,7 +48,7 @@ export const MOVIES_LIBRARY_CONTRACT: LibraryModuleContract = {
   subtitleKey: "year",
   ratingKey: "rating",
   secondaryRatingKey: "secondaryRating",
-  secondaryRatingLabel: "Critics' rating",
+  secondaryRatingLabel: "property.movies.secondaryRating.name",
   sourceUrlKey: "sourceUrl",
   statusKey: "status",
   coverGlyph: "\u{1F3AC}", // 🎬

@@ -19,6 +19,7 @@ import {
   type PasswordResetMailer,
 } from "@semprec/data";
 import { createDispatcher } from "../app.js";
+import { createDatabaseRoutes } from "../databasesHandler.js";
 
 const PASSWORD = "s3cret-password";
 const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
@@ -31,10 +32,11 @@ let pool: Pool;
 let chokePoint: ChokePoint;
 const moduleRegistry = await loadFullModuleRegistry();
 
-async function authHeader(): Promise<{ Authorization: string }> {
+async function authHeader(locale = "en"): Promise<{ Authorization: string }> {
   const user = await createUser(pool, {
     email: `${randomUUID()}@example.com`,
     passwordHash: await hashPassword(PASSWORD),
+    locale,
   });
   const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
   return { Authorization: `Bearer ${token}` };
@@ -46,6 +48,21 @@ interface DatabaseBody {
   key: string | null;
   system: boolean;
   archivedAt: string | null;
+}
+
+interface PropertyCatalogBody {
+  properties: Array<{
+    id: string;
+    databaseId: string;
+    key: string;
+    type: string;
+    label: string;
+    options?: Array<{ key: string; label: string }>;
+    locked: boolean;
+    owner: string;
+    ownerProcess: string | null;
+    migrationStatus: string;
+  }>;
 }
 
 async function findSystemDatabase(): Promise<DatabaseRow> {
@@ -134,6 +151,100 @@ describe("database routes (issue #240)", () => {
     const headers = await authHeader();
     const res = await fetch(`${baseUrl}/api/databases/${randomUUID()}`, { headers });
     expect(res.status).toBe(404);
+  });
+
+  it("serves one locale-resolved property catalog and preserves its authoritative raw fields", async () => {
+    const movies = (await chokePoint.listDatabases()).find((database) => database.key === "movies");
+    if (!movies) throw new Error("expected Movies database from seedSystem");
+
+    const getCatalog = async (locale: string): Promise<PropertyCatalogBody> => {
+      const res = await fetch(`${baseUrl}/api/databases/${movies.id}/properties`, {
+        headers: await authHeader(locale),
+      });
+      expect(res.status).toBe(200);
+      return (await res.json()) as PropertyCatalogBody;
+    };
+
+    const cs = await getCatalog("cs");
+    const csType = cs.properties.find((property) => property.key === "type");
+    expect(csType).toMatchObject({
+      databaseId: movies.id,
+      type: "select",
+      label: "Typ",
+      locked: false,
+      owner: "user",
+      ownerProcess: null,
+      migrationStatus: "stable",
+      options: [
+        { key: "movie", label: "Film" },
+        { key: "series", label: "Seriál" },
+      ],
+    });
+    expect(cs.properties.find((property) => property.key === "year")).not.toHaveProperty("options");
+
+    const en = await getCatalog("en");
+    expect(en.properties.find((property) => property.key === "type")).toMatchObject({
+      label: "Type",
+      options: [
+        { key: "movie", label: "Movie" },
+        { key: "series", label: "Series" },
+      ],
+    });
+  });
+
+  it("lets a property label override win and falls back to a raw key without a catalog", async () => {
+    const movies = (await chokePoint.listDatabases()).find((database) => database.key === "movies");
+    if (!movies) throw new Error("expected Movies database from seedSystem");
+    await pool.query(`UPDATE properties SET name = $1 WHERE database_id = $2 AND key = 'rating'`, [
+      "My rating",
+      movies.id,
+    ]);
+
+    const overridden = await fetch(`${baseUrl}/api/databases/${movies.id}/properties`, {
+      headers: await authHeader("cs"),
+    });
+    const overriddenBody = (await overridden.json()) as PropertyCatalogBody;
+    expect(overriddenBody.properties.find((property) => property.key === "rating")?.label).toBe("My rating");
+
+    const custom = await chokePoint.createDatabase({ name: "Custom" });
+    const raw = await chokePoint.createProperty({
+      databaseId: custom.id,
+      key: "untranslated",
+      name: "Untranslated",
+      type: "text",
+    });
+    await pool.query(`UPDATE properties SET name = NULL WHERE id = $1`, [raw.id]);
+    const rawResponse = await fetch(`${baseUrl}/api/databases/${custom.id}/properties`, {
+      headers: await authHeader("cs"),
+    });
+    const rawBody = (await rawResponse.json()) as PropertyCatalogBody;
+    expect(rawBody.properties).toEqual([
+      expect.objectContaining({ id: raw.id, databaseId: custom.id, key: "untranslated", label: "untranslated" }),
+    ]);
+  });
+
+  it("keeps archived databases readable and returns the established not_found and 401 failures", async () => {
+    const database = await chokePoint.createDatabase({ name: "Archived" });
+    await chokePoint.createProperty({ databaseId: database.id, key: "title", name: "Title", type: "text" });
+    await chokePoint.archiveDatabase(database.id);
+
+    const archived = await fetch(`${baseUrl}/api/databases/${database.id}/properties`, { headers: await authHeader() });
+    expect(archived.status).toBe(200);
+
+    const missing = await fetch(`${baseUrl}/api/databases/${randomUUID()}/properties`, { headers: await authHeader() });
+    expect(missing.status).toBe(404);
+    expect((await missing.json()) as { error: { code: string } }).toEqual({ error: { code: "not_found" } });
+
+    const unauthenticated = await fetch(`${baseUrl}/api/databases/${database.id}/properties`);
+    expect(unauthenticated.status).toBe(401);
+  });
+
+  it("registers exactly one property-catalog route handler", () => {
+    expect(
+      createDatabaseRoutes(pool, moduleRegistry).filter(
+        (route) => route.method === "GET" && route.path === "/api/databases/:id/properties",
+      ),
+    ).toHaveLength(1);
   });
 
   it("forbids archiving/deleting a system database with 403", async () => {
