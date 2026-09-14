@@ -17,6 +17,13 @@
   --color-danger: #b3261e;
   --color-unread: #14161a;
 
+  --library-fallback-1: #274c77;
+  --library-fallback-2: #3a5a40;
+  --library-fallback-3: #6d597a;
+  --library-fallback-4: #9c6644;
+  --library-fallback-5: #386641;
+  --library-fallback-6: #7f5539;
+
   --space-1: 0.25rem;
   --space-2: 0.5rem;
   --space-3: 0.75rem;
