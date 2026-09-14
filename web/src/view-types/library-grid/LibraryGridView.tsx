@@ -13,14 +13,6 @@ import {
   type LibraryPropertyDisplay,
 } from "./types.js";
 
-export type {
-  LibraryGridItem,
-  LibraryGridState,
-  LibraryGridViewProps,
-  LibraryModuleContract,
-  LibraryPropertyDisplay,
-} from "./types.js";
-
 interface CardFieldSpec {
   key: string | undefined;
   labelOverrideKey?: string;
@@ -239,7 +231,16 @@ function AddForm({
 }
 
 /** The shared card-grid renderer for `library-grid` views (Books, Movies/TV — issue #25). */
-export function LibraryGridView({ viewId, databaseId, contract, properties, state, onCreated }: LibraryGridViewProps) {
+export function LibraryGridView({
+  viewId,
+  databaseId,
+  contract,
+  properties,
+  state,
+  onCreated,
+  onLoadMore,
+  onRetry,
+}: LibraryGridViewProps) {
   const t = useLocalizedString();
   const { api } = useAuthenticatedWebContext();
   const titleProperty = state.status === "ready" ? findTitleProperty(properties) : null;
@@ -253,9 +254,12 @@ export function LibraryGridView({ viewId, databaseId, contract, properties, stat
     );
   } else if (state.status === "error") {
     body = (
-      <p className="library-grid__state" role="alert">
-        {t("library.createError")}
-      </p>
+      <div className="library-grid__state" role="alert">
+        <p>{t("library.createError")}</p>
+        <button type="button" className="library-grid__retry" onClick={onRetry}>
+          {t("library.retry")}
+        </button>
+      </div>
     );
   } else if (!titleProperty) {
     body = (
@@ -271,19 +275,26 @@ export function LibraryGridView({ viewId, databaseId, contract, properties, stat
     );
   } else {
     body = (
-      <ul className="library-grid__list">
-        {state.items.map((item) => (
-          <LibraryCard
-            key={item.id}
-            item={item}
-            contract={contract}
-            properties={properties}
-            titleProperty={titleProperty}
-            blobUrl={api.blobUrl}
-            t={t}
-          />
-        ))}
-      </ul>
+      <>
+        <ul className="library-grid__list">
+          {state.items.map((item) => (
+            <LibraryCard
+              key={item.id}
+              item={item}
+              contract={contract}
+              properties={properties}
+              titleProperty={titleProperty}
+              blobUrl={api.blobUrl}
+              t={t}
+            />
+          ))}
+        </ul>
+        {state.nextCursor !== null ? (
+          <button type="button" className="library-grid__load-more" onClick={onLoadMore} disabled={state.loadingMore}>
+            {t("library.loadMore")}
+          </button>
+        ) : null}
+      </>
     );
   }
 

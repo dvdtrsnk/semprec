@@ -50,7 +50,7 @@ export interface QueryFailure {
 
 export interface AuthenticatedApiClient {
   getView(viewId: string): Promise<View>;
-  listProperties(databaseId: string): Promise<PropertyCatalog>;
+  listProperties(databaseId: string, options?: { signal?: AbortSignal }): Promise<PropertyCatalog>;
   queryView(viewId: string, request: { cursor: string | null; limit: number }): Promise<ViewQuery | QueryFailure>;
   createItem(databaseId: string, properties: Record<string, unknown>): Promise<Item>;
   /** The safe-inline blob URL (issue #158's `?disposition=inline`) — a URL to embed, not a request this client issues. */
@@ -101,8 +101,10 @@ export function createAuthenticatedApiClient(options: AuthenticatedApiClientOpti
       return viewSchema.parse(body);
     },
 
-    async listProperties(databaseId) {
-      const { response, body } = await request(`/databases/${encodeURIComponent(databaseId)}/properties`);
+    async listProperties(databaseId, options) {
+      const { response, body } = await request(`/databases/${encodeURIComponent(databaseId)}/properties`, {
+        signal: options?.signal,
+      });
       if (!response.ok) throw new ApiRequestError(response.status);
       return propertyCatalogSchema.parse(body);
     },

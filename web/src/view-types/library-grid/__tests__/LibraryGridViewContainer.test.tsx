@@ -87,8 +87,8 @@ function itemRow(id: string, name: string): Item {
   };
 }
 
-function queryResult(items: Item[]): ViewQuery {
-  return { items, nextCursor: null };
+function queryResult(items: Item[], nextCursor: string | null = null): ViewQuery {
+  return { items, nextCursor };
 }
 
 function fakeApi(overrides: Partial<AuthenticatedApiClient> = {}): AuthenticatedApiClient {
@@ -268,6 +268,96 @@ describe("LibraryGridViewContainer", () => {
 
     expect(screen.getByText("Status (en-2)")).toBeInTheDocument();
     expect(screen.queryByText("Status (cs, stale)")).not.toBeInTheDocument();
+  });
+
+  it("follows nextCursor only after the user clicks Load more, appending the next page", async () => {
+    const user = userEvent.setup();
+    const queryView = vi
+      .fn()
+      .mockResolvedValueOnce(queryResult([itemRow("item-1", "Dune")], "cursor-2"))
+      .mockResolvedValueOnce(queryResult([itemRow("item-2", "Chinatown")], null));
+    const api = fakeApi({ queryView: queryView as unknown as AuthenticatedApiClient["queryView"] });
+    renderContainer(api);
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Dune" })).toBeInTheDocument());
+    expect(queryView).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("heading", { name: "Chinatown" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Load more" }));
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Chinatown" })).toBeInTheDocument());
+    expect(queryView).toHaveBeenCalledWith("view-1", { cursor: "cursor-2", limit: 50 });
+    expect(screen.getByRole("heading", { name: "Dune" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
+  });
+
+  it("aborts an older in-flight property request when a newer locale change starts", async () => {
+    const signals: AbortSignal[] = [];
+    const listProperties = vi
+      .fn()
+      .mockResolvedValueOnce(catalog("Status (en)"))
+      .mockImplementation((_databaseId: string, options?: { signal?: AbortSignal }) => {
+        if (options?.signal) signals.push(options.signal);
+        return new Promise<PropertyCatalog>(() => {});
+      });
+    const api = fakeApi({ listProperties: listProperties as unknown as AuthenticatedApiClient["listProperties"] });
+    render(<LocaleSwitcher api={api} initialLocale="en" />);
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Dune" })).toBeInTheDocument());
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "switch to cs" }));
+    await waitFor(() => expect(listProperties).toHaveBeenCalledTimes(2));
+    const firstSignal = signals[0]!;
+    expect(firstSignal.aborted).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "switch to en" }));
+    await waitFor(() => expect(listProperties).toHaveBeenCalledTimes(3));
+
+    expect(firstSignal.aborted).toBe(true);
+  });
+
+  it("retry after a locale-change property fetch failure repeats the current locale request", async () => {
+    const user = userEvent.setup();
+    const listProperties = vi
+      .fn()
+      .mockResolvedValueOnce(catalog("Status (en)"))
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockResolvedValueOnce(catalog("Status (cs)"));
+    const api = fakeApi({ listProperties: listProperties as unknown as AuthenticatedApiClient["listProperties"] });
+    render(<LocaleSwitcher api={api} initialLocale="en" />);
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Dune" })).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "switch to cs" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    expect(listProperties).toHaveBeenCalledTimes(2);
+
+    await user.click(screen.getByRole("button", { name: "Zkusit znovu" }));
+
+    await waitFor(() => expect(listProperties).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.getByText("Status (cs)")).toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "Dune" })).toBeInTheDocument();
+    expect(api.getView).toHaveBeenCalledTimes(1);
+    expect(api.queryView).toHaveBeenCalledTimes(1);
+  });
+
+  it("retry after a failed initial load repeats the initial load", async () => {
+    const user = userEvent.setup();
+    const getView = vi
+      .fn()
+      .mockResolvedValueOnce(view({ notAContract: true }))
+      .mockResolvedValueOnce(view());
+    const api = fakeApi({ getView: getView as unknown as AuthenticatedApiClient["getView"] });
+    renderContainer(api);
+
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    expect(getView).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Dune" })).toBeInTheDocument());
+    expect(getView).toHaveBeenCalledTimes(2);
   });
 
   it.each(["en", "cs"] as const)(

@@ -3,5 +3,7 @@
   "library.add": "Přidat",
   "library.empty": "Zatím žádné položky.",
   "library.createError": "Něco se pokazilo. Zkuste to znovu.",
+  "library.retry": "Zkusit znovu",
+  "library.loadMore": "Načíst další",
   "property.movies.secondaryRating.name": "Hodnocení kritiků"
 }

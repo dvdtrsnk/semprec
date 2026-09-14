@@ -3,5 +3,7 @@
   "library.add": "Add",
   "library.empty": "No items yet.",
   "library.createError": "Something went wrong. Try again.",
+  "library.retry": "Retry",
+  "library.loadMore": "Load more",
   "property.movies.secondaryRating.name": "Critics' rating"
 }

@@ -38,7 +38,9 @@ export interface LibraryPropertyDisplay {
 }
 
 export type LibraryGridState =
-  { status: "loading" } | { status: "error"; error: { code: string } } | { status: "ready"; items: LibraryGridItem[] };
+  | { status: "loading" }
+  | { status: "error"; error: { code: string } }
+  | { status: "ready"; items: LibraryGridItem[]; nextCursor: string | null; loadingMore: boolean };
 
 export interface LibraryGridViewProps {
   viewId: string;
@@ -47,6 +49,8 @@ export interface LibraryGridViewProps {
   properties: LibraryPropertyDisplay[];
   state: LibraryGridState;
   onCreated(item: LibraryGridItem): void;
+  onLoadMore(): void;
+  onRetry(): void;
 }
 
 /** The sole property whose `type` is `'title'` — the card's title text. Not part of `LibraryModuleContract`. */

@@ -64,6 +64,11 @@ function fakeApi(overrides: Partial<AuthenticatedApiClient> = {}): Authenticated
   };
 }
 
+type TestState =
+  | { status: "loading" }
+  | { status: "error"; error: { code: string } }
+  | { status: "ready"; items: LibraryGridItem[]; nextCursor?: string | null; loadingMore?: boolean };
+
 function renderView({
   state,
   locale = "en",
@@ -71,28 +76,45 @@ function renderView({
   properties = PROPERTIES,
   api = fakeApi(),
   onCreated = vi.fn(),
+  onLoadMore = vi.fn(),
+  onRetry = vi.fn(),
 }: {
-  state: LibraryGridState;
+  state: TestState;
   locale?: string;
   contract?: LibraryModuleContract;
   properties?: LibraryPropertyDisplay[];
   api?: AuthenticatedApiClient;
   onCreated?: (item: LibraryGridItem) => void;
+  onLoadMore?: () => void;
+  onRetry?: () => void;
 }) {
+  const resolvedState: LibraryGridState =
+    state.status === "ready"
+      ? {
+          status: "ready",
+          items: state.items,
+          nextCursor: state.nextCursor ?? null,
+          loadingMore: state.loadingMore ?? false,
+        }
+      : state;
   const wrapper = ({ children }: { children: ReactNode }) => (
     <AuthenticatedWebProvider value={{ user: { locale }, api }}>{children}</AuthenticatedWebProvider>
   );
   return {
     api,
     onCreated,
+    onLoadMore,
+    onRetry,
     ...render(
       <LibraryGridView
         viewId="view-1"
         databaseId="db-1"
         contract={contract}
         properties={properties}
-        state={state}
+        state={resolvedState}
         onCreated={onCreated}
+        onLoadMore={onLoadMore}
+        onRetry={onRetry}
       />,
       { wrapper },
     ),
@@ -108,6 +130,49 @@ describe("LibraryGridView", () => {
   it("renders the error state with library.createError", () => {
     renderView({ state: { status: "error", error: { code: "unavailable" } } });
     expect(screen.getByRole("alert")).toHaveTextContent("Something went wrong. Try again.");
+  });
+
+  it("calls onRetry when the error state's retry button is clicked", async () => {
+    const user = userEvent.setup();
+    const onRetry = vi.fn();
+    renderView({ state: { status: "error", error: { code: "unavailable" } }, onRetry });
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a load-more button only when nextCursor is not null, and calls onLoadMore", async () => {
+    const user = userEvent.setup();
+    const onLoadMore = vi.fn();
+    renderView({
+      state: { status: "ready", items: [item({ properties: { name: "Dune" } })], nextCursor: "cursor-2" },
+      onLoadMore,
+    });
+
+    const loadMore = screen.getByRole("button", { name: "Load more" });
+    await user.click(loadMore);
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+  });
+
+  it("omits the load-more button when nextCursor is null", () => {
+    renderView({
+      state: { status: "ready", items: [item({ properties: { name: "Dune" } })], nextCursor: null },
+    });
+
+    expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
+  });
+
+  it("disables the load-more button while loadingMore is true", () => {
+    renderView({
+      state: {
+        status: "ready",
+        items: [item({ properties: { name: "Dune" } })],
+        nextCursor: "cursor-2",
+        loadingMore: true,
+      },
+    });
+
+    expect(screen.getByRole("button", { name: "Load more" })).toBeDisabled();
   });
 
   it("renders the empty state only for ready with zero items", () => {
