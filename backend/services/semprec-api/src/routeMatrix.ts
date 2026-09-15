@@ -25,8 +25,8 @@
  *   auth-v1 actually delivered is the setup wizard below (issue #234). Gating the client's other
  *   views is a follow-up for whichever issue adds a login page; this service's routes are what
  *   auth-v1 #143 can enforce today, and every read/write those views depend on is in the table.
- * - Health-style probes: none exist in this service today. If one is added later, it belongs in
- *   this table as `public: true` with a `publicReason`, same as everything else here.
+ * - Health-style probes: `GET /healthz` (issue #168) is the one probe this service serves; see
+ *   its entry below.
  */
 export interface RouteMatrixEntry {
   /** For docs/failure messages only — matching is driven by `method` + `path` below. */
@@ -51,6 +51,15 @@ export interface RouteMatrixEntry {
 const EXAMPLE_ID = "00000000-0000-0000-0000-000000000000";
 
 export const ROUTE_MATRIX: RouteMatrixEntry[] = [
+  {
+    name: "shallow health check",
+    method: "GET",
+    path: "/healthz",
+    surface: "api",
+    public: true,
+    publicReason:
+      "Issue #168: a deployment/orchestrator probe run with no session — its only content is a status word, never account or deployment detail.",
+  },
   {
     name: "login",
     method: "POST",

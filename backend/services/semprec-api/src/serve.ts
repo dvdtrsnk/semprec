@@ -6,6 +6,7 @@ import {
   NodemailerPasswordResetMailer,
   noopPasswordResetMailer,
   resolveDocHistoryRetentionDays,
+  startProcessHeartbeat,
   type PasswordResetMailer,
 } from "@semprec/data";
 import { createTransport } from "nodemailer";
@@ -70,6 +71,15 @@ const blobStorage = new LocalFsBlobStorageWriter(process.env.FILES_STORAGE_DIR ?
 
 const pool = createPool(connectionString);
 wireRealtimeHooks(pool);
+
+// Issue #168: this process's own `process_heartbeats` row, re-UPSERTed every 15 seconds for as
+// long as this process is up — `GET /healthz` (and any future observability surface) reads it
+// back through `process_heartbeats`, never through this in-memory handle.
+startProcessHeartbeat(
+  pool,
+  { process: "api", pid: process.pid, version: process.env.APP_VERSION ?? "0.0.0" },
+  { onError: (err) => logger.error({ err }, "Failed to record this process's heartbeat") },
+);
 
 const moduleRegistry = await loadFullModuleRegistry();
 const dispatch = await createDispatcher(pool, {
