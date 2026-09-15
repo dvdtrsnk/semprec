@@ -35,7 +35,9 @@ async function writeTestNotification(userId: string, sourceId: string): Promise<
 
 interface FanoutJobRow {
   key: string;
-  payload: { notificationId: string };
+  // Issue #167: `enqueueJob` wraps every job payload in a `{ traceId, payload }` envelope before
+  // it reaches `graphile_worker`'s own `jobs` table.
+  payload: { traceId: string; payload: { notificationId: string } };
 }
 
 async function fanoutJobs(): Promise<FanoutJobRow[]> {
@@ -65,7 +67,7 @@ describe("notificationFanout job (issue #151)", () => {
     const jobs = await fanoutJobs();
     expect(jobs).toHaveLength(1);
     expect(jobs[0]!.key).toBe(notificationFanoutJobKey(notificationId));
-    expect(jobs[0]!.payload).toEqual({ notificationId });
+    expect(jobs[0]!.payload.payload).toEqual({ notificationId });
   });
 
   it("does not enqueue a second job when the same transition replays", async () => {

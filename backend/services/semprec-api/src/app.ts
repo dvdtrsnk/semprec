@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
+import { withTraceContext } from "@semprec/shared";
 import type { BlobStorageWriter, PasswordResetMailer, loadFullModuleRegistry } from "@semprec/data";
 import { mountCustomRoutes } from "./adapter/customRouteMount.js";
 import { mountRoutes } from "./adapter/routeTable.js";
@@ -75,7 +76,15 @@ export async function createDispatcher(
   });
   const blobsListener = createBlobsRequestListener(pool, { storage: options.blobStorage });
 
-  return function dispatch(req: IncomingMessage, res: ServerResponse): void {
+  // Issue #167's HTTP entry point: every request mints its own trace id, carried through
+  // whichever async work the matched route kicks off (nothing below awaits `dispatch` itself, but
+  // `AsyncLocalStorage` context follows the promise chains those routes start from inside this
+  // synchronous call).
+  function dispatch(req: IncomingMessage, res: ServerResponse): void {
+    withTraceContext({}, () => dispatchTraced(req, res));
+  }
+
+  function dispatchTraced(req: IncomingMessage, res: ServerResponse): void {
     if (dispatchCustomRoute(req, res)) return;
     if (dispatchResourceRoute(req, res)) return;
 
@@ -117,5 +126,7 @@ export async function createDispatcher(
       return;
     }
     void mcpAgentPageListener(req, res);
-  };
+  }
+
+  return dispatch;
 }

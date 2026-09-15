@@ -1,4 +1,4 @@
-import { CORE_TASK_NAMES, type Task, type TaskList } from "@semprec/queue";
+import { CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
 import type { ModuleRegistry } from "@semprec/module-registry";
 
 export const CORE_TASK_NAME_SET: ReadonlySet<string> = new Set(Object.values(CORE_TASK_NAMES));
@@ -29,7 +29,11 @@ export async function mergeModuleTaskList(coreTaskList: TaskList, moduleRegistry
       const parsedPayload = task.payloadSchema.parse(payload);
       await task.handler(parsedPayload, helpers);
     };
-    merged[task.name] = wrapped;
+    // Issue #167: a module task is enqueued through the same `enqueueJob` envelope as a core
+    // one, so it restores its producer's trace the same way — `registerTask` unwraps the
+    // envelope before `wrapped` ever sees the payload, so `payloadSchema.parse` still validates
+    // the module's own business shape, not the envelope.
+    merged[task.name] = registerTask(task.name, wrapped);
   }
   return merged;
 }

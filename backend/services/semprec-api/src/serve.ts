@@ -11,7 +11,7 @@ import {
 } from "@semprec/data";
 import { createTransport } from "nodemailer";
 import { wireRealtimeHooks } from "@semprec/realtime";
-import { installFatalHandlers } from "@semprec/shared";
+import { installFatalHandlers, withTraceContext } from "@semprec/shared";
 import { createDispatcher } from "./app.js";
 import { createSyncUpgradeHandler } from "./syncHandler.js";
 import { logger } from "./logger.js";
@@ -97,12 +97,14 @@ const server = createServer(dispatch);
 // `WS /api/sync` (issue #160) is the one WS upgrade route this service serves; anything else
 // requesting a protocol upgrade gets its socket destroyed rather than silently ignored.
 server.on("upgrade", (req, socket, head) => {
-  const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
-  if (pathname === "/api/sync") {
-    syncServer.handleUpgrade(req, socket, head);
-    return;
-  }
-  socket.destroy();
+  withTraceContext({}, () => {
+    const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+    if (pathname === "/api/sync") {
+      syncServer.handleUpgrade(req, socket, head);
+      return;
+    }
+    socket.destroy();
+  });
 });
 
 server.listen(port, () => {
