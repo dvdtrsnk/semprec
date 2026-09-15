@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 import { createAgentRun, finishAgentRun, finishAgentRunWithErrorNotification, withTransaction } from "@semprec/data";
+import { withTraceContext } from "@semprec/shared";
 import type { CompactionAdapter } from "./compaction.js";
 import {
   persistCompaction,
@@ -117,26 +118,28 @@ export class SempConversation {
     if (entry) {
       entry.busy = true;
       try {
-        let lastMessage: AgentMessage | null;
-        try {
-          if (!entry.session.send) {
-            throw new Error(
-              "AgentSession does not support continuation (send) required to continue Semp's conversation",
-            );
+        return await withTraceContext({ agentRunId: entry.agentRunId }, async () => {
+          let lastMessage: AgentMessage | null;
+          try {
+            if (!entry.session.send) {
+              throw new Error(
+                "AgentSession does not support continuation (send) required to continue Semp's conversation",
+              );
+            }
+            lastMessage = await runAgentTurn(this.pool, entry.agentRunId, entry.session.send(task));
+          } catch (err) {
+            // A broken turn leaves the underlying AgentSession in an unknown state — close the
+            // run as error and drop the entry rather than leaving a busy-cleared but unusable
+            // session around for the next message to reuse. The conversation itself is
+            // unaffected: the next send() just wakes a fresh run, same as after a TTL pause.
+            this.entry = null;
+            clearTimeout(entry.ttlTimer);
+            await failRun(this.pool, entry.agentRunId, err);
+            throw err;
           }
-          lastMessage = await runAgentTurn(this.pool, entry.agentRunId, entry.session.send(task));
-        } catch (err) {
-          // A broken turn leaves the underlying AgentSession in an unknown state — close the
-          // run as error and drop the entry rather than leaving a busy-cleared but unusable
-          // session around for the next message to reuse. The conversation itself is
-          // unaffected: the next send() just wakes a fresh run, same as after a TTL pause.
-          this.entry = null;
-          clearTimeout(entry.ttlTimer);
-          await failRun(this.pool, entry.agentRunId, err);
-          throw err;
-        }
-        this.touch(entry);
-        return { ok: true, message: extractResultSnapshot(lastMessage) };
+          this.touch(entry);
+          return { ok: true, message: extractResultSnapshot(lastMessage) };
+        });
       } finally {
         entry.busy = false;
       }
@@ -153,36 +156,39 @@ export class SempConversation {
         unit: "session",
         task,
       });
-      await pushRunStatus(this.pool, run.id, "running");
 
-      // The compacted continuation replaces the raw history it was derived from — persisted
-      // here, on the run it seeds, so a later restart's reconstruction resumes from this
-      // checkpoint instead of re-deriving (and potentially re-compacting) it all over again.
-      if (priorHistory?.compacted) {
-        await persistCompaction(this.pool, run.id, priorHistory.entries);
-      }
+      return await withTraceContext({ agentRunId: run.id }, async () => {
+        await pushRunStatus(this.pool, run.id, "running");
 
-      const session = this.options.createAgentSession({
-        task,
-        initialState: priorHistory ? { messages: priorHistory.entries } : undefined,
+        // The compacted continuation replaces the raw history it was derived from — persisted
+        // here, on the run it seeds, so a later restart's reconstruction resumes from this
+        // checkpoint instead of re-deriving (and potentially re-compacting) it all over again.
+        if (priorHistory?.compacted) {
+          await persistCompaction(this.pool, run.id, priorHistory.entries);
+        }
+
+        const session = this.options.createAgentSession({
+          task,
+          initialState: priorHistory ? { messages: priorHistory.entries } : undefined,
+        });
+
+        let lastMessage: AgentMessage | null;
+        try {
+          lastMessage = await runAgentTurn(this.pool, run.id, session.messages());
+        } catch (err) {
+          await failRun(this.pool, run.id, err);
+          throw err;
+        }
+
+        this.entry = {
+          agentRunId: run.id,
+          session,
+          busy: false,
+          ttlTimer: this.scheduleTtl(),
+        };
+
+        return { ok: true, message: extractResultSnapshot(lastMessage) };
       });
-
-      let lastMessage: AgentMessage | null;
-      try {
-        lastMessage = await runAgentTurn(this.pool, run.id, session.messages());
-      } catch (err) {
-        await failRun(this.pool, run.id, err);
-        throw err;
-      }
-
-      this.entry = {
-        agentRunId: run.id,
-        session,
-        busy: false,
-        ttlTimer: this.scheduleTtl(),
-      };
-
-      return { ok: true, message: extractResultSnapshot(lastMessage) };
     } finally {
       this.waking = false;
     }

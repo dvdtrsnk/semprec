@@ -84,6 +84,7 @@ export * from "./agentRuns/agentRunsStore.js";
 export * from "./agentRuns/agentRunEventsStore.js";
 export * from "./aiGateway/aiGatewayCallsStore.js";
 export * from "./aiGateway/aiUsageReport.js";
+export * from "./health/processHeartbeats.js";
 export { seedSystem } from "./seed/seedSystem.js";
 export * from "./seed/tenDatabaseKeys.js";
 export { seedTenDatabasesInTransaction, type TenDatabases } from "./seed/seedTenDatabases.js";

@@ -11,6 +11,7 @@ import {
   type TriggeredBy,
 } from "@semprec/data";
 import { publishAgentRunDelta } from "@semprec/realtime";
+import { withTraceContext } from "@semprec/shared";
 import type { AgentMessage, CreateAgentSession } from "./types.js";
 import { logger } from "./logger.js";
 
@@ -129,33 +130,35 @@ export async function runAgentSession(client: Pool | PoolClient, input: RunAgent
     unit: input.unit,
     task: input.task,
   });
-  await pushRunStatus(client, run.id, "running");
+  return withTraceContext({ agentRunId: run.id }, async () => {
+    await pushRunStatus(client, run.id, "running");
 
-  const session = input.createAgentSession({
-    task: input.task,
-    systemPromptOverride: input.systemPromptOverride,
-  });
+    const session = input.createAgentSession({
+      task: input.task,
+      systemPromptOverride: input.systemPromptOverride,
+    });
 
-  try {
-    const lastMessage = await runAgentTurn(client, run.id, session.messages(), input.onEvent);
-    await finishAgentRun(client, run.id, "done", extractResultSnapshot(lastMessage));
-    await pushRunStatus(client, run.id, "done");
-  } catch (err) {
     try {
-      // Issue #149: same client as the status write, so a caller-supplied transaction rolls
-      // both back together; a bare pool gives the same best-effort guarantee this catch block
-      // already had before the notification existed.
-      await finishAgentRunWithErrorNotification(client, run.id, err instanceof Error ? err.message : String(err));
-      await pushRunStatus(client, run.id, "error");
-    } catch (finishErr) {
-      // Preserve the session failure for the caller, but do not erase evidence that the
-      // secondary lifecycle close failed and left the row running.
-      logger.error({ err: finishErr, agentRunId: run.id }, "Failed to record failed agent run lifecycle");
+      const lastMessage = await runAgentTurn(client, run.id, session.messages(), input.onEvent);
+      await finishAgentRun(client, run.id, "done", extractResultSnapshot(lastMessage));
+      await pushRunStatus(client, run.id, "done");
+    } catch (err) {
+      try {
+        // Issue #149: same client as the status write, so a caller-supplied transaction rolls
+        // both back together; a bare pool gives the same best-effort guarantee this catch block
+        // already had before the notification existed.
+        await finishAgentRunWithErrorNotification(client, run.id, err instanceof Error ? err.message : String(err));
+        await pushRunStatus(client, run.id, "error");
+      } catch (finishErr) {
+        // Preserve the session failure for the caller, but do not erase evidence that the
+        // secondary lifecycle close failed and left the row running.
+        logger.error({ err: finishErr, agentRunId: run.id }, "Failed to record failed agent run lifecycle");
+      }
+      throw err;
     }
-    throw err;
-  }
 
-  const finished = await getAgentRun(client, run.id);
-  if (!finished) throw new Error(`agent run ${run.id} vanished after finishing`);
-  return finished;
+    const finished = await getAgentRun(client, run.id);
+    if (!finished) throw new Error(`agent run ${run.id} vanished after finishing`);
+    return finished;
+  });
 }

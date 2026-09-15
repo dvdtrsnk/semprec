@@ -6,11 +6,12 @@ import {
   NodemailerPasswordResetMailer,
   noopPasswordResetMailer,
   resolveDocHistoryRetentionDays,
+  startProcessHeartbeat,
   type PasswordResetMailer,
 } from "@semprec/data";
 import { createTransport } from "nodemailer";
 import { wireRealtimeHooks } from "@semprec/realtime";
-import { installFatalHandlers } from "@semprec/shared";
+import { installFatalHandlers, withTraceContext } from "@semprec/shared";
 import { createDispatcher } from "./app.js";
 import { createSyncUpgradeHandler } from "./syncHandler.js";
 import { logger } from "./logger.js";
@@ -71,6 +72,15 @@ const blobStorage = new LocalFsBlobStorageWriter(process.env.FILES_STORAGE_DIR ?
 const pool = createPool(connectionString);
 wireRealtimeHooks(pool);
 
+// Issue #168: this process's own `process_heartbeats` row, re-UPSERTed every 15 seconds for as
+// long as this process is up — `GET /healthz` (and any future observability surface) reads it
+// back through `process_heartbeats`, never through this in-memory handle.
+startProcessHeartbeat(
+  pool,
+  { process: "api", pid: process.pid, version: process.env.APP_VERSION ?? "0.0.0" },
+  { onError: (err) => logger.error({ err }, "Failed to record this process's heartbeat") },
+);
+
 const moduleRegistry = await loadFullModuleRegistry();
 const dispatch = await createDispatcher(pool, {
   passwordResetMailer: buildPasswordResetMailer(),
@@ -87,12 +97,14 @@ const server = createServer(dispatch);
 // `WS /api/sync` (issue #160) is the one WS upgrade route this service serves; anything else
 // requesting a protocol upgrade gets its socket destroyed rather than silently ignored.
 server.on("upgrade", (req, socket, head) => {
-  const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
-  if (pathname === "/api/sync") {
-    syncServer.handleUpgrade(req, socket, head);
-    return;
-  }
-  socket.destroy();
+  withTraceContext({}, () => {
+    const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+    if (pathname === "/api/sync") {
+      syncServer.handleUpgrade(req, socket, head);
+      return;
+    }
+    socket.destroy();
+  });
 });
 
 server.listen(port, () => {

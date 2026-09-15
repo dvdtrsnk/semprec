@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createChokePoint, getSystemSettingsDatabaseId, getSystemSettingsItemId, seedSystem } from "@semprec/data";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTraceContext } from "@semprec/shared";
 import { createDispatcher } from "../app.js";
 import type { CompleteHandlerOptions } from "../completeHandler.js";
 import {
@@ -36,9 +37,12 @@ class FakeProvider implements StructuredCompletionProvider {
   response: unknown = { contradictions: ["one"] };
   usage = { inputTokens: 100, outputTokens: 40 };
   failure: Error | null = null;
+  /** Captures the trace context active while the provider call runs, for issue #167's assertions. */
+  observedTraceIds: (string | undefined)[] = [];
 
   async complete(request: StructuredCompletionRequest) {
     this.calls.push(request);
+    this.observedTraceIds.push(getTraceContext()?.traceId);
     if (this.failure) throw this.failure;
     return { content: this.response, inputTokens: this.usage.inputTokens, outputTokens: this.usage.outputTokens };
   }
@@ -79,10 +83,19 @@ async function listen(): Promise<void> {
   baseUrl = `http://127.0.0.1:${address.port}`;
 }
 
-function post(path: string, body: unknown, token = "test-internal-token"): Promise<Response> {
+function post(
+  path: string,
+  body: unknown,
+  token = "test-internal-token",
+  extraHeaders: Record<string, string> = {},
+): Promise<Response> {
   return fetch(`${baseUrl}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    headers: {
+      "content-type": "application/json",
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...extraHeaders,
+    },
     body: JSON.stringify(body),
   });
 }
@@ -229,6 +242,47 @@ describe("POST /internal/complete", () => {
 
     const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
     expect(rows).toHaveLength(0);
+  });
+
+  describe("trace propagation (#167)", () => {
+    it("binds the forwarded x-trace-id for the duration of the provider call", async () => {
+      const provider = new FakeProvider();
+      startServer(provider);
+      await listen();
+
+      const res = await post("/internal/complete", VALID_BODY, "test-internal-token", {
+        "x-trace-id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      });
+
+      expect(res.status).toBe(200);
+      expect(provider.observedTraceIds).toEqual(["3fa85f64-5717-4562-b3fc-2c963f66afa6"]);
+    });
+
+    it("mints its own trace id when no x-trace-id header is sent", async () => {
+      const provider = new FakeProvider();
+      startServer(provider);
+      await listen();
+
+      const res = await post("/internal/complete", VALID_BODY);
+
+      expect(res.status).toBe(200);
+      expect(provider.observedTraceIds).toHaveLength(1);
+      expect(provider.observedTraceIds[0]).toMatch(/^[0-9a-f-]{36}$/i);
+    });
+
+    it("ignores a malformed x-trace-id header and mints its own instead", async () => {
+      const provider = new FakeProvider();
+      startServer(provider);
+      await listen();
+
+      const res = await post("/internal/complete", VALID_BODY, "test-internal-token", {
+        "x-trace-id": "not-a-uuid",
+      });
+
+      expect(res.status).toBe(200);
+      expect(provider.observedTraceIds[0]).not.toBe("not-a-uuid");
+      expect(provider.observedTraceIds[0]).toMatch(/^[0-9a-f-]{36}$/i);
+    });
   });
 
   describe("budget enforcement", () => {

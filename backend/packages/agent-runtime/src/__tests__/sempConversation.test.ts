@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTraceContext } from "@semprec/shared";
 import { SEMP_BUSY_ERROR_MESSAGE, SempConversation } from "../sempConversation.js";
 import type {
   AgentMessage,
@@ -116,6 +117,41 @@ describe("SempConversation", () => {
       SEMPREC_PROJECT_ITEM_ID,
     ]);
     expect(rows[0].n).toBe(1);
+
+    conversation.clear();
+  });
+
+  it("binds the run's id into the trace context on both the wake and a reused-session send (#167)", async () => {
+    const observed: { traceId: string | undefined; agentRunId: string | undefined }[] = [];
+    let call = 0;
+    const batches = [
+      [{ kind: "turn_start" as const }, { kind: "message" as const, text: "first" }, { kind: "turn_end" as const }],
+      [{ kind: "turn_start" as const }, { kind: "message" as const, text: "second" }, { kind: "turn_end" as const }],
+    ];
+    const createAgentSession: CreateAgentSession = (): AgentSession => ({
+      async *messages() {
+        observed.push({ traceId: getTraceContext()?.traceId, agentRunId: getTraceContext()?.agentRunId });
+        for (const message of batches[call++]!) yield message;
+      },
+      async *send() {
+        observed.push({ traceId: getTraceContext()?.traceId, agentRunId: getTraceContext()?.agentRunId });
+        for (const message of batches[call++]!) yield message;
+      },
+    });
+    const conversation = new SempConversation(pool, { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID });
+
+    await conversation.send("one");
+    await conversation.send("two");
+
+    const { rows } = await pool.query<{ id: string }>(`SELECT id FROM agent_runs WHERE project_item_id = $1`, [
+      SEMPREC_PROJECT_ITEM_ID,
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(observed).toHaveLength(2);
+    expect(observed[0]!.agentRunId).toBe(rows[0]!.id);
+    expect(observed[1]!.agentRunId).toBe(rows[0]!.id);
+    expect(observed[0]!.traceId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(observed[1]!.traceId).toMatch(/^[0-9a-f-]{36}$/i);
 
     conversation.clear();
   });

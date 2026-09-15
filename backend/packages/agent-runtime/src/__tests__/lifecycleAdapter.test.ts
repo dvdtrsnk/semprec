@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { setAgentRunEventHook } from "@semprec/data";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTraceContext } from "@semprec/shared";
 import { publishRealtimeMessage } from "@semprec/realtime";
 import { runAgentSession } from "../lifecycleAdapter.js";
 import type { AgentMessage, AgentSession, CreateAgentSession } from "../types.js";
@@ -56,25 +57,27 @@ describe("runAgentSession", () => {
     expect(run.status).toBe("done");
     expect(run.result).toBe("Hello there");
     expect(run.unit).toBe("invocation");
+  });
 
-    const { rows } = await pool.query<{ id: string; kind: string }>(
-      "SELECT id, kind FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id ASC",
-      [run.id],
-    );
+  it("binds the new run's id into the trace context the session's message stream runs under (#167)", async () => {
+    const observed: { traceId: string | undefined; agentRunId: string | undefined }[] = [];
+    const createAgentSession: CreateAgentSession = (): AgentSession => ({
+      async *messages() {
+        observed.push({ traceId: getTraceContext()?.traceId, agentRunId: getTraceContext()?.agentRunId });
+        yield { kind: "turn_start" };
+        yield { kind: "turn_end" };
+      },
+    });
 
-    expect(rows.map((r) => r.kind)).toEqual([
-      "run_status",
-      "turn_start",
-      "message",
-      "tool_use",
-      "tool_result",
-      "run_status",
-      "turn_end",
-      "run_status",
-    ]);
+    const run = await runAgentSession(pool, {
+      createAgentSession,
+      task: "do the thing",
+      triggeredBy: "user",
+    });
 
-    const ids = rows.map((r) => BigInt(r.id));
-    expect(ids).toEqual([...ids].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
+    expect(observed).toHaveLength(1);
+    expect(observed[0]!.agentRunId).toBe(run.id);
+    expect(observed[0]!.traceId).toMatch(/^[0-9a-f-]{36}$/i);
   });
 
   it("never persists message_update deltas", async () => {

@@ -3,6 +3,12 @@ name: Code Review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        description: Pull request number to review
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -11,21 +17,32 @@ permissions:
   checks: write
 
 concurrency:
-  group: code-review-${{ github.event.pull_request.number }}
+  group: code-review-${{ inputs.pull_request || github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
+  # This job id is a required status check context on `develop` — renaming it
+  # or splitting it into several jobs would leave `review` permanently pending
+  # on every pull request. Keep the workflow's review lifecycle in this one job.
   review:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout semprec
         uses: actions/checkout@v4
+        with:
+          # Deliberately review the PR head in both trigger modes, rather than the
+          # pull_request merge ref. The bot gets changed files from the PR API and
+          # anchors its Check Run to that head, so agents must read the same tree.
+          ref: ${{ github.event.pull_request.head.sha || format('refs/pull/{0}/head', inputs.pull_request) }}
 
       - name: Checkout code-review-bot (private)
         uses: actions/checkout@v4
         with:
           repository: dvdtrsnk/code-review-bot
+          # The code-review Check Run is required on `develop`; keep its producer
+          # stable so a bot default-branch change cannot rename that context.
+          ref: ab4de536358b94d09a4f1e3c440d176bc9138268
           token: ${{ secrets.CODE_REVIEW_BOT_TOKEN }}
           path: .code-review-bot
 
@@ -37,6 +54,10 @@ jobs:
       - name: Run review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ inputs.pull_request || github.event.pull_request.number }}
+          # Keep the required Check Run name under this repository's control even
+          # if the bot changes its default in a later pinned revision.
+          GH_CHECK_NAME: code-review
           # The default GITHUB_TOKEN cannot call resolveReviewThread ("Resource not
           # accessible by integration"), so a finding the bot has already fixed
           # replies "Fixed." but never actually closes the thread — which silently
@@ -48,6 +69,8 @@ jobs:
           # this one mutation. Secret names can't start with GITHUB_, hence the
           # differing names either side of this mapping.
           GITHUB_RESOLVE_TOKEN: ${{ secrets.PR_RESOLVE_TOKEN }}
+          # ANTHROPIC_API_KEY stores the Claude Code OAuth token used by the CLI;
+          # the secret name predates this workflow and cannot be renamed here.
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.ANTHROPIC_API_KEY }}
           # Relay-managed PRs obtain their provider and model from the short-lived
           # broker session, rather than this fallback Claude credential.
@@ -68,3 +91,33 @@ jobs:
           # nobody was obliged to act on.
           REVIEW_BLOCK_SEVERITY: medium
         run: bash "${GITHUB_WORKSPACE}/.code-review-bot/scripts/run-review-github.sh"
+
+      - name: Finalize interrupted code-review check
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${CODE_REVIEW_CHECK_RUN_ID:-}" ]; then
+            echo "No Check Run ID was exported; nothing to finalize."
+            exit 0
+          fi
+
+          if ! status="$(gh api "repos/${GITHUB_REPOSITORY}/check-runs/${CODE_REVIEW_CHECK_RUN_ID}" --jq '.status')"; then
+            echo "::warning::Could not read Check Run ${CODE_REVIEW_CHECK_RUN_ID}; leaving it unchanged."
+            exit 0
+          fi
+          if [ "$status" = "completed" ]; then
+            echo "Check Run ${CODE_REVIEW_CHECK_RUN_ID} was completed by the review bot."
+            exit 0
+          fi
+
+          if ! jq -n \
+            --arg summary "The review workflow ended before the review bot completed this Check Run. Re-run the Code Review workflow for a fresh verdict." \
+            '{status: "completed", conclusion: "cancelled", output: {title: "AI Review — Cancelled", summary: $summary}}' \
+            | gh api --method PATCH "repos/${GITHUB_REPOSITORY}/check-runs/${CODE_REVIEW_CHECK_RUN_ID}" --input - > /dev/null; then
+            echo "::warning::Could not finalize Check Run ${CODE_REVIEW_CHECK_RUN_ID}; leaving it unchanged."
+            exit 0
+          fi
+          echo "Finalized interrupted Check Run ${CODE_REVIEW_CHECK_RUN_ID}."

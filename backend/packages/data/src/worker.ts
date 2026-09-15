@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
-import { CORE_TASK_NAMES, type TaskList } from "@semprec/queue";
+import { CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
+import { withTraceContext } from "@semprec/shared";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { handleHeartbeatSweepTask, createHeartbeatFireTask } from "./scheduler/sweep.js";
 import { handleRollupRecomputeTask, handleRollupRecomputeFullTask } from "./rollup/recompute.js";
@@ -94,7 +95,7 @@ export function createCoreTaskList(
   moduleRegistry?: ModuleRegistry,
   pushSenders?: PushSenders,
 ): TaskList {
-  return {
+  const handlers: TaskList = {
     [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {
       await handleHeartbeatSweepTask(pool, moduleRegistry);
     },
@@ -141,13 +142,11 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: async (payload, helpers) => {
       if (!mailModuleIds)
         throw new Error("mailAccountSync job requires createCoreTaskList's mailModuleIds argument to be configured");
-      await handleSyncMailAccountTask(
-        pool,
-        { mailboxItemId: requireString(payload, "mailboxItemId") },
-        mailSyncAdapters,
-        mailModuleIds,
-        mailBlobStorage,
-        { job: { id: helpers.job.id } },
+      const mailboxItemId = requireString(payload, "mailboxItemId");
+      await withTraceContext({ mailboxId: mailboxItemId }, () =>
+        handleSyncMailAccountTask(pool, { mailboxItemId }, mailSyncAdapters, mailModuleIds, mailBlobStorage, {
+          job: { id: helpers.job.id },
+        }),
       );
     },
     [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: async () => {
@@ -178,4 +177,12 @@ export function createCoreTaskList(
       await handleItemTrashPurgeSweepTask(pool);
     },
   };
+
+  // Issue #167: every core task restores the trace its `enqueueJob` producer stamped (or, for a
+  // crontab-fired sweep with no producer, mints a fresh one for that tick) before its handler runs.
+  return Object.fromEntries(
+    Object.entries(handlers)
+      .filter((entry): entry is [string, Task] => entry[1] !== undefined)
+      .map(([name, task]) => [name, registerTask(name, task)]),
+  );
 }
