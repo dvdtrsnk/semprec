@@ -6,6 +6,7 @@ import * as Y from "yjs";
 import * as syncProtocol from "y-protocols/sync.js";
 import { getDocById, getDocUpdateById, loadYDoc, mutateYDoc, type CreatedBy } from "@semprec/data";
 import { buildBinaryFrame } from "./protocolV1.js";
+import { sendWithBackpressure } from "./backpressure.js";
 
 /**
  * Every update accepted over `WS /api/sync`'s binary channel is attributed to this fixed
@@ -26,6 +27,14 @@ const DOC_SYNC_CREATED_BY: CreatedBy = "user";
  */
 const MAX_UPDATES_PER_WINDOW = 50;
 const RATE_LIMIT_WINDOW_MS = 1000;
+
+/**
+ * Per-connection cap on distinct open documents (issue #242's Task): a client that opened this
+ * many documents already gets no more subscriptions from this socket until it closes one. Kept
+ * deliberately low relative to any real editor's working set, since it exists only to bound one
+ * connection's fan-out membership, not to reflect an expected usage pattern.
+ */
+const MAX_OPEN_DOCS_PER_CONNECTION = 32;
 
 /**
  * Per-process registry of which open `WS /api/sync` sockets have which documents open
@@ -52,8 +61,7 @@ export interface DocSyncRegistry {
 }
 
 function sendFrame(ws: WebSocket, docId: string, payload: Uint8Array): void {
-  if (ws.readyState !== ws.OPEN) return;
-  ws.send(buildBinaryFrame(docId, payload));
+  sendWithBackpressure(ws, buildBinaryFrame(docId, payload));
 }
 
 export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
@@ -100,19 +108,55 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
     openDocsByClient.get(ws)?.delete(docId);
   }
 
+  /**
+   * Reserves `docId` against the per-connection cap synchronously, before any `await` — a burst
+   * of concurrent `doc:open` frames dispatches each one's async body without waiting for the
+   * previous to finish, so checking the cap only after `getDocById` resolves would let every
+   * frame in the burst read the same stale (pre-mutation) count and all pass it. Returns `false`
+   * (cap already hit) or `true` (already open, or newly reserved) — the caller must undo a fresh
+   * reservation with `releaseReservation` if the doc turns out not to exist.
+   */
+  function reserveOpenSlot(ws: WebSocket, docId: string): boolean {
+    let openDocs = openDocsByClient.get(ws);
+    if (openDocs?.has(docId)) return true;
+    if ((openDocs?.size ?? 0) >= MAX_OPEN_DOCS_PER_CONNECTION) return false;
+    if (!openDocs) {
+      openDocs = new Set();
+      openDocsByClient.set(ws, openDocs);
+    }
+    openDocs.add(docId);
+    return true;
+  }
+
   return {
     async handleOpen(ws, docId) {
+      // The per-connection subscription cap (issue #242's Task) is enforced synchronously,
+      // before any `await` below, precisely so a burst of concurrent `doc:open` frames for
+      // distinct docs can't all read the same stale count and land at 33 (see
+      // `reserveOpenSlot`'s doc comment).
+      if (!reserveOpenSlot(ws, docId)) {
+        console.warn("Sync server rejected doc:open: socket exceeded the per-connection subscription limit");
+        return;
+      }
+
       // A docId naming no real `docs` row (deleted, never existed, malformed-but-UUID-shaped)
-      // is dropped rather than opened — there is nothing to sync and no snapshot to read.
+      // is dropped rather than opened — there is nothing to sync and no snapshot to read. The
+      // reservation above is released so a bad docId never permanently occupies a cap slot.
       const doc = await getDocById(pool, docId);
-      if (!doc) return;
+      if (!doc) {
+        openDocsByClient.get(ws)?.delete(docId);
+        return;
+      }
 
       // The socket may have closed while the query above was in flight — its own `close`
       // handler already ran `handleSocketClosed`, which found no subscription yet and did
       // nothing. Subscribing now, after that, would leave a dead socket permanently held by
       // `subscribersByDoc` with no future close event left to clean it up. No `await` follows
       // this check before `subscribe`, so nothing can close the socket in between.
-      if (ws.readyState !== ws.OPEN) return;
+      if (ws.readyState !== ws.OPEN) {
+        openDocsByClient.get(ws)?.delete(docId);
+        return;
+      }
 
       subscribe(ws, docId);
 
@@ -231,7 +275,7 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
       const frame = buildBinaryFrame(docId, encoding.toUint8Array(encoder));
 
       for (const client of subscribers) {
-        if (client.readyState === client.OPEN) client.send(frame);
+        sendWithBackpressure(client, frame);
       }
     },
   };

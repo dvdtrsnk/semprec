@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
+import type { Socket } from "node:net";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { WebSocket, type RawData } from "ws";
 import * as encoding from "lib0/encoding";
 import * as decoding from "lib0/decoding";
@@ -122,6 +123,45 @@ class TestDocClient {
       Y.applyUpdate(this.ydoc, update);
     }
   }
+}
+
+/**
+ * Intercepts the very first `pool.connect()` call `create()` triggers — in every test in this
+ * file that is `createSyncServer`'s own dedicated LISTEN connection, acquired synchronously
+ * before anything else runs. Returns the real `PoolClient` so a test can force a fault on it
+ * (`.emit("error", ...)`) without any test-only hook in production code.
+ */
+async function captureListenClient(
+  pool: Pool,
+  create: () => Promise<SyncServer>,
+): Promise<{ syncServer: SyncServer; listenClient: PoolClient }> {
+  const originalConnect = pool.connect.bind(pool);
+  let resolveClient: (client: PoolClient) => void;
+  const clientPromise = new Promise<PoolClient>((resolve) => {
+    resolveClient = resolve;
+  });
+  // `Pool["connect"]` is overloaded (a promise-returning form and a callback-returning-`void`
+  // form); TS's `ReturnType`/`Parameters` machinery collapses that to the last overload for typing
+  // a mock implementation, which is the `void` one — spying through this narrowed, non-overloaded
+  // view of the same `pool` object keeps the mock's own type honest as promise-returning.
+  const poolConnect = pool as unknown as { connect: () => Promise<PoolClient> };
+  const spy = vi.spyOn(poolConnect, "connect").mockImplementationOnce(async () => {
+    const client = await originalConnect();
+    resolveClient(client);
+    return client;
+  });
+  let syncServer: SyncServer;
+  try {
+    syncServer = await create();
+  } finally {
+    spy.mockRestore();
+  }
+  return { syncServer, listenClient: await clientPromise };
+}
+
+/** Resolves once `client` closes, capturing the close code — never resolves on a dropped/errored connection. */
+function waitForClose(client: WebSocket): Promise<number> {
+  return new Promise((resolve) => client.once("close", (code) => resolve(code)));
 }
 
 /** Waits until `predicate()` becomes true or `timeoutMs` elapses, polling every 10ms. */
@@ -516,6 +556,14 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
       }),
     );
     await publishRealtimeMessage(pool, { type: "notification_created", userId: owner, notificationId });
+
+    // `publishRealtimeMessage` resolving only means the NOTIFY was sent — the LISTEN client still
+    // has to receive it and `forwardNotification` still has to run its own async row fetch before
+    // delivery is attempted. Waiting here lets that pipeline finish while no socket is open at all
+    // (a real drop, matching production), instead of racing it against the reconnect below: under
+    // load, that race could let this same live-delivery machinery reach the *new* socket by
+    // coincidence, which is a timing artifact rather than the replay this test targets.
+    await new Promise((resolve) => setTimeout(resolve, 300));
 
     // Reconnecting afterwards opens a brand-new socket with no queued/replayed backlog — the
     // notification published above must never surface on it. A reconnecting client converges by
@@ -978,4 +1026,242 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
     expect(frames.every((frame) => typeof frame.chunk === "object")).toBe(true);
     client.close();
   });
+});
+
+describe("createSyncServer server-side limits, LISTEN outage and backpressure (issue #242)", () => {
+  let httpServer: Server;
+  let syncServer: SyncServer;
+  let port: number;
+  let identityByToken: Map<string, SyncIdentity>;
+
+  async function createTestUser(): Promise<string> {
+    const passwordHash = await hashPassword("s3cret-password");
+    const user = await createUser(pool, { email: `limits-${Math.random()}@example.test`, passwordHash, locale: "en" });
+    return user.id;
+  }
+
+  async function connect(token: string): Promise<WebSocket> {
+    const client = new WebSocket(`ws://127.0.0.1:${port}/api/sync?token=${token}`, { maxPayload: 0 });
+    await waitForOpen(client);
+    return client;
+  }
+
+  async function bindHttpServer(): Promise<void> {
+    httpServer = createServer();
+    httpServer.on("upgrade", (req, socket, head) => syncServer.handleUpgrade(req, socket, head));
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const address = httpServer.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    port = address.port;
+  }
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    identityByToken = new Map();
+  });
+
+  afterEach(async () => {
+    // A test that already exercised a controlled shutdown has closed this itself; closing again
+    // must not fail the test (`wss.close()` rejects the second time since it's already closed).
+    await syncServer?.close().catch(() => {});
+    await new Promise<void>((resolve) => httpServer?.close(() => resolve()) ?? resolve());
+  });
+
+  it("closes every connected socket with 1012 when the dedicated LISTEN connection errors, and serves a fresh connection again once it reconnects", async () => {
+    const { syncServer: server, listenClient } = await captureListenClient(pool, () =>
+      createSyncServer(pool, {
+        authenticate: async (req: IncomingMessage) => {
+          const token = new URL(req.url ?? "/", "http://localhost").searchParams.get("token");
+          return token ? (identityByToken.get(token) ?? null) : null;
+        },
+        revalidateSession: async () => true,
+        heartbeatIntervalMs: 30_000,
+      }),
+    );
+    syncServer = server;
+    await bindHttpServer();
+
+    identityByToken.set("a", { userId: await createTestUser(), sessionId: "session-a" });
+    identityByToken.set("b", { userId: await createTestUser(), sessionId: "session-b" });
+    const clientA = await connect("a");
+    const clientB = await connect("b");
+    const closedA = waitForClose(clientA);
+    const closedB = waitForClose(clientB);
+
+    // Simulates the LISTEN connection being lost (network blip, Postgres restart) without any
+    // test-only hook in production code — `onError` is the real handler `syncServer.ts` wires.
+    listenClient.emit("error", new Error("simulated LISTEN connection loss"));
+
+    expect(await closedA).toBe(1012);
+    expect(await closedB).toBe(1012);
+
+    // The reconnect loop (capped exponential backoff) restores a usable LISTEN connection: a
+    // client connecting after the outage is served exactly like one that connected before it.
+    const clientC = await connect("a");
+    expect(clientC.readyState).toBe(clientC.OPEN);
+    clientC.close();
+  });
+
+  it("closes every connected socket with 1012 on a controlled shutdown", async () => {
+    syncServer = await createSyncServer(pool, {
+      authenticate: async (req: IncomingMessage) => {
+        const token = new URL(req.url ?? "/", "http://localhost").searchParams.get("token");
+        return token ? (identityByToken.get(token) ?? null) : null;
+      },
+      revalidateSession: async () => true,
+      heartbeatIntervalMs: 30_000,
+    });
+    await bindHttpServer();
+
+    identityByToken.set("a", { userId: await createTestUser(), sessionId: "session-a" });
+    const client = await connect("a");
+    const closed = waitForClose(client);
+
+    await syncServer.close();
+
+    expect(await closed).toBe(1012);
+  });
+
+  it("terminates a connection that stops answering pings within a few missed heartbeats", async () => {
+    syncServer = await createSyncServer(pool, {
+      authenticate: async () => ({ userId: "user-1", sessionId: "session-1" }),
+      revalidateSession: async () => true,
+      heartbeatIntervalMs: 20,
+    });
+    await bindHttpServer();
+
+    // `autoPong: false` simulates a peer that stops answering the server's RFC 6455 pings — a
+    // stalled tab, a dropped network the TCP stack hasn't noticed yet — without needing to wait
+    // out the real ~90s window: the heartbeat cadence above is scaled down proportionally.
+    const client = new WebSocket(`ws://127.0.0.1:${port}/api/sync`, { autoPong: false });
+    const closed = waitForClose(client);
+    await waitForOpen(client);
+
+    await closed;
+    expect(client.readyState).not.toBe(client.OPEN);
+  });
+
+  it("rejects a frame over the 2MB inbound cap by closing the connection, rather than buffering it", async () => {
+    syncServer = await createSyncServer(pool, {
+      authenticate: async () => ({ userId: "user-1", sessionId: "session-1" }),
+      revalidateSession: async () => true,
+      heartbeatIntervalMs: 30_000,
+    });
+    await bindHttpServer();
+
+    const client = await connect("ignored");
+    const closed = waitForClose(client);
+
+    client.send(Buffer.alloc(2_000_001));
+
+    expect(await closed).toBe(1009);
+  });
+
+  it("rejects a doc:open beyond the 32-open-documents-per-connection cap, leaving the first 32 subscribed", async () => {
+    const chokePoint = createChokePoint(pool);
+    const docStore = createDocStore(pool);
+    async function createTestDoc(): Promise<string> {
+      const db = await chokePoint.createDatabase({ name: "Pages" });
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
+      await docStore.putBlock(item.id, { id: "root", flavour: "page" }, "user");
+      const doc = await docStore.getDoc(item.id);
+      return doc!.id;
+    }
+
+    syncServer = await createSyncServer(pool, {
+      authenticate: async (req: IncomingMessage) => {
+        const token = new URL(req.url ?? "/", "http://localhost").searchParams.get("token");
+        return token ? (identityByToken.get(token) ?? null) : null;
+      },
+      revalidateSession: async () => true,
+      heartbeatIntervalMs: 30_000,
+    });
+    await bindHttpServer();
+    identityByToken.set("a", { userId: await createTestUser(), sessionId: "session-a" });
+    const client = await connect("a");
+
+    const docIds: string[] = [];
+    for (let i = 0; i < 33; i += 1) docIds.push(await createTestDoc());
+
+    const openedDocIds = new Set<string>();
+    client.on("message", (data: RawData) => {
+      const frame = parseBinaryFrame(messageBuffer(data));
+      const docId = frame ? decodeDocId(frame.docId) : null;
+      if (docId) openedDocIds.add(docId);
+    });
+
+    for (const docId of docIds) client.send(JSON.stringify({ type: "doc:open", docId }));
+    await waitUntil(() => openedDocIds.size >= 32, 5_000);
+    // Give the (rejected) 33rd doc:open a beat to arrive if the cap were not enforced.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(openedDocIds.size).toBe(32);
+    expect(openedDocIds.has(docIds[32]!)).toBe(false);
+    expect(client.readyState).toBe(client.OPEN);
+    client.close();
+  });
+
+  it("closes a slow consumer with 1013 once its outgoing buffer stays over the backpressure threshold, without silently dropping any of the frames it never acknowledged", async () => {
+    const chokePoint = createChokePoint(pool);
+    const docStore = createDocStore(pool);
+    // A real accepted update's fan-out rides the same doc_update NOTIFY the write path fires in
+    // production — wire it here too, exactly like the doc-sync describe block above, so this
+    // exercises the real write-then-notify path rather than a simulated one.
+    wireRealtimeHooks(pool);
+    const db = await chokePoint.createDatabase({ name: "Pages" });
+    const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
+    await docStore.putBlock(item.id, { id: "root", flavour: "page" }, "user");
+    const doc = await docStore.getDoc(item.id);
+    const docId = doc!.id;
+
+    syncServer = await createSyncServer(pool, {
+      authenticate: async (req: IncomingMessage) => {
+        const token = new URL(req.url ?? "/", "http://localhost").searchParams.get("token");
+        return token ? (identityByToken.get(token) ?? null) : null;
+      },
+      revalidateSession: async () => true,
+      heartbeatIntervalMs: 30_000,
+    });
+    await bindHttpServer();
+
+    identityByToken.set("producer", { userId: await createTestUser(), sessionId: "session-producer" });
+    identityByToken.set("subscriber", { userId: await createTestUser(), sessionId: "session-subscriber" });
+    const producerWs = await connect("producer");
+    const subscriberWs = await connect("subscriber");
+    const producer = new TestDocClient(producerWs, docId);
+    const subscriber = new TestDocClient(subscriberWs, docId);
+    producer.open();
+    subscriber.open();
+    await waitUntil(() => producer.received.length > 0 && subscriber.received.length > 0);
+
+    // Stops the subscriber's socket from being read, so every fanned-out update piles up in the
+    // *server's* outgoing buffer for that connection instead of draining over the wire — the
+    // server's own close frame (once it decides to send one) queues behind that same backlog,
+    // which is why the client's own `'close'` event can't fire yet either.
+    const subscriberSocket = (subscriberWs as unknown as { _socket: Socket })._socket;
+    subscriberSocket.pause();
+
+    // Each update's fan-out rides a real Postgres NOTIFY round-trip, whose latency varies with
+    // system load (e.g. a preceding test's writes still settling) — and separately, how much data
+    // a paused socket can absorb before the OS-level window fills depends on how far the kernel
+    // had already auto-tuned that window, which is not under this test's control either. 30 x
+    // ~1MB updates over 3s (comfortably inside the 20s test timeout) makes both margins generous
+    // instead of tuned to a guessed minimum.
+    for (let i = 0; i < 30; i += 1) {
+      producer.mutate((ydoc) => ydoc.getText("body").insert(0, "x".repeat(1_000_000)));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    // Gives the server a beat to notice `bufferedAmount` over the threshold and queue its 1013
+    // close frame behind the backlog above.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const closed = waitForClose(subscriberWs);
+    // Resuming now lets the client drain the whole backlog, including the trailing close frame —
+    // proving every one of the six updates was actually delivered (never silently dropped) before
+    // the connection was closed for falling behind.
+    subscriberSocket.resume();
+
+    expect(await closed).toBe(1013);
+  }, 20_000);
 });
