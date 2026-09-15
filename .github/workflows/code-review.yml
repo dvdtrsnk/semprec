@@ -49,6 +49,11 @@ jobs:
           # differing names either side of this mapping.
           GITHUB_RESOLVE_TOKEN: ${{ secrets.PR_RESOLVE_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Relay-managed PRs obtain their provider and model from the short-lived
+          # broker session, rather than this fallback Claude credential.
+          RELAY_BROKER_URL: ${{ secrets.RELAY_BROKER_URL }}
+          RELAY_BROKER_SECRET: ${{ secrets.RELAY_BROKER_SECRET }}
+          RELAY_REAL_CLAUDE_BIN: claude
           # develop -> main is a release promotion, not a feature review: switch
           # to the bot's release-readiness rules (migrations/config/rollback/
           # security) instead of re-running the standard per-platform review
