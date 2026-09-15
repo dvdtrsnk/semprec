@@ -31,8 +31,9 @@ jobs:
       - name: Checkout semprec
         uses: actions/checkout@v4
         with:
-          # A dispatch runs from the workflow's ref, not the PR's synthetic merge
-          # ref. Review the selected PR head in both trigger modes.
+          # Deliberately review the PR head in both trigger modes, rather than the
+          # pull_request merge ref. The bot gets changed files from the PR API and
+          # anchors its Check Run to that head, so agents must read the same tree.
           ref: ${{ github.event.pull_request.head.sha || format('refs/pull/{0}/head', inputs.pull_request) }}
 
       - name: Checkout code-review-bot (private)
@@ -96,21 +97,27 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
           if [ -z "${CODE_REVIEW_CHECK_RUN_ID:-}" ]; then
             echo "No Check Run ID was exported; nothing to finalize."
             exit 0
           fi
 
-          status="$(gh api "repos/${GITHUB_REPOSITORY}/check-runs/${CODE_REVIEW_CHECK_RUN_ID}" --jq '.status')"
+          if ! status="$(gh api "repos/${GITHUB_REPOSITORY}/check-runs/${CODE_REVIEW_CHECK_RUN_ID}" --jq '.status')"; then
+            echo "::warning::Could not read Check Run ${CODE_REVIEW_CHECK_RUN_ID}; leaving it unchanged."
+            exit 0
+          fi
           if [ "$status" = "completed" ]; then
             echo "Check Run ${CODE_REVIEW_CHECK_RUN_ID} was completed by the review bot."
             exit 0
           fi
 
-          jq -n \
+          if ! jq -n \
             --arg summary "The review workflow ended before the review bot completed this Check Run. Re-run the Code Review workflow for a fresh verdict." \
             '{status: "completed", conclusion: "cancelled", output: {title: "AI Review — Cancelled", summary: $summary}}' \
-            | gh api --method PATCH "repos/${GITHUB_REPOSITORY}/check-runs/${CODE_REVIEW_CHECK_RUN_ID}" --input - > /dev/null
+            | gh api --method PATCH "repos/${GITHUB_REPOSITORY}/check-runs/${CODE_REVIEW_CHECK_RUN_ID}" --input - > /dev/null; then
+            echo "::warning::Could not finalize Check Run ${CODE_REVIEW_CHECK_RUN_ID}; leaving it unchanged."
+            exit 0
+          fi
           echo "Finalized interrupted Check Run ${CODE_REVIEW_CHECK_RUN_ID}."
