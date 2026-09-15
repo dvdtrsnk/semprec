@@ -1,5 +1,7 @@
 import {
   AiGatewayFailedError,
+  getTraceId,
+  mintTraceId,
   type AiGatewayClientPort,
   type AiGatewayCompletionInput,
   type AiGatewayCompletionResult,
@@ -78,6 +80,10 @@ export function createHttpAiGatewayClient(config: HttpAiGatewayClientConfig): Ai
           headers: {
             "content-type": "application/json",
             authorization: `Bearer ${config.token}`,
+            // Issue #167: carries this call's trace across the loopback hop so the gateway's own
+            // logs correlate with the caller's. Minting a fallback here (rather than requiring an
+            // active trace) keeps this client usable from a caller that hasn't set one up.
+            "x-trace-id": getTraceId() ?? mintTraceId(),
           },
           body: JSON.stringify(input),
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),

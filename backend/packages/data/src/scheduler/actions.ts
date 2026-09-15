@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { withTraceContext } from "@semprec/shared";
 import { createAgentRun, finishAgentRun, finishAgentRunWithErrorNotification } from "../agentRuns/agentRunsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { parseItemRelationFilterConfig, passesItemRelationFilter } from "./itemRelationFilter.js";
@@ -67,16 +68,18 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
       task,
     });
 
-    try {
-      const outcome = await runAgent({ agentRunId: run.id, projectItemId: context.projectItemId, task });
-      await finishAgentRun(pool, run.id, "done", outcome?.result ?? null);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      // Same transaction as the source write, per issue #149: a crash between closing the run
-      // and writing its `agent_run_error` notification never leaves one without the other.
-      await withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, run.id, message));
-      throw err;
-    }
+    await withTraceContext({ agentRunId: run.id }, async () => {
+      try {
+        const outcome = await runAgent({ agentRunId: run.id, projectItemId: context.projectItemId, task });
+        await finishAgentRun(pool, run.id, "done", outcome?.result ?? null);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // Same transaction as the source write, per issue #149: a crash between closing the run
+        // and writing its `agent_run_error` notification never leaves one without the other.
+        await withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, run.id, message));
+        throw err;
+      }
+    });
   };
 }
 
