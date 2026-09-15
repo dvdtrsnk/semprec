@@ -1,6 +1,7 @@
 import { Pool } from "pg";
 
 const TABLES = [
+  "process_heartbeats",
   "module_migrations",
   "idempotency_keys",
   "login_attempts",

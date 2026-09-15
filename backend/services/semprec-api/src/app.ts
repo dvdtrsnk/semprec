@@ -14,6 +14,7 @@ import { createAgentRunRequestListener } from "./agentRunHandler.js";
 import { createAuthRequestListener } from "./authHandler.js";
 import { createNotificationsRequestListener } from "./notificationsHandler.js";
 import { createSetupRequestListener } from "./setupHandler.js";
+import { createHealthzRequestListener } from "./healthzHandler.js";
 import { createSchemaRequestListener } from "./schemaHandler.js";
 import { createFilesRequestListener } from "./filesHandler.js";
 import { createBlobsRequestListener } from "./blobsHandler.js";
@@ -67,6 +68,7 @@ export async function createDispatcher(
   });
   const notificationsListener = createNotificationsRequestListener(pool);
   const setupListener = createSetupRequestListener(pool, { setupToken: options.setupToken });
+  const healthzListener = createHealthzRequestListener(pool);
   const schemaListener = createSchemaRequestListener(pool, options.moduleRegistry);
   const filesListener = createFilesRequestListener(pool, {
     storage: options.blobStorage,
@@ -87,6 +89,10 @@ export async function createDispatcher(
     if (dispatchResourceRoute(req, res)) return;
 
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+    if (pathname === "/healthz") {
+      void healthzListener(req, res);
+      return;
+    }
     if (pathname === "/api/schema") {
       void schemaListener(req, res);
       return;
