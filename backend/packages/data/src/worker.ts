@@ -36,6 +36,7 @@ import { handleApprovalRequestExecuteTask } from "./mcp/approvalRequestExecution
 import { handleNotificationFanoutTask } from "./notifications/notificationFanoutJob.js";
 import type { PushSenders } from "./push/pushSenders.js";
 import { handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
+import { handleObservabilityCheckSystemTask } from "./observability/observabilityCheckSystem.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -73,6 +74,7 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 */5 * * * * ${CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP}
 30 3 * * * ${CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP}
 45 3 * * * ${CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP}
+* * * * * ${CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM}
 `;
 
 /**
@@ -175,6 +177,9 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: async () => {
       await handleItemTrashPurgeSweepTask(pool);
+    },
+    [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: async (_payload, taskHelpers) => {
+      await handleObservabilityCheckSystemTask(pool, { job: { id: taskHelpers.job.id } });
     },
   };
 
