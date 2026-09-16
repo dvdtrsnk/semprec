@@ -26,7 +26,13 @@ jobs:
   # on every pull request. Keep the workflow's review lifecycle in this one job.
   review:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # A Relay-managed pull request answers every agent through the Relay broker,
+    # which spawns a hidden agent thread per call and serializes them per pull
+    # request. A measured run took 22 minutes to finish its platform and
+    # acceptance-criteria agents before the summary agent even started, so the
+    # old 30-minute budget cancelled the job mid-summary. Sized for that path;
+    # a non-Relay review finishes well inside it.
+    timeout-minutes: 60
     steps:
       - name: Checkout semprec
         uses: actions/checkout@v4
@@ -113,8 +119,16 @@ jobs:
             exit 0
           fi
 
+          # The trailing marker is the contract an orchestrator reads to tell a
+          # reviewer-side breakage from real findings. Without it, Relay sees a
+          # failing check with no outcome class and sends the implementer back to
+          # rewrite code against a review that never produced a single finding.
+          summary=$(printf '%s\n\n%s' \
+            "The review workflow ended before the review bot completed this Check Run. Re-run the Code Review workflow for a fresh verdict." \
+            "<!-- crb-outcome:v1:infra-failure -->")
+
           if ! jq -n \
-            --arg summary "The review workflow ended before the review bot completed this Check Run. Re-run the Code Review workflow for a fresh verdict." \
+            --arg summary "$summary" \
             '{status: "completed", conclusion: "cancelled", output: {title: "AI Review — Cancelled", summary: $summary}}' \
             | gh api --method PATCH "repos/${GITHUB_REPOSITORY}/check-runs/${CODE_REVIEW_CHECK_RUN_ID}" --input - > /dev/null; then
             echo "::warning::Could not finalize Check Run ${CODE_REVIEW_CHECK_RUN_ID}; leaving it unchanged."
