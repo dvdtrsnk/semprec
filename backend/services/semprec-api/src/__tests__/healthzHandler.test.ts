@@ -94,13 +94,17 @@ describe("createHealthzRequestListener (issue #168)", () => {
     }
   });
 
-  it("returns 404 for an unknown route", async () => {
+  it("returns 404 {status: error} for an unknown route", async () => {
     const res = await fetch(`${baseUrl}/healthz/whatever`, { method: "GET" });
+
     expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ status: "error" });
   });
 
-  it("returns 404 for a non-GET method", async () => {
+  it("returns 404 {status: error} for a non-GET method", async () => {
     const res = await fetch(`${baseUrl}/healthz`, { method: "POST" });
+
     expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ status: "error" });
   });
 });
