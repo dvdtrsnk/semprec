@@ -60,7 +60,13 @@ describe("createHealthzRequestListener (issue #168)", () => {
     expect(await res.json()).toEqual({ status: "error" });
   });
 
-  it("stays healthy when the agents heartbeat is missing but the api heartbeat is fresh", async () => {
+  it("stays healthy when the agents heartbeat is stale but the api heartbeat is fresh", async () => {
+    const staleStartedAt = new Date(Date.now() - 5 * 60_000);
+    await pool.query(
+      `INSERT INTO process_heartbeats (process, pid, version, started_at, beat_at)
+       VALUES ('agents', 1, '1.0.0', $1, $1)`,
+      [staleStartedAt],
+    );
     await upsertProcessHeartbeat(pool, { process: "api", pid: 1, version: "1.0.0" }, new Date());
 
     const res = await fetch(`${baseUrl}/healthz`, { method: "GET" });
