@@ -8,8 +8,6 @@ export interface ObservabilityCheckTransition {
   status: ObservabilityCheckStatus;
   /** True only on a genuine ok/missing -> alerting flip — the caller's one signal to notify. */
   transitionedToAlerting: boolean;
-  /** True only on a genuine alerting -> ok flip — the caller's one signal to "rearm" a later alert. */
-  transitionedToOk: boolean;
 }
 
 /**
@@ -55,6 +53,24 @@ export async function transitionObservabilityCheck(
     previousStatus,
     status,
     transitionedToAlerting: changed && status === "alerting",
-    transitionedToOk: changed && status === "ok",
   };
+}
+
+/**
+ * Drops `observability_checks` rows whose `check_key` starts with `checkKeyPrefix` but is not in
+ * `currentCheckKeys` — the check's own source (e.g. a deleted mail account) is gone, so the row
+ * would otherwise never be re-evaluated and would sit `alerting` forever with no path back to `ok`.
+ */
+export async function deleteOrphanedObservabilityChecks(
+  client: PoolClient,
+  checkKeyPrefix: string,
+  currentCheckKeys: readonly string[],
+): Promise<number> {
+  const result = await client.query(
+    `DELETE FROM observability_checks WHERE check_key LIKE $1 AND NOT (check_key = ANY($2::text[]))`,
+    [`${checkKeyPrefix}%`, currentCheckKeys],
+  );
+  // Zero is the common case (no orphans this tick) — there is nothing to act on beyond returning
+  // the count, which exists so a caller could log or assert on it if it ever needed to.
+  return result.rowCount ?? 0;
 }

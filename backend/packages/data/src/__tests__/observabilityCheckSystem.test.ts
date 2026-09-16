@@ -189,6 +189,21 @@ describe("observability.checkSystem (issue #169)", () => {
     expect(healthyCheck?.status).toBe("ok");
   });
 
+  it("drops an orphaned mail check once its account is deleted, instead of leaving it alerting forever", async () => {
+    await createTestUser();
+    await markAllProcessesFresh();
+    const mailboxItemId = randomUUID();
+    await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
+    await recordSyncError(pool, mailboxItemId, "boom");
+
+    await runCheck();
+    expect((await getCheck(`mail:${mailboxItemId}`))?.status).toBe("alerting");
+
+    await pool.query(`DELETE FROM mail_account_sync_state WHERE item_id = $1`, [mailboxItemId]);
+    await runCheck();
+    expect(await getCheck(`mail:${mailboxItemId}`)).toBeUndefined();
+  });
+
   it("references the specific check row that transitioned as the notification's source", async () => {
     await createTestUser();
     await markAllProcessesFresh();

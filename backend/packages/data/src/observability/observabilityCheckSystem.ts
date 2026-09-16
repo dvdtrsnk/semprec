@@ -5,7 +5,11 @@ import { writeNotification } from "../notifications/notify.js";
 import type { NotificationKind } from "../notifications/notificationKinds.js";
 import { getExpectedProcessHeartbeatStatuses } from "../health/processHeartbeats.js";
 import { listAllMailAccountSyncStates } from "../mail/mailAccountSyncStateStore.js";
-import { transitionObservabilityCheck, type ObservabilityCheckStatus } from "./observabilityChecksStore.js";
+import {
+  transitionObservabilityCheck,
+  deleteOrphanedObservabilityChecks,
+  type ObservabilityCheckStatus,
+} from "./observabilityChecksStore.js";
 
 export interface ObservabilityCheckSystemHelpers {
   /** The firing crontab job's own id — the stable base a retry of this same tick reuses, so a redelivery after a mid-transaction crash lands on the same `transitionInstance` as the attempt it's retrying, instead of a fresh one that would slip past `writeNotification`'s dedupe. */
@@ -134,16 +138,27 @@ async function checkPermanentlyFailedJobs(pool: Pool, helpers: ObservabilityChec
   });
 }
 
+const MAIL_CHECK_KEY_PREFIX = "mail:";
+
 /**
  * One `mail:<mailboxItemId>` check per mailbox, folding both adapter-owned inputs into the single
  * uniform predicate `mail_account_sync_state`'s own migration comment already documents: overdue
  * `next_expected_activity_at` (set identically by the imap/gmail_api/graph_api adapters, so this
  * check has no provider-specific branch) OR a non-null `last_error`.
+ *
+ * `mail_account_sync_state` has no FK to `observability_checks`, so a deleted mail account simply
+ * stops appearing in `listAllMailAccountSyncStates` — its `mail:<itemId>` row would otherwise never
+ * be re-evaluated again and could sit `alerting` forever. `deleteOrphanedObservabilityChecks` drops
+ * any `mail:` row whose account is no longer present before this tick's checks run.
  */
 async function checkMailSync(pool: Pool, helpers: ObservabilityCheckSystemHelpers): Promise<void> {
   const accounts = await withTransaction(pool, (client) => listAllMailAccountSyncStates(client));
+  const currentCheckKeys = accounts.map((account) => `${MAIL_CHECK_KEY_PREFIX}${account.itemId}`);
+  await withTransaction(pool, (client) =>
+    deleteOrphanedObservabilityChecks(client, MAIL_CHECK_KEY_PREFIX, currentCheckKeys),
+  );
   for (const account of accounts) {
-    const checkKey = `mail:${account.itemId}`;
+    const checkKey = `${MAIL_CHECK_KEY_PREFIX}${account.itemId}`;
     await withTransaction(pool, async (client) => {
       const overdue =
         account.nextExpectedActivityAt !== null && new Date(account.nextExpectedActivityAt).getTime() < Date.now();
