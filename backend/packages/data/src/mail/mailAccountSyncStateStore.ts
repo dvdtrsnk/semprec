@@ -254,3 +254,15 @@ export async function listAccountsDueForSync(client: Queryable): Promise<MailAcc
   );
   return rows.map(mapRow);
 }
+
+/**
+ * Every mailbox's sync state, regardless of due-ness — the observability check (issue #169)
+ * evaluates `next_expected_activity_at < now()` and `last_error` as one uniform `mail_sync_stalled`
+ * predicate per mailbox, so it needs every account, not just the ones the periodic sweep above
+ * would currently re-enqueue (e.g. a connection-limit backoff pushes `next_expected_activity_at`
+ * into the future while `last_error` stays set — that account is not "due" but is still failing).
+ */
+export async function listAllMailAccountSyncStates(client: Queryable): Promise<MailAccountSyncStateRow[]> {
+  const { rows } = await client.query<MailAccountSyncStateDbRow>(`SELECT ${COLUMNS} FROM mail_account_sync_state`);
+  return rows.map(mapRow);
+}
