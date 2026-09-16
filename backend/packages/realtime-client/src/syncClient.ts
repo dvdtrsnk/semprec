@@ -91,6 +91,10 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let closedByCaller = true;
   let gateInvalidations = false;
+  // Bumped on every `establishConnection()` call so a stale socket's `onclose`/`onopen` handler —
+  // one whose connection attempt has already been superseded by a newer one — can recognize
+  // itself as stale and no-op instead of clobbering the current connection's state.
+  let connectionId = 0;
 
   const openDocs = new Map<string, DocSession>();
   const watchedRuns = new Map<string, { lastEventId: string }>();
@@ -154,7 +158,7 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
    * Yjs/agent-run recovery is deliberately not gated on the same refetch: each stream's Task
    * describes its own independent resume path, not one blocking the others.
    */
-  function recoverAfterConnect(): void {
+  function recoverAfterConnect(myConnectionId: number): void {
     for (const docId of openDocs.keys()) sendFrame({ type: "doc:open", docId });
     for (const [runId, watch] of watchedRuns)
       sendFrame({ type: "agent:watch", runId, afterEventId: watch.lastEventId });
@@ -174,7 +178,9 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
         console.error("Sync client failed to refetch active state after connect", err);
       })
       .finally(() => {
-        gateInvalidations = false;
+        // A superseded connection attempt's refetch resolving late must not lift the *current*
+        // attempt's gate — only the still-current connection may clear it.
+        if (myConnectionId === connectionId) gateInvalidations = false;
       });
   }
 
@@ -188,13 +194,18 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
 
   function establishConnection(): void {
     if (closedByCaller) return;
+    const myConnectionId = ++connectionId;
     const ws = options.createSocket();
     socket = ws;
     ws.onopen = () => {
+      if (myConnectionId !== connectionId) return;
       reconnectAttempt = 0;
-      recoverAfterConnect();
+      recoverAfterConnect(myConnectionId);
     };
-    ws.onmessage = (event) => handleMessage(event.data);
+    ws.onmessage = (event) => {
+      if (myConnectionId !== connectionId) return;
+      handleMessage(event.data);
+    };
     // A listener must be attached even when the caller supplies none: leaving `onerror` null
     // would surface as an unhandled error in some `WebSocketLike` implementations (`ws`'s own
     // included) rather than the `close` event this client already reacts to right after.
@@ -202,6 +213,10 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
       console.error("Sync client socket error", err);
     };
     ws.onclose = (event) => {
+      // A stale socket's own close (e.g. one `close()` explicitly tore down, or one that lost a
+      // race against a newer `establishConnection()`) must not clobber a connection that has
+      // already superseded it.
+      if (myConnectionId !== connectionId) return;
       socket = null;
       if (event.code === SESSION_REVOKED_CLOSE_CODE) {
         // Terminal: a revoked session will fail authentication again on every retry, so this
@@ -238,7 +253,10 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
       return session;
     },
     closeDoc(docId) {
-      if (!openDocs.delete(docId)) return;
+      const session = openDocs.get(docId);
+      if (!session) return;
+      session.dispose();
+      openDocs.delete(docId);
       sendFrame({ type: "doc:close", docId });
     },
     watchAgentRun(runId, afterEventId) {

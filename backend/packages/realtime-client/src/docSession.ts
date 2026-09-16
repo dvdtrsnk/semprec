@@ -24,6 +24,12 @@ export interface DocSession {
   readonly ydoc: Y.Doc;
   /** Feeds one binary y-protocols/sync payload for this session's own `docId`. */
   handlePayload(payload: Uint8Array): void;
+  /**
+   * Detaches this session's `ydoc` "update" listener. Required before a retained `ydoc` (one the
+   * caller passed in and keeps editing through) is reused in a later `createDocSession` call —
+   * otherwise the old listener stays registered and every local edit is sent to the server twice.
+   */
+  dispose(): void;
 }
 
 /**
@@ -37,16 +43,20 @@ export function createDocSession(
   send: (payload: Uint8Array) => void,
   ydoc: Y.Doc = new Y.Doc(),
 ): DocSession {
-  ydoc.on("update", (update: Uint8Array, origin: unknown) => {
+  const onUpdate = (update: Uint8Array, origin: unknown): void => {
     if (origin === REMOTE_ORIGIN) return;
     const encoder = encoding.createEncoder();
     syncProtocol.writeUpdate(encoder, update);
     send(encoding.toUint8Array(encoder));
-  });
+  };
+  ydoc.on("update", onUpdate);
 
   return {
     docId,
     ydoc,
+    dispose() {
+      ydoc.off("update", onUpdate);
+    },
     handlePayload(payload) {
       let decoder: decoding.Decoder;
       let messageType: number;
