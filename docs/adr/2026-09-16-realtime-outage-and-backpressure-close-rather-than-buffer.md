@@ -1,7 +1,7 @@
 ---
 status: accepted
 date: 2026-09-16
-area: [backend]
+area: [backend, web, apple]
 supersedes: []
 superseded-by: null
 ---
