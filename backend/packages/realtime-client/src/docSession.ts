@@ -32,7 +32,11 @@ export interface DocSession {
  * `ydoc` defaults to a fresh, empty document; passing an existing one lets a caller keep editing
  * through a reconnect that replaces the underlying session transport.
  */
-export function createDocSession(docId: string, send: (payload: Uint8Array) => void, ydoc: Y.Doc = new Y.Doc()): DocSession {
+export function createDocSession(
+  docId: string,
+  send: (payload: Uint8Array) => void,
+  ydoc: Y.Doc = new Y.Doc(),
+): DocSession {
   ydoc.on("update", (update: Uint8Array, origin: unknown) => {
     if (origin === REMOTE_ORIGIN) return;
     const encoder = encoding.createEncoder();

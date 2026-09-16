@@ -156,7 +156,8 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
    */
   function recoverAfterConnect(): void {
     for (const docId of openDocs.keys()) sendFrame({ type: "doc:open", docId });
-    for (const [runId, watch] of watchedRuns) sendFrame({ type: "agent:watch", runId, afterEventId: watch.lastEventId });
+    for (const [runId, watch] of watchedRuns)
+      sendFrame({ type: "agent:watch", runId, afterEventId: watch.lastEventId });
 
     options.fetchUnreadNotifications?.().catch((err: unknown) => {
       console.error("Sync client failed to fetch unread notifications after connect", err);

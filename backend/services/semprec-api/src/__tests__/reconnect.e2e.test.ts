@@ -68,7 +68,9 @@ async function waitUntilAsync(predicate: () => Promise<boolean>, timeoutMs = 10_
  * does for issue #242's own fault-injection tests, so this client-side suite can force the same
  * LISTEN-connection-loss fault without any test-only hook in production code.
  */
-async function captureListenClient(create: () => Promise<SyncServer>): Promise<{ syncServer: SyncServer; listenClient: PoolClient }> {
+async function captureListenClient(
+  create: () => Promise<SyncServer>,
+): Promise<{ syncServer: SyncServer; listenClient: PoolClient }> {
   const originalConnect = pool.connect.bind(pool);
   let resolveClient: (client: PoolClient) => void;
   const clientPromise = new Promise<PoolClient>((resolve) => {
@@ -102,7 +104,9 @@ class Harness {
   }
 }
 
-async function startServer(createSync: () => Promise<SyncServer> = () => createSyncUpgradeHandler(pool)): Promise<Harness> {
+async function startServer(
+  createSync: () => Promise<SyncServer> = () => createSyncUpgradeHandler(pool),
+): Promise<Harness> {
   const dispatch = await createDispatcher(pool, {
     passwordResetMailer: noopMailer,
     appBaseUrl: "http://localhost",
@@ -140,7 +144,10 @@ interface Fixture {
 }
 
 async function buildFixture(): Promise<Fixture> {
-  const user = await createUser(pool, { email: `${randomUUID()}@example.com`, passwordHash: await hashPassword(PASSWORD) });
+  const user = await createUser(pool, {
+    email: `${randomUUID()}@example.com`,
+    passwordHash: await hashPassword(PASSWORD),
+  });
   const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
 
   const database = await chokePoint.createDatabase({ name: "D" });
@@ -252,7 +259,13 @@ async function connectAndOpenStreams(rig: ClientRig, fixture: Fixture): Promise<
 }
 
 /** Asserts every stream converges with server truth after a fault + reconnect: REST, Yjs, agent events, unread. */
-async function assertConverged(rig: ClientRig, fixture: Fixture, updatedTitle: string, secondEventId: string, notificationId: string): Promise<void> {
+async function assertConverged(
+  rig: ClientRig,
+  fixture: Fixture,
+  updatedTitle: string,
+  secondEventId: string,
+  notificationId: string,
+): Promise<void> {
   await waitUntil(() => rig.itemSnapshot?.properties.title === updatedTitle);
   expect(rig.viewItemIds).toContain(fixture.itemId);
 
@@ -287,7 +300,9 @@ describe("client reconnect and per-stream recovery (issue #164)", () => {
   });
 
   /** Mutates every stream's server-side truth while the client is mid-fault, returning what a converged client must end up showing. */
-  async function mutateWhileDisconnected(fixture: Fixture): Promise<{ title: string; secondEventId: string; notificationId: string }> {
+  async function mutateWhileDisconnected(
+    fixture: Fixture,
+  ): Promise<{ title: string; secondEventId: string; notificationId: string }> {
     const title = "updated during reconnect";
     const updated = await chokePoint.updateItem(
       { databaseId: fixture.databaseId, itemId: fixture.itemId, propertiesPatch: { title } },
@@ -333,7 +348,11 @@ describe("client reconnect and per-stream recovery (issue #164)", () => {
       // room), so the reconnect's one refetch below is guaranteed to observe the final state —
       // exactly what "no universal cursor, refetch after reconnect" promises, not a race with it.
       const expectation = await mutateWhileDisconnected(fixture);
-      await waitUntil(() => rig.sockets.length > socketCountBeforeFault && rig.sockets[rig.sockets.length - 1]!.readyState === WebSocket.OPEN);
+      await waitUntil(
+        () =>
+          rig.sockets.length > socketCountBeforeFault &&
+          rig.sockets[rig.sockets.length - 1]!.readyState === WebSocket.OPEN,
+      );
 
       await assertConverged(rig, fixture, expectation.title, expectation.secondEventId, expectation.notificationId);
     } finally {

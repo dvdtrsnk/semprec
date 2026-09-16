@@ -132,7 +132,13 @@ describe("createSyncClient (issue #164)", () => {
     first.receiveFrame({
       type: "agent:event",
       agentRunId: "22222222-2222-2222-2222-222222222222",
-      event: { id: "7", agentRunId: "22222222-2222-2222-2222-222222222222", kind: "turn_start", payload: {}, at: new Date().toISOString() },
+      event: {
+        id: "7",
+        agentRunId: "22222222-2222-2222-2222-222222222222",
+        kind: "turn_start",
+        payload: {},
+        at: new Date().toISOString(),
+      },
     });
 
     first.serverClose(1012, "listen connection lost");
