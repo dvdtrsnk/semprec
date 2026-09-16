@@ -13,6 +13,8 @@ import {
 import { createAgentRunWatchRegistry } from "./agentRunWatch.js";
 import { createDocSyncRegistry } from "./docSync.js";
 import { decodeDocId, parseBinaryFrame, parseInboundFrame, type OutboundFrame } from "./protocolV1.js";
+import { sendWithBackpressure } from "./backpressure.js";
+import { createInvalidationCoalescer } from "./invalidationCoalescer.js";
 
 /** The identity every `WS /api/sync` socket is associated with for its whole lifetime. */
 export interface SyncIdentity {
@@ -50,12 +52,27 @@ const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 const SESSION_REVOKED_CLOSE_CODE = 4401;
 
 /**
- * Caps every inbound frame at 1 MiB. Nothing in protocol-v1's closed catalog needs anywhere near
- * that (control frames are a handful of bytes; a real CRDT-update binary frame's size is a later
- * sibling issue's concern) — this exists so one authenticated client can't hold the process's
- * memory hostage with an oversized frame.
+ * RFC 6455 close code 1012 ("Service Restart"), used for both a LISTEN-connection outage and a
+ * controlled process shutdown (issue #242's Task). Neither case has anything to replay — NOTIFY
+ * is never persisted — so every affected client is forced through its own resume path rather than
+ * left holding a socket this process can no longer serve.
  */
-const MAX_INBOUND_FRAME_BYTES = 1_000_000;
+const SERVICE_RESTART_CLOSE_CODE = 1012;
+
+/**
+ * Caps every inbound frame at 2 MB (issue #242's Task). `ws`'s own `maxPayload` enforcement closes
+ * an over-limit connection automatically (close code 1009) before the frame ever reaches this
+ * server's message handler, so one authenticated client can't hold the process's memory hostage
+ * with an oversized frame.
+ */
+const MAX_INBOUND_FRAME_BYTES = 2_000_000;
+
+/** Ping cadence and missed-pong budget (issue #242's Task): closed within ~90s of going unresponsive. */
+const MAX_MISSED_PONGS = 2;
+
+/** Base and cap for the LISTEN-connection reconnect backoff after an outage. */
+const LISTEN_RECONNECT_BASE_DELAY_MS = 200;
+const LISTEN_RECONNECT_MAX_DELAY_MS = 5_000;
 
 function rawDataToBuffer(data: RawData): Buffer {
   if (Array.isArray(data)) return Buffer.concat(data);
@@ -106,8 +123,26 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   const docSync = createDocSyncRegistry(pool);
   let closed = false;
 
+  const invalidationCoalescer = createInvalidationCoalescer();
+
+  function deliver(client: WebSocket, frame: OutboundFrame): void {
+    if (frame.type === "invalidate" && frame.scope === "item") {
+      invalidationCoalescer.enqueue(client, frame);
+      return;
+    }
+    sendWithBackpressure(client, JSON.stringify(frame));
+  }
+
   function attachClient(ws: WebSocket, identity: SyncIdentity): void {
     identityByClient.set(ws, identity);
+
+    // `ws` already closes the connection itself for a protocol-level fault (e.g. a frame over
+    // `maxPayload`) before emitting this — but it emits it regardless, and an `EventEmitter`
+    // with no `'error'` listener throws it as an uncaught exception, which would crash this
+    // whole process over one client's malformed frame. Logging here is purely to observe it.
+    ws.on("error", (err: unknown) => {
+      console.error("Sync server client socket error", err);
+    });
 
     // Protocol-v1 frame validation: anything outside the closed catalog is dropped, never
     // crashing this connection or any other client's. Binary sync-protocol frames are dispatched
@@ -147,7 +182,26 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
       }
     });
 
+    // RFC 6455 protocol-level ping (issue #242's Task): a control frame, not an application
+    // message, so a browser or `URLSession` peer answers it on their own without any client-side
+    // code. `missedPongs` resets on every pong; a connection that fails to answer this many
+    // consecutive pings is presumed dead and dropped without waiting on a close handshake it has
+    // already shown it won't complete.
+    let missedPongs = 0;
+    ws.on("pong", () => {
+      missedPongs = 0;
+    });
+
     const heartbeat = setInterval(() => {
+      if (missedPongs >= MAX_MISSED_PONGS) {
+        clearInterval(heartbeat);
+        ws.terminate();
+        return;
+      }
+      missedPongs += 1;
+      if (ws.readyState === ws.OPEN) ws.ping();
+
+      // The fallback for a lost `session_revoked` NOTIFY (issue #160) rides this same tick.
       options
         .revalidateSession(identity.sessionId)
         .then((active) => {
@@ -161,32 +215,46 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     ws.on("close", () => {
       clearInterval(heartbeat);
       identityByClient.delete(ws);
+      invalidationCoalescer.discard(ws);
       agentRunWatch.handleSocketClosed(ws);
       docSync.handleSocketClosed(ws);
     });
   }
 
-  const listenClient: PoolClient = await pool.connect();
-  try {
-    await listenClient.query(`LISTEN ${REALTIME_CHANNEL}`);
-    await listenClient.query(`LISTEN ${AGENT_STREAM_CHANNEL}`);
-  } catch (err) {
-    listenClient.release(true);
-    throw err;
+  async function connectListenClient(): Promise<PoolClient> {
+    const client = await pool.connect();
+    try {
+      await client.query(`LISTEN ${REALTIME_CHANNEL}`);
+      await client.query(`LISTEN ${AGENT_STREAM_CHANNEL}`);
+    } catch (err) {
+      client.release(true);
+      throw err;
+    }
+    return client;
   }
 
+  let listenClient: PoolClient = await connectListenClient();
+  // Guards against detaching/releasing the same client twice — `onError` and `close()` can both
+  // race to clean up the same broken connection.
+  let listenClientActive = true;
+
   function broadcast(frame: OutboundFrame): void {
-    const payload = JSON.stringify(frame);
     for (const client of wss.clients) {
-      if (client.readyState === client.OPEN) client.send(payload);
+      if (client.readyState === client.OPEN) deliver(client, frame);
     }
   }
 
   function sendToUser(userId: string, frame: OutboundFrame): void {
-    const payload = JSON.stringify(frame);
     for (const client of wss.clients) {
       const identity = identityByClient.get(client);
-      if (identity?.userId === userId && client.readyState === client.OPEN) client.send(payload);
+      if (identity?.userId === userId && client.readyState === client.OPEN) deliver(client, frame);
+    }
+  }
+
+  /** Closes every currently connected socket with `code`/`reason` — never a per-stream drop. */
+  function closeAll(code: number, reason: string): void {
+    for (const client of wss.clients) {
+      if (client.readyState === client.OPEN) client.close(code, reason);
     }
   }
 
@@ -313,12 +381,60 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
         return;
     }
   };
+  function detachListenClient(): void {
+    if (!listenClientActive) return;
+    listenClientActive = false;
+    listenClient.off("notification", onNotification);
+    listenClient.off("error", onError);
+    listenClient.release(true);
+  }
+
+  /**
+   * Retries `connectListenClient` with capped exponential backoff until it succeeds or `close()`
+   * runs. On success, every connected socket is closed with 1012 exactly as it was when the
+   * outage began — a socket that connected during the gap has no way to tell it missed anything,
+   * so it goes through the same blunt, uniform resume path as one that was already open.
+   */
+  async function reconnectListen(): Promise<void> {
+    let delay = LISTEN_RECONNECT_BASE_DELAY_MS;
+    while (!closed) {
+      try {
+        const client = await connectListenClient();
+        if (closed) {
+          // `close()` ran while this attempt was in flight — this client must not become the
+          // active `listenClient` after the server already considers itself closed.
+          client.release(true);
+          return;
+        }
+        listenClient = client;
+        listenClientActive = true;
+        listenClient.on("notification", onNotification);
+        listenClient.on("error", onError);
+        closeAll(SERVICE_RESTART_CLOSE_CODE, "listen connection restored");
+        return;
+      } catch (err) {
+        console.error("Sync server failed to reconnect its LISTEN connection", err);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        delay = Math.min(delay * 2, LISTEN_RECONNECT_MAX_DELAY_MS);
+      }
+    }
+  }
+
   listenClient.on("notification", onNotification);
 
-  // Same reasoning as `wsServer.ts`'s `startRealtimeServer`: an unhandled 'error' here would
-  // crash the whole process on a dropped LISTEN connection.
+  // The dedicated LISTEN connection carries no replayable state — NOTIFY is never persisted — so
+  // losing it forces every connected socket through its own resume path (issue #242's Task)
+  // rather than leaving them attached to a process that can no longer fan anything out to them.
+  // An unhandled 'error' here would otherwise crash the whole process on a dropped connection.
   const onError = (err: unknown) => {
     console.error("Sync server LISTEN connection error", err);
+    detachListenClient();
+    closeAll(SERVICE_RESTART_CLOSE_CODE, "listen connection lost");
+    if (!closed) {
+      reconnectListen().catch((reconnectErr: unknown) => {
+        console.error("Sync server LISTEN reconnect loop failed unexpectedly", reconnectErr);
+      });
+    }
   };
   listenClient.on("error", onError);
 
@@ -347,14 +463,14 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     },
     async close() {
       closed = true;
-      listenClient.off("notification", onNotification);
-      listenClient.off("error", onError);
-      // `terminate()`, not `close()`: an unresponsive client (dropped network, crashed tab) would
-      // otherwise never complete the close handshake, hanging `wss.close()` below indefinitely.
-      for (const client of wss.clients) client.terminate();
-      // A client that has issued LISTEN carries session state the pool must not silently
-      // reuse — release(true) destroys the underlying connection instead of pooling it.
-      listenClient.release(true);
+      detachListenClient();
+      // A controlled (deploy) shutdown (issue #242's Task) sends every client a real 1012 close
+      // frame rather than `terminate()`ing them: the whole point is telling each one "reconnect
+      // elsewhere," which only a delivered close code does. This `wss` was created with
+      // `noServer: true` and never attached to an `http.Server`, so `wss.close()` below does not
+      // wait on these clients finishing their handshake — an unresponsive one is hard-dropped by
+      // `ws`'s own close timeout rather than hanging this method.
+      closeAll(SERVICE_RESTART_CLOSE_CODE, "server shutting down");
       await new Promise<void>((resolve, reject) => wss.close((err) => (err ? reject(err) : resolve())));
     },
   };

@@ -138,7 +138,7 @@ export async function getExpectedProcessHeartbeatStatuses(
   });
 }
 
-/** `GET /healthz`'s agents-freshness check: a fresh row means one exists and beat within the stale threshold. */
+/** `GET /healthz`'s freshness check for whichever process name it's given: a fresh row means one exists and beat within the stale threshold. */
 export async function isProcessHeartbeatFresh(
   client: Queryable,
   process: string,

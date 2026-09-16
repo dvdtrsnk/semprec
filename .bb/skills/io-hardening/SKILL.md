@@ -52,12 +52,31 @@ add one soon add the other.
   between acquire and the first query can't leak the connection. Fall back to a
   manual acquire/`try`/`finally` only when the client has to outlive a single
   `withClient`-style call, such as a session-scoped `LISTEN`.
+- **Every outbound frame goes through one send gate, never `ws.send` directly.**
+  A stream that sends straight to the socket has to choose between dropping a
+  frame — silent, and invisible to the client — and letting the outgoing buffer
+  grow, which turns one paused reader into unbounded server memory. In the sync
+  server that gate is `sendWithBackpressure` (`backend/packages/realtime/src/backpressure.ts`),
+  which closes the socket with 1013 once `bufferedAmount` exceeds its cap rather
+  than doing either. A new outbound stream that bypasses it reintroduces exactly
+  the unbounded queue it exists to prevent — see
+  `docs/adr/2026-09-16-realtime-outage-and-backpressure-close-rather-than-buffer.md`,
+  which also records why coalescing repeated *thin* invalidations is not the
+  same thing as dropping a frame, and why a stream carrying content may not be
+  coalesced that way.
 - **A shutdown that waits on a handshake can wait forever.** `ws.close()` starts
   a close handshake that needs the client to acknowledge it; one unresponsive
   client (dropped network, crashed tab) means the promise waiting on it never
   resolves. When you are the one tearing the server down, use `terminate()` —
   which drops the socket with no round-trip — and reserve `close()` for a
-  single connection's own graceful exit.
+  single connection's own graceful exit. The one deliberate exception is a
+  shutdown whose entire purpose is to *tell* each client to reconnect: a close
+  code only arrives if a real close frame is delivered, so the sync server sends
+  1012 rather than terminating. That is safe only because its `WebSocketServer`
+  is created with `noServer: true` and never attached to an `http.Server`, so
+  `wss.close()` does not wait on those handshakes — an unresponsive client is
+  hard-dropped by `ws`'s own close timeout. Terminating is still the default
+  everywhere that condition does not hold.
 - **Work already in flight when shutdown starts can still land after it.** An
   async step that began before the shutdown loop ran — an in-flight
   authentication that attaches its connection once it resolves, a callback
