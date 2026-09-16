@@ -30,8 +30,8 @@ describe("createHealthzRequestListener (issue #168)", () => {
     await pool?.end();
   });
 
-  it("returns 200 {status: ok} when the agents heartbeat is fresh", async () => {
-    await upsertProcessHeartbeat(pool, { process: "agents", pid: 1, version: "1.0.0" }, new Date());
+  it("returns 200 {status: ok} when the api heartbeat is fresh", async () => {
+    await upsertProcessHeartbeat(pool, { process: "api", pid: 1, version: "1.0.0" }, new Date());
 
     const res = await fetch(`${baseUrl}/healthz`, { method: "GET" });
 
@@ -39,18 +39,18 @@ describe("createHealthzRequestListener (issue #168)", () => {
     expect(await res.json()).toEqual({ status: "ok" });
   });
 
-  it("returns 503 when there is no agents heartbeat row at all", async () => {
+  it("returns 503 when there is no api heartbeat row at all", async () => {
     const res = await fetch(`${baseUrl}/healthz`, { method: "GET" });
 
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ status: "error" });
   });
 
-  it("returns 503 when the agents heartbeat is stale (older than 60 seconds)", async () => {
+  it("returns 503 when the api heartbeat is stale (older than 60 seconds)", async () => {
     const staleStartedAt = new Date(Date.now() - 5 * 60_000);
     await pool.query(
       `INSERT INTO process_heartbeats (process, pid, version, started_at, beat_at)
-       VALUES ('agents', 1, '1.0.0', $1, $1)`,
+       VALUES ('api', 1, '1.0.0', $1, $1)`,
       [staleStartedAt],
     );
 
@@ -58,6 +58,15 @@ describe("createHealthzRequestListener (issue #168)", () => {
 
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ status: "error" });
+  });
+
+  it("stays healthy when the agents heartbeat is missing but the api heartbeat is fresh", async () => {
+    await upsertProcessHeartbeat(pool, { process: "api", pid: 1, version: "1.0.0" }, new Date());
+
+    const res = await fetch(`${baseUrl}/healthz`, { method: "GET" });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "ok" });
   });
 
   it("leaks no detail when the database check itself fails", async () => {
