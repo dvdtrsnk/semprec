@@ -1258,7 +1258,7 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
 
     const closed = waitForClose(subscriberWs);
     // Resuming now lets the client drain the whole backlog, including the trailing close frame —
-    // proving every one of the six updates was actually delivered (never silently dropped) before
+    // proving every one of the updates above was actually delivered (never silently dropped) before
     // the connection was closed for falling behind.
     subscriberSocket.resume();
 
