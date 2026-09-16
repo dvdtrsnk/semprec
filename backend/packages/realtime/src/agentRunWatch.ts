@@ -9,6 +9,7 @@ import {
 } from "@semprec/data";
 import type { AgentStreamMessage } from "./pgNotifyPublisher.js";
 import type { AgentDeltaChunk, OutboundFrame } from "./protocolV1.js";
+import { sendWithBackpressure } from "./backpressure.js";
 
 interface Watcher {
   ws: WebSocket;
@@ -37,7 +38,7 @@ function isLater(left: string, right: string): boolean {
 }
 
 function send(ws: WebSocket, frame: OutboundFrame): void {
-  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame));
+  sendWithBackpressure(ws, JSON.stringify(frame));
 }
 
 function eventFrame(event: AgentRunEventRow): OutboundFrame {

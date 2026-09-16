@@ -26,13 +26,20 @@ jobs:
   # on every pull request. Keep the workflow's review lifecycle in this one job.
   review:
     runs-on: ubuntu-latest
-    # A Relay-managed pull request answers every agent through the Relay broker,
-    # which spawns a hidden agent thread per call and serializes them per pull
-    # request. A measured run took 22 minutes to finish its platform and
-    # acceptance-criteria agents before the summary agent even started, so the
-    # old 30-minute budget cancelled the job mid-summary. Sized for that path;
-    # a non-Relay review finishes well inside it.
-    timeout-minutes: 60
+    # A Relay-managed pull request answers every agent through the Relay broker.
+    # Relay derives the client's budget for one `execute` call and reports it as
+    # `executeBudgetSeconds` on the broker lookup; today that is a 5-minute
+    # queue-wait bound plus a 30-minute turn deadline plus a 2-minute margin =
+    # 37 minutes. A review makes two sequential rounds of broker calls (the
+    # platform and acceptance-criteria agents run concurrently, then the summary
+    # agent runs after them), so the floor is 74 minutes of agent time alone.
+    # This value is that floor plus room for checkout, dependency install and
+    # artifact upload. The derivation is pinned by a test in bb-plugin-relay
+    # (REVIEW_SEQUENTIAL_BROKER_CALLS) and recorded in its
+    # docs/reviews/2026-09-16-client-execute-budget.md — if that deadline moves,
+    # that test goes red and this number has to move with it.
+    # A non-Relay review finishes well inside this budget.
+    timeout-minutes: 90
     steps:
       - name: Checkout semprec
         uses: actions/checkout@v4
@@ -48,7 +55,7 @@ jobs:
           repository: dvdtrsnk/code-review-bot
           # The code-review Check Run is required on `develop`; keep its producer
           # stable so a bot default-branch change cannot rename that context.
-          ref: 4a98bc890c9c57e2d53f2bd50d77eaf350488a09
+          ref: 51dc4e5594b518ee3115873c7bb153a08d362604
           token: ${{ secrets.CODE_REVIEW_BOT_TOKEN }}
           path: .code-review-bot
 
