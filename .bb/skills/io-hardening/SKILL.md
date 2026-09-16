@@ -56,7 +56,7 @@ add one soon add the other.
   A stream that sends straight to the socket has to choose between dropping a
   frame — silent, and invisible to the client — and letting the outgoing buffer
   grow, which turns one paused reader into unbounded server memory. In the sync
-  server that gate is `sendWithBackpressure` (`packages/realtime/src/backpressure.ts`),
+  server that gate is `sendWithBackpressure` (`backend/packages/realtime/src/backpressure.ts`),
   which closes the socket with 1013 once `bufferedAmount` exceeds its cap rather
   than doing either. A new outbound stream that bypasses it reintroduces exactly
   the unbounded queue it exists to prevent — see
