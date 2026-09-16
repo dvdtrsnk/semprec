@@ -11,8 +11,10 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 
 /**
  * Handles unauthenticated `GET /healthz` (issue #168). Responds 200 `{"status":"ok"}` only when
- * a plain `SELECT 1` and the `agents` process's heartbeat freshness both pass; any other outcome
- * — a DB error, a missing or stale `agents` row — is a 503 with the same minimal body. Neither
+ * a plain `SELECT 1` and this `api` process's own heartbeat freshness both pass; any other
+ * outcome — a DB error, a missing or stale `api` row — is a 503 with the same minimal body.
+ * Gates on `api`, the process this handler runs inside (started by `serve.ts`), not on a
+ * separate process like `agents` that may not be deployed alongside it (issue #404). Neither
  * branch ever includes the underlying error or which specific check failed: a probe reachable
  * without a session must not become a way to learn why a deployment is unhealthy.
  */
@@ -27,7 +29,7 @@ export function createHealthzRequestListener(pool: Pool) {
     try {
       const healthy = await withClient(pool, async (client) => {
         await client.query("SELECT 1");
-        return isProcessHeartbeatFresh(client, "agents");
+        return isProcessHeartbeatFresh(client, "api");
       });
       sendJson(res, healthy ? 200 : 503, { status: healthy ? "ok" : "error" });
     } catch (err) {
