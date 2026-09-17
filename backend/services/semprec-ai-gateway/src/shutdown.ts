@@ -126,9 +126,17 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
 export function registerShutdownSignals(shutdown: (signal: string) => Promise<void>): void {
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
     process.on(signal, () => {
-      void shutdown(signal).then(() => {
-        process.exit(0);
-      });
+      shutdown(signal)
+        .then(() => {
+          process.exit(0);
+        })
+        .catch((err: unknown) => {
+          // `shutdown` is caller-injected and typed only as `Promise<void>`; this repository's
+          // own `createGracefulShutdown` never rejects, but this function makes no such
+          // guarantee about its argument, so a rejection here must not become unhandled.
+          console.error("shutdown() rejected unexpectedly during", signal, err);
+          process.exit(1);
+        });
     });
   }
 }
