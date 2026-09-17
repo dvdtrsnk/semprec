@@ -86,8 +86,13 @@ in the spec, go back to the user — do not fill it silently.
 2. Decompose the spec into a **strictly sequential** chain of issues. Each issue
    must be implementable by an agent that reads only that issue (plus comments on
    its blockers). Inline everything it needs — copy context in, do not point
-   elsewhere. Size guide: one issue = one coherent PR an agent finishes in a
-   single run.
+   elsewhere. **One issue implements exactly one mechanism** — not one
+   coherent-sounding bundle of mechanisms: a bundled issue's PR carries every
+   bundled mechanism's review surface at once, so one finding blocks the whole
+   PR and the fix-review loop repeats for all of them together (see
+   `.github/ISSUE_FORMAT.md` for the rounds this has cost on real PRs here).
+   Step 7 below is the mechanical check for this; draft with it in mind so
+   step 7 is confirmation, not a rewrite.
 3. Write every issue per `.github/ISSUE_FORMAT.md` — that document is the
    authority on the Blocked-by rules (in short: `none` only for a batch with no
    dependencies at all; a dependent batch's first issue lists its real
@@ -105,7 +110,28 @@ in the spec, go back to the user — do not fill it silently.
 6. Write the epic per the same document: approved spec, a `## Decisions` section
    preserving the grilling Q&A (question → adopted answer → reason — the
    decision log would otherwise die with this conversation), and the checklist.
-7. **Real mode:** create the epic first, then the issues **in batch order**
+7. **Decomposition size gate — mechanical self-check, before anything is
+   created.** For every drafted implementation issue (not the epic), group its
+   acceptance criteria by which Task bullet each one verifies — the same
+   grouping the Phase 5 audit's C4 class (Task/criteria asymmetry) checks for.
+   If two or more groups are independent (neither's code, state, or test
+   setup depends on the other), the issue is oversized: split it into
+   sequential siblings along that grouping, one mechanism per issue, and fix
+   up the batch's numbering and Blocked-by chain. Apply the same test to the
+   title and Context: if the one-sentence summary of the Task reads as an
+   enumeration ("X, Y, and Z") naming mechanisms that don't need each other's
+   code to exist or to be tested, that enumeration is the split line. A Task
+   with several bullets is not automatically oversized — bullets that are
+   steps of the *same* mechanism (add the migration, add the endpoint that
+   uses it, add the client call that hits it) belong together. The test
+   throughout: could a reviewer approve bullet 1 without having read bullet
+   3? If yes, they are different issues. Re-run the check after every split
+   — a split can leave a remaining sibling still bundling two mechanisms.
+   This gate is deliberately not part of the Phase 5 audit and never will
+   be: Phase 5's auditors are barred from proposing a different
+   decomposition (see "What is never a finding" in the auditor prompt) —
+   that authority belongs here, before creation, not after.
+8. **Real mode:** create the epic first, then the issues **in batch order**
    (`gh issue create -R dvdtrsnk/semprec`) — creating sequentially means every
    backward in-batch reference already has its real `#N` at write time. Then do
    one substitution pass: edit the epic checklist and any issue that used a

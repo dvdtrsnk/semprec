@@ -69,6 +69,8 @@ an implementer:
   have phrased more carefully.
 - Alternative designs, or any suggestion that the issue build more, less, or
   differently than its Task says. Scope belongs to the user, not to you.
+- A different decomposition: splitting, merging, or reordering issues is a
+  decision that belongs in `/define-behavior` before creation, not here.
 - Anything you cannot back with a command, a `path:line`, or a quote from
   `.github/ISSUE_FORMAT.md`.
 
