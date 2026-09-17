@@ -1,4 +1,5 @@
 import type { GenericApplicationPort } from "@semprec/shared";
+import { ValidationError } from "@semprec/data";
 import type { RouteDefinition } from "./adapter/routeTable.js";
 import { requireJsonObjectBody, requireStringParam } from "./adapter/requestValidation.js";
 import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js";
@@ -6,19 +7,58 @@ import { toViewEnvelope } from "./adapter/viewEnvelope.js";
 import { toViewItemEnvelope } from "./adapter/viewItemEnvelope.js";
 import { toItemQueryEnvelope } from "./adapter/itemQueryEnvelope.js";
 
+function requestUrl(rawUrl: string | undefined): URL {
+  return new URL(rawUrl ?? "/", "http://localhost");
+}
+
+function optionalIntegerQueryParam(query: URLSearchParams, name: string): number | undefined {
+  const value = query.get(name);
+  if (value === null) return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) {
+    throw new ValidationError(`Query parameter '${name}' must be an integer`, { field: name });
+  }
+  return parsed;
+}
+
 /**
  * The view endpoint family (issue #155, rebased onto the generic-operation bindings by issue
- * #219): `POST /api/databases/:id/views`, `PATCH/DELETE /api/views/:id`, `PUT/DELETE
- * /api/views/:id/items/:itemId` for curated view membership, and `POST /api/views/:id/query`
- * (issue #157). Every route assembles a canonical command object and dispatches it through
- * `dispatchGenericOperation` against the injected `GenericApplicationPort` — no route constructs
- * its own `createChokePoint(pool)`. Every write's actor is a REST human actor (`restActor`): this
- * adapter authenticates only human sessions (#34/#143); an agent-originated view write goes
- * through a different adapter entirely (see
+ * #219): `GET /api/views`, `GET/PATCH/DELETE /api/views/:id`, `POST /api/databases/:id/views`,
+ * `PUT/PATCH/DELETE /api/views/:id/items/:itemId` for curated view membership (`PUT` adds or
+ * repositions, `PATCH` reorders an existing member — issue #219 wires up `viewItem.reorder`,
+ * which #155/#157 left unrouted), and `POST /api/views/:id/query` (issue #157). Every route
+ * assembles a canonical command object and dispatches it through `dispatchGenericOperation`
+ * against the injected `GenericApplicationPort` — no route constructs its own
+ * `createChokePoint(pool)`. `view.list` has no database scope of its own (its catalog is global,
+ * not per-database — see `packages/application`'s `listViews`), so `GET /api/views` takes no
+ * `:id` path segment, unlike the property/item list routes. Every write's actor is a REST human
+ * actor (`restActor`): this adapter authenticates only human sessions (#34/#143); an
+ * agent-originated view write goes through a different adapter entirely (see
  * `docs/adr/2026-09-10-views-are-excluded-from-the-agent-proposal-flow.md`).
  */
 export function createViewRoutes(service: GenericApplicationPort): RouteDefinition[] {
   return [
+    {
+      method: "GET",
+      path: "/api/views",
+      handler: async (ctx) => {
+        const query = requestUrl(ctx.req.url).searchParams;
+        const page = await dispatchGenericOperation(service, "view.list", restActor(ctx.identity.user.id), {
+          cursor: query.get("cursor") ?? undefined,
+          limit: optionalIntegerQueryParam(query, "limit"),
+        });
+        return { status: 200, body: { views: page.items.map(toViewEnvelope), nextCursor: page.nextCursor } };
+      },
+    },
+    {
+      method: "GET",
+      path: "/api/views/:id",
+      handler: async (ctx) => {
+        const viewId = requireStringParam(ctx.params, "id");
+        const view = await dispatchGenericOperation(service, "view.get", restActor(ctx.identity.user.id), { viewId });
+        return { status: 200, body: toViewEnvelope(view) };
+      },
+    },
     {
       method: "POST",
       path: "/api/databases/:id/views",
@@ -71,6 +111,21 @@ export function createViewRoutes(service: GenericApplicationPort): RouteDefiniti
         const itemId = requireStringParam(ctx.params, "itemId");
         const body = requireJsonObjectBody(ctx.body);
         const viewItem = await dispatchGenericOperation(service, "viewItem.add", restActor(ctx.identity.user.id), {
+          viewId,
+          itemId,
+          position: body.position,
+        });
+        return { status: 200, body: toViewItemEnvelope(viewItem) };
+      },
+    },
+    {
+      method: "PATCH",
+      path: "/api/views/:id/items/:itemId",
+      handler: async (ctx) => {
+        const viewId = requireStringParam(ctx.params, "id");
+        const itemId = requireStringParam(ctx.params, "itemId");
+        const body = requireJsonObjectBody(ctx.body);
+        const viewItem = await dispatchGenericOperation(service, "viewItem.reorder", restActor(ctx.identity.user.id), {
           viewId,
           itemId,
           position: body.position,

@@ -1,6 +1,6 @@
 import type { Pool } from "pg";
-import { createChokePoint, NotFoundError, ValidationError } from "@semprec/data";
-import type { GenericApplicationPort } from "@semprec/shared";
+import { createChokePoint, NotFoundError } from "@semprec/data";
+import type { GenericApplicationPort, Property } from "@semprec/shared";
 import type { RouteDefinition } from "./adapter/routeTable.js";
 import { optionalHeader, requireJsonObjectBody, requireStringParam } from "./adapter/requestValidation.js";
 import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js";
@@ -12,21 +12,26 @@ function requestUrl(rawUrl: string | undefined): URL {
   return new URL(rawUrl ?? "/", "http://localhost");
 }
 
+type RelationPropertyResolution = { property: Property } | { conflict: { status: number; body: unknown } };
+
 /**
  * Resolves a relation route's `:propertyKey` path segment against the caller item's own database
  * to exactly one RELATION-typed property (issue #219) — `404 not_found` with
- * `{ resource: 'relationProperty', databaseId, propertyKey }` for no match, `400 validation_failed`
+ * `{ resource: 'relationProperty', databaseId, propertyKey }` for no match, `409 validation_failed`
  * with `{ field: 'propertyKey', reason: 'ambiguous' }` for more than one (defensive: the
- * `UNIQUE(database_id, key)` constraint on `properties` already makes this unreachable today).
- * Both the item lookup and the property list go through the injected `GenericApplicationPort`,
- * same as every other route in this family.
+ * `UNIQUE(database_id, key)` constraint on `properties` already makes this unreachable today). The
+ * ambiguous case is returned as a direct `{ status, body }` result rather than thrown, since the
+ * shared code→status table fixes `validation_failed` to 400 everywhere else and this route's own
+ * validator — the issue's Task calls it out as route-local, not the canonical command schema — is
+ * the one place `validation_failed` answers 409 instead. Both the item lookup and the property
+ * list go through the injected `GenericApplicationPort`, same as every other route in this family.
  */
 async function resolveRelationProperty(
   service: GenericApplicationPort,
   actor: ReturnType<typeof restActor>,
   callerItemId: string,
   propertyKey: string,
-) {
+): Promise<RelationPropertyResolution> {
   const item = await dispatchGenericOperation(service, "item.get", actor, { itemId: callerItemId });
   const properties = await dispatchGenericOperation(service, "property.list", actor, { databaseId: item.databaseId });
   const matches = properties.filter((property) => property.key === propertyKey && property.type === "relation");
@@ -38,12 +43,14 @@ async function resolveRelationProperty(
     });
   }
   if (matches.length > 1) {
-    throw new ValidationError(`Relation property key '${propertyKey}' is ambiguous`, {
-      field: "propertyKey",
-      reason: "ambiguous",
-    });
+    return {
+      conflict: {
+        status: 409,
+        body: { error: { code: "validation_failed", details: { field: "propertyKey", reason: "ambiguous" } } },
+      },
+    };
   }
-  return matches[0]!;
+  return { property: matches[0]! };
 }
 
 /**
@@ -162,10 +169,11 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
         const propertyKey = requireStringParam(ctx.params, "propertyKey");
         const targetItemId = requireStringParam(ctx.params, "targetItemId");
         const actor = restActor(ctx.identity.user.id);
-        const property = await resolveRelationProperty(service, actor, id, propertyKey);
+        const resolution = await resolveRelationProperty(service, actor, id, propertyKey);
+        if ("conflict" in resolution) return resolution.conflict;
         const body = ctx.body === undefined ? {} : requireJsonObjectBody(ctx.body);
         const edge = await dispatchGenericOperation(service, "relation.put", actor, {
-          relationPropertyId: property.id,
+          relationPropertyId: resolution.property.id,
           callerItemId: id,
           targetItemId,
           metadata: body.metadata,
@@ -181,9 +189,10 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
         const propertyKey = requireStringParam(ctx.params, "propertyKey");
         const targetItemId = requireStringParam(ctx.params, "targetItemId");
         const actor = restActor(ctx.identity.user.id);
-        const property = await resolveRelationProperty(service, actor, id, propertyKey);
+        const resolution = await resolveRelationProperty(service, actor, id, propertyKey);
+        if ("conflict" in resolution) return resolution.conflict;
         const result = await dispatchGenericOperation(service, "relation.delete", actor, {
-          relationPropertyId: property.id,
+          relationPropertyId: resolution.property.id,
           callerItemId: id,
           targetItemId,
         });
