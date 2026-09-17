@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import EmbeddedPostgres from "embedded-postgres";
 import { Pool } from "pg";
-import { ensureQueueSchema } from "@semprec/queue";
+import { ensureQueueSchema, grantQueueSchemaPrivileges } from "@semprec/queue";
 import { runMigrations } from "../db/migrate.js";
 import { runDocHistoryCutoverMigration } from "../docs/docHistoryCutoverMigration.js";
 
@@ -66,6 +66,7 @@ export default async function setup(): Promise<() => Promise<void>> {
   await runMigrations(pool);
   await runDocHistoryCutoverMigration(pool);
   await ensureQueueSchema(pool);
+  await grantQueueSchemaPrivileges(pool);
   await pool.end();
 
   return async () => {

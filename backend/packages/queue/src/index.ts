@@ -63,6 +63,60 @@ export async function ensureQueueSchema(pool: Pool): Promise<void> {
   await runMigrations({ pgPool: pool });
 }
 
+/**
+ * Grants the runtime least-privilege roles (issue #243: `semprec_data`/`semprec_side`, created
+ * by packages/data's `0039_least_privilege_roles.sql`) full access to graphile-worker's own
+ * `graphile_worker` schema — its tables can't be listed in that migration because
+ * `ensureQueueSchema` (graphile-worker's own migration runner) is what creates them, and it
+ * hasn't run yet at that point. Call this once, immediately after `ensureQueueSchema`, as
+ * whichever role owns/migrates the schema (that role's `ALTER DEFAULT PRIVILEGES` below covers
+ * any table a later graphile-worker version adds on a future `ensureQueueSchema` call under the
+ * same role, without needing this function to enumerate them).
+ *
+ * graphile-worker enables row-level security on its own private tables
+ * (`_private_jobs`, `_private_job_queues`, `_private_tasks`, `_private_known_crontabs`) but
+ * ships no policies, so an ordinary GRANT is not enough — Postgres blocks every non-owner role's
+ * DML on them regardless of table privileges. `add_job`/`add_jobs` are not `SECURITY DEFINER`
+ * either, so calling them as `semprec_side` still runs under `semprec_side`'s own RLS context.
+ * A permissive policy per table (scoped to `semprec_side` only, not a role-wide `BYPASSRLS`)
+ * is the least-privilege fix; it must be re-added here if a future graphile-worker version
+ * renames or adds an RLS-enabled table.
+ */
+export async function grantQueueSchemaPrivileges(pool: Pool): Promise<void> {
+  await pool.query(`
+    GRANT USAGE ON SCHEMA graphile_worker TO semprec_side;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA graphile_worker TO semprec_side;
+    GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA graphile_worker TO semprec_side;
+    GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA graphile_worker TO semprec_side;
+    ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA graphile_worker
+      GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO semprec_side;
+    ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA graphile_worker
+      GRANT USAGE, SELECT ON SEQUENCES TO semprec_side;
+    ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA graphile_worker
+      GRANT EXECUTE ON FUNCTIONS TO semprec_side;
+
+    DO $$
+    DECLARE
+      rls_table text;
+    BEGIN
+      FOREACH rls_table IN ARRAY ARRAY[
+        '_private_jobs', '_private_job_queues', '_private_tasks', '_private_known_crontabs'
+      ]
+      LOOP
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_policies
+          WHERE schemaname = 'graphile_worker' AND tablename = rls_table AND policyname = 'semprec_side_all'
+        ) THEN
+          EXECUTE format(
+            'CREATE POLICY semprec_side_all ON graphile_worker.%I FOR ALL TO semprec_side USING (true) WITH CHECK (true)',
+            rls_table
+          );
+        END IF;
+      END LOOP;
+    END $$;
+  `);
+}
+
 export interface EnqueueJobOptions {
   /** Deduplicates: a repeat enqueue with the same key updates/collapses onto the existing job instead of adding a second one. */
   jobKey?: string;
