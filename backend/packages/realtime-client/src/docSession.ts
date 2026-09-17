@@ -63,9 +63,10 @@ export function createDocSession(
       try {
         decoder = decoding.createDecoder(payload);
         messageType = decoding.readVarUint(decoder);
-      } catch {
+      } catch (err) {
         // Malformed payload from this connection's own server — dropped rather than crashing
         // the whole sync client over one document's corrupted frame.
+        console.warn(`docSession(${docId}): malformed binary frame header, dropping`, err);
         return;
       }
 
@@ -74,7 +75,8 @@ export function createDocSession(
           let remoteStateVector: Uint8Array;
           try {
             remoteStateVector = decoding.readVarUint8Array(decoder);
-          } catch {
+          } catch (err) {
+            console.warn(`docSession(${docId}): malformed SyncStep1 state vector, dropping`, err);
             return;
           }
           // Mirrors the server's own handshake (`docSync.ts`): reply with whatever this
@@ -96,7 +98,8 @@ export function createDocSession(
           let update: Uint8Array;
           try {
             update = decoding.readVarUint8Array(decoder);
-          } catch {
+          } catch (err) {
+            console.warn(`docSession(${docId}): malformed sync update payload, dropping`, err);
             return;
           }
           // Yjs update application is idempotent, so content this session already has from a

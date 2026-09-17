@@ -187,6 +187,14 @@ interface UnreadBody {
   notifications: { id: string; readAt: string | null }[];
 }
 
+/** Guards a `Response.json()` result (typed `any`) against a server response-shape regression before the caller treats it as `T` — a shape mismatch throws here instead of surfacing as a confusing TypeError deep inside a later `.map()`. */
+function asShape<T>(body: unknown, check: (b: Record<string, unknown>) => boolean): T {
+  if (typeof body !== "object" || body === null || !check(body as Record<string, unknown>)) {
+    throw new Error(`unexpected response shape: ${JSON.stringify(body)}`);
+  }
+  return body as T;
+}
+
 /** Everything a converged client should show, kept in sync purely by this rig's recovery hooks — never asserted on directly by a test until after a fault. */
 interface ClientRig {
   client: SyncClient;
@@ -229,13 +237,16 @@ function buildRig(harness: Harness, fixture: Fixture): ClientRig {
           body: JSON.stringify({ limit: 50 }),
         }),
       ]);
-      rig.itemSnapshot = (await itemRes.json()) as ItemBody;
-      const queryBody = (await queryRes.json()) as ViewQueryBody;
+      rig.itemSnapshot = asShape<ItemBody>(
+        await itemRes.json(),
+        (b) => typeof b.id === "string" && typeof b.properties === "object" && b.properties !== null,
+      );
+      const queryBody = asShape<ViewQueryBody>(await queryRes.json(), (b) => Array.isArray(b.items));
       rig.viewItemIds = queryBody.items.map((entry) => entry.id);
     },
     fetchUnreadNotifications: async () => {
       const res = await fetch(`${harness.baseUrl}/api/notifications/unread`, { headers: authHeaders });
-      const body = (await res.json()) as UnreadBody;
+      const body = asShape<UnreadBody>(await res.json(), (b) => Array.isArray(b.notifications));
       rig.unreadIds = body.notifications.map((n) => n.id);
     },
     onAgentEvent: (_runId, event) => {
