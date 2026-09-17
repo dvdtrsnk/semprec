@@ -85,7 +85,8 @@ an audit that returns fifteen findings has stopped discriminating between them.
 
 ## Output format — exact
 
-One block per finding, nothing between blocks but a blank line:
+One block per finding, nothing between blocks but a blank line. A blocking
+finding carries every field:
 
 ```
 FINDING
@@ -94,7 +95,22 @@ severity: blocking
 issue: #426
 quote: "<the exact text at fault, 200 characters or fewer>"
 proof: <the command that fails, or path:line that contradicts it>
-failure: <the failure sentence — blocking findings only>
+failure: <the failure sentence>
+fix: <the smallest edit that removes the finding, one sentence>
+```
+
+An advisory finding is the same block with the `failure:` line **omitted
+entirely** — not present and empty, not present with "n/a". The two reports are
+compared field by field, so a field that appears in one and not the other costs
+more than it looks:
+
+```
+FINDING
+class: C4
+severity: advisory
+issue: #426
+quote: "<the exact text at fault, 200 characters or fewer>"
+proof: <the command that fails, or path:line that contradicts it>
 fix: <the smallest edit that removes the finding, one sentence>
 ```
 

@@ -173,8 +173,11 @@ Apply the consensus gate again. Then stop: there is no round 3.
 - **No blocking finding survives round 2, dry-run** → report the summary, the file
   paths and the advisory findings; no labeling.
 - **A blocking finding passes the gate in round 2** → if its `fix` is a single
-  mechanical edit (a name, a number, a reference), apply it and arm as above —
-  without a third round to confirm it. If the fix is anything larger, leave
+  mechanical edit (a name, a number, a reference), apply it and then finish in
+  whichever of the two terminal states above matches your mode — labeling in real
+  mode, reporting without labels in dry-run — without a third round to confirm
+  the edit. Dry-run never labels, in this state or any other. If the fix is
+  anything larger than a single mechanical edit, leave
   everything unlabeled and hand it to the user with the finding and its proof.
   Round 2 has then found either a real defect your fix missed or a defect your fix
   created, and both are decisions worth a human; a third round is how this phase
