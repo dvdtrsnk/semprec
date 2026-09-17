@@ -23,6 +23,8 @@ const dispatch = createDispatcher(pool, config.handlerOptions);
 
 const server = createServer(dispatch);
 
-server.listen(config.port, () => {
+// Issue #174: bound to loopback explicitly — this process is never a public entry point, only
+// `semprec-api` reaches it, over `http://127.0.0.1:${AI_GATEWAY_PORT}/internal/complete`.
+server.listen(config.port, "127.0.0.1", () => {
   logger.info({ port: config.port }, "semprec-ai-gateway listening");
 });
