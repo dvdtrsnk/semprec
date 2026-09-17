@@ -306,12 +306,7 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
           targetItemId: input.targetItemId,
         });
       }
-      return {
-        deleted: true,
-        relationPropertyId: input.relationPropertyId,
-        callerItemId: input.callerItemId,
-        targetItemId: input.targetItemId,
-      };
+      return edge;
     },
   } satisfies GenericApplicationPort;
 }

@@ -191,12 +191,12 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
         const actor = restActor(ctx.identity.user.id);
         const resolution = await resolveRelationProperty(service, actor, id, propertyKey);
         if ("conflict" in resolution) return resolution.conflict;
-        const result = await dispatchGenericOperation(service, "relation.delete", actor, {
+        const edge = await dispatchGenericOperation(service, "relation.delete", actor, {
           relationPropertyId: resolution.property.id,
           callerItemId: id,
           targetItemId,
         });
-        return { status: 200, body: result };
+        return { status: 200, body: toRelationEnvelope(edge) };
       },
     },
   ];

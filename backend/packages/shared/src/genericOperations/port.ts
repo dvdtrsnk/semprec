@@ -32,7 +32,7 @@ export interface OutputByOperation {
   "item.restore": Item;
   "database.query": ItemPage;
   "relation.put": RelationEdge;
-  "relation.delete": { deleted: true; relationPropertyId: string; callerItemId: string; targetItemId: string };
+  "relation.delete": RelationEdge;
 }
 
 type AssertSameKeys<T, U> = [T] extends [U] ? ([U] extends [T] ? true : never) : never;

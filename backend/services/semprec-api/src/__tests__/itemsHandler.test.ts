@@ -914,33 +914,24 @@ describe("item routes (issue #241)", () => {
         expect(res.status).toBe(404);
       });
 
-      it("deletes an existing edge and returns 200 with a thin deleted confirmation, never 204", async () => {
+      it("deletes an existing edge and returns 200 with the full relation envelope, never 204", async () => {
         const { source, target, property } = await makePairedRelation();
         const task = await chokePoint.createItem({ databaseId: source.id, properties: {} });
         const person = await chokePoint.createItem({ databaseId: target.id, properties: {} });
         const headers = await authHeader();
 
-        await fetch(`${baseUrl}/api/items/${task.id}/relations/${property.key}/${person.id}`, {
+        const put = await fetch(`${baseUrl}/api/items/${task.id}/relations/${property.key}/${person.id}`, {
           method: "PUT",
           headers,
         });
+        const putBody = (await put.json()) as RelationBody;
         const res = await fetch(`${baseUrl}/api/items/${task.id}/relations/${property.key}/${person.id}`, {
           method: "DELETE",
           headers,
         });
         expect(res.status).toBe(200);
-        const body = (await res.json()) as {
-          deleted: boolean;
-          relationPropertyId: string;
-          callerItemId: string;
-          targetItemId: string;
-        };
-        expect(body).toEqual({
-          deleted: true,
-          relationPropertyId: property.id,
-          callerItemId: task.id,
-          targetItemId: person.id,
-        });
+        const body = (await res.json()) as RelationBody;
+        expect(body).toEqual(putBody);
       });
 
       it("rejects a delete through a system-owned relation property with 403 owner_violation", async () => {

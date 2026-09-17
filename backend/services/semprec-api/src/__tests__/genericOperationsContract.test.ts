@@ -316,8 +316,8 @@ const CASES: Record<GenericOperationName, ContractCase> = {
       { method: "DELETE", headers },
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { deleted: boolean };
-    expect(body.deleted).toBe(true);
+    const body = (await res.json()) as { itemA: string; itemB: string };
+    expect([body.itemA, body.itemB]).toContain(fx.itemA.id);
   },
 };
 
