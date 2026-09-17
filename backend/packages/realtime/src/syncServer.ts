@@ -49,7 +49,7 @@ export interface SyncServer {
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 
 /** WS close code for "your session was revoked" (issue #160's Task; outside the standard 1000-1015 range reserved for the protocol itself, so it can't collide with one). */
-const SESSION_REVOKED_CLOSE_CODE = 4401;
+export const SESSION_REVOKED_CLOSE_CODE = 4401;
 
 /**
  * RFC 6455 close code 1012 ("Service Restart"), used for both a LISTEN-connection outage and a
