@@ -1,0 +1,31 @@
+# Issue #174: PostgreSQL and MinIO both bind to loopback explicitly here, rather than relying on
+# deploy/nftables.conf alone — the `127.0.0.1:` prefix on each host port below is load-bearing,
+# not documentation. semprec-api and semprec-ai-gateway aren't containerized (they run as
+# systemd units against the `current` release symlink, see issue #176); their own loopback
+# binding lives in their `server.listen(port, "127.0.0.1", ...)` call.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file:
+      - /opt/semprec/shared/.env
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    env_file:
+      - /opt/semprec/shared/.env
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio_data:/data
+
+volumes:
+  postgres_data:
+  minio_data:
