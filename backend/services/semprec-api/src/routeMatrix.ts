@@ -162,6 +162,13 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
   },
   {
+    name: "system health report",
+    method: "GET",
+    path: "/api/system-health",
+    surface: "api",
+    public: false,
+  },
+  {
     name: "confirm proposal",
     method: "POST",
     path: `/api/proposals/${EXAMPLE_ID}/confirm`,

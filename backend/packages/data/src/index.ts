@@ -87,6 +87,7 @@ export * from "./aiGateway/aiUsageReport.js";
 export * from "./health/processHeartbeats.js";
 export * from "./observability/observabilityChecksStore.js";
 export * from "./observability/observabilityCheckSystem.js";
+export * from "./observability/systemHealthReport.js";
 export { seedSystem } from "./seed/seedSystem.js";
 export * from "./seed/tenDatabaseKeys.js";
 export { seedTenDatabasesInTransaction, type TenDatabases } from "./seed/seedTenDatabases.js";

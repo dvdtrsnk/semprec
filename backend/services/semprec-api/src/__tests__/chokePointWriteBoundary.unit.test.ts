@@ -37,6 +37,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "register push subscription": "packages/data/src/push/pushRouteHandlers.ts",
   "revoke push subscription": "packages/data/src/push/pushRouteHandlers.ts",
   "ai usage report": "packages/data/src/aiGateway/aiUsageRouteHandler.ts",
+  "system health report": "packages/data/src/observability/systemHealthRouteHandler.ts",
   "list databases": "services/semprec-api/src/databasesHandler.ts",
   "create database": "services/semprec-api/src/databasesHandler.ts",
   "database detail": "services/semprec-api/src/databasesHandler.ts",

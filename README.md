@@ -47,6 +47,9 @@ one at a time.
 - `apple/` — empty until the issue queue reaches it; `web/` is a React +
   TypeScript (Vite) app, currently holding the view registry, the generic
   operations client, and the mailbox view renderer.
+- `deploy/` — host-level operational configuration (Caddy, firewall, the
+  database/object-storage compose file) for the single-server production
+  deployment — see [`deploy/README.md`](deploy/README.md).
 
 ## Stack
 

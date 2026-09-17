@@ -1,12 +1,14 @@
 import { I18nProvider, resolveLocale } from "./i18n/index.js";
 import type { GenericOperations } from "./api/genericOperations.js";
 import type { AiUsageOperations } from "./api/aiUsageOperations.js";
+import type { SystemHealthOperations } from "./api/systemHealthOperations.js";
 import type { McpAgentPageOperations } from "./api/mcpAgentPageOperations.js";
 import type { ApprovalQueueOperations } from "./api/approvalQueueOperations.js";
 import type { AgentRunOperations } from "./api/agentRunOperations.js";
 import { ViewHost } from "./views/ViewHost.js";
 import { createDefaultViewRegistry } from "./views/registerViews.js";
 import { UtilizationPage } from "./views/aiUsage/UtilizationPage.js";
+import { SystemStatusPanel } from "./views/systemStatus/SystemStatusPanel.js";
 import { AgentPage } from "./views/agentPage/AgentPage.js";
 import { ApprovalQueue } from "./views/approvalQueue/ApprovalQueue.js";
 import { AgentRunDetail } from "./views/agentRun/AgentRunDetail.js";
@@ -42,6 +44,7 @@ export function App({
   viewId,
   operations,
   aiUsageOperations,
+  systemHealthOperations,
   agentPage,
   approvalQueue,
   agentRun,
@@ -52,6 +55,8 @@ export function App({
   operations: GenericOperations;
   /** Present only when the composition root routed to the System page's Utilization graph (issue #121) rather than an item/view id. */
   aiUsageOperations?: AiUsageOperations;
+  /** Present alongside `aiUsageOperations` on the System page (issue #170's System status block). */
+  systemHealthOperations?: SystemHealthOperations;
   /** Present only when the composition root routed to a project's AGENT page (issue #127) rather than an item/view id. */
   agentPage?: AgentPageRoute;
   /** Present only when the composition root routed to the global approval queue (issue #132) rather than an item/view id. */
@@ -64,7 +69,12 @@ export function App({
 }) {
   let content;
   if (aiUsageOperations) {
-    content = <UtilizationPage operations={aiUsageOperations} />;
+    content = (
+      <>
+        <UtilizationPage operations={aiUsageOperations} />
+        {systemHealthOperations ? <SystemStatusPanel operations={systemHealthOperations} /> : null}
+      </>
+    );
   } else if (agentPage) {
     content = (
       <AgentPage
