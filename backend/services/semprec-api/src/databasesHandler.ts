@@ -4,13 +4,12 @@ import {
   resolveDatabaseName,
   resolveProperty,
   toManifestLocale,
-  ValidationError,
   type CatalogResolver,
   type ManifestLocale,
 } from "@semprec/data";
 import type { Database, GenericApplicationPort, Property } from "@semprec/shared";
 import type { RouteDefinition } from "./adapter/routeTable.js";
-import { requireJsonObjectBody, requireStringParam } from "./adapter/requestValidation.js";
+import { optionalIntegerQueryParam, requireJsonObjectBody, requireStringParam } from "./adapter/requestValidation.js";
 import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js";
 import { toDatabaseEnvelope } from "./adapter/databaseEnvelope.js";
 import { toPropertyEnvelope } from "./adapter/propertyEnvelope.js";
@@ -60,16 +59,6 @@ async function resolvedDatabaseBody(
 ): Promise<ReturnType<typeof toDatabaseEnvelope>> {
   const catalogs = await catalogResolver.getCatalogsForDbKey(database.key);
   return toDatabaseEnvelope(database, resolveDatabaseName(database.name, database.key, database.id, catalogs, locale));
-}
-
-function optionalIntegerQueryParam(query: URLSearchParams, name: string): number | undefined {
-  const value = query.get(name);
-  if (value === null) return undefined;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed)) {
-    throw new ValidationError(`Query parameter '${name}' must be an integer`, { field: name });
-  }
-  return parsed;
 }
 
 function requestUrl(rawUrl: string | undefined): URL {

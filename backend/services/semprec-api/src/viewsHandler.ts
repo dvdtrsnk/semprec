@@ -1,7 +1,6 @@
 import type { GenericApplicationPort } from "@semprec/shared";
-import { ValidationError } from "@semprec/data";
 import type { RouteDefinition } from "./adapter/routeTable.js";
-import { requireJsonObjectBody, requireStringParam } from "./adapter/requestValidation.js";
+import { optionalIntegerQueryParam, requireJsonObjectBody, requireStringParam } from "./adapter/requestValidation.js";
 import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js";
 import { toViewEnvelope } from "./adapter/viewEnvelope.js";
 import { toViewItemEnvelope } from "./adapter/viewItemEnvelope.js";
@@ -9,16 +8,6 @@ import { toItemQueryEnvelope } from "./adapter/itemQueryEnvelope.js";
 
 function requestUrl(rawUrl: string | undefined): URL {
   return new URL(rawUrl ?? "/", "http://localhost");
-}
-
-function optionalIntegerQueryParam(query: URLSearchParams, name: string): number | undefined {
-  const value = query.get(name);
-  if (value === null) return undefined;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed)) {
-    throw new ValidationError(`Query parameter '${name}' must be an integer`, { field: name });
-  }
-  return parsed;
 }
 
 /**

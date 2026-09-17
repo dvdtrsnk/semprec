@@ -96,3 +96,12 @@ export function optionalIntegerField(
   const value = body[field];
   return value === undefined ? undefined : assertIntegerField(value, field, options);
 }
+
+export function optionalIntegerQueryParam(
+  query: URLSearchParams,
+  name: string,
+  options: IntegerFieldOptions = {},
+): number | undefined {
+  const raw = query.get(name);
+  return raw === null ? undefined : assertIntegerField(Number(raw), name, options);
+}
