@@ -177,6 +177,28 @@
       }
     },
     {
+      "name": "no-shared-services-import",
+      "severity": "error",
+      "comment": "Issue #252: packages/shared/src/genericOperations is the transport-independent operation catalog — its schemas, port, and bindings must stay importable by every consumer (REST in #219, AgentTool/MCP in #220) without pulling in a concrete implementation. packages/shared as a whole must never import a services/* composition root.",
+      "from": {
+        "path": "^packages/shared/"
+      },
+      "to": {
+        "path": "^services/"
+      }
+    },
+    {
+      "name": "no-shared-data-import",
+      "severity": "error",
+      "comment": "Issue #252 / docs/adr/2026-09-17-shared-package-mirrors-rather-than-imports-data-row-types.md: packages/shared/src/genericOperations mirrors packages/data's row shapes (PROPERTY_TYPES, Database/Property/View/Item/...) by hand instead of importing them, so the transport-independent catalog never depends on a concrete implementation package. This rule makes that constraint mechanical instead of comment-only. packages/data's declared testSupport/ entry point (used only from tests) is exempt, matching the no-deep-imports exemption elsewhere in this file.",
+      "from": {
+        "path": "^packages/shared/"
+      },
+      "to": {
+        "path": "^packages/data/src/(?!testSupport/)"
+      }
+    },
+    {
       "name": "items-store-private",
       "severity": "error",
       "comment": "Issue #173 / #243: the item store is the privileged SQL layer for the choke-point's most sensitive table — visible only inside packages/data. This is the static (CI) half of the choke-point write control; the runtime half is the semprec_data/semprec_side least-privilege Postgres roles delivered by #243.",
