@@ -1,14 +1,26 @@
 ---
 name: define-behavior
-description: Turn a feature idea into a user-approved behavior specification and a batch of sequential, self-contained GitHub issues (epic + implementation issues) in dvdtrsnk/semprec, finishing with an independent two-agent audit and automatic spec:approved labeling. Invoked explicitly as /define-behavior <idea>; supports a dry-run mode.
+description: Turn a feature idea into a user-approved behavior specification and a batch of sequential, self-contained GitHub issues (epic + implementation issues) in dvdtrsnk/semprec, finishing with a bounded, consensus-gated two-agent audit and automatic spec:approved labeling. Invoked explicitly as /define-behavior <idea>; supports a dry-run mode.
 disable-model-invocation: true
 ---
 
 # /define-behavior — from idea to approved issue batch
 
-Input: `$ARGUMENTS` — a short statement of the desired behavior. If the first word
-is `dry-run`, run every phase normally but write issue drafts to local files
-instead of touching GitHub, and skip labeling.
+Input: `$ARGUMENTS` — a short statement of the desired behavior. Two prefixes
+change the run:
+
+- `dry-run` — run every phase normally but write issue drafts to local files
+  instead of touching GitHub, and skip labeling.
+- `audit #N` — audit issue `#N`, which already exists and was written by hand.
+  Skip Phases 1–4 entirely and start at Phase 5, per "Auditing an issue this
+  skill did not create" below. This skill is not model-invocable, so a bare
+  request to review an issue does not reach it: run it as
+  `/define-behavior audit #N`. On its own, `audit #N` is a real-mode run: it
+  edits the live issue through the consensus gate and labels it at the end.
+
+The two compose as `dry-run audit #N`, which reads the live issue and writes
+nothing at all — no edit, no label. There are no draft files to edit in this
+combination, so report the findings and the edits you would have made instead.
 
 The pipeline this feeds is fully autonomous: once issues get `spec:approved`,
 a headless agent on the VPS implements them one by one with **no human in the
@@ -103,35 +115,120 @@ in the spec, go back to the user — do not fill it silently.
    directory, using `#TBD-NN` for in-batch references (real cross-batch
    blockers keep their real `#N`). No gh calls, no labels.
 
-## Phase 5 — Independent audit, then arm the pipeline
+## Phase 5 — Bounded audit, then arm the pipeline
+
+The audit is **two rounds at most**, and what gets fixed is decided by agreement
+between the auditors, not by whether a finding was raised at all.
+
+This is not a cost compromise — an unbounded audit is *worse*, not just slower.
+Every fix lengthens the issue, and a longer issue offers more surface to the next
+round, so the loop generates defects as fast as it removes them: renumbered steps
+that leave stale references, a rule number that reads as an issue number, a
+paragraph added to answer a critique of a paragraph. A specification that is
+right and dispatched beats one that is perfect and still unlabeled.
+
+### Round 1
+
+Record each issue's body length first — you need it for the growth check below.
 
 Spawn **two independent subagents with clean context** (general-purpose, in
-parallel). Give each only: the epic number, the list of issue numbers, and the
-instruction to read `.github/ISSUE_FORMAT.md` plus the issue bodies from GitHub
-(or the draft files in dry-run). Each audits independently:
+parallel). Give each the same short instruction, and nothing improvised on top of
+it: read `.claude/skills/define-behavior/references/auditor-prompt.md` and follow
+it as the whole contract; the audit target (epic number and issue numbers, or the
+draft file paths in dry-run); the mode; and the round number. That file is the
+calibration — do not restate, summarise or extend it in the spawn prompt, or the
+two auditors stop being comparable.
 
-- **Coverage** — every behavior in the epic spec lands in exactly one issue;
-  nothing in any issue lacks a basis in the spec.
-- **Self-containment** — no issue depends on unwritten context or external
-  documents; an agent reading only the issue could implement it.
-- **Blocking graph** — every issue has the Blocked-by line, the chain is
-  sequential, no cycles, no issue could be picked up before its real
-  prerequisites are closed.
-- **Format compliance** — title format, section order, acceptance criteria
-  present, English canonical keys.
+### The consensus gate
 
-In dry-run the auditors read the draft files instead and must treat `#TBD-NN`
-in-batch placeholders as valid references (they still check the chain's shape).
+Compare the two reports finding by finding. Two findings are **the same finding**
+when they name the same issue and point at the same defect — judge that by
+substance, not by string equality. Any one of these settles it: their `quote`
+spans overlapping text, their `proof` cites the same command or `path:line`, or
+their `fix` would produce the same edit. Auditors writing independently almost
+never quote a defect identically, so an exact-match rule would collapse the gate
+into "the driver decides" and waste the second auditor entirely. **When you cannot
+tell whether two findings are the same defect, treat them as matching** — the fix
+is the smallest edit that removes it either way, so the cost of pairing them
+wrongly is far below the cost of missing a real agreement.
 
-Compare the two reports:
+Edit an issue only for a finding that is either:
 
-- **Findings** → fix them (`gh issue edit` in real mode, edit the draft files in
-  dry-run), then re-audit with fresh subagents. Repeat until clean — the
-  fix-and-re-audit loop applies in both modes.
-- **Both clean, real mode** → label every implementation issue (NEVER the epic)
-  `spec:approved`, then tell the user: batch summary, issue numbers, and that
-  the VPS dispatcher will pick up the first issue within ~10 minutes.
-- **Both clean, dry-run** → report the summary and file paths; no labeling.
-- **Unresolvable disagreement or a spec gap** → leave everything unlabeled and
-  hand the decision to the user. An unarmed batch is a safe state; a wrongly
-  armed one is not.
+- **reported by both auditors**, or
+- **reported by one and carries a proof you verified yourself** — you ran the
+  command and it failed, or you read the `path:line` and it says what the auditor
+  claims. A proof you did not check does not count.
+
+Every other finding — raised once, unproven — goes into your report to the user
+and **nowhere near the issue body**. This is what the second auditor is for: the
+signal is in the overlap, not in the union.
+
+Apply the `fix` field as written: the smallest edit that removes the finding. Do
+not rewrite a section to answer a finding, and do not fix an advisory finding by
+adding prose that explains itself.
+
+**Growth check.** Run this per issue, after that issue's fixes. Length means
+characters, counted the same way before and after: `gh issue view <N> --json body
+--jq '.body | length'` in real mode, `wc -m` on the draft file in dry-run. An
+issue over 1.5× its pre-audit character count is being healed with prose, which is
+the failure this phase is bounded to prevent.
+
+The check is per issue and so is the halt: stop applying fixes to **that** issue
+and go on fixing the others. One bloated issue in a batch of eight says nothing
+about the other seven.
+
+For the halted issue, choose by where the growth came from, not by judgement. If
+deleting text **you** added during this audit brings it back under the threshold,
+delete it and the issue rejoins the run — that is mechanical and needs no one's
+permission. If getting back under would mean cutting text the issue already had
+before the audit, leave it as it is and hand **it** to the user: shortening what
+the user approved in Phase 3 edits the specification rather than repairing it.
+The rest of the batch continues to round 2 and its terminal state without it, and
+an issue handed over this way is never labeled.
+
+### Round 2 — narrow
+
+**If the gate produced no edits, skip round 2 entirely** and go to the terminal
+states. Round 2 exists to check your fixes; with no fixes there is nothing to
+check, and re-auditing an untouched body is exactly the re-litigation this phase
+is bounded to prevent.
+
+Otherwise spawn two fresh auditors with the same prompt file, round number 2. Give
+them the diff of your fixes and the findings those fixes claim to close — **not**
+the full bodies again. They answer only whether each fix closed its finding and
+whether it broke something else.
+
+Apply the consensus gate again. Then stop: there is no round 3.
+
+### Terminal states
+
+- **No blocking finding survives round 2, real mode** → label every implementation
+  issue (NEVER the epic) `spec:approved`. Open advisory findings do not hold the
+  label back; list them to the user instead, so they can decide. Report: batch
+  summary, issue numbers, the advisory findings left on the table, and that the
+  VPS dispatcher will pick up the first issue within ~10 minutes.
+- **No blocking finding survives round 2, dry-run** → report the summary, the file
+  paths and the advisory findings; no labeling.
+- **A blocking finding passes the gate in round 2** → if its `fix` is a single
+  mechanical edit (a name, a number, a reference), apply it and then finish in
+  whichever of the two terminal states above matches your mode — labeling in real
+  mode, reporting without labels in dry-run — without a third round to confirm
+  the edit. Dry-run never labels, in this state or any other. If the fix is
+  anything larger than a single mechanical edit, leave
+  everything unlabeled and hand it to the user with the finding and its proof.
+  Round 2 has then found either a real defect your fix missed or a defect your fix
+  created, and both are decisions worth a human; a third round is how this phase
+  used to spend forty minutes and still arm nothing.
+- **A finding that is actually a spec gap** → back to the user, per Phase 3. Do not
+  decide it here.
+
+An unarmed batch is a safe state; a wrongly armed one is not.
+
+## Auditing an issue this skill did not create
+
+`/define-behavior audit #N` — the user asking for an existing hand-written issue
+to be armed — runs Phase 5 and nothing else: same prompt file, same two auditors,
+same consensus gate, same two-round bound, same terminal states. Judge coverage
+against the issue's own Context and Task rather than an epic spec, and tell the
+auditors there is deliberately no epic. Do not improvise a fresh audit prompt for these; the
+whole point of the prompt file is that the bar does not move between runs.
