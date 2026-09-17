@@ -151,6 +151,27 @@ describe("ViewQueryInputSchema", () => {
   it("rejects a limit above 200", () => {
     expect(ViewQueryInputSchema.safeParse({ viewId: "v1", limit: 201 }).success).toBe(false);
   });
+
+  it("defaults limit to 50 when omitted", () => {
+    const result = ViewQueryInputSchema.safeParse({ viewId: "v1" });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.limit).toBe(50);
+    }
+  });
+});
+
+describe("ViewItemAddInputSchema / ViewItemReorderInputSchema position bound", () => {
+  it("rejects a position beyond the Postgres int4 range", () => {
+    expect(ViewItemAddInputSchema.safeParse({ viewId: "v1", itemId: "i1", position: 2147483648 }).success).toBe(false);
+    expect(ViewItemReorderInputSchema.safeParse({ viewId: "v1", itemId: "i1", position: 2147483648 }).success).toBe(
+      false,
+    );
+  });
+
+  it("accepts a position at the top of the int4 range", () => {
+    expect(ViewItemAddInputSchema.safeParse({ viewId: "v1", itemId: "i1", position: 2147483647 }).success).toBe(true);
+  });
 });
 
 describe("RelationDeleteInputSchema", () => {

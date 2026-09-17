@@ -3,7 +3,9 @@
  * `packages/shared` must not import `packages/data` (that would make the transport-independent
  * catalog depend on a concrete implementation package), so these mirror — rather than import —
  * `packages/data/src/types.ts`'s row shapes. Keep the two in sync by hand; `Item` is pinned
- * verbatim by this issue's Task, and `RelationEdge` by issue #82.
+ * verbatim by this issue's Task, and `RelationEdge` by issue #82. See
+ * docs/adr/2026-09-17-shared-package-mirrors-rather-than-imports-data-row-types.md for the
+ * rationale and the dependency-cruiser rule (`no-shared-data-import`) that enforces it.
  */
 
 /** Mirrors `packages/data/src/types.ts`'s `PROPERTY_TYPES` — the single source of truth for the actual enum lives there; this list must be kept identical. */

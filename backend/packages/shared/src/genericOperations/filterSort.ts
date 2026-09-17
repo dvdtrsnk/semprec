@@ -76,15 +76,30 @@ const filterConditionSchema = z.union([
     .strict(),
 ]);
 
-/** Recursive tree: zod needs an explicit `z.ZodType` annotation plus `z.lazy` to type-check a self-referential schema. */
-export const filterNodeSchema: z.ZodType<FilterNode> = z.lazy(() =>
-  z.union([
+/**
+ * A `z.lazy` self-reference has no depth bound: a payload nesting `not`/`and`/`or` a few
+ * thousand levels deep recurses the validator down the JS call stack until it overflows and
+ * crashes the process. Instead of `z.lazy`, unroll the recursion into `MAX_FILTER_DEPTH` concrete
+ * schema levels — parsing a tree deeper than that fails validation (400) rather than overflowing
+ * the stack. `nodes` is also capped to bound `and`/`or` fan-out at each level.
+ */
+const MAX_FILTER_DEPTH = 8;
+const MAX_FILTER_NODES_PER_LEVEL = 20;
+
+function buildFilterNodeSchema(remainingDepth: number): z.ZodType<FilterNode> {
+  if (remainingDepth <= 0) {
+    return filterConditionSchema;
+  }
+  const child = buildFilterNodeSchema(remainingDepth - 1);
+  return z.union([
     filterConditionSchema,
-    z.object({ type: z.literal("and"), nodes: z.array(filterNodeSchema).min(1) }).strict(),
-    z.object({ type: z.literal("or"), nodes: z.array(filterNodeSchema).min(1) }).strict(),
-    z.object({ type: z.literal("not"), node: filterNodeSchema }).strict(),
-  ]),
-);
+    z.object({ type: z.literal("and"), nodes: z.array(child).min(1).max(MAX_FILTER_NODES_PER_LEVEL) }).strict(),
+    z.object({ type: z.literal("or"), nodes: z.array(child).min(1).max(MAX_FILTER_NODES_PER_LEVEL) }).strict(),
+    z.object({ type: z.literal("not"), node: child }).strict(),
+  ]);
+}
+
+export const filterNodeSchema: z.ZodType<FilterNode> = buildFilterNodeSchema(MAX_FILTER_DEPTH);
 
 export const sortSpecSchema = z
   .object({

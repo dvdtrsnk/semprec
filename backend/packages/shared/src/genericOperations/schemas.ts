@@ -14,8 +14,8 @@ import type { GenericOperationName } from "./operationNames.js";
  */
 
 const cursor = z.string().optional();
-/** Bounds `limit` at 200; the implementation (#219) supplies the default of 50 when omitted — this schema only validates, it never defaults. */
-const limit = z.number().int().min(1).max(200).optional();
+/** Bounds `limit` at 200 and defaults to 50 when omitted, per issue #252's Task. */
+const limit = z.number().int().min(1).max(200).default(50);
 
 const jsonObject = z.record(z.string(), z.unknown());
 
@@ -167,8 +167,11 @@ export type ViewQueryInput = z.infer<typeof ViewQueryInputSchema>;
 export const DatabaseQueryInputSchema = z.object({ databaseId: z.string(), ...queryFields }).strict();
 export type DatabaseQueryInput = z.infer<typeof DatabaseQueryInputSchema>;
 
+/** Matches the `view_items.position` `integer` (int4) column's range. */
+const viewItemPosition = z.number().int().min(0).max(2147483647);
+
 export const ViewItemAddInputSchema = z
-  .object({ viewId: z.string(), itemId: z.string(), position: z.number().int().min(0) })
+  .object({ viewId: z.string(), itemId: z.string(), position: viewItemPosition })
   .strict();
 export type ViewItemAddInput = z.infer<typeof ViewItemAddInputSchema>;
 
@@ -176,7 +179,7 @@ export const ViewItemRemoveInputSchema = z.object({ viewId: z.string(), itemId: 
 export type ViewItemRemoveInput = z.infer<typeof ViewItemRemoveInputSchema>;
 
 export const ViewItemReorderInputSchema = z
-  .object({ viewId: z.string(), itemId: z.string(), position: z.number().int().min(0) })
+  .object({ viewId: z.string(), itemId: z.string(), position: viewItemPosition })
   .strict();
 export type ViewItemReorderInput = z.infer<typeof ViewItemReorderInputSchema>;
 
