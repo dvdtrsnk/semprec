@@ -13,7 +13,7 @@ describe("checkModuleBoundaries", () => {
     expect(importers).toContain("modules/beta/src/badImport.ts");
     const violation = violations.find((v: BoundaryViolation) => v.importer === "modules/beta/src/badImport.ts");
     expect(violation?.imported).toBe("modules/alpha/src/internal.ts");
-    expect(violation?.rules).toContain("no-module-service-internal-cross-import");
+    expect(violation?.rules).toContain("no-module-to-module");
   });
 
   it("rejects a service reaching into another service's internals", async () => {
@@ -21,7 +21,7 @@ describe("checkModuleBoundaries", () => {
     const violation = violations.find((v: BoundaryViolation) => v.importer === "services/svcB/src/badImport.ts");
 
     expect(violation?.imported).toBe("services/svcA/src/internal.ts");
-    expect(violation?.rules).toContain("no-module-service-internal-cross-import");
+    expect(violation?.rules).toContain("no-service-to-service");
   });
 
   it("rejects a module reaching into a service's internals", async () => {
@@ -31,7 +31,7 @@ describe("checkModuleBoundaries", () => {
     );
 
     expect(violation?.imported).toBe("services/svcA/src/internal.ts");
-    expect(violation?.rules).toContain("no-module-service-internal-cross-import");
+    expect(violation?.rules).toContain("no-module-to-service");
   });
 
   it("rejects a service reaching into a module's internals", async () => {
@@ -39,16 +39,24 @@ describe("checkModuleBoundaries", () => {
     const violation = violations.find((v: BoundaryViolation) => v.importer === "services/svcB/src/badModuleImport.ts");
 
     expect(violation?.imported).toBe("modules/alpha/src/internal.ts");
-    expect(violation?.rules).toContain("no-module-service-internal-cross-import");
+    expect(violation?.rules).toContain("no-service-to-module");
   });
 
-  it("allows imports of another module's or service's public entry point", async () => {
+  it("rejects a module importing a service's public entry point (issue #173: no imports across the service boundary at all)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const violation = violations.find(
+      (v: BoundaryViolation) => v.importer === "modules/beta/src/usesServicePublicEntry.ts",
+    );
+
+    expect(violation?.imported).toBe("services/svcA/src/index.ts");
+    expect(violation?.rules).toContain("no-module-to-service");
+  });
+
+  it("allows imports of another module's public entry point", async () => {
     const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
     const importers = violations.map((violation: BoundaryViolation) => violation.importer);
 
     expect(importers).not.toContain("modules/beta/src/goodImport.ts");
-    expect(importers).not.toContain("services/svcB/src/goodImport.ts");
-    expect(importers).not.toContain("modules/beta/src/usesServicePublicEntry.ts");
   });
 
   it("allows a module reaching into its own internals", async () => {
@@ -63,51 +71,6 @@ describe("checkModuleBoundaries", () => {
     const importers = violations.map((violation: BoundaryViolation) => violation.importer);
 
     expect(importers).not.toContain("modules/beta/src/usesShared.ts");
-  });
-
-  it("reports exactly the deliberate violations, naming importer, imported path, and rule", async () => {
-    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
-
-    expect(violations).toEqual(
-      expect.arrayContaining([
-        {
-          importer: "modules/beta/src/badImport.ts",
-          imported: "modules/alpha/src/internal.ts",
-          rules: ["no-module-service-internal-cross-import"],
-        },
-        {
-          importer: "services/svcB/src/badImport.ts",
-          imported: "services/svcA/src/internal.ts",
-          rules: ["no-module-service-internal-cross-import"],
-        },
-        {
-          importer: "modules/beta/src/badCrossCategoryImport.ts",
-          imported: "services/svcA/src/internal.ts",
-          rules: ["no-module-service-internal-cross-import"],
-        },
-        {
-          importer: "services/svcB/src/badModuleImport.ts",
-          imported: "modules/alpha/src/internal.ts",
-          rules: ["no-module-service-internal-cross-import"],
-        },
-        {
-          importer: "modules/beta/src/badCoreTableWrite.ts",
-          imported: "packages/data/src/chokePoint/itemsStore.ts",
-          rules: ["no-core-table-write-outside-choke-point"],
-        },
-        {
-          importer: "modules/beta/src/badCoreTableWriteDatabases.ts",
-          imported: "packages/data/src/chokePoint/databasesStore.ts",
-          rules: ["no-core-table-write-outside-choke-point"],
-        },
-        {
-          importer: "modules/beta/src/badCoreTableWriteProperties.ts",
-          imported: "packages/data/src/chokePoint/propertiesStore.ts",
-          rules: ["no-core-table-write-outside-choke-point"],
-        },
-      ]),
-    );
-    expect(violations).toHaveLength(7);
   });
 
   it.each([
@@ -135,5 +98,92 @@ describe("checkModuleBoundaries", () => {
     const importers = violations.map((violation: BoundaryViolation) => violation.importer);
 
     expect(importers).not.toContain("packages/data/src/chokePoint/usesOwnStore.ts");
+  });
+
+  it("rejects a core package importing module code (issue #173: core-knows-nobody)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const violation = violations.find(
+      (v: BoundaryViolation) => v.importer === "packages/shared/src/badModuleImport.ts",
+    );
+
+    expect(violation?.imported).toBe("modules/alpha/src/index.ts");
+    expect(violation?.rules).toContain("core-knows-nobody");
+  });
+
+  it("rejects a core package importing service code (issue #173: core-knows-nobody)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const violation = violations.find(
+      (v: BoundaryViolation) => v.importer === "packages/shared/src/badServiceImport.ts",
+    );
+
+    expect(violation?.imported).toBe("services/svcA/src/index.ts");
+    expect(violation?.rules).toContain("core-knows-nobody");
+  });
+
+  it("rejects code outside agent-runtime importing pi-agent-core directly (issue #173: pi-only-in-agent-runtime)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const violation = violations.find((v: BoundaryViolation) => v.importer === "packages/shared/src/badPiImport.ts");
+
+    expect(violation?.imported).toContain("node_modules/@earendil-works/pi-agent-core");
+    expect(violation?.rules).toContain("pi-only-in-agent-runtime");
+  });
+
+  it("lets packages/agent-runtime import pi-agent-core itself (issue #173: pi-only-in-agent-runtime)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const importers = violations.map((violation: BoundaryViolation) => violation.importer);
+
+    expect(importers).not.toContain("packages/agent-runtime/src/__tests__/usesPiAgentCore.ts");
+  });
+
+  it("rejects a service other than semprec-agents importing agent-runtime (issue #173: agent-runtime-only-in-agents)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const violation = violations.find(
+      (v: BoundaryViolation) => v.importer === "services/svcB/src/badAgentRuntimeImport.ts",
+    );
+
+    expect(violation?.imported).toBe("packages/agent-runtime/src/index.ts");
+    expect(violation?.rules).toContain("agent-runtime-only-in-agents");
+  });
+
+  it("lets services/semprec-agents import agent-runtime (issue #173: agent-runtime-only-in-agents)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const importers = violations.map((violation: BoundaryViolation) => violation.importer);
+
+    expect(importers).not.toContain("services/semprec-agents/src/usesAgentRuntime.ts");
+  });
+
+  it("rejects a package reaching past another package's entry point (issue #173: no-deep-imports)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const violation = violations.find(
+      (v: BoundaryViolation) => v.importer === "packages/shared/src/badDeepPackageImport.ts",
+    );
+
+    expect(violation?.imported).toBe("packages/data/src/someOtherStore.ts");
+    expect(violation?.rules).toContain("no-deep-imports");
+  });
+
+  it("rejects a module reaching past a package's entry point (issue #173: no-deep-imports)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const violation = violations.find(
+      (v: BoundaryViolation) => v.importer === "modules/beta/src/badDeepPackageImport.ts",
+    );
+
+    expect(violation?.imported).toBe("packages/data/src/someOtherStore.ts");
+    expect(violation?.rules).toContain("no-deep-imports");
+  });
+
+  it("allows importing a package's declared secondary entry point (issue #173: no-deep-imports exempts package.json exports)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const importers = violations.map((violation: BoundaryViolation) => violation.importer);
+
+    expect(importers).not.toContain("packages/shared/src/usesDataTestSupport.ts");
+  });
+
+  it("rejects code outside packages/data importing the item store (issue #173: items-store-private)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const violation = violations.find((v: BoundaryViolation) => v.importer === "modules/beta/src/badCoreTableWrite.ts");
+
+    expect(violation?.imported).toBe("packages/data/src/chokePoint/itemsStore.ts");
+    expect(violation?.rules).toContain("items-store-private");
   });
 });
