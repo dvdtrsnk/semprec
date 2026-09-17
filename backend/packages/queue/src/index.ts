@@ -68,7 +68,7 @@ export async function ensureQueueSchema(pool: Pool): Promise<void> {
 
 /**
  * Grants the runtime least-privilege roles (issue #243: `semprec_data`/`semprec_side`, created
- * by packages/data's `0039_least_privilege_roles.sql`) full access to graphile-worker's own
+ * by packages/data's `0040_least_privilege_roles.sql`) full access to graphile-worker's own
  * `graphile_worker` schema — its tables can't be listed in that migration because
  * `ensureQueueSchema` (graphile-worker's own migration runner) is what creates them, and it
  * hasn't run yet at that point. Call this once, immediately after `ensureQueueSchema`, as

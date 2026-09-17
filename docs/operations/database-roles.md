@@ -1,6 +1,6 @@
 # Runtime Postgres roles and least-privilege service connections
 
-Issue #243. Two roles, created by migration `0039_least_privilege_roles.sql`
+Issue #243. Two roles, created by migration `0040_least_privilege_roles.sql`
 (`backend/packages/data/src/db/migrations/`):
 
 - **`semprec_data`** — full `SELECT`/`INSERT`/`UPDATE`/`DELETE` on the tables the generic

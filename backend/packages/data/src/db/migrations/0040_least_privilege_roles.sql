@@ -78,7 +78,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
   module_migrations, ai_gateway_calls, agent_run_events, manifest_drift_findings,
   notifications, heartbeat_occurrences, push_subscriptions, approval_requests,
   sessions, login_attempts, doc_history_updates, agent_guidance_drift_findings,
-  process_heartbeats, push_deliveries
+  process_heartbeats, push_deliveries, observability_checks
 TO semprec_side;
 
 -- Several side tables above (agent_run_events, ai_gateway_calls, mail_threads, docs,

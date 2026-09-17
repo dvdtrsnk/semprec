@@ -5,7 +5,7 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 
 /**
- * Issue #243: `0039_least_privilege_roles.sql` (run once by `globalSetup.ts` for the whole test
+ * Issue #243: `0040_least_privilege_roles.sql` (run once by `globalSetup.ts` for the whole test
  * run, like every other migration) creates `semprec_data`/`semprec_side` with no password —
  * real deployments set one out-of-band (issue #175). These tests need to actually log in as
  * each role against the shared embedded-Postgres instance, so they set a test-only password
