@@ -5,5 +5,8 @@
   "notification.automation_error.title": "Automatizace položky selhala",
   "notification.mail_sync_error.title": "Synchronizace pošty selhala",
   "notification.agent_guidance_drift.title": "Pokyny pro agenta jsou v rozporu s oprávněními",
-  "notification.agent_guidance_drift_resolved.title": "Rozpor v pokynech pro agenta vyřešen"
+  "notification.agent_guidance_drift_resolved.title": "Rozpor v pokynech pro agenta vyřešen",
+  "notification.process_stale.title": "Proces přestal hlásit stav",
+  "notification.queue_backlog.title": "Fronta úloh se hromadí",
+  "notification.mail_sync_stalled.title": "Synchronizace pošty se zasekla"
 }
