@@ -107,6 +107,8 @@ server.on("upgrade", (req, socket, head) => {
   });
 });
 
-server.listen(port, () => {
+// Issue #174: bound to loopback explicitly — the only public entry point is the Caddy reverse
+// proxy on the same host (`deploy/Caddyfile`), never this process's own listener directly.
+server.listen(port, "127.0.0.1", () => {
   logger.info({ port }, "semprec-api listening");
 });
