@@ -170,8 +170,15 @@ adding prose that explains itself.
 **Growth check.** Length here means characters, counted the same way before and
 after: `gh issue view <N> --json body --jq '.body | length'` in real mode, `wc -m`
 on the draft file in dry-run. If any issue body is now more than 1.5× its
-pre-audit character count, stop applying fixes. The specification is being healed with prose, which is the
-failure this phase is bounded to prevent. Shorten it back, or hand it to the user.
+pre-audit character count, stop applying fixes. The specification is being healed
+with prose, which is the failure this phase is bounded to prevent.
+
+Then choose by where the growth came from, not by judgement: if deleting text
+**you** added during this audit brings the body back under the threshold, delete
+it and carry on — that is mechanical and needs no one's permission. If getting
+back under it would mean cutting text the issue already had before the audit, stop
+and hand it to the user. Shortening what the user approved is an edit to the
+specification, not a fix to it.
 
 ### Round 2 — narrow
 
