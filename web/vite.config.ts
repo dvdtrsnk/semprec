@@ -11,6 +11,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/api/ai-usage": { target: process.env.SEMPREC_API_URL ?? "http://localhost:3001" },
+      "/api/system-health": { target: process.env.SEMPREC_API_URL ?? "http://localhost:3001" },
       "/api/approval-requests": { target: process.env.SEMPREC_API_URL ?? "http://localhost:3001" },
       "/api/agent-runs": { target: process.env.SEMPREC_API_URL ?? "http://localhost:3001" },
       "/api/setup": { target: process.env.SEMPREC_API_URL ?? "http://localhost:3001" },
