@@ -167,18 +167,24 @@ Apply the `fix` field as written: the smallest edit that removes the finding. Do
 not rewrite a section to answer a finding, and do not fix an advisory finding by
 adding prose that explains itself.
 
-**Growth check.** Length here means characters, counted the same way before and
-after: `gh issue view <N> --json body --jq '.body | length'` in real mode, `wc -m`
-on the draft file in dry-run. If any issue body is now more than 1.5× its
-pre-audit character count, stop applying fixes. The specification is being healed
-with prose, which is the failure this phase is bounded to prevent.
+**Growth check.** Run this per issue, after that issue's fixes. Length means
+characters, counted the same way before and after: `gh issue view <N> --json body
+--jq '.body | length'` in real mode, `wc -m` on the draft file in dry-run. An
+issue over 1.5× its pre-audit character count is being healed with prose, which is
+the failure this phase is bounded to prevent.
 
-Then choose by where the growth came from, not by judgement: if deleting text
-**you** added during this audit brings the body back under the threshold, delete
-it and carry on — that is mechanical and needs no one's permission. If getting
-back under it would mean cutting text the issue already had before the audit, stop
-and hand it to the user. Shortening what the user approved is an edit to the
-specification, not a fix to it.
+The check is per issue and so is the halt: stop applying fixes to **that** issue
+and go on fixing the others. One bloated issue in a batch of eight says nothing
+about the other seven.
+
+For the halted issue, choose by where the growth came from, not by judgement. If
+deleting text **you** added during this audit brings it back under the threshold,
+delete it and the issue rejoins the run — that is mechanical and needs no one's
+permission. If getting back under would mean cutting text the issue already had
+before the audit, leave it as it is and hand **it** to the user: shortening what
+the user approved in Phase 3 edits the specification rather than repairing it.
+The rest of the batch continues to round 2 and its terminal state without it, and
+an issue handed over this way is never labeled.
 
 ### Round 2 — narrow
 
