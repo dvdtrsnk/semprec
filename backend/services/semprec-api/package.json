@@ -21,10 +21,12 @@
   },
   "devDependencies": {
     "@semprec/module-boundaries": "workspace:*",
+    "@semprec/realtime-client": "workspace:*",
     "@types/nodemailer": "^8.0.1",
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.5.13",
     "vitest": "^4.1.11",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "yjs": "^13.6.32"
   }
 }
