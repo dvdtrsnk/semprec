@@ -36,10 +36,13 @@ in a class is not reported.
   or the real name and its path.*
 - **C2 — False claim about the repository.** A statement in Context or Task that
   the code contradicts. *Proof: `path:line`.*
-- **C3 — Unobservable acceptance criterion.** A criterion that cannot be observed
-  in the test tier the issue's Scope authorizes (tiers are defined in
-  `.bb/AGENTS.md`), because the seam, fixture or real dependency it needs does not
-  exist. *Proof: name the tier and the missing seam.*
+- **C3 — Unobservable acceptance criterion.** A criterion no test can observe:
+  the seam, fixture or real dependency it needs exists in no tier, or it needs a
+  tier the issue has ruled out. The tiers are defined in `.bb/AGENTS.md`. An issue
+  is not required to name one — `.github/ISSUE_FORMAT.md` gives `## Scope` no
+  field for it — so use the tier the issue names in Scope or Task when it names
+  one, and otherwise the tier the criterion's own dependencies imply.
+  *Proof: name the tier and the missing seam.*
 - **C4 — Task/criteria asymmetry.** A Task deliverable no acceptance criterion
   verifies, or a criterion that verifies something the Task never asks to build.
 - **C5 — Blocking-graph defect.** A missing or malformed `Blocked by:` line, a
