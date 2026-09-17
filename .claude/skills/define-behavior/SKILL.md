@@ -87,8 +87,12 @@ in the spec, go back to the user — do not fill it silently.
    must be implementable by an agent that reads only that issue (plus comments on
    its blockers). Inline everything it needs — copy context in, do not point
    elsewhere. **One issue implements exactly one mechanism** — not one
-   coherent-sounding bundle of mechanisms. Step 7 below is the mechanical check
-   for this; draft with it in mind so step 7 is confirmation, not a rewrite.
+   coherent-sounding bundle of mechanisms: a bundled issue's PR carries every
+   bundled mechanism's review surface at once, so one finding blocks the whole
+   PR and the fix-review loop repeats for all of them together (see
+   `.github/ISSUE_FORMAT.md` for the rounds this has cost on real PRs here).
+   Step 7 below is the mechanical check for this; draft with it in mind so
+   step 7 is confirmation, not a rewrite.
 3. Write every issue per `.github/ISSUE_FORMAT.md` — that document is the
    authority on the Blocked-by rules (in short: `none` only for a batch with no
    dependencies at all; a dependent batch's first issue lists its real
