@@ -80,7 +80,7 @@
     {
       "name": "no-deep-imports",
       "severity": "error",
-      "comment": "Issue #173: a package is imported only through its entry point (src/index.ts) or one of its declared package.json `exports` (e.g. @semprec/data's testSupport). Reaching past that into another package's internals is forbidden even for a different package under packages/.",
+      "comment": "Issue #173: a package is imported only through its entry point (src/index.ts) or the hardcoded testSupport/ secondary entry path (matching what @semprec/data's package.json `exports` separately declares as its public testSupport surface — this rule does not read package.json itself). Reaching past that into another package's internals is forbidden even for a different package under packages/.",
       "from": {
         "path": "^packages/([^/]+)/"
       },
@@ -91,7 +91,7 @@
     {
       "name": "no-deep-imports",
       "severity": "error",
-      "comment": "Issue #173: same entry-point-only rule as above, for modules/services reaching into a package's internals instead of its declared entry points.",
+      "comment": "Issue #173: same entry-point-only rule as above (index.ts or the hardcoded testSupport/ path), for modules/services reaching into a package's internals instead of its declared entry points.",
       "from": {
         "path": "^(modules|services)/[^/]+/src/"
       },
