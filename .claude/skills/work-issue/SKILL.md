@@ -110,9 +110,16 @@ Two modes, detected by the `SEMPREC_HARNESS` environment variable:
    not "checking back later". Both required checks (`review` and
    `code-review`) must pass. Address every code-review-bot finding (fix it,
    or reply on the PR with a concrete justification), push, watch again
-   (foreground, every time). Iterate until green — branch protection makes
-   merging physically impossible otherwise, so there is no shortcut to look
-   for.
+   (foreground, every time). Iterate until green, capped at **6 rounds** of
+   push+watch. Branch protection makes merging physically impossible without
+   green checks, so there is no shortcut before the cap — but a real issue
+   never needs 6 rounds; hitting the cap means the issue bundled more than one
+   mechanism and grew more review surface than one PR should carry. Treat
+   hitting the cap as a reason to stop, not a reason to push harder: follow
+   "If you cannot finish" below, and say in the `BLOCKED:` comment that the
+   round cap was hit and why (which findings kept recurring, what the PR
+   touches) — that is the signal the next `/define-behavior` run needs to
+   split issues like this one earlier.
 6. **Merge**: `gh pr merge --squash --delete-branch`.
 7. **Report**: get the new SHA (`git fetch origin && git rev-parse origin/develop`)
    and comment on the issue:
@@ -128,13 +135,15 @@ Two modes, detected by the `SEMPREC_HARNESS` environment variable:
 ## If you cannot finish
 
 If you are blocked — failing CI you cannot fix, missing context, the issue asks
-for something impossible — do NOT merge a broken PR and do NOT close the issue.
-First commit and push whatever you have (`git add -A && git commit && git push
--u origin feat/issue-N`) so a human can inspect or resume it — this is your
-last chance to do so, per "single, non-resumable turn" above. Then label the
-issue `gh issue edit N -R dvdtrsnk/semprec --remove-label agent:implementing --remove-label agent:reviewing-and-fixing --add-label agent:blocked`
-— this is a deliberate stop over a spec problem, a more specific signal than
-the generic crash/timeout that `agent:failed` means, and the dispatcher relies
+for something impossible, the step 5 review-round cap was hit — do NOT merge a
+broken PR and do NOT close the issue. First commit and push whatever you have
+(`git add -A && git commit && git push -u origin feat/issue-N`) so a human can
+inspect or resume it — this is your last chance to do so, per "single,
+non-resumable turn" above. Then label the issue
+`gh issue edit N -R dvdtrsnk/semprec --remove-label agent:implementing --remove-label agent:reviewing-and-fixing --add-label agent:blocked`
+— this is a deliberate stop over a spec or scope problem, a more specific
+signal than the generic crash/timeout that `agent:failed` means, and the
+dispatcher relies
 on it to skip its generic failure comment in favor of your `BLOCKED:` one.
 Then post an issue comment starting with `BLOCKED:` explaining precisely what
 stopped you and what a human must decide, and leave the issue OPEN. The
