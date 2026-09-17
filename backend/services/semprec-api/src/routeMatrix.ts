@@ -250,6 +250,13 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
   },
   {
+    name: "property list",
+    method: "GET",
+    path: `/api/properties?databaseId=${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+  },
+  {
     name: "property detail",
     method: "GET",
     path: `/api/properties/${EXAMPLE_ID}`,

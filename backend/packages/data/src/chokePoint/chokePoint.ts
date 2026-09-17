@@ -1071,6 +1071,17 @@ export function createChokePoint(
         let property = await propertiesStore.getProperty(client, id);
         if (!property) throw new NotFoundError(`Property ${id} not found`);
 
+        // Issue #219: re-checked against the row this same transaction just fetched, not a
+        // caller-supplied snapshot — a concurrent type change between an outer read and this
+        // write can't slip a type/config patch past a relation property this way.
+        if (property.type === "relation" && (input.type !== undefined || input.config !== undefined)) {
+          const field = input.type !== undefined ? "type" : "config";
+          throw new ValidationError(
+            `Property ${id} is a relation; ${field} is changed only via its relation definition`,
+            { field, reason: "relation_definition_required" },
+          );
+        }
+
         if (input.name !== undefined) {
           property = await propertiesStore.renameProperty(client, id, input.name);
         }

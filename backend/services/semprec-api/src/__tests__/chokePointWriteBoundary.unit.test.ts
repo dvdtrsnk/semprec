@@ -45,6 +45,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "restore database": "services/semprec-api/src/databasesHandler.ts",
   "property catalog": "services/semprec-api/src/databasesHandler.ts",
   "create property": "services/semprec-api/src/databasesHandler.ts",
+  "property list": "services/semprec-api/src/propertiesHandler.ts",
   "property detail": "services/semprec-api/src/propertiesHandler.ts",
   "update property": "services/semprec-api/src/propertiesHandler.ts",
   "delete property": "services/semprec-api/src/propertiesHandler.ts",

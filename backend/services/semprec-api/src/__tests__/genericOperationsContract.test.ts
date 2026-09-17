@@ -143,16 +143,20 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     expect(res.status).toBe(200);
   },
   "property.list": async (fx, headers, baseUrl) => {
-    const res = await fetch(`${baseUrl}/api/databases/${fx.database.id}/properties`, { headers });
+    const res = await fetch(`${baseUrl}/api/properties?databaseId=${fx.database.id}`, { headers });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { properties: { id: string }[] };
-    expect(body.properties.some((p) => p.id === fx.property.id)).toBe(true);
+    const body = (await res.json()) as { properties: { id: string; config: Record<string, unknown> }[] };
+    const found = body.properties.find((p) => p.id === fx.property.id);
+    expect(found).toBeDefined();
+    // The raw row, not the localized catalog projection: `config` proves it wasn't stripped.
+    expect(found?.config).toBeDefined();
   },
   "property.get": async (fx, headers, baseUrl) => {
     const res = await fetch(`${baseUrl}/api/properties/${fx.property.id}`, { headers });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { id: string };
+    const body = (await res.json()) as { id: string; config: Record<string, unknown> };
     expect(body.id).toBe(fx.property.id);
+    expect(body.config).toBeDefined();
   },
   "property.create": async (fx, headers, baseUrl) => {
     const res = await fetch(`${baseUrl}/api/databases/${fx.database.id}/properties`, {

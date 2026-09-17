@@ -131,6 +131,10 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
     },
 
     async patchProperty(actor, input) {
+      // Existence is checked first so an unknown propertyId is 404 regardless of patch shape,
+      // matching every other patch operation's error priority; it's a plain existence read, not
+      // the relation-type guard, so a concurrent delete between this and the write below just
+      // means `chokePoint.updateProperty`'s own transaction throws `NotFoundError` itself.
       const property = await chokePoint.getProperty(input.propertyId);
       if (!property) {
         throw new NotFoundError(`Property ${input.propertyId} not found`, {
@@ -139,16 +143,10 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
         });
       }
       assertNonEmptyPatch(input.patch);
-      if (property.type === "relation" && (input.patch.type !== undefined || input.patch.config !== undefined)) {
-        const field = input.patch.type !== undefined ? "type" : "config";
-        throw new ValidationError(
-          `Property ${input.propertyId} is a relation; ${field} is changed only via its relation definition`,
-          {
-            field,
-            reason: "relation_definition_required",
-          },
-        );
-      }
+      // The relation type/config guard itself runs inside `chokePoint.updateProperty`'s own
+      // transaction, against the row that same transaction fetches — not as a separate
+      // read-then-write here, which would leave a window for a concurrent type change to slip
+      // past it (issue #219).
       const { property: updated } = await chokePoint.updateProperty(
         input.propertyId,
         { name: input.patch.name, config: input.patch.config, type: input.patch.type },
