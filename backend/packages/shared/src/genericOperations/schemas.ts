@@ -173,8 +173,9 @@ export type DatabaseQueryInput = z.infer<typeof DatabaseQueryInputSchema>;
 /** Matches the `view_items.position` `integer` (int4) column's range. */
 const viewItemPosition = z.number().int().min(0).max(2147483647);
 
+/** `position` is optional (issue #37 specifies no request body for this route): omitting it appends a new item to the end, or leaves an already-present item's position unchanged — see `viewItemsStore.addViewItem`. */
 export const ViewItemAddInputSchema = z
-  .object({ viewId: z.string(), itemId: z.string(), position: viewItemPosition })
+  .object({ viewId: z.string(), itemId: z.string(), position: viewItemPosition.optional() })
   .strict();
 export type ViewItemAddInput = z.infer<typeof ViewItemAddInputSchema>;
 

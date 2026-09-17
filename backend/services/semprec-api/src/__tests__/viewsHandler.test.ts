@@ -200,6 +200,33 @@ describe("view routes (issue #155)", () => {
       expect(await chokePoint.listViewItems(view.id)).toEqual([{ viewId: view.id, itemId: item.id, position: 0 }]);
     });
 
+    it("adds an item to a curated view with no position, appending to the end (200, not 400)", async () => {
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const view = await makeCuratedView();
+      const itemA = await makeItem();
+      const itemB = await makeItem();
+
+      await fetch(`${baseUrl}/api/views/${view.id}/items/${itemA.id}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ position: 0 }),
+      });
+
+      const res = await fetch(`${baseUrl}/api/views/${view.id}/items/${itemB.id}`, {
+        method: "PUT",
+        headers,
+        body: "{}",
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as ViewItemBody;
+      expect(body).toEqual({ viewId: view.id, itemId: itemB.id, position: 1 });
+
+      expect(await chokePoint.listViewItems(view.id)).toEqual([
+        { viewId: view.id, itemId: itemA.id, position: 0 },
+        { viewId: view.id, itemId: itemB.id, position: 1 },
+      ]);
+    });
+
     it("is idempotent: repeating the same PUT leaves membership unchanged", async () => {
       const headers = { ...(await authHeader()), "Content-Type": "application/json" };
       const view = await makeCuratedView();
