@@ -26,7 +26,7 @@ finding here turns into an edit to a specification that is already correct.
 
 ## Finding classes — closed list
 
-Report only findings that fall into one of these six. A defect you cannot place
+Report only findings that fall into one of these seven. A defect you cannot place
 in a class is not reported.
 
 - **C1 — Missing or misnamed symbol.** The Task names a file, export, function,
@@ -48,6 +48,11 @@ in a class is not reported.
 - **C6 — Format violation.** Title pattern, section order, a missing mandatory
   section, non-English text, a canonical stored key that is not English camelCase
   (view types kebab-case), or a reference to a document outside the issue graph.
+- **C7 — Batch coverage gap.** A behavior in the epic's approved specification
+  that no issue in the batch delivers, or an issue deliverable with no basis in
+  that specification. **Batch targets only** — a single hand-written issue has no
+  epic, and is judged against its own Context instead, which C1–C6 already cover.
+  *Proof: quote the spec behavior and name the issues you searched.*
 
 ## What is never a finding
 
@@ -71,9 +76,16 @@ an implementer:
 > An agent that reads only this issue and follows it literally will do **X**, and
 > **X** fails because **Y**.
 
-If you cannot fill in both blanks — if the harm is "the implementer might be
-confused", "this could be clearer", or "this may not be what was intended" — it
-is not blocking. Uncertainty is never blocking.
+A **C7** finding cannot fail a single implementer, so it takes the other form:
+
+> The batch closes with every issue merged, and behavior **N** of the approved
+> specification is still not built.
+
+Quote behavior N and name the issues you searched for it.
+
+If you cannot fill in the blanks of whichever sentence applies — if the harm is
+"the implementer might be confused", "this could be clearer", or "this may not be
+what was intended" — it is not blocking. Uncertainty is never blocking.
 
 **advisory** — everything else in C1–C6.
 
