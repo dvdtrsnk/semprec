@@ -59,7 +59,11 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
 
     async getDatabase(_actor, input) {
       const database = await chokePoint.getDatabase(input.databaseId);
-      if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`, { resource: "database", databaseId: input.databaseId });
+      if (!database)
+        throw new NotFoundError(`Database ${input.databaseId} not found`, {
+          resource: "database",
+          databaseId: input.databaseId,
+        });
       return database;
     },
 
@@ -127,7 +131,6 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
     },
 
     async patchProperty(actor, input) {
-      assertNonEmptyPatch(input.patch);
       const property = await chokePoint.getProperty(input.propertyId);
       if (!property) {
         throw new NotFoundError(`Property ${input.propertyId} not found`, {
@@ -135,12 +138,16 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
           propertyId: input.propertyId,
         });
       }
+      assertNonEmptyPatch(input.patch);
       if (property.type === "relation" && (input.patch.type !== undefined || input.patch.config !== undefined)) {
         const field = input.patch.type !== undefined ? "type" : "config";
-        throw new ValidationError(`Property ${input.propertyId} is a relation; ${field} is changed only via its relation definition`, {
-          field,
-          reason: "relation_definition_required",
-        });
+        throw new ValidationError(
+          `Property ${input.propertyId} is a relation; ${field} is changed only via its relation definition`,
+          {
+            field,
+            reason: "relation_definition_required",
+          },
+        );
       }
       const { property: updated } = await chokePoint.updateProperty(
         input.propertyId,
@@ -169,7 +176,13 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
 
     async createView(actor, input) {
       return chokePoint.createView(
-        { databaseId: input.databaseId ?? null, type: input.type, name: input.name, config: input.config, isDefault: input.isDefault },
+        {
+          databaseId: input.databaseId ?? null,
+          type: input.type,
+          name: input.name,
+          config: input.config,
+          isDefault: input.isDefault,
+        },
         toActor(actor),
         actor.userId,
       );
@@ -240,7 +253,12 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
     async patchItem(actor, input) {
       const existing = await requireItem(input.itemId);
       return chokePoint.updateItem(
-        { databaseId: existing.databaseId, itemId: input.itemId, propertiesPatch: input.properties, ifVersion: input.ifVersion },
+        {
+          databaseId: existing.databaseId,
+          itemId: input.itemId,
+          propertiesPatch: input.properties,
+          ifVersion: input.ifVersion,
+        },
         actor.userId,
       );
     },
@@ -261,7 +279,11 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
 
     async queryDatabase(_actor, input) {
       const database = await chokePoint.getDatabase(input.databaseId);
-      if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`, { resource: "database", databaseId: input.databaseId });
+      if (!database)
+        throw new NotFoundError(`Database ${input.databaseId} not found`, {
+          resource: "database",
+          databaseId: input.databaseId,
+        });
       return chokePoint.queryDatabaseItems(input.databaseId, {
         filter: input.filter,
         sort: input.sort,

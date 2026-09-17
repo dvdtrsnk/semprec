@@ -128,7 +128,7 @@ describe("property routes (issue #240)", () => {
     expect(body.name).toBe("New Title");
   });
 
-  it("changing type returns 202 and enqueues exactly one migration_status job", async () => {
+  it("changing type returns 200 (property.patch's canonical output has no typeChanged status) and enqueues exactly one migration_status job", async () => {
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };
     const database = await chokePoint.createDatabase({ name: "D" });
     const property: PropertyRow = await chokePoint.createProperty({
@@ -143,7 +143,7 @@ describe("property routes (issue #240)", () => {
       headers,
       body: JSON.stringify({ type: "number" }),
     });
-    expect(res.status).toBe(202);
+    expect(res.status).toBe(200);
     const body = (await res.json()) as PropertyBody;
     expect(body.type).toBe("number");
     expect(body.migrationStatus).toBe("pending");
@@ -186,7 +186,7 @@ describe("property routes (issue #240)", () => {
     });
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: { code: string; details?: { field?: string } } };
-    expect(body.error.details?.field).toBe("type");
+    expect(body.error.details?.field).toBe("patch.type");
   });
 
   it("returns 403 property_locked when changing the type of a locked property", async () => {

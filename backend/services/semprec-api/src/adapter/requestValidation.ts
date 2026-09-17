@@ -37,6 +37,11 @@ export function requireHeader(req: IncomingMessage, name: string): string {
   return value;
 }
 
+export function optionalHeader(req: IncomingMessage, name: string): string | undefined {
+  const value = req.headers[name.toLowerCase()];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 /** Rejects anything but a plain JSON object — an array, string, number, `null`, or non-JSON body is `validation_failed`. */
 export function requireJsonObjectBody(body: unknown): Record<string, unknown> {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {

@@ -1,55 +1,64 @@
 import type { Pool } from "pg";
-import { createChokePoint, NotFoundError, ValidationError, type ChokePoint, type PropertyRow } from "@semprec/data";
+import { createChokePoint, NotFoundError, ValidationError } from "@semprec/data";
+import type { GenericApplicationPort } from "@semprec/shared";
 import type { RouteDefinition } from "./adapter/routeTable.js";
-import { requireHeader, requireJsonObjectBody, requireStringParam } from "./adapter/requestValidation.js";
+import { optionalHeader, requireJsonObjectBody, requireStringParam } from "./adapter/requestValidation.js";
+import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js";
 import { toItemDetailEnvelope, toItemEnvelope } from "./adapter/itemEnvelope.js";
 import { toItemQueryEnvelope } from "./adapter/itemQueryEnvelope.js";
 import { toRelationEnvelope } from "./adapter/relationEnvelope.js";
-
-function jsonObjectField(value: unknown, field: string): Record<string, unknown> | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new ValidationError(`'${field}' must be a JSON object`, { field });
-  }
-  return value as Record<string, unknown>;
-}
-
-function requireJsonObjectField(value: unknown, field: string): Record<string, unknown> {
-  if (value === undefined) {
-    throw new ValidationError(`'${field}' is required`, { field });
-  }
-  return jsonObjectField(value, field) as Record<string, unknown>;
-}
 
 function requestUrl(rawUrl: string | undefined): URL {
   return new URL(rawUrl ?? "/", "http://localhost");
 }
 
-/** Resolves a relation route's `:propertyKey` path segment against the caller item's own database — the choke-point's edge calls take a property id, never a key. */
-async function findRelationProperty(
-  chokePoint: ChokePoint,
+/**
+ * Resolves a relation route's `:propertyKey` path segment against the caller item's own database
+ * to exactly one RELATION-typed property (issue #219) — `404 not_found` with
+ * `{ resource: 'relationProperty', databaseId, propertyKey }` for no match, `400 validation_failed`
+ * with `{ field: 'propertyKey', reason: 'ambiguous' }` for more than one (defensive: the
+ * `UNIQUE(database_id, key)` constraint on `properties` already makes this unreachable today).
+ * Both the item lookup and the property list go through the injected `GenericApplicationPort`,
+ * same as every other route in this family.
+ */
+async function resolveRelationProperty(
+  service: GenericApplicationPort,
+  actor: ReturnType<typeof restActor>,
   callerItemId: string,
   propertyKey: string,
-): Promise<PropertyRow> {
-  const item = await chokePoint.findItem(callerItemId);
-  if (!item) throw new NotFoundError(`Item ${callerItemId} not found`);
-  const property = await chokePoint.getPropertyByKey(item.databaseId, propertyKey);
-  if (!property) throw new NotFoundError(`Property '${propertyKey}' not found on database ${item.databaseId}`);
-  return property;
+) {
+  const item = await dispatchGenericOperation(service, "item.get", actor, { itemId: callerItemId });
+  const properties = await dispatchGenericOperation(service, "property.list", actor, { databaseId: item.databaseId });
+  const matches = properties.filter((property) => property.key === propertyKey && property.type === "relation");
+  if (matches.length === 0) {
+    throw new NotFoundError(`Relation property '${propertyKey}' not found`, {
+      resource: "relationProperty",
+      databaseId: item.databaseId,
+      propertyKey,
+    });
+  }
+  if (matches.length > 1) {
+    throw new ValidationError(`Relation property key '${propertyKey}' is ambiguous`, {
+      field: "propertyKey",
+      reason: "ambiguous",
+    });
+  }
+  return matches[0]!;
 }
 
 /**
- * The item endpoint family: `POST /api/databases/:id/items`, `GET /api/items/:id` (with optional
- * `?include=path` for a server-assembled breadcrumb), and `PATCH /api/items/:id` with
- * `ifVersion`-checked optimistic concurrency (issue #241); `DELETE /api/items/:id` and
- * `POST /api/items/:id/restore` (issue #156); `POST /api/databases/:id/query` and
- * `PUT`/`DELETE /api/items/:id/relations/:propertyKey/:targetItemId` (issue #157). Every route is
- * a thin mapping onto `createChokePoint`'s service calls — the `Idempotency-Key` requirement, the
- * `computed_readonly`/`version_conflict`/`database_archived` rejections, the typed filter/sort
- * compilation, and every relation-edge rule (direction, cardinality, ownership, endpoint validity)
- * all live in the choke-point, not here.
+ * The item endpoint family (rebased onto the generic-operation bindings by issue #219): `POST
+ * /api/databases/:id/items`, `GET /api/items/:id` (with optional `?include=path`), `PATCH
+ * /api/items/:id` with `ifVersion`-checked optimistic concurrency, `DELETE /api/items/:id` and
+ * `POST /api/items/:id/restore`, `POST /api/databases/:id/query`, and
+ * `PUT`/`DELETE /api/items/:id/relations/:propertyKey/:targetItemId`. Every route assembles a
+ * canonical command object and dispatches it through `dispatchGenericOperation` against the
+ * injected `GenericApplicationPort` — no route constructs its own `createChokePoint(pool)` for an
+ * operation the 28-operation catalog covers. `?include=path`'s breadcrumb chain
+ * (`chokePoint.getItemPath`) is the one read this family still reaches `pool` for directly: it has
+ * no corresponding generic operation, so there is no binding to rebase it onto.
  */
-export function createItemRoutes(pool: Pool): RouteDefinition[] {
+export function createItemRoutes(service: GenericApplicationPort, pool: Pool): RouteDefinition[] {
   const chokePoint = createChokePoint(pool);
 
   return [
@@ -58,10 +67,13 @@ export function createItemRoutes(pool: Pool): RouteDefinition[] {
       path: "/api/databases/:id/items",
       handler: async (ctx) => {
         const databaseId = requireStringParam(ctx.params, "id");
-        const idempotencyKey = requireHeader(ctx.req, "Idempotency-Key");
+        const idempotencyKey = optionalHeader(ctx.req, "Idempotency-Key");
         const body = requireJsonObjectBody(ctx.body);
-        const properties = jsonObjectField(body.properties, "properties") ?? {};
-        const item = await chokePoint.createItem({ databaseId, properties, idempotencyKey }, ctx.identity.user.id);
+        const item = await dispatchGenericOperation(service, "item.create", restActor(ctx.identity.user.id), {
+          databaseId,
+          properties: body.properties ?? {},
+          idempotencyKey,
+        });
         return { status: 201, body: toItemEnvelope(item) };
       },
     },
@@ -73,15 +85,16 @@ export function createItemRoutes(pool: Pool): RouteDefinition[] {
         const includePath = requestUrl(ctx.req.url).searchParams.get("include") === "path";
 
         if (!includePath) {
-          const item = await chokePoint.findItem(id);
-          if (!item) throw new NotFoundError(`Item ${id} not found`);
+          const item = await dispatchGenericOperation(service, "item.get", restActor(ctx.identity.user.id), {
+            itemId: id,
+          });
           return { status: 200, body: toItemEnvelope(item) };
         }
 
         // `getItemPath`'s chain already ends with `id` itself (or is empty if it doesn't exist),
-        // so deriving the item from it — rather than a separate `findItem` call — keeps both
-        // reads inside `getItemPath`'s one transaction instead of two, which would otherwise let
-        // the item be deleted or changed in the gap between them.
+        // so deriving the item from it — rather than a separate lookup — keeps both reads inside
+        // `getItemPath`'s one transaction instead of two, which would otherwise let the item be
+        // deleted or changed in the gap between them.
         const path = await chokePoint.getItemPath(id);
         const item = path.at(-1);
         if (!item) throw new NotFoundError(`Item ${id} not found`);
@@ -93,22 +106,12 @@ export function createItemRoutes(pool: Pool): RouteDefinition[] {
       path: "/api/items/:id",
       handler: async (ctx) => {
         const id = requireStringParam(ctx.params, "id");
-        const existing = await chokePoint.findItem(id);
-        if (!existing) throw new NotFoundError(`Item ${id} not found`);
-
         const body = requireJsonObjectBody(ctx.body);
-        const propertiesPatch = requireJsonObjectField(body.properties, "properties");
-        const ifVersion = typeof body.ifVersion === "string" ? body.ifVersion : undefined;
-
-        const item = await chokePoint.updateItem(
-          {
-            databaseId: existing.databaseId,
-            itemId: id,
-            propertiesPatch,
-            ifVersion,
-          },
-          ctx.identity.user.id,
-        );
+        const item = await dispatchGenericOperation(service, "item.patch", restActor(ctx.identity.user.id), {
+          itemId: id,
+          properties: body.properties,
+          ifVersion: body.ifVersion,
+        });
         return { status: 200, body: toItemEnvelope(item) };
       },
     },
@@ -117,11 +120,9 @@ export function createItemRoutes(pool: Pool): RouteDefinition[] {
       path: "/api/items/:id",
       handler: async (ctx) => {
         const id = requireStringParam(ctx.params, "id");
-        const existing = await chokePoint.findItemIncludingDeleted(id);
-        if (!existing) throw new NotFoundError(`Item ${id} not found`);
-
-        const item = await chokePoint.softDeleteItem(existing.databaseId, id, ctx.identity.user.id);
-        if (!item) throw new NotFoundError(`Item ${id} not found`);
+        const item = await dispatchGenericOperation(service, "item.delete", restActor(ctx.identity.user.id), {
+          itemId: id,
+        });
         return { status: 200, body: toItemEnvelope(item) };
       },
     },
@@ -130,11 +131,9 @@ export function createItemRoutes(pool: Pool): RouteDefinition[] {
       path: "/api/items/:id/restore",
       handler: async (ctx) => {
         const id = requireStringParam(ctx.params, "id");
-        const existing = await chokePoint.findItemIncludingDeleted(id);
-        if (!existing) throw new NotFoundError(`Item ${id} not found`);
-
-        const item = await chokePoint.restoreItem(existing.databaseId, id, ctx.identity.user.id);
-        if (!item) throw new NotFoundError(`Item ${id} not found`);
+        const item = await dispatchGenericOperation(service, "item.restore", restActor(ctx.identity.user.id), {
+          itemId: id,
+        });
         return { status: 200, body: toItemEnvelope(item) };
       },
     },
@@ -143,10 +142,9 @@ export function createItemRoutes(pool: Pool): RouteDefinition[] {
       path: "/api/databases/:id/query",
       handler: async (ctx) => {
         const databaseId = requireStringParam(ctx.params, "id");
-        const database = await chokePoint.getDatabase(databaseId);
-        if (!database) throw new NotFoundError(`Database ${databaseId} not found`);
         const body = ctx.body === undefined ? {} : requireJsonObjectBody(ctx.body);
-        const result = await chokePoint.queryDatabaseItems(databaseId, {
+        const result = await dispatchGenericOperation(service, "database.query", restActor(ctx.identity.user.id), {
+          databaseId,
           filter: body.filter,
           sort: body.sort,
           cursor: body.cursor,
@@ -163,14 +161,14 @@ export function createItemRoutes(pool: Pool): RouteDefinition[] {
         const id = requireStringParam(ctx.params, "id");
         const propertyKey = requireStringParam(ctx.params, "propertyKey");
         const targetItemId = requireStringParam(ctx.params, "targetItemId");
-        const property = await findRelationProperty(chokePoint, id, propertyKey);
+        const actor = restActor(ctx.identity.user.id);
+        const property = await resolveRelationProperty(service, actor, id, propertyKey);
         const body = ctx.body === undefined ? {} : requireJsonObjectBody(ctx.body);
-        const metadata = jsonObjectField(body.metadata, "metadata");
-        const edge = await chokePoint.createRelation({
+        const edge = await dispatchGenericOperation(service, "relation.put", actor, {
           relationPropertyId: property.id,
           callerItemId: id,
           targetItemId,
-          metadata,
+          metadata: body.metadata,
         });
         return { status: 200, body: toRelationEnvelope(edge) };
       },
@@ -182,20 +180,14 @@ export function createItemRoutes(pool: Pool): RouteDefinition[] {
         const id = requireStringParam(ctx.params, "id");
         const propertyKey = requireStringParam(ctx.params, "propertyKey");
         const targetItemId = requireStringParam(ctx.params, "targetItemId");
-        const property = await findRelationProperty(chokePoint, id, propertyKey);
-        const edge = await chokePoint.deleteRelation({
+        const actor = restActor(ctx.identity.user.id);
+        const property = await resolveRelationProperty(service, actor, id, propertyKey);
+        const result = await dispatchGenericOperation(service, "relation.delete", actor, {
           relationPropertyId: property.id,
           callerItemId: id,
           targetItemId,
         });
-        if (!edge) {
-          throw new NotFoundError(`Relation edge not found`, {
-            relationPropertyId: property.id,
-            callerItemId: id,
-            targetItemId,
-          });
-        }
-        return { status: 200, body: toRelationEnvelope(edge) };
+        return { status: 200, body: result };
       },
     },
   ];
