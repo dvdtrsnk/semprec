@@ -25,6 +25,18 @@ type RelationPropertyResolution = { property: Property } | { conflict: { status:
  * validator — the issue's Task calls it out as route-local, not the canonical command schema — is
  * the one place `validation_failed` answers 409 instead. Both the item lookup and the property
  * list go through the injected `GenericApplicationPort`, same as every other route in this family.
+ *
+ * The property list is fetched in full and filtered in memory — O(N) in the database's property
+ * count — rather than an indexed key lookup. This is deliberate, not an oversight: the pre-#219
+ * `chokePoint.getPropertyByKey(databaseId, key)` this replaced was O(1) but satisfies none of the
+ * three requirements above — it doesn't filter by type (a non-relation property with the same key
+ * would wrongly resolve), it doesn't produce this route's `{ resource: 'relationProperty', ... }`
+ * 404 shape, and it returns at most one row, so it can't detect the ambiguous-match case at all. A
+ * `property.getByKey` operation on `GenericApplicationPort` that did all three would be the
+ * coherent fix, but #219 closes the generic-operation catalog at exactly 28 operations; adding a
+ * 29th for this one call site is the scope growth
+ * `docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md` rules out here. Tracked as
+ * follow-up in #432.
  */
 async function resolveRelationProperty(
   service: GenericApplicationPort,
