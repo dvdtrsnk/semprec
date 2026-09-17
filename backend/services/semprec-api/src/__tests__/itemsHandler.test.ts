@@ -123,7 +123,7 @@ describe("item routes (issue #241)", () => {
       expect(body.properties).toEqual({ title: "Arrival" });
     });
 
-    it("rejects a create with no Idempotency-Key header", async () => {
+    it("creates an item with no Idempotency-Key header (optional per the generic catalog)", async () => {
       const db = await makeMoviesDb();
       const headers = { ...(await authHeader()), "Content-Type": "application/json" };
 
@@ -132,9 +132,9 @@ describe("item routes (issue #241)", () => {
         headers,
         body: JSON.stringify({ properties: { title: "Arrival" } }),
       });
-      expect(res.status).toBe(400);
-      const body = (await res.json()) as ErrorBody;
-      expect(body.error.code).toBe("validation_failed");
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as ItemBody;
+      expect(body.properties).toEqual({ title: "Arrival" });
     });
 
     it("repeating the same Idempotency-Key returns the original row without a second insert", async () => {
@@ -282,7 +282,7 @@ describe("item routes (issue #241)", () => {
       const res = await fetch(`${baseUrl}/api/items/${randomUUID()}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: {} }),
+        body: JSON.stringify({ properties: {}, ifVersion: new Date().toISOString() }),
       });
       expect(res.status).toBe(404);
     });
@@ -332,7 +332,7 @@ describe("item routes (issue #241)", () => {
       const res = await fetch(`${baseUrl}/api/items/${item.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { [rollup.key]: 5 } }),
+        body: JSON.stringify({ properties: { [rollup.key]: 5 }, ifVersion: item.updatedAt }),
       });
       expect(res.status).toBe(403);
       const body = (await res.json()) as ErrorBody;
@@ -348,7 +348,7 @@ describe("item routes (issue #241)", () => {
       const res = await fetch(`${baseUrl}/api/items/${item.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { title: "Dune (2021)" } }),
+        body: JSON.stringify({ properties: { title: "Dune (2021)" }, ifVersion: item.updatedAt }),
       });
       expect(res.status).toBe(403);
       const body = (await res.json()) as ErrorBody;
@@ -914,24 +914,24 @@ describe("item routes (issue #241)", () => {
         expect(res.status).toBe(404);
       });
 
-      it("deletes an existing edge and returns 200 with the full deleted envelope, never 204", async () => {
+      it("deletes an existing edge and returns 200 with the full relation envelope, never 204", async () => {
         const { source, target, property } = await makePairedRelation();
         const task = await chokePoint.createItem({ databaseId: source.id, properties: {} });
         const person = await chokePoint.createItem({ databaseId: target.id, properties: {} });
         const headers = await authHeader();
 
-        await fetch(`${baseUrl}/api/items/${task.id}/relations/${property.key}/${person.id}`, {
+        const put = await fetch(`${baseUrl}/api/items/${task.id}/relations/${property.key}/${person.id}`, {
           method: "PUT",
           headers,
         });
+        const putBody = (await put.json()) as RelationBody;
         const res = await fetch(`${baseUrl}/api/items/${task.id}/relations/${property.key}/${person.id}`, {
           method: "DELETE",
           headers,
         });
         expect(res.status).toBe(200);
         const body = (await res.json()) as RelationBody;
-        expect(body.itemA).toBe(task.id);
-        expect(body.itemB).toBe(person.id);
+        expect(body).toEqual(putBody);
       });
 
       it("rejects a delete through a system-owned relation property with 403 owner_violation", async () => {

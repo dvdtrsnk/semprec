@@ -1071,6 +1071,25 @@ export function createChokePoint(
         let property = await propertiesStore.getProperty(client, id);
         if (!property) throw new NotFoundError(`Property ${id} not found`);
 
+        // Issue #219: checked here, inside the same transaction as the existence check above,
+        // so an unknown id is always 404 regardless of patch shape — a caller-side pre-check for
+        // this would itself be an out-of-transaction read the existence check above already makes
+        // redundant.
+        if (input.name === undefined && input.config === undefined && input.type === undefined) {
+          throw new ValidationError("Patch must include at least one field", { reason: "empty_patch" });
+        }
+
+        // Issue #219: re-checked against the row this same transaction just fetched, not a
+        // caller-supplied snapshot — a concurrent type change between an outer read and this
+        // write can't slip a type/config patch past a relation property this way.
+        if (property.type === "relation" && (input.type !== undefined || input.config !== undefined)) {
+          const field = input.type !== undefined ? "type" : "config";
+          throw new ValidationError(
+            `Property ${id} is a relation; ${field} is changed only via its relation definition`,
+            { field, reason: "relation_definition_required" },
+          );
+        }
+
         if (input.name !== undefined) {
           property = await propertiesStore.renameProperty(client, id, input.name);
         }
@@ -1089,10 +1108,16 @@ export function createChokePoint(
       });
     },
 
-    async deleteProperty(id: string, actingUserId?: string): Promise<void> {
+    /**
+     * Returns the row as it stood immediately before deletion (issue #219): fetched by this same
+     * transaction, not a caller-supplied snapshot from a separate `getProperty` call — a rename
+     * landing between a pre-check and this call could otherwise make a REST response describe a
+     * state the deleted row never actually had at the moment it was deleted.
+     */
+    async deleteProperty(id: string, actingUserId?: string): Promise<PropertyRow> {
       return withTransaction(pool, async (client) => {
         const property = await propertiesStore.getProperty(client, id);
-        if (!property) return;
+        if (!property) throw new NotFoundError(`Property ${id} not found`);
 
         const invalidatedDatabaseIds = new Set([property.databaseId]);
         if (property.type === "relation") {
@@ -1115,6 +1140,7 @@ export function createChokePoint(
           for (const databaseId of invalidatedDatabaseIds)
             notifyInvalidation({ scope: "schema", databaseId, userId: actingUserId });
         });
+        return property;
       });
     },
 
@@ -1492,7 +1518,13 @@ export function createChokePoint(
       });
     },
 
-    async deleteView(input: { id: string; actor: Actor; actingUserId?: string }): Promise<void> {
+    /**
+     * Returns the row as it stood immediately before deletion (issue #219): fetched by this same
+     * transaction, not a caller-supplied snapshot from a separate `getView` call — a config change
+     * landing between a pre-check and this call could otherwise make a REST response describe a
+     * state the deleted row never actually had at the moment it was deleted.
+     */
+    async deleteView(input: { id: string; actor: Actor; actingUserId?: string }): Promise<ViewRow> {
       return withTransaction(pool, async (client) => {
         await assertAuthenticatedAgentIdentity(client, input.actor);
         const view = await viewsStore.getView(client, input.id);
@@ -1503,6 +1535,7 @@ export function createChokePoint(
           const databaseId = view.databaseId;
           runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId, userId: input.actingUserId }));
         }
+        return view;
       });
     },
 
