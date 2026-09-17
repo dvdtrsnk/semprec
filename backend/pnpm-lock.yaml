@@ -308,6 +308,34 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
 
+  packages/realtime-client:
+    dependencies:
+      '@semprec/data':
+        specifier: workspace:*
+        version: link:../data
+      '@semprec/realtime':
+        specifier: workspace:*
+        version: link:../realtime
+      lib0:
+        specifier: ^0.2.99
+        version: 0.2.117
+      y-protocols:
+        specifier: ^1.0.6
+        version: 1.0.7(yjs@13.6.32)
+      yjs:
+        specifier: ^13.6.32
+        version: 13.6.32
+    devDependencies:
+      '@types/ws':
+        specifier: ^8.5.13
+        version: 8.18.1
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.3
+
   packages/shared:
     dependencies:
       pino:
@@ -375,6 +403,9 @@ importers:
       '@semprec/module-boundaries':
         specifier: workspace:*
         version: link:../../packages/module-boundaries
+      '@semprec/realtime-client':
+        specifier: workspace:*
+        version: link:../../packages/realtime-client
       '@types/nodemailer':
         specifier: ^8.0.1
         version: 8.0.1
@@ -390,6 +421,9 @@ importers:
       ws:
         specifier: ^8.18.0
         version: 8.21.3
+      yjs:
+        specifier: ^13.6.32
+        version: 13.6.32
 
 packages:
 
