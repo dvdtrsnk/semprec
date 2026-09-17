@@ -64,6 +64,14 @@ listed here must be delivered, nothing beyond it may be built. Concrete names
 (endpoints, tables, keys, view types) belong here, written out — canonical stored
 keys are English camelCase, view types kebab-case, user-facing labels via i18n.
 
+**One issue implements exactly one mechanism.** Several bullets are fine when
+they are steps of the same mechanism (the migration, the endpoint that uses it,
+the client call that hits it) — they are not fine when they enumerate separable
+mechanisms ("X, Y, and Z") that don't need each other's code to exist or to be
+tested. Mechanical test: could a reviewer approve the first bullet without
+having read the third? If yes, this is more than one issue and belongs in
+sequential siblings instead.
+
 ### 4. `## Scope`
 
 ```
