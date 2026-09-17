@@ -1,0 +1,170 @@
+import { describe, expect, it } from "vitest";
+import {
+  DatabaseArchiveInputSchema,
+  DatabaseCreateInputSchema,
+  DatabaseGetInputSchema,
+  DatabaseListInputSchema,
+  DatabasePatchInputSchema,
+  DatabaseQueryInputSchema,
+  DatabaseRestoreInputSchema,
+  ItemCreateInputSchema,
+  ItemDeleteInputSchema,
+  ItemGetInputSchema,
+  ItemPatchInputSchema,
+  ItemRestoreInputSchema,
+  PropertyCreateInputSchema,
+  PropertyDeleteInputSchema,
+  PropertyGetInputSchema,
+  PropertyListInputSchema,
+  PropertyPatchInputSchema,
+  RelationDeleteInputSchema,
+  RelationPutInputSchema,
+  ViewCreateInputSchema,
+  ViewDeleteInputSchema,
+  ViewGetInputSchema,
+  ViewItemAddInputSchema,
+  ViewItemRemoveInputSchema,
+  ViewItemReorderInputSchema,
+  ViewListInputSchema,
+  ViewPatchInputSchema,
+  ViewQueryInputSchema,
+} from "../schemas.js";
+
+const ALL_SCHEMAS = [
+  DatabaseListInputSchema,
+  DatabaseGetInputSchema,
+  DatabaseCreateInputSchema,
+  DatabasePatchInputSchema,
+  DatabaseArchiveInputSchema,
+  DatabaseRestoreInputSchema,
+  PropertyListInputSchema,
+  PropertyGetInputSchema,
+  PropertyCreateInputSchema,
+  PropertyPatchInputSchema,
+  PropertyDeleteInputSchema,
+  ViewListInputSchema,
+  ViewGetInputSchema,
+  ViewCreateInputSchema,
+  ViewPatchInputSchema,
+  ViewDeleteInputSchema,
+  ViewQueryInputSchema,
+  ViewItemAddInputSchema,
+  ViewItemRemoveInputSchema,
+  ViewItemReorderInputSchema,
+  ItemGetInputSchema,
+  ItemCreateInputSchema,
+  ItemPatchInputSchema,
+  ItemDeleteInputSchema,
+  ItemRestoreInputSchema,
+  DatabaseQueryInputSchema,
+  RelationPutInputSchema,
+  RelationDeleteInputSchema,
+];
+
+describe("every generic-operation input schema", () => {
+  it.each(["actor", "userId", "agentProjectItemId", "runId"])(
+    "is a strict object that rejects a spoofed top-level '%s' field",
+    (identityField) => {
+      for (const schema of ALL_SCHEMAS) {
+        expect(schema.safeParse({ [identityField]: "spoofed" }).success).toBe(false);
+      }
+    },
+  );
+});
+
+describe("DatabaseCreateInputSchema", () => {
+  it("accepts a bare name", () => {
+    expect(DatabaseCreateInputSchema.safeParse({ name: "Tasks" }).success).toBe(true);
+  });
+
+  it.each(["system", "schemaLocked", "ownerProjectItemId", "ownerModuleId", "archivedAt", "key"])(
+    "rejects the server-derived field '%s'",
+    (field) => {
+      expect(DatabaseCreateInputSchema.safeParse({ name: "Tasks", [field]: "x" }).success).toBe(false);
+    },
+  );
+});
+
+describe("PropertyPatchInputSchema", () => {
+  it("rejects patching to relation", () => {
+    expect(PropertyPatchInputSchema.safeParse({ propertyId: "p1", patch: { type: "relation" } }).success).toBe(false);
+  });
+
+  it.each(["locked", "owner", "ownerProcess", "createdBy"])("rejects the protected patch field '%s'", (field) => {
+    expect(PropertyPatchInputSchema.safeParse({ propertyId: "p1", patch: { [field]: "x" } }).success).toBe(false);
+  });
+});
+
+describe("PropertyCreateInputSchema relation branch", () => {
+  it("requires source and inverse locked booleans", () => {
+    const result = PropertyCreateInputSchema.safeParse({
+      databaseId: "db1",
+      key: "linkedTasks",
+      name: "Linked Tasks",
+      type: "relation",
+      targetDatabaseId: "db2",
+      cardinality: "many_to_many",
+      locked: true,
+      inverse: { key: "linkedFrom", name: "Linked From", locked: false },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a relation input missing the required source locked flag", () => {
+    const result = PropertyCreateInputSchema.safeParse({
+      databaseId: "db1",
+      key: "linkedTasks",
+      name: "Linked Tasks",
+      type: "relation",
+      targetDatabaseId: "db2",
+      cardinality: "many_to_many",
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("ItemPatchInputSchema", () => {
+  it("requires ifVersion", () => {
+    expect(ItemPatchInputSchema.safeParse({ itemId: "i1", properties: {} }).success).toBe(false);
+  });
+
+  it("accepts itemId/properties/ifVersion", () => {
+    expect(ItemPatchInputSchema.safeParse({ itemId: "i1", properties: { title: "x" }, ifVersion: "v1" }).success).toBe(
+      true,
+    );
+  });
+});
+
+describe("ViewQueryInputSchema", () => {
+  it("accepts filter/sort/inTrash/cursor/limit alongside viewId", () => {
+    const result = ViewQueryInputSchema.safeParse({
+      viewId: "v1",
+      cursor: "c1",
+      limit: 50,
+      inTrash: true,
+      sort: [{ property: "name", direction: "asc" }],
+      filter: { type: "and", nodes: [{ type: "equals", property: "status", value: "done" }] },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a limit above 200", () => {
+    expect(ViewQueryInputSchema.safeParse({ viewId: "v1", limit: 201 }).success).toBe(false);
+  });
+});
+
+describe("RelationDeleteInputSchema", () => {
+  it("has the same endpoint fields as RelationPutInputSchema, without metadata", () => {
+    expect(
+      RelationDeleteInputSchema.safeParse({ relationPropertyId: "p1", callerItemId: "i1", targetItemId: "i2" }).success,
+    ).toBe(true);
+    expect(
+      RelationDeleteInputSchema.safeParse({
+        relationPropertyId: "p1",
+        callerItemId: "i1",
+        targetItemId: "i2",
+        metadata: {},
+      }).success,
+    ).toBe(false);
+  });
+});

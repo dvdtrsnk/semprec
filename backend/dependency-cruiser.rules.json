@@ -87,6 +87,17 @@
       "to": {
         "path": "^packages/data/src/chokePoint/(itemsStore|databasesStore|propertiesStore)\\.ts$"
       }
+    },
+    {
+      "name": "no-shared-services-import",
+      "severity": "error",
+      "comment": "Issue #252: packages/shared/src/genericOperations is the transport-independent operation catalog — its schemas, port, and bindings must stay importable by every consumer (REST in #219, AgentTool/MCP in #220) without pulling in a concrete implementation. packages/shared as a whole must never import a services/* composition root.",
+      "from": {
+        "path": "^packages/shared/"
+      },
+      "to": {
+        "path": "^services/"
+      }
     }
   ]
 }
