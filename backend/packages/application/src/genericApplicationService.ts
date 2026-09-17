@@ -73,7 +73,10 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
 
     async patchDatabase(actor, input) {
       assertNonEmptyPatch(input.patch);
-      return chokePoint.renameDatabase(input.databaseId, input.patch.name!, actor.userId);
+      if (input.patch.name === undefined) {
+        throw new ValidationError("Patch must include 'name'", { field: "name" });
+      }
+      return chokePoint.renameDatabase(input.databaseId, input.patch.name, actor.userId);
     },
 
     async archiveDatabase(actor, input) {
@@ -131,22 +134,12 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
     },
 
     async patchProperty(actor, input) {
-      // Existence is checked first so an unknown propertyId is 404 regardless of patch shape,
-      // matching every other patch operation's error priority; it's a plain existence read, not
-      // the relation-type guard, so a concurrent delete between this and the write below just
-      // means `chokePoint.updateProperty`'s own transaction throws `NotFoundError` itself.
-      const property = await chokePoint.getProperty(input.propertyId);
-      if (!property) {
-        throw new NotFoundError(`Property ${input.propertyId} not found`, {
-          resource: "property",
-          propertyId: input.propertyId,
-        });
-      }
-      assertNonEmptyPatch(input.patch);
-      // The relation type/config guard itself runs inside `chokePoint.updateProperty`'s own
-      // transaction, against the row that same transaction fetches — not as a separate
-      // read-then-write here, which would leave a window for a concurrent type change to slip
-      // past it (issue #219).
+      // Both the existence check and the empty-patch/relation-type guards run inside
+      // `chokePoint.updateProperty`'s own transaction, against the row that same transaction
+      // fetches — not as a separate read-then-write here, which would leave a window for a
+      // concurrent change to slip past them, and would also mean deciding the 404-vs-400 error
+      // priority for "unknown id + empty patch" outside the transaction that already knows the
+      // answer (issue #219).
       const { property: updated } = await chokePoint.updateProperty(
         input.propertyId,
         { name: input.patch.name, config: input.patch.config, type: input.patch.type },
@@ -156,8 +149,7 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
     },
 
     async deleteProperty(actor, input) {
-      await chokePoint.deleteProperty(input.propertyId, actor.userId);
-      return { deleted: true, propertyId: input.propertyId };
+      return chokePoint.deleteProperty(input.propertyId, actor.userId);
     },
 
     // ---- views ----
@@ -199,8 +191,7 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
     },
 
     async deleteView(actor, input) {
-      await chokePoint.deleteView({ id: input.viewId, actor: toActor(actor), actingUserId: actor.userId });
-      return { deleted: true, viewId: input.viewId };
+      return chokePoint.deleteView({ id: input.viewId, actor: toActor(actor), actingUserId: actor.userId });
     },
 
     async queryView(_actor, input) {

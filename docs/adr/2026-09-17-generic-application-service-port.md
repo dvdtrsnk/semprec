@@ -50,19 +50,20 @@ Ownership split between the two layers:
   operation's already-validated input onto the choke-point calls it takes to
   satisfy it (including multi-call operations like the relation branch of
   `createProperty`), actor-shape translation (`AuthenticatedActor` →
-  `packages/data`'s `Actor`), and the handful of input-shape rejections that
-  are about the operation's own contract rather than persisted state (e.g.
-  empty-patch rejection).
+  `packages/data`'s `Actor`), and an input-shape rejection whose priority
+  against persisted state doesn't matter (e.g. `patchDatabase`'s empty-patch
+  rejection, checked before the database is even looked up).
 - **The choke-point (`packages/data`) owns**: everything that has to be
   atomic against persisted state — idempotency, event emission, ownership and
-  locked/archived enforcement, and any invariant that must be checked against
-  the same transaction that performs the write it protects. A service-level
-  read followed by a separate choke-point write call is not equivalent: the
-  row can change between the two, letting a concurrent write slip past a
-  check that appeared to guard it. The service must never split a guarded
-  write into a pre-check call plus a write call; the choke-point method
-  itself re-checks the invariant against the row its own transaction just
-  fetched.
+  locked/archived enforcement, and any invariant (including an input-shape
+  rejection like `patchProperty`'s empty-patch check) that must be ordered
+  against, or checked in the same transaction as, the write it protects. A
+  service-level read followed by a separate choke-point write call is not
+  equivalent: the row can change between the two, letting a concurrent write
+  slip past a check that appeared to guard it. The service must never split a
+  guarded write into a pre-check call plus a write call; the choke-point
+  method itself re-checks the invariant against the row its own transaction
+  just fetched.
 
 A transport adapter's own responsibility stops at assembling a canonical
 command object from its own request shape (route params, query, headers,

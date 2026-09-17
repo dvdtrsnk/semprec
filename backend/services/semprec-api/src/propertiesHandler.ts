@@ -76,7 +76,10 @@ export function createPropertyRoutes(
         const propertyId = requireStringParam(ctx.params, "id");
         const actor = restActor(ctx.identity.user.id);
 
-        const property = await dispatchGenericOperation(service, "property.get", actor, { propertyId });
+        // The deleted row comes back from `property.delete` itself — the state it reports is
+        // exactly the state the deletion transaction saw, not a separately-fetched snapshot that
+        // could go stale between reading it and deleting it (issue #219).
+        const property = await dispatchGenericOperation(service, "property.delete", actor, { propertyId });
         const locale = toManifestLocale(ctx.identity.user.locale);
         const database = await dispatchGenericOperation(service, "database.get", actor, {
           databaseId: property.databaseId,
@@ -84,10 +87,7 @@ export function createPropertyRoutes(
         const catalogResolver = await createCatalogResolver(moduleRegistry);
         const catalogs = await catalogResolver.getCatalogsForDbKey(database.key);
         const resolved = resolveProperty(property, database.key, catalogs, locale);
-        const body = toPropertyEnvelope(property, resolved);
-
-        await dispatchGenericOperation(service, "property.delete", actor, { propertyId });
-        return { status: 200, body };
+        return { status: 200, body: toPropertyEnvelope(property, resolved) };
       },
     },
     {

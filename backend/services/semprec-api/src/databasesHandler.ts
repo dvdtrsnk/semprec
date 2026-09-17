@@ -139,9 +139,11 @@ export function createDatabaseRoutes(
       handler: async (ctx) => {
         const databaseId = requireStringParam(ctx.params, "id");
         const body = requireJsonObjectBody(ctx.body);
+        const patch: Record<string, unknown> = {};
+        if (body.name !== undefined) patch.name = body.name;
         const database = await dispatchGenericOperation(service, "database.patch", restActor(ctx.identity.user.id), {
           databaseId,
-          patch: { name: body.name },
+          patch,
         });
         const locale = toManifestLocale(ctx.identity.user.locale);
         const catalogResolver = await createCatalogResolver(moduleRegistry);

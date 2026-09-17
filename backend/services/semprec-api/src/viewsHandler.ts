@@ -98,8 +98,10 @@ export function createViewRoutes(service: GenericApplicationPort): RouteDefiniti
       handler: async (ctx) => {
         const viewId = requireStringParam(ctx.params, "id");
         const actor = restActor(ctx.identity.user.id);
-        const view = await dispatchGenericOperation(service, "view.get", actor, { viewId });
-        await dispatchGenericOperation(service, "view.delete", actor, { viewId });
+        // The deleted row comes back from `view.delete` itself — the state it reports is exactly
+        // the state the deletion transaction saw, not a separately-fetched snapshot that could go
+        // stale between reading it and deleting it (issue #219).
+        const view = await dispatchGenericOperation(service, "view.delete", actor, { viewId });
         return { status: 200, body: toViewEnvelope(view) };
       },
     },
