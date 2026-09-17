@@ -123,7 +123,7 @@ public root into an internal or example path.
 ## Enforced boundaries
 
 `pnpm run check:boundaries` (from `backend/`) runs `dependency-cruiser`
-against `modules`, `services`, and `packages`. Two rules in
+against `modules`, `services`, and `packages`. Several rules in
 `dependency-cruiser.rules.json` are specific to this package:
 
 - `no-agent-runtime-internal-cross-import` — nothing outside
@@ -135,13 +135,22 @@ against `modules`, `services`, and `packages`. Two rules in
   `@earendil-works/pi-*` or `@anthropic-ai/*` directly. The exclusion is
   exactly `piRuntimeContract.unit.test.ts`'s sanctioned pin check described
   under DIP above — every other file stays on the port.
+- `pi-only-in-agent-runtime` (issue #173) — the complementary containment
+  rule: `@earendil-works/pi-agent-core` may be imported only from somewhere
+  under `packages/agent-runtime`, never from any other module, service, or
+  package.
+- `agent-runtime-only-in-agents` (issue #173) — only `services/semprec-agents`
+  (this package's composition root, issue #91) may import
+  `packages/agent-runtime` at all; `services/semprec-api` in particular never
+  runs the agent loop itself.
 
-Both are additive to the pre-existing `no-module-service-internal-cross-import`
-rule, which covers `modules/*` and `services/*` the same way but deliberately
-leaves `packages/*` unrestricted in general — these two rules are a
+These are additive to the general `no-module-to-module`/`no-service-to-service`/
+`no-service-to-module`/`no-module-to-service`/`core-knows-nobody`/
+`no-deep-imports` rules (issue #173), which cover `modules/*`, `services/*`,
+and `packages/*` entry-point boundaries generally — the four rules above are a
 package-specific exception for `agent-runtime` because its responsibility
-split is the compatibility boundary this doc exists to protect, not a
-change to that general policy.
+split is the compatibility boundary this doc exists to protect, not a change
+to that general policy.
 
 `pnpm run check:pi-import-paths` (`scripts/check-pi-import-paths.mjs`) is a
 narrower, complementary check scoped to this package alone: it doesn't gate

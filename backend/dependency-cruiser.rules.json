@@ -1,14 +1,102 @@
 {
   "forbidden": [
     {
-      "name": "no-module-service-internal-cross-import",
+      "name": "no-module-to-module",
       "severity": "error",
-      "comment": "A module or service may only be imported by another module or service through its public entry point (src/index.ts). Reach into another module's or service's internals directly, and this rule fires. Shared packages/* stay unrestricted since they are the intended neutral integration point.",
+      "comment": "Issue #173: a module may only be imported by another module through its public entry point (src/index.ts). Reach into another module's internals directly, and this rule fires.",
       "from": {
-        "path": "^(modules|services)/([^/]+)/src/"
+        "path": "^modules/([^/]+)/src/"
       },
       "to": {
-        "path": "^(?!$1/$2/)(modules|services)/[^/]+/src/(?!index\\.ts$)"
+        "path": "^(?!modules/$1/)modules/[^/]+/src/(?!index\\.ts$)"
+      }
+    },
+    {
+      "name": "no-service-to-service",
+      "severity": "error",
+      "comment": "Issue #173: the deployable processes under services/ talk to each other only through Postgres, never by importing one another's code — not even through a public entry point, since importing a service's module bundles its runtime dependency stack into the caller and defeats independent deployability.",
+      "from": {
+        "path": "^services/([^/]+)/src/"
+      },
+      "to": {
+        "path": "^(?!services/$1/)services/[^/]+/src/"
+      }
+    },
+    {
+      "name": "no-service-to-module",
+      "severity": "error",
+      "comment": "Issue #173: a service never imports module code across the service boundary; it reaches persisted state the same way every other process does — through Postgres.",
+      "from": {
+        "path": "^services/[^/]+/src/"
+      },
+      "to": {
+        "path": "^modules/[^/]+/src/"
+      }
+    },
+    {
+      "name": "no-module-to-service",
+      "severity": "error",
+      "comment": "Issue #173: a module never imports service code; a service is a separate deployable process, not a library a module can depend on.",
+      "from": {
+        "path": "^modules/[^/]+/src/"
+      },
+      "to": {
+        "path": "^services/[^/]+/src/"
+      }
+    },
+    {
+      "name": "core-knows-nobody",
+      "severity": "error",
+      "comment": "Issue #173: packages/* are the neutral core the rest of the system depends on; they import no module or service code, so a core package can never end up coupled to one vertical slice or one process.",
+      "from": {
+        "path": "^packages/[^/]+/src/"
+      },
+      "to": {
+        "path": "^(modules|services)/[^/]+/src/"
+      }
+    },
+    {
+      "name": "pi-only-in-agent-runtime",
+      "severity": "error",
+      "comment": "Issue #173: pi-agent-core (the pinned @earendil-works/pi-agent-core package) is opaque outside the runtime that wraps it — only packages/agent-runtime may import it directly.",
+      "from": {
+        "path": "^(?!packages/agent-runtime/)"
+      },
+      "to": {
+        "path": "node_modules/@earendil-works/pi-agent-core"
+      }
+    },
+    {
+      "name": "agent-runtime-only-in-agents",
+      "severity": "error",
+      "comment": "Issue #173: packages/agent-runtime drives the agent loop; only services/semprec-agents (its composition root, issue #91) may import it. In particular, services/semprec-api never runs the agent loop itself.",
+      "from": {
+        "path": "^(?!packages/agent-runtime/)(?!services/semprec-agents/)"
+      },
+      "to": {
+        "path": "^packages/agent-runtime/src/"
+      }
+    },
+    {
+      "name": "no-deep-imports",
+      "severity": "error",
+      "comment": "Issue #173: a package is imported only through its entry point (src/index.ts) or one of its declared package.json `exports` (e.g. @semprec/data's testSupport). Reaching past that into another package's internals is forbidden even for a different package under packages/.",
+      "from": {
+        "path": "^packages/([^/]+)/"
+      },
+      "to": {
+        "path": "^(?!packages/$1/)packages/[^/]+/src/(?!index\\.ts$|testSupport/)"
+      }
+    },
+    {
+      "name": "no-deep-imports",
+      "severity": "error",
+      "comment": "Issue #173: same entry-point-only rule as above, for modules/services reaching into a package's internals instead of its declared entry points.",
+      "from": {
+        "path": "^(modules|services)/[^/]+/src/"
+      },
+      "to": {
+        "path": "^packages/[^/]+/src/(?!index\\.ts$|testSupport/)"
       }
     },
     {
@@ -86,6 +174,17 @@
       },
       "to": {
         "path": "^packages/data/src/chokePoint/(itemsStore|databasesStore|propertiesStore)\\.ts$"
+      }
+    },
+    {
+      "name": "items-store-private",
+      "severity": "error",
+      "comment": "Issue #173 / #243: the item store is the privileged SQL layer for the choke-point's most sensitive table — visible only inside packages/data. This is the static (CI) half of the choke-point write control; the runtime half is the semprec_data/semprec_side least-privilege Postgres roles delivered by #243.",
+      "from": {
+        "path": "^(?!packages/data/)"
+      },
+      "to": {
+        "path": "^packages/data/src/chokePoint/itemsStore\\.ts$"
       }
     }
   ]
