@@ -53,10 +53,7 @@ export type PropertyListInput = z.infer<typeof PropertyListInputSchema>;
 export const PropertyGetInputSchema = z.object({ propertyId: z.string() }).strict();
 export type PropertyGetInput = z.infer<typeof PropertyGetInputSchema>;
 
-const NON_RELATION_PROPERTY_TYPES = PROPERTY_TYPES.filter((type) => type !== "relation") as Exclude<
-  PropertyType,
-  "relation"
->[];
+const NON_RELATION_PROPERTY_TYPES = PROPERTY_TYPES.filter((type) => type !== "relation");
 const nonRelationPropertyTypeSchema = z.enum(
   NON_RELATION_PROPERTY_TYPES as [Exclude<PropertyType, "relation">, ...Exclude<PropertyType, "relation">[]],
 );
