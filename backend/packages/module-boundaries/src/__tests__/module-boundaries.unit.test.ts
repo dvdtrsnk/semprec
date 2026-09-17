@@ -182,7 +182,7 @@ describe("checkModuleBoundaries", () => {
     expect(violation?.rules).toContain("no-deep-imports");
   });
 
-  it("allows importing a package's declared secondary entry point (issue #173: no-deep-imports exempts package.json exports)", async () => {
+  it("allows importing a package's testSupport secondary entry point (issue #173: no-deep-imports exempts the hardcoded testSupport/ path)", async () => {
     const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
     const importers = violations.map((violation: BoundaryViolation) => violation.importer);
 
