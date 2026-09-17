@@ -20,8 +20,11 @@ async function listServiceEnvExamples(): Promise<Array<{ service: string; conten
       const filePath = path.join(SERVICES_DIR, entry.name, ".env.example");
       try {
         return { service: entry.name, contents: await readFile(filePath, "utf8") };
-      } catch {
-        return null;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+          return null;
+        }
+        throw err;
       }
     }),
   );
@@ -32,6 +35,7 @@ describe("service .env.example database role configuration", () => {
   it("only semprec-api documents the semprec_data connection string", async () => {
     const envExamples = await listServiceEnvExamples();
     expect(envExamples.length).toBeGreaterThan(0);
+    expect(envExamples.some((e) => e.service === CHOKE_POINT_HOSTING_SERVICE)).toBe(true);
 
     for (const { service, contents } of envExamples) {
       if (service === CHOKE_POINT_HOSTING_SERVICE) {
