@@ -15,7 +15,12 @@ change the run:
   Skip Phases 1–4 entirely and start at Phase 5, per "Auditing an issue this
   skill did not create" below. This skill is not model-invocable, so a bare
   request to review an issue does not reach it: run it as
-  `/define-behavior audit #N`.
+  `/define-behavior audit #N`. On its own, `audit #N` is a real-mode run: it
+  edits the live issue through the consensus gate and labels it at the end.
+
+The two compose as `dry-run audit #N`, which reads the live issue and writes
+nothing at all — no edit, no label. There are no draft files to edit in this
+combination, so report the findings and the edits you would have made instead.
 
 The pipeline this feeds is fully autonomous: once issues get `spec:approved`,
 a headless agent on the VPS implements them one by one with **no human in the
