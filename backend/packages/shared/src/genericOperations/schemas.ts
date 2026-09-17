@@ -168,7 +168,7 @@ export const DatabaseQueryInputSchema = z.object({ databaseId: z.string(), ...qu
 export type DatabaseQueryInput = z.infer<typeof DatabaseQueryInputSchema>;
 
 export const ViewItemAddInputSchema = z
-  .object({ viewId: z.string(), itemId: z.string(), position: z.number() })
+  .object({ viewId: z.string(), itemId: z.string(), position: z.number().int().min(0) })
   .strict();
 export type ViewItemAddInput = z.infer<typeof ViewItemAddInputSchema>;
 
@@ -176,7 +176,7 @@ export const ViewItemRemoveInputSchema = z.object({ viewId: z.string(), itemId: 
 export type ViewItemRemoveInput = z.infer<typeof ViewItemRemoveInputSchema>;
 
 export const ViewItemReorderInputSchema = z
-  .object({ viewId: z.string(), itemId: z.string(), position: z.number() })
+  .object({ viewId: z.string(), itemId: z.string(), position: z.number().int().min(0) })
   .strict();
 export type ViewItemReorderInput = z.infer<typeof ViewItemReorderInputSchema>;
 

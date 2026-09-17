@@ -34,6 +34,7 @@ export type FilterCondition =
   | { type: "before" | "after" | "on_or_before" | "on_or_after"; property: string; value: string }
   | { type: "date_range"; property: string; value: { from: string; to: string } }
   | { type: "in"; property: string; value: string[] }
+  /** `value` must be a UUID string — `filterConditionSchema` validates it with `z.uuid()`. */
   | { type: "relation_contains" | "relation_not_contains"; property: string; value: string };
 
 export type FilterNode =
