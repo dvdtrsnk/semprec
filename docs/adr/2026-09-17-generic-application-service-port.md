@@ -32,8 +32,8 @@ implementation of `GenericApplicationPort`. It is a neutral, transport-ignorant
 package (`core-knows-nobody` in `dependency-cruiser.rules.json`): it imports
 only `packages/data`'s public choke-point facade (`createChokePoint`) and
 `packages/shared`'s types, never a store, SQL, or anything from a
-`services/*` transport. It is not owned by or imported from `semprec-api`,
-so `packages/application` — but not the reverse.
+`services/*` transport. It is not owned by `semprec-api`: `semprec-api`
+imports from `packages/application`, never the reverse.
 
 A composition root constructs exactly one instance per injected `Pool`
 (`createGenericApplicationService(pool)`) and threads that single instance
@@ -56,11 +56,13 @@ Ownership split between the two layers:
 - **The choke-point (`packages/data`) owns**: everything that has to be
   atomic against persisted state — idempotency, event emission, ownership and
   locked/archived enforcement, and any invariant that must be checked against
-  the same transaction that performs the write it protects (not a separate
-  read the service does first; see
-  `docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md`'s
-  sibling rule on transactional pre-checks — a service-level read-then-write
-  across two choke-point calls is exactly the gap that rule exists to close).
+  the same transaction that performs the write it protects. A service-level
+  read followed by a separate choke-point write call is not equivalent: the
+  row can change between the two, letting a concurrent write slip past a
+  check that appeared to guard it. The service must never split a guarded
+  write into a pre-check call plus a write call; the choke-point method
+  itself re-checks the invariant against the row its own transaction just
+  fetched.
 
 A transport adapter's own responsibility stops at assembling a canonical
 command object from its own request shape (route params, query, headers,
