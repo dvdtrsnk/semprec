@@ -103,7 +103,7 @@ halts for human attention (`agent:failed` / `agent:blocked`).
 
 | Label | Meaning |
 |---|---|
-| `spec:approved` | Issue's spec passed the batch audit; the VPS dispatcher may pick it up |
+| `spec:approved` | Issue's spec passed the batch audit — no blocking finding survived it; the VPS dispatcher may pick it up |
 | `agent:implementing` | An agent is writing the initial implementation — no PR yet |
 | `agent:reviewing-and-fixing` | PR is open; the agent is watching CI and addressing code-review-bot findings |
 | `agent:done` | Agent finished: PR merged, issue closed |
