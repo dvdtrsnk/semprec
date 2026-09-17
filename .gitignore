@@ -4,3 +4,9 @@ dist/
 .env
 *.log
 .DS_Store
+
+# Issue #173: module-boundaries' fixtures include a real node_modules/ package (a fake
+# @earendil-works/pi-agent-core) so the pi-only-in-agent-runtime dependency-cruiser rule has a
+# real resolvable import to test against — must stay tracked despite the blanket ignore above.
+!backend/packages/module-boundaries/src/__tests__/fixtures/node_modules/
+!backend/packages/module-boundaries/src/__tests__/fixtures/node_modules/**
