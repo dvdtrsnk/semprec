@@ -64,6 +64,20 @@ listed here must be delivered, nothing beyond it may be built. Concrete names
 (endpoints, tables, keys, view types) belong here, written out — canonical stored
 keys are English camelCase, view types kebab-case, user-facing labels via i18n.
 
+**One issue implements exactly one mechanism.** A bundled issue forces one PR
+to carry every bundled mechanism's review surface at once, so a finding on any
+one of them blocks the whole PR and the fix-review loop repeats for all of
+them together: PR #418 (reconnect backoff plus four separate per-stream
+recovery paths in one issue) took 10 review rounds and PR #410 (four
+independent server-side mechanisms in one issue) took 12, against 0-4 rounds
+for single-mechanism PRs #415, #420 and #421. Several bullets are fine when
+they are steps of the same mechanism (the migration, the endpoint that uses
+it, the client call that hits it) — they are not fine when they enumerate
+separable mechanisms ("X, Y, and Z") that don't need each other's code to
+exist or to be tested. Mechanical test: could a reviewer approve the first
+bullet without having read the third? If yes, this is more than one issue and
+belongs in sequential siblings instead.
+
 ### 4. `## Scope`
 
 ```
@@ -103,7 +117,7 @@ halts for human attention (`agent:failed` / `agent:blocked`).
 
 | Label | Meaning |
 |---|---|
-| `spec:approved` | Issue's spec passed the batch audit; the VPS dispatcher may pick it up |
+| `spec:approved` | Issue's spec passed the batch audit — no blocking finding survived it; the VPS dispatcher may pick it up |
 | `agent:implementing` | An agent is writing the initial implementation — no PR yet |
 | `agent:reviewing-and-fixing` | PR is open; the agent is watching CI and addressing code-review-bot findings |
 | `agent:done` | Agent finished: PR merged, issue closed |

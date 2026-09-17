@@ -55,13 +55,26 @@ jobs:
           repository: dvdtrsnk/code-review-bot
           # The code-review Check Run is required on `develop`; keep its producer
           # stable so a bot default-branch change cannot rename that context.
-          ref: 96c06bac88aaf54810c2cf51ea6439f346cf3e48
+          ref: 818f2026d434ea9f63587c10c1e4b9b87de02a49
           token: ${{ secrets.CODE_REVIEW_BOT_TOKEN }}
           path: .code-review-bot
 
       - name: Install Claude Code CLI
         run: |
+          # A pipeline reports its LAST command's status, so `curl | bash` is green
+          # whenever bash is — including when curl downloaded nothing at all. That is
+          # not hypothetical: `curl: (28) SSL connection timeout` left this step green
+          # with no `claude` on PATH, and the run then failed five minutes later as
+          # "Claude pre-flight call failed: no response from Claude", which points at
+          # the credential rather than at the download that actually failed. The
+          # default shell here is `bash -e`, without pipefail.
+          set -o pipefail
           curl -fsSL --connect-timeout 10 --max-time 60 https://claude.ai/install.sh | bash
+          # GITHUB_PATH only affects LATER steps, so verify the binary by its own path.
+          if ! "$HOME/.local/bin/claude" --version >/dev/null 2>&1; then
+            echo "::error::the Claude CLI installer ran but left no usable binary at $HOME/.local/bin/claude"
+            exit 1
+          fi
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Run review
