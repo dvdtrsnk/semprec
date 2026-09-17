@@ -55,6 +55,9 @@ export const CORE_TASK_NAMES = {
   // Issue #156: permanently deletes trashed items (and their cascade subtree) whose
   // `deleted_at` is older than the 30-day retention window.
   ITEM_TRASH_PURGE_SWEEP: "itemTrashPurgeSweep",
+  // Issue #169: the every-minute internal-degradation check (process staleness, queue backlog,
+  // permanently-failed jobs, per-mailbox sync staleness).
+  OBSERVABILITY_CHECK_SYSTEM: "observabilityCheckSystem",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
