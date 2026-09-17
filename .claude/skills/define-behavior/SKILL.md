@@ -6,9 +6,16 @@ disable-model-invocation: true
 
 # /define-behavior — from idea to approved issue batch
 
-Input: `$ARGUMENTS` — a short statement of the desired behavior. If the first word
-is `dry-run`, run every phase normally but write issue drafts to local files
-instead of touching GitHub, and skip labeling.
+Input: `$ARGUMENTS` — a short statement of the desired behavior. Two prefixes
+change the run:
+
+- `dry-run` — run every phase normally but write issue drafts to local files
+  instead of touching GitHub, and skip labeling.
+- `audit #N` — audit issue `#N`, which already exists and was written by hand.
+  Skip Phases 1–4 entirely and start at Phase 5, per "Auditing an issue this
+  skill did not create" below. This skill is not model-invocable, so a bare
+  request to review an issue does not reach it: run it as
+  `/define-behavior audit #N`.
 
 The pipeline this feeds is fully autonomous: once issues get `spec:approved`,
 a headless agent on the VPS implements them one by one with **no human in the
@@ -201,9 +208,9 @@ An unarmed batch is a safe state; a wrongly armed one is not.
 
 ## Auditing an issue this skill did not create
 
-A hand-written issue asked to be armed — "review this one so it gets the label" —
-runs Phase 5 and nothing else: same prompt file, same two auditors, same consensus
-gate, same two-round bound, same terminal states. Judge coverage against the
-issue's own Context and Task rather than an epic spec, and tell the auditors there
-is deliberately no epic. Do not improvise a fresh audit prompt for these; the
+`/define-behavior audit #N` — the user asking for an existing hand-written issue
+to be armed — runs Phase 5 and nothing else: same prompt file, same two auditors,
+same consensus gate, same two-round bound, same terminal states. Judge coverage
+against the issue's own Context and Task rather than an epic spec, and tell the
+auditors there is deliberately no epic. Do not improvise a fresh audit prompt for these; the
 whole point of the prompt file is that the bar does not move between runs.
