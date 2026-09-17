@@ -145,8 +145,10 @@ Apply the `fix` field as written: the smallest edit that removes the finding. Do
 not rewrite a section to answer a finding, and do not fix an advisory finding by
 adding prose that explains itself.
 
-**Growth check.** If any issue body is now more than 1.5× its pre-audit length,
-stop applying fixes. The specification is being healed with prose, which is the
+**Growth check.** Length here means characters, counted the same way before and
+after: `gh issue view <N> --json body --jq '.body | length'` in real mode, `wc -m`
+on the draft file in dry-run. If any issue body is now more than 1.5× its
+pre-audit character count, stop applying fixes. The specification is being healed with prose, which is the
 failure this phase is bounded to prevent. Shorten it back, or hand it to the user.
 
 ### Round 2 — narrow

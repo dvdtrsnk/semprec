@@ -87,7 +87,8 @@ If you cannot fill in the blanks of whichever sentence applies — if the harm i
 "the implementer might be confused", "this could be clearer", or "this may not be
 what was intended" — it is not blocking. Uncertainty is never blocking.
 
-**advisory** — everything else in C1–C6.
+**advisory** — everything else in C1–C7, including a C7 coverage gap whose
+blocking sentence you could not complete.
 
 ## Budget
 
@@ -143,7 +144,8 @@ are given the diff of the fixes applied after round 1 and the findings those fix
 claim to close. You answer exactly two questions:
 
 1. Does each fix actually close the finding it claims to close?
-2. Did the fix introduce a **new** C1–C6 defect?
+2. Did the fix introduce a **new** C1–C7 defect? A fix that deleted a deliverable
+   to satisfy round 1 can open a coverage gap that was not there before.
 
 Pay particular attention to the damage that editing a specification causes to its
 own internal consistency: step renumbering that leaves stale references, a step
