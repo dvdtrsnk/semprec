@@ -153,11 +153,14 @@ export type ViewPatchInput = z.infer<typeof ViewPatchInputSchema>;
 export const ViewDeleteInputSchema = z.object({ viewId: z.string() }).strict();
 export type ViewDeleteInput = z.infer<typeof ViewDeleteInputSchema>;
 
+/** Bounds sort-spec fan-out the same way `MAX_FILTER_NODES_PER_LEVEL` bounds filter fan-out. */
+const MAX_SORT_SPECS = 10;
+
 const queryFields = {
   cursor,
   limit,
   filter: filterNodeSchema.optional(),
-  sort: z.array(sortSpecSchema).optional(),
+  sort: z.array(sortSpecSchema).max(MAX_SORT_SPECS).optional(),
   inTrash: z.boolean().optional(),
 };
 

@@ -159,6 +159,16 @@ describe("ViewQueryInputSchema", () => {
       expect(result.data.limit).toBe(50);
     }
   });
+
+  it("rejects a sort array beyond the max-length cap", () => {
+    const tooManySortSpecs = Array.from({ length: 11 }, (_, i) => ({ property: `p${i}`, direction: "asc" as const }));
+    expect(ViewQueryInputSchema.safeParse({ viewId: "v1", sort: tooManySortSpecs }).success).toBe(false);
+  });
+
+  it("accepts a sort array at the max-length cap", () => {
+    const maxSortSpecs = Array.from({ length: 10 }, (_, i) => ({ property: `p${i}`, direction: "asc" as const }));
+    expect(ViewQueryInputSchema.safeParse({ viewId: "v1", sort: maxSortSpecs }).success).toBe(true);
+  });
 });
 
 describe("ViewItemAddInputSchema / ViewItemReorderInputSchema position bound", () => {
