@@ -24,6 +24,16 @@ describe("checkModuleBoundaries", () => {
     expect(violation?.rules).toContain("no-service-to-service");
   });
 
+  it("rejects a service importing another service's public entry point (issue #173: no imports across the service boundary at all)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const violation = violations.find(
+      (v: BoundaryViolation) => v.importer === "services/svcB/src/badServiceEntryImport.ts",
+    );
+
+    expect(violation?.imported).toBe("services/svcA/src/index.ts");
+    expect(violation?.rules).toContain("no-service-to-service");
+  });
+
   it("rejects a module reaching into a service's internals", async () => {
     const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
     const violation = violations.find(
