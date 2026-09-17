@@ -87,3 +87,12 @@ TO semprec_side;
 -- none of the choke-point tables use a serial column (they key on `gen_random_uuid()`), so this
 -- is scoped to `semprec_side` only, matching the side-table grant it rides along with.
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO semprec_side;
+
+-- The grant above is a point-in-time snapshot of sequences that exist right now. Without this,
+-- a later migration that adds a bigserial column to an existing (or new) side table would
+-- silently need a follow-up sequence grant nobody would think to add, and semprec_side inserts
+-- into that table would fail at runtime with a privilege error instead of at review time. This
+-- mirrors grantQueueSchemaPrivileges's ALTER DEFAULT PRIVILEGES for the graphile_worker schema
+-- in packages/queue/src/index.ts, applied here to the public schema instead.
+ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO semprec_side;
