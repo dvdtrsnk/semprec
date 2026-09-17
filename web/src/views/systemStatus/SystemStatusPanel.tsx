@@ -63,7 +63,10 @@ export function SystemStatusPanel({ operations }: { operations: SystemHealthOper
   if (resource.status === "failed") return <ErrorState error={resource.error} onRetry={reload} />;
 
   const report: SystemHealthReport = resource.value;
-  const isEmpty = report.processes.length === 0 && report.mailboxes.length === 0;
+  // `alertingChecks` belongs in this guard even though it is not a monitored *component*:
+  // an alerting check with no processes and no mailboxes to attribute it to is still an
+  // active degraded signal, and the empty state would hide it behind "nothing is monitored".
+  const isEmpty = report.processes.length === 0 && report.mailboxes.length === 0 && report.alertingChecks.length === 0;
   if (isEmpty) return <EmptyState message={t("systemStatus.empty")} />;
 
   const degraded = report.alertingChecks.length > 0;
@@ -95,13 +98,14 @@ export function SystemStatusPanel({ operations }: { operations: SystemHealthOper
 
       <h2>{t("systemStatus.queue.title")}</h2>
       <ul>
-        <li
-          className={
-            report.queue.overdue > 0 ? "system-status__row system-status__row--degraded" : "system-status__row"
-          }
-        >
-          {t("systemStatus.queue.pending", { count: report.queue.pending })}
-        </li>
+        {/*
+          Pending is a plain queue depth, not a fault count: there is no number of pending
+          jobs that is wrong on its own, which is why this row carries no degraded styling.
+          A backlog that has become a fault arrives as the `queue_backlog` alerting check,
+          listed above. Overdue and permanent below are different — each is already a count
+          of jobs in a bad state, so a non-zero value is itself the signal.
+        */}
+        <li className="system-status__row">{t("systemStatus.queue.pending", { count: report.queue.pending })}</li>
         <li
           className={
             report.queue.overdue > 0 ? "system-status__row system-status__row--degraded" : "system-status__row"

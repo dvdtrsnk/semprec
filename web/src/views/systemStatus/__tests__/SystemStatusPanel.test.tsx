@@ -77,6 +77,40 @@ describe("SystemStatusPanel (issue #170)", () => {
     expect(await screen.findByText("No system status data is available")).toBeInTheDocument();
   });
 
+  it("does not show the empty state while a check is alerting, even with nothing monitored", async () => {
+    // The empty state answers "nothing is being monitored". An alerting check with no
+    // process or mailbox to attribute it to is still an active degraded signal, and
+    // reporting it as "nothing monitored" hides a fault the system already decided on.
+    const operations = stubOperations(async () =>
+      makeReport({
+        processes: [],
+        mailboxes: [],
+        alertingChecks: [{ checkKey: "queue_backlog", detail: {}, changedAt: "2026-09-17T00:00:00.000Z" }],
+      }),
+    );
+    renderPanel(operations);
+
+    expect(await screen.findByText(/1 component/i)).toBeTruthy();
+    expect(screen.queryByText(/nothing is being monitored/i)).toBeNull();
+    expect(screen.getByText("queue_backlog")).toBeTruthy();
+  });
+
+  it("marks overdue and permanent as degraded but never pending, whose count is not a fault on its own", async () => {
+    // Regression: the pending row borrowed `overdue > 0` for its own class, so a backlog
+    // with overdue work marked *pending* as the faulty metric, and a large pending count
+    // with nothing overdue looked healthy. Pending has no threshold this panel may invent
+    // — a backlog that has become a fault arrives as an alerting check instead.
+    const operations = stubOperations(async () => makeReport({ queue: { pending: 5000, overdue: 3, permanent: 0 } }));
+    renderPanel(operations);
+
+    const pendingRow = (await screen.findByText("Pending: 5000")).closest("li");
+    const overdueRow = screen.getByText("Overdue: 3").closest("li");
+    const permanentRow = screen.getByText("Permanently failed: 0").closest("li");
+    expect(pendingRow?.className).toBe("system-status__row");
+    expect(overdueRow?.className).toContain("system-status__row--degraded");
+    expect(permanentRow?.className).toBe("system-status__row");
+  });
+
   it("shows an error state and retries on demand", async () => {
     let calls = 0;
     renderPanel(
