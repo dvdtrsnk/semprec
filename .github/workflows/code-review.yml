@@ -61,7 +61,20 @@ jobs:
 
       - name: Install Claude Code CLI
         run: |
+          # A pipeline reports its LAST command's status, so `curl | bash` is green
+          # whenever bash is — including when curl downloaded nothing at all. That is
+          # not hypothetical: `curl: (28) SSL connection timeout` left this step green
+          # with no `claude` on PATH, and the run then failed five minutes later as
+          # "Claude pre-flight call failed: no response from Claude", which points at
+          # the credential rather than at the download that actually failed. The
+          # default shell here is `bash -e`, without pipefail.
+          set -o pipefail
           curl -fsSL --connect-timeout 10 --max-time 60 https://claude.ai/install.sh | bash
+          # GITHUB_PATH only affects LATER steps, so verify the binary by its own path.
+          if ! "$HOME/.local/bin/claude" --version >/dev/null 2>&1; then
+            echo "::error::the Claude CLI installer ran but left no usable binary at $HOME/.local/bin/claude"
+            exit 1
+          fi
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Run review
