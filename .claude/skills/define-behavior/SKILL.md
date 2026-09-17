@@ -129,8 +129,18 @@ two auditors stop being comparable.
 
 ### The consensus gate
 
-Compare the two reports finding by finding, matching on the `quote` field. Edit
-an issue only for a finding that is either:
+Compare the two reports finding by finding. Two findings are **the same finding**
+when they name the same issue and point at the same defect — judge that by
+substance, not by string equality. Any one of these settles it: their `quote`
+spans overlapping text, their `proof` cites the same command or `path:line`, or
+their `fix` would produce the same edit. Auditors writing independently almost
+never quote a defect identically, so an exact-match rule would collapse the gate
+into "the driver decides" and waste the second auditor entirely. **When you cannot
+tell whether two findings are the same defect, treat them as matching** — the fix
+is the smallest edit that removes it either way, so the cost of pairing them
+wrongly is far below the cost of missing a real agreement.
+
+Edit an issue only for a finding that is either:
 
 - **reported by both auditors**, or
 - **reported by one and carries a proof you verified yourself** — you ran the
