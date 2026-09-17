@@ -9,9 +9,10 @@ import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
  * run, like every other migration) creates `semprec_data`/`semprec_side` with no password —
  * real deployments set one out-of-band (issue #175). These tests need to actually log in as
  * each role against the shared embedded-Postgres instance, so they set a test-only password
- * here, once, using the admin pool's superuser privileges.
+ * here, once, using the admin pool's superuser privileges. Generated at run time (not a literal)
+ * so no credential-shaped string is committed to source control.
  */
-const TEST_ROLE_PASSWORD = "least-privilege-roles-test-only";
+const TEST_ROLE_PASSWORD = randomUUID();
 
 let adminPool: Pool;
 let dataPool: Pool;
