@@ -31,6 +31,7 @@ async function createPendingRequest(): Promise<string> {
     toolName: "search_web",
     riskClass: "unclassified",
     payload,
+    resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
   });
   return created.id;
 }
@@ -57,6 +58,7 @@ describe("approvalRequestsStore (issue #130)", () => {
       toolName: "search_web",
       riskClass: "unclassified",
       payload,
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
 
     expect(created.status).toBe("pending");

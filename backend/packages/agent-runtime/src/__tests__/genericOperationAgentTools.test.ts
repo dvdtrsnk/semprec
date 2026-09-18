@@ -112,7 +112,14 @@ describe("generic operation AgentTools (issue #220)", () => {
     it("a destructive operation, granted, returns a synthetic-success result and creates exactly one pending approval request, without executing", async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete a view" });
-      const view = await chokePoint.createView({ type: "list", name: "Scratch", config: { membership: "manual" } });
+      // Owned by this same agent identity (issue #89's preflight now runs the destructive
+      // command's own `assertViewWritable` ownership check before ever creating the approval
+      // row) — a view owned by someone else is exactly what that preflight must reject outright,
+      // not synthesize a pending approval for, so this fixture has to match the calling agent.
+      const view = await chokePoint.createView(
+        { type: "list", name: "Scratch", config: { membership: "manual" } },
+        { type: "ai_agent", agentProjectItemId: projectItemId },
+      );
       const tools = createGenericOperationAgentTools(pool, moduleRegistry);
 
       const outcome = await tools["view.delete"](run.id, { viewId: view.id });

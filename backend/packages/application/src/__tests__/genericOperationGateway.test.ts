@@ -198,13 +198,29 @@ describe("createGenericOperationGateway (issue #220)", () => {
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete it" });
       const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
 
+      let requestId: string;
       try {
         await gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id });
         expect.unreachable("expected ApprovalRequiredError");
+        return { requestId: "", run, item };
       } catch (err) {
-        const details = (err as ApprovalRequiredError).details;
-        return { requestId: details.approvalRequestId, run, item };
+        requestId = (err as ApprovalRequiredError).details.approvalRequestId;
       }
+
+      // `replayApprovedGenericOperation` itself now rejects a row that isn't `approved` +
+      // `queued` (issue #89's locked-execution protocol), so these direct-call tests must
+      // decide the request first, same as the worker-path tests below — just without also
+      // running the queue job, since they call the executor themselves.
+      const decidedByUserId = await createUser();
+      await withTransaction(pool, (client) =>
+        decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: requestId,
+          decision: "approved",
+          decidedByUserId,
+        }),
+      );
+
+      return { requestId, run, item };
     }
 
     it("replays an approved, untouched request: executes the real operation and returns its result", async () => {
@@ -216,7 +232,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
       const outcome = await replayApprovedGenericOperation(pool, request);
 
       expect(outcome.error).toBe(false);
-      expect(JSON.parse(outcome.result)).toMatchObject({ id: item.id });
+      expect(JSON.parse(outcome.result).result).toMatchObject({ id: item.id });
       expect(await chokePoint.findItem(item.id)).toBeNull();
     });
 
@@ -233,6 +249,13 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect(outcome.error).toBe(true);
       expect(outcome.result).toContain("owner_violation");
       expect(await chokePoint.findItem(item.id)).not.toBeNull();
+
+      // A drifted-provenance rejection is a terminal conflict, not a rollback that leaves the
+      // row `queued` forever for graphile to retry against a request that can never revalidate.
+      const persisted = await getApprovalRequest(pool, requestId);
+      expect(persisted!.executionStatus).toBe("conflict");
+      expect(persisted!.executedAt).not.toBeNull();
+      expect((persisted!.executionResult as { error: { code: string } }).error.code).toBe("version_conflict");
     });
 
     it("rejects a request whose stored canonicalInput no longer satisfies the operation's current schema, without executing", async () => {
@@ -253,6 +276,103 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect(outcome.error).toBe(true);
       expect(outcome.result).toContain("validation_failed");
       expect(await chokePoint.findItem(item.id)).not.toBeNull();
+
+      const persisted = await getApprovalRequest(pool, requestId);
+      expect(persisted!.executionStatus).toBe("conflict");
+      expect(persisted!.executedAt).not.toBeNull();
+    });
+
+    it("terminalizes as conflict, without executing, when the resource changed after approval (snapshot hash mismatch)", async () => {
+      const { requestId, item } = await createPendingDelete();
+
+      // Something else legitimately mutated the item between approval and execution — the
+      // resource's current shape (`item_delete`'s snapshot is hashed off `updatedAt`) no longer
+      // matches the sha256 snapshotted at approval time.
+      await pool.query(`UPDATE items SET updated_at = now() WHERE id = $1`, [item.id]);
+      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
+        payload: GenericOperationApprovalRequestPayload;
+      };
+
+      const outcome = await replayApprovedGenericOperation(pool, request);
+
+      expect(outcome.error).toBe(true);
+      expect(await chokePoint.findItem(item.id)).not.toBeNull();
+
+      const persisted = await getApprovalRequest(pool, requestId);
+      expect(persisted!.executionStatus).toBe("conflict");
+      expect(
+        (persisted!.executionResult as { error: { code: string; details: { currentResource: unknown } } }).error.code,
+      ).toBe("version_conflict");
+      expect(
+        (persisted!.executionResult as { error: { details: { currentResource: unknown } } }).error.details
+          .currentResource,
+      ).not.toBeNull();
+    });
+
+    it("replaying an already-succeeded request is a no-op: returns the persisted result without executing again", async () => {
+      const { requestId, item } = await createPendingDelete();
+      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
+        payload: GenericOperationApprovalRequestPayload;
+      };
+
+      const first = await replayApprovedGenericOperation(pool, request);
+      expect(first.error).toBe(false);
+      expect(await chokePoint.findItem(item.id)).toBeNull();
+
+      const reloaded = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
+        payload: GenericOperationApprovalRequestPayload;
+      };
+      const second = await replayApprovedGenericOperation(pool, reloaded);
+
+      // `second.result` round-tripped through jsonb, so Postgres may reorder its keys — compare
+      // parsed content, not the raw JSON string, to avoid a spurious key-order mismatch.
+      expect(second.error).toBe(first.error);
+      expect(JSON.parse(second.result)).toEqual(JSON.parse(first.result));
+    });
+
+    it("replaying an already-conflicted request is a no-op: returns the persisted conflict without re-authorizing", async () => {
+      const { requestId, run, item } = await createPendingDelete();
+      await pool.query(`UPDATE agent_runs SET project_item_id = $1 WHERE id = $2`, [randomUUID(), run.id]);
+      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
+        payload: GenericOperationApprovalRequestPayload;
+      };
+
+      const first = await replayApprovedGenericOperation(pool, request);
+      expect(first.error).toBe(true);
+
+      // Fix the provenance drift that caused the first conflict — a redelivered job must still
+      // see the row as terminal and must not re-run the check, let alone the mutation.
+      await pool.query(`UPDATE agent_runs SET project_item_id = $1 WHERE id = $2`, [
+        request.payload.actor.agentProjectItemId,
+        run.id,
+      ]);
+      const reloaded = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
+        payload: GenericOperationApprovalRequestPayload;
+      };
+      const second = await replayApprovedGenericOperation(pool, reloaded);
+
+      expect(second.error).toBe(first.error);
+      expect(JSON.parse(second.result)).toEqual(JSON.parse(first.result));
+      expect(await chokePoint.findItem(item.id)).not.toBeNull();
+    });
+  });
+
+  describe("DestructiveApprovalPreflight (issue #89)", () => {
+    it("creates no approval_requests row and no notification when the resource is unauthorized (not found)", async () => {
+      const gateway = createGenericOperationGateway(pool);
+      const userId = await createUser();
+      const projectItemId = randomUUID();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete a ghost" });
+      const actor: AuthenticatedActor = { userId, runId: run.id, agentProjectItemId: projectItemId };
+
+      await expect(gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: randomUUID() })).rejects.toThrow(
+        NotFoundError,
+      );
+
+      const { rows: requestRows } = await pool.query(`SELECT count(*)::int AS count FROM approval_requests`);
+      expect(requestRows[0].count).toBe(0);
+      const { rows: notificationRows } = await pool.query(`SELECT count(*)::int AS count FROM notifications`);
+      expect(notificationRows[0].count).toBe(0);
     });
   });
 
@@ -313,8 +433,8 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect(await chokePoint.findItem(itemId)).toBeNull();
       const finished = await getApprovalRequest(pool, requestId);
       expect(finished!.executedAt).not.toBeNull();
-      expect(finished!.executionError).toBe(false);
-      expect(JSON.parse(finished!.executionResult!)).toMatchObject({ id: itemId });
+      expect(finished!.executionStatus).toBe("succeeded");
+      expect((finished!.executionResult as { result: { id: string } }).result).toMatchObject({ id: itemId });
     });
 
     it("without a configured replay handler, records a failed outcome instead of silently doing nothing", async () => {

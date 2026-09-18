@@ -10,6 +10,18 @@ export type {
   UpdateRelationInput,
   DeleteRelationInput,
   RelationEdge,
+  ResourceSnapshot,
+  ResourceSnapshotKind,
+  DestructiveResourceProjection,
+  DestructiveOperationCheck,
+} from "./chokePoint/chokePoint.js";
+export {
+  databaseArchiveWithClient,
+  propertyDeleteWithClient,
+  viewDeleteWithClient,
+  itemDeleteWithClient,
+  deleteRelationWithClient,
+  computeDestructiveResourceProjection,
 } from "./chokePoint/chokePoint.js";
 export type { CreateDatabaseInput } from "./chokePoint/databasesStore.js";
 export { getDatabaseByModuleId } from "./chokePoint/databasesStore.js";

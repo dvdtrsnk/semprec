@@ -97,6 +97,7 @@ describe("approval request decide+execute (issue #131)", () => {
       toolName: SEARCH_TOOL.name,
       riskClass: "unclassified",
       payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
     const userId = await createUser();
 
@@ -129,6 +130,7 @@ describe("approval request decide+execute (issue #131)", () => {
       toolName: SEARCH_TOOL.name,
       riskClass: "unclassified",
       payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
     const userId = await createUser();
 
@@ -157,6 +159,7 @@ describe("approval request decide+execute (issue #131)", () => {
       toolName: SEARCH_TOOL.name,
       riskClass: "unclassified",
       payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
     const userId = await createUser();
     const otherUser = await createUser();
