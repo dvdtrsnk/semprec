@@ -250,6 +250,17 @@ export type { GenericOperationApprovalReplay } from "./mcp/approvalRequestExecut
 export type { DecideApprovalRequestInput } from "./mcp/approvalDecisionAction.js";
 export { decideAndEnqueueApprovalRequest } from "./mcp/approvalDecisionAction.js";
 
+// `mcpRunCredentialsStore.ts`'s raw hash-keyed lookup is deliberately NOT exported here, mirroring
+// `sessionsStore.ts`'s `getActiveSessionByTokenHash`: only the action-layer wrapper that hashes the
+// presented token internally (`resolveMcpRunCredential`) is reachable from a composition root.
+export type { ActiveMcpRunCredential } from "./mcp/mcpRunCredentialsStore.js";
+export type { MintMcpRunCredentialInput, MintMcpRunCredentialResult } from "./mcp/mcpRunCredentialAction.js";
+export {
+  mintMcpRunCredential,
+  resolveMcpRunCredential,
+  MCP_RUN_CREDENTIAL_TTL_SECONDS,
+} from "./mcp/mcpRunCredentialAction.js";
+
 export {
   projectAgentGuidanceStore,
   guidanceReferenceStore,

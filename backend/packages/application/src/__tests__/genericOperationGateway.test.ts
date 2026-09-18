@@ -274,7 +274,11 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
       const decidedByUserId = await createUser();
       const decided = await withTransaction(pool, (client) =>
-        decideAndEnqueueApprovalRequest(client, { approvalRequestId: requestId, decision: "approved", decidedByUserId }),
+        decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: requestId,
+          decision: "approved",
+          decidedByUserId,
+        }),
       );
       expect(decided!.status).toBe("approved");
 

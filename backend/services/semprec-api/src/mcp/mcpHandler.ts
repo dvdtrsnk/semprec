@@ -1,7 +1,15 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
-import { ApprovalRequiredError, ChokePointError, NotFoundError, ValidationError } from "@semprec/data";
 import {
+  ApprovalRequiredError,
+  ChokePointError,
+  NotFoundError,
+  ValidationError,
+  withTransaction,
+  resolveMcpRunCredential,
+} from "@semprec/data";
+import {
+  CAPABILITY_IDS,
   GENERIC_OPERATION_NAMES,
   operationInputJsonSchema,
   type AuthenticatedActor,
@@ -68,27 +76,68 @@ interface JsonRpcRequestBody {
   params?: unknown;
 }
 
+/** Reads the raw bearer token only — this endpoint never accepts a cookie, unlike `authHandler.ts`'s `extractToken`. */
+function extractBearerToken(req: IncomingMessage): string | null {
+  const header = req.headers.authorization;
+  if (!header?.startsWith("Bearer ")) return null;
+  const token = header.slice("Bearer ".length).trim();
+  return token.length > 0 ? token : null;
+}
+
 /**
  * The authenticated MCP JSON-RPC endpoint (issue #220): `POST /mcp`, `tools/list` and
  * `tools/call` over the same 28-operation generic catalog REST (#219) and the AgentTool
  * composition root (`packages/agent-runtime/src/tools/generic`) dispatch through — MCP names are
- * the operation names prefixed `semprec.` (`fromMcpToolName`/`toMcpToolName`). The actor is
- * derived exclusively from `authenticateRequest`'s verified session/Bearer identity — never from
- * a JSON-RPC param — and carries no `runId`/`agentProjectItemId`, so `gateway.invoke`'s approval
- * gate is always a no-op for this transport (matching REST); an ungranted or unknown tool name
- * both resolve to the same JSON-RPC "method not found" rather than a distinguishable error, per
- * the issue's "never present-but-forbidden" requirement.
+ * the operation names prefixed `semprec.` (`fromMcpToolName`/`toMcpToolName`).
+ *
+ * The actor is derived one of two ways, tried in this order (AC34/44/47):
+ *  1. A restricted MCP run-credential (`resolveMcpRunCredential`, minted via
+ *     `POST /api/agent-runs/mcp-credentials`): resolves to `{ userId, runId, agentProjectItemId }`,
+ *     so `gateway.invoke`'s approval gate actually applies, and the operations it can see are
+ *     further restricted to the credential's own granted capability subset.
+ *  2. `authenticateRequest`'s verified human session/Bearer identity (unmodified) — the original,
+ *     unrestricted path: `{ userId }` alone, no `runId`, so the approval gate stays a no-op for it,
+ *     same as REST.
+ * Either way, an ungranted or unknown tool name resolve to the same JSON-RPC "method not found"
+ * rather than a distinguishable error, per the issue's "never present-but-forbidden" requirement.
  *
  * `grantedCapabilities` is fixed per process (the schema core module's own registered
- * capabilities — see `schemaCoreModuleManifest.ts`), not derived per session: unlike an
- * AgentTool's per-project permission manifest, an authenticated MCP session has no project scope
- * to compute a manifest against.
+ * capabilities — see `schemaCoreModuleManifest.ts`); a restricted credential's own capability list
+ * is intersected against it, so a credential can only ever narrow what a process already grants,
+ * never widen it.
  */
 export function createMcpRequestListener(
   pool: Pool,
   gateway: GenericOperationGateway,
   grantedCapabilities: ReadonlySet<CapabilityId>,
 ) {
+  async function resolveActor(
+    req: IncomingMessage,
+  ): Promise<{ actor: AuthenticatedActor; capabilities: ReadonlySet<CapabilityId> }> {
+    const bearerToken = extractBearerToken(req);
+    const credential = bearerToken
+      ? await withTransaction(pool, (client) => resolveMcpRunCredential(client, bearerToken))
+      : null;
+    if (credential) {
+      const capabilities = new Set(
+        (CAPABILITY_IDS as readonly CapabilityId[]).filter(
+          (id) => credential.capabilities.includes(id) && grantedCapabilities.has(id),
+        ),
+      );
+      return {
+        actor: {
+          userId: credential.actorUserId,
+          runId: credential.runId,
+          agentProjectItemId: credential.agentProjectItemId,
+        },
+        capabilities,
+      };
+    }
+
+    const identity = await authenticateRequest(pool, req);
+    return { actor: { userId: identity.user.id }, capabilities: grantedCapabilities };
+  }
+
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== "POST") {
       sendJson(res, 404, { error: "Not found" });
@@ -97,8 +146,7 @@ export function createMcpRequestListener(
 
     let rpcId: unknown;
     try {
-      const identity = await authenticateRequest(pool, req);
-      const actor: AuthenticatedActor = { userId: identity.user.id };
+      const { actor, capabilities: effectiveCapabilities } = await resolveActor(req);
 
       let body: unknown;
       try {
@@ -123,7 +171,7 @@ export function createMcpRequestListener(
       }
 
       if (rpc.method === "tools/list") {
-        const tools = gateway.listOperations(grantedCapabilities).map((operation) => ({
+        const tools = gateway.listOperations(effectiveCapabilities).map((operation) => ({
           name: toMcpToolName(operation),
           inputSchema: operationInputJsonSchema(operation),
         }));
@@ -140,7 +188,7 @@ export function createMcpRequestListener(
           return;
         }
         try {
-          const output = await gateway.invoke(operation, actor, grantedCapabilities, params?.arguments ?? {});
+          const output = await gateway.invoke(operation, actor, effectiveCapabilities, params?.arguments ?? {});
           sendJson(res, 200, rpcResult(rpcId, { content: [{ type: "text", text: JSON.stringify(output) }] }));
         } catch (err) {
           if (err instanceof NotFoundError) {

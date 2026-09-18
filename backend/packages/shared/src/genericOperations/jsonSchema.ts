@@ -10,5 +10,5 @@ import type { GenericOperationName } from "./operationNames.js";
  * `z.toJSONSchema`'s own default of describing the parsed *output* shape.
  */
 export function operationInputJsonSchema(operation: GenericOperationName): Record<string, unknown> {
-  return z.toJSONSchema(GENERIC_OPERATION_BINDINGS[operation].input, { io: "input" }) as Record<string, unknown>;
+  return z.toJSONSchema(GENERIC_OPERATION_BINDINGS[operation].input, { io: "input" });
 }

@@ -9,6 +9,7 @@ import {
   createViewTypeRegistry,
   hashPassword,
   login,
+  mintMcpRunCredential,
   seedSystem,
   type ChokePoint,
 } from "@semprec/data";
@@ -222,6 +223,86 @@ describe("createMcpRequestListener (issue #220)", () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as JsonRpcResponse;
       expect(body.error?.code).toBe(-32602);
+    });
+  });
+
+  describe("restricted MCP run-credentials (issue #220, AC34/44/47)", () => {
+    async function credentialHeader(capabilities: CapabilityId[]): Promise<{ Authorization: string }> {
+      // `mintMcpRunCredential` attributes the run to the sole account (single-tenant), so one must exist.
+      await createUser(pool, { email: `${randomUUID()}@example.com`, passwordHash: await hashPassword(PASSWORD) });
+      const minted = await mintMcpRunCredential(pool, { projectItemId: randomUUID(), capabilities });
+      return { Authorization: `Bearer ${minted.token}` };
+    }
+
+    it("restricts tools/list to the credential's own capabilities, not the full process grant", async () => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+
+      const res = await rpc(baseUrl, await credentialHeader(["core.item.write"]), {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/list",
+      });
+
+      const body = (await res.json()) as JsonRpcResponse;
+      const tools = (body.result as { tools: { name: string }[] }).tools;
+      expect(tools.some((t) => t.name === "semprec.item.create")).toBe(true);
+      expect(tools.some((t) => t.name === "semprec.item.get")).toBe(false);
+    });
+
+    it("never widens capabilities beyond what the process itself grants", async () => {
+      const { server, baseUrl } = await startServer(NO_CAPABILITIES);
+      servers.push(server);
+
+      const res = await rpc(baseUrl, await credentialHeader([...CAPABILITY_IDS]), {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/list",
+      });
+
+      const body = (await res.json()) as JsonRpcResponse;
+      expect((body.result as { tools: unknown[] }).tools).toEqual([]);
+    });
+
+    it("routes a destructive tool call through the approval gate for a restricted-credential actor, unlike a plain session", async () => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+      const database = await chokePoint.createDatabase({ name: "MCP credential DB" });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+
+      const res = await rpc(baseUrl, await credentialHeader(["core.item.write"]), {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "semprec.item.delete", arguments: { itemId: item.id } },
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as JsonRpcResponse;
+      expect(body.error?.code).toBe(-32001);
+      expect(await chokePoint.findItem(item.id)).not.toBeNull();
+      const { rows } = await pool.query(`SELECT count(*)::int AS count FROM approval_requests`);
+      expect(rows[0].count).toBe(1);
+    });
+
+    it("executes a granted non-destructive tool for a restricted-credential actor", async () => {
+      const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+      servers.push(server);
+      const database = await chokePoint.createDatabase({ name: "MCP credential DB 2" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "title", name: "Title", type: "title" });
+
+      const res = await rpc(baseUrl, await credentialHeader(["core.item.write"]), {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "semprec.item.create", arguments: { databaseId: database.id, properties: { title: "hi" } } },
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as JsonRpcResponse;
+      const content = (body.result as { content: { type: string; text: string }[] }).content;
+      const created = JSON.parse(content[0]!.text) as { id: string };
+      expect(await chokePoint.findItem(created.id)).not.toBeNull();
     });
   });
 });
