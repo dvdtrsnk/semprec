@@ -41,6 +41,22 @@ export async function runApprovalRequestExecutionStatusCutoverMigration(pool: Po
     );
     if (columnRows[0]?.is_nullable === "NO") return; // already migrated
 
+    // 0021_approval_requests.sql's own `CHECK (status IN ('pending', 'approved', 'rejected'))`
+    // already makes an out-of-enum `status` impossible to insert, so this can never fire against
+    // this migration's own schema — kept anyway per the issue's explicit "unknown legacy status
+    // aborts migration" requirement, as cheap defense-in-depth for a one-time, irreversible bulk
+    // terminalization: a future relaxation of that constraint must not silently sweep an
+    // unrecognized status into `legacy_terminal`.
+    const { rows: unknownStatusRows } = await client.query<{ status: string }>(
+      `SELECT DISTINCT status FROM approval_requests WHERE status NOT IN ('pending', 'approved', 'rejected')`,
+    );
+    if (unknownStatusRows.length > 0) {
+      throw new Error(
+        `approvalRequestExecutionStatusCutoverMigration: unknown approval_requests.status value(s) ` +
+          `${unknownStatusRows.map((row) => row.status).join(", ")} — refusing to terminalize rows this migration does not recognize`,
+      );
+    }
+
     const { rows: schemaRows } = await client.query<{ exists: boolean }>(
       `SELECT to_regprocedure('graphile_worker.remove_job(text)') IS NOT NULL AS exists`,
     );

@@ -107,6 +107,20 @@ async function executeDestructiveWithClient(
   }
 }
 
+/**
+ * Extracts the `currentResource` projection `computeDestructiveResourceProjection` attaches to a
+ * non-not-found domain error's `details` (issue #89: "otherwise it is the current projection"), so
+ * `replayApprovedGenericOperation`'s conflict terminalization can report it instead of always
+ * reporting `null`. A `details` shape without `currentResource` (e.g. `not_found`, which never
+ * loads a resource to report) falls back to `null`, matching the spec's `not_found` case exactly.
+ */
+function currentResourceFromErrorDetails(details: unknown): unknown {
+  if (typeof details === "object" && details !== null && "currentResource" in details) {
+    return details.currentResource;
+  }
+  return null;
+}
+
 function isGranted(operation: GenericOperationName, grantedCapabilities: ReadonlySet<CapabilityId>): boolean {
   return grantedCapabilities.has(OPERATION_METADATA[operation].requiresCapability);
 }
@@ -168,13 +182,16 @@ async function invokeBinding<K extends GenericOperationName>(
 }
 
 /**
- * `DestructiveApprovalPreflight` (issue #89): runs the exact resource authorization
- * (`computeDestructiveResourceProjection` — existence/ownership/locked/archive/version, the same
- * checks the destructive command itself would run) that a direct call to this operation would run,
- * and only on success — in the same transaction — inserts the pending approval request plus its
- * `approval_pending` notification, carrying the resulting `resourceSnapshot`. An unauthorized,
- * not-found, locked, or archived call therefore never creates a row or a notification at all: the
- * caller sees the domain `ChokePointError` `computeDestructiveResourceProjection` throws, propagated
+ * `DestructiveApprovalPreflight` (issue #89): revalidates the persisted actor provenance against
+ * the current `agent_run` row first — the same check execution later repeats — so a request whose
+ * actor can never pass that check at execution time is rejected here instead of being queued for a
+ * human to approve something that can only end in `owner_violation`. Only then runs the exact
+ * resource authorization (`computeDestructiveResourceProjection` — existence/ownership/locked/
+ * archive/version, the same checks the destructive command itself would run) that a direct call to
+ * this operation would run, and only on success — in the same transaction — inserts the pending
+ * approval request plus its `approval_pending` notification, carrying the resulting
+ * `resourceSnapshot`. An unauthorized, not-found, locked, or archived call therefore never creates
+ * a row or a notification at all: the caller sees the domain `ChokePointError` thrown, propagated
  * out of this transaction (which rolls back), rather than a queued request nobody can act on.
  */
 async function preflightDestructiveApproval(
@@ -185,13 +202,23 @@ async function preflightDestructiveApproval(
 ): Promise<ApprovalRequest> {
   const metadata = OPERATION_METADATA[operation];
   return withTransaction(pool, async (client) => {
+    const run = await getAgentRun(client, actor.runId!);
+    if (!run || run.projectItemId !== actor.agentProjectItemId || run.actorUserId !== actor.userId) {
+      throw new ForbiddenError(
+        `Actor for operation '${operation}' does not match run '${actor.runId}'s persisted provenance`,
+        undefined,
+        "owner_violation",
+      );
+    }
+
     const check = buildDestructiveCheck(operation, input, toActor(actor));
     const { snapshot } = await computeDestructiveResourceProjection(client, check);
 
     const payload: GenericOperationApprovalRequestPayload = {
       operationName: operation,
       canonicalInput: input,
-      actor: { runId: actor.runId!, agentProjectItemId: actor.agentProjectItemId!, userId: actor.userId },
+      actor: { runId: actor.runId!, agentProjectItemId: actor.agentProjectItemId, userId: actor.userId },
+      resourceSnapshot: snapshot,
     };
     const created = await createPendingApprovalRequest(client, {
       agentRunId: actor.runId!,
@@ -387,7 +414,7 @@ export async function replayApprovedGenericOperation(
       if (err instanceof ChokePointError) {
         return await terminalizeApprovalRequestAsConflict(client, locked.id, {
           reason: err.code,
-          currentResource: null,
+          currentResource: currentResourceFromErrorDetails(err.details),
         });
       }
       throw err;

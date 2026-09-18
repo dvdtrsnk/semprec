@@ -974,6 +974,11 @@ function buildResourceSnapshot(kind: ResourceSnapshotKind, resourceId: string, p
   return { kind, resourceId, sha256: createHash("sha256").update(canonicalizeJson(projection), "utf8").digest("hex") };
 }
 
+/** Widens a caught `ChokePointError`'s `unknown` `details` back to a spreadable object, so a rethrow can add `currentResource` alongside whatever the original error already carried. */
+function detailsObject(details: unknown): Record<string, unknown> {
+  return typeof details === "object" && details !== null ? (details as Record<string, unknown>) : {};
+}
+
 /** The one authorize-and-project call `DestructiveApprovalPreflight` and `ApprovedOperationExecutor` both make (issue #89) — never mutates, and throws the exact domain error the matching `*WithClient` mutation would throw for the same input, so a rejection here means the mutation would also reject it. */
 export type DestructiveOperationCheck =
   | { operation: "database.archive"; input: { databaseId: string } }
@@ -990,25 +995,17 @@ export async function computeDestructiveResourceProjection(
     case "database.archive": {
       const database = await databasesStore.getDatabase(client, check.input.databaseId);
       if (!database) throw new NotFoundError(`Database ${check.input.databaseId} not found`);
-      if (database.system) throw new ForbiddenError("A system database cannot be archived");
+      if (database.system) {
+        throw new ForbiddenError("A system database cannot be archived", { currentResource: database });
+      }
       return { snapshot: buildResourceSnapshot("database_archive", database.id, database), currentResource: database };
     }
     case "property.delete": {
       const property = await propertiesStore.getProperty(client, check.input.propertyId);
       if (!property) throw new NotFoundError(`Property ${check.input.propertyId} not found`);
-      if (property.type === "relation") {
-        const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, property.id);
-        if (reldef) {
-          await assertRelationDeletable(client, reldef.id);
-          const otherPropertyId = reldef.propertyIdA === property.id ? reldef.propertyIdB : reldef.propertyIdA;
-          if (otherPropertyId) {
-            const otherProperty = await propertiesStore.getProperty(client, otherPropertyId);
-            if (otherProperty?.locked) {
-              throw new ForbiddenError(`Cannot delete: the paired relation property ${otherPropertyId} is locked`);
-            }
-          }
-        }
-      }
+      // Loaded before the relation-type checks below (unlike `propertyDeleteWithClient`, which
+      // never reads the database at all) purely so a rejection here can report `currentResource` —
+      // safe because the real mutation's own check order never depends on this lookup.
       const database = await databasesStore.getDatabase(client, property.databaseId);
       if (!database) throw new NotFoundError(`Database ${property.databaseId} not found`);
       const projected = {
@@ -1016,12 +1013,41 @@ export async function computeDestructiveResourceProjection(
         databaseSchemaLocked: database.schemaLocked,
         databaseArchivedAt: database.archivedAt,
       };
+      if (property.type === "relation") {
+        const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, property.id);
+        if (reldef) {
+          try {
+            await assertRelationDeletable(client, reldef.id);
+          } catch (err) {
+            if (err instanceof ValidationError) {
+              throw new ValidationError(err.message, { ...detailsObject(err.details), currentResource: projected });
+            }
+            throw err;
+          }
+          const otherPropertyId = reldef.propertyIdA === property.id ? reldef.propertyIdB : reldef.propertyIdA;
+          if (otherPropertyId) {
+            const otherProperty = await propertiesStore.getProperty(client, otherPropertyId);
+            if (otherProperty?.locked) {
+              throw new ForbiddenError(`Cannot delete: the paired relation property ${otherPropertyId} is locked`, {
+                currentResource: projected,
+              });
+            }
+          }
+        }
+      }
       return { snapshot: buildResourceSnapshot("property_delete", property.id, projected), currentResource: projected };
     }
     case "view.delete": {
       const view = await viewsStore.getView(client, check.input.viewId);
       if (!view) throw new NotFoundError(`View ${check.input.viewId} not found`);
-      assertViewWritable(view, check.actor);
+      try {
+        assertViewWritable(view, check.actor);
+      } catch (err) {
+        if (err instanceof ForbiddenError) {
+          throw new ForbiddenError(err.message, { ...detailsObject(err.details), currentResource: view }, err.code);
+        }
+        throw err;
+      }
       return { snapshot: buildResourceSnapshot("view_delete", view.id, view), currentResource: view };
     }
     case "item.delete": {
@@ -1034,18 +1060,6 @@ export async function computeDestructiveResourceProjection(
       if (!item || item.deletedAt) throw new NotFoundError(`Item ${check.input.itemId} not found`);
       const database = await databasesStore.getDatabase(client, item.databaseId);
       if (!database) throw new NotFoundError(`Database ${item.databaseId} not found`);
-      if (database.archivedAt) {
-        throw new ForbiddenError(
-          `Database ${item.databaseId} is archived and cannot be written to`,
-          { field: "databaseId" },
-          "database_archived",
-        );
-      }
-      if (item.properties.systemActive === true) {
-        throw new ForbiddenError(`Item ${item.id} is a system-active project and cannot be deleted, only deactivated`, {
-          field: "systemActive",
-        });
-      }
       const projected = {
         id: item.id,
         databaseId: item.databaseId,
@@ -1053,9 +1067,28 @@ export async function computeDestructiveResourceProjection(
         deletedAt: item.deletedAt,
         databaseArchivedAt: database.archivedAt,
       };
+      if (database.archivedAt) {
+        throw new ForbiddenError(
+          `Database ${item.databaseId} is archived and cannot be written to`,
+          { field: "databaseId", currentResource: projected },
+          "database_archived",
+        );
+      }
+      if (item.properties.systemActive === true) {
+        throw new ForbiddenError(`Item ${item.id} is a system-active project and cannot be deleted, only deactivated`, {
+          field: "systemActive",
+          currentResource: projected,
+        });
+      }
       return { snapshot: buildResourceSnapshot("item_delete", item.id, projected), currentResource: projected };
     }
     case "relation.delete": {
+      // Unlike the other four kinds, `currentResource` stays absent from `assertRelationDatabasesNotArchived`/
+      // `assertRelationPropertyWritable` failures here: this check order is the exact order
+      // `deleteRelationWithClient` itself enforces, and the edge this function would report as
+      // `currentResource` isn't loaded until after both of those checks in the real mutation too —
+      // loading it earlier just to attach it to a rejection would risk diverging from the
+      // mutation's own error precedence, which this function's docstring promises to preserve.
       const edgeContext = await loadRelationEdgeContext(client, check.input.relationPropertyId);
       await assertRelationDatabasesNotArchived(client, edgeContext);
       assertRelationPropertyWritable(edgeContext.property, undefined);

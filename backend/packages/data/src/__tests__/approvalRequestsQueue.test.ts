@@ -78,6 +78,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       operationName: "item.delete",
       canonicalInput: { itemId: randomUUID() },
       actor: { runId: run.id, agentProjectItemId: randomUUID(), userId: run.actorUserId },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     };
     await createPendingApprovalRequest(pool, {
       agentRunId: run.id,

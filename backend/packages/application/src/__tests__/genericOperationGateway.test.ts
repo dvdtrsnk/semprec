@@ -14,13 +14,20 @@ import {
   createViewTypeRegistry,
   decideAndEnqueueApprovalRequest,
   getApprovalRequest,
+  getDatabaseByModuleId,
   seedSystem,
   withTransaction,
   type ApprovalRequest,
   type ChokePoint,
   type GenericOperationApprovalRequestPayload,
 } from "@semprec/data";
-import { CAPABILITY_IDS, GENERIC_OPERATION_NAMES, OPERATION_METADATA, type AuthenticatedActor } from "@semprec/shared";
+import {
+  CAPABILITY_IDS,
+  GENERIC_OPERATION_NAMES,
+  OPERATION_METADATA,
+  type AuthenticatedActor,
+  type GenericOperationName,
+} from "@semprec/shared";
 import { createGenericOperationGateway, replayApprovedGenericOperation } from "../genericOperationGateway.js";
 
 let pool: Pool;
@@ -35,6 +42,36 @@ async function createUser(): Promise<string> {
     [`${randomUUID()}@example.com`],
   );
   return rows[0]!.id;
+}
+
+/** A real Projects item id (not just a random UUID) — required by `assertAuthenticatedAgentIdentity`, which `viewDeleteWithClient` enforces but the other four destructive `*WithClient` mutations do not. */
+async function createRealAgentProjectItemId(): Promise<string> {
+  const projectsDatabase = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
+  const chokePointHandle = createChokePoint(pool);
+  const item = await chokePointHandle.createItem({ databaseId: projectsDatabase!.id, properties: {} });
+  return item.id;
+}
+
+/** Runs `gateway.invoke` for a destructive operation, extracts the queued `approvalRequestId`, and approves it — the shared setup every replay-parity test needs before it can call `replayApprovedGenericOperation`. */
+async function approveDestructive(
+  operation: GenericOperationName,
+  actor: AuthenticatedActor,
+  input: unknown,
+): Promise<string> {
+  const gateway = createGenericOperationGateway(pool);
+  let requestId: string;
+  try {
+    await gateway.invoke(operation, actor, ALL_CAPABILITIES, input);
+    expect.unreachable("expected ApprovalRequiredError");
+    return "";
+  } catch (err) {
+    requestId = (err as ApprovalRequiredError).details.approvalRequestId;
+  }
+  const decidedByUserId = await createUser();
+  await withTransaction(pool, (client) =>
+    decideAndEnqueueApprovalRequest(client, { approvalRequestId: requestId, decision: "approved", decidedByUserId }),
+  );
+  return requestId;
 }
 
 describe("createGenericOperationGateway (issue #220)", () => {
@@ -139,12 +176,11 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
     it("defers a destructive operation for a full agent actor: no execution, one pending approval_requests row, ApprovalRequiredError", async () => {
       const gateway = createGenericOperationGateway(pool);
-      const userId = await createUser();
       const database = await chokePoint.createDatabase({ name: "Gateway DB 3" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
       const projectItemId = randomUUID();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete it" });
-      const actor: AuthenticatedActor = { userId, runId: run.id, agentProjectItemId: projectItemId };
+      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
 
       try {
         await gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id });
@@ -190,7 +226,11 @@ describe("createGenericOperationGateway (issue #220)", () => {
   });
 
   describe("replayApprovedGenericOperation", () => {
-    async function createPendingDelete(): Promise<{ requestId: string; run: { id: string }; item: { id: string } }> {
+    async function createPendingDelete(): Promise<{
+      requestId: string;
+      run: { id: string };
+      item: { id: string; databaseId: string };
+    }> {
       const gateway = createGenericOperationGateway(pool);
       const database = await chokePoint.createDatabase({ name: "Replay DB" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
@@ -309,6 +349,27 @@ describe("createGenericOperationGateway (issue #220)", () => {
       ).not.toBeNull();
     });
 
+    it("terminalizes as conflict with a populated currentResource for a non-not-found domain failure (database archived after approval)", async () => {
+      const { requestId, item } = await createPendingDelete();
+
+      // The item itself is untouched (so the snapshot hash still matches), but its database was
+      // archived after approval — `computeDestructiveResourceProjection` rejects this as
+      // `database_archived`, which lands in `replayApprovedGenericOperation`'s `catch (err)`
+      // branch rather than the snapshot-hash-mismatch branch tested above.
+      await pool.query(`UPDATE databases SET archived_at = now() WHERE id = $1`, [item.databaseId]);
+      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
+        payload: GenericOperationApprovalRequestPayload;
+      };
+
+      const outcome = await replayApprovedGenericOperation(pool, request);
+
+      expect(outcome.error).toBe(true);
+      const parsed = JSON.parse(outcome.result) as { error: { code: string; details: Record<string, unknown> } };
+      expect(parsed.error.details.reason).toBe("database_archived");
+      expect(parsed.error.details.currentResource).not.toBeNull();
+      expect((parsed.error.details.currentResource as { id: string }).id).toBe(item.id);
+    });
+
     it("replaying an already-succeeded request is a no-op: returns the persisted result without executing again", async () => {
       const { requestId, item } = await createPendingDelete();
       const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
@@ -358,21 +419,192 @@ describe("createGenericOperationGateway (issue #220)", () => {
   });
 
   describe("DestructiveApprovalPreflight (issue #89)", () => {
+    async function expectNoApprovalOrNotification(): Promise<void> {
+      const { rows: requestRows } = await pool.query(`SELECT count(*)::int AS count FROM approval_requests`);
+      expect(requestRows[0].count).toBe(0);
+      const { rows: notificationRows } = await pool.query(`SELECT count(*)::int AS count FROM notifications`);
+      expect(notificationRows[0].count).toBe(0);
+    }
+
     it("creates no approval_requests row and no notification when the resource is unauthorized (not found)", async () => {
       const gateway = createGenericOperationGateway(pool);
-      const userId = await createUser();
       const projectItemId = randomUUID();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete a ghost" });
-      const actor: AuthenticatedActor = { userId, runId: run.id, agentProjectItemId: projectItemId };
+      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
 
       await expect(gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: randomUUID() })).rejects.toThrow(
         NotFoundError,
       );
 
-      const { rows: requestRows } = await pool.query(`SELECT count(*)::int AS count FROM approval_requests`);
-      expect(requestRows[0].count).toBe(0);
-      const { rows: notificationRows } = await pool.query(`SELECT count(*)::int AS count FROM notifications`);
-      expect(notificationRows[0].count).toBe(0);
+      await expectNoApprovalOrNotification();
+    });
+
+    it("creates no approval_requests row and no notification when the actor's persisted provenance no longer matches (owner_violation)", async () => {
+      const gateway = createGenericOperationGateway(pool);
+      const database = await chokePoint.createDatabase({ name: "Preflight Provenance" });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+      const projectItemId = randomUUID();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete it" });
+      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+
+      // The run's own persisted provenance drifted from what `actor` claims — the same drift
+      // `replayApprovedGenericOperation` catches at execution time, now caught before a request
+      // is ever queued for a human to approve.
+      await pool.query(`UPDATE agent_runs SET project_item_id = $1 WHERE id = $2`, [randomUUID(), run.id]);
+
+      try {
+        await gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id });
+        expect.unreachable("expected ForbiddenError");
+      } catch (err) {
+        expect(err).toBeInstanceOf(ForbiddenError);
+        expect((err as ForbiddenError).code).toBe("owner_violation");
+      }
+
+      expect(await chokePoint.findItem(item.id)).not.toBeNull();
+      await expectNoApprovalOrNotification();
+    });
+
+    it("creates no approval_requests row and no notification when the resource is locked (paired relation property locked)", async () => {
+      const gateway = createGenericOperationGateway(pool);
+      const tasks = await chokePoint.createDatabase({ name: "Preflight Locked Tasks" });
+      const participants = await chokePoint.createDatabase({ name: "Preflight Locked Participants" });
+      const { property: assignedTo } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: tasks.id,
+        key: "assignedTo",
+        name: "Assigned To",
+        targetDatabaseId: participants.id,
+        inverse: { key: "assignedTasks", name: "Assigned Tasks", locked: true },
+      });
+      const projectItemId = randomUUID();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete a property" });
+      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+
+      await expect(
+        gateway.invoke("property.delete", actor, ALL_CAPABILITIES, { propertyId: assignedTo.id }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+
+      expect((await chokePoint.listProperties(tasks.id)).some((p) => p.id === assignedTo.id)).toBe(true);
+      await expectNoApprovalOrNotification();
+    });
+
+    it("persists resourceSnapshot inside the payload, matching the row's own resourceSnapshot column", async () => {
+      const gateway = createGenericOperationGateway(pool);
+      const database = await chokePoint.createDatabase({ name: "Preflight Snapshot Payload" });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+      const projectItemId = randomUUID();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete it" });
+      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+
+      let requestId: string;
+      try {
+        await gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id });
+        expect.unreachable("expected ApprovalRequiredError");
+        return;
+      } catch (err) {
+        requestId = (err as ApprovalRequiredError).details.approvalRequestId;
+      }
+
+      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
+        payload: GenericOperationApprovalRequestPayload;
+      };
+      expect(request.payload.resourceSnapshot).toEqual(request.resourceSnapshot);
+    });
+  });
+
+  describe("replay parity for all five destructive operations (issue #89 acceptance criteria)", () => {
+    async function makeAgentActor(): Promise<AuthenticatedActor> {
+      const projectItemId = await createRealAgentProjectItemId();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "replay parity" });
+      return { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+    }
+
+    async function replay(requestId: string) {
+      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
+        payload: GenericOperationApprovalRequestPayload;
+      };
+      const outcome = await replayApprovedGenericOperation(pool, request);
+      const finished = await getApprovalRequest(pool, requestId);
+      return { outcome, finished };
+    }
+
+    it("database.archive: preflight, approve, and replay archive the database exactly once", async () => {
+      const database = await chokePoint.createDatabase({ name: "Replay Parity Archive" });
+      const actor = await makeAgentActor();
+
+      const requestId = await approveDestructive("database.archive", actor, { databaseId: database.id });
+      const { outcome, finished } = await replay(requestId);
+
+      expect(outcome.error).toBe(false);
+      expect(finished!.executionStatus).toBe("succeeded");
+      const reloaded = await chokePoint.getDatabase(database.id);
+      expect(reloaded?.archivedAt).not.toBeNull();
+    });
+
+    it("property.delete: preflight, approve, and replay delete the property exactly once", async () => {
+      const database = await chokePoint.createDatabase({ name: "Replay Parity Property" });
+      const property = await chokePoint.createProperty({
+        databaseId: database.id,
+        key: "notes",
+        name: "Notes",
+        type: "text",
+      });
+      const actor = await makeAgentActor();
+
+      const requestId = await approveDestructive("property.delete", actor, { propertyId: property.id });
+      const { outcome, finished } = await replay(requestId);
+
+      expect(outcome.error).toBe(false);
+      expect(finished!.executionStatus).toBe("succeeded");
+      const remaining = await chokePoint.listProperties(database.id);
+      expect(remaining.some((p) => p.id === property.id)).toBe(false);
+    });
+
+    it("view.delete: preflight, approve, and replay delete the view exactly once", async () => {
+      const database = await chokePoint.createDatabase({ name: "Replay Parity View" });
+      const actor = await makeAgentActor();
+      const view = await chokePoint.createView(
+        { databaseId: database.id, type: "table", name: "Agent View" },
+        { type: "ai_agent", agentProjectItemId: actor.agentProjectItemId },
+      );
+
+      const requestId = await approveDestructive("view.delete", actor, { viewId: view.id });
+      const { outcome, finished } = await replay(requestId);
+
+      expect(outcome.error).toBe(false);
+      expect(finished!.executionStatus).toBe("succeeded");
+      expect(await chokePoint.getView(view.id)).toBeNull();
+    });
+
+    it("relation.delete: preflight, approve, and replay delete the edge exactly once", async () => {
+      const tasks = await chokePoint.createDatabase({ name: "Replay Parity Rel Tasks" });
+      const participants = await chokePoint.createDatabase({ name: "Replay Parity Rel Participants" });
+      const { property: assignedTo } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: tasks.id,
+        key: "assignedTo",
+        name: "Assigned To",
+        targetDatabaseId: participants.id,
+        inverse: { key: "assignedTasks", name: "Assigned Tasks" },
+      });
+      const task = await chokePoint.createItem({ databaseId: tasks.id, properties: {} });
+      const person = await chokePoint.createItem({ databaseId: participants.id, properties: {} });
+      const edge = await chokePoint.createRelation({
+        relationPropertyId: assignedTo.id,
+        callerItemId: task.id,
+        targetItemId: person.id,
+      });
+      const actor = await makeAgentActor();
+
+      const requestId = await approveDestructive("relation.delete", actor, {
+        relationPropertyId: assignedTo.id,
+        callerItemId: task.id,
+        targetItemId: person.id,
+      });
+      const { outcome, finished } = await replay(requestId);
+
+      expect(outcome.error).toBe(false);
+      expect(finished!.executionStatus).toBe("succeeded");
+      const { rows } = await pool.query(`SELECT count(*)::int AS count FROM item_relations WHERE id = $1`, [edge.id]);
+      expect(rows[0].count).toBe(0);
     });
   });
 

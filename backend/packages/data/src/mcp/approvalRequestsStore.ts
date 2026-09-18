@@ -75,16 +75,19 @@ export interface McpInvokeApprovalRequestPayload {
 }
 
 /**
- * The inbound generic-operation payload shape (issue #220): the operation name, its
- * already-validated canonical input, and the exact actor identity `agentRunsStore`'s persisted
- * `agent_run` row backed at dispatch time — never re-derived from `agentRunId` at replay, so a
- * mismatch between this snapshot and the run's current provenance is what `owner_violation`
- * detects at `approvalExecute` time.
+ * The inbound generic-operation payload shape (issue #220, `resourceSnapshot` added by #89): the
+ * operation name, its already-validated canonical input, the exact actor identity
+ * `agentRunsStore`'s persisted `agent_run` row backed at dispatch time — never re-derived from
+ * `agentRunId` at replay, so a mismatch between this snapshot and the run's current provenance is
+ * what `owner_violation` detects at `approvalExecute` time — and the same resource snapshot
+ * persisted in the row's own `resource_snapshot` column, duplicated into the payload so the
+ * payload alone is a self-contained record of exactly what was approved.
  */
 export interface GenericOperationApprovalRequestPayload {
   operationName: string;
   canonicalInput: unknown;
   actor: { runId: string; agentProjectItemId: string; userId: string };
+  resourceSnapshot: ApprovalResourceSnapshot;
 }
 
 export type ApprovalRequestPayload = McpInvokeApprovalRequestPayload | GenericOperationApprovalRequestPayload;
