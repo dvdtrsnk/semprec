@@ -248,7 +248,7 @@ describe("Microsoft Graph webhook subscription lifecycle (issue #198)", () => {
       renewalIntervalMs: 20,
     });
     const lifecycle = factory({ mailboxItemId, syncMode: "graph_api" });
-    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
 
     try {
       await lifecycle.start();
