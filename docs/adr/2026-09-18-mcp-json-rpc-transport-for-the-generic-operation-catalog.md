@@ -23,7 +23,7 @@ should be layered onto the same process's HTTP surface.
 
 ## Decision
 
-`services/semprec-api/src/mcp/mcpHandler.ts` implements the JSON-RPC framing
+`backend/services/semprec-api/src/mcp/mcpHandler.ts` implements the JSON-RPC framing
 by hand — parsing and validating the envelope, mapping `tools/list`/
 `tools/call` to `GenericOperationGateway`, and mapping the result back to a
 JSON-RPC response — rather than adopting a general-purpose MCP server

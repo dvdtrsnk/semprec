@@ -27,7 +27,7 @@ do: "the shared invocation interceptor checks approval only when
 descriptor data of #219" and "agent AgentTool/MCP calls marked destructive
 insert #32's pending request... through #32's existing approval-request
 writer." `GenericOperationGateway.invoke`
-(`packages/application/src/genericOperationGateway.ts`) implements exactly
+(`backend/packages/application/src/genericOperationGateway.ts`) implements exactly
 that: a full agent actor's call is queued for approval only when
 `OPERATION_METADATA[operation].requiresApproval` is true; every other
 generic-operation write a full agent actor makes — creating an item,
