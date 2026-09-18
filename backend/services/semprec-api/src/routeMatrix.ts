@@ -424,4 +424,13 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     surface: "ws",
     public: false,
   },
+  {
+    name: "Microsoft Graph mail webhook",
+    method: "POST",
+    path: "/api/mail/graph/webhook",
+    surface: "api",
+    public: true,
+    publicReason:
+      "Issue #198: Microsoft Graph itself calls this with no session to deliver subscription validation and change notifications; each notification's clientState (checked in constant time) is the receiver's own authenticity check, not a session.",
+  },
 ];

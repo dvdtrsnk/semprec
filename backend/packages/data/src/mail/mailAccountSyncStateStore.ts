@@ -1,4 +1,4 @@
-import type { Queryable } from "../db/pool.js";
+import { requireAffectedRows, type Queryable } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 
 export const SYNC_MODES = ["imap", "gmail_api", "graph_api"] as const;
@@ -35,6 +35,7 @@ export interface MailAccountSyncStateRow {
   gmailWatchExpiresAt: string | null;
   graphSubscriptionId: string | null;
   graphSubscriptionExpiresAt: string | null;
+  graphClientState: string | null;
   graphDeltaLink: string | null;
   lastError: string | null;
   lastActivityAt: string | null;
@@ -49,6 +50,7 @@ type MailAccountSyncStateDbRow = {
   gmail_watch_expires_at: Date | null;
   graph_subscription_id: string | null;
   graph_subscription_expires_at: Date | null;
+  graph_client_state: string | null;
   graph_delta_link: string | null;
   last_error: string | null;
   last_activity_at: Date | null;
@@ -63,6 +65,7 @@ function mapRow(row: MailAccountSyncStateDbRow): MailAccountSyncStateRow {
     gmailWatchExpiresAt: row.gmail_watch_expires_at?.toISOString() ?? null,
     graphSubscriptionId: row.graph_subscription_id,
     graphSubscriptionExpiresAt: row.graph_subscription_expires_at?.toISOString() ?? null,
+    graphClientState: row.graph_client_state,
     graphDeltaLink: row.graph_delta_link,
     lastError: row.last_error,
     lastActivityAt: row.last_activity_at?.toISOString() ?? null,
@@ -71,7 +74,7 @@ function mapRow(row: MailAccountSyncStateDbRow): MailAccountSyncStateRow {
 }
 
 const COLUMNS =
-  "item_id, sync_mode, gmail_history_id, gmail_watch_expires_at, graph_subscription_id, graph_subscription_expires_at, graph_delta_link, last_error, last_activity_at, next_expected_activity_at";
+  "item_id, sync_mode, gmail_history_id, gmail_watch_expires_at, graph_subscription_id, graph_subscription_expires_at, graph_client_state, graph_delta_link, last_error, last_activity_at, next_expected_activity_at";
 
 export interface EnsureMailAccountSyncStateInput {
   itemId: string;
@@ -195,6 +198,59 @@ export async function recordGraphActivity(client: Queryable, input: RecordGraphA
       input.nextExpectedActivityAt,
     ],
   );
+}
+
+/** The webhook receiver's account lookup (graphWebhookNotifications.ts, issue #198) — maps an inbound notification's `subscriptionId` back to the account it belongs to, or `null` for one this app never registered (a stale/foreign subscription id). */
+export async function getMailAccountSyncStateByGraphSubscriptionId(
+  client: Queryable,
+  subscriptionId: string,
+): Promise<MailAccountSyncStateRow | null> {
+  const { rows } = await client.query<MailAccountSyncStateDbRow>(
+    `SELECT ${COLUMNS} FROM mail_account_sync_state WHERE graph_subscription_id = $1`,
+    [subscriptionId],
+  );
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
+export interface RecordGraphSubscriptionRegistrationInput {
+  subscriptionId: string;
+  expiresAt: Date;
+  clientState: string;
+}
+
+/**
+ * Owned by the subscription lifecycle (graphWebhookLifecycle.ts, issue #198) — a fresh
+ * registration replaces `graph_subscription_id`/`graph_client_state` outright (unlike
+ * `recordGmailWatchRegistration`'s `COALESCE`-guarded history cursor, there is nothing here a
+ * concurrent reconcile pass could have advanced past): the id and secret this row held before
+ * belonged to whatever subscription Graph just replaced, and the webhook receiver must start
+ * validating notifications against the new pair immediately, not the stale one.
+ */
+export async function recordGraphSubscriptionRegistration(
+  client: Queryable,
+  itemId: string,
+  input: RecordGraphSubscriptionRegistrationInput,
+): Promise<void> {
+  const result = await client.query(
+    `UPDATE mail_account_sync_state
+     SET graph_subscription_id = $2, graph_subscription_expires_at = $3, graph_client_state = $4
+     WHERE item_id = $1`,
+    [itemId, input.subscriptionId, input.expiresAt, input.clientState],
+  );
+  requireAffectedRows(result, `graph subscription registration for item ${itemId}`);
+}
+
+/** The renewal-only counterpart to `recordGraphSubscriptionRegistration` above — extends the expiry of the already-persisted subscription id/clientState pair without disturbing either. */
+export async function recordGraphSubscriptionRenewal(
+  client: Queryable,
+  itemId: string,
+  expiresAt: Date,
+): Promise<void> {
+  const result = await client.query(
+    `UPDATE mail_account_sync_state SET graph_subscription_expires_at = $2 WHERE item_id = $1`,
+    [itemId, expiresAt],
+  );
+  requireAffectedRows(result, `graph subscription renewal for item ${itemId}`);
 }
 
 export interface RecordImapActivityInput {
