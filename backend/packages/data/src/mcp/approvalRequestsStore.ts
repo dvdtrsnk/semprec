@@ -34,11 +34,32 @@ export interface ApprovalRequest {
   executionResult: string | null;
 }
 
-/** The exact deferred choke-point payload: enough to re-issue the call once approved, unchanged. */
-export interface ApprovalRequestPayload {
+/** The outbound third-party-MCP-tool-invoke payload shape (issue #130) — the resolved target's identity plus the model-supplied arguments. */
+export interface McpInvokeApprovalRequestPayload {
   mcpToolRegistrationId: string;
   mcpServerItemId: string;
   args: Record<string, unknown>;
+}
+
+/**
+ * The inbound generic-operation payload shape (issue #220): the operation name, its
+ * already-validated canonical input, and the exact actor identity `agentRunsStore`'s persisted
+ * `agent_run` row backed at dispatch time — never re-derived from `agentRunId` at replay, so a
+ * mismatch between this snapshot and the run's current provenance is what `owner_violation`
+ * detects at `approvalExecute` time.
+ */
+export interface GenericOperationApprovalRequestPayload {
+  operationName: string;
+  canonicalInput: unknown;
+  actor: { runId: string; agentProjectItemId: string; userId: string };
+}
+
+export type ApprovalRequestPayload = McpInvokeApprovalRequestPayload | GenericOperationApprovalRequestPayload;
+
+export function isGenericOperationApprovalRequestPayload(
+  payload: ApprovalRequestPayload,
+): payload is GenericOperationApprovalRequestPayload {
+  return "operationName" in payload;
 }
 
 interface ApprovalRequestRow {

@@ -72,6 +72,7 @@ describe("approval request decide+execute (issue #131)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    await createUser();
     const viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry();
     await seedSystem(pool, viewTypeRegistry);
     mcpServersId = await databaseIdFor("mcpServers");

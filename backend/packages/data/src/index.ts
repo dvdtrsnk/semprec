@@ -225,25 +225,41 @@ export {
 export type {
   ApprovalRequest,
   ApprovalRequestPayload,
+  McpInvokeApprovalRequestPayload,
+  GenericOperationApprovalRequestPayload,
   ApprovalRequestStatus,
   ApprovalRequestDecision,
   CreatePendingApprovalRequestInput,
+  ApprovalRequestOutcome,
 } from "./mcp/approvalRequestsStore.js";
 export {
   createPendingApprovalRequest,
   getApprovalRequest,
   listPendingApprovalRequests,
+  isGenericOperationApprovalRequestPayload,
 } from "./mcp/approvalRequestsStore.js";
 export type { ApprovalRequestQueueEntry, ApprovalRequestSafeSummary } from "./mcp/approvalRequestsQueue.js";
 export { listApprovalRequestsQueue } from "./mcp/approvalRequestsQueue.js";
 export type { McpInvokeResult, McpInvokeArgs, McpInvokeOptions } from "./mcp/mcpToolExecution.js";
 export { executeMcpInvocation } from "./mcp/mcpToolExecution.js";
+export type { GenericOperationApprovalReplay } from "./mcp/approvalRequestExecution.js";
 // `approvalRequestsStore.ts`'s `decideApprovalRequest` is deliberately NOT exported here — see
 // that file's header comment (issue #131), same convention as `mcpGrantsAdminStore.ts`. Only
 // this wrapper (which also enqueues the reserved execution job in the same transaction) is
 // reachable from a route handler.
 export type { DecideApprovalRequestInput } from "./mcp/approvalDecisionAction.js";
 export { decideAndEnqueueApprovalRequest } from "./mcp/approvalDecisionAction.js";
+
+// `mcpRunCredentialsStore.ts`'s raw hash-keyed lookup is deliberately NOT exported here, mirroring
+// `sessionsStore.ts`'s `getActiveSessionByTokenHash`: only the action-layer wrapper that hashes the
+// presented token internally (`resolveMcpRunCredential`) is reachable from a composition root.
+export type { ActiveMcpRunCredential } from "./mcp/mcpRunCredentialsStore.js";
+export type { MintMcpRunCredentialInput, MintMcpRunCredentialResult } from "./mcp/mcpRunCredentialAction.js";
+export {
+  mintMcpRunCredential,
+  resolveMcpRunCredential,
+  MCP_RUN_CREDENTIAL_TTL_SECONDS,
+} from "./mcp/mcpRunCredentialAction.js";
 
 export {
   projectAgentGuidanceStore,

@@ -3,7 +3,16 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { createViewTypeRegistry, seedSystem, createAgentRun, createUser, hashPassword, login } from "@semprec/data";
+import {
+  createViewTypeRegistry,
+  seedSystem,
+  createAgentRun,
+  createUser,
+  hashPassword,
+  login,
+  getAgentRun,
+  withTransaction,
+} from "@semprec/data";
 import { createAgentRunRequestListener } from "../agentRunHandler.js";
 
 const PASSWORD = "s3cret-password";
@@ -27,6 +36,7 @@ describe("createAgentRunRequestListener", () => {
     pool ??= getTestPool();
     const viewTypeRegistry = createViewTypeRegistry();
     await resetDatabase(pool);
+    await createUser(pool, { email: `${randomUUID()}@example.com`, passwordHash: await hashPassword(PASSWORD) });
     await seedSystem(pool, viewTypeRegistry);
 
     server = createServer(createAgentRunRequestListener(pool));
@@ -90,6 +100,85 @@ describe("createAgentRunRequestListener", () => {
       task: "search the docs",
       status: "running",
       triggeredBy: "user",
+    });
+  });
+
+  describe("POST /api/agent-runs/mcp-credentials (issue #220, AC34/44/47)", () => {
+    it("rejects an unauthenticated mint request", async () => {
+      const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectItemId: randomUUID(), capabilities: ["core.item.write"] }),
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it("rejects a non-POST method", async () => {
+      const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+        headers: await authHeader(),
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it("rejects a JSON body that is not an object", async () => {
+      const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+        method: "POST",
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
+        body: JSON.stringify(null),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects a missing projectItemId", async () => {
+      const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+        method: "POST",
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
+        body: JSON.stringify({ capabilities: ["core.item.write"] }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects an empty capabilities array", async () => {
+      const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+        method: "POST",
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
+        body: JSON.stringify({ projectItemId: randomUUID(), capabilities: [] }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects an unknown capability id", async () => {
+      const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+        method: "POST",
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
+        body: JSON.stringify({ projectItemId: randomUUID(), capabilities: ["not.a.real.capability"] }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("mints a restricted run credential for the given project item and capabilities", async () => {
+      const projectItemId = randomUUID();
+      const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+        method: "POST",
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
+        body: JSON.stringify({ projectItemId, capabilities: ["core.item.read", "core.item.write"], task: "test task" }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as {
+        runId: string;
+        agentProjectItemId: string;
+        token: string;
+        capabilities: string[];
+        expiresAt: string;
+      };
+      expect(body.agentProjectItemId).toBe(projectItemId);
+      expect(body.capabilities.sort()).toEqual(["core.item.read", "core.item.write"]);
+      expect(typeof body.token).toBe("string");
+      expect(body.token.length).toBeGreaterThan(0);
+
+      const run = await withTransaction(pool, (client) => getAgentRun(client, body.runId));
+      expect(run).toMatchObject({ id: body.runId, projectItemId, triggeredBy: "mcp", status: "running" });
     });
   });
 });
