@@ -228,9 +228,11 @@ describe("createMcpRequestListener (issue #220)", () => {
 
   describe("restricted MCP run-credentials (issue #220, AC34/44/47)", () => {
     async function credentialHeader(capabilities: CapabilityId[]): Promise<{ Authorization: string }> {
-      // `mintMcpRunCredential` attributes the run to the sole account (single-tenant), so one must exist.
-      await createUser(pool, { email: `${randomUUID()}@example.com`, passwordHash: await hashPassword(PASSWORD) });
-      const minted = await mintMcpRunCredential(pool, { projectItemId: randomUUID(), capabilities });
+      const user = await createUser(pool, {
+        email: `${randomUUID()}@example.com`,
+        passwordHash: await hashPassword(PASSWORD),
+      });
+      const minted = await mintMcpRunCredential(pool, { projectItemId: randomUUID(), capabilities, userId: user.id });
       return { Authorization: `Bearer ${minted.token}` };
     }
 

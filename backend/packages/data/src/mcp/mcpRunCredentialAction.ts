@@ -20,6 +20,13 @@ export interface MintMcpRunCredentialInput {
   projectItemId: string;
   capabilities: readonly string[];
   task?: string;
+  /**
+   * The authenticated session user minting this credential (issue #220, AC11) — attributed to
+   * the root `agent_run` this mints via `CreateAgentRunInput.userId`, instead of the
+   * single-tenant setup-owner proxy `createAgentRun` falls back to for a root run with no
+   * session to capture (a heartbeat-triggered one).
+   */
+  userId: string;
 }
 
 export interface MintMcpRunCredentialResult {
@@ -63,6 +70,7 @@ export async function mintMcpRunCredential(
     projectItemId: input.projectItemId,
     triggeredBy: "mcp",
     task: input.task ?? "MCP run-credential session",
+    userId: input.userId,
   });
 
   const { token, tokenHash } = generateOpaqueToken();
