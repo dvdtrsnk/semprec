@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import http2 from "node:http2";
 import crypto from "node:crypto";
 import type { ApnsEnvironment } from "./types.js";
@@ -12,16 +13,37 @@ export interface ApnsConfig {
   topic: string;
 }
 
-/** Never provisioned here (operations' job, per issue #151's scope) — read lazily, only when a send is actually attempted. */
-function getApnsConfigFromEnv(): ApnsConfig {
+/** Keyed by path so a changed `APNS_PRIVATE_KEY_PATH` (e.g. across tests) never serves a stale key. */
+const privateKeyCache = new Map<string, string>();
+
+function readPrivateKey(privateKeyPath: string): string {
+  const cached = privateKeyCache.get(privateKeyPath);
+  if (cached !== undefined) return cached;
+  const privateKey = fs.readFileSync(privateKeyPath, "utf8");
+  privateKeyCache.set(privateKeyPath, privateKey);
+  return privateKey;
+}
+
+/**
+ * Provisioned by issue #175: `APNS_PRIVATE_KEY_PATH` points at the root:root 0600
+ * `apns-key.p8` file distributed alongside `/opt/semprec/shared/.env`, never at inline PEM —
+ * a multi-line key has no safe representation in a systemd `EnvironmentFile=`/Docker
+ * `env_file:` line, and shipping it as its own file keeps it out of `.env` and out of any
+ * process log that might dump environment variables. Read lazily, only when a send is
+ * actually attempted, and cached thereafter — this is called on every `sendApnsNotification`,
+ * and the file never changes without a process restart.
+ */
+export function getApnsConfigFromEnv(): ApnsConfig {
   const teamId = process.env.APNS_TEAM_ID;
   const keyId = process.env.APNS_KEY_ID;
-  const privateKey = process.env.APNS_PRIVATE_KEY;
+  const privateKeyPath = process.env.APNS_PRIVATE_KEY_PATH;
   const topic = process.env.APNS_TOPIC;
-  if (!teamId || !keyId || !privateKey || !topic) {
-    throw new Error("APNs delivery requires APNS_TEAM_ID, APNS_KEY_ID, APNS_PRIVATE_KEY, and APNS_TOPIC to be set");
+  if (!teamId || !keyId || !privateKeyPath || !topic) {
+    throw new Error(
+      "APNs delivery requires APNS_TEAM_ID, APNS_KEY_ID, APNS_PRIVATE_KEY_PATH, and APNS_TOPIC to be set",
+    );
   }
-  return { teamId, keyId, privateKey, topic };
+  return { teamId, keyId, privateKey: readPrivateKey(privateKeyPath), topic };
 }
 
 const APNS_HOSTS: Record<ApnsEnvironment, string> = {

@@ -38,7 +38,11 @@ export function resolveStartupConfig(
   env: NodeJS.ProcessEnv,
   registeredProviders: StructuredCompletionProvider[] = buildRegisteredProviders(env),
 ): StartupConfig {
-  const databaseUrl = requireEnv(env, "DATABASE_URL");
+  // SEMPREC_SIDE_DATABASE_URL is the shared `semprec_side`-role connection string every
+  // side-table-only process reads out of the single `/opt/semprec/shared/.env` (issue #175,
+  // see docs/operations/database-roles.md) — `DATABASE_URL` remains the fallback for local
+  // development, where a developer runs this service alone against its own per-service `.env`.
+  const databaseUrl = env.SEMPREC_SIDE_DATABASE_URL ?? requireEnv(env, "DATABASE_URL");
 
   const rawPort = env.AI_GATEWAY_PORT ?? "3002";
   const port = Number(rawPort);
