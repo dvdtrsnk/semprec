@@ -113,6 +113,9 @@ importers:
       '@semprec/data':
         specifier: workspace:*
         version: link:../data
+      '@semprec/module-registry':
+        specifier: workspace:*
+        version: link:../module-registry
       '@semprec/shared':
         specifier: workspace:*
         version: link:../shared

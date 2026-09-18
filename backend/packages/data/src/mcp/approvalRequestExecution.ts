@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import type { ModuleRegistry } from "@semprec/module-registry";
 import { withTransaction } from "../db/pool.js";
 import type { ItemRow } from "../types.js";
 import {
@@ -24,6 +25,7 @@ import { executeMcpInvocation } from "./mcpToolExecution.js";
 export type GenericOperationApprovalReplay = (
   pool: Pool,
   request: ApprovalRequest & { payload: GenericOperationApprovalRequestPayload },
+  moduleRegistry?: ModuleRegistry,
 ) => Promise<ApprovalRequestOutcome>;
 
 async function loadServerItem(client: PoolClient, itemId: string): Promise<Pick<ItemRow, "id" | "properties"> | null> {
@@ -52,6 +54,7 @@ export async function handleApprovalRequestExecuteTask(
   pool: Pool,
   input: HandleApprovalRequestExecuteInput,
   genericOperationApprovalReplay?: GenericOperationApprovalReplay,
+  moduleRegistry?: ModuleRegistry,
 ): Promise<void> {
   const claimed: ApprovalRequest | null = await withTransaction(pool, (client) =>
     claimApprovalRequestExecution(client, input.approvalRequestId),
@@ -62,7 +65,7 @@ export async function handleApprovalRequestExecuteTask(
   if (isGenericOperationApprovalRequestPayload(claimed.payload)) {
     const genericPayload = claimed.payload;
     outcome = genericOperationApprovalReplay
-      ? await genericOperationApprovalReplay(pool, { ...claimed, payload: genericPayload })
+      ? await genericOperationApprovalReplay(pool, { ...claimed, payload: genericPayload }, moduleRegistry)
       : { error: true, result: "No generic-operation approval replay handler is configured for this worker." };
   } else {
     const payload = claimed.payload;

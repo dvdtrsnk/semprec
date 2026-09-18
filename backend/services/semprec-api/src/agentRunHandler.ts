@@ -78,7 +78,7 @@ export function createAgentRunRequestListener(pool: Pool) {
     const url = new URL(req.url ?? "/", "http://localhost");
 
     try {
-      await authenticateRequest(pool, req);
+      const identity = await authenticateRequest(pool, req);
 
       if (url.pathname === MCP_CREDENTIALS_PATH) {
         if (req.method !== "POST") {
@@ -102,7 +102,9 @@ export function createAgentRunRequestListener(pool: Pool) {
         }
 
         const input = parseMintMcpCredentialBody(body);
-        const minted = await withTransaction(pool, (client) => mintMcpRunCredential(client, input));
+        const minted = await withTransaction(pool, (client) =>
+          mintMcpRunCredential(client, { ...input, userId: identity.user.id }),
+        );
         sendJson(res, 201, {
           runId: minted.run.id,
           agentProjectItemId: input.projectItemId,

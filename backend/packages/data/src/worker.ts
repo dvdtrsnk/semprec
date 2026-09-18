@@ -174,6 +174,7 @@ export function createCoreTaskList(
         pool,
         { approvalRequestId: requireString(payload, "approvalRequestId") },
         genericOperationApprovalReplay,
+        moduleRegistry,
       );
     },
     [CORE_TASK_NAMES.NOTIFICATION_FANOUT]: async (payload) => {

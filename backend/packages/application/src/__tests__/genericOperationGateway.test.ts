@@ -14,17 +14,20 @@ import {
   createViewTypeRegistry,
   decideAndEnqueueApprovalRequest,
   getApprovalRequest,
+  loadFullModuleRegistry,
   seedSystem,
   withTransaction,
   type ApprovalRequest,
   type ChokePoint,
   type GenericOperationApprovalRequestPayload,
 } from "@semprec/data";
+import type { ModuleRegistry } from "@semprec/module-registry";
 import { CAPABILITY_IDS, GENERIC_OPERATION_NAMES, OPERATION_METADATA, type AuthenticatedActor } from "@semprec/shared";
 import { createGenericOperationGateway, replayApprovedGenericOperation } from "../genericOperationGateway.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
+const moduleRegistry: ModuleRegistry = await loadFullModuleRegistry();
 
 const ALL_CAPABILITIES = new Set(CAPABILITY_IDS);
 const NO_CAPABILITIES = new Set<(typeof CAPABILITY_IDS)[number]>();
@@ -213,7 +216,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         payload: GenericOperationApprovalRequestPayload;
       };
 
-      const outcome = await replayApprovedGenericOperation(pool, request);
+      const outcome = await replayApprovedGenericOperation(pool, request, moduleRegistry);
 
       expect(outcome.error).toBe(false);
       expect(JSON.parse(outcome.result)).toMatchObject({ id: item.id });
@@ -228,10 +231,45 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
       await pool.query(`UPDATE agent_runs SET project_item_id = $1 WHERE id = $2`, [randomUUID(), run.id]);
 
-      const outcome = await replayApprovedGenericOperation(pool, request);
+      const outcome = await replayApprovedGenericOperation(pool, request, moduleRegistry);
 
       expect(outcome.error).toBe(true);
       expect(outcome.result).toContain("owner_violation");
+      expect(await chokePoint.findItem(item.id)).not.toBeNull();
+    });
+
+    it("re-checks the capability grant at replay time (issue #220, AC35) — no moduleRegistry supplied means nothing is granted, so the operation surfaces as unknown rather than executing", async () => {
+      const { requestId, item } = await createPendingDelete();
+      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
+        payload: GenericOperationApprovalRequestPayload;
+      };
+
+      const outcome = await replayApprovedGenericOperation(pool, request);
+
+      expect(outcome.error).toBe(true);
+      expect(outcome.result).toContain("Unknown operation");
+      expect(await chokePoint.findItem(item.id)).not.toBeNull();
+    });
+
+    it("re-validates canonicalInput at replay time (issue #220, AC35) — a payload tampered with between approval and replay fails validation instead of executing", async () => {
+      const { requestId, item } = await createPendingDelete();
+      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
+        payload: GenericOperationApprovalRequestPayload;
+      };
+      const tamperedPayload = { ...request.payload, canonicalInput: { itemId: 12345 } };
+      // `replayApprovedGenericOperation` reloads the request fresh from the database by id rather
+      // than trusting its `request` parameter's payload, so the tamper has to land in the row
+      // itself (same reasoning as the `owner_violation` case above, which mutates `agent_runs`
+      // directly).
+      await pool.query(`UPDATE approval_requests SET payload = $1 WHERE id = $2`, [
+        JSON.stringify(tamperedPayload),
+        requestId,
+      ]);
+
+      const outcome = await replayApprovedGenericOperation(pool, request, moduleRegistry);
+
+      expect(outcome.error).toBe(true);
+      expect(outcome.result).toContain("validation_failed");
       expect(await chokePoint.findItem(item.id)).not.toBeNull();
     });
   });
@@ -249,7 +287,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         undefined,
         undefined,
         undefined,
-        undefined,
+        moduleRegistry,
         undefined,
         genericOperationApprovalReplay,
       );

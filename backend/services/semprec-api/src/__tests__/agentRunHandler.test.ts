@@ -180,5 +180,33 @@ describe("createAgentRunRequestListener", () => {
       const run = await withTransaction(pool, (client) => getAgentRun(client, body.runId));
       expect(run).toMatchObject({ id: body.runId, projectItemId, triggeredBy: "mcp", status: "running" });
     });
+
+    it("attributes the minted run's actor_user_id to the authenticated session user, not the earliest-created account (issue #220, AC11)", async () => {
+      // `beforeEach` already created an earlier, unrelated account — `getEarliestUserId`'s
+      // fallback would resolve to that one, not to the session below, if the session's own
+      // identity weren't threaded into `mintMcpRunCredential`.
+      const sessionUser = await createUser(pool, {
+        email: `${randomUUID()}@example.com`,
+        passwordHash: await hashPassword(PASSWORD),
+      });
+      const { token } = await login(pool, {
+        email: sessionUser.email,
+        password: PASSWORD,
+        platform: "ios",
+        ip: "127.0.0.1",
+      });
+      const projectItemId = randomUUID();
+
+      const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ projectItemId, capabilities: ["core.item.read"] }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { runId: string };
+      const run = await withTransaction(pool, (client) => getAgentRun(client, body.runId));
+      expect(run?.actorUserId).toBe(sessionUser.id);
+    });
   });
 });

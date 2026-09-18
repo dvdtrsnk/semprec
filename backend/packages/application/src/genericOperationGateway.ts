@@ -6,6 +6,7 @@ import {
   NotFoundError,
   ValidationError,
   createPendingApprovalRequest,
+  generatePermissionManifest,
   getAgentRun,
   getApprovalRequest,
   isGenericOperationApprovalRequestPayload,
@@ -13,6 +14,7 @@ import {
   type ApprovalRequest,
   type GenericOperationApprovalRequestPayload,
 } from "@semprec/data";
+import type { ModuleRegistry } from "@semprec/module-registry";
 import {
   GENERIC_OPERATION_BINDINGS,
   GENERIC_OPERATION_NAMES,
@@ -162,19 +164,23 @@ export function createGenericOperationGateway(pool: Pool): GenericOperationGatew
  * request and the persisted `agent_run` its payload was snapshotted against, rejects a mismatch
  * as `owner_violation` rather than executing against stale provenance, then dispatches the same
  * binding REST/MCP/AgentTool dispatch through — bypassing only the already-satisfied approval
- * check. Neither validation nor capability run again here: `canonicalInput` is the exact
- * already-validated snapshot `parseInput` produced at creation time, and the capability grant
- * itself is not re-checked against the project's *current* manifest, only the run's identity
- * (`project_item_id`/`actor_user_id`) against what the snapshot recorded. The provenance read is
+ * check. Validation and capability both run again here, against the run's *current* state:
+ * `canonicalInput` is re-parsed through the operation's own schema (`parseInput`, same as a fresh
+ * `invoke()` call) rather than trusted as already-valid, and the capability grant is re-checked
+ * against the project's live manifest (`generatePermissionManifest` with the `moduleRegistry` the
+ * composition root supplies here) rather than only against what the snapshot recorded — a module
+ * deactivated between approval and replay must still block execution. The provenance read is
  * row-locked (`getAgentRun(client, ..., true)`) and held for the duration of the same transaction
- * as the dispatch below, so a concurrent write to those columns can't land in the gap between the
- * check and the write it's guarding. A composition root passes this to `createCoreTaskList`'s
- * `genericOperationApprovalReplay` parameter; `packages/data`'s worker can't call it directly
- * without an `application -> data -> application` import cycle.
+ * as the checks and dispatch below, so a concurrent write to those columns, or to the project's
+ * module grants, can't land in the gap between the checks and the write they're guarding. A
+ * composition root passes this to `createCoreTaskList`'s `genericOperationApprovalReplay`
+ * parameter; `packages/data`'s worker can't call it directly without an
+ * `application -> data -> application` import cycle.
  */
 export async function replayApprovedGenericOperation(
   pool: Pool,
   request: ApprovalRequest & { payload: GenericOperationApprovalRequestPayload },
+  moduleRegistry?: ModuleRegistry,
 ): Promise<{ error: boolean; result: string }> {
   try {
     const reloaded = await getApprovalRequest(pool, request.id);
@@ -199,7 +205,15 @@ export async function replayApprovedGenericOperation(
           "owner_violation",
         );
       }
-      return invokeBinding(service, operation, actor, canonicalInput as InputByOperation[typeof operation]);
+
+      assertCompleteAgentIdentity(actor);
+      const manifest = await generatePermissionManifest(client, actor.agentProjectItemId, { moduleRegistry });
+      if (!isGranted(operation, new Set(manifest.grantedCapabilities))) {
+        throw new NotFoundError(`Unknown operation '${operation}'`);
+      }
+      const input = parseInput(operation, canonicalInput);
+
+      return invokeBinding(service, operation, actor, input);
     });
     return { error: false, result: JSON.stringify(output) };
   } catch (err) {

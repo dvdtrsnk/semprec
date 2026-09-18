@@ -48,8 +48,11 @@ async function credentialHeader(
   projectItemId: string,
   capabilities: CapabilityId[],
 ): Promise<{ Authorization: string }> {
-  await createUser(pool, { email: `${randomUUID()}@example.com`, passwordHash: await hashPassword(PASSWORD) });
-  const minted = await mintMcpRunCredential(pool, { projectItemId, capabilities });
+  const user = await createUser(pool, {
+    email: `${randomUUID()}@example.com`,
+    passwordHash: await hashPassword(PASSWORD),
+  });
+  const minted = await mintMcpRunCredential(pool, { projectItemId, capabilities, userId: user.id });
   return { Authorization: `Bearer ${minted.token}` };
 }
 
