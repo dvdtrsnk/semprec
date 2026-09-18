@@ -4,7 +4,7 @@ import { getEarliestUserId } from "../auth/usersStore.js";
 
 /**
  * One-time populated-upgrade cutover for issue #220's `agent_runs.actor_user_id` column
- * (0041_agent_runs_actor_user_id.sql adds it nullable; this finishes the job). A delegated run's
+ * (0042_agent_runs_actor_user_id.sql adds it nullable; this finishes the job). A delegated run's
  * actor has to be resolved by walking its `parent_run_id` chain up to a root run, which SQL can
  * express directly (`agentRunsStore.ts`'s own runtime resolution instead reads one parent at a
  * time, following `docs/adr/2026-09-11-iterative-parent-chain-traversal-in-choke-point.md`'s
