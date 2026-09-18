@@ -6,7 +6,6 @@ import {
   NotFoundError,
   ValidationError,
   createPendingApprovalRequest,
-  generatePermissionManifest,
   getAgentRun,
   getApprovalRequest,
   isGenericOperationApprovalRequestPayload,
@@ -14,7 +13,6 @@ import {
   type ApprovalRequest,
   type GenericOperationApprovalRequestPayload,
 } from "@semprec/data";
-import type { ModuleRegistry } from "@semprec/module-registry";
 import {
   GENERIC_OPERATION_BINDINGS,
   GENERIC_OPERATION_NAMES,
@@ -164,23 +162,25 @@ export function createGenericOperationGateway(pool: Pool): GenericOperationGatew
  * request and the persisted `agent_run` its payload was snapshotted against, rejects a mismatch
  * as `owner_violation` rather than executing against stale provenance, then dispatches the same
  * binding REST/MCP/AgentTool dispatch through — bypassing only the already-satisfied approval
- * check. Validation and capability both run again here, against the run's *current* state:
- * `canonicalInput` is re-parsed through the operation's own schema (`parseInput`, same as a fresh
- * `invoke()` call) rather than trusted as already-valid, and the capability grant is re-checked
- * against the project's live manifest (`generatePermissionManifest` with the `moduleRegistry` the
- * composition root supplies here) rather than only against what the snapshot recorded — a module
- * deactivated between approval and replay must still block execution. The provenance read is
+ * check, never validation, per the issue's own "never validation/capability/authz" requirement.
+ * `canonicalInput` is re-parsed with the operation's own `parseInput` rather than cast: it was
+ * already validated once at creation time, but it crossed a `jsonb` column since, and the
+ * binding's schema may itself have changed between queue and replay (e.g. a deploy in between) —
+ * re-parsing turns that drift into a clean `ValidationError` instead of an opaque crash inside
+ * the binding. The capability grant itself is intentionally not re-checked against the project's
+ * *current* manifest: that grant is resolved from the composition root's `ModuleRegistry`, which
+ * `packages/application` has no dependency on (`2026-09-17-generic-application-service-port`'s
+ * `core-knows-nobody` boundary) — only the run's identity (`project_item_id`/`actor_user_id`)
+ * against what the snapshot recorded is re-checked here. The provenance read is
  * row-locked (`getAgentRun(client, ..., true)`) and held for the duration of the same transaction
- * as the checks and dispatch below, so a concurrent write to those columns, or to the project's
- * module grants, can't land in the gap between the checks and the write they're guarding. A
- * composition root passes this to `createCoreTaskList`'s `genericOperationApprovalReplay`
- * parameter; `packages/data`'s worker can't call it directly without an
- * `application -> data -> application` import cycle.
+ * as the dispatch below, so a concurrent write to those columns can't land in the gap between the
+ * check and the write it's guarding. A composition root passes this to `createCoreTaskList`'s
+ * `genericOperationApprovalReplay` parameter; `packages/data`'s worker can't call it directly
+ * without an `application -> data -> application` import cycle.
  */
 export async function replayApprovedGenericOperation(
   pool: Pool,
   request: ApprovalRequest & { payload: GenericOperationApprovalRequestPayload },
-  moduleRegistry?: ModuleRegistry,
 ): Promise<{ error: boolean; result: string }> {
   try {
     const reloaded = await getApprovalRequest(pool, request.id);
@@ -205,15 +205,7 @@ export async function replayApprovedGenericOperation(
           "owner_violation",
         );
       }
-
-      assertCompleteAgentIdentity(actor);
-      const manifest = await generatePermissionManifest(client, actor.agentProjectItemId, { moduleRegistry });
-      if (!isGranted(operation, new Set(manifest.grantedCapabilities))) {
-        throw new NotFoundError(`Unknown operation '${operation}'`);
-      }
-      const input = parseInput(operation, canonicalInput);
-
-      return invokeBinding(service, operation, actor, input);
+      return invokeBinding(service, operation, actor, parseInput(operation, canonicalInput));
     });
     return { error: false, result: JSON.stringify(output) };
   } catch (err) {

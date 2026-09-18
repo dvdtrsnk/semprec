@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@semprec/data": "workspace:*",
-    "@semprec/module-registry": "workspace:*",
     "@semprec/shared": "workspace:*",
     "pg": "^8.23.0"
   },
