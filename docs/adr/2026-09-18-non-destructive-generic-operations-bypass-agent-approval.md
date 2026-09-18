@@ -13,7 +13,7 @@ superseded-by: null
 [[2026-09-10-agent-writes-are-proposals-not-direct-writes]] requires every
 agent-originated change to go through the approval queue rather than write
 state directly. Issue #252 defined `OPERATION_METADATA` for the 28-operation
-generic catalog (`packages/shared/src/genericOperations/capabilities.ts`),
+generic catalog (`backend/packages/shared/src/genericOperations/capabilities.ts`),
 including a `requiresApproval`/`riskClass` field per operation, with only
 `database.archive`, `property.delete`, `view.delete`, `item.delete`, and
 `relation.delete` marked `requiresApproval: true`/`riskClass: "destructive"`
@@ -63,7 +63,7 @@ it back, remove it from the view) after the fact — the cost of a mistake is
 low and reversible. Archiving or deleting is comparatively one-directional
 from the agent's own vantage point (the record leaves the surfaces the agent
 and the approving human both see) and is exactly the shape of action this
-catalog's own risk classification (`packages/shared/capabilities.ts`) singles
+catalog's own risk classification (`backend/packages/shared/src/genericOperations/capabilities.ts`) singles
 out as `"destructive"`.
 
 This exclusion is specific to the generic-operation catalog's own
