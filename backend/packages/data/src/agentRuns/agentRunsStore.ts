@@ -25,14 +25,12 @@ export interface AgentRunRow {
   startedAt: string;
   finishedAt: string | null;
   /**
-   * The user this run's writes are attributed to (issue #220) — a session user for a
-   * user-triggered root run, the setup owner for a heartbeat-triggered root run, and copied
-   * from the parent run for every delegated (`parentRunId` set) run. `createAgentRun` resolves
-   * this itself rather than taking it as an input: Semprec is single-tenant (`getEarliestUserId`
-   * — see `permissionManifest.ts`'s own note that "the earliest-created account stands in for
-   * 'the' user"), so a session user, the setup owner, and "the sole user" are the same value in
-   * every case this table's four producers ever see. The AgentTool composition root (#220)
-   * derives an agent actor's `userId` from this column alone, never from tool input.
+   * The user this run's writes are attributed to (issue #220) — the authenticated session user
+   * for a user-triggered root run that supplied one (`CreateAgentRunInput.userId`), the single
+   * setup-owner user for a root run with none to capture (`getEarliestUserId` — a
+   * heartbeat/system-triggered run has no session), and copied from the parent run for every
+   * delegated (`parentRunId` set) run. The AgentTool composition root (#220) derives an agent
+   * actor's `userId` from this column alone, never from tool input.
    */
   actorUserId: string;
 }
@@ -80,28 +78,43 @@ export interface CreateAgentRunInput {
   triggeredBy: TriggeredBy;
   unit?: AgentRunUnit;
   task: string;
+  /**
+   * The authenticated session user creating this root run (issue #220, AC11) — required for a
+   * user-triggered root so its `actor_user_id` reflects who actually asked for it. Ignored for a
+   * delegated run (`parentRunId` set), which always inherits its parent's `actorUserId` instead;
+   * omit it for a root run with no session to capture (a heartbeat/system-triggered one), which
+   * falls back to the sole account (`getEarliestUserId`).
+   */
+  userId?: string;
 }
 
 /**
- * A delegated run (`parentRunId` set) inherits its supervisor's `actorUserId` unchanged; a root
- * run (no parent) is attributed to the sole account (`getEarliestUserId` — see `AgentRunRow.actorUserId`'s
- * doc comment for why this is correct for every one of this table's producers). Throws if neither
- * resolves to a user, since a run with no attributable actor can never pass #220's AgentTool
- * actor-derivation invariant.
+ * A delegated run (`parentRunId` set) inherits its supervisor's `actorUserId` unchanged. A root
+ * run (no parent) uses `userId` when the caller supplied one — the authenticated session user
+ * that actually triggered it (issue #220, AC11) — and falls back to the sole account
+ * (`getEarliestUserId`) only when it didn't, which is correct for every root producer with no
+ * session to capture (a heartbeat/system-triggered run). Throws if neither resolves to a user,
+ * since a run with no attributable actor can never pass #220's AgentTool actor-derivation
+ * invariant.
  */
-async function resolveActorUserId(client: Pool | PoolClient, parentRunId: string | null | undefined): Promise<string> {
+async function resolveActorUserId(
+  client: Pool | PoolClient,
+  parentRunId: string | null | undefined,
+  userId: string | undefined,
+): Promise<string> {
   if (parentRunId) {
     const parent = await getAgentRun(client, parentRunId);
     if (!parent) throw new Error(`Cannot create a delegated agent run: parent run '${parentRunId}' does not exist`);
     return parent.actorUserId;
   }
-  const userId = await getEarliestUserId(client);
-  if (!userId) throw new Error("Cannot create an agent run before any account exists");
-  return userId;
+  if (userId) return userId;
+  const earliestUserId = await getEarliestUserId(client);
+  if (!earliestUserId) throw new Error("Cannot create an agent run before any account exists");
+  return earliestUserId;
 }
 
 export async function createAgentRun(client: Pool | PoolClient, input: CreateAgentRunInput): Promise<AgentRunRow> {
-  const actorUserId = await resolveActorUserId(client, input.parentRunId);
+  const actorUserId = await resolveActorUserId(client, input.parentRunId, input.userId);
   const { rows } = await client.query<AgentRunDbRow>(
     `INSERT INTO agent_runs (project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, actor_user_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7)
