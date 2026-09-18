@@ -120,6 +120,15 @@ describe("createAgentRunRequestListener", () => {
       expect(res.status).toBe(404);
     });
 
+    it("rejects a JSON body that is not an object", async () => {
+      const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+        method: "POST",
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
+        body: JSON.stringify(null),
+      });
+      expect(res.status).toBe(400);
+    });
+
     it("rejects a missing projectItemId", async () => {
       const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
         method: "POST",

@@ -42,6 +42,9 @@ interface MintMcpCredentialRequestBody {
 }
 
 function parseMintMcpCredentialBody(body: unknown): { projectItemId: string; capabilities: string[]; task?: string } {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw new ValidationError("Request body must be a JSON object");
+  }
   const parsed = body as MintMcpCredentialRequestBody;
   if (typeof parsed.projectItemId !== "string" || parsed.projectItemId.length === 0) {
     throw new ValidationError("'projectItemId' must be a non-empty string");
