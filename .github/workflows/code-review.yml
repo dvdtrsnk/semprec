@@ -29,17 +29,26 @@ jobs:
     # A Relay-managed pull request answers every agent through the Relay broker.
     # Relay derives the client's budget for one `execute` call and reports it as
     # `executeBudgetSeconds` on the broker lookup; today that is a 5-minute
-    # queue-wait bound plus a 30-minute turn deadline plus a 2-minute margin =
-    # 37 minutes. A review makes two sequential rounds of broker calls (the
+    # queue-wait bound plus a 60-minute turn deadline plus a 2-minute margin =
+    # 67 minutes. A review makes two sequential rounds of broker calls (the
     # platform and acceptance-criteria agents run concurrently, then the summary
-    # agent runs after them), so the floor is 74 minutes of agent time alone.
+    # agent runs after them), so the floor is 134 minutes of agent time alone.
     # This value is that floor plus room for checkout, dependency install and
     # artifact upload. The derivation is pinned by a test in bb-plugin-relay
     # (REVIEW_SEQUENTIAL_BROKER_CALLS) and recorded in its
-    # docs/reviews/2026-09-16-client-execute-budget.md — if that deadline moves,
-    # that test goes red and this number has to move with it.
-    # A non-Relay review finishes well inside this budget.
-    timeout-minutes: 90
+    # docs/reviews/2026-09-18-deadline-for-a-three-angle-first-review.md — if
+    # that deadline moves, that test goes red and this number has to move with it.
+    #
+    # The turn deadline went from 30 to 60 minutes because this bot revision runs
+    # a pull request's FIRST review over three independently-angled passes of
+    # every task. They share one concurrency bound, so three angles cost three
+    # waves rather than three times the load — and one turn has to outlive all
+    # three. Single-wave agent turns here measured 351s, 907s and 935s, so three
+    # waves of the worst is about 47 minutes.
+    #
+    # This is a ceiling, not a duration: a review that finds nothing still
+    # returns in minutes, and a non-Relay review finishes well inside it.
+    timeout-minutes: 150
     steps:
       - name: Checkout semprec
         uses: actions/checkout@v4
@@ -55,7 +64,7 @@ jobs:
           repository: dvdtrsnk/code-review-bot
           # The code-review Check Run is required on `develop`; keep its producer
           # stable so a bot default-branch change cannot rename that context.
-          ref: 818f2026d434ea9f63587c10c1e4b9b87de02a49
+          ref: 758166bbe9ca324f9b788a81690a85863dff8181
           token: ${{ secrets.CODE_REVIEW_BOT_TOKEN }}
           path: .code-review-bot
 
