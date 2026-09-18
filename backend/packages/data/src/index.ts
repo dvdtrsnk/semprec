@@ -249,6 +249,8 @@ export {
   getApprovalRequest,
   listPendingApprovalRequests,
   isGenericOperationApprovalRequestPayload,
+  terminalizeApprovalRequestAsConflict,
+  markApprovalRequestExecutionSucceeded,
 } from "./mcp/approvalRequestsStore.js";
 export type { ApprovalRequestQueueEntry, ApprovalRequestSafeSummary } from "./mcp/approvalRequestsQueue.js";
 export { listApprovalRequestsQueue } from "./mcp/approvalRequestsQueue.js";

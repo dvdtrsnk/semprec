@@ -1025,8 +1025,13 @@ export async function computeDestructiveResourceProjection(
       return { snapshot: buildResourceSnapshot("view_delete", view.id, view), currentResource: view };
     }
     case "item.delete": {
+      // `...IncludingDeleted` (not the live-only lookup) so an already-deleted item can be told
+      // apart from one that never existed — both are rejected here as `not_found`. A direct call
+      // to `itemDeleteWithClient` treats an already-deleted item as an idempotent no-op, but an
+      // *approval request* must not be created against (or later replayed as) deleting a
+      // resource that is already gone.
       const [item] = await itemsStore.getItemsByIdsIncludingDeleted(client, [check.input.itemId]);
-      if (!item) throw new NotFoundError(`Item ${check.input.itemId} not found`);
+      if (!item || item.deletedAt) throw new NotFoundError(`Item ${check.input.itemId} not found`);
       const database = await databasesStore.getDatabase(client, item.databaseId);
       if (!database) throw new NotFoundError(`Database ${item.databaseId} not found`);
       if (database.archivedAt) {

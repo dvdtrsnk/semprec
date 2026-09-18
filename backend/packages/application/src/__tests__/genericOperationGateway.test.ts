@@ -446,6 +446,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
       const finished = await getApprovalRequest(pool, requestId);
       expect(finished!.executedAt).not.toBeNull();
       expect(finished!.executionError).toBe(true);
+      expect(finished!.executionStatus).toBe("conflict");
       expect(finished!.executionResult).toContain("No generic-operation approval replay handler is configured");
     });
   });

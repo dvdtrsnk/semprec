@@ -16,15 +16,18 @@ import { withTransaction } from "../db/pool.js";
  *
  * Any `approvalExecute` job still queued for one of these rows is removed first: after this
  * transaction commits, every row is terminal, so a redelivered job for it must not run the old
- * handler logic against a row whose state it no longer expects. `graphile_worker.jobs` is a
- * read-only view over `_private_jobs`/`_private_tasks` (not a table — deleting from it directly
- * fails with "cannot delete from view"), so the removal targets `_private_jobs` joined back to
- * `_private_tasks` for the identifier instead. `_private_jobs`/`_private_tasks` may not exist yet
- * at this point in a fresh test/CI database — `runMigrationsCli.ts` and `testSupport/globalSetup.ts`
- * both call `ensureQueueSchema` *after* this cutover, matching the existing two cutover migrations
- * it already runs alongside — so the removal is skipped rather than attempted when the schema
- * isn't there; a real deploy always has it already, from the previous release's own
- * `ensureQueueSchema` call.
+ * handler logic against a row whose state it no longer expects. Removal goes through
+ * `graphile_worker.remove_job(job_key)`, the library's public, documented job-cancellation
+ * function (sql/000016.sql) — not `_private_jobs`/`_private_tasks`, which graphile-worker names
+ * and treats as private/unstable. `approvalDecisionAction.ts` enqueues every `approvalExecute`
+ * job with the deterministic key `approval-request-execute-${request.id}`, so this can target
+ * each pre-existing row's job by that same key without ever touching the private tables; a
+ * nonexistent key is a no-op (`remove_job` returns null, never errors). The public function may
+ * not exist yet at this point in a fresh test/CI database — `runMigrationsCli.ts` and
+ * `testSupport/globalSetup.ts` both call `ensureQueueSchema` *after* this cutover, matching the
+ * existing two cutover migrations it already runs alongside — so the removal is skipped rather
+ * than attempted when the schema isn't there; a real deploy always has it already, from the
+ * previous release's own `ensureQueueSchema` call.
  */
 export async function runApprovalRequestExecutionStatusCutoverMigration(pool: Pool): Promise<void> {
   await withTransaction(pool, async (client) => {
@@ -39,15 +42,10 @@ export async function runApprovalRequestExecutionStatusCutoverMigration(pool: Po
     if (columnRows[0]?.is_nullable === "NO") return; // already migrated
 
     const { rows: schemaRows } = await client.query<{ exists: boolean }>(
-      `SELECT to_regclass('graphile_worker._private_jobs') IS NOT NULL AS exists`,
+      `SELECT to_regprocedure('graphile_worker.remove_job(text)') IS NOT NULL AS exists`,
     );
     if (schemaRows[0]?.exists) {
-      await client.query(`
-        DELETE FROM graphile_worker._private_jobs AS jobs
-         WHERE jobs.task_id IN (
-           SELECT id FROM graphile_worker._private_tasks WHERE identifier = 'approvalExecute'
-         )
-      `);
+      await client.query(`SELECT graphile_worker.remove_job('approval-request-execute-' || id) FROM approval_requests`);
     }
 
     await client.query(`UPDATE approval_requests SET status = 'rejected' WHERE status = 'pending'`);
@@ -56,7 +54,7 @@ export async function runApprovalRequestExecutionStatusCutoverMigration(pool: Po
       UPDATE approval_requests
          SET resource_snapshot = jsonb_build_object('kind', 'legacy_unavailable', 'resourceId', id, 'sha256', null),
              execution_status = 'legacy_terminal',
-             execution_result = jsonb_build_object(
+             execution_result_jsonb = jsonb_build_object(
                'error', jsonb_build_object(
                  'code', 'validation_failed',
                  'details', jsonb_build_object('reason', 'approval_snapshot_unavailable')

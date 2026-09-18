@@ -109,7 +109,7 @@ interface ApprovalRequestRow {
   execution_status: string;
   executed_at: string | null;
   execution_error: boolean | null;
-  execution_result: unknown;
+  execution_result_jsonb: unknown;
 }
 
 function rowToApprovalRequest(row: ApprovalRequestRow): ApprovalRequest {
@@ -127,7 +127,7 @@ function rowToApprovalRequest(row: ApprovalRequestRow): ApprovalRequest {
     executionStatus: assertKnownValue(APPROVAL_REQUEST_EXECUTION_STATUSES, row.execution_status, "execution_status"),
     executedAt: row.executed_at,
     executionError: row.execution_error,
-    executionResult: row.execution_result,
+    executionResult: row.execution_result_jsonb,
   };
 }
 
@@ -245,10 +245,12 @@ export interface ApprovalRequestOutcome {
  * handler configured" fallback (never claimed, since that path bypasses
  * `claimApprovalRequestExecution` entirely — see `approvalRequestExecution.ts`'s header comment
  * — so `executed_at` must be stamped here instead). `COALESCE` keeps the mcpInvoke path's
- * original claim timestamp rather than overwriting it. Also settles `execution_status` to
- * `succeeded` so this kind of request participates in the same terminal-state vocabulary issue
- * #89 introduced for generic-operation requests, even though its own execution never revalidates
- * a snapshot.
+ * original claim timestamp rather than overwriting it. `execution_status` settles to `succeeded`
+ * only when `outcome.error` is false, and to `conflict` otherwise — the same terminal-state
+ * vocabulary issue #89 introduced for generic-operation requests — so a failed outcome (e.g. "no
+ * generic-operation approval replay handler is configured") is never recorded as `succeeded` and
+ * can never be replayed by `replayApprovedGenericOperation`'s idempotency check as a false
+ * success.
  */
 export async function recordApprovalRequestOutcome(
   client: Queryable,
@@ -257,10 +259,57 @@ export async function recordApprovalRequestOutcome(
 ): Promise<void> {
   const result = await client.query(
     `UPDATE approval_requests
-        SET execution_error = $2, execution_result = $3::jsonb, execution_status = 'succeeded',
+        SET execution_error = $2, execution_result_jsonb = $3::jsonb,
+            execution_status = CASE WHEN $2 THEN 'conflict' ELSE 'succeeded' END,
             executed_at = COALESCE(executed_at, now())
       WHERE id = $1`,
     [id, outcome.error, JSON.stringify(outcome.result)],
   );
   requireAffectedRows(result, `recording approval request '${id}' outcome`);
+}
+
+/**
+ * Writes the terminal `conflict` outcome on an already-locked row (issue #89's
+ * `ApprovedOperationExecutor`, `replayApprovedGenericOperation` in `packages/application`), inside
+ * the caller's own transaction — never throws, so the transaction that wrote it commits. The sole
+ * owner of `approval_requests` writes, per the single-writer ownership model; a caller outside
+ * this module must never issue its own `UPDATE approval_requests` for this transition.
+ */
+export async function terminalizeApprovalRequestAsConflict(
+  client: Queryable,
+  id: string,
+  details: Record<string, unknown>,
+): Promise<{ error: true; result: string }> {
+  const executionResult = { error: { code: "version_conflict", details } };
+  const result = await client.query(
+    `UPDATE approval_requests
+        SET execution_status = 'conflict', execution_result_jsonb = $2::jsonb, executed_at = now()
+      WHERE id = $1`,
+    [id, JSON.stringify(executionResult)],
+  );
+  requireAffectedRows(result, `terminalizing approval request '${id}' as conflict`);
+  return { error: true, result: JSON.stringify(executionResult) };
+}
+
+/**
+ * Writes the terminal `succeeded` outcome on an already-locked row, inside the caller's own
+ * transaction, so the mutation `replayApprovedGenericOperation` (`packages/application`) just ran
+ * and its terminal-state write land in the same commit — see that function's header comment for
+ * why both must be atomic. The sole owner of `approval_requests` writes; see
+ * `terminalizeApprovalRequestAsConflict` above for the same rationale.
+ */
+export async function markApprovalRequestExecutionSucceeded(
+  client: Queryable,
+  id: string,
+  result: unknown,
+): Promise<{ error: false; result: string }> {
+  const executionResult = { result };
+  const updateResult = await client.query(
+    `UPDATE approval_requests
+        SET execution_status = 'succeeded', execution_result_jsonb = $2::jsonb, executed_at = now()
+      WHERE id = $1`,
+    [id, JSON.stringify(executionResult)],
+  );
+  requireAffectedRows(updateResult, `marking approval request '${id}' succeeded`);
+  return { error: false, result: JSON.stringify(executionResult) };
 }

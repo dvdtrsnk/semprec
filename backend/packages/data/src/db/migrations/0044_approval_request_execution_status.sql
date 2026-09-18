@@ -8,16 +8,20 @@
 -- approvalRequestExecutionStatusCutoverMigration.ts immediately after structural migrations, the
 -- same way 0042's actor_user_id cutover does.
 --
--- `execution_result` was `text` (0022_approval_request_execution.sql), historically holding plain
--- (non-JSON) error/result strings, not just JSON-shaped ones — `to_jsonb()` wraps any existing
--- value as a JSON string scalar rather than attempting to parse it, so this conversion can never
--- fail on old data. Every pre-existing row's `execution_result` is unconditionally overwritten by
--- the `legacy_terminal` cutover backfill that runs immediately after this migration anyway (see
--- approvalRequestExecutionStatusCutoverMigration.ts), so what this cast produces for old rows is
--- moot beyond "must not throw".
+-- `execution_result` (0022_approval_request_execution.sql) is `text`, historically holding plain
+-- (non-JSON) error/result strings, not just JSON-shaped ones. Narrowing it in place with `ALTER
+-- COLUMN ... TYPE jsonb` would be a type-narrowing change forbidden by the expand/contract ADR:
+-- during a rolling deploy, an old process still running the previous release's
+-- `recordApprovalRequestOutcome` (which writes a plain non-JSON string) would fail every
+-- INSERT/UPDATE the instant this migration runs, before that process ever gets the new binary —
+-- and a rollback afterwards would be unsafe, since the column could no longer hold what the old
+-- code writes. Instead this is a pure expand step: `execution_result` stays exactly as it was,
+-- untouched, and a new nullable `execution_result_jsonb` column is added alongside it.
+-- `approvalRequestExecutionStatusCutoverMigration.ts` backfills `execution_result_jsonb` for
+-- every pre-existing row, and this release's code (`approvalRequestsStore.ts`) reads and writes
+-- only `execution_result_jsonb` going forward — `execution_result` becomes dead weight that a
+-- later contract-step migration can drop once the pre-#89 binary is fully retired.
 ALTER TABLE approval_requests
   ADD COLUMN resource_snapshot jsonb,
-  ADD COLUMN execution_status text;
-
-ALTER TABLE approval_requests
-  ALTER COLUMN execution_result TYPE jsonb USING to_jsonb(execution_result);
+  ADD COLUMN execution_status text,
+  ADD COLUMN execution_result_jsonb jsonb;

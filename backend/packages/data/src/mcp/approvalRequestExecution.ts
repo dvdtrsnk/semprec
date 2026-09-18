@@ -85,6 +85,12 @@ export async function handleApprovalRequestExecuteTask(
   const claimed: ApprovalRequest | null = await withTransaction(pool, (client) =>
     claimApprovalRequestExecution(client, input.approvalRequestId),
   );
+  // `isGenericOperationApprovalRequestPayload(claimed.payload)` can never be true here — the
+  // early return above already handles every generic-operation payload, and a payload's kind is
+  // fixed at row-creation time, so `claimed` (re-read by id from `claimApprovalRequestExecution`)
+  // carries the same kind `request` did. The check still has to run: `claimed` is a distinct read
+  // from `request`, so TypeScript can't carry that invariant across them, and this is what
+  // narrows `claimed.payload` to `McpInvokeApprovalRequestPayload` below without an unchecked `as`.
   if (!claimed || isGenericOperationApprovalRequestPayload(claimed.payload)) return;
 
   const payload = claimed.payload;

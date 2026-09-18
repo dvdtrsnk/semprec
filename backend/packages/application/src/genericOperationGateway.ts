@@ -15,8 +15,9 @@ import {
   getEarliestUserId,
   isGenericOperationApprovalRequestPayload,
   itemDeleteWithClient,
+  markApprovalRequestExecutionSucceeded,
   propertyDeleteWithClient,
-  requireAffectedRows,
+  terminalizeApprovalRequestAsConflict,
   viewDeleteWithClient,
   withTransaction,
   writeNotification,
@@ -279,23 +280,6 @@ export function createGenericOperationGateway(pool: Pool): GenericOperationGatew
   };
 }
 
-/** Writes the terminal `conflict` outcome on the already-locked row, inside the caller's own transaction, and returns the same shape a caller of this module gets back — never throws, so the transaction that wrote it commits. */
-async function terminalizeConflict(
-  client: Parameters<typeof databaseArchiveWithClient>[0],
-  id: string,
-  details: Record<string, unknown>,
-): Promise<{ error: true; result: string }> {
-  const executionResult = { error: { code: "version_conflict", details } };
-  const result = await client.query(
-    `UPDATE approval_requests
-        SET execution_status = 'conflict', execution_result = $2::jsonb, executed_at = now()
-      WHERE id = $1`,
-    [id, JSON.stringify(executionResult)],
-  );
-  requireAffectedRows(result, `terminalizing approval request '${id}' as conflict`);
-  return { error: true, result: JSON.stringify(executionResult) };
-}
-
 /**
  * `ApprovedOperationExecutor` (issue #89, the `approvalExecute` job's actual handler for a
  * generic-operation approval request — replacing this function's own former binding-replay
@@ -387,7 +371,7 @@ export async function replayApprovedGenericOperation(
         snapshot.resourceId !== locked.resourceSnapshot.resourceId ||
         snapshot.sha256 !== locked.resourceSnapshot.sha256
       ) {
-        return await terminalizeConflict(client, locked.id, { currentResource });
+        return await terminalizeApprovalRequestAsConflict(client, locked.id, { currentResource });
       }
 
       const result = await executeDestructiveWithClient(
@@ -398,18 +382,13 @@ export async function replayApprovedGenericOperation(
         actor.userId,
         currentResource,
       );
-      const executionResult = { result };
-      const updateResult = await client.query(
-        `UPDATE approval_requests
-            SET execution_status = 'succeeded', execution_result = $2::jsonb, executed_at = now()
-          WHERE id = $1`,
-        [locked.id, JSON.stringify(executionResult)],
-      );
-      requireAffectedRows(updateResult, `marking approval request '${locked.id}' succeeded`);
-      return { error: false, result: JSON.stringify(executionResult) };
+      return await markApprovalRequestExecutionSucceeded(client, locked.id, result);
     } catch (err) {
       if (err instanceof ChokePointError) {
-        return await terminalizeConflict(client, locked.id, { reason: err.code, currentResource: null });
+        return await terminalizeApprovalRequestAsConflict(client, locked.id, {
+          reason: err.code,
+          currentResource: null,
+        });
       }
       throw err;
     }

@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, computeDestructiveResourceProjection, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
+import { NotFoundError } from "../errors.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -106,6 +107,18 @@ describe("computeDestructiveResourceProjection snapshot hashing (issue #89)", ()
       computeDestructiveResourceProjection(client, { operation: "item.delete", input: { itemId: item.id } }),
     );
     expect(third.snapshot.sha256).not.toBe(first.snapshot.sha256);
+  });
+
+  it("item.delete: rejects an already-deleted item instead of letting it be approved and replayed", async () => {
+    const database = await chokePoint.createDatabase({ name: "Movies" });
+    const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+    await chokePoint.softDeleteItem(database.id, item.id);
+
+    await expect(
+      withTransaction(pool, (client) =>
+        computeDestructiveResourceProjection(client, { operation: "item.delete", input: { itemId: item.id } }),
+      ),
+    ).rejects.toThrow(NotFoundError);
   });
 
   it("view.delete: is deterministic for an unchanged view, and changes when its config changes", async () => {
