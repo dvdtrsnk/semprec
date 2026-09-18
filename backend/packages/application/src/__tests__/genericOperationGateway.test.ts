@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { runOnce } from "@semprec/queue";
 import {
   ApprovalRequiredError,
   ForbiddenError,
@@ -9,9 +10,12 @@ import {
   ValidationError,
   createAgentRun,
   createChokePoint,
+  createCoreTaskList,
   createViewTypeRegistry,
+  decideAndEnqueueApprovalRequest,
   getApprovalRequest,
   seedSystem,
+  withTransaction,
   type ApprovalRequest,
   type ChokePoint,
   type GenericOperationApprovalRequestPayload,
@@ -229,6 +233,76 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect(outcome.error).toBe(true);
       expect(outcome.result).toContain("owner_violation");
       expect(await chokePoint.findItem(item.id)).not.toBeNull();
+    });
+  });
+
+  describe("handleApprovalRequestExecuteTask (worker path, issue #220)", () => {
+    // `createCoreTaskList`'s later positional parameters (library metadata fetcher, mail
+    // adapters, ...) are irrelevant to this task and default sensibly on their own; only the
+    // trailing `genericOperationApprovalReplay` slot needs a real value here.
+    function taskListWithReplay(genericOperationApprovalReplay: typeof replayApprovedGenericOperation | undefined) {
+      return createCoreTaskList(
+        pool,
+        new Map(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        genericOperationApprovalReplay,
+      );
+    }
+
+    async function createPendingDeleteAndApprove(): Promise<{ requestId: string; itemId: string }> {
+      const gateway = createGenericOperationGateway(pool);
+      const database = await chokePoint.createDatabase({ name: "Worker path DB" });
+      const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+      const projectItemId = randomUUID();
+      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete it" });
+      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+
+      let requestId: string;
+      try {
+        await gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id });
+        expect.unreachable("expected ApprovalRequiredError");
+        return { requestId: "", itemId: item.id };
+      } catch (err) {
+        requestId = (err as ApprovalRequiredError).details.approvalRequestId;
+      }
+
+      const decidedByUserId = await createUser();
+      const decided = await withTransaction(pool, (client) =>
+        decideAndEnqueueApprovalRequest(client, { approvalRequestId: requestId, decision: "approved", decidedByUserId }),
+      );
+      expect(decided!.status).toBe("approved");
+
+      return { requestId, itemId: item.id };
+    }
+
+    it("routes an approved generic-operation request through the queue to the injected replay handler, executing the real operation", async () => {
+      const { requestId, itemId } = await createPendingDeleteAndApprove();
+
+      await runOnce({ pgPool: pool, taskList: taskListWithReplay(replayApprovedGenericOperation) });
+
+      expect(await chokePoint.findItem(itemId)).toBeNull();
+      const finished = await getApprovalRequest(pool, requestId);
+      expect(finished!.executedAt).not.toBeNull();
+      expect(finished!.executionError).toBe(false);
+      expect(JSON.parse(finished!.executionResult!)).toMatchObject({ id: itemId });
+    });
+
+    it("without a configured replay handler, records a failed outcome instead of silently doing nothing", async () => {
+      const { requestId, itemId } = await createPendingDeleteAndApprove();
+
+      await runOnce({ pgPool: pool, taskList: taskListWithReplay(undefined) });
+
+      expect(await chokePoint.findItem(itemId)).not.toBeNull();
+      const finished = await getApprovalRequest(pool, requestId);
+      expect(finished!.executedAt).not.toBeNull();
+      expect(finished!.executionError).toBe(true);
+      expect(finished!.executionResult).toContain("No generic-operation approval replay handler is configured");
     });
   });
 });

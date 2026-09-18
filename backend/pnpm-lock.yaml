@@ -120,6 +120,9 @@ importers:
         specifier: ^8.23.0
         version: 8.23.0
     devDependencies:
+      '@semprec/queue':
+        specifier: workspace:*
+        version: link:../queue
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1

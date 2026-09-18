@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import { ApprovalRequiredError, ChokePointError, NotFoundError, ValidationError } from "@semprec/data";
 import {
   GENERIC_OPERATION_NAMES,
+  operationInputJsonSchema,
   type AuthenticatedActor,
   type CapabilityId,
   type GenericOperationName,
@@ -124,7 +125,7 @@ export function createMcpRequestListener(
       if (rpc.method === "tools/list") {
         const tools = gateway.listOperations(grantedCapabilities).map((operation) => ({
           name: toMcpToolName(operation),
-          inputSchema: { type: "object" },
+          inputSchema: operationInputJsonSchema(operation),
         }));
         sendJson(res, 200, rpcResult(rpcId, { tools }));
         return;
