@@ -27,6 +27,7 @@ describe("createAgentRunRequestListener", () => {
     pool ??= getTestPool();
     const viewTypeRegistry = createViewTypeRegistry();
     await resetDatabase(pool);
+    await createUser(pool, { email: `${randomUUID()}@example.com`, passwordHash: await hashPassword(PASSWORD) });
     await seedSystem(pool, viewTypeRegistry);
 
     server = createServer(createAgentRunRequestListener(pool));

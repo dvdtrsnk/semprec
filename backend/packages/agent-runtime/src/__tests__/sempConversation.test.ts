@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createUser, hashPassword } from "@semprec/data";
 import { getTraceContext } from "@semprec/shared";
 import { SEMP_BUSY_ERROR_MESSAGE, SempConversation } from "../sempConversation.js";
 import type {
@@ -64,6 +65,8 @@ describe("SempConversation", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    const passwordHash = await hashPassword("s3cret-password");
+    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
   });
 
   afterAll(async () => {

@@ -23,6 +23,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
     pool ??= getTestPool();
     chokePoint ??= createChokePoint(pool);
     await resetDatabase(pool);
+    await createUser();
   });
 
   afterAll(async () => {

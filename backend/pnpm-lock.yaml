@@ -50,9 +50,15 @@ importers:
       '@earendil-works/pi-coding-agent':
         specifier: 0.85.1
         version: 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(ws@8.21.3)(zod@4.4.3)
+      '@semprec/application':
+        specifier: workspace:*
+        version: link:../application
       '@semprec/data':
         specifier: workspace:*
         version: link:../data
+      '@semprec/module-registry':
+        specifier: workspace:*
+        version: link:../module-registry
       '@semprec/realtime':
         specifier: workspace:*
         version: link:../realtime

@@ -41,6 +41,7 @@ describe("approvalRequestsStore (issue #130)", () => {
     const viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry();
     await resetDatabase(pool);
     await seedSystem(pool, viewTypeRegistry);
+    await createUser();
   });
 
   afterAll(async () => {

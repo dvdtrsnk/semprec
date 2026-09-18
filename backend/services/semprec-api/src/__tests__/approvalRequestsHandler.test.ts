@@ -56,6 +56,7 @@ describe("createApprovalRequestsRequestListener", () => {
     chokePoint ??= createChokePoint(pool);
     const viewTypeRegistry = createViewTypeRegistry();
     await resetDatabase(pool);
+    await createUser();
     await seedSystem(pool, viewTypeRegistry);
 
     server = createServer(createApprovalRequestsRequestListener(pool));

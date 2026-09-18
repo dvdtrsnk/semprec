@@ -24,6 +24,17 @@ export interface AgentRunRow {
   result: string | null;
   startedAt: string;
   finishedAt: string | null;
+  /**
+   * The user this run's writes are attributed to (issue #220) — a session user for a
+   * user-triggered root run, the setup owner for a heartbeat-triggered root run, and copied
+   * from the parent run for every delegated (`parentRunId` set) run. `createAgentRun` resolves
+   * this itself rather than taking it as an input: Semprec is single-tenant (`getEarliestUserId`
+   * — see `permissionManifest.ts`'s own note that "the earliest-created account stands in for
+   * 'the' user"), so a session user, the setup owner, and "the sole user" are the same value in
+   * every case this table's four producers ever see. The AgentTool composition root (#220)
+   * derives an agent actor's `userId` from this column alone, never from tool input.
+   */
+  actorUserId: string;
 }
 
 /** The raw `agent_runs` row shape this module reads back from Postgres. */
@@ -39,7 +50,11 @@ type AgentRunDbRow = {
   result: string | null;
   started_at: Date;
   finished_at: Date | null;
+  actor_user_id: string;
 };
+
+const AGENT_RUN_ROW_COLUMNS =
+  "id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at, actor_user_id";
 
 function mapRow(row: AgentRunDbRow): AgentRunRow {
   return {
@@ -54,6 +69,7 @@ function mapRow(row: AgentRunDbRow): AgentRunRow {
     result: row.result,
     startedAt: row.started_at.toISOString(),
     finishedAt: row.finished_at ? row.finished_at.toISOString() : null,
+    actorUserId: row.actor_user_id,
   };
 }
 
@@ -66,11 +82,30 @@ export interface CreateAgentRunInput {
   task: string;
 }
 
+/**
+ * A delegated run (`parentRunId` set) inherits its supervisor's `actorUserId` unchanged; a root
+ * run (no parent) is attributed to the sole account (`getEarliestUserId` — see `AgentRunRow.actorUserId`'s
+ * doc comment for why this is correct for every one of this table's producers). Throws if neither
+ * resolves to a user, since a run with no attributable actor can never pass #220's AgentTool
+ * actor-derivation invariant.
+ */
+async function resolveActorUserId(client: Pool | PoolClient, parentRunId: string | null | undefined): Promise<string> {
+  if (parentRunId) {
+    const parent = await getAgentRun(client, parentRunId);
+    if (!parent) throw new Error(`Cannot create a delegated agent run: parent run '${parentRunId}' does not exist`);
+    return parent.actorUserId;
+  }
+  const userId = await getEarliestUserId(client);
+  if (!userId) throw new Error("Cannot create an agent run before any account exists");
+  return userId;
+}
+
 export async function createAgentRun(client: Pool | PoolClient, input: CreateAgentRunInput): Promise<AgentRunRow> {
+  const actorUserId = await resolveActorUserId(client, input.parentRunId);
   const { rows } = await client.query<AgentRunDbRow>(
-    `INSERT INTO agent_runs (project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at`,
+    `INSERT INTO agent_runs (project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, actor_user_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING ${AGENT_RUN_ROW_COLUMNS}`,
     [
       input.projectItemId ?? null,
       input.parentRunId ?? null,
@@ -78,6 +113,7 @@ export async function createAgentRun(client: Pool | PoolClient, input: CreateAge
       input.triggeredBy,
       input.unit ?? "invocation",
       input.task,
+      actorUserId,
     ],
   );
   return mapRow(requireSingleRow(rows, "agent_runs row"));
@@ -138,7 +174,7 @@ export async function finishAgentRunWithErrorNotification(
 
 export async function getAgentRun(client: Pool | PoolClient, id: string): Promise<AgentRunRow | null> {
   const { rows } = await client.query<AgentRunDbRow>(
-    `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
+    `SELECT ${AGENT_RUN_ROW_COLUMNS}
      FROM agent_runs WHERE id = $1`,
     [id],
   );
@@ -149,7 +185,7 @@ export async function getAgentRun(client: Pool | PoolClient, id: string): Promis
 export async function getAgentRunsByIds(client: Pool | PoolClient, ids: string[]): Promise<AgentRunRow[]> {
   if (ids.length === 0) return [];
   const { rows } = await client.query<AgentRunDbRow>(
-    `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
+    `SELECT ${AGENT_RUN_ROW_COLUMNS}
      FROM agent_runs WHERE id = ANY($1::uuid[])`,
     [ids],
   );
@@ -168,7 +204,7 @@ export async function listAgentRunsByHeartbeat(
   limit?: number,
 ): Promise<AgentRunRow[]> {
   const { rows } = await client.query<AgentRunDbRow>(
-    `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
+    `SELECT ${AGENT_RUN_ROW_COLUMNS}
      FROM agent_runs WHERE heartbeat_id = $1 ORDER BY started_at DESC` + (limit !== undefined ? ` LIMIT $2` : ``),
     limit !== undefined ? [heartbeatId, limit] : [heartbeatId],
   );
@@ -194,7 +230,7 @@ export async function listSessionAgentRuns(
   filter: SessionAgentRunsFilter,
 ): Promise<AgentRunRow[]> {
   const { rows } = await client.query<AgentRunDbRow>(
-    `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
+    `SELECT ${AGENT_RUN_ROW_COLUMNS}
      FROM agent_runs
      WHERE project_item_id = $1 AND unit = 'session' AND triggered_by = $2 AND parent_run_id IS NOT DISTINCT FROM $3
      ORDER BY wake_seq ASC`,
@@ -210,7 +246,7 @@ export async function listSessionAgentRuns(
  */
 export async function listRunningAgentRuns(client: Pool | PoolClient): Promise<AgentRunRow[]> {
   const { rows } = await client.query<AgentRunDbRow>(
-    `SELECT id, project_item_id, parent_run_id, heartbeat_id, triggered_by, unit, task, status, result, started_at, finished_at
+    `SELECT ${AGENT_RUN_ROW_COLUMNS}
      FROM agent_runs WHERE status = 'running' ORDER BY started_at ASC`,
   );
   return rows.map(mapRow);
