@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { withTraceContext } from "@semprec/shared";
+import { createGenericApplicationService } from "@semprec/application";
 import type { BlobStorageWriter, PasswordResetMailer, loadFullModuleRegistry } from "@semprec/data";
 import { mountCustomRoutes } from "./adapter/customRouteMount.js";
 import { mountRoutes } from "./adapter/routeTable.js";
@@ -54,11 +55,15 @@ export async function createDispatcher(
 ): Promise<(req: IncomingMessage, res: ServerResponse) => void> {
   const customRouteDefinitions = await options.moduleRegistry.getCustomRouteDefinitions();
   const dispatchCustomRoute = mountCustomRoutes(pool, customRouteDefinitions);
+  // The sole neutral `GenericApplicationPort` implementation (issue #219): one instance per
+  // injected `Pool`, threaded into every generic resource route family below so there is no
+  // second write path — a route never constructs its own `createChokePoint(pool)`.
+  const genericApplicationService = createGenericApplicationService(pool);
   const dispatchResourceRoute = mountRoutes(pool, [
-    ...createDatabaseRoutes(pool, options.moduleRegistry),
-    ...createPropertyRoutes(pool, options.moduleRegistry),
-    ...createViewRoutes(pool),
-    ...createItemRoutes(pool),
+    ...createDatabaseRoutes(genericApplicationService, options.moduleRegistry),
+    ...createPropertyRoutes(genericApplicationService, options.moduleRegistry),
+    ...createViewRoutes(genericApplicationService),
+    ...createItemRoutes(genericApplicationService, pool),
   ]);
   const mcpAgentPageListener = createMcpAgentPageRequestListener(pool);
   const approvalRequestsListener = createApprovalRequestsRequestListener(pool);

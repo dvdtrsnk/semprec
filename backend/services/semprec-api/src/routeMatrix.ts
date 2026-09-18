@@ -162,6 +162,13 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
   },
   {
+    name: "system health report",
+    method: "GET",
+    path: "/api/system-health",
+    surface: "api",
+    public: false,
+  },
+  {
     name: "confirm proposal",
     method: "POST",
     path: `/api/proposals/${EXAMPLE_ID}/confirm`,
@@ -229,6 +236,13 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
   },
   {
+    name: "restore database",
+    method: "POST",
+    path: `/api/databases/${EXAMPLE_ID}/restore`,
+    surface: "api",
+    public: false,
+  },
+  {
     name: "property catalog",
     method: "GET",
     path: `/api/databases/${EXAMPLE_ID}/properties`,
@@ -243,6 +257,20 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
   },
   {
+    name: "property list",
+    method: "GET",
+    path: `/api/properties?databaseId=${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "property detail",
+    method: "GET",
+    path: `/api/properties/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+  },
+  {
     name: "update property",
     method: "PATCH",
     path: `/api/properties/${EXAMPLE_ID}`,
@@ -253,6 +281,20 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     name: "delete property",
     method: "DELETE",
     path: `/api/properties/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "list views",
+    method: "GET",
+    path: "/api/views",
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "view detail",
+    method: "GET",
+    path: `/api/views/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
   },
@@ -280,6 +322,13 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
   {
     name: "add/reposition curated view item",
     method: "PUT",
+    path: `/api/views/${EXAMPLE_ID}/items/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "reorder curated view item",
+    method: "PATCH",
     path: `/api/views/${EXAMPLE_ID}/items/${EXAMPLE_ID}`,
     surface: "api",
     public: false,

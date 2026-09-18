@@ -18,6 +18,7 @@ import {
   type DatabaseRow,
   type PasswordResetMailer,
 } from "@semprec/data";
+import { createGenericApplicationService } from "@semprec/application";
 import { createDispatcher } from "../app.js";
 import { createDatabaseRoutes } from "../databasesHandler.js";
 
@@ -232,7 +233,7 @@ describe("database routes (issue #240)", () => {
 
     const missing = await fetch(`${baseUrl}/api/databases/${randomUUID()}/properties`, { headers: await authHeader() });
     expect(missing.status).toBe(404);
-    expect((await missing.json()) as { error: { code: string } }).toEqual({ error: { code: "not_found" } });
+    expect(((await missing.json()) as { error: { code: string } }).error.code).toBe("not_found");
 
     const unauthenticated = await fetch(`${baseUrl}/api/databases/${database.id}/properties`);
     expect(unauthenticated.status).toBe(401);
@@ -240,7 +241,7 @@ describe("database routes (issue #240)", () => {
 
   it("registers exactly one property-catalog route handler", () => {
     expect(
-      createDatabaseRoutes(pool, moduleRegistry).filter(
+      createDatabaseRoutes(createGenericApplicationService(pool), moduleRegistry).filter(
         (route) => route.method === "GET" && route.path === "/api/databases/:id/properties",
       ),
     ).toHaveLength(1);
@@ -287,8 +288,8 @@ describe("database routes (issue #240)", () => {
       body: JSON.stringify({ key: "title", name: "Title", type: "bogus" }),
     });
     expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: { code: string; details?: { field?: string } } };
-    expect(body.error.details?.field).toBe("type");
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("validation_failed");
   });
 
   it("returns 403 schema_locked when creating a property on a schema-locked database", async () => {

@@ -20,6 +20,7 @@ export const ITEM_ERROR_CODES = [
   "approval_required",
   "heartbeat_event_triggered",
   "cardinality_violation",
+  "database_archived",
 ] as const;
 
 export type ItemErrorCode = (typeof ITEM_ERROR_CODES)[number];
@@ -44,6 +45,7 @@ export const ITEM_ERROR_STATUS_BY_CODE: Readonly<Record<ItemErrorCode, number>> 
   approval_required: 403,
   heartbeat_event_triggered: 409,
   cardinality_violation: 409,
+  database_archived: 403,
 };
 
 function isItemErrorCode(code: string): code is ItemErrorCode {

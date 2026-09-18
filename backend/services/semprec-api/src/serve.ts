@@ -21,8 +21,13 @@ import { logger } from "./logger.js";
 // fatally and exit non-zero rather than crash silently or hang.
 installFatalHandlers(logger);
 
-const connectionString = process.env.DATABASE_URL;
-if (!connectionString) throw new Error("DATABASE_URL is not set");
+// SEMPREC_API_DATABASE_URL is this process's own key in the single shared `/opt/semprec/shared/.env`
+// (issue #175) — semprec-api is the only process authenticating as the `semprec_data` role (see
+// docs/operations/database-roles.md), so it cannot share one `DATABASE_URL` name with the
+// `semprec_side` processes that read the same file. `DATABASE_URL` remains the fallback for local
+// development, where a developer runs this service alone against its own per-service `.env`.
+const connectionString = process.env.SEMPREC_API_DATABASE_URL ?? process.env.DATABASE_URL;
+if (!connectionString) throw new Error("SEMPREC_API_DATABASE_URL (or DATABASE_URL) is not set");
 
 // Issue #216: DOC_HISTORY_RETENTION_DAYS must be a positive integer when set. Called eagerly
 // here (its result discarded — request-time call sites re-read the same env var themselves)
@@ -107,6 +112,8 @@ server.on("upgrade", (req, socket, head) => {
   });
 });
 
-server.listen(port, () => {
+// Issue #174: bound to loopback explicitly — the only public entry point is the Caddy reverse
+// proxy on the same host (`deploy/Caddyfile`), never this process's own listener directly.
+server.listen(port, "127.0.0.1", () => {
   logger.info({ port }, "semprec-api listening");
 });
