@@ -41,14 +41,9 @@ async function createProjectItem(): Promise<string> {
   return item.id;
 }
 
-interface ParsedResult<T> {
-  outcome: { error: boolean; result: string };
-  value: T;
-}
-
-function parseSuccess<T>(outcome: { error: boolean; result: string }): ParsedResult<T> {
+function parseSuccess<T>(outcome: { error: boolean; result: string }): T {
   expect(outcome.error).toBe(false);
-  return { outcome, value: JSON.parse(outcome.result) as T };
+  return JSON.parse(outcome.result) as T;
 }
 
 describe("generic operation AgentTools (issue #220)", () => {
@@ -109,7 +104,7 @@ describe("generic operation AgentTools (issue #220)", () => {
         type: "table",
         name: "Legit view",
       });
-      const { value: view } = parseSuccess<{ id: string; creatorProjectItemId: string | null }>(legit);
+      const view = parseSuccess<{ id: string; creatorProjectItemId: string | null }>(legit);
       expect(view.creatorProjectItemId).toBe(projectItemId);
       expect(view.creatorProjectItemId).not.toBe(otherProjectItemId);
     });

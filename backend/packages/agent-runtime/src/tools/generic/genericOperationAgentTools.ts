@@ -66,10 +66,9 @@ function pendingApprovalResult(
   err: ApprovalRequiredError,
   operation: GenericOperationName,
 ): GenericOperationAgentToolResult {
-  const details = err.details as { approvalRequestId: string };
   return {
     error: false,
-    result: `Operation '${operation}' requires human approval before it can run. Approval request ${details.approvalRequestId} has been created and is awaiting a decision; this call has not been executed.`,
+    result: `Operation '${operation}' requires human approval before it can run. Approval request ${err.details.approvalRequestId} has been created and is awaiting a decision; this call has not been executed.`,
   };
 }
 
@@ -86,11 +85,11 @@ function createTool(
   operation: GenericOperationName,
 ): GenericOperationAgentTool {
   return async function invoke(currentRunId, args) {
-    const context = await resolveAgentContext(pool, moduleRegistry, currentRunId);
-    if (!context) {
-      return { error: true, result: "owner_violation: no persisted run context for this agent tool call" };
-    }
     try {
+      const context = await resolveAgentContext(pool, moduleRegistry, currentRunId);
+      if (!context) {
+        return { error: true, result: "owner_violation: no persisted run context for this agent tool call" };
+      }
       const output = await gateway.invoke(operation, context.actor, context.grantedCapabilities, args ?? {});
       return { error: false, result: JSON.stringify(output) };
     } catch (err) {

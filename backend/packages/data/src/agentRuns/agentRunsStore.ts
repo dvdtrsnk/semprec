@@ -172,10 +172,25 @@ export async function finishAgentRunWithErrorNotification(
   });
 }
 
-export async function getAgentRun(client: Pool | PoolClient, id: string): Promise<AgentRunRow | null> {
+/**
+ * `forUpdate` row-locks the run so a concurrent write to its `project_item_id`/`actor_user_id`
+ * blocks until the caller's transaction commits or rolls back — `replayApprovedGenericOperation`
+ * holds this lock across its provenance check and the operation it re-checks provenance for, so
+ * the two can't be split by a race. `forUpdate: true` requires a `PoolClient`, not the broader
+ * `Pool | PoolClient`, matching `getTaskRecurrence`'s two-overload pattern: `FOR UPDATE` against a
+ * bare `Pool` acquires and immediately auto-commit-releases the lock on that single statement,
+ * silently defeating the whole point of locking.
+ */
+export function getAgentRun(client: PoolClient, id: string, forUpdate: true): Promise<AgentRunRow | null>;
+export function getAgentRun(client: Pool | PoolClient, id: string, forUpdate?: false): Promise<AgentRunRow | null>;
+export async function getAgentRun(
+  client: Pool | PoolClient,
+  id: string,
+  forUpdate = false,
+): Promise<AgentRunRow | null> {
   const { rows } = await client.query<AgentRunDbRow>(
     `SELECT ${AGENT_RUN_ROW_COLUMNS}
-     FROM agent_runs WHERE id = $1`,
+     FROM agent_runs WHERE id = $1${forUpdate ? " FOR UPDATE" : ""}`,
     [id],
   );
   return rows[0] ? mapRow(rows[0]) : null;

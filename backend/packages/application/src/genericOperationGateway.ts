@@ -40,6 +40,14 @@ function assertCompleteAgentIdentity(actor: AuthenticatedActor): void {
   }
 }
 
+/** Validates a stored payload's `operationName` against the closed catalog instead of casting it straight to `GenericOperationName` — the payload came back through a `jsonb` column, a boundary this codebase's own types don't protect. */
+function assertGenericOperationName(value: string): GenericOperationName {
+  if (!(GENERIC_OPERATION_NAMES as readonly string[]).includes(value)) {
+    throw new ValidationError(`Unknown operation '${value}' in approval request payload`);
+  }
+  return value as GenericOperationName;
+}
+
 function parseInput<K extends GenericOperationName>(operation: K, raw: unknown): InputByOperation[K] {
   const binding = GENERIC_OPERATION_BINDINGS[operation] as {
     input: {
@@ -154,9 +162,15 @@ export function createGenericOperationGateway(pool: Pool): GenericOperationGatew
  * request and the persisted `agent_run` its payload was snapshotted against, rejects a mismatch
  * as `owner_violation` rather than executing against stale provenance, then dispatches the same
  * binding REST/MCP/AgentTool dispatch through — bypassing only the already-satisfied approval
- * check, never validation, capability, or authz. A composition root passes this to
- * `createCoreTaskList`'s `genericOperationApprovalReplay` parameter; `packages/data`'s worker
- * can't call it directly without an `application -> data -> application` import cycle.
+ * check. Neither validation nor capability run again here: `canonicalInput` is the exact
+ * already-validated snapshot `parseInput` produced at creation time, and the capability grant
+ * itself is not re-checked against the project's *current* manifest, only the run's identity
+ * (`project_item_id`/`actor_user_id`) against what the snapshot recorded. The provenance read is
+ * row-locked (`getAgentRun(client, ..., true)`) and held for the duration of the same transaction
+ * as the dispatch below, so a concurrent write to those columns can't land in the gap between the
+ * check and the write it's guarding. A composition root passes this to `createCoreTaskList`'s
+ * `genericOperationApprovalReplay` parameter; `packages/data`'s worker can't call it directly
+ * without an `application -> data -> application` import cycle.
  */
 export async function replayApprovedGenericOperation(
   pool: Pool,
@@ -168,23 +182,25 @@ export async function replayApprovedGenericOperation(
       throw new NotFoundError(`Approval request '${request.id}' not found`);
     }
     const { actor, operationName, canonicalInput } = reloaded.payload;
-    const run = await getAgentRun(pool, reloaded.agentRunId);
-    if (
-      !run ||
-      reloaded.agentRunId !== actor.runId ||
-      run.projectItemId !== actor.agentProjectItemId ||
-      run.actorUserId !== actor.userId
-    ) {
-      throw new ForbiddenError(
-        `Approval request '${request.id}' no longer matches its run's persisted provenance`,
-        undefined,
-        "owner_violation",
-      );
-    }
-
+    const operation = assertGenericOperationName(operationName);
     const service = createGenericApplicationService(pool);
-    const operation = operationName as GenericOperationName;
-    const output = await invokeBinding(service, operation, actor, canonicalInput as InputByOperation[typeof operation]);
+
+    const output = await withTransaction(pool, async (client) => {
+      const run = await getAgentRun(client, reloaded.agentRunId, true);
+      if (
+        !run ||
+        reloaded.agentRunId !== actor.runId ||
+        run.projectItemId !== actor.agentProjectItemId ||
+        run.actorUserId !== actor.userId
+      ) {
+        throw new ForbiddenError(
+          `Approval request '${request.id}' no longer matches its run's persisted provenance`,
+          undefined,
+          "owner_violation",
+        );
+      }
+      return invokeBinding(service, operation, actor, canonicalInput as InputByOperation[typeof operation]);
+    });
     return { error: false, result: JSON.stringify(output) };
   } catch (err) {
     if (err instanceof ChokePointError) return { error: true, result: `${err.code}: ${err.message}` };

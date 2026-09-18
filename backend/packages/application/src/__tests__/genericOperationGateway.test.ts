@@ -147,7 +147,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         expect.unreachable("expected ApprovalRequiredError");
       } catch (err) {
         expect(err).toBeInstanceOf(ApprovalRequiredError);
-        const details = (err as ApprovalRequiredError).details as { approvalRequestId: string; link: string };
+        const details = (err as ApprovalRequiredError).details;
         expect(details.approvalRequestId).toBeDefined();
         expect(details.link).toContain(details.approvalRequestId);
 
@@ -198,7 +198,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         await gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id });
         expect.unreachable("expected ApprovalRequiredError");
       } catch (err) {
-        const details = (err as ApprovalRequiredError).details as { approvalRequestId: string };
+        const details = (err as ApprovalRequiredError).details;
         return { requestId: details.approvalRequestId, run, item };
       }
     }
