@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Pool } from "pg";
+import { logger } from "./logger.js";
 import { enqueueMailAccountSync } from "./mailSyncJob.js";
 import {
   getMailAccountSyncState,
@@ -134,7 +135,11 @@ export function createGraphWebhookLifecycleFactory(
         try {
           await registerOrRenew(credential);
         } catch (err) {
-          options.onError?.(account.mailboxItemId, "subscription", err);
+          if (options.onError) {
+            options.onError(account.mailboxItemId, "subscription", err);
+          } else {
+            logger.error({ err, mailboxItemId: account.mailboxItemId }, "Graph subscription lifecycle error");
+          }
         }
         if (await sleepOrStop(renewalIntervalMs)) return;
       }

@@ -42,18 +42,18 @@ export async function handleGraphChangeNotification(
   pool: Pool,
   notification: GraphChangeNotification,
 ): Promise<GraphNotificationOutcome> {
-  const state = await withTransaction(pool, (client) =>
-    getMailAccountSyncStateByGraphSubscriptionId(client, notification.subscriptionId),
-  );
-  if (!state) return "unknownSubscription";
-  if (
-    !state.graphClientState ||
-    !notification.clientState ||
-    !clientStateMatches(state.graphClientState, notification.clientState)
-  ) {
-    return "invalidClientState";
-  }
+  return withTransaction(pool, async (client) => {
+    const state = await getMailAccountSyncStateByGraphSubscriptionId(client, notification.subscriptionId);
+    if (!state) return "unknownSubscription";
+    if (
+      !state.graphClientState ||
+      !notification.clientState ||
+      !clientStateMatches(state.graphClientState, notification.clientState)
+    ) {
+      return "invalidClientState";
+    }
 
-  await enqueueMailAccountSync(pool, state.itemId);
-  return "accepted";
+    await enqueueMailAccountSync(client, state.itemId);
+    return "accepted";
+  });
 }

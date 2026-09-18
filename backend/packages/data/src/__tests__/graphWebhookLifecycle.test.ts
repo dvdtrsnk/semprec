@@ -6,6 +6,7 @@ import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { ensureMailAccountSyncState, getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import { handleGraphChangeNotification } from "../mail/graphWebhookNotifications.js";
+import { logger } from "../mail/logger.js";
 import {
   createGraphWebhookLifecycleFactory,
   GraphSubscriptionNotFoundError,
@@ -227,6 +228,37 @@ describe("Microsoft Graph webhook subscription lifecycle (issue #198)", () => {
     const callsAfterStop = createCalls.length;
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(createCalls.length).toBe(callsAfterStop);
+  });
+
+  it("logs a failed registration when the caller passed no onError handler, instead of swallowing it", async () => {
+    const mailboxItemId = await createMailboxItem("E2");
+    await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "graph_api" });
+    const failure = new Error("Graph rejected the subscription");
+    const { transport } = createFakeTransport({
+      createSubscription: () => {
+        throw failure;
+      },
+    });
+    // No `onError`: the renewal loop's catch has nowhere to report to but the logger, and a
+    // subscription that never registers must not fail silently just because the caller left the
+    // optional handler out.
+    const factory = createGraphWebhookLifecycleFactory(pool, transport, {
+      getCredential: async () => "access-token",
+      notificationUrl: NOTIFICATION_URL,
+      renewalIntervalMs: 20,
+    });
+    const lifecycle = factory({ mailboxItemId, syncMode: "graph_api" });
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+
+    try {
+      await lifecycle.start();
+      await vi.waitFor(() => expect(errorSpy).toHaveBeenCalled());
+      expect(errorSpy.mock.calls[0]?.[0]).toMatchObject({ err: failure, mailboxItemId });
+      expect((await getMailAccountSyncState(pool, mailboxItemId))?.graphSubscriptionId).toBeNull();
+    } finally {
+      await lifecycle.stop();
+      errorSpy.mockRestore();
+    }
   });
 
   it("enqueues an immediate reconcile on start", async () => {

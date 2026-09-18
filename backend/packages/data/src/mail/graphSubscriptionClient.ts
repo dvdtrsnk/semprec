@@ -22,7 +22,7 @@ class GraphApiError extends Error {
 
 async function readBoundedText(response: Response, url: string, maxBytes: number): Promise<string> {
   const reader = response.body?.getReader();
-  if (!reader) return response.text();
+  if (!reader) throw new Error(`Response from ${url} has no readable body stream`);
   const decoder = new TextDecoder();
   let received = 0;
   let text = "";

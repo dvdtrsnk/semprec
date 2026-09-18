@@ -2,7 +2,7 @@ import type { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
-import { withTransaction } from "../db/pool.js";
+import { withTransaction, type Queryable } from "../db/pool.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { updateItemWithClient } from "../chokePoint/chokePoint.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
@@ -65,9 +65,9 @@ export function mailAccountSyncJobKey(mailboxItemId: string): string {
   return `mail-account-sync:${mailboxItemId}`;
 }
 
-export async function enqueueMailAccountSync(pool: Pool, mailboxItemId: string): Promise<void> {
+export async function enqueueMailAccountSync(client: Queryable, mailboxItemId: string): Promise<void> {
   await enqueueJob(
-    pool,
+    client,
     CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC,
     { mailboxItemId },
     { jobKey: mailAccountSyncJobKey(mailboxItemId), maxAttempts: 3 },
