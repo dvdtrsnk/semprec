@@ -60,6 +60,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       riskClass: "moderate",
       requestedAt: created.requestedAt,
       safeSummary: {
+        kind: "mcpInvoke",
         mcpToolRegistrationId: payload.mcpToolRegistrationId,
         mcpServerItemId: payload.mcpServerItemId,
         argKeys: ["to", "apiKey"],
@@ -67,6 +68,30 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       agentRunId: run.id,
       projectItemId: projectItem.id,
       projectName: "Renovate the kitchen",
+    });
+  });
+
+  it("summarizes a generic-operation-originated request with its operationName, never mcp fields (issue #220)", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const payload = {
+      operationName: "item.delete",
+      canonicalInput: { itemId: randomUUID() },
+      actor: { runId: run.id, agentProjectItemId: randomUUID(), userId: run.actorUserId },
+    };
+    await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "item.delete",
+      riskClass: "destructive",
+      payload,
+    });
+
+    const rows = await listApprovalRequestsQueue(pool);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.safeSummary).toEqual({
+      kind: "genericOperation",
+      operationName: "item.delete",
+      argKeys: ["itemId"],
     });
   });
 

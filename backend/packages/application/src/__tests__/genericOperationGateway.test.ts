@@ -234,6 +234,26 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect(outcome.result).toContain("owner_violation");
       expect(await chokePoint.findItem(item.id)).not.toBeNull();
     });
+
+    it("rejects a request whose stored canonicalInput no longer satisfies the operation's current schema, without executing", async () => {
+      const { requestId, item } = await createPendingDelete();
+      // Simulates schema drift between queue time and replay time (e.g. a deploy landed
+      // in between): the snapshot was valid when parseInput produced it, but a corrupted
+      // or now-incompatible stored payload must fail cleanly, not crash inside the binding.
+      await pool.query(
+        `UPDATE approval_requests SET payload = jsonb_set(payload, '{canonicalInput}', '{}'::jsonb) WHERE id = $1`,
+        [requestId],
+      );
+      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
+        payload: GenericOperationApprovalRequestPayload;
+      };
+
+      const outcome = await replayApprovedGenericOperation(pool, request);
+
+      expect(outcome.error).toBe(true);
+      expect(outcome.result).toContain("validation_failed");
+      expect(await chokePoint.findItem(item.id)).not.toBeNull();
+    });
   });
 
   describe("handleApprovalRequestExecuteTask (worker path, issue #220)", () => {
