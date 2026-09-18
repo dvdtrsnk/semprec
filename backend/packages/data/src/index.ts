@@ -116,6 +116,11 @@ export {
   type MailLiveSyncRootOptions,
 } from "./mail/mailLiveSyncRoot.js";
 export { manifest as mailModuleManifest } from "./mail/mailModuleManifest.js";
+export {
+  handleGraphChangeNotification,
+  type GraphChangeNotification,
+  type GraphNotificationOutcome,
+} from "./mail/graphWebhookNotifications.js";
 export * from "./realtimeHook.js";
 
 export { createDocStore, type DocStore, type DocVersion } from "./docs/docStore.js";

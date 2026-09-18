@@ -19,6 +19,7 @@ import { createHealthzRequestListener } from "./healthzHandler.js";
 import { createSchemaRequestListener } from "./schemaHandler.js";
 import { createFilesRequestListener } from "./filesHandler.js";
 import { createBlobsRequestListener } from "./blobsHandler.js";
+import { createGraphWebhookRequestListener } from "./graphWebhookHandler.js";
 
 export interface AppOptions {
   passwordResetMailer: PasswordResetMailer;
@@ -80,6 +81,7 @@ export async function createDispatcher(
     maxFileSizeBytes: options.maxFileSizeBytes,
   });
   const blobsListener = createBlobsRequestListener(pool, { storage: options.blobStorage });
+  const graphWebhookListener = createGraphWebhookRequestListener(pool);
 
   // Issue #167's HTTP entry point: every request mints its own trace id, carried through
   // whichever async work the matched route kicks off (nothing below awaits `dispatch` itself, but
@@ -128,6 +130,10 @@ export async function createDispatcher(
     }
     if (pathname.startsWith("/api/blobs/") && req.method === "GET") {
       void blobsListener(req, res);
+      return;
+    }
+    if (pathname === "/api/mail/graph/webhook") {
+      void graphWebhookListener(req, res);
       return;
     }
     void mcpAgentPageListener(req, res);

@@ -69,6 +69,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "query view": "services/semprec-api/src/viewsHandler.ts",
   "upload file": "services/semprec-api/src/filesHandler.ts",
   "download blob": "services/semprec-api/src/blobsHandler.ts",
+  "Microsoft Graph mail webhook": "services/semprec-api/src/graphWebhookHandler.ts",
 };
 
 const apiRoutes: RouteMatrixEntry[] = ROUTE_MATRIX.filter((route) => route.surface === "api");
