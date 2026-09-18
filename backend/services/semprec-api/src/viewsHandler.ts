@@ -1,53 +1,66 @@
-import type { Pool } from "pg";
-import { createChokePoint, NotFoundError, ValidationError, type Actor } from "@semprec/data";
+import type { GenericApplicationPort } from "@semprec/shared";
 import type { RouteDefinition } from "./adapter/routeTable.js";
-import {
-  optionalIntegerField,
-  requireJsonObjectBody,
-  requireStringField,
-  requireStringParam,
-} from "./adapter/requestValidation.js";
+import { optionalIntegerQueryParam, requireJsonObjectBody, requireStringParam } from "./adapter/requestValidation.js";
+import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js";
 import { toViewEnvelope } from "./adapter/viewEnvelope.js";
 import { toViewItemEnvelope } from "./adapter/viewItemEnvelope.js";
 import { toItemQueryEnvelope } from "./adapter/itemQueryEnvelope.js";
 
-const USER_ACTOR: Actor = { type: "user" };
-
-function optionalConfigField(body: Record<string, unknown>): Record<string, unknown> | undefined {
-  return typeof body.config === "object" && body.config !== null && !Array.isArray(body.config)
-    ? (body.config as Record<string, unknown>)
-    : undefined;
+function requestUrl(rawUrl: string | undefined): URL {
+  return new URL(rawUrl ?? "/", "http://localhost");
 }
 
 /**
- * The view endpoint family (issue #155): `POST /api/databases/:id/views`, `PATCH/DELETE
- * /api/views/:id`, and `PUT/DELETE /api/views/:id/items/:itemId` for curated view membership;
- * `POST /api/views/:id/query` (issue #157) for reading through a view's own filter/sort/visibility
- * config, or an ad-hoc override of it. Every route is a thin mapping onto `createChokePoint`'s
- * service calls — no business rule is reimplemented here, and no successful mutation returns 204.
- * Every write's `actor` is `{ type: 'user' }`: this REST adapter authenticates only human sessions
- * (#34/#143); an agent-originated view write goes through a different adapter entirely (see
+ * The view endpoint family (issue #155, rebased onto the generic-operation bindings by issue
+ * #219): `GET /api/views`, `GET/PATCH/DELETE /api/views/:id`, `POST /api/databases/:id/views`,
+ * `PUT/PATCH/DELETE /api/views/:id/items/:itemId` for curated view membership (`PUT` adds or
+ * repositions, `PATCH` reorders an existing member — issue #219 wires up `viewItem.reorder`,
+ * which #155/#157 left unrouted), and `POST /api/views/:id/query` (issue #157). Every route
+ * assembles a canonical command object and dispatches it through `dispatchGenericOperation`
+ * against the injected `GenericApplicationPort` — no route constructs its own
+ * `createChokePoint(pool)`. `view.list` has no database scope of its own (its catalog is global,
+ * not per-database — see `packages/application`'s `listViews`), so `GET /api/views` takes no
+ * `:id` path segment, unlike the property/item list routes. Every write's actor is a REST human
+ * actor (`restActor`): this adapter authenticates only human sessions (#34/#143); an
+ * agent-originated view write goes through a different adapter entirely (see
  * `docs/adr/2026-09-10-views-are-excluded-from-the-agent-proposal-flow.md`).
  */
-export function createViewRoutes(pool: Pool): RouteDefinition[] {
-  const chokePoint = createChokePoint(pool);
-
+export function createViewRoutes(service: GenericApplicationPort): RouteDefinition[] {
   return [
+    {
+      method: "GET",
+      path: "/api/views",
+      handler: async (ctx) => {
+        const query = requestUrl(ctx.req.url).searchParams;
+        const page = await dispatchGenericOperation(service, "view.list", restActor(ctx.identity.user.id), {
+          cursor: query.get("cursor") ?? undefined,
+          limit: optionalIntegerQueryParam(query, "limit"),
+        });
+        return { status: 200, body: { views: page.items.map(toViewEnvelope), nextCursor: page.nextCursor } };
+      },
+    },
+    {
+      method: "GET",
+      path: "/api/views/:id",
+      handler: async (ctx) => {
+        const viewId = requireStringParam(ctx.params, "id");
+        const view = await dispatchGenericOperation(service, "view.get", restActor(ctx.identity.user.id), { viewId });
+        return { status: 200, body: toViewEnvelope(view) };
+      },
+    },
     {
       method: "POST",
       path: "/api/databases/:id/views",
       handler: async (ctx) => {
         const databaseId = requireStringParam(ctx.params, "id");
         const body = requireJsonObjectBody(ctx.body);
-        const type = requireStringField(body, "type");
-        const name = requireStringField(body, "name");
-        const config = optionalConfigField(body);
-        const isDefault = typeof body.isDefault === "boolean" ? body.isDefault : undefined;
-        const view = await chokePoint.createView(
-          { databaseId, type, name, config, isDefault },
-          USER_ACTOR,
-          ctx.identity.user.id,
-        );
+        const view = await dispatchGenericOperation(service, "view.create", restActor(ctx.identity.user.id), {
+          databaseId,
+          type: body.type,
+          name: body.name,
+          config: body.config,
+          isDefault: body.isDefault,
+        });
         return { status: 201, body: toViewEnvelope(view) };
       },
     },
@@ -55,18 +68,15 @@ export function createViewRoutes(pool: Pool): RouteDefinition[] {
       method: "PATCH",
       path: "/api/views/:id",
       handler: async (ctx) => {
-        const id = requireStringParam(ctx.params, "id");
+        const viewId = requireStringParam(ctx.params, "id");
         const body = requireJsonObjectBody(ctx.body);
-        const name = typeof body.name === "string" ? body.name : undefined;
-        const config = optionalConfigField(body);
-        const isDefault = typeof body.isDefault === "boolean" ? body.isDefault : undefined;
-        const view = await chokePoint.patchView({
-          id,
-          actor: USER_ACTOR,
-          name,
-          config,
-          isDefault,
-          actingUserId: ctx.identity.user.id,
+        const patch: Record<string, unknown> = {};
+        if (body.name !== undefined) patch.name = body.name;
+        if (body.config !== undefined) patch.config = body.config;
+        if (body.isDefault !== undefined) patch.isDefault = body.isDefault;
+        const view = await dispatchGenericOperation(service, "view.patch", restActor(ctx.identity.user.id), {
+          viewId,
+          patch,
         });
         return { status: 200, body: toViewEnvelope(view) };
       },
@@ -75,10 +85,12 @@ export function createViewRoutes(pool: Pool): RouteDefinition[] {
       method: "DELETE",
       path: "/api/views/:id",
       handler: async (ctx) => {
-        const id = requireStringParam(ctx.params, "id");
-        const view = await chokePoint.getView(id);
-        if (!view) throw new NotFoundError(`View ${id} not found`);
-        await chokePoint.deleteView({ id, actor: USER_ACTOR, actingUserId: ctx.identity.user.id });
+        const viewId = requireStringParam(ctx.params, "id");
+        const actor = restActor(ctx.identity.user.id);
+        // The deleted row comes back from `view.delete` itself — the state it reports is exactly
+        // the state the deletion transaction saw, not a separately-fetched snapshot that could go
+        // stale between reading it and deleting it (issue #219).
+        const view = await dispatchGenericOperation(service, "view.delete", actor, { viewId });
         return { status: 200, body: toViewEnvelope(view) };
       },
     },
@@ -89,8 +101,26 @@ export function createViewRoutes(pool: Pool): RouteDefinition[] {
         const viewId = requireStringParam(ctx.params, "id");
         const itemId = requireStringParam(ctx.params, "itemId");
         const body = requireJsonObjectBody(ctx.body);
-        const position = optionalIntegerField(body, "position", { nonNegative: true });
-        const viewItem = await chokePoint.addViewItem({ viewId, itemId, position, actor: USER_ACTOR });
+        const viewItem = await dispatchGenericOperation(service, "viewItem.add", restActor(ctx.identity.user.id), {
+          viewId,
+          itemId,
+          position: body.position,
+        });
+        return { status: 200, body: toViewItemEnvelope(viewItem) };
+      },
+    },
+    {
+      method: "PATCH",
+      path: "/api/views/:id/items/:itemId",
+      handler: async (ctx) => {
+        const viewId = requireStringParam(ctx.params, "id");
+        const itemId = requireStringParam(ctx.params, "itemId");
+        const body = requireJsonObjectBody(ctx.body);
+        const viewItem = await dispatchGenericOperation(service, "viewItem.reorder", restActor(ctx.identity.user.id), {
+          viewId,
+          itemId,
+          position: body.position,
+        });
         return { status: 200, body: toViewItemEnvelope(viewItem) };
       },
     },
@@ -100,27 +130,21 @@ export function createViewRoutes(pool: Pool): RouteDefinition[] {
       handler: async (ctx) => {
         const viewId = requireStringParam(ctx.params, "id");
         const itemId = requireStringParam(ctx.params, "itemId");
-        const view = await chokePoint.getView(viewId);
-        if (!view) throw new NotFoundError(`View ${viewId} not found`);
-        if (view.databaseId !== null) {
-          throw new ValidationError("Only a curated view (databaseId = null) accepts view_items membership", {
-            field: "viewId",
-          });
-        }
-        const members = await chokePoint.listViewItems(viewId);
-        const target = members.find((member) => member.itemId === itemId);
-        if (!target) throw new NotFoundError(`Item ${itemId} is not a member of view ${viewId}`);
-        await chokePoint.removeViewItem({ viewId, itemId, actor: USER_ACTOR });
-        return { status: 200, body: toViewItemEnvelope(target) };
+        const result = await dispatchGenericOperation(service, "viewItem.remove", restActor(ctx.identity.user.id), {
+          viewId,
+          itemId,
+        });
+        return { status: 200, body: result };
       },
     },
     {
       method: "POST",
       path: "/api/views/:id/query",
       handler: async (ctx) => {
-        const id = requireStringParam(ctx.params, "id");
+        const viewId = requireStringParam(ctx.params, "id");
         const body = ctx.body === undefined ? {} : requireJsonObjectBody(ctx.body);
-        const result = await chokePoint.queryViewItems(id, {
+        const result = await dispatchGenericOperation(service, "view.query", restActor(ctx.identity.user.id), {
+          viewId,
           filter: body.filter,
           sort: body.sort,
           cursor: body.cursor,

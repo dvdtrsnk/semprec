@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App.js";
 import { createHttpGenericOperations } from "./api/httpGenericOperations.js";
 import { createAiUsageOperations } from "./api/aiUsageOperations.js";
+import { createSystemHealthOperations } from "./api/systemHealthOperations.js";
 import { createMcpAgentPageOperations } from "./api/mcpAgentPageOperations.js";
 import { createApprovalQueueOperations } from "./api/approvalQueueOperations.js";
 import { createAgentRunOperations } from "./api/agentRunOperations.js";
@@ -27,6 +28,8 @@ const operations = createHttpGenericOperations({ baseUrl: apiBaseUrl });
 // No token here: the endpoint's stopgap bearer secret stays server-side (vite.config.ts's dev
 // proxy attaches it), so this client only ever issues a plain same-origin fetch.
 const aiUsageOperations = page === "ai-usage" ? createAiUsageOperations({ baseUrl: apiBaseUrl }) : undefined;
+// Rendered beside the AI usage block on the same System page (issue #170), not behind its own `?page=`.
+const systemHealthOperations = page === "ai-usage" ? createSystemHealthOperations({ baseUrl: apiBaseUrl }) : undefined;
 const agentPage =
   page === "agent" && params.get("project") && params.get("database")
     ? {
@@ -66,6 +69,7 @@ createRoot(container).render(
       viewId={viewId}
       operations={operations}
       aiUsageOperations={aiUsageOperations}
+      systemHealthOperations={systemHealthOperations}
       agentPage={agentPage}
       approvalQueue={approvalQueue}
       agentRun={agentRun}

@@ -10,6 +10,7 @@ export {
   createRevokePushSubscriptionRouteHandler,
 } from "../push/pushRouteHandlers.js";
 export { createAiUsageRouteHandler } from "../aiGateway/aiUsageRouteHandler.js";
+export { createSystemHealthRouteHandler } from "../observability/systemHealthRouteHandler.js";
 
 /**
  * Retrofit manifest (module-contract issue #226) for the schema/data core: the choke point
@@ -66,6 +67,16 @@ export const manifest: ModuleManifest = {
       // An aggregate report over ai_gateway_calls/agent_runs/system settings, outside the item
       // model entirely — issue #239's "aggregate read outside the item model" justification.
       justification: "transactional-semantics",
+    },
+    {
+      name: "systemHealthReport",
+      method: "GET",
+      path: "/api/system-health",
+      handlerExport: "createSystemHealthRouteHandler",
+      // A live snapshot across process_heartbeats/observability_checks/graphile_worker/
+      // item_automation/agent_runs/mail_account_sync_state, shaped for exactly one consumer
+      // (issue #170's System status block) — the "single-consumer-read" justification.
+      justification: "single-consumer-read",
     },
   ],
 };

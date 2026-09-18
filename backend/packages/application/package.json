@@ -9,9 +9,12 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@semprec/shared": "workspace:*"
+    "@semprec/data": "workspace:*",
+    "@semprec/shared": "workspace:*",
+    "pg": "^8.23.0"
   },
   "devDependencies": {
+    "@types/pg": "^8.23.1",
     "vitest": "^4.1.11"
   }
 }

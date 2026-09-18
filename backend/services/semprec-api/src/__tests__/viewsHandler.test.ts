@@ -184,11 +184,15 @@ describe("view routes (issue #155)", () => {
     }
 
     it("adds an item to a curated view (200, not 204)", async () => {
-      const headers = await authHeader();
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
       const view = await makeCuratedView();
       const item = await makeItem();
 
-      const res = await fetch(`${baseUrl}/api/views/${view.id}/items/${item.id}`, { method: "PUT", headers });
+      const res = await fetch(`${baseUrl}/api/views/${view.id}/items/${item.id}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ position: 0 }),
+      });
       expect(res.status).toBe(200);
       const body = (await res.json()) as ViewItemBody;
       expect(body).toEqual({ viewId: view.id, itemId: item.id, position: 0 });
@@ -196,13 +200,48 @@ describe("view routes (issue #155)", () => {
       expect(await chokePoint.listViewItems(view.id)).toEqual([{ viewId: view.id, itemId: item.id, position: 0 }]);
     });
 
+    it("adds an item to a curated view with no position, appending to the end (200, not 400)", async () => {
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const view = await makeCuratedView();
+      const itemA = await makeItem();
+      const itemB = await makeItem();
+
+      await fetch(`${baseUrl}/api/views/${view.id}/items/${itemA.id}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ position: 0 }),
+      });
+
+      const res = await fetch(`${baseUrl}/api/views/${view.id}/items/${itemB.id}`, {
+        method: "PUT",
+        headers,
+        body: "{}",
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as ViewItemBody;
+      expect(body).toEqual({ viewId: view.id, itemId: itemB.id, position: 1 });
+
+      expect(await chokePoint.listViewItems(view.id)).toEqual([
+        { viewId: view.id, itemId: itemA.id, position: 0 },
+        { viewId: view.id, itemId: itemB.id, position: 1 },
+      ]);
+    });
+
     it("is idempotent: repeating the same PUT leaves membership unchanged", async () => {
-      const headers = await authHeader();
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
       const view = await makeCuratedView();
       const item = await makeItem();
 
-      await fetch(`${baseUrl}/api/views/${view.id}/items/${item.id}`, { method: "PUT", headers });
-      const res = await fetch(`${baseUrl}/api/views/${view.id}/items/${item.id}`, { method: "PUT", headers });
+      await fetch(`${baseUrl}/api/views/${view.id}/items/${item.id}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ position: 0 }),
+      });
+      const res = await fetch(`${baseUrl}/api/views/${view.id}/items/${item.id}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ position: 0 }),
+      });
       expect(res.status).toBe(200);
 
       expect(await chokePoint.listViewItems(view.id)).toEqual([{ viewId: view.id, itemId: item.id, position: 0 }]);
@@ -267,7 +306,7 @@ describe("view routes (issue #155)", () => {
       expect(infiniteRes.status).toBe(400);
     });
 
-    it("removes a member from a curated view (200 with its prior representation, not 204)", async () => {
+    it("removes a member from a curated view (200 with a thin deleted confirmation, not 204)", async () => {
       const headers = await authHeader();
       const view = await makeCuratedView();
       const item = await makeItem();
@@ -275,23 +314,31 @@ describe("view routes (issue #155)", () => {
 
       const res = await fetch(`${baseUrl}/api/views/${view.id}/items/${item.id}`, { method: "DELETE", headers });
       expect(res.status).toBe(200);
-      const body = (await res.json()) as ViewItemBody;
-      expect(body).toEqual({ viewId: view.id, itemId: item.id, position: 0 });
+      const body = (await res.json()) as { deleted: boolean; viewId: string; itemId: string };
+      expect(body).toEqual({ deleted: true, viewId: view.id, itemId: item.id });
 
       expect(await chokePoint.listViewItems(view.id)).toEqual([]);
     });
 
     it("returns 404 adding an item to an unknown view", async () => {
-      const headers = await authHeader();
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
       const item = await makeItem();
-      const res = await fetch(`${baseUrl}/api/views/${randomUUID()}/items/${item.id}`, { method: "PUT", headers });
+      const res = await fetch(`${baseUrl}/api/views/${randomUUID()}/items/${item.id}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ position: 0 }),
+      });
       expect(res.status).toBe(404);
     });
 
     it("returns 404 adding an unknown item to a curated view", async () => {
-      const headers = await authHeader();
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
       const view = await makeCuratedView();
-      const res = await fetch(`${baseUrl}/api/views/${view.id}/items/${randomUUID()}`, { method: "PUT", headers });
+      const res = await fetch(`${baseUrl}/api/views/${view.id}/items/${randomUUID()}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ position: 0 }),
+      });
       expect(res.status).toBe(404);
     });
 

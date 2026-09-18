@@ -15,12 +15,12 @@ export interface OutputByOperation {
   "property.get": Property;
   "property.create": Property;
   "property.patch": Property;
-  "property.delete": { deleted: true; propertyId: string };
+  "property.delete": Property;
   "view.list": Page<View>;
   "view.get": View;
   "view.create": View;
   "view.patch": View;
-  "view.delete": { deleted: true; viewId: string };
+  "view.delete": View;
   "view.query": ItemPage;
   "viewItem.add": ViewItem;
   "viewItem.remove": { deleted: true; viewId: string; itemId: string };
@@ -32,7 +32,7 @@ export interface OutputByOperation {
   "item.restore": Item;
   "database.query": ItemPage;
   "relation.put": RelationEdge;
-  "relation.delete": { deleted: true; relationPropertyId: string; callerItemId: string; targetItemId: string };
+  "relation.delete": RelationEdge;
 }
 
 type AssertSameKeys<T, U> = [T] extends [U] ? ([U] extends [T] ? true : never) : never;

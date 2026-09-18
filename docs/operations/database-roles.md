@@ -31,9 +31,12 @@ Issue #243. Two roles, created by migration `0040_least_privilege_roles.sql`
 
 No service other than `semprec-api` is ever configured with the `semprec_data` connection
 string. Each service's `.env.example` documents which role its `DATABASE_URL` must
-authenticate as. The actual per-environment connection strings (with real passwords) are
-provisioned by issue #175's `shared/.env`, never committed here — the roles created by this
-migration have no password until an operator sets one with `ALTER ROLE ... WITH PASSWORD`.
+authenticate as, for local development. In production, the actual per-environment connection
+strings (with real passwords) come from issue #175's `deploy/shared/.env.example` —
+`SEMPREC_API_DATABASE_URL` (`semprec_data`) and `SEMPREC_SIDE_DATABASE_URL` (`semprec_side`,
+shared by every side-table-only process) — never committed here. The roles created by this
+migration have no password until an operator sets one with `ALTER ROLE ... WITH PASSWORD`, using
+the distinct `SEMPREC_DATA_DB_PASSWORD` / `SEMPREC_SIDE_DB_PASSWORD` values from that same file.
 
 ## Extending the grants
 
