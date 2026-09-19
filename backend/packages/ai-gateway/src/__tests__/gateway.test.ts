@@ -3,8 +3,10 @@ import type { Pool } from "pg";
 import {
   createAgentRun,
   createChokePoint,
+  createUser,
   getSystemSettingsDatabaseId,
   getSystemSettingsItemId,
+  hashPassword,
   seedSystem,
 } from "@semprec/data";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
@@ -32,6 +34,8 @@ describe("gateway", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    const passwordHash = await hashPassword("s3cret-password");
+    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
   });
 
   afterAll(async () => {

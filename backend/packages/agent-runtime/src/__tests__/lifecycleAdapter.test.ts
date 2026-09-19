@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { setAgentRunEventHook } from "@semprec/data";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
@@ -8,6 +9,14 @@ import { runAgentSession } from "../lifecycleAdapter.js";
 import type { AgentMessage, AgentSession, CreateAgentSession } from "../types.js";
 
 let pool: Pool;
+
+async function createUser(): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
+    [`${randomUUID()}@example.com`],
+  );
+  return rows[0]!.id;
+}
 
 function fakeSession(messages: AgentMessage[]): CreateAgentSession {
   return (): AgentSession => ({
@@ -21,6 +30,7 @@ describe("runAgentSession", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    await createUser();
     setAgentRunEventHook((event) => {
       publishRealtimeMessage(pool, { type: "agent_run_event", ...event }).catch((err: unknown) => {
         console.error("Failed to publish agent_run_event realtime message", err);

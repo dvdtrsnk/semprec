@@ -23,6 +23,7 @@ export const manifest: ModuleManifest = {
       name: "fixtureGood.processThing",
       payloadSchemaExport: "processThingPayloadSchema",
       handlerExport: "handleProcessThing",
+      queueAffinity: "api",
     },
   ],
   workers: [{ name: "fixtureGood.worker", handlerExport: "runWorker" }],
