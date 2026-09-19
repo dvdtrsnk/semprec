@@ -15,7 +15,8 @@ const filesTranscriptionTriggerConfigSchema = z.object({
   attachmentsRelationPropertyId: z.string().uuid(),
 });
 
-function readBlobId(properties: Record<string, unknown>): string | undefined {
+/** Shared with `transcriptionRouteHandlers.ts`'s own mime-type gate on `POST /api/transcriptions`. */
+export function readBlobId(properties: Record<string, unknown>): string | undefined {
   const file = properties.file;
   if (typeof file !== "object" || file === null) return undefined;
   const blobId = (file as Record<string, unknown>).blobId;

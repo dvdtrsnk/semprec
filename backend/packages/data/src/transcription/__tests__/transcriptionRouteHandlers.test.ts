@@ -79,4 +79,16 @@ describe("createCreateTranscriptionRouteHandler (issue #180)", () => {
       NotFoundError,
     );
   });
+
+  it("rejects a malformed (non-UUID) fileItemId with a 400 ValidationError, not a raw Postgres error", async () => {
+    const handler = createCreateTranscriptionRouteHandler(pool);
+    await expect(handler({ params: {}, body: { fileItemId: "not-a-uuid" } })).rejects.toThrow(ValidationError);
+  });
+
+  it("rejects a file that is neither audio nor video", async () => {
+    const fileItemId = await createFileItem("application/pdf");
+    const handler = createCreateTranscriptionRouteHandler(pool);
+
+    await expect(handler({ params: {}, body: { fileItemId } })).rejects.toThrow(ValidationError);
+  });
 });
