@@ -3,6 +3,8 @@ import type { ModuleRegistry, ModuleTaskDefinition, ModuleTaskProjection } from 
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, type TaskList } from "@semprec/queue";
 import {
   mergeModuleTaskList,
+  mergeModuleTaskListForAffinity,
+  assertTaskListMatchesAffinity,
   CORE_TASK_NAME_SET,
   AGENT_TASK_NAME_SET,
   RESERVED_TASK_NAMES,
@@ -96,6 +98,7 @@ describe("mergeModuleTaskList", () => {
         handler: async (payload: unknown) => {
           calls.push(payload);
         },
+        queueAffinity: "api",
       },
     ]);
 
@@ -126,6 +129,7 @@ describe("mergeModuleTaskList", () => {
         handler: async () => {
           ran = true;
         },
+        queueAffinity: "api",
       },
     ]);
 
@@ -141,6 +145,7 @@ describe("mergeModuleTaskList", () => {
         name: "fixtureModule.processThing",
         payloadSchema: { parse: (raw: unknown) => raw },
         handler: async () => {},
+        queueAffinity: "api",
       },
     ]);
     const mergedActive = await mergeModuleTaskList(coreTaskList, registryActive);
@@ -158,8 +163,89 @@ describe("mergeModuleTaskList", () => {
         name: CORE_TASK_NAMES.HEARTBEAT_SWEEP,
         payloadSchema: { parse: (raw: unknown) => raw },
         handler: async () => {},
+        queueAffinity: "api",
       },
     ]);
     await expect(mergeModuleTaskList(coreTaskList, registry)).rejects.toThrow(/collides with a core task name/);
+  });
+});
+
+describe("mergeModuleTaskListForAffinity", () => {
+  const coreTaskList: TaskList = {
+    [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {},
+  };
+
+  it("adds only the module tasks matching the requested affinity", async () => {
+    const registry = fakeRegistry([
+      {
+        moduleId: "fixture-module",
+        name: "fixtureModule.apiThing",
+        payloadSchema: { parse: (raw: unknown) => raw },
+        handler: async () => {},
+        queueAffinity: "api",
+      },
+      {
+        moduleId: "fixture-module",
+        name: "fixtureModule.agentsThing",
+        payloadSchema: { parse: (raw: unknown) => raw },
+        handler: async () => {},
+        queueAffinity: "agents",
+      },
+    ]);
+
+    const merged = await mergeModuleTaskListForAffinity(coreTaskList, registry, "api");
+    expect(Object.keys(merged).sort()).toEqual([CORE_TASK_NAMES.HEARTBEAT_SWEEP, "fixtureModule.apiThing"].sort());
+  });
+
+  it("rejects a module task colliding with a core/agent task name", async () => {
+    const registry = fakeRegistry([
+      {
+        moduleId: "fixture-module",
+        name: AGENT_TASK_NAMES.AGENT_RUN,
+        payloadSchema: { parse: (raw: unknown) => raw },
+        handler: async () => {},
+        queueAffinity: "agents",
+      },
+    ]);
+    await expect(mergeModuleTaskListForAffinity(coreTaskList, registry, "agents")).rejects.toThrow(
+      /collides with a core\/agent task name/,
+    );
+  });
+});
+
+describe("assertTaskListMatchesAffinity", () => {
+  it("passes silently when the registered handlers exactly match the expected set", () => {
+    const taskList: TaskList = {
+      [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {},
+    };
+    expect(() =>
+      assertTaskListMatchesAffinity(taskList, new Set([CORE_TASK_NAMES.HEARTBEAT_SWEEP]), "api"),
+    ).not.toThrow();
+  });
+
+  it("throws an actionable error when a handler is missing", () => {
+    const taskList: TaskList = {};
+    expect(() => assertTaskListMatchesAffinity(taskList, new Set([CORE_TASK_NAMES.HEARTBEAT_SWEEP]), "api")).toThrow(
+      /missing handler\(s\) for: heartbeatSweep/,
+    );
+  });
+
+  it("throws an actionable error when a handler is registered outside its affinity", () => {
+    const taskList: TaskList = {
+      [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {},
+      [AGENT_TASK_NAMES.AGENT_RUN]: async () => {},
+    };
+    expect(() => assertTaskListMatchesAffinity(taskList, new Set([CORE_TASK_NAMES.HEARTBEAT_SWEEP]), "api")).toThrow(
+      /unexpected handler\(s\) outside its affinity for: agentRun/,
+    );
+  });
+
+  it("reports both missing and unexpected handlers together", () => {
+    const taskList: TaskList = {
+      [AGENT_TASK_NAMES.AGENT_RUN]: async () => {},
+    };
+    expect(() => assertTaskListMatchesAffinity(taskList, new Set([CORE_TASK_NAMES.HEARTBEAT_SWEEP]), "api")).toThrow(
+      /missing handler\(s\) for: heartbeatSweep; unexpected handler\(s\) outside its affinity for: agentRun/,
+    );
   });
 });

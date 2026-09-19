@@ -194,9 +194,19 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: async () => {
       await handleItemTrashPurgeSweepTask(pool);
     },
+    // Issue #221 declared `trashPurge` as a second daily crontab entry alongside
+    // `itemTrashPurgeSweep`, distinct in name but not in effect — it runs the same purge sweep.
+    [CORE_TASK_NAMES.TRASH_PURGE]: async () => {
+      await handleItemTrashPurgeSweepTask(pool);
+    },
     [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: async (_payload, taskHelpers) => {
       await handleObservabilityCheckSystemTask(pool, { job: { id: taskHelpers.job.id } });
     },
+    // Issue #221 declared this name in the closed API affinity set ("handler and enqueue routing
+    // are delivered later") but nothing enqueues it yet — no crontab line, no producer. A no-op
+    // placeholder keeps the `api` runtime's registered handlers matching its affinity set exactly
+    // (issue #91's startup validation) until the deferred issue gives it a real body.
+    [CORE_TASK_NAMES.DOC_HISTORY_SQUASH]: async () => {},
   };
 
   // Issue #167: every core task restores the trace its `enqueueJob` producer stamped (or, for a
@@ -206,4 +216,18 @@ export function createCoreTaskList(
       .filter((entry): entry is [string, Task] => entry[1] !== undefined)
       .map(([name, task]) => [name, registerTask(name, task)]),
   );
+}
+
+/**
+ * Issue #91's `api` composition root's own task list: every `createCoreTaskList` handler except
+ * `AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT`, which belongs to the agents runtime's affinity set,
+ * not the API runtime's. `createCoreTaskList` keeps hosting both split heartbeat handlers for the
+ * single-process test/dev list its own comment describes; the API runtime's registered handler
+ * set must match `resolveTaskAffinitySets(...).api` exactly, so it never registers a handler for
+ * a task name outside that set.
+ */
+export function createApiCoreTaskList(...args: Parameters<typeof createCoreTaskList>): TaskList {
+  const taskList = createCoreTaskList(...args);
+  delete taskList[AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT];
+  return taskList;
 }
