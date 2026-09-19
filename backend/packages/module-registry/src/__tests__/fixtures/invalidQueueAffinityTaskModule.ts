@@ -1,20 +1,19 @@
-import type { ModuleManifest } from "../../manifest.js";
-
-export const manifest: ModuleManifest = {
-  id: "fixture-duplicate-task-name",
+export const manifest = {
+  id: "fixture-invalid-queue-affinity",
   version: "1.0.0",
-  name: "Fixture Duplicate Task Name",
+  name: "Fixture Invalid Queue Affinity",
   removable: true,
   systemProject: false,
   databases: [],
   capabilities: [],
   agentTools: [],
   taskNames: [
+    // "worker" isn't a valid queueAffinity ("api" | "agents") — must fail ModuleRegistry load.
     {
-      name: "fixtureGood.processThing",
+      name: "fixtureInvalidAffinity.doThing",
       payloadSchemaExport: "payloadSchema",
       handlerExport: "handleTask",
-      queueAffinity: "api",
+      queueAffinity: "worker",
     },
   ],
 };

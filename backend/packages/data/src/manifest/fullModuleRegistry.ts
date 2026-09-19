@@ -1,4 +1,5 @@
 import { ModuleRegistry } from "@semprec/module-registry";
+import { RESERVED_TASK_NAMES } from "../moduleTasks.js";
 
 /**
  * Every module manifest issues #226/#227 shipped a retrofit for, loaded together — the same set
@@ -31,7 +32,7 @@ const MANIFEST_PATHS = [
  * never sees a stale set from a previous request.
  */
 export async function loadFullModuleRegistry(): Promise<ModuleRegistry> {
-  const registry = new ModuleRegistry(() => new Set(ALL_MODULE_IDS));
+  const registry = new ModuleRegistry(() => new Set(ALL_MODULE_IDS), { reservedTaskNames: RESERVED_TASK_NAMES });
   for (const path of MANIFEST_PATHS) {
     await registry.loadModule(path);
   }
