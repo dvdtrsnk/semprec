@@ -19,6 +19,11 @@ describe("CORE_TASK_AFFINITY", () => {
   it("keeps the transitional heartbeatFire entry at affinity 'api'", () => {
     expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.HEARTBEAT_FIRE]).toBe("api");
   });
+
+  it("declares docHistorySquash in the exhaustive API set", () => {
+    expect(CORE_TASK_NAMES.DOC_HISTORY_SQUASH).toBe("docHistorySquash");
+    expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.DOC_HISTORY_SQUASH]).toBe("api");
+  });
 });
 
 describe("AGENT_TASK_NAMES", () => {

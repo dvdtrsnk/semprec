@@ -36,6 +36,9 @@ export const CORE_TASK_NAMES = {
   ROLLUP_RECOMPUTE_FULL: "rollupRecomputeFull",
   PROPERTY_TYPE_MIGRATION: "propertyTypeMigration",
   DOC_COMPACTION_SWEEP: "docCompactionSweep",
+  // Issue #221: the closed API-set name for the block-doc history squash job; declared here so
+  // the affinity catalog is complete, but its handler and enqueue routing are delivered later.
+  DOC_HISTORY_SQUASH: "docHistorySquash",
   DOC_HISTORY_CLEANUP: "docHistoryCleanup",
   // Issue #25: the library module's per-item cover/metadata processing job.
   LIBRARY_METADATA_PROCESS: "processLibraryMetadata",
@@ -86,6 +89,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE_FULL]: "api",
   [CORE_TASK_NAMES.PROPERTY_TYPE_MIGRATION]: "api",
   [CORE_TASK_NAMES.DOC_COMPACTION_SWEEP]: "api",
+  [CORE_TASK_NAMES.DOC_HISTORY_SQUASH]: "api",
   [CORE_TASK_NAMES.DOC_HISTORY_CLEANUP]: "api",
   [CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS]: "api",
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: "api",
