@@ -27,6 +27,7 @@ import { hashPassword } from "../auth/passwordHash.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
+let ownerUserId: string;
 
 async function drainQueue(registry = createActionRegistry()) {
   await runOnce({ pgPool: pool, taskList: createCoreTaskList(pool, registry) });
@@ -38,6 +39,9 @@ describe("scheduler", () => {
     chokePoint ??= createChokePoint(pool);
     await resetDatabase(pool);
     await seedSystem(pool);
+    const passwordHash = await hashPassword("s3cret-password");
+    const owner = await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+    ownerUserId = owner.id;
   });
 
   afterAll(async () => {
@@ -697,8 +701,6 @@ describe("scheduler", () => {
 
   it("writes a heartbeat_error notification on the final retry attempt, deduped by job id but not across distinct failing jobs (issue #237)", async () => {
     const projectItemId = await getSemprecProjectId();
-    const passwordHash = await hashPassword("s3cret-password");
-    const user = await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
 
     const heartbeat = await withTransaction(pool, (client) =>
       createHeartbeat(client, {
@@ -728,7 +730,7 @@ describe("scheduler", () => {
     );
     expect(afterFirst).toMatchObject([
       {
-        user_id: user.id,
+        user_id: ownerUserId,
         kind: "heartbeat_error",
         title: `Heartbeat "Always fails" failed`,
         source_table: "project_heartbeats",
