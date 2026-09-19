@@ -276,7 +276,10 @@ export async function recordApprovalRequestOutcome(
  * `ApprovedOperationExecutor`, `replayApprovedGenericOperation` in `packages/application`), inside
  * the caller's own transaction — never throws, so the transaction that wrote it commits. The sole
  * owner of `approval_requests` writes, per the single-writer ownership model; a caller outside
- * this module must never issue its own `UPDATE approval_requests` for this transition.
+ * this module must never issue its own `UPDATE approval_requests` for this transition. Also sets
+ * the legacy `execution_error` column so it stays in sync with `execution_status` for any reader
+ * still keyed off it — the same pairing `recordApprovalRequestOutcome` maintains for the mcpInvoke
+ * path.
  */
 export async function terminalizeApprovalRequestAsConflict(
   client: Queryable,
@@ -286,7 +289,8 @@ export async function terminalizeApprovalRequestAsConflict(
   const executionResult = { error: { code: "version_conflict", details } };
   const result = await client.query(
     `UPDATE approval_requests
-        SET execution_status = 'conflict', execution_result_jsonb = $2::jsonb, executed_at = now()
+        SET execution_status = 'conflict', execution_error = true, execution_result_jsonb = $2::jsonb,
+            executed_at = now()
       WHERE id = $1`,
     [id, JSON.stringify(executionResult)],
   );
@@ -299,7 +303,8 @@ export async function terminalizeApprovalRequestAsConflict(
  * transaction, so the mutation `replayApprovedGenericOperation` (`packages/application`) just ran
  * and its terminal-state write land in the same commit — see that function's header comment for
  * why both must be atomic. The sole owner of `approval_requests` writes; see
- * `terminalizeApprovalRequestAsConflict` above for the same rationale.
+ * `terminalizeApprovalRequestAsConflict` above for the same rationale, including the legacy
+ * `execution_error` column.
  */
 export async function markApprovalRequestExecutionSucceeded(
   client: Queryable,
@@ -309,7 +314,8 @@ export async function markApprovalRequestExecutionSucceeded(
   const executionResult = { result };
   const updateResult = await client.query(
     `UPDATE approval_requests
-        SET execution_status = 'succeeded', execution_result_jsonb = $2::jsonb, executed_at = now()
+        SET execution_status = 'succeeded', execution_error = false, execution_result_jsonb = $2::jsonb,
+            executed_at = now()
       WHERE id = $1`,
     [id, JSON.stringify(executionResult)],
   );

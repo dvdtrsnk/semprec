@@ -41,7 +41,7 @@ catches the latter.
 ## Decision
 
 **Resource-snapshot hashing.** `computeDestructiveResourceProjection`
-(`packages/data/src/chokePoint/chokePoint.ts`) is the single authorization-and
+(`backend/packages/data/src/chokePoint/chokePoint.ts`) is the single authorization-and
 -projection function both approval-request creation and later execution call:
 it runs the same existence/ownership/locked/archived checks the direct
 `*WithClient` mutation would run, and returns a deterministic `{ kind,
