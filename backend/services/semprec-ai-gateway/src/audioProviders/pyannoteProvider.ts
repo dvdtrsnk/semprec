@@ -1,6 +1,6 @@
 import { isIP } from "node:net";
 import { AudioProviderCallError, type DiarizationProvider, type DiarizationTurn } from "./types.js";
-import { readJsonBodyWithSizeCap } from "./httpUtils.js";
+import { isObject, readJsonBodyWithSizeCap } from "./httpUtils.js";
 
 const PYANNOTE_API_URL = "https://api.pyannote.ai/v1";
 const PYANNOTE_DIARIZATION_MODEL = "pyannote-3";
@@ -19,9 +19,25 @@ function isPrivateOrReservedIp(hostname: string, family: 4 | 6): boolean {
     return false;
   }
   const lower = hostname.toLowerCase();
-  return (
-    lower === "::1" || lower === "::" || lower.startsWith("fc") || lower.startsWith("fd") || lower.startsWith("fe80")
-  );
+  if (
+    lower === "::1" ||
+    lower === "::" ||
+    lower.startsWith("fc") ||
+    lower.startsWith("fd") ||
+    lower.startsWith("fe80")
+  ) {
+    return true;
+  }
+  // IPv4-mapped IPv6 (::ffff:a.b.c.d) embeds an IPv4 address that WHATWG URL canonicalizes to
+  // hex groups (e.g. ::ffff:7f00:1 for 127.0.0.1), which the textual-prefix check above misses.
+  const mappedV4 = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mappedV4?.[1] !== undefined && mappedV4[2] !== undefined) {
+    const high = parseInt(mappedV4[1], 16);
+    const low = parseInt(mappedV4[2], 16);
+    const octets = [(high >> 8) & 0xff, high & 0xff, (low >> 8) & 0xff, low & 0xff];
+    return isPrivateOrReservedIp(octets.join("."), 4);
+  }
+  return false;
 }
 
 /**
@@ -45,17 +61,16 @@ function assertPublicAudioUrl(audioUrl: string): void {
   if (hostname === "localhost" || hostname.endsWith(".internal") || hostname.endsWith(".local")) {
     throw new AudioProviderCallError("audioUrl targets a disallowed host");
   }
-  const family = isIP(hostname);
-  if (family && isPrivateOrReservedIp(hostname, family as 4 | 6)) {
+  // URL.hostname wraps IPv6 literals in brackets (e.g. "[::1]"); isIP rejects the brackets
+  // outright, which would otherwise skip the IPv6 branch below for every IPv6 literal.
+  const bareHostname = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  const family = isIP(bareHostname);
+  if (family && isPrivateOrReservedIp(bareHostname, family as 4 | 6)) {
     throw new AudioProviderCallError("audioUrl targets a private or reserved address");
   }
 }
 
 type PyannoteJob = { jobId?: unknown; status?: unknown; output?: unknown };
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 function parseJob(value: unknown): PyannoteJob {
   if (!isObject(value)) throw new AudioProviderCallError("pyannoteAI response did not match the expected shape");

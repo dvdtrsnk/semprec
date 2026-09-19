@@ -43,4 +43,29 @@ describe("createPyannoteDiarizationProvider", () => {
       createPyannoteDiarizationProvider("test-key").diarize({ audioUrl: "https://audio.example/meeting.opus" }),
     ).rejects.toBeInstanceOf(AudioProviderCallError);
   });
+
+  describe("SSRF guard on audioUrl", () => {
+    const fetchMock = vi.fn();
+
+    afterEach(() => {
+      fetchMock.mockReset();
+    });
+
+    const rejects = async (audioUrl: string) => {
+      vi.stubGlobal("fetch", fetchMock);
+      await expect(createPyannoteDiarizationProvider("test-key").diarize({ audioUrl })).rejects.toBeInstanceOf(
+        AudioProviderCallError,
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    };
+
+    it("rejects a non-https URL", () => rejects("http://audio.example/meeting.opus"));
+    it("rejects localhost", () => rejects("https://localhost/meeting.opus"));
+    it("rejects a .internal host", () => rejects("https://host.internal/meeting.opus"));
+    it("rejects a literal private IPv4 address", () => rejects("https://192.168.1.5/meeting.opus"));
+    it("rejects a literal loopback IPv4 address", () => rejects("https://127.0.0.1/meeting.opus"));
+    it("rejects a literal IPv6 loopback address", () => rejects("https://[::1]/meeting.opus"));
+    it("rejects an IPv4-mapped IPv6 loopback address", () => rejects("https://[::ffff:127.0.0.1]/meeting.opus"));
+    it("rejects an IPv4-mapped IPv6 private address", () => rejects("https://[::ffff:192.168.1.5]/meeting.opus"));
+  });
 });

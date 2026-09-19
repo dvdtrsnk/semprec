@@ -99,6 +99,19 @@ describe("gateway", () => {
     expect(Number(rows[0].audio_seconds)).toBe(240);
   });
 
+  it("diarize() always stores a null agent_run_id, even when the caller supplies one", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "diarize something" });
+
+    await diarize(pool, { provider: "pyannoteai", model: "pyannote-3", agentRunId: run.id }, async () => ({
+      audioSeconds: 60,
+      costUsd: 0.01,
+    }));
+
+    const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].agent_run_id).toBeNull();
+  });
+
   it("does not record a row when the provider call fails", async () => {
     await expect(
       complete(pool, { provider: "anthropic", model: "claude-sonnet-5" }, async () => {

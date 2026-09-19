@@ -1,5 +1,9 @@
 import { AudioProviderCallError } from "./types.js";
 
+export function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 /**
  * Reads a response body with a hard byte cap, independent of any (absent, wrong, or
  * adversarial) Content-Length header, so a pathologically large or malformed provider

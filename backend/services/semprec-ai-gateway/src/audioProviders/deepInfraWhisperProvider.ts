@@ -4,14 +4,10 @@ import {
   type TranscriptionRequest,
   type TranscriptionResult,
 } from "./types.js";
-import { readJsonBodyWithSizeCap } from "./httpUtils.js";
+import { isObject, readJsonBodyWithSizeCap } from "./httpUtils.js";
 
 const DEEPINFRA_TRANSCRIPTIONS_URL = "https://api.deepinfra.com/v1/openai/audio/transcriptions";
 const MAX_RESPONSE_BODY_BYTES = 10 * 1024 * 1024;
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 function parseResponse(value: unknown): TranscriptionResult {
   if (!isObject(value) || typeof value.text !== "string") {
