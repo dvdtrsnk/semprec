@@ -60,8 +60,7 @@ import {
 } from "../mail/imapFlowClient.js";
 import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG, messageFlagProperties } from "../mail/messageFlags.js";
-import type { ImapFlow } from "imapflow";
-import type { MessageStructureObject } from "imapflow";
+import type { FetchMessageObject, ImapFlow, MessageStructureObject } from "imapflow";
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { createUser } from "../auth/usersStore.js";
@@ -2683,6 +2682,118 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
     expect(fetched[0]!.message.bodyText).toBeDefined();
     expect(raw.calls).toContain("download");
     expect(raw.calls.some((c) => c.startsWith("messageFlagsAdd"))).toBe(false);
+  });
+
+  async function attachmentStream(client: ImapFlowMailClient): Promise<Readable> {
+    const fetched = await client.fetchMessagesSince("INBOX", 1);
+    return await fetched[0]!.message.attachments[0]!.openStream();
+  }
+
+  function attachmentFetch(): AsyncIterableIterator<FetchMessageObject> {
+    return (async function* () {
+      yield {
+        seq: 1,
+        uid: 1,
+        envelope: { from: [{ address: "a@x.com" }], to: [], cc: [] },
+        bodyStructure: { type: "application/pdf", part: "2", disposition: "attachment" },
+        headers: Buffer.from(""),
+      };
+    })();
+  }
+
+  it("replaces a failed attachment download with ordered bounded IMAP partial ranges", async () => {
+    const ranges: Array<{ start: number; maxLength: number }> = [];
+    const raw = fakeImapFlow({
+      async download() {
+        return {
+          content: Readable.from(
+            (async function* () {
+              yield Buffer.from("abc");
+              throw new Error("midstream failure");
+            })(),
+          ),
+        };
+      },
+      fetch: attachmentFetch,
+      async fetchOne(_uid: string, query: { bodyParts?: Array<{ key: string; start?: number; maxLength?: number }> }) {
+        const range = query.bodyParts?.[0];
+        if (range?.start === undefined || range.maxLength === undefined) throw new Error("missing partial range");
+        ranges.push({ start: range.start, maxLength: range.maxLength });
+        return { bodyParts: new Map([[range.key, Buffer.from("def")]]) };
+      },
+    });
+
+    const stream = await attachmentStream(new ImapFlowMailClient(raw));
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+
+    expect(Buffer.concat(chunks).toString()).toBe("abcdef");
+    expect(ranges).toEqual([{ start: 3, maxLength: 64 * 1024 }]);
+  });
+
+  it("recognizes EOF from a short partial range and rejects a partial fetch that makes no progress", async () => {
+    const eofChunk = Buffer.alloc(100);
+    const eofStarts: number[] = [];
+    const eofRaw = fakeImapFlow({
+      async download() {
+        throw new Error("download failed");
+      },
+      fetch: attachmentFetch,
+      async fetchOne(_uid: string, query: { bodyParts?: Array<{ key: string; start?: number }> }) {
+        const range = query.bodyParts?.[0];
+        if (range?.start === undefined) throw new Error("missing partial range");
+        eofStarts.push(range.start);
+        return { bodyParts: new Map([[range.key, eofChunk]]) };
+      },
+    });
+    const eofStream = await attachmentStream(new ImapFlowMailClient(eofRaw));
+    let eofBytes = 0;
+    for await (const chunk of eofStream) eofBytes += Buffer.byteLength(chunk);
+    expect(eofBytes).toBe(eofChunk.length);
+    expect(eofStarts).toEqual([0]);
+
+    const stalledRaw = fakeImapFlow({
+      async download() {
+        throw new Error("download failed");
+      },
+      fetch: attachmentFetch,
+      async fetchOne(_uid: string, query: { bodyParts?: Array<{ key: string }> }) {
+        const key = query.bodyParts?.[0]?.key;
+        if (!key) throw new Error("missing partial range");
+        return { bodyParts: new Map([[key, Buffer.alloc(0)]]) };
+      },
+    });
+    const stalledStream = await attachmentStream(new ImapFlowMailClient(stalledRaw));
+    await expect(async () => {
+      for await (const _chunk of stalledStream) {
+        // Draining is required to make the lazy fallback perform its first partial request.
+      }
+    }).rejects.toThrow("made no progress");
+  });
+
+  it("rejects a partial download that reaches the attachment cap and still has bytes", async () => {
+    const fullChunk = Buffer.alloc(64 * 1024);
+    let fetches = 0;
+    const raw = fakeImapFlow({
+      async download() {
+        throw new Error("download failed");
+      },
+      fetch: attachmentFetch,
+      async fetchOne(_uid: string, query: { bodyParts?: Array<{ key: string }> }) {
+        const key = query.bodyParts?.[0]?.key;
+        if (!key) throw new Error("missing partial range");
+        fetches += 1;
+        return { bodyParts: new Map([[key, fetches <= 1600 ? fullChunk : Buffer.from("x")]]) };
+      },
+    });
+    const stream = await attachmentStream(new ImapFlowMailClient(raw));
+
+    await expect(async () => {
+      for await (const _chunk of stream) {
+        // Draining confirms the cap is enforced by the fallback before storage sees an extra byte.
+      }
+    }).rejects.toThrow("exceeded the 104857600-byte cap");
+    expect(fetches).toBe(1601);
   });
 
   it("setMessageFlag — the only explicit flag-writing path — issues STORE +FLAGS / -FLAGS for the given UID", async () => {
