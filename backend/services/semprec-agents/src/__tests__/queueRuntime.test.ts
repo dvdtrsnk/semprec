@@ -139,6 +139,13 @@ describe("createAgentsQueueRuntime (issue #91)", () => {
     await expect(createAgentsQueueRuntime(pool, registry)).rejects.toThrow(/collides with a core\/agent task name/);
   });
 
+  it("rejects a module task with an invalid queueAffinity value before either composition root starts", async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixture-agents-invalid-affinity-task"]));
+    await expect(registry.loadModule(fixturePath("agentsInvalidAffinityTaskModule.js"))).rejects.toThrow(
+      /invalid manifest/,
+    );
+  });
+
   it("is idempotent to stop twice, and never closes the pool", async () => {
     const registry = await buildRegistryWith("agentsFixtureModule.js", "fixture-agents-queue-runtime");
     runtime = await createAgentsQueueRuntime(pool, registry);
