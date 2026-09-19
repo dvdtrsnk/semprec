@@ -31,7 +31,10 @@ async function jobsByIdentifier(identifier: string): Promise<LegacyJobRow[]> {
 
 async function getSemprecProjectId(): Promise<string> {
   const { rows } = await pool.query("SELECT id FROM databases WHERE owner_module_id = 'projects'");
+  if (rows.length === 0)
+    throw new Error("getSemprecProjectId: no database with owner_module_id 'projects' — did seedSystem run?");
   const { rows: items } = await pool.query("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [rows[0].id]);
+  if (items.length === 0) throw new Error("getSemprecProjectId: the projects database has no seeded items");
   return items[0].id;
 }
 

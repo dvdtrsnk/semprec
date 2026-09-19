@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import type { Task, TaskAffinity } from "@semprec/queue";
+import { AGENT_TASK_NAMES, type Task, type TaskAffinity } from "@semprec/queue";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
@@ -72,7 +72,7 @@ export async function handleHeartbeatSweepTask(pool: Pool, moduleRegistry?: Modu
  */
 function assertActionAffinity(actionId: string, expectedAffinity: TaskAffinity): void {
   const resolvedTaskName = resolveHeartbeatFireTaskName(actionId);
-  const actualAffinity: TaskAffinity = resolvedTaskName === "heartbeatFireAgent" ? "agents" : "api";
+  const actualAffinity: TaskAffinity = resolvedTaskName === AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT ? "agents" : "api";
   if (actualAffinity !== expectedAffinity) {
     throw new Error(
       `Heartbeat action '${actionId}' resolves to '${resolvedTaskName}' (affinity '${actualAffinity}'), ` +
