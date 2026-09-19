@@ -279,7 +279,9 @@ export async function recordApprovalRequestOutcome(
  * this module must never issue its own `UPDATE approval_requests` for this transition. Also sets
  * the legacy `execution_error` column so it stays in sync with `execution_status` for any reader
  * still keyed off it — the same pairing `recordApprovalRequestOutcome` maintains for the mcpInvoke
- * path.
+ * path. Guards on `execution_status = 'queued'` like every other targeted UPDATE in this file
+ * guards on current state — a caller bug that passes an id already in a terminal state must not
+ * silently overwrite it; `requireAffectedRows` turns that into a thrown error instead.
  */
 export async function terminalizeApprovalRequestAsConflict(
   client: Queryable,
@@ -291,7 +293,7 @@ export async function terminalizeApprovalRequestAsConflict(
     `UPDATE approval_requests
         SET execution_status = 'conflict', execution_error = true, execution_result_jsonb = $2::jsonb,
             executed_at = now()
-      WHERE id = $1`,
+      WHERE id = $1 AND execution_status = 'queued'`,
     [id, JSON.stringify(executionResult)],
   );
   requireAffectedRows(result, `terminalizing approval request '${id}' as conflict`);
@@ -304,7 +306,9 @@ export async function terminalizeApprovalRequestAsConflict(
  * and its terminal-state write land in the same commit — see that function's header comment for
  * why both must be atomic. The sole owner of `approval_requests` writes; see
  * `terminalizeApprovalRequestAsConflict` above for the same rationale, including the legacy
- * `execution_error` column.
+ * `execution_error` column and the `execution_status = 'queued'` guard — the row being
+ * `FOR UPDATE`-locked already rules out a concurrent writer, but not a caller bug that invokes
+ * this on an id already in a terminal state.
  */
 export async function markApprovalRequestExecutionSucceeded(
   client: Queryable,
@@ -316,7 +320,7 @@ export async function markApprovalRequestExecutionSucceeded(
     `UPDATE approval_requests
         SET execution_status = 'succeeded', execution_error = false, execution_result_jsonb = $2::jsonb,
             executed_at = now()
-      WHERE id = $1`,
+      WHERE id = $1 AND execution_status = 'queued'`,
     [id, JSON.stringify(executionResult)],
   );
   requireAffectedRows(updateResult, `marking approval request '${id}' succeeded`);
