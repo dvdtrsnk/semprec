@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -19,6 +20,14 @@ import {
 
 let pool: Pool;
 
+async function createUser(): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
+    [`${randomUUID()}@example.com`],
+  );
+  return rows[0]!.id;
+}
+
 const PROJECT_A = "11111111-1111-1111-1111-111111111111";
 const PROJECT_B = "22222222-2222-2222-2222-222222222222";
 
@@ -39,7 +48,7 @@ async function pendingTriggerJobs(pool: Pool): Promise<TriggerJobRow[]> {
     `SELECT j.key, j.payload
      FROM graphile_worker._private_jobs j
      JOIN graphile_worker._private_tasks t ON t.id = j.task_id
-     WHERE t.identifier = 'heartbeatFire'`,
+     WHERE t.identifier = 'heartbeatFireAgent'`,
   );
   return rows;
 }
@@ -49,6 +58,7 @@ describe("heartbeat.list / heartbeat.history / heartbeat.trigger agent tools", (
     pool ??= getTestPool();
     await resetDatabase(pool);
     await seedSystem(pool);
+    await createUser();
   });
 
   afterAll(async () => {

@@ -34,6 +34,7 @@ const SEARCH_TOOL: ContractServerTool = {
 let pool: Pool;
 let mcpServersId: string;
 let servers: McpContractServer[] = [];
+let earliestUser: { id: string };
 
 async function databaseIdFor(moduleId: string): Promise<string> {
   const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
@@ -68,6 +69,8 @@ describe("MCP invoke adapter (issue #128)", () => {
     const viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry();
     await seedSystem(pool, viewTypeRegistry);
     mcpServersId = await databaseIdFor("mcpServers");
+    const passwordHash = await hashPassword("s3cret-password");
+    earliestUser = await createUser(pool, { email: `${randomUUID()}@example.test`, passwordHash, locale: "en" });
   });
 
   afterEach(async () => {
@@ -229,8 +232,7 @@ describe("MCP invoke adapter (issue #128)", () => {
       servers.push(contractServer);
       const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
       const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
-      const passwordHash = await hashPassword("s3cret-password");
-      const user = await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+      const user = earliestUser;
 
       const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
       const first = await invoke({ query: "semprec" });

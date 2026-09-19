@@ -1,8 +1,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
-import { withTraceContext } from "@semprec/shared";
-import { createGenericApplicationService } from "@semprec/application";
+import { CAPABILITY_IDS, withTraceContext } from "@semprec/shared";
+import { createGenericApplicationService, createGenericOperationGateway } from "@semprec/application";
 import type { BlobStorageWriter, PasswordResetMailer, loadFullModuleRegistry } from "@semprec/data";
+import { createMcpRequestListener } from "./mcp/mcpHandler.js";
 import { mountCustomRoutes } from "./adapter/customRouteMount.js";
 import { mountRoutes } from "./adapter/routeTable.js";
 import { createDatabaseRoutes } from "./databasesHandler.js";
@@ -65,6 +66,16 @@ export async function createDispatcher(
     ...createViewRoutes(genericApplicationService),
     ...createItemRoutes(genericApplicationService, pool),
   ]);
+  // Issue #220's own composition root over the same generic catalog: a second
+  // `GenericOperationGateway` instance over this process's one `Pool`, never sharing state with
+  // the REST `genericApplicationService` above beyond the `Pool` itself (#219's ADR — REST and
+  // MCP each own their own instance). `grantedCapabilities` is the schema core module's own
+  // registered capabilities (an authenticated MCP session has no project to compute a per-run
+  // manifest against, unlike an AgentTool run).
+  const mcpGateway = createGenericOperationGateway(pool);
+  const registeredModuleCapabilities = await options.moduleRegistry.getCapabilities();
+  const mcpGrantedCapabilities = new Set(CAPABILITY_IDS.filter((id) => registeredModuleCapabilities.includes(id)));
+  const mcpListener = createMcpRequestListener(pool, mcpGateway, mcpGrantedCapabilities);
   const mcpAgentPageListener = createMcpAgentPageRequestListener(pool);
   const approvalRequestsListener = createApprovalRequestsRequestListener(pool);
   const agentRunListener = createAgentRunRequestListener(pool);
@@ -102,6 +113,10 @@ export async function createDispatcher(
     }
     if (pathname === "/api/schema") {
       void schemaListener(req, res);
+      return;
+    }
+    if (pathname === "/mcp") {
+      void mcpListener(req, res);
       return;
     }
     if (pathname === "/api/approval-requests" || pathname.startsWith("/api/approval-requests/")) {

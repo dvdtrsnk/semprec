@@ -1,4 +1,6 @@
 import type { Pool, PoolClient } from "pg";
+import { createHash } from "node:crypto";
+import { canonicalizeJson } from "@semprec/shared";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
@@ -831,6 +833,296 @@ export async function deleteRelationWithClient(
 }
 
 /**
+ * Transaction-scoped counterpart to `chokePoint.archiveDatabase` (issue #89): `databasesStore.archiveDatabase`
+ * already takes a `client` rather than opening its own transaction, so this is a thin named alias —
+ * kept alongside the other four `*WithClient` exports so `ApprovedOperationExecutor` has one uniform
+ * naming convention to call the destructive half of each of the five approval-gated operations.
+ */
+export async function databaseArchiveWithClient(
+  client: PoolClient,
+  id: string,
+  actingUserId?: string,
+): Promise<DatabaseRow> {
+  const database = await databasesStore.archiveDatabase(client, id);
+  runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }));
+  return database;
+}
+
+/**
+ * Transaction-scoped counterpart to `chokePoint.deleteProperty` (issue #89), factored out so
+ * `ApprovedOperationExecutor` can run it against the same locked transaction as its own
+ * revalidation instead of `chokePoint.deleteProperty` opening a second, independent one.
+ */
+export async function propertyDeleteWithClient(
+  client: PoolClient,
+  id: string,
+  actingUserId?: string,
+): Promise<PropertyRow> {
+  const property = await propertiesStore.getProperty(client, id);
+  if (!property) throw new NotFoundError(`Property ${id} not found`);
+
+  const invalidatedDatabaseIds = new Set([property.databaseId]);
+  if (property.type === "relation") {
+    const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, id);
+    if (reldef) {
+      await assertRelationDeletable(client, reldef.id);
+      const otherPropertyId = reldef.propertyIdA === id ? reldef.propertyIdB : reldef.propertyIdA;
+      if (otherPropertyId) {
+        const otherProperty = await propertiesStore.getProperty(client, otherPropertyId);
+        if (otherProperty?.locked) {
+          throw new ForbiddenError(`Cannot delete: the paired relation property ${otherPropertyId} is locked`);
+        }
+        if (otherProperty) invalidatedDatabaseIds.add(otherProperty.databaseId);
+        await propertiesStore.deleteProperty(client, otherPropertyId);
+      }
+    }
+  }
+  await propertiesStore.deleteProperty(client, id);
+  runAfterCommit(client, () => {
+    for (const databaseId of invalidatedDatabaseIds)
+      notifyInvalidation({ scope: "schema", databaseId, userId: actingUserId });
+  });
+  return property;
+}
+
+/**
+ * Transaction-scoped counterpart to `chokePoint.deleteView` (issue #89), factored out for the
+ * same reason as `propertyDeleteWithClient` above.
+ */
+export async function viewDeleteWithClient(
+  client: PoolClient,
+  id: string,
+  actor: Actor,
+  actingUserId?: string,
+): Promise<ViewRow> {
+  await assertAuthenticatedAgentIdentity(client, actor);
+  const view = await viewsStore.getView(client, id);
+  if (!view) throw new NotFoundError(`View ${id} not found`);
+  assertViewWritable(view, actor);
+  await viewsStore.deleteView(client, id);
+  if (view.databaseId !== null) {
+    const databaseId = view.databaseId;
+    runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId, userId: actingUserId }));
+  }
+  return view;
+}
+
+/**
+ * Transaction-scoped counterpart to `chokePoint.softDeleteItem` (issue #89), factored out for the
+ * same reason as `propertyDeleteWithClient` above. Runs the identical subtree cascade, including
+ * the `systemActive`/archived-database guards and rollup/heartbeat side effects.
+ */
+export async function itemDeleteWithClient(
+  client: PoolClient,
+  databaseId: string,
+  itemId: string,
+  options: { queueAffinity: ActionQueueAffinity; actingUserId?: string },
+): Promise<ItemRow | null> {
+  await assertDatabaseNotArchived(client, databaseId);
+  const before = await itemsStore.lockItemById(client, databaseId, itemId);
+  if (!before) return null;
+  if (before.properties.systemActive === true) {
+    throw new ForbiddenError(`Item ${itemId} is a system-active project and cannot be deleted, only deactivated`, {
+      field: "systemActive",
+    });
+  }
+  if (before.deletedAt) return before;
+
+  const subtree = await collectItemSubtree(client, before);
+  for (const row of subtree) await assertDatabaseNotArchived(client, row.databaseId);
+
+  let rootResult: ItemRow | null = null;
+  for (const row of subtree) {
+    const item = await itemsStore.softDeleteItem(client, row.databaseId, row.id);
+    if (!item) continue;
+    if (row.id === itemId) rootResult = item;
+    await triggerOnItemEventHeartbeats(client, row.databaseId, "delete", row.id, options.queueAffinity);
+    const edges = await relationsStore.listAllRelationsForItem(client, row.id);
+    for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
+    runAfterCommit(client, () =>
+      notifyInvalidation({
+        scope: "item",
+        databaseId: item.databaseId,
+        itemId: item.id,
+        op: "delete",
+        updatedAt: item.updatedAt,
+        userId: options.actingUserId,
+      }),
+    );
+  }
+  return rootResult;
+}
+
+/** The five approval-gated destructive kinds a `resource_snapshot` can carry (issue #89). */
+export type ResourceSnapshotKind =
+  "database_archive" | "property_delete" | "view_delete" | "item_delete" | "relation_delete";
+
+/** Persisted alongside every new destructive approval request, and re-derived at execution time to detect a resource that changed since approval was granted. */
+export interface ResourceSnapshot {
+  kind: ResourceSnapshotKind;
+  resourceId: string;
+  sha256: string;
+}
+
+/** The read-only projection a `ResourceSnapshot` is hashed from, kept alongside it so a conflict result can report the resource's actual current shape. */
+export interface DestructiveResourceProjection {
+  snapshot: ResourceSnapshot;
+  currentResource: unknown;
+}
+
+function buildResourceSnapshot(kind: ResourceSnapshotKind, resourceId: string, projection: unknown): ResourceSnapshot {
+  return { kind, resourceId, sha256: createHash("sha256").update(canonicalizeJson(projection), "utf8").digest("hex") };
+}
+
+/** Widens a caught `ChokePointError`'s `unknown` `details` back to a spreadable object, so a rethrow can add `currentResource` alongside whatever the original error already carried. */
+function detailsObject(details: unknown): Record<string, unknown> {
+  return typeof details === "object" && details !== null ? (details as Record<string, unknown>) : {};
+}
+
+/** The one authorize-and-project call `DestructiveApprovalPreflight` and `ApprovedOperationExecutor` both make (issue #89) — never mutates, and throws the exact domain error the matching `*WithClient` mutation would throw for the same input, so a rejection here means the mutation would also reject it. */
+export type DestructiveOperationCheck =
+  | { operation: "database.archive"; input: { databaseId: string } }
+  | { operation: "property.delete"; input: { propertyId: string } }
+  | { operation: "view.delete"; input: { viewId: string }; actor: Actor }
+  | { operation: "item.delete"; input: { itemId: string } }
+  | { operation: "relation.delete"; input: { relationPropertyId: string; callerItemId: string; targetItemId: string } };
+
+export async function computeDestructiveResourceProjection(
+  client: PoolClient,
+  check: DestructiveOperationCheck,
+): Promise<DestructiveResourceProjection> {
+  switch (check.operation) {
+    case "database.archive": {
+      const database = await databasesStore.getDatabase(client, check.input.databaseId);
+      if (!database) throw new NotFoundError(`Database ${check.input.databaseId} not found`);
+      if (database.system) {
+        throw new ForbiddenError("A system database cannot be archived", { currentResource: database });
+      }
+      return { snapshot: buildResourceSnapshot("database_archive", database.id, database), currentResource: database };
+    }
+    case "property.delete": {
+      const property = await propertiesStore.getProperty(client, check.input.propertyId);
+      if (!property) throw new NotFoundError(`Property ${check.input.propertyId} not found`);
+      // Loaded before the relation-type checks below (unlike `propertyDeleteWithClient`, which
+      // never reads the database at all) purely so a rejection here can report `currentResource` —
+      // safe because the real mutation's own check order never depends on this lookup.
+      const database = await databasesStore.getDatabase(client, property.databaseId);
+      if (!database) throw new NotFoundError(`Database ${property.databaseId} not found`);
+      const projected = {
+        ...property,
+        databaseSchemaLocked: database.schemaLocked,
+        databaseArchivedAt: database.archivedAt,
+      };
+      if (property.type === "relation") {
+        const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, property.id);
+        if (reldef) {
+          try {
+            await assertRelationDeletable(client, reldef.id);
+          } catch (err) {
+            if (err instanceof ValidationError) {
+              throw new ValidationError(err.message, { ...detailsObject(err.details), currentResource: projected });
+            }
+            throw err;
+          }
+          const otherPropertyId = reldef.propertyIdA === property.id ? reldef.propertyIdB : reldef.propertyIdA;
+          if (otherPropertyId) {
+            const otherProperty = await propertiesStore.getProperty(client, otherPropertyId);
+            if (otherProperty?.locked) {
+              throw new ForbiddenError(`Cannot delete: the paired relation property ${otherPropertyId} is locked`, {
+                currentResource: projected,
+              });
+            }
+          }
+        }
+      }
+      return { snapshot: buildResourceSnapshot("property_delete", property.id, projected), currentResource: projected };
+    }
+    case "view.delete": {
+      const view = await viewsStore.getView(client, check.input.viewId);
+      if (!view) throw new NotFoundError(`View ${check.input.viewId} not found`);
+      try {
+        assertViewWritable(view, check.actor);
+      } catch (err) {
+        if (err instanceof ForbiddenError) {
+          throw new ForbiddenError(err.message, { ...detailsObject(err.details), currentResource: view }, err.code);
+        }
+        throw err;
+      }
+      return { snapshot: buildResourceSnapshot("view_delete", view.id, view), currentResource: view };
+    }
+    case "item.delete": {
+      // `...IncludingDeleted` (not the live-only lookup) so an already-deleted item can be told
+      // apart from one that never existed — both are rejected here as `not_found`. A direct call
+      // to `itemDeleteWithClient` treats an already-deleted item as an idempotent no-op, but an
+      // *approval request* must not be created against (or later replayed as) deleting a
+      // resource that is already gone.
+      const [item] = await itemsStore.getItemsByIdsIncludingDeleted(client, [check.input.itemId]);
+      if (!item || item.deletedAt) throw new NotFoundError(`Item ${check.input.itemId} not found`);
+      const database = await databasesStore.getDatabase(client, item.databaseId);
+      if (!database) throw new NotFoundError(`Database ${item.databaseId} not found`);
+      const projected = {
+        id: item.id,
+        databaseId: item.databaseId,
+        updatedAt: item.updatedAt,
+        deletedAt: item.deletedAt,
+        databaseArchivedAt: database.archivedAt,
+      };
+      if (database.archivedAt) {
+        throw new ForbiddenError(
+          `Database ${item.databaseId} is archived and cannot be written to`,
+          { field: "databaseId", currentResource: projected },
+          "database_archived",
+        );
+      }
+      if (item.properties.systemActive === true) {
+        throw new ForbiddenError(`Item ${item.id} is a system-active project and cannot be deleted, only deactivated`, {
+          field: "systemActive",
+          currentResource: projected,
+        });
+      }
+      return { snapshot: buildResourceSnapshot("item_delete", item.id, projected), currentResource: projected };
+    }
+    case "relation.delete": {
+      // Unlike the other four kinds, `currentResource` stays absent from `assertRelationDatabasesNotArchived`/
+      // `assertRelationPropertyWritable` failures here: this check order is the exact order
+      // `deleteRelationWithClient` itself enforces, and the edge this function would report as
+      // `currentResource` isn't loaded until after both of those checks in the real mutation too —
+      // loading it earlier just to attach it to a rejection would risk diverging from the
+      // mutation's own error precedence, which this function's docstring promises to preserve.
+      const edgeContext = await loadRelationEdgeContext(client, check.input.relationPropertyId);
+      await assertRelationDatabasesNotArchived(client, edgeContext);
+      assertRelationPropertyWritable(edgeContext.property, undefined);
+      const { itemA, itemB } = normalizeRelationSides(
+        edgeContext.reldef,
+        check.input.relationPropertyId,
+        check.input.callerItemId,
+        check.input.targetItemId,
+      );
+      const edge = await relationsStore.getItemRelationByTuple(client, edgeContext.reldef.id, itemA, itemB);
+      if (!edge) {
+        throw new NotFoundError(`Relation edge not found`, {
+          resource: "relationEdge",
+          relationPropertyId: check.input.relationPropertyId,
+          callerItemId: check.input.callerItemId,
+          targetItemId: check.input.targetItemId,
+        });
+      }
+      const property = edgeContext.property;
+      const projected = {
+        ...edge,
+        property: {
+          id: property.id,
+          owner: property.owner,
+          ownerProcess: property.ownerProcess,
+          locked: property.locked,
+        },
+      };
+      return { snapshot: buildResourceSnapshot("relation_delete", edge.id, projected), currentResource: projected };
+    }
+  }
+}
+
+/**
  * The config-update logic shared by `chokePoint.updatePropertyConfig` and `chokePoint.updateProperty`
  * (issue #240), factored out so `updateProperty` can run it against the same client/transaction as
  * a sibling rename/type-change instead of opening its own.
@@ -932,13 +1224,7 @@ export function createChokePoint(
       });
     },
     async archiveDatabase(id: string, actingUserId?: string): Promise<DatabaseRow> {
-      return withTransaction(pool, async (client) => {
-        const database = await databasesStore.archiveDatabase(client, id);
-        runAfterCommit(client, () =>
-          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
-        );
-        return database;
-      });
+      return withTransaction(pool, (client) => databaseArchiveWithClient(client, id, actingUserId));
     },
     async restoreDatabase(id: string, actingUserId?: string): Promise<DatabaseRow> {
       return withTransaction(pool, async (client) => {
@@ -1115,33 +1401,7 @@ export function createChokePoint(
      * state the deleted row never actually had at the moment it was deleted.
      */
     async deleteProperty(id: string, actingUserId?: string): Promise<PropertyRow> {
-      return withTransaction(pool, async (client) => {
-        const property = await propertiesStore.getProperty(client, id);
-        if (!property) throw new NotFoundError(`Property ${id} not found`);
-
-        const invalidatedDatabaseIds = new Set([property.databaseId]);
-        if (property.type === "relation") {
-          const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, id);
-          if (reldef) {
-            await assertRelationDeletable(client, reldef.id);
-            const otherPropertyId = reldef.propertyIdA === id ? reldef.propertyIdB : reldef.propertyIdA;
-            if (otherPropertyId) {
-              const otherProperty = await propertiesStore.getProperty(client, otherPropertyId);
-              if (otherProperty?.locked) {
-                throw new ForbiddenError(`Cannot delete: the paired relation property ${otherPropertyId} is locked`);
-              }
-              if (otherProperty) invalidatedDatabaseIds.add(otherProperty.databaseId);
-              await propertiesStore.deleteProperty(client, otherPropertyId);
-            }
-          }
-        }
-        await propertiesStore.deleteProperty(client, id);
-        runAfterCommit(client, () => {
-          for (const databaseId of invalidatedDatabaseIds)
-            notifyInvalidation({ scope: "schema", databaseId, userId: actingUserId });
-        });
-        return property;
-      });
+      return withTransaction(pool, (client) => propertyDeleteWithClient(client, id, actingUserId));
     },
 
     // ---- relations (schema side: creating a paired relation property) ----
@@ -1277,50 +1537,9 @@ export function createChokePoint(
      * is written; a database midway down the tree being archived is not a partial success.
      */
     async softDeleteItem(databaseId: string, itemId: string, actingUserId?: string): Promise<ItemRow | null> {
-      return withTransaction(pool, async (client) => {
-        await assertDatabaseNotArchived(client, databaseId);
-        // A system-module project (issue #24's Projects.systemActive) "can only be
-        // deactivated, never deleted" — checked generically on `properties.systemActive`
-        // rather than hardcoded to the Projects database, so any future database adopting
-        // the same convention is covered too. Row-locked (not a plain getItemById): without
-        // the lock, a concurrent updateItem setting systemActive: true could commit between
-        // this read and the delete below, slipping a delete through on what was, by the time
-        // it mattered, a system-active item. The lock is held until this transaction commits,
-        // so a concurrent writer blocks here instead of racing past the check.
-        const before = await itemsStore.lockItemById(client, databaseId, itemId);
-        if (!before) return null;
-        if (before.properties.systemActive === true) {
-          throw new ForbiddenError(
-            `Item ${itemId} is a system-active project and cannot be deleted, only deactivated`,
-            { field: "systemActive" },
-          );
-        }
-        if (before.deletedAt) return before; // already trashed: idempotent no-op, same as a repeat DELETE
-
-        const subtree = await collectItemSubtree(client, before);
-        for (const row of subtree) await assertDatabaseNotArchived(client, row.databaseId);
-
-        let rootResult: ItemRow | null = null;
-        for (const row of subtree) {
-          const item = await itemsStore.softDeleteItem(client, row.databaseId, row.id);
-          if (!item) continue; // already independently trashed: not part of this cascade, left untouched
-          if (row.id === itemId) rootResult = item;
-          await triggerOnItemEventHeartbeats(client, row.databaseId, "delete", row.id, queueAffinity);
-          const edges = await relationsStore.listAllRelationsForItem(client, row.id);
-          for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
-          runAfterCommit(client, () =>
-            notifyInvalidation({
-              scope: "item",
-              databaseId: item.databaseId,
-              itemId: item.id,
-              op: "delete",
-              updatedAt: item.updatedAt,
-              userId: actingUserId,
-            }),
-          );
-        }
-        return rootResult;
-      });
+      return withTransaction(pool, (client) =>
+        itemDeleteWithClient(client, databaseId, itemId, { queueAffinity, actingUserId }),
+      );
     },
 
     /**
@@ -1525,18 +1744,7 @@ export function createChokePoint(
      * state the deleted row never actually had at the moment it was deleted.
      */
     async deleteView(input: { id: string; actor: Actor; actingUserId?: string }): Promise<ViewRow> {
-      return withTransaction(pool, async (client) => {
-        await assertAuthenticatedAgentIdentity(client, input.actor);
-        const view = await viewsStore.getView(client, input.id);
-        if (!view) throw new NotFoundError(`View ${input.id} not found`);
-        assertViewWritable(view, input.actor);
-        await viewsStore.deleteView(client, input.id);
-        if (view.databaseId !== null) {
-          const databaseId = view.databaseId;
-          runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId, userId: input.actingUserId }));
-        }
-        return view;
-      });
+      return withTransaction(pool, (client) => viewDeleteWithClient(client, input.id, input.actor, input.actingUserId));
     },
 
     // ---- view_items (curated view membership) ----

@@ -21,7 +21,14 @@ export const manifest: ModuleManifest = {
   heartbeatRuleKinds: [
     { kind: "e2eAlpha.onTick", schemaExport: "alphaTickRuleSchema", nextFireAtExport: "computeAlphaTickNextFireAt" },
   ],
-  taskNames: [{ name: "e2eAlpha.ingest", payloadSchemaExport: "ingestPayloadSchema", handlerExport: "handleIngest" }],
+  taskNames: [
+    {
+      name: "e2eAlpha.ingest",
+      payloadSchemaExport: "ingestPayloadSchema",
+      handlerExport: "handleIngest",
+      queueAffinity: "api",
+    },
+  ],
   migrations: ["0001_e2e_alpha_marker.sql"],
   dataMigrations: [
     { databaseKey: "e2eAlphaItems", fromVersion: "1.0.0", toVersion: "2.0.0", converterExport: "convertAlphaItem" },

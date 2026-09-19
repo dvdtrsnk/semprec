@@ -1,4 +1,5 @@
 import type { ModuleManifest } from "@semprec/module-registry";
+import { CAPABILITY_IDS } from "@semprec/shared";
 
 export {
   createHeartbeatListTool,
@@ -18,15 +19,21 @@ export { createSystemHealthRouteHandler } from "../observability/systemHealthRou
  * databases, properties, relation_definitions, items, item_relations, project_heartbeats,
  * agent_runs, resource_grants, rollup_dependencies, notifications, idempotency_keys). This is
  * the generic engine every other module builds on, not a business database of its own — it
- * declares no `databases` entries and no capabilities. Authoring this manifest changes no
- * behavior: the choke point continues to be called directly everywhere it already is, this
- * only makes its existence loadable and structurally checkable through `ModuleRegistry`.
+ * declares no `databases` entries. Authoring this manifest changes no behavior: the choke point
+ * continues to be called directly everywhere it already is, this only makes its existence
+ * loadable and structurally checkable through `ModuleRegistry`.
  *
  * `heartbeat.list`/`heartbeat.history` (issue #135) are its first two agent tools: read-only
  * introspection over `project_heartbeats`/`agent_runs`, scoped exclusively to the calling
  * run's own project, so neither declares a `capability` gate (see `heartbeatAgentTools.ts`).
  * `heartbeat.trigger` (issue #136) joins them on the same terms — project-scoped availability
  * only, no `capability` gate and no approval requirement beyond that.
+ *
+ * `capabilities` registers the eight generic-operation capability ids from #252's
+ * `CAPABILITY_IDS` (issue #220) — the same eight `OPERATION_METADATA.requiresCapability` values
+ * every one of the 28 generic operations is keyed against, so a project's granted subset of
+ * these is what `packages/application`'s `genericOperationGateway.ts` filters AgentTool/MCP
+ * discovery and invocation by.
  */
 export const manifest: ModuleManifest = {
   id: "schemaCore",
@@ -35,7 +42,7 @@ export const manifest: ModuleManifest = {
   removable: false,
   systemProject: true,
   databases: [],
-  capabilities: [],
+  capabilities: [...CAPABILITY_IDS],
   agentTools: [
     { name: "heartbeat.list", handlerExport: "createHeartbeatListTool" },
     { name: "heartbeat.history", handlerExport: "createHeartbeatHistoryTool" },

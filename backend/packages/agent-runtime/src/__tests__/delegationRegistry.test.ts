@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createAgentRun } from "@semprec/data";
@@ -6,6 +7,14 @@ import { BUSY_ERROR_MESSAGE, DelegationRegistry, type ReconstructDelegatedHistor
 import type { AgentMessage, AgentSession, ConversationEntry, CreateAgentSession } from "../types.js";
 
 let pool: Pool;
+
+async function createUser(): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
+    [`${randomUUID()}@example.com`],
+  );
+  return rows[0]!.id;
+}
 
 /** A session whose `messages()`/`send()` yield exactly the given batch, one call each. */
 function scriptedSession(...batches: AgentMessage[][]): {
@@ -52,6 +61,7 @@ describe("DelegationRegistry", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    await createUser();
   });
 
   afterAll(async () => {
