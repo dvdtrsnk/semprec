@@ -363,6 +363,31 @@ importers:
         specifier: ^4.1.11
         version: 4.4.3
 
+  services/semprec-agents:
+    dependencies:
+      '@semprec/data':
+        specifier: workspace:*
+        version: link:../../packages/data
+      '@semprec/module-registry':
+        specifier: workspace:*
+        version: link:../../packages/module-registry
+      '@semprec/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
+      '@semprec/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      pg:
+        specifier: ^8.23.0
+        version: 8.23.0
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
+
   services/semprec-ai-gateway:
     dependencies:
       '@semprec/ai-gateway':
@@ -405,6 +430,9 @@ importers:
       '@semprec/notifications':
         specifier: workspace:*
         version: link:../../packages/notifications
+      '@semprec/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
       '@semprec/realtime':
         specifier: workspace:*
         version: link:../../packages/realtime

@@ -1,4 +1,11 @@
-import { AGENT_TASK_NAMES, CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
+import {
+  AGENT_TASK_NAMES,
+  CORE_TASK_NAMES,
+  registerTask,
+  type Task,
+  type TaskAffinity,
+  type TaskList,
+} from "@semprec/queue";
 import type { ModuleRegistry } from "@semprec/module-registry";
 
 export const CORE_TASK_NAME_SET: ReadonlySet<string> = new Set(Object.values(CORE_TASK_NAMES));
@@ -76,4 +83,55 @@ export async function mergeModuleTaskList(coreTaskList: TaskList, moduleRegistry
     merged[task.name] = registerTask(task.name, wrapped);
   }
   return merged;
+}
+
+/**
+ * The affinity-scoped variant of `mergeModuleTaskList` issue #91's two composition roots use
+ * instead: only module tasks whose manifest `queueAffinity` matches `affinity` are merged in, so
+ * the API runtime never registers a handler for an agents-affinity module task and vice versa.
+ */
+export async function mergeModuleTaskListForAffinity(
+  coreTaskList: TaskList,
+  moduleRegistry: ModuleRegistry,
+  affinity: TaskAffinity,
+): Promise<TaskList> {
+  const merged: TaskList = { ...coreTaskList };
+  const moduleTasks = await moduleRegistry.getTaskDefinitions();
+  for (const task of moduleTasks) {
+    if (task.queueAffinity !== affinity) continue;
+    if (CORE_TASK_NAME_SET.has(task.name) || AGENT_TASK_NAME_SET.has(task.name)) {
+      throw new Error(`Module "${task.moduleId}" task "${task.name}" collides with a core/agent task name`);
+    }
+    const wrapped: Task = async (payload, helpers) => {
+      const parsedPayload = task.payloadSchema.parse(payload);
+      await task.handler(parsedPayload, helpers);
+    };
+    merged[task.name] = registerTask(task.name, wrapped);
+  }
+  return merged;
+}
+
+/**
+ * Proves a composition root's own registered `TaskList` matches its resolved affinity set
+ * exactly (issue #91): every name the set expects has a handler, and no handler exists for a
+ * name outside the set (which would mean a task registered under the wrong runtime). Called
+ * before either runner reports readiness — an actionable error here is what stops startup on a
+ * missing, duplicate, or cross-affinity handler instead of the runner silently starting anyway.
+ */
+export function assertTaskListMatchesAffinity(
+  taskList: TaskList,
+  expected: ReadonlySet<string>,
+  runtime: TaskAffinity,
+): void {
+  const registered = new Set(Object.keys(taskList));
+  const missing = [...expected].filter((name) => !registered.has(name));
+  const unexpected = [...registered].filter((name) => !expected.has(name));
+  if (missing.length === 0 && unexpected.length === 0) return;
+
+  const parts: string[] = [];
+  if (missing.length > 0) parts.push(`missing handler(s) for: ${missing.join(", ")}`);
+  if (unexpected.length > 0) parts.push(`unexpected handler(s) outside its affinity for: ${unexpected.join(", ")}`);
+  throw new Error(
+    `"${runtime}" queue runtime's registered task list does not match its affinity set — ${parts.join("; ")}`,
+  );
 }

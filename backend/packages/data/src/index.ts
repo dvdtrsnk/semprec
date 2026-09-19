@@ -53,6 +53,7 @@ export {
   createHeartbeatFireCoreTask,
   createHeartbeatFireAgentTask,
 } from "./scheduler/sweep.js";
+export { runHeartbeatFireQueueSplitMigration } from "./scheduler/heartbeatFireQueueSplitMigration.js";
 
 export * from "./rollup/config.js";
 export * from "./rollup/dependencies.js";
@@ -109,9 +110,12 @@ export * from "./seed/tenDatabaseKeys.js";
 export { seedTenDatabasesInTransaction, type TenDatabases } from "./seed/seedTenDatabases.js";
 export { manifest as systemDatabasesModuleManifest } from "./seed/systemDatabasesModuleManifest.js";
 export * from "./systemSettings.js";
-export { createCoreTaskList, CORE_CRONTAB } from "./worker.js";
+export { createCoreTaskList, createApiCoreTaskList, CORE_CRONTAB } from "./worker.js";
+export { createAgentTaskList, noopAgentQueueTask, type AgentQueueTaskHandler } from "./agentWorker.js";
 export {
   mergeModuleTaskList,
+  mergeModuleTaskListForAffinity,
+  assertTaskListMatchesAffinity,
   CORE_TASK_NAME_SET,
   AGENT_TASK_NAME_SET,
   RESERVED_TASK_NAMES,
