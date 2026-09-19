@@ -116,6 +116,10 @@ describe("runHeartbeatFireQueueSplitMigration (issue #222)", () => {
       key: "legacy-key-agent",
       payload: { payload: { heartbeatId: heartbeat.id, triggeredByRunId: "run-1" } },
     });
+
+    // A second run must find nothing left to migrate and must not duplicate the re-enqueued job.
+    await runHeartbeatFireQueueSplitMigration(pool);
+    expect(await jobsByIdentifier("heartbeatFireAgent")).toHaveLength(1);
   });
 
   it("stops with an actionable error, migrating nothing, when a legacy job's heartbeat no longer exists", async () => {

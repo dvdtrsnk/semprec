@@ -788,6 +788,42 @@ describe("scheduler", () => {
     expect(ran).toBe(0);
   });
 
+  it("createHeartbeatFireCoreTask rejects a scheduled (occurrenceId) fire of a core.agentRun heartbeat with an affinity-mismatch error instead of running it", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async ({ task }) => ({ result: `handled: ${task}` })),
+    );
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Scheduled agent session",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: CORE_AGENT_RUN_ACTION_ID,
+        actionConfig: { task: "process the inbox" },
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+    const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    expect(fired).toHaveLength(1);
+    const { rows: occRows } = await pool.query("SELECT id FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
+      heartbeat.id,
+    ]);
+    const occurrenceId: string = occRows[0].id;
+
+    const task = createHeartbeatFireCoreTask(pool, registry);
+    const helpers = { job: { id: "job-1", attempts: 1, max_attempts: 3 } } as Parameters<typeof task>[1];
+    await expect(task({ heartbeatId: heartbeat.id, occurrenceId, generation: 1 }, helpers)).rejects.toThrow(
+      /resolves to 'heartbeatFireAgent'.*dispatched to the 'api' runtime/,
+    );
+
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
+    expect(runs).toHaveLength(0); // never ran — rejected before the handler was even looked up
+  });
+
   it("writes a heartbeat_error notification on the final retry attempt, deduped by job id but not across distinct failing jobs (issue #237)", async () => {
     const projectItemId = await getSemprecProjectId();
 
