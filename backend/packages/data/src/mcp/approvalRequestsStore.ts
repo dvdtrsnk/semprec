@@ -1,4 +1,4 @@
-import { requireSingleRow, type Queryable } from "../db/pool.js";
+import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 
 export type ApprovalRequestStatus = "pending" | "approved" | "rejected";
@@ -7,6 +7,37 @@ export type ApprovalRequestStatus = "pending" | "approved" | "rejected";
 export type ApprovalRequestDecision = "approved" | "rejected";
 
 const APPROVAL_REQUEST_STATUSES: readonly ApprovalRequestStatus[] = ["pending", "approved", "rejected"];
+
+/**
+ * The exactly-once execution protocol's own state machine (issue #89), independent of the
+ * approval decision above: `not_approved` (default) -> `queued` (set atomically alongside
+ * `status: 'approved'`) -> `succeeded` (the mutation committed) or `conflict` (a terminal
+ * revalidation failure — the resource changed or its authorization no longer holds). A
+ * populated-upgrade row that predates this column is `legacy_terminal` and never executes.
+ */
+export type ApprovalRequestExecutionStatus = "not_approved" | "queued" | "succeeded" | "conflict" | "legacy_terminal";
+
+const APPROVAL_REQUEST_EXECUTION_STATUSES: readonly ApprovalRequestExecutionStatus[] = [
+  "not_approved",
+  "queued",
+  "succeeded",
+  "conflict",
+  "legacy_terminal",
+];
+
+/**
+ * The persisted `{ kind, resourceId, sha256 }` shape every approval request now carries
+ * (issue #89). `kind` is validated against the closed five-destructive-operation enum only by
+ * `DestructiveApprovalPreflight` at the point a *new* generic-operation request is created — this
+ * store-level type stays a plain string so the still-live `mcpInvoke` request kind (and a
+ * populated-upgrade's `legacy_unavailable` kind) can also satisfy the column's `NOT NULL`
+ * constraint without widening it into a union this module has no reason to know about.
+ */
+export interface ApprovalResourceSnapshot {
+  kind: string;
+  resourceId: string;
+  sha256: string | null;
+}
 
 /**
  * `approval_requests` (issue #130 baseline): one immutable, invocation-time snapshot per
@@ -28,10 +59,12 @@ export interface ApprovalRequest {
   requestedAt: string;
   decidedAt: string | null;
   decidedBy: string | null;
+  resourceSnapshot: ApprovalResourceSnapshot;
+  executionStatus: ApprovalRequestExecutionStatus;
   /** Set atomically as an execution claim (issue #131) before the deferred call is made — see 0022's migration comment. */
   executedAt: string | null;
   executionError: boolean | null;
-  executionResult: string | null;
+  executionResult: unknown;
 }
 
 /** The outbound third-party-MCP-tool-invoke payload shape (issue #130) — the resolved target's identity plus the model-supplied arguments. */
@@ -42,16 +75,19 @@ export interface McpInvokeApprovalRequestPayload {
 }
 
 /**
- * The inbound generic-operation payload shape (issue #220): the operation name, its
- * already-validated canonical input, and the exact actor identity `agentRunsStore`'s persisted
- * `agent_run` row backed at dispatch time — never re-derived from `agentRunId` at replay, so a
- * mismatch between this snapshot and the run's current provenance is what `owner_violation`
- * detects at `approvalExecute` time.
+ * The inbound generic-operation payload shape (issue #220, `resourceSnapshot` added by #89): the
+ * operation name, its already-validated canonical input, the exact actor identity
+ * `agentRunsStore`'s persisted `agent_run` row backed at dispatch time — never re-derived from
+ * `agentRunId` at replay, so a mismatch between this snapshot and the run's current provenance is
+ * what `owner_violation` detects at `approvalExecute` time — and the same resource snapshot
+ * persisted in the row's own `resource_snapshot` column, duplicated into the payload so the
+ * payload alone is a self-contained record of exactly what was approved.
  */
 export interface GenericOperationApprovalRequestPayload {
   operationName: string;
   canonicalInput: unknown;
   actor: { runId: string; agentProjectItemId: string; userId: string };
+  resourceSnapshot: ApprovalResourceSnapshot;
 }
 
 export type ApprovalRequestPayload = McpInvokeApprovalRequestPayload | GenericOperationApprovalRequestPayload;
@@ -72,9 +108,11 @@ interface ApprovalRequestRow {
   requested_at: string;
   decided_at: string | null;
   decided_by: string | null;
+  resource_snapshot: ApprovalResourceSnapshot;
+  execution_status: string;
   executed_at: string | null;
   execution_error: boolean | null;
-  execution_result: string | null;
+  execution_result_jsonb: unknown;
 }
 
 function rowToApprovalRequest(row: ApprovalRequestRow): ApprovalRequest {
@@ -88,9 +126,11 @@ function rowToApprovalRequest(row: ApprovalRequestRow): ApprovalRequest {
     requestedAt: row.requested_at,
     decidedAt: row.decided_at,
     decidedBy: row.decided_by,
+    resourceSnapshot: row.resource_snapshot,
+    executionStatus: assertKnownValue(APPROVAL_REQUEST_EXECUTION_STATUSES, row.execution_status, "execution_status"),
     executedAt: row.executed_at,
     executionError: row.execution_error,
-    executionResult: row.execution_result,
+    executionResult: row.execution_result_jsonb,
   };
 }
 
@@ -99,6 +139,7 @@ export interface CreatePendingApprovalRequestInput {
   toolName: string;
   riskClass: string;
   payload: ApprovalRequestPayload;
+  resourceSnapshot: ApprovalResourceSnapshot;
 }
 
 /** Inserts one `pending` request. The caller is responsible for running this inside the same transaction as whatever it must be atomic with. */
@@ -107,16 +148,30 @@ export async function createPendingApprovalRequest(
   input: CreatePendingApprovalRequestInput,
 ): Promise<ApprovalRequest> {
   const { rows } = await client.query<ApprovalRequestRow>(
-    `INSERT INTO approval_requests (agent_run_id, tool_name, risk_class, payload)
-     VALUES ($1, $2, $3, $4::jsonb)
+    `INSERT INTO approval_requests (agent_run_id, tool_name, risk_class, payload, resource_snapshot)
+     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
      RETURNING *`,
-    [input.agentRunId, input.toolName, input.riskClass, JSON.stringify(input.payload)],
+    [
+      input.agentRunId,
+      input.toolName,
+      input.riskClass,
+      JSON.stringify(input.payload),
+      JSON.stringify(input.resourceSnapshot),
+    ],
   );
   return rowToApprovalRequest(requireSingleRow(rows, "approval_requests insert RETURNING"));
 }
 
-export async function getApprovalRequest(client: Queryable, id: string): Promise<ApprovalRequest | null> {
-  const { rows } = await client.query<ApprovalRequestRow>(`SELECT * FROM approval_requests WHERE id = $1`, [id]);
+/** `forUpdate` row-locks the request for the duration of the caller's transaction — `approvalExecute`'s locked revalidate-then-mutate protocol (issue #89) needs this so a concurrent decide/replay can't observe or race a half-finished execution. */
+export async function getApprovalRequest(
+  client: Queryable,
+  id: string,
+  forUpdate = false,
+): Promise<ApprovalRequest | null> {
+  const { rows } = await client.query<ApprovalRequestRow>(
+    `SELECT * FROM approval_requests WHERE id = $1${forUpdate ? " FOR UPDATE" : ""}`,
+    [id],
+  );
   return rows[0] ? rowToApprovalRequest(rows[0]) : null;
 }
 
@@ -154,7 +209,8 @@ export async function decideApprovalRequest(
 ): Promise<ApprovalRequest | null> {
   const { rows } = await client.query<ApprovalRequestRow>(
     `UPDATE approval_requests
-        SET status = $2, decided_at = now(), decided_by = $3
+        SET status = $2, decided_at = now(), decided_by = $3,
+            execution_status = CASE WHEN $2 = 'approved' THEN 'queued' ELSE execution_status END
       WHERE id = $1 AND status = 'pending'
       RETURNING *`,
     [id, decision, decidedBy],
@@ -186,15 +242,87 @@ export interface ApprovalRequestOutcome {
   result: string;
 }
 
-/** Records the deferred call's outcome on the already-claimed row — the audit trail's final write. */
+/**
+ * Records a deferred call's outcome — the audit trail's final write for the mcpInvoke path
+ * (already claimed, so `executed_at` is set there) and for the generic-operation "no replay
+ * handler configured" fallback (never claimed, since that path bypasses
+ * `claimApprovalRequestExecution` entirely — see `approvalRequestExecution.ts`'s header comment
+ * — so `executed_at` must be stamped here instead). `COALESCE` keeps the mcpInvoke path's
+ * original claim timestamp rather than overwriting it. `execution_status` settles to `succeeded`
+ * only when `outcome.error` is false, and to `conflict` otherwise — the same terminal-state
+ * vocabulary issue #89 introduced for generic-operation requests — so a failed outcome (e.g. "no
+ * generic-operation approval replay handler is configured") is never recorded as `succeeded` and
+ * can never be replayed by `replayApprovedGenericOperation`'s idempotency check as a false
+ * success.
+ */
 export async function recordApprovalRequestOutcome(
   client: Queryable,
   id: string,
   outcome: ApprovalRequestOutcome,
 ): Promise<void> {
-  await client.query(`UPDATE approval_requests SET execution_error = $2, execution_result = $3 WHERE id = $1`, [
-    id,
-    outcome.error,
-    outcome.result,
-  ]);
+  const result = await client.query(
+    `UPDATE approval_requests
+        SET execution_error = $2, execution_result_jsonb = $3::jsonb,
+            execution_status = CASE WHEN $2 THEN 'conflict' ELSE 'succeeded' END,
+            executed_at = COALESCE(executed_at, now())
+      WHERE id = $1`,
+    [id, outcome.error, JSON.stringify(outcome.result)],
+  );
+  requireAffectedRows(result, `recording approval request '${id}' outcome`);
+}
+
+/**
+ * Writes the terminal `conflict` outcome on an already-locked row (issue #89's
+ * `ApprovedOperationExecutor`, `replayApprovedGenericOperation` in `packages/application`), inside
+ * the caller's own transaction — never throws, so the transaction that wrote it commits. The sole
+ * owner of `approval_requests` writes, per the single-writer ownership model; a caller outside
+ * this module must never issue its own `UPDATE approval_requests` for this transition. Also sets
+ * the legacy `execution_error` column so it stays in sync with `execution_status` for any reader
+ * still keyed off it — the same pairing `recordApprovalRequestOutcome` maintains for the mcpInvoke
+ * path. Guards on `execution_status = 'queued'` like every other targeted UPDATE in this file
+ * guards on current state — a caller bug that passes an id already in a terminal state must not
+ * silently overwrite it; `requireAffectedRows` turns that into a thrown error instead.
+ */
+export async function terminalizeApprovalRequestAsConflict(
+  client: Queryable,
+  id: string,
+  details: Record<string, unknown>,
+): Promise<{ error: true; result: string }> {
+  const executionResult = { error: { code: "version_conflict", details } };
+  const result = await client.query(
+    `UPDATE approval_requests
+        SET execution_status = 'conflict', execution_error = true, execution_result_jsonb = $2::jsonb,
+            executed_at = now()
+      WHERE id = $1 AND execution_status = 'queued'`,
+    [id, JSON.stringify(executionResult)],
+  );
+  requireAffectedRows(result, `terminalizing approval request '${id}' as conflict`);
+  return { error: true, result: JSON.stringify(executionResult) };
+}
+
+/**
+ * Writes the terminal `succeeded` outcome on an already-locked row, inside the caller's own
+ * transaction, so the mutation `replayApprovedGenericOperation` (`packages/application`) just ran
+ * and its terminal-state write land in the same commit — see that function's header comment for
+ * why both must be atomic. The sole owner of `approval_requests` writes; see
+ * `terminalizeApprovalRequestAsConflict` above for the same rationale, including the legacy
+ * `execution_error` column and the `execution_status = 'queued'` guard — the row being
+ * `FOR UPDATE`-locked already rules out a concurrent writer, but not a caller bug that invokes
+ * this on an id already in a terminal state.
+ */
+export async function markApprovalRequestExecutionSucceeded(
+  client: Queryable,
+  id: string,
+  result: unknown,
+): Promise<{ error: false; result: string }> {
+  const executionResult = { result };
+  const updateResult = await client.query(
+    `UPDATE approval_requests
+        SET execution_status = 'succeeded', execution_error = false, execution_result_jsonb = $2::jsonb,
+            executed_at = now()
+      WHERE id = $1 AND execution_status = 'queued'`,
+    [id, JSON.stringify(executionResult)],
+  );
+  requireAffectedRows(updateResult, `marking approval request '${id}' succeeded`);
+  return { error: false, result: JSON.stringify(executionResult) };
 }

@@ -3,6 +3,7 @@ import { createPool } from "./pool.js";
 import { runMigrations } from "./migrate.js";
 import { runDocHistoryCutoverMigration } from "../docs/docHistoryCutoverMigration.js";
 import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsActorUserIdCutoverMigration.js";
+import { runApprovalRequestExecutionStatusCutoverMigration } from "../mcp/approvalRequestExecutionStatusCutoverMigration.js";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -14,6 +15,7 @@ try {
   await runMigrations(pool);
   await runDocHistoryCutoverMigration(pool);
   await runAgentRunsActorUserIdCutoverMigration(pool);
+  await runApprovalRequestExecutionStatusCutoverMigration(pool);
   // Issue #243: graphile-worker's own schema doesn't exist until ensureQueueSchema creates it, so
   // semprec_side's grants on it can't live in the SQL migrations above — this CLI is the real-deploy
   // invocation point, matching testSupport/globalSetup.ts's test-time call to the same two functions.
