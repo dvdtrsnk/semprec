@@ -25,6 +25,7 @@ import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
 import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
 import { seedInboxPipelineInTransaction } from "./seedInboxPipeline.js";
 import { seedMcpModuleInTransaction } from "./seedMcpModule.js";
+import { runModuleDataMigrations } from "../migrationJob/moduleDataMigration.js";
 
 export { PROJECTS_MODULE_ID } from "./tenDatabaseKeys.js";
 
@@ -256,4 +257,8 @@ export async function seedSystem(
     // only depends on the Projects database above.
     await seedMcpModuleInTransaction(client, projectsDb.id);
   });
+
+  // Active module data migrations are resumable and independently idempotent. Run them
+  // after the structural seed transaction so item batches never prolong its lock scope.
+  await runModuleDataMigrations(pool, moduleRegistry);
 }
