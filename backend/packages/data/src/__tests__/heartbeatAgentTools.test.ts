@@ -48,7 +48,7 @@ async function pendingTriggerJobs(pool: Pool): Promise<TriggerJobRow[]> {
     `SELECT j.key, j.payload
      FROM graphile_worker._private_jobs j
      JOIN graphile_worker._private_tasks t ON t.id = j.task_id
-     WHERE t.identifier = 'heartbeatFire'`,
+     WHERE t.identifier = 'heartbeatFireAgent'`,
   );
   return rows;
 }

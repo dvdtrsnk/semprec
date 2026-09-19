@@ -48,7 +48,11 @@ export { computeNextFireAt } from "./scheduler/nextFireAt.js";
 export * from "./scheduler/schedulerStore.js";
 export * from "./scheduler/actions.js";
 export * from "./scheduler/heartbeatAgentTools.js";
-export { handleHeartbeatSweepTask, createHeartbeatFireTask } from "./scheduler/sweep.js";
+export {
+  handleHeartbeatSweepTask,
+  createHeartbeatFireCoreTask,
+  createHeartbeatFireAgentTask,
+} from "./scheduler/sweep.js";
 
 export * from "./rollup/config.js";
 export * from "./rollup/dependencies.js";

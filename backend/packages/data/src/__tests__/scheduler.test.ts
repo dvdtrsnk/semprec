@@ -17,7 +17,7 @@ import {
 } from "../scheduler/schedulerStore.js";
 import { createActionRegistry, CORE_AGENT_RUN_ACTION_ID, coreAgentRunAction } from "../scheduler/actions.js";
 import { createCoreTaskList } from "../worker.js";
-import { createHeartbeatFireTask } from "../scheduler/sweep.js";
+import { createHeartbeatFireCoreTask, createHeartbeatFireAgentTask } from "../scheduler/sweep.js";
 import { getSystemSettingsItemId } from "../systemSettings.js";
 import { createAgentRun, listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
 import { createHeartbeatTriggerTool } from "../scheduler/heartbeatAgentTools.js";
@@ -685,9 +685,9 @@ describe("scheduler", () => {
     expect(ran).toBe(1);
   });
 
-  it("createHeartbeatFireTask rejects a payload carrying zero or more than one of occurrenceId/itemId/triggeredByRunId with validation_failed", async () => {
+  it("createHeartbeatFireCoreTask rejects a payload carrying zero or more than one of occurrenceId/itemId/triggeredByRunId with validation_failed", async () => {
     const registry = createActionRegistry();
-    const task = createHeartbeatFireTask(pool, registry);
+    const task = createHeartbeatFireCoreTask(pool, registry);
     const helpers = { job: { attempts: 1, max_attempts: 3 } } as Parameters<typeof task>[1];
 
     await expect(task({ heartbeatId: "h1" }, helpers)).rejects.toMatchObject({ code: "validation_failed" });
@@ -697,6 +697,131 @@ describe("scheduler", () => {
     await expect(
       task({ heartbeatId: "h1", occurrenceId: "o1", triggeredByRunId: "r1" }, helpers),
     ).rejects.toMatchObject({ code: "validation_failed" });
+  });
+
+  it("createHeartbeatFireAgentTask rejects a payload carrying zero or more than one of occurrenceId/itemId/triggeredByRunId with validation_failed", async () => {
+    const registry = createActionRegistry();
+    const task = createHeartbeatFireAgentTask(pool, registry);
+    const helpers = { job: { attempts: 1, max_attempts: 3 } } as Parameters<typeof task>[1];
+
+    await expect(task({ heartbeatId: "h1" }, helpers)).rejects.toMatchObject({ code: "validation_failed" });
+    await expect(task({ heartbeatId: "h1", occurrenceId: "o1", itemId: "i1" }, helpers)).rejects.toMatchObject({
+      code: "validation_failed",
+    });
+  });
+
+  it("createHeartbeatFireAgentTask runs the core.agentRun handler for an agent-session heartbeat", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async ({ task }) => ({ result: `handled: ${task}` })),
+    );
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Process inbox",
+        rule: { kind: "interval", minutes: 1 },
+        actionId: CORE_AGENT_RUN_ACTION_ID,
+        actionConfig: { task: "process the inbox" },
+      }),
+    );
+
+    const task = createHeartbeatFireAgentTask(pool, registry);
+    const helpers = { job: { id: "job-1", attempts: 1, max_attempts: 3 } } as Parameters<typeof task>[1];
+    await task({ heartbeatId: heartbeat.id, itemId: "unused" }, helpers);
+
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.status).toBe("done");
+    expect(runs[0]!.result).toBe("handled: process the inbox");
+  });
+
+  it("createHeartbeatFireCoreTask rejects a core.agentRun heartbeat with an affinity-mismatch error instead of running it", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async ({ task }) => ({ result: `handled: ${task}` })),
+    );
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Process inbox",
+        rule: { kind: "interval", minutes: 1 },
+        actionId: CORE_AGENT_RUN_ACTION_ID,
+        actionConfig: { task: "process the inbox" },
+      }),
+    );
+
+    const task = createHeartbeatFireCoreTask(pool, registry);
+    const helpers = { job: { id: "job-1", attempts: 1, max_attempts: 3 } } as Parameters<typeof task>[1];
+    await expect(task({ heartbeatId: heartbeat.id, itemId: "unused" }, helpers)).rejects.toThrow(
+      /resolves to 'heartbeatFireAgent'.*dispatched to the 'api' runtime/,
+    );
+
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
+    expect(runs).toHaveLength(0); // never ran — rejected before the handler was even looked up
+  });
+
+  it("createHeartbeatFireAgentTask rejects a deterministic heartbeat with an affinity-mismatch error instead of running it", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    let ran = 0;
+    registry.set("noop", async () => {
+      ran += 1;
+    });
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Deterministic",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "noop",
+      }),
+    );
+
+    const task = createHeartbeatFireAgentTask(pool, registry);
+    const helpers = { job: { id: "job-1", attempts: 1, max_attempts: 3 } } as Parameters<typeof task>[1];
+    await expect(task({ heartbeatId: heartbeat.id, itemId: "unused" }, helpers)).rejects.toThrow(
+      /resolves to 'heartbeatFireCore'.*dispatched to the 'agents' runtime/,
+    );
+    expect(ran).toBe(0);
+  });
+
+  it("createHeartbeatFireCoreTask rejects a scheduled (occurrenceId) fire of a core.agentRun heartbeat with an affinity-mismatch error instead of running it", async () => {
+    const projectItemId = await getSemprecProjectId();
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async ({ task }) => ({ result: `handled: ${task}` })),
+    );
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Scheduled agent session",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: CORE_AGENT_RUN_ACTION_ID,
+        actionConfig: { task: "process the inbox" },
+      }),
+    );
+    await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+      heartbeat.id,
+    ]);
+    const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    expect(fired).toHaveLength(1);
+    const { rows: occRows } = await pool.query("SELECT id FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
+      heartbeat.id,
+    ]);
+    const occurrenceId: string = occRows[0].id;
+
+    const task = createHeartbeatFireCoreTask(pool, registry);
+    const helpers = { job: { id: "job-1", attempts: 1, max_attempts: 3 } } as Parameters<typeof task>[1];
+    await expect(task({ heartbeatId: heartbeat.id, occurrenceId, generation: 1 }, helpers)).rejects.toThrow(
+      /resolves to 'heartbeatFireAgent'.*dispatched to the 'api' runtime/,
+    );
+
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeat.id);
+    expect(runs).toHaveLength(0); // never ran — rejected before the handler was even looked up
   });
 
   it("writes a heartbeat_error notification on the final retry attempt, deduped by job id but not across distinct failing jobs (issue #237)", async () => {
@@ -716,7 +841,7 @@ describe("scheduler", () => {
       throw new Error("boom");
     });
 
-    const task = createHeartbeatFireTask(pool, registry);
+    const task = createHeartbeatFireCoreTask(pool, registry);
     const finalAttemptHelpers = (jobId: string) =>
       ({ job: { id: jobId, attempts: 3, max_attempts: 3 } }) as Parameters<typeof task>[1];
 
