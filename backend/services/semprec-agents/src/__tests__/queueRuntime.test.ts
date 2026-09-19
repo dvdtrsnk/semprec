@@ -72,24 +72,66 @@ describe("createAgentsQueueRuntime (issue #91)", () => {
     });
   });
 
-  it("never executes a task outside its own affinity — an api-only job stays unexecuted", async () => {
+  it("never executes a task outside its own affinity — api-only jobs stay unexecuted", async () => {
     const registry = await buildRegistryWith("agentsFixtureModule.js", "fixture-agents-queue-runtime");
     runtime = await createAgentsQueueRuntime(pool, registry);
 
-    await enqueueJob(pool, CORE_TASK_NAMES.HEARTBEAT_SWEEP, {});
+    const apiOnlyIdentifiers = [
+      CORE_TASK_NAMES.HEARTBEAT_SWEEP,
+      CORE_TASK_NAMES.TRASH_PURGE,
+      CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE,
+      CORE_TASK_NAMES.NOTIFICATION_FANOUT,
+    ];
+    for (const identifier of apiOnlyIdentifiers) {
+      await enqueueJob(pool, identifier, {});
+    }
 
-    // This runtime's taskList has no `heartbeatSweep` handler, so graphile-worker's own job
-    // fetcher (which only claims jobs for task identifiers the connected worker supports) never
-    // claims it — there is no "it ran and failed" signal to poll for, only its continued,
-    // unclaimed presence after giving this runner ample time to have picked it up if it could.
+    // This runtime's taskList has no handler for any of these api-affinity identifiers, so
+    // graphile-worker's own job fetcher (which only claims jobs for task identifiers the
+    // connected worker supports) never claims them — there is no "it ran and failed" signal to
+    // poll for, only their continued, unclaimed presence after giving this runner ample time to
+    // have picked them up if it could.
     await sleep(1_500);
-    const { rows } = await pool.query<{ attempts: number }>(
-      `SELECT jobs.attempts FROM graphile_worker._private_jobs jobs
+    const { rows } = await pool.query<{ identifier: string; attempts: number }>(
+      `SELECT tasks.identifier, jobs.attempts FROM graphile_worker._private_jobs jobs
        JOIN graphile_worker._private_tasks tasks ON tasks.id = jobs.task_id
-       WHERE tasks.identifier = $1`,
-      [CORE_TASK_NAMES.HEARTBEAT_SWEEP],
+       WHERE tasks.identifier = ANY($1)
+       ORDER BY tasks.identifier`,
+      [apiOnlyIdentifiers],
     );
-    expect(rows).toEqual([{ attempts: 0 }]);
+    expect(rows).toEqual([...apiOnlyIdentifiers].sort().map((identifier) => ({ identifier, attempts: 0 })));
+  });
+
+  it("executes heartbeatFireAgent only in the agents runtime", async () => {
+    const registry = await buildRegistryWith("agentsFixtureModule.js", "fixture-agents-queue-runtime");
+    runtime = await createAgentsQueueRuntime(pool, registry);
+
+    await enqueueJob(pool, AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT, {});
+
+    // An empty payload fails this handler's own field validation, so it never completes — but
+    // graphile-worker still has to claim and invoke it to discover that. `attempts >= 1` is
+    // therefore the positive counterpart to the negative "never claimed" proof above: it shows
+    // this runtime is the one that owns and runs this task name, regardless of whether the
+    // specific payload used here happens to be valid business data (irrelevant to ownership).
+    await waitFor(async () => {
+      const { rows } = await pool.query<{ attempts: number }>(
+        `SELECT jobs.attempts FROM graphile_worker._private_jobs jobs
+         JOIN graphile_worker._private_tasks tasks ON tasks.id = jobs.task_id
+         WHERE tasks.identifier = $1`,
+        [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT],
+      );
+      return (rows[0]?.attempts ?? 0) >= 1;
+    });
+  });
+
+  it("rejects two active modules declaring the same task name before either composition root starts", async () => {
+    const registry = new ModuleRegistry(
+      () => new Set(["fixture-agents-duplicate-task-a", "fixture-agents-duplicate-task-b"]),
+    );
+    await registry.loadModule(fixturePath("agentsDuplicateTaskModuleA.js"));
+    await expect(registry.loadModule(fixturePath("agentsDuplicateTaskModuleB.js"))).rejects.toThrow(
+      /Duplicate task name/,
+    );
   });
 
   it("rejects a module task colliding with an agent task name at startup", async () => {

@@ -1,5 +1,4 @@
 import type { Pool } from "pg";
-import type { Runner } from "@semprec/queue";
 import { ensureQueueSchema, grantQueueSchemaPrivileges, runWorker } from "@semprec/queue";
 import {
   assertTaskListMatchesAffinity,
@@ -11,7 +10,6 @@ import {
 import type { ModuleRegistry } from "@semprec/module-registry";
 
 export interface AgentsQueueRuntime {
-  runner: Runner;
   /** Idempotent: awaits `runner.stop()` exactly once. Never closes `pool` — the caller (`serve.ts`) owns that. */
   stop(): Promise<void>;
 }
@@ -49,7 +47,6 @@ export async function createAgentsQueueRuntime(
 
   let stopped: Promise<void> | null = null;
   return {
-    runner,
     stop(): Promise<void> {
       stopped ??= runner.stop();
       return stopped;

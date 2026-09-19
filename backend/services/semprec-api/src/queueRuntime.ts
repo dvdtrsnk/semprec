@@ -1,5 +1,4 @@
 import type { Pool } from "pg";
-import type { Runner } from "@semprec/queue";
 import { ensureQueueSchema, grantQueueSchemaPrivileges, runWorker } from "@semprec/queue";
 import {
   CORE_CRONTAB,
@@ -18,7 +17,6 @@ export interface ApiQueueRuntimeOptions {
 }
 
 export interface ApiQueueRuntime {
-  runner: Runner;
   /** Idempotent: awaits `runner.stop()` exactly once. Never closes `pool` — the caller (`serve.ts`) owns that. */
   stop(): Promise<void>;
 }
@@ -74,7 +72,6 @@ export async function createApiQueueRuntime(
 
   let stopped: Promise<void> | null = null;
   return {
-    runner,
     stop(): Promise<void> {
       stopped ??= runner.stop();
       return stopped;

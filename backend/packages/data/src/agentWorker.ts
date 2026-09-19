@@ -28,7 +28,7 @@ export function createAgentTaskList(
   agentRunTask: AgentQueueTaskHandler = noopAgentQueueTask,
   delegatedAgentRunTask: AgentQueueTaskHandler = noopAgentQueueTask,
 ): TaskList {
-  const handlers: TaskList = {
+  const handlers: Record<string, Task> = {
     [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: createHeartbeatFireAgentTask(pool, actionRegistry, moduleRegistry),
     [AGENT_TASK_NAMES.AGENT_RUN]: async (payload, helpers) => {
       await agentRunTask(payload, { job: { id: String(helpers.job.id) } });
@@ -38,9 +38,5 @@ export function createAgentTaskList(
     },
   };
 
-  return Object.fromEntries(
-    Object.entries(handlers)
-      .filter((entry): entry is [string, Task] => entry[1] !== undefined)
-      .map(([name, task]) => [name, registerTask(name, task)]),
-  );
+  return Object.fromEntries(Object.entries(handlers).map(([name, task]) => [name, registerTask(name, task)]));
 }

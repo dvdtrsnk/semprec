@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { seedSystem, createHeartbeat, withTransaction } from "@semprec/data";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { createApiQueueRuntime, type ApiQueueRuntime } from "../queueRuntime.js";
 import * as apiFixtureModule from "./fixtures/apiFixtureModule.js";
@@ -36,6 +38,24 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 5_000): Promis
     await sleep(50);
   }
   expect(await check()).toBe(true);
+}
+
+async function jobCountFor(pool: Pool, identifier: string): Promise<number> {
+  const { rows } = await pool.query<{ count: string }>(
+    `SELECT count(*)::text AS count FROM graphile_worker._private_jobs jobs
+     JOIN graphile_worker._private_tasks tasks ON tasks.id = jobs.task_id
+     WHERE tasks.identifier = $1`,
+    [identifier],
+  );
+  return Number(rows[0]?.count ?? 0);
+}
+
+async function getSemprecProjectId(pool: Pool): Promise<string> {
+  const { rows } = await pool.query("SELECT id FROM databases WHERE owner_module_id = 'projects'");
+  if (rows.length === 0) throw new Error("getSemprecProjectId: no database with owner_module_id 'projects'");
+  const { rows: items } = await pool.query("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [rows[0].id]);
+  if (items.length === 0) throw new Error("getSemprecProjectId: the projects database has no seeded items");
+  return items[0].id as string;
 }
 
 let pool: Pool;
@@ -97,6 +117,79 @@ describe("createApiQueueRuntime (issue #91)", () => {
       [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT],
     );
     expect(rows).toEqual([{ attempts: 0 }]);
+  });
+
+  it("executes heartbeatSweep, trashPurge, approvalExecute and notificationFanout only in the API runtime", async () => {
+    const registry = await buildRegistryWith("apiFixtureModule.js", "fixture-api-queue-runtime");
+    runtime = await createApiQueueRuntime(pool, registry);
+
+    await enqueueJob(pool, CORE_TASK_NAMES.HEARTBEAT_SWEEP, {});
+    await enqueueJob(pool, CORE_TASK_NAMES.TRASH_PURGE, {});
+    await enqueueJob(pool, CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE, { approvalRequestId: randomUUID() });
+    await enqueueJob(pool, CORE_TASK_NAMES.NOTIFICATION_FANOUT, { notificationId: randomUUID() });
+
+    // None of these four handlers throw on an unresolvable id (each is a graceful `if (!row)
+    // return`), so successful completion means the job row disappears — a positive proof that
+    // the API runtime, not just "some" runtime, actually ran each of these core task names.
+    for (const identifier of [
+      CORE_TASK_NAMES.HEARTBEAT_SWEEP,
+      CORE_TASK_NAMES.TRASH_PURGE,
+      CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE,
+      CORE_TASK_NAMES.NOTIFICATION_FANOUT,
+    ]) {
+      await waitFor(async () => (await jobCountFor(pool, identifier)) === 0);
+    }
+  });
+
+  it("fires the CORE_CRONTAB-installed heartbeatSweep entry for real, on its own real-time cadence", async () => {
+    const registry = await buildRegistryWith("apiFixtureModule.js", "fixture-api-queue-runtime");
+    runtime = await createApiQueueRuntime(pool, registry);
+
+    // graphile-worker's crontab is minute-granularity with no backfill for a freshly-unknown
+    // identifier (confirmed by reading its own migration SQL) — this is the one test in this
+    // suite willing to pay the real up-to-a-minute wait for `last_execution` to move off `null`,
+    // to literally observe one heartbeatSweep firing from the installed cron entry itself,
+    // rather than only from a directly-enqueued job.
+    await waitFor(async () => {
+      const { rows } = await pool.query<{ last_execution: string | null }>(
+        `SELECT last_execution FROM graphile_worker._private_known_crontabs WHERE identifier = $1`,
+        [CORE_TASK_NAMES.HEARTBEAT_SWEEP],
+      );
+      return rows[0]?.last_execution !== null && rows[0]?.last_execution !== undefined;
+    }, 75_000);
+  }, 90_000);
+
+  it("re-enqueues a legacy heartbeatFire job exactly once under its split task name at install, without duplication", async () => {
+    await seedSystem(pool);
+    const projectItemId = await getSemprecProjectId(pool);
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Legacy deterministic (issue #91 install migration)",
+        rule: { kind: "dailyTime", at: "09:00" },
+        actionId: "noop",
+      }),
+    );
+    await enqueueJob(
+      pool,
+      "heartbeatFire",
+      { heartbeatId: heartbeat.id, occurrenceId: "legacy-occurrence", generation: 0 },
+      { jobKey: "legacy-key-issue-91", maxAttempts: 3, queueName: "legacy-queue" },
+    );
+
+    const registry = await buildRegistryWith("apiFixtureModule.js", "fixture-api-queue-runtime");
+    runtime = await createApiQueueRuntime(pool, registry);
+
+    expect(await jobCountFor(pool, "heartbeatFire")).toBe(0);
+    expect(await jobCountFor(pool, CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE)).toBe(1);
+  });
+
+  it("rejects two active modules declaring the same task name before either composition root starts", async () => {
+    const registry = new ModuleRegistry(
+      () => new Set(["fixture-api-duplicate-task-a", "fixture-api-duplicate-task-b"]),
+    );
+    await registry.loadModule(fixturePath("apiDuplicateTaskModuleA.js"));
+    await expect(registry.loadModule(fixturePath("apiDuplicateTaskModuleB.js"))).rejects.toThrow(/Duplicate task name/);
   });
 
   it("rejects a module task colliding with a core task name at startup", async () => {
