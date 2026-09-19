@@ -13,6 +13,7 @@ import {
   TASKS_MODULE_ID,
   TRANSCRIPTS_MODULE_ID,
 } from "./tenDatabaseKeys.js";
+export { backfillTaskTimeProperties } from "../tasks/deriveTaskTime.js";
 
 export { createCreateTranscriptionRouteHandler } from "../transcription/transcriptionRouteHandlers.js";
 
@@ -32,7 +33,7 @@ export { createCreateTranscriptionRouteHandler } from "../transcription/transcri
  */
 export const manifest: ModuleManifest = {
   id: "systemDatabases",
-  version: "1.0.0",
+  version: "1.1.0",
   name: "System Databases",
   removable: false,
   systemProject: true,
@@ -53,6 +54,14 @@ export const manifest: ModuleManifest = {
   viewTypes: [TEMPORAL_SWITCHER_VIEW_TYPE],
   heartbeatActions: [FILES_TRANSCRIPTION_TRIGGER_ACTION_ID],
   migrations: ["0004_ten_databases.sql"],
+  dataMigrations: [
+    {
+      databaseKey: TASKS_MODULE_ID,
+      fromVersion: "1.0.0",
+      toVersion: "1.1.0",
+      converterExport: "backfillTaskTimeProperties",
+    },
+  ],
   customRoutes: [
     {
       name: "createTranscription",
