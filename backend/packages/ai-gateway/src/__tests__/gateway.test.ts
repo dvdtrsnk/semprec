@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import {
   createAgentRun,
@@ -127,6 +127,22 @@ describe("gateway", () => {
 
       const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
       expect(rows).toHaveLength(1); // only the seeded row above, nothing from the rejected call
+    });
+
+    it("rejects an audio call before its provider is invoked", async () => {
+      await setBudgets(pool, { dailyBudgetUsd: 1, monthlyBudgetUsd: null });
+      await pool.query(
+        `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, cost_usd) VALUES ('anthropic', 'claude-sonnet-5', 10, 10, 1)`,
+      );
+      const invoke = vi.fn(async () => ({ audioSeconds: 180, costUsd: 0.03 }));
+
+      await expect(transcribe(pool, { provider: "deepinfra", model: "whisper-large-v3" }, invoke)).rejects.toThrow(
+        BudgetExceededError,
+      );
+
+      expect(invoke).not.toHaveBeenCalled();
+      const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
+      expect(rows).toHaveLength(1);
     });
 
     it("rejects the call once the monthly cap is already reached, independently of the daily cap", async () => {
