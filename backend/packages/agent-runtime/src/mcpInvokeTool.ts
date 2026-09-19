@@ -172,6 +172,10 @@ export function createApprovalGatedMcpInvokeTool(
             mcpServerItemId: target.mcpServerItemId,
             args: resolution.args,
           },
+          // mcpInvoke requests have no destructive-operation resource to snapshot (issue #89 only
+          // introduced that concept for the five generic-operation kinds) — this placeholder just
+          // satisfies the column's `NOT NULL` constraint without claiming a hash that doesn't exist.
+          resourceSnapshot: { kind: "mcp_invoke", resourceId: mcpToolRegistrationId, sha256: null },
         });
         const userId = await getEarliestUserId(client);
         if (userId) {
