@@ -27,11 +27,19 @@ export type QueueJobEnvelope = z.infer<typeof queueJobEnvelopeSchema>;
  */
 export const CORE_TASK_NAMES = {
   HEARTBEAT_SWEEP: "heartbeatSweep",
-  HEARTBEAT_FIRE: "heartbeatFire",
+  // Issue #222: the API-runtime half of `heartbeatFire`'s split for every deterministic
+  // heartbeat action (including library processing); the agent-session half is
+  // `AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT`. The legacy `heartbeatFire` name is gone —
+  // #222's install migration re-enqueues every pending legacy job under the correct one of
+  // these two before the old handler is removed.
+  HEARTBEAT_FIRE_CORE: "heartbeatFireCore",
   ROLLUP_RECOMPUTE: "rollupRecompute",
   ROLLUP_RECOMPUTE_FULL: "rollupRecomputeFull",
   PROPERTY_TYPE_MIGRATION: "propertyTypeMigration",
   DOC_COMPACTION_SWEEP: "docCompactionSweep",
+  // Issue #221: the closed API-set name for the block-doc history squash job; declared here so
+  // the affinity catalog is complete, but its handler and enqueue routing are delivered later.
+  DOC_HISTORY_SQUASH: "docHistorySquash",
   DOC_HISTORY_CLEANUP: "docHistoryCleanup",
   // Issue #25: the library module's per-item cover/metadata processing job.
   LIBRARY_METADATA_PROCESS: "processLibraryMetadata",
@@ -58,8 +66,55 @@ export const CORE_TASK_NAMES = {
   // Issue #169: the every-minute internal-degradation check (process staleness, queue backlog,
   // permanently-failed jobs, per-mailbox sync staleness).
   OBSERVABILITY_CHECK_SYSTEM: "observabilityCheckSystem",
+  // Issue #221: the closed API-set name for the daily trash purge crontab entry, distinct from
+  // the existing `itemTrashPurgeSweep` job it schedules alongside.
+  TRASH_PURGE: "trashPurge",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
+
+/** Which long-lived runtime (issue #91's two composition roots) owns a queue task. */
+export const TASK_AFFINITIES = ["api", "agents"] as const;
+export type TaskAffinity = (typeof TASK_AFFINITIES)[number];
+
+/**
+ * Every `CORE_TASK_NAMES` entry's runtime affinity — the exhaustive API-set data issue #221
+ * requires, keyed by task name rather than folded into `CORE_TASK_NAMES` itself so every
+ * existing `CORE_TASK_NAMES.X` reference across the codebase keeps working unchanged.
+ */
+export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
+  [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: "api",
+  [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: "api",
+  [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: "api",
+  [CORE_TASK_NAMES.ROLLUP_RECOMPUTE_FULL]: "api",
+  [CORE_TASK_NAMES.PROPERTY_TYPE_MIGRATION]: "api",
+  [CORE_TASK_NAMES.DOC_COMPACTION_SWEEP]: "api",
+  [CORE_TASK_NAMES.DOC_HISTORY_SQUASH]: "api",
+  [CORE_TASK_NAMES.DOC_HISTORY_CLEANUP]: "api",
+  [CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS]: "api",
+  [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: "api",
+  [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: "api",
+  [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: "api",
+  [CORE_TASK_NAMES.MAIL_LEGACY_EMAIL_MIGRATION]: "api",
+  [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE]: "api",
+  [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: "api",
+  [CORE_TASK_NAMES.NOTIFICATION_FANOUT]: "api",
+  [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: "api",
+  [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: "api",
+  [CORE_TASK_NAMES.TRASH_PURGE]: "api",
+};
+
+/**
+ * The closed set of task names the agents runtime (issue #91's second composition root) may
+ * run. `heartbeatFireAgent`'s handler and enqueue routing ship with #222, for the one heartbeat
+ * action (`core.agentRun`) that starts or continues an agent session; `agentRun`/
+ * `delegatedAgentRun`'s handlers ship with #91 — this issue only closes the name catalog for them.
+ */
+export const AGENT_TASK_NAMES = {
+  HEARTBEAT_FIRE_AGENT: "heartbeatFireAgent",
+  AGENT_RUN: "agentRun",
+  DELEGATED_AGENT_RUN: "delegatedAgentRun",
+} as const;
+export type AgentTaskName = (typeof AGENT_TASK_NAMES)[keyof typeof AGENT_TASK_NAMES];
 
 /** Creates/updates graphile-worker's own schema. Call once at startup, before enqueueJob/runWorker. */
 export async function ensureQueueSchema(pool: Pool): Promise<void> {

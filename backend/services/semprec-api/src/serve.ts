@@ -14,6 +14,8 @@ import { wireRealtimeHooks } from "@semprec/realtime";
 import { installFatalHandlers, withTraceContext } from "@semprec/shared";
 import { createDispatcher } from "./app.js";
 import { createSyncUpgradeHandler } from "./syncHandler.js";
+import { createApiQueueRuntime } from "./queueRuntime.js";
+import { createGracefulShutdown, registerShutdownSignals } from "./shutdown.js";
 import { logger } from "./logger.js";
 
 // Installed before anything else runs: an uncaught exception or unhandled rejection during
@@ -97,7 +99,14 @@ const dispatch = await createDispatcher(pool, {
 });
 const syncServer = await createSyncUpgradeHandler(pool);
 
+// Issue #91: this process is one of the queue's two composition roots — the one that installs
+// `CORE_CRONTAB` and hosts every `queueAffinity: 'api'` task handler, over this same pool.
+const queueRuntime = await createApiQueueRuntime(pool, moduleRegistry);
+
 const server = createServer(dispatch);
+
+const shutdown = createGracefulShutdown({ server, queueRuntime, pool, logger });
+registerShutdownSignals(shutdown);
 
 // `WS /api/sync` (issue #160) is the one WS upgrade route this service serves; anything else
 // requesting a protocol upgrade gets its socket destroyed rather than silently ignored.

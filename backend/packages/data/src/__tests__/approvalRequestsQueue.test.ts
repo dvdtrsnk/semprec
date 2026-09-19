@@ -23,6 +23,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
     pool ??= getTestPool();
     chokePoint ??= createChokePoint(pool);
     await resetDatabase(pool);
+    await createUser();
   });
 
   afterAll(async () => {
@@ -48,6 +49,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       toolName: "send_email",
       riskClass: "moderate",
       payload,
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
 
     const rows = await listApprovalRequestsQueue(pool);
@@ -59,6 +61,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       riskClass: "moderate",
       requestedAt: created.requestedAt,
       safeSummary: {
+        kind: "mcpInvoke",
         mcpToolRegistrationId: payload.mcpToolRegistrationId,
         mcpServerItemId: payload.mcpServerItemId,
         argKeys: ["to", "apiKey"],
@@ -69,6 +72,32 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
     });
   });
 
+  it("summarizes a generic-operation-originated request with its operationName, never mcp fields (issue #220)", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const payload = {
+      operationName: "item.delete",
+      canonicalInput: { itemId: randomUUID() },
+      actor: { runId: run.id, agentProjectItemId: randomUUID(), userId: run.actorUserId },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    };
+    await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "item.delete",
+      riskClass: "destructive",
+      payload,
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+
+    const rows = await listApprovalRequestsQueue(pool);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.safeSummary).toEqual({
+      kind: "genericOperation",
+      operationName: "item.delete",
+      argKeys: ["itemId"],
+    });
+  });
+
   it("never includes argument values, only their keys", async () => {
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
     const payload = {
@@ -76,7 +105,13 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       mcpServerItemId: randomUUID(),
       args: { password: "hunter2" },
     };
-    await createPendingApprovalRequest(pool, { agentRunId: run.id, toolName: "login", riskClass: "high", payload });
+    await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "login",
+      riskClass: "high",
+      payload,
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
 
     const rows = await listApprovalRequestsQueue(pool);
 
@@ -87,7 +122,13 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
   it("returns null project fields for a run with no project (e.g. the supervisor's own run)", async () => {
     const run = await createAgentRun(pool, { triggeredBy: "supervisor", task: "test" });
     const payload = { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} };
-    await createPendingApprovalRequest(pool, { agentRunId: run.id, toolName: "noop", riskClass: "low", payload });
+    await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: "noop",
+      riskClass: "low",
+      payload,
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
 
     const rows = await listApprovalRequestsQueue(pool);
 
@@ -103,18 +144,21 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       toolName: "first",
       riskClass: "low",
       payload,
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
     const second = await createPendingApprovalRequest(pool, {
       agentRunId: run.id,
       toolName: "second",
       riskClass: "low",
       payload,
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
     const decided = await createPendingApprovalRequest(pool, {
       agentRunId: run.id,
       toolName: "third",
       riskClass: "low",
       payload,
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
     await decideApprovalRequest(pool, decided.id, "approved", await createUser());
 

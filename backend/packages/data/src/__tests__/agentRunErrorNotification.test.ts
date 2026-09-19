@@ -79,14 +79,9 @@ describe("finishAgentRunWithErrorNotification (issue #149)", () => {
     expect(rows).toMatchObject([{ user_id: user.id, kind: "agent_run_error" }]);
   });
 
-  it("skips the notification (but still finishes the run) before any user account exists", async () => {
-    const run = await createAgentRun(pool, { triggeredBy: "user", task: "do the thing" });
-
-    await withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, run.id, "boom"));
-
-    const finished = await getAgentRun(pool, run.id);
-    expect(finished!.status).toBe("error");
-    const { rows } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [run.id]);
-    expect(rows).toHaveLength(0);
+  it("rejects creating an agent run before any user account exists", async () => {
+    await expect(createAgentRun(pool, { triggeredBy: "user", task: "do the thing" })).rejects.toThrow(
+      "Cannot create an agent run before any account exists",
+    );
   });
 });

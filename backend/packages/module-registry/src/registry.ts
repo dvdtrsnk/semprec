@@ -1,5 +1,10 @@
 import { loadModuleCatalogs, type ModuleCatalogs } from "./catalog.js";
-import { moduleManifestSchema, type CustomRouteMethod, type ModuleManifest } from "./manifest.js";
+import {
+  moduleManifestSchema,
+  type CustomRouteMethod,
+  type ModuleManifest,
+  type ModuleTaskAffinity,
+} from "./manifest.js";
 
 export interface ModuleDatabaseProjection {
   moduleId: string;
@@ -19,6 +24,7 @@ export interface ModuleTaskProjection {
   name: string;
   payloadSchemaExport: string;
   handlerExport: string;
+  queueAffinity: ModuleTaskAffinity;
 }
 
 export interface ModuleWorkerProjection {
@@ -64,6 +70,7 @@ export interface ModuleTaskDefinition {
   name: string;
   payloadSchema: { parse: (raw: unknown) => unknown };
   handler: (...args: unknown[]) => unknown;
+  queueAffinity: ModuleTaskAffinity;
 }
 
 /**
@@ -493,6 +500,7 @@ export class ModuleRegistry {
         name: task.name,
         payloadSchema: loaded.exports[task.payloadSchemaExport] as ModuleTaskDefinition["payloadSchema"],
         handler: loaded.exports[task.handlerExport] as ModuleTaskDefinition["handler"],
+        queueAffinity: task.queueAffinity,
       })),
     );
   }

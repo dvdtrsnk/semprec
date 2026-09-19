@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createAgentRun, insertAgentRunEvent } from "@semprec/data";
@@ -9,6 +10,14 @@ import type { AgentMessage, ConversationEntry } from "../types.js";
 let pool: Pool;
 
 const PROJECT_ITEM_ID = "99999999-9999-9999-9999-999999999999";
+
+async function createUser(): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
+    [`${randomUUID()}@example.com`],
+  );
+  return rows[0]!.id;
+}
 
 /** Never triggers compaction — `shouldCompact` always false. */
 const noopCompaction: CompactionAdapter = {
@@ -47,6 +56,7 @@ describe("reconstructConversationHistory", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    await createUser();
   });
 
   afterAll(async () => {

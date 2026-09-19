@@ -34,6 +34,7 @@ import {
 import type { ClassifiedAttachment } from "../mail/attachments.js";
 import { sanitizeMailHtml } from "../mail/htmlSanitize.js";
 import { parseMailSearchQuery, reindexItemSearch, searchItems } from "../mail/search.js";
+import { ValidationError } from "../errors.js";
 import { storeCredential, getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import { reconcileImapAccount, type ImapFetchedMessage, type ImapMailClient } from "../mail/imapReconcile.js";
 import { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
@@ -867,6 +868,45 @@ describe("full-text search over Emails (issue #26)", () => {
       expect(parseMailSearchQuery("just some words")).toEqual({ freeText: "just some words" });
     });
 
+    it("is:read/is:unread and is:flagged/is:unflagged parse into independent boolean dimensions", () => {
+      expect(parseMailSearchQuery("invoice is:unread is:unflagged")).toEqual({
+        freeText: "invoice",
+        read: false,
+        flagged: false,
+      });
+      expect(parseMailSearchQuery("is:read is:flagged")).toEqual({ freeText: "", read: true, flagged: true });
+    });
+
+    it("identical repeated is: operators collapse instead of conflicting", () => {
+      expect(parseMailSearchQuery("is:unread is:unread")).toEqual({ freeText: "", read: false });
+      expect(parseMailSearchQuery("is:flagged is:flagged")).toEqual({ freeText: "", flagged: true });
+    });
+
+    it("an unrecognized is: value is left in free text rather than silently discarded", () => {
+      expect(parseMailSearchQuery("invoice is:spam")).toEqual({ freeText: "invoice is:spam" });
+    });
+
+    it("is:read is:unread fails as a contradictory validation error", () => {
+      expect(() => parseMailSearchQuery("is:read is:unread")).toThrow(ValidationError);
+      try {
+        parseMailSearchQuery("is:read is:unread");
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(ValidationError);
+        expect((err as ValidationError).details).toEqual({ field: "is:read", conflict: ["read", "unread"] });
+      }
+    });
+
+    it("is:flagged is:unflagged fails as a contradictory validation error", () => {
+      try {
+        parseMailSearchQuery("is:flagged is:unflagged");
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(ValidationError);
+        expect((err as ValidationError).details).toEqual({ field: "is:flagged", conflict: ["flagged", "unflagged"] });
+      }
+    });
+
     it("from: filters by the sender display text", async () => {
       const emailsId = await databaseIdFor("emails");
       const foldersId = await databaseIdFor("folders");
@@ -914,6 +954,64 @@ describe("full-text search over Emails (issue #26)", () => {
 
       const results = await searchItems(pool, { databaseId: emailsId, query: "report from:alice@x.com" });
       expect(results.map((r) => r.itemId)).toEqual([fromAlice.itemId]);
+    });
+
+    it("is:read/is:unread and is:flagged/is:unflagged filter on the canonical structured properties (issue #90)", async () => {
+      const emailsId = await databaseIdFor("emails");
+      const foldersId = await databaseIdFor("folders");
+      const filesId = await databaseIdFor("files");
+      const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+      const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+      const folder = await withTransaction(pool, (client) =>
+        createItemWithClient(
+          client,
+          { databaseId: foldersId, properties: { name: "INBOX" } },
+          { allowedSystemKeys: ["name"] },
+        ),
+      );
+
+      const ingest = (messageId: string, flags: string[] | undefined) =>
+        withTransaction(pool, (client) =>
+          ingestEmailMessage(client, {
+            emailsDatabaseId: emailsId,
+            filesDatabaseId: filesId,
+            folderRelationPropertyId: folderProperty.id,
+            attachmentsRelationPropertyId: attachmentsProperty.id,
+            folderItemId: folder.id,
+            messageId,
+            subject: "Report",
+            envelope: { from: { address: "alice@x.com" } },
+            attachments: [],
+            storage: noopStorage,
+            storageKeyPrefix: "test",
+            flags,
+          }),
+        );
+
+      // Legacy row: no flags reported at ingest at all, the documented default is unread/unflagged.
+      const legacy = await ingest("<legacy@x>", undefined);
+      const readOnly = await ingest("<read@x>", [IMAP_SEEN_FLAG]);
+      const flaggedOnly = await ingest("<flagged@x>", [IMAP_FLAGGED_FLAG]);
+      const readAndFlagged = await ingest("<both@x>", [IMAP_SEEN_FLAG, IMAP_FLAGGED_FLAG]);
+
+      const unread = await searchItems(pool, { databaseId: emailsId, query: "report is:unread" });
+      expect(unread.map((r) => r.itemId).sort()).toEqual([flaggedOnly.itemId, legacy.itemId].sort());
+
+      const read = await searchItems(pool, { databaseId: emailsId, query: "report is:read" });
+      expect(read.map((r) => r.itemId).sort()).toEqual([readAndFlagged.itemId, readOnly.itemId].sort());
+
+      const unflagged = await searchItems(pool, { databaseId: emailsId, query: "report is:unflagged" });
+      expect(unflagged.map((r) => r.itemId).sort()).toEqual([legacy.itemId, readOnly.itemId].sort());
+
+      const flagged = await searchItems(pool, { databaseId: emailsId, query: "report is:flagged" });
+      expect(flagged.map((r) => r.itemId).sort()).toEqual([flaggedOnly.itemId, readAndFlagged.itemId].sort());
+
+      // Read and flagged dimensions compose with AND, and with an unrelated existing operator (from:).
+      const readAndFlaggedQuery = await searchItems(pool, {
+        databaseId: emailsId,
+        query: "report is:read is:flagged from:alice@x.com",
+      });
+      expect(readAndFlaggedQuery.map((r) => r.itemId)).toEqual([readAndFlagged.itemId]);
     });
   });
 });
