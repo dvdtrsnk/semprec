@@ -4,6 +4,7 @@ import { runMigrations } from "./migrate.js";
 import { runDocHistoryCutoverMigration } from "../docs/docHistoryCutoverMigration.js";
 import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsActorUserIdCutoverMigration.js";
 import { runApprovalRequestExecutionStatusCutoverMigration } from "../mcp/approvalRequestExecutionStatusCutoverMigration.js";
+import { runHeartbeatFireQueueSplitMigration } from "../scheduler/heartbeatFireQueueSplitMigration.js";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -21,6 +22,9 @@ try {
   // invocation point, matching testSupport/globalSetup.ts's test-time call to the same two functions.
   await ensureQueueSchema(pool);
   await grantQueueSchemaPrivileges(pool);
+  // Issue #222: needs graphile_worker's own schema/functions, which don't exist until the two
+  // calls above create them — unlike the cutover migrations above, which run before them.
+  await runHeartbeatFireQueueSplitMigration(pool);
 } finally {
   await pool.end();
 }

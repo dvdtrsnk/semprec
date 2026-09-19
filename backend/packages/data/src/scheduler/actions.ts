@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { AGENT_TASK_NAMES, CORE_TASK_NAMES, type AgentTaskName, type CoreTaskName } from "@semprec/queue";
 import { withTraceContext } from "@semprec/shared";
 import { createAgentRun, finishAgentRun, finishAgentRunWithErrorNotification } from "../agentRuns/agentRunsStore.js";
 import { withTransaction } from "../db/pool.js";
@@ -84,3 +85,24 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
 }
 
 export const CORE_AGENT_RUN_ACTION_ID = "core.agentRun";
+
+/**
+ * Which of `heartbeatFire`'s two split task names (issue #222) a heartbeat action's fire job
+ * belongs on: `heartbeatFireAgent` for an action that starts or continues an agent session,
+ * `heartbeatFireCore` for every deterministic action (the default — including library
+ * processing, drift checks, and every other known core action id). `core.agentRun` is currently
+ * the only action id that starts/continues a session; a future one joins it here.
+ *
+ * Deliberately not validated against `KNOWN_HEARTBEAT_ACTION_IDS` (manifest/knownActionIds.ts):
+ * that catalog only covers real, module-registered actions, while tests register arbitrary ids
+ * (`"noop"`, `"markRan"`, ...) that must still resolve to a task name to enqueue onto. An
+ * unresolvable *heartbeat* (not action id) is a different failure mode, handled by the callers
+ * that already look one up (schedulerStore.ts, the legacy job migration).
+ */
+const AGENT_SESSION_ACTION_IDS: ReadonlySet<string> = new Set([CORE_AGENT_RUN_ACTION_ID]);
+
+export function resolveHeartbeatFireTaskName(actionId: string): CoreTaskName | AgentTaskName {
+  return AGENT_SESSION_ACTION_IDS.has(actionId)
+    ? AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT
+    : CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE;
+}

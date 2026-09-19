@@ -16,8 +16,9 @@ describe("CORE_TASK_AFFINITY", () => {
     expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.TRASH_PURGE]).toBe("api");
   });
 
-  it("keeps the transitional heartbeatFire entry at affinity 'api'", () => {
-    expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.HEARTBEAT_FIRE]).toBe("api");
+  it("declares heartbeatFireCore in the exhaustive API set", () => {
+    expect(CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE).toBe("heartbeatFireCore");
+    expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]).toBe("api");
   });
 
   it("declares docHistorySquash in the exhaustive API set", () => {

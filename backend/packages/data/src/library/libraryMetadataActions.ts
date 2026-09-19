@@ -26,7 +26,7 @@ const libraryMetadataActionConfigSchema = libraryMetadataJobConfigSchema.extend(
  * every caller of `createItem` — UI or AI, present or future — the same automation
  * hookup, with no special-cased second path (issue #25's "single path for adding an
  * item"). The action itself only seeds `item_automation` and enqueues the actual
- * `processLibraryMetadata` job; the outer heartbeatFire job's own retry is an
+ * `processLibraryMetadata` job; the outer heartbeatFireCore job's own retry is an
  * implementation detail underneath, not the retry policy the issue specifies (that one
  * belongs to the enqueued job itself — see libraryMetadataJob.ts).
  */

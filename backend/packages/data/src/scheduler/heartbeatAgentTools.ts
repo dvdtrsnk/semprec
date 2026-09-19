@@ -1,8 +1,9 @@
 import type { Pool } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { enqueueJob } from "@semprec/queue";
 import { getAgentRun, listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
 import { getHeartbeatForProject, listHeartbeatsByProject, manualHeartbeatFireJobKey } from "./schedulerStore.js";
+import { resolveHeartbeatFireTaskName } from "./actions.js";
 import { isOnItemEventRule, type HeartbeatRuleKindRegistry } from "./rule.js";
 
 export const HEARTBEAT_HISTORY_DEFAULT_LIMIT = 10;
@@ -185,7 +186,7 @@ export function createHeartbeatTriggerTool(
 
     await enqueueJob(
       pool,
-      CORE_TASK_NAMES.HEARTBEAT_FIRE,
+      resolveHeartbeatFireTaskName(heartbeat.actionId),
       { heartbeatId: heartbeat.id, triggeredByRunId: currentRunId },
       { jobKey: manualHeartbeatFireJobKey(heartbeat.id), maxAttempts: 3 },
     );

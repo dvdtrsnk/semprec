@@ -27,10 +27,11 @@ export type QueueJobEnvelope = z.infer<typeof queueJobEnvelopeSchema>;
  */
 export const CORE_TASK_NAMES = {
   HEARTBEAT_SWEEP: "heartbeatSweep",
-  HEARTBEAT_FIRE: "heartbeatFire",
-  // Issue #221/#222: the API-runtime half of `heartbeatFire`'s split — declared here so the
-  // affinity catalog is complete, but its handler, enqueue routing, and the legacy job
-  // migration off `heartbeatFire` are delivered by #222.
+  // Issue #222: the API-runtime half of `heartbeatFire`'s split for every deterministic
+  // heartbeat action (including library processing); the agent-session half is
+  // `AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT`. The legacy `heartbeatFire` name is gone —
+  // #222's install migration re-enqueues every pending legacy job under the correct one of
+  // these two before the old handler is removed.
   HEARTBEAT_FIRE_CORE: "heartbeatFireCore",
   ROLLUP_RECOMPUTE: "rollupRecompute",
   ROLLUP_RECOMPUTE_FULL: "rollupRecomputeFull",
@@ -79,11 +80,9 @@ export type TaskAffinity = (typeof TASK_AFFINITIES)[number];
  * Every `CORE_TASK_NAMES` entry's runtime affinity — the exhaustive API-set data issue #221
  * requires, keyed by task name rather than folded into `CORE_TASK_NAMES` itself so every
  * existing `CORE_TASK_NAMES.X` reference across the codebase keeps working unchanged.
- * `heartbeatFire` stays `'api'` as a transitional entry (#222 removes it once the split lands).
  */
 export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: "api",
-  [CORE_TASK_NAMES.HEARTBEAT_FIRE]: "api",
   [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: "api",
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: "api",
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE_FULL]: "api",
@@ -106,9 +105,9 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
 
 /**
  * The closed set of task names the agents runtime (issue #91's second composition root) may
- * run. `heartbeatFireAgent` is declared here (its handler and enqueue routing ship with #222)
- * alongside `agentRun`/`delegatedAgentRun`, whose handlers ship with #91 — this issue only
- * closes the name catalog.
+ * run. `heartbeatFireAgent`'s handler and enqueue routing ship with #222, for the one heartbeat
+ * action (`core.agentRun`) that starts or continues an agent session; `agentRun`/
+ * `delegatedAgentRun`'s handlers ship with #91 — this issue only closes the name catalog for them.
  */
 export const AGENT_TASK_NAMES = {
   HEARTBEAT_FIRE_AGENT: "heartbeatFireAgent",

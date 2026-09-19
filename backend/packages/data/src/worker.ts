@@ -1,8 +1,12 @@
 import type { Pool } from "pg";
-import { CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
+import { AGENT_TASK_NAMES, CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
 import { withTraceContext } from "@semprec/shared";
 import type { ModuleRegistry } from "@semprec/module-registry";
-import { handleHeartbeatSweepTask, createHeartbeatFireTask } from "./scheduler/sweep.js";
+import {
+  handleHeartbeatSweepTask,
+  createHeartbeatFireCoreTask,
+  createHeartbeatFireAgentTask,
+} from "./scheduler/sweep.js";
 import { handleRollupRecomputeTask, handleRollupRecomputeFullTask } from "./rollup/recompute.js";
 import { handleJournalInboxRecomputeTask } from "./inbox/journalInboxCompute.js";
 import { handlePropertyTypeMigrationTask } from "./migrationJob/propertyTypeMigration.js";
@@ -106,7 +110,10 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {
       await handleHeartbeatSweepTask(pool, moduleRegistry);
     },
-    [CORE_TASK_NAMES.HEARTBEAT_FIRE]: createHeartbeatFireTask(pool, actionRegistry, moduleRegistry),
+    // Issue #222: both split handlers run in this single-process test/dev task list until a
+    // future issue (#91) hosts them under their own separate api/agents composition roots.
+    [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: createHeartbeatFireCoreTask(pool, actionRegistry, moduleRegistry),
+    [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: createHeartbeatFireAgentTask(pool, actionRegistry, moduleRegistry),
     [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: async (payload) => {
       await handleRollupRecomputeTask(pool, {
         rollupPropertyId: requireString(payload, "rollupPropertyId"),

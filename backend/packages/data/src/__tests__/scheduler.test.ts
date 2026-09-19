@@ -17,7 +17,7 @@ import {
 } from "../scheduler/schedulerStore.js";
 import { createActionRegistry, CORE_AGENT_RUN_ACTION_ID, coreAgentRunAction } from "../scheduler/actions.js";
 import { createCoreTaskList } from "../worker.js";
-import { createHeartbeatFireTask } from "../scheduler/sweep.js";
+import { createHeartbeatFireCoreTask } from "../scheduler/sweep.js";
 import { getSystemSettingsItemId } from "../systemSettings.js";
 import { createAgentRun, listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
 import { createHeartbeatTriggerTool } from "../scheduler/heartbeatAgentTools.js";
@@ -685,9 +685,9 @@ describe("scheduler", () => {
     expect(ran).toBe(1);
   });
 
-  it("createHeartbeatFireTask rejects a payload carrying zero or more than one of occurrenceId/itemId/triggeredByRunId with validation_failed", async () => {
+  it("createHeartbeatFireCoreTask rejects a payload carrying zero or more than one of occurrenceId/itemId/triggeredByRunId with validation_failed", async () => {
     const registry = createActionRegistry();
-    const task = createHeartbeatFireTask(pool, registry);
+    const task = createHeartbeatFireCoreTask(pool, registry);
     const helpers = { job: { attempts: 1, max_attempts: 3 } } as Parameters<typeof task>[1];
 
     await expect(task({ heartbeatId: "h1" }, helpers)).rejects.toMatchObject({ code: "validation_failed" });
@@ -716,7 +716,7 @@ describe("scheduler", () => {
       throw new Error("boom");
     });
 
-    const task = createHeartbeatFireTask(pool, registry);
+    const task = createHeartbeatFireCoreTask(pool, registry);
     const finalAttemptHelpers = (jobId: string) =>
       ({ job: { id: jobId, attempts: 3, max_attempts: 3 } }) as Parameters<typeof task>[1];
 

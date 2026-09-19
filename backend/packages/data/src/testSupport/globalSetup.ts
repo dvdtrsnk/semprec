@@ -9,6 +9,7 @@ import { runMigrations } from "../db/migrate.js";
 import { runDocHistoryCutoverMigration } from "../docs/docHistoryCutoverMigration.js";
 import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsActorUserIdCutoverMigration.js";
 import { runApprovalRequestExecutionStatusCutoverMigration } from "../mcp/approvalRequestExecutionStatusCutoverMigration.js";
+import { runHeartbeatFireQueueSplitMigration } from "../scheduler/heartbeatFireQueueSplitMigration.js";
 
 /**
  * A fixed port made any second test run on the same machine fail in a way that reads like a
@@ -71,6 +72,7 @@ export default async function setup(): Promise<() => Promise<void>> {
   await runApprovalRequestExecutionStatusCutoverMigration(pool);
   await ensureQueueSchema(pool);
   await grantQueueSchemaPrivileges(pool);
+  await runHeartbeatFireQueueSplitMigration(pool);
   await pool.end();
 
   return async () => {
