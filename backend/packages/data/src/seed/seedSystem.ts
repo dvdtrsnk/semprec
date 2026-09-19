@@ -15,6 +15,11 @@ import { registerLibraryGridViewType } from "../views/libraryGridViewType.js";
 import { registerMailboxClientViewType } from "../views/mailboxClientViewType.js";
 import { registerJournalInboxViewType } from "../views/journalInboxViewType.js";
 import { JOURNAL_INBOX_COMPUTED_KEY } from "../inbox/journalInboxCompute.js";
+import {
+  TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
+  TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
+} from "../transcription/transcriptionComputedKeys.js";
+import { FILES_TRANSCRIPTION_TRIGGER_ACTION_ID } from "../transcription/transcriptionActions.js";
 import { seedTenDatabasesInTransaction } from "./seedTenDatabases.js";
 import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
 import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
@@ -68,6 +73,10 @@ export async function seedSystem(
   // seedInboxPipelineInTransaction, which the idempotency early-return below skips after
   // the first run.
   computedKeyRegistry.add(JOURNAL_INBOX_COMPUTED_KEY);
+  // Same reasoning again (issue #180's Transcripts computed keys): reserved against
+  // collision on every startup, not only the one-time DB seed.
+  computedKeyRegistry.add(TRANSCRIPT_SEGMENTS_COMPUTED_KEY);
+  computedKeyRegistry.add(TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY);
 
   // The systemDatabases module is always active for this seed: it's the retrofit manifest
   // (module-contract issue #226) describing the ten hardcoded databases this function itself
@@ -197,7 +206,7 @@ export async function seedSystem(
     // Mailboxes/Folders/Emails (issue #26): the IMAP sync core's schema and deterministic
     // People-linking wiring. Order relative to the library module doesn't matter — both only
     // depend on the ten databases above.
-    await seedEmailModuleInTransaction(
+    const emailModuleResult = await seedEmailModuleInTransaction(
       client,
       projectsDb.id,
       tenDatabases.people.id,
@@ -205,6 +214,29 @@ export async function seedSystem(
       computedKeyRegistry,
       viewTypeRegistry,
     );
+
+    // Files transcription trigger (issue #180): fires on every Files item creation, but only
+    // enqueues a transcription job for a standalone `audio/*` file with no Emails.attachments
+    // edge (see transcriptionActions.ts) — needs the attachments relation's property id, which
+    // only exists once seedEmailModuleInTransaction above has created it.
+    const attachmentsProperty = await propertiesStore.getPropertyByKey(
+      client,
+      emailModuleResult.emails.id,
+      emailModuleResult.attachmentsRelationKey,
+    );
+    if (!attachmentsProperty) {
+      throw new Error("Emails.attachments property not found after seedEmailModuleInTransaction");
+    }
+    await createHeartbeat(client, {
+      projectItemId: semprecProject.id,
+      name: "Files transcription trigger",
+      rule: { kind: "onItemEvent", databaseId: tenDatabases.files.id, event: "create" },
+      actionId: FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
+      actionConfig: {
+        filesDatabaseId: tenDatabases.files.id,
+        attachmentsRelationPropertyId: attachmentsProperty.id,
+      },
+    });
 
     // Inbox / Inbox item types / Processing proposals (issue #101): the three databases
     // issue #24's ten hardcoded databases deliberately exclude. Order relative to the
