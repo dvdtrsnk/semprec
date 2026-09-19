@@ -3,7 +3,6 @@ import { z } from "zod";
 import { createRelationWithClient } from "../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
-import { getRelationDefinitionByPropertyId } from "../chokePoint/relationsStore.js";
 import type { ItemRelationRow } from "../types.js";
 import { NotFoundError } from "../errors.js";
 import { PEOPLE_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
@@ -20,12 +19,9 @@ export const speakerEdgeMetadataSchema = z.object({ speaker: z.string().min(1) }
 export type SpeakerEdgeMetadata = z.infer<typeof speakerEdgeMetadataSchema>;
 
 /**
- * Looks up the `speakers` relation property on Transcripts by key, shared by
- * `getSpeakersRelationDefinitionId` and `writeTranscriptSpeakerEdge` (the latter needs the
- * property id itself, not its relation definition, to call the choke-point's
- * `createRelationWithClient`). Throws rather than returning `null`: every caller already
- * assumes the catalog migration has run (same assumption `enqueueTranscriptionJob`'s callers
- * make about the job queue existing).
+ * Looks up the `speakers` relation property on Transcripts by key. Throws rather than
+ * returning `null`: every caller already assumes the catalog migration has run (same
+ * assumption `enqueueTranscriptionJob`'s callers make about the job queue existing).
  */
 async function getSpeakersProperty(client: PoolClient, transcriptsDatabaseId: string): Promise<{ id: string }> {
   const { rows } = await client.query<{ id: string }>(
@@ -35,20 +31,6 @@ async function getSpeakersProperty(client: PoolClient, transcriptsDatabaseId: st
   const speakersProperty = rows[0];
   if (!speakersProperty) throw new NotFoundError(`'speakers' property not found on Transcripts`);
   return speakersProperty;
-}
-
-/**
- * Looks up the `speakers` relation definition id, mirroring
- * `transcriptsCatalogCutoverMigration.ts`'s own property-then-relation lookup shape.
- */
-export async function getSpeakersRelationDefinitionId(client: PoolClient): Promise<string> {
-  const transcripts = await getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);
-  if (!transcripts) throw new NotFoundError(`Database for module '${TRANSCRIPTS_MODULE_ID}' not found`);
-
-  const speakersProperty = await getSpeakersProperty(client, transcripts.id);
-  const definition = await getRelationDefinitionByPropertyId(client, speakersProperty.id);
-  if (!definition) throw new NotFoundError(`Relation definition for 'speakers' property not found`);
-  return definition.id;
 }
 
 /**

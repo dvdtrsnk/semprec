@@ -6,7 +6,7 @@ import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
 import { createItemWithClient } from "../../chokePoint/chokePoint.js";
 import { NotFoundError } from "../../errors.js";
-import { getSpeakersRelationDefinitionId, writeTranscriptSpeakerEdge } from "../transcriptionSpeakerEdges.js";
+import { writeTranscriptSpeakerEdge } from "../transcriptionSpeakerEdges.js";
 
 let pool: Pool;
 
@@ -47,11 +47,6 @@ describe("writeTranscriptSpeakerEdge (issue #180)", () => {
     );
     return item.id;
   }
-
-  it("resolves the speakers relation definition seeded by seedTenDatabases.ts", async () => {
-    const relationDefinitionId = await withTransaction(pool, (client) => getSpeakersRelationDefinitionId(client));
-    expect(typeof relationDefinitionId).toBe("string");
-  });
 
   it("writes a valid {speaker} edge between a Transcripts item and a People item", async () => {
     const transcriptItemId = await createTranscriptItem();
