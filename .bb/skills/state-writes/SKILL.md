@@ -44,6 +44,16 @@ Every piece of state has exactly one owning process (the module contract's
 If a feature seems to need a second writer, the answer is an explicit ownership
 handoff in the module contract, not a quiet extra `UPDATE`.
 
+A derived `owner: 'system'` field that must always reflect other properties on the
+same item (e.g. Tasks' `time`, computed from `timeFrom`/`timeTo`) is computed
+inline inside the choke-point's create/update path, keyed off the database's
+`ownerModuleId`, in the same transaction as the write that changed its inputs —
+not via a second writer reacting after the fact. This is distinct from the
+`allowedSystemKeys` escape hatch (which only relaxes the permission check for a
+caller that already computed the value); a derived field needs the value computed
+automatically regardless of caller. See
+`docs/adr/2026-09-19-derived-system-properties-computed-inline-at-choke-point.md`.
+
 ## 3. Agent code proposes, humans (or grants) confirm
 
 AI/agent code never writes state directly. An agent-originated change is a
