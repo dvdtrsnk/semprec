@@ -44,6 +44,7 @@ import { handleNotificationFanoutTask } from "./notifications/notificationFanout
 import type { PushSenders } from "./push/pushSenders.js";
 import { handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
 import { handleObservabilityCheckSystemTask } from "./observability/observabilityCheckSystem.js";
+import { handleTranscriptionJobTask } from "./transcription/transcriptionJob.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -201,6 +202,9 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: async (_payload, taskHelpers) => {
       await handleObservabilityCheckSystemTask(pool, { job: { id: taskHelpers.job.id } });
+    },
+    [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: async (payload) => {
+      await handleTranscriptionJobTask(payload);
     },
     // Issue #221 declared this name in the closed API affinity set ("handler and enqueue routing
     // are delivered later") but nothing enqueues it yet — no crontab line, no producer. A no-op
