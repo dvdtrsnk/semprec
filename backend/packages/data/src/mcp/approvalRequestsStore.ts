@@ -1,5 +1,5 @@
 import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
-import { assertKnownValue } from "../dbRowValidation.js";
+import { assertKnownValue, assertShape } from "../dbRowValidation.js";
 
 export type ApprovalRequestStatus = "pending" | "approved" | "rejected";
 
@@ -115,6 +115,18 @@ interface ApprovalRequestRow {
   execution_result_jsonb: unknown;
 }
 
+function assertResourceSnapshotShape(value: ApprovalResourceSnapshot): ApprovalResourceSnapshot {
+  assertShape(
+    typeof value === "object" &&
+      value !== null &&
+      typeof value.kind === "string" &&
+      typeof value.resourceId === "string" &&
+      (value.sha256 === null || typeof value.sha256 === "string"),
+    "resource_snapshot",
+  );
+  return value;
+}
+
 function rowToApprovalRequest(row: ApprovalRequestRow): ApprovalRequest {
   return {
     id: row.id,
@@ -126,7 +138,7 @@ function rowToApprovalRequest(row: ApprovalRequestRow): ApprovalRequest {
     requestedAt: row.requested_at,
     decidedAt: row.decided_at,
     decidedBy: row.decided_by,
-    resourceSnapshot: row.resource_snapshot,
+    resourceSnapshot: assertResourceSnapshotShape(row.resource_snapshot),
     executionStatus: assertKnownValue(APPROVAL_REQUEST_EXECUTION_STATUSES, row.execution_status, "execution_status"),
     executedAt: row.executed_at,
     executionError: row.execution_error,
