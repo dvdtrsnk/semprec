@@ -4,22 +4,17 @@ import {
   type TranscriptionRequest,
   type TranscriptionResult,
 } from "./types.js";
+import { readJsonBodyWithSizeCap } from "./httpUtils.js";
 
 const DEEPINFRA_TRANSCRIPTIONS_URL = "https://api.deepinfra.com/v1/openai/audio/transcriptions";
 const MAX_RESPONSE_BODY_BYTES = 10 * 1024 * 1024;
-
-type DeepInfraResponse = { text?: unknown; language?: unknown; segments?: unknown };
-
-function isDeepInfraResponse(value: unknown): value is DeepInfraResponse {
-  return typeof value === "object" && value !== null;
-}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
 function parseResponse(value: unknown): TranscriptionResult {
-  if (!isDeepInfraResponse(value) || typeof value.text !== "string") {
+  if (!isObject(value) || typeof value.text !== "string") {
     throw new AudioProviderCallError("DeepInfra response did not match the expected shape");
   }
   if (value.language !== undefined && typeof value.language !== "string") {
@@ -42,28 +37,6 @@ function parseResponse(value: unknown): TranscriptionResult {
     return { start: segment.start, end: segment.end, text: segment.text };
   });
   return { text: value.text, language: value.language ?? null, segments };
-}
-
-async function readJsonBodyWithSizeCap(res: Response): Promise<unknown> {
-  const reader = res.body?.getReader();
-  if (!reader) throw new AudioProviderCallError("DeepInfra response body stream was unavailable");
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > MAX_RESPONSE_BODY_BYTES) {
-      await reader.cancel();
-      throw new AudioProviderCallError("DeepInfra response body exceeded the maximum allowed size");
-    }
-    chunks.push(value);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8"));
-  } catch {
-    throw new AudioProviderCallError("DeepInfra response body was not valid JSON");
-  }
 }
 
 /** DeepInfra's OpenAI-compatible Whisper large-v3 adapter. */
@@ -93,7 +66,7 @@ export function createDeepInfraWhisperProvider(apiKey: string): TranscriptionPro
         );
       }
       if (!res.ok) throw new AudioProviderCallError(`DeepInfra responded with HTTP ${res.status}`);
-      return parseResponse(await readJsonBodyWithSizeCap(res));
+      return parseResponse(await readJsonBodyWithSizeCap(res, "DeepInfra", MAX_RESPONSE_BODY_BYTES));
     },
   };
 }

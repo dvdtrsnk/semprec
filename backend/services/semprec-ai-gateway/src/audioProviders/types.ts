@@ -12,6 +12,7 @@ export interface DiarizationRequest {
 
 export interface DiarizationProvider {
   readonly id: string;
+  readonly model: string;
   diarize(request: DiarizationRequest): Promise<DiarizationTurn[]>;
 }
 
