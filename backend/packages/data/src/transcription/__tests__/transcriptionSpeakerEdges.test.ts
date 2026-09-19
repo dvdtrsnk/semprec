@@ -88,4 +88,18 @@ describe("writeTranscriptSpeakerEdge (issue #180)", () => {
       ),
     ).rejects.toThrow(NotFoundError);
   });
+
+  it("rejects a transcriptItemId that doesn't exist in Transcripts", async () => {
+    const personItemId = await createPersonItem();
+
+    await expect(
+      withTransaction(pool, (client) =>
+        writeTranscriptSpeakerEdge(client, {
+          transcriptItemId: "00000000-0000-0000-0000-000000000000",
+          personItemId,
+          speaker: "SPEAKER_00",
+        }),
+      ),
+    ).rejects.toThrow(NotFoundError);
+  });
 });
