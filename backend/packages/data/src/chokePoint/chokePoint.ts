@@ -40,6 +40,8 @@ import { getSystemSettingsItemId } from "../systemSettings.js";
 import { createComputedKeyRegistry, type ComputedKeyRegistry } from "./computedKeyRegistry.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "./viewTypeRegistry.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { deriveTaskTime } from "../tasks/deriveTaskTime.js";
 
 interface AssertWritablePropertiesOptions {
   /**
@@ -523,9 +525,23 @@ export async function createItemWithClient(
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   assertWritableProperties(properties, Object.keys(input.properties ?? {}), options);
 
+  const database = await databasesStore.getDatabase(client, input.databaseId);
+  if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
+  const inputProperties = input.properties ?? {};
+  const itemProperties =
+    database.ownerModuleId === TASKS_MODULE_ID
+      ? {
+          ...inputProperties,
+          time: deriveTaskTime(
+            typeof inputProperties.timeFrom === "string" ? inputProperties.timeFrom : null,
+            typeof inputProperties.timeTo === "string" ? inputProperties.timeTo : null,
+          ),
+        }
+      : inputProperties;
+
   const item = await itemsStore.insertItem(client, {
     databaseId: input.databaseId,
-    properties: input.properties ?? {},
+    properties: itemProperties,
     idempotencyKey: input.idempotencyKey,
   });
   await triggerOnItemEventHeartbeats(client, input.databaseId, "create", item.id, options.queueAffinity);
@@ -574,10 +590,34 @@ export async function updateItemWithClient(
   const patchKeys = Object.keys(input.propertiesPatch);
   assertWritableProperties(properties, patchKeys, options);
 
+  const database = await databasesStore.getDatabase(client, input.databaseId);
+  if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
+  let propertiesPatch = input.propertiesPatch;
+  if (
+    database.ownerModuleId === TASKS_MODULE_ID &&
+    (Object.hasOwn(input.propertiesPatch, "timeFrom") || Object.hasOwn(input.propertiesPatch, "timeTo"))
+  ) {
+    const current = await itemsStore.lockItemById(client, input.databaseId, input.itemId);
+    if (!current || current.deletedAt) throw new NotFoundError(`Item ${input.itemId} not found`);
+    const effectiveTimeFrom = Object.hasOwn(input.propertiesPatch, "timeFrom")
+      ? input.propertiesPatch.timeFrom
+      : current.properties.timeFrom;
+    const effectiveTimeTo = Object.hasOwn(input.propertiesPatch, "timeTo")
+      ? input.propertiesPatch.timeTo
+      : current.properties.timeTo;
+    propertiesPatch = {
+      ...input.propertiesPatch,
+      time: deriveTaskTime(
+        typeof effectiveTimeFrom === "string" ? effectiveTimeFrom : null,
+        typeof effectiveTimeTo === "string" ? effectiveTimeTo : null,
+      ),
+    };
+  }
+
   const item = await itemsStore.updateItemProperties(client, {
     databaseId: input.databaseId,
     itemId: input.itemId,
-    propertiesPatch: input.propertiesPatch,
+    propertiesPatch,
     ifVersion: input.ifVersion,
   });
   await triggerOnItemEventHeartbeats(client, input.databaseId, "update", item.id, options.queueAffinity);

@@ -91,6 +91,7 @@ export * from "./observability/systemHealthReport.js";
 export { seedSystem } from "./seed/seedSystem.js";
 export * from "./seed/tenDatabaseKeys.js";
 export { seedTenDatabasesInTransaction, type TenDatabases } from "./seed/seedTenDatabases.js";
+export { deriveTaskTime, backfillTaskTimeProperties } from "./tasks/deriveTaskTime.js";
 export { manifest as systemDatabasesModuleManifest } from "./seed/systemDatabasesModuleManifest.js";
 export * from "./systemSettings.js";
 export { createCoreTaskList, CORE_CRONTAB } from "./worker.js";
