@@ -18,6 +18,6 @@ export function backfillTaskTimeProperties(properties: Record<string, unknown>):
   const timeFrom = typeof properties.timeFrom === "string" ? properties.timeFrom : null;
   const timeTo = typeof properties.timeTo === "string" ? properties.timeTo : null;
   const time = deriveTaskTime(timeFrom, timeTo);
-  if (properties.time === time) return properties;
+  if ((properties.time ?? null) === time) return properties;
   return { ...properties, time };
 }

@@ -41,8 +41,7 @@ import { createActionQueueAffinity, type ActionQueueAffinity } from "../schedule
 import { getSystemSettingsItemId } from "../systemSettings.js";
 import { createComputedKeyRegistry, type ComputedKeyRegistry } from "./computedKeyRegistry.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "./viewTypeRegistry.js";
-import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
-import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { PROJECTS_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { deriveTaskTime } from "../tasks/deriveTaskTime.js";
 
 interface AssertWritablePropertiesOptions {
@@ -530,6 +529,8 @@ export async function createItemWithClient(
   const database = await databasesStore.getDatabase(client, input.databaseId);
   if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
   const inputProperties = input.properties ?? {};
+  // Ownership-keyed derived property, distinct from the allowedSystemKeys escape hatch above —
+  // see docs/adr/2026-09-19-derived-system-properties-computed-inline-at-choke-point.md.
   const itemProperties =
     database.ownerModuleId === TASKS_MODULE_ID
       ? {
@@ -595,6 +596,8 @@ export async function updateItemWithClient(
   const database = await databasesStore.getDatabase(client, input.databaseId);
   if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
   let propertiesPatch = input.propertiesPatch;
+  // Same ownership-keyed derivation as createItemWithClient above — see
+  // docs/adr/2026-09-19-derived-system-properties-computed-inline-at-choke-point.md.
   if (
     database.ownerModuleId === TASKS_MODULE_ID &&
     (Object.hasOwn(input.propertiesPatch, "timeFrom") || Object.hasOwn(input.propertiesPatch, "timeTo"))
