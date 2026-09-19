@@ -1,4 +1,6 @@
 import type { Queryable } from "../db/pool.js";
+import { ValidationError } from "../errors.js";
+import { FLAGGED_PROPERTY_KEY, READ_PROPERTY_KEY } from "./messageFlags.js";
 
 /**
  * Full-text search over synced message content (issue #26's scope: Emails only — the
@@ -64,13 +66,10 @@ export interface SearchItemsResultRow {
 
 /**
  * A thin layer of Gmail-style search operators over the free-text query (issue #26):
- * `from:`, `has:attachment`, `before:`/`after:` become structured `WHERE` conditions;
- * everything else is the free-text remainder handed to `websearch_to_tsquery`. `is:unread`
- * is deliberately not parsed here — there is no read/flags property anywhere in this issue's
- * Emails schema to filter on (that property, and the sync direction that would write it,
- * belongs to whichever issue adds a "mark as read" UI action) — an `is:unread` token is left
- * in the free text rather than silently doing nothing, which is at least visible to the user
- * as a literal non-match instead of a filter that looks like it did something.
+ * `from:`, `has:attachment`, `before:`/`after:`, and `is:read`/`is:unread`/`is:flagged`/
+ * `is:unflagged` become structured `WHERE` conditions; everything else is the free-text
+ * remainder handed to `websearch_to_tsquery`. The `is:` operators compile over #97's
+ * canonical `read`/`flagged` boolean properties (issue #90) — never into full text.
  */
 export interface ParsedMailSearchQuery {
   freeText: string;
@@ -78,9 +77,48 @@ export interface ParsedMailSearchQuery {
   hasAttachment?: boolean;
   before?: string;
   after?: string;
+  read?: boolean;
+  flagged?: boolean;
 }
 
-const OPERATOR_PATTERN = /\b(from|has|before|after):(\S+)/gi;
+const OPERATOR_PATTERN = /\b(from|has|before|after|is):(\S+)/gi;
+
+/**
+ * `is:read`/`is:unread` and `is:flagged`/`is:unflagged` are each a single independent
+ * boolean dimension: identical repeats collapse (`is:unread is:unread` is just `unread`),
+ * but the two values of the same dimension contradict each other and fail predictably
+ * (issue #90) rather than silently picking one or returning arbitrary results.
+ */
+function applyIsOperator(parsed: ParsedMailSearchQuery, value: string): void {
+  switch (value.toLowerCase()) {
+    case "read":
+    case "unread": {
+      const next = value.toLowerCase() === "read";
+      if (parsed.read !== undefined && parsed.read !== next) {
+        throw new ValidationError("Contradictory is:read/is:unread search operators", {
+          field: "is:read",
+          conflict: ["read", "unread"],
+        });
+      }
+      parsed.read = next;
+      return;
+    }
+    case "flagged":
+    case "unflagged": {
+      const next = value.toLowerCase() === "flagged";
+      if (parsed.flagged !== undefined && parsed.flagged !== next) {
+        throw new ValidationError("Contradictory is:flagged/is:unflagged search operators", {
+          field: "is:flagged",
+          conflict: ["flagged", "unflagged"],
+        });
+      }
+      parsed.flagged = next;
+      return;
+    }
+    default:
+      return;
+  }
+}
 
 export function parseMailSearchQuery(query: string): ParsedMailSearchQuery {
   const parsed: ParsedMailSearchQuery = { freeText: "" };
@@ -98,6 +136,9 @@ export function parseMailSearchQuery(query: string): ParsedMailSearchQuery {
           return "";
         case "after":
           parsed.after = value;
+          return "";
+        case "is":
+          applyIsOperator(parsed, value);
           return "";
         default:
           return _match;
@@ -144,6 +185,14 @@ export async function searchItems(client: Queryable, input: SearchItemsInput): P
   }
   if (parsed.hasAttachment) {
     conditions.push(`EXISTS (SELECT 1 FROM mail_attachments a WHERE a.message_item_id = s.item_id)`);
+  }
+  if (parsed.read !== undefined) {
+    params.push(parsed.read);
+    conditions.push(`coalesce((i.properties ->> '${READ_PROPERTY_KEY}')::boolean, false) = $${params.length}`);
+  }
+  if (parsed.flagged !== undefined) {
+    params.push(parsed.flagged);
+    conditions.push(`coalesce((i.properties ->> '${FLAGGED_PROPERTY_KEY}')::boolean, false) = $${params.length}`);
   }
 
   const rankWithRecency = `${rankExpr} * (1.0 / (1.0 + extract(epoch FROM now() - s.updated_at) / 86400.0 / 30.0))`;
