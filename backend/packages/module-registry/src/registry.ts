@@ -1,5 +1,10 @@
 import { loadModuleCatalogs, type ModuleCatalogs } from "./catalog.js";
-import { moduleManifestSchema, type CustomRouteMethod, type ModuleManifest } from "./manifest.js";
+import {
+  moduleManifestSchema,
+  type CustomRouteMethod,
+  type ModuleManifest,
+  type ModuleTaskAffinity,
+} from "./manifest.js";
 
 export interface ModuleDatabaseProjection {
   moduleId: string;
@@ -19,6 +24,7 @@ export interface ModuleTaskProjection {
   name: string;
   payloadSchemaExport: string;
   handlerExport: string;
+  queueAffinity: ModuleTaskAffinity;
 }
 
 export interface ModuleWorkerProjection {

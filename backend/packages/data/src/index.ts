@@ -94,7 +94,14 @@ export { seedTenDatabasesInTransaction, type TenDatabases } from "./seed/seedTen
 export { manifest as systemDatabasesModuleManifest } from "./seed/systemDatabasesModuleManifest.js";
 export * from "./systemSettings.js";
 export { createCoreTaskList, CORE_CRONTAB } from "./worker.js";
-export { mergeModuleTaskList, CORE_TASK_NAME_SET } from "./moduleTasks.js";
+export {
+  mergeModuleTaskList,
+  CORE_TASK_NAME_SET,
+  AGENT_TASK_NAME_SET,
+  RESERVED_TASK_NAMES,
+  resolveTaskAffinitySets,
+  type TaskAffinitySets,
+} from "./moduleTasks.js";
 export {
   deriveDesiredWorkerInstances,
   createModuleWorkerInstanceReconciler,

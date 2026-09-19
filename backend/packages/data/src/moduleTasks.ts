@@ -1,7 +1,47 @@
-import { CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
+import { AGENT_TASK_NAMES, CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
 import type { ModuleRegistry } from "@semprec/module-registry";
 
 export const CORE_TASK_NAME_SET: ReadonlySet<string> = new Set(Object.values(CORE_TASK_NAMES));
+
+/** The closed agents-runtime task-name catalog (issue #221), as a set for collision checks. */
+export const AGENT_TASK_NAME_SET: ReadonlySet<string> = new Set(Object.values(AGENT_TASK_NAMES));
+
+/**
+ * Every name a module task may never claim — the union of the core and agents catalogs. The
+ * shape `ModuleRegistry`'s `reservedTaskNames` option expects (issue #221).
+ */
+export const RESERVED_TASK_NAMES: ReadonlySet<string> = new Set([...CORE_TASK_NAME_SET, ...AGENT_TASK_NAME_SET]);
+
+export interface TaskAffinitySets {
+  /** Every task name the API runtime's composition root (#91) must register a handler for. */
+  api: ReadonlySet<string>;
+  /** Every task name the agents runtime's composition root (#91) must register a handler for. */
+  agents: ReadonlySet<string>;
+}
+
+/**
+ * Resolves the full runtime-affinity picture (issue #221): the closed core API/agents catalogs
+ * plus every active module task, partitioned by its manifest `queueAffinity`. #91's two
+ * composition roots call this before either reports readiness, to prove their own registered
+ * handler set matches the runtime they were started as.
+ *
+ * Throws if an active module task's name collides with a core/agent catalog name — defense in
+ * depth mirroring `mergeModuleTaskList`'s own guard below, in case a caller constructs
+ * `ModuleRegistry` without `reservedTaskNames: RESERVED_TASK_NAMES`. A module task can never
+ * land in both sets: its `queueAffinity` is a single mandatory enum value, not a list.
+ */
+export async function resolveTaskAffinitySets(moduleRegistry: ModuleRegistry): Promise<TaskAffinitySets> {
+  const api = new Set<string>(CORE_TASK_NAME_SET);
+  const agents = new Set<string>(AGENT_TASK_NAME_SET);
+  const moduleTasks = await moduleRegistry.getTasks();
+  for (const task of moduleTasks) {
+    if (api.has(task.name) || agents.has(task.name)) {
+      throw new Error(`Module "${task.moduleId}" task "${task.name}" collides with a core/agent task name`);
+    }
+    (task.queueAffinity === "api" ? api : agents).add(task.name);
+  }
+  return { api, agents };
+}
 
 /**
  * Merges core's task handlers with the currently active modules' registered tasks into one
