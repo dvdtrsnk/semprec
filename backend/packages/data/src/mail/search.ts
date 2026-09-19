@@ -87,9 +87,12 @@ const OPERATOR_PATTERN = /\b(from|has|before|after|is):(\S+)/gi;
  * `is:read`/`is:unread` and `is:flagged`/`is:unflagged` are each a single independent
  * boolean dimension: identical repeats collapse (`is:unread is:unread` is just `unread`),
  * but the two values of the same dimension contradict each other and fail predictably
- * (issue #90) rather than silently picking one or returning arbitrary results.
+ * (issue #90) rather than silently picking one or returning arbitrary results. An
+ * unrecognized `is:` value (e.g. `is:spam`) is left unhandled — the caller falls back to
+ * leaving the token in free text, the same as any other unrecognized operator, rather than
+ * silently discarding it as if it were a no-op filter.
  */
-function applyIsOperator(parsed: ParsedMailSearchQuery, value: string): void {
+function applyIsOperator(parsed: ParsedMailSearchQuery, value: string): boolean {
   switch (value.toLowerCase()) {
     case "read":
     case "unread": {
@@ -101,7 +104,7 @@ function applyIsOperator(parsed: ParsedMailSearchQuery, value: string): void {
         });
       }
       parsed.read = next;
-      return;
+      return true;
     }
     case "flagged":
     case "unflagged": {
@@ -113,10 +116,10 @@ function applyIsOperator(parsed: ParsedMailSearchQuery, value: string): void {
         });
       }
       parsed.flagged = next;
-      return;
+      return true;
     }
     default:
-      return;
+      return false;
   }
 }
 
@@ -138,8 +141,7 @@ export function parseMailSearchQuery(query: string): ParsedMailSearchQuery {
           parsed.after = value;
           return "";
         case "is":
-          applyIsOperator(parsed, value);
-          return "";
+          return applyIsOperator(parsed, value) ? "" : _match;
         default:
           return _match;
       }

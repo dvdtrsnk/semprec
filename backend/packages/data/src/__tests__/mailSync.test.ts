@@ -882,6 +882,10 @@ describe("full-text search over Emails (issue #26)", () => {
       expect(parseMailSearchQuery("is:flagged is:flagged")).toEqual({ freeText: "", flagged: true });
     });
 
+    it("an unrecognized is: value is left in free text rather than silently discarded", () => {
+      expect(parseMailSearchQuery("invoice is:spam")).toEqual({ freeText: "invoice is:spam" });
+    });
+
     it("is:read is:unread fails as a contradictory validation error", () => {
       expect(() => parseMailSearchQuery("is:read is:unread")).toThrow(ValidationError);
       try {
