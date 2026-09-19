@@ -19,6 +19,7 @@ function makeRow(overrides: Partial<ApprovalRequestRow> = {}): ApprovalRequestRo
     riskClass: "high",
     requestedAt: "2026-09-01T12:00:00.000Z",
     safeSummary: {
+      kind: "mcpInvoke",
       mcpToolRegistrationId: "reg-1",
       mcpServerItemId: "server-1",
       argKeys: ["to", "subject"],
@@ -107,6 +108,24 @@ describe("ApprovalQueue (issue #132)", () => {
     expect(screen.getByText("Acme project", { exact: false })).toBeInTheDocument();
     const agentRunLink = screen.getByRole("link", { name: "Agent run run-1" });
     expect(agentRunLink).toHaveAttribute("href", "?page=agent-run&id=run-1");
+  });
+
+  it("renders a generic-operation-originated row (issue #220) the same as an mcp-invoke one", async () => {
+    renderQueue(
+      stubOperations({
+        listApprovalRequests: vi.fn(async () => [
+          okEntry({
+            toolName: "item.delete",
+            riskClass: "destructive",
+            safeSummary: { kind: "genericOperation", operationName: "item.delete", argKeys: ["itemId"] },
+          }),
+        ]),
+      }),
+    );
+
+    expect(await screen.findByText("item.delete")).toBeInTheDocument();
+    expect(screen.getByText("Risk class: destructive")).toBeInTheDocument();
+    expect(screen.getByText("Arguments: itemId")).toBeInTheDocument();
   });
 
   it("requests from different projects appear together", async () => {

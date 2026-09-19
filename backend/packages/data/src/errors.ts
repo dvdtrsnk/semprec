@@ -114,6 +114,9 @@ export class PropertyLockedError extends ForbiddenError {
  * of surfacing this error.
  */
 export class ApprovalRequiredError extends ChokePointError {
+  /** Narrows the base class's `unknown` `details` to what this error's constructor always sets, so a catcher reads it typed instead of casting blind. */
+  declare readonly details: { approvalRequestId: string; link: string };
+
   constructor(message: string, details: { approvalRequestId: string; link: string }) {
     super(403, "approval_required", message, details);
     this.name = "ApprovalRequiredError";

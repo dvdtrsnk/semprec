@@ -12,7 +12,7 @@ function makeRawRow(overrides: Record<string, unknown> = {}): Record<string, unk
     toolName: "send_email",
     riskClass: "high",
     requestedAt: "2026-09-01T12:00:00.000Z",
-    safeSummary: { mcpToolRegistrationId: "reg-1", mcpServerItemId: "server-1", argKeys: ["to"] },
+    safeSummary: { kind: "mcpInvoke", mcpToolRegistrationId: "reg-1", mcpServerItemId: "server-1", argKeys: ["to"] },
     agentRunId: "run-1",
     projectItemId: "project-1",
     projectName: "Acme project",
@@ -30,6 +30,33 @@ describe("approval queue operations", () => {
     const entries = await operations.listApprovalRequests();
 
     expect(entries).toEqual([{ kind: "ok", row: makeRawRow() }]);
+  });
+
+  it("parses a generic-operation-originated row (issue #220), never as malformed", async () => {
+    const operations = createApprovalQueueOperations({
+      baseUrl: "/api",
+      fetchImpl: async () =>
+        jsonResponse({
+          rows: [
+            makeRawRow({
+              toolName: "item.delete",
+              safeSummary: { kind: "genericOperation", operationName: "item.delete", argKeys: ["itemId"] },
+            }),
+          ],
+        }),
+    });
+
+    const entries = await operations.listApprovalRequests();
+
+    expect(entries).toEqual([
+      {
+        kind: "ok",
+        row: makeRawRow({
+          toolName: "item.delete",
+          safeSummary: { kind: "genericOperation", operationName: "item.delete", argKeys: ["itemId"] },
+        }),
+      },
+    ]);
   });
 
   it("degrades a single malformed row to a placeholder, keeping the rest of the list", async () => {

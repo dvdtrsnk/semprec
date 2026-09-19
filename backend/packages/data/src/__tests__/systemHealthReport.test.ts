@@ -16,6 +16,14 @@ import { getSystemHealthReport } from "../observability/systemHealthReport.js";
 let pool: Pool;
 let chokePoint: ChokePoint;
 
+async function createUser(): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
+    [`${randomUUID()}@example.com`],
+  );
+  return rows[0]!.id;
+}
+
 /** Fresh beats for every fixed process so this report's process list is deterministic per test. */
 async function markAllProcessesFresh(): Promise<void> {
   for (const process of ["api", "agents", "transcribe", "ai-gateway"]) {
@@ -29,6 +37,7 @@ describe("getSystemHealthReport (issue #170)", () => {
     await resetDatabase(pool);
     chokePoint = createChokePoint(pool);
     await seedSystem(pool);
+    await createUser();
   });
 
   afterAll(async () => {
