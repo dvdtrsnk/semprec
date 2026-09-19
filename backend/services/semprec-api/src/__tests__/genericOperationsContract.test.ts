@@ -365,4 +365,31 @@ describe("generic operation REST contract (issue #219)", () => {
       await CASES[operation](fx, headers, baseUrl);
     });
   }
+
+  it("ignores an actor-identity-shaped field smuggled into a POST body — REST derives the actor solely from the session (issue #220 parity)", async () => {
+    const fx = await buildFixtures();
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+
+    // Every REST route assembles its own explicit command object (`genericBinding.ts`'s
+    // `dispatchGenericOperation`, called with a hand-picked field list, never a body spread) — an
+    // `agentProjectItemId`/`runId`/`userId` field in the JSON body has no route that reads it, so
+    // it cannot influence who the choke point believes made this write, unlike MCP/AgentTools'
+    // `arguments`, where the same fields are rejected outright by each operation's strict schema.
+    const res = await fetch(`${baseUrl}/api/databases/${fx.database.id}/views`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        type: "table",
+        name: "Stolen view",
+        agentProjectItemId: randomUUID(),
+        runId: randomUUID(),
+        userId: randomUUID(),
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { createdBy: string; creatorProjectItemId: string | null };
+    expect(body.createdBy).toBe("user");
+    expect(body.creatorProjectItemId).toBeNull();
+  });
 });
