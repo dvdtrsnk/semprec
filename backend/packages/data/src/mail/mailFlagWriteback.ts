@@ -20,3 +20,21 @@ export function createImapMailFlagWritebackAdapter(imap: ImapMailClient): MailFl
     },
   };
 }
+
+/** #199 supplies the Gmail `users.messages.modify` mutation; until then desired state remains durably pending. */
+export function createGmailMailFlagWritebackAdapter(): MailFlagWritebackAdapter {
+  return {
+    async write() {
+      return "pending";
+    },
+  };
+}
+
+/** #199 supplies the Graph `PATCH` mutation; until then desired state remains durably pending. */
+export function createGraphMailFlagWritebackAdapter(): MailFlagWritebackAdapter {
+  return {
+    async write() {
+      return "pending";
+    },
+  };
+}

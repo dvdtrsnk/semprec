@@ -39,6 +39,8 @@ import { storeCredential, getDecryptedCredential } from "../credentials/external
 import { reconcileImapAccount, type ImapFetchedMessage, type ImapMailClient } from "../mail/imapReconcile.js";
 import { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
 import { reconcileGraphAccount, type GraphMailClient } from "../mail/graphReconcile.js";
+import { createGmailMailFlagWritebackAdapter, createGraphMailFlagWritebackAdapter } from "../mail/mailFlagWriteback.js";
+import type { PendingImapFlagWrite } from "../mail/mailMessageFlagSyncStore.js";
 import {
   handleMailSearchReindexSweepTask,
   handleSyncMailAccountTask,
@@ -64,7 +66,7 @@ import {
   isImapConnectionLimitError,
 } from "../mail/imapFlowClient.js";
 import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
-import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG, messageFlagProperties } from "../mail/messageFlags.js";
+import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG, READ_PROPERTY_KEY, messageFlagProperties } from "../mail/messageFlags.js";
 import type { FetchMessageObject, ImapFlow, MessageStructureObject } from "imapflow";
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
@@ -3533,12 +3535,25 @@ describe("mail flag write-back (issue #251)", () => {
       withTransaction(pool, (client) => reconcileImapAccount(client, failingClient, params)),
     ).rejects.toThrow("temporary IMAP failure");
     await withTransaction(pool, (client) => reconcileImapAccount(client, writingClient, params));
+    expect(writes.slice(-2)).toHaveLength(2);
     expect(writes.slice(-2)).toEqual(
       expect.arrayContaining([
         { path: "INBOX", flag: IMAP_FLAGGED_FLAG, value: true },
         { path: "Archive", flag: IMAP_FLAGGED_FLAG, value: true },
       ]),
     );
+  });
+
+  it("Gmail and Graph write-back adapters persist desired state as pending without a provider call", async () => {
+    const pendingWrite: PendingImapFlagWrite = {
+      messageItemId: "00000000-0000-0000-0000-000000000000",
+      propertyKey: READ_PROPERTY_KEY,
+      desiredState: true,
+      folderPath: "INBOX",
+      uid: 1,
+    };
+    await expect(createGmailMailFlagWritebackAdapter().write(pendingWrite)).resolves.toBe("pending");
+    await expect(createGraphMailFlagWritebackAdapter().write(pendingWrite)).resolves.toBe("pending");
   });
 });
 
