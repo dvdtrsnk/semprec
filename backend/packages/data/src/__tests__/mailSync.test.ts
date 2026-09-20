@@ -3462,7 +3462,7 @@ describe("mail flag write-back (issue #251)", () => {
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
       fetchMessagesSince: async (path) => [{ uid: path === "INBOX" ? 1 : 2, message }],
       fetchVanishedSince: async () => [],
-      fetchAllUids: async () => [1],
+      fetchAllUids: async (path) => (path === "INBOX" ? [1] : [2]),
       setMessageFlag: async () => {},
     };
     await withTransaction(pool, (client) => reconcileImapAccount(client, initial, params));
