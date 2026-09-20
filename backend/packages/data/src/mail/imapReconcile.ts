@@ -16,6 +16,8 @@ import { findEmailItemIdByFolderUid, listKnownFolderUids } from "./folderMembers
 import { ensureFolderItem } from "./folderDiscovery.js";
 import { ensureMailAccountSyncState, recordImapActivity } from "./mailAccountSyncStateStore.js";
 import type { WritableImapFlag } from "./messageFlags.js";
+import { listPendingImapFlagWrites, recordConfirmedMailMessageFlag } from "./mailMessageFlagSyncStore.js";
+import { createImapMailFlagWritebackAdapter } from "./mailFlagWriteback.js";
 
 export interface ImapFetchedMessage {
   uid: number;
@@ -297,6 +299,39 @@ export async function reconcileImapAccount(
       mailboxFolderRelationPropertyId: params.mailboxFolderRelationPropertyId,
       mailboxAliases: params.mailboxAliases,
     });
+  }
+
+  const [folderRelationDefinition, mailboxFolderRelationDefinition] = await Promise.all([
+    getRelationDefinitionByPropertyId(dbClient, params.folderRelationPropertyId),
+    getRelationDefinitionByPropertyId(dbClient, params.mailboxFolderRelationPropertyId),
+  ]);
+  if (!folderRelationDefinition || !mailboxFolderRelationDefinition) {
+    throw new ValidationError("Mail folder relation definitions are missing from the email module schema");
+  }
+  // A state observation that equals the desired state has no row in this result, preventing
+  // a reconcile of a provider-originated change from echoing it straight back over STORE.
+  const writeback = createImapMailFlagWritebackAdapter(imap);
+  const pendingWrites = await listPendingImapFlagWrites(dbClient, {
+    folderRelationDefinitionId: folderRelationDefinition.id,
+    mailboxFolderRelationDefinitionId: mailboxFolderRelationDefinition.id,
+    mailboxItemId: params.mailboxItemId,
+  });
+  const pendingByFlag = new Map<string, typeof pendingWrites>();
+  for (const pending of pendingWrites) {
+    const key = `${pending.messageItemId}:${pending.propertyKey}`;
+    const writes = pendingByFlag.get(key) ?? [];
+    writes.push(pending);
+    pendingByFlag.set(key, writes);
+  }
+  for (const writes of pendingByFlag.values()) {
+    const pending = writes[0]!;
+    let allApplied = true;
+    for (const write of writes) {
+      const outcome = await writeback.write(write);
+      if (outcome !== "applied") allApplied = false;
+    }
+    if (!allApplied) continue;
+    await recordConfirmedMailMessageFlag(dbClient, pending.messageItemId, pending.propertyKey, pending.desiredState);
   }
 
   // IMAP has no push-vs-poll distinction at this layer — periodic reconcile is the only

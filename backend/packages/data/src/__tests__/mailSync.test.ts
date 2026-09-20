@@ -39,6 +39,8 @@ import { storeCredential, getDecryptedCredential } from "../credentials/external
 import { reconcileImapAccount, type ImapFetchedMessage, type ImapMailClient } from "../mail/imapReconcile.js";
 import { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
 import { reconcileGraphAccount, type GraphMailClient } from "../mail/graphReconcile.js";
+import { createGmailMailFlagWritebackAdapter, createGraphMailFlagWritebackAdapter } from "../mail/mailFlagWriteback.js";
+import type { PendingImapFlagWrite } from "../mail/mailMessageFlagSyncStore.js";
 import {
   handleMailSearchReindexSweepTask,
   handleSyncMailAccountTask,
@@ -64,7 +66,7 @@ import {
   isImapConnectionLimitError,
 } from "../mail/imapFlowClient.js";
 import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
-import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG, messageFlagProperties } from "../mail/messageFlags.js";
+import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG, READ_PROPERTY_KEY, messageFlagProperties } from "../mail/messageFlags.js";
 import type { FetchMessageObject, ImapFlow, MessageStructureObject } from "imapflow";
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
@@ -3411,6 +3413,147 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     releaseFirst();
     await firstPass;
     await secondPass;
+  });
+});
+
+describe("mail flag write-back (issue #251)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  it("persists desired/current state, writes every IMAP folder copy for all four transitions, and does not echo a converged observation", async () => {
+    const [emailsId, foldersId, filesId, mailboxesId] = await Promise.all([
+      databaseIdFor("emails"),
+      databaseIdFor("folders"),
+      databaseIdFor("files"),
+      databaseIdFor("mailboxes"),
+    ]);
+    const [emailProperties, folderProperties] = await Promise.all([
+      chokePoint.listProperties(emailsId),
+      chokePoint.listProperties(foldersId),
+    ]);
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
+    );
+    const params = {
+      mailboxItemId: mailbox.id,
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      foldersDatabaseId: foldersId,
+      folderRelationPropertyId: emailProperties.find((property) => property.key === "folder")!.id,
+      mailboxFolderRelationPropertyId: folderProperties.find((property) => property.key === "mailbox")!.id,
+      attachmentsRelationPropertyId: emailProperties.find((property) => property.key === "attachments")!.id,
+      storage: noopStorage,
+      storageKeyPrefix: "test",
+    };
+    const message = {
+      messageId: "<writeback@x>",
+      envelope: {},
+      attachments: [],
+      flags: [],
+    };
+    const initial: ImapMailClient = {
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [
+        { path: "INBOX", specialUse: "\\Inbox" },
+        { path: "Archive", specialUse: "\\Archive" },
+      ],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
+      fetchMessagesSince: async (path) => [{ uid: path === "INBOX" ? 1 : 2, message }],
+      fetchVanishedSince: async () => [],
+      fetchAllUids: async (path) => (path === "INBOX" ? [1] : [2]),
+      setMessageFlag: async () => {},
+    };
+    await withTransaction(pool, (client) => reconcileImapAccount(client, initial, params));
+
+    const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [emailsId]);
+    const emailItemId = rows[0]!.id;
+    await chokePoint.updateItem({
+      databaseId: emailsId,
+      itemId: emailItemId,
+      propertiesPatch: { read: true, flagged: true },
+    });
+
+    const writes: Array<{ path: string; flag: string; value: boolean }> = [];
+    const writingClient: ImapMailClient = {
+      ...initial,
+      fetchMessagesSince: async () => [],
+      setMessageFlag: async (path, _uid, flag, value) => {
+        writes.push({ path, flag, value });
+      },
+    };
+    await withTransaction(pool, (client) => reconcileImapAccount(client, writingClient, params));
+    expect(writes).toHaveLength(4);
+    expect(writes).toEqual(
+      expect.arrayContaining([
+        { path: "INBOX", flag: IMAP_FLAGGED_FLAG, value: true },
+        { path: "Archive", flag: IMAP_FLAGGED_FLAG, value: true },
+        { path: "INBOX", flag: IMAP_SEEN_FLAG, value: true },
+        { path: "Archive", flag: IMAP_SEEN_FLAG, value: true },
+      ]),
+    );
+
+    await chokePoint.updateItem({
+      databaseId: emailsId,
+      itemId: emailItemId,
+      propertiesPatch: { read: false, flagged: false },
+    });
+    await withTransaction(pool, (client) => reconcileImapAccount(client, writingClient, params));
+    expect(writes.slice(4)).toHaveLength(4);
+    expect(writes.slice(4)).toEqual(
+      expect.arrayContaining([
+        { path: "INBOX", flag: IMAP_FLAGGED_FLAG, value: false },
+        { path: "Archive", flag: IMAP_FLAGGED_FLAG, value: false },
+        { path: "INBOX", flag: IMAP_SEEN_FLAG, value: false },
+        { path: "Archive", flag: IMAP_SEEN_FLAG, value: false },
+      ]),
+    );
+
+    await chokePoint.updateItem({ databaseId: emailsId, itemId: emailItemId, propertiesPatch: { read: true } });
+    const observedConvergence: ImapMailClient = {
+      ...initial,
+      fetchMessagesSince: async (path) => [
+        { uid: path === "INBOX" ? 1 : 2, message: { ...message, flags: [IMAP_SEEN_FLAG] } },
+      ],
+      setMessageFlag: async () => {
+        throw new Error("a provider observation matching desired state must not be echoed");
+      },
+    };
+    await withTransaction(pool, (client) => reconcileImapAccount(client, observedConvergence, params));
+
+    await chokePoint.updateItem({ databaseId: emailsId, itemId: emailItemId, propertiesPatch: { flagged: true } });
+    const failingClient: ImapMailClient = {
+      ...writingClient,
+      setMessageFlag: async () => {
+        throw new Error("temporary IMAP failure");
+      },
+    };
+    await expect(
+      withTransaction(pool, (client) => reconcileImapAccount(client, failingClient, params)),
+    ).rejects.toThrow("temporary IMAP failure");
+    await withTransaction(pool, (client) => reconcileImapAccount(client, writingClient, params));
+    expect(writes.slice(-2)).toHaveLength(2);
+    expect(writes.slice(-2)).toEqual(
+      expect.arrayContaining([
+        { path: "INBOX", flag: IMAP_FLAGGED_FLAG, value: true },
+        { path: "Archive", flag: IMAP_FLAGGED_FLAG, value: true },
+      ]),
+    );
+  });
+
+  it("Gmail and Graph write-back adapters persist desired state as pending without a provider call", async () => {
+    const pendingWrite: PendingImapFlagWrite = {
+      messageItemId: "00000000-0000-0000-0000-000000000000",
+      propertyKey: READ_PROPERTY_KEY,
+      desiredState: true,
+      folderPath: "INBOX",
+      uid: 1,
+    };
+    await expect(createGmailMailFlagWritebackAdapter().write(pendingWrite)).resolves.toBe("pending");
+    await expect(createGraphMailFlagWritebackAdapter().write(pendingWrite)).resolves.toBe("pending");
   });
 });
 
