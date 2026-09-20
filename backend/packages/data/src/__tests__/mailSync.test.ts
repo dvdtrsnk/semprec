@@ -3513,7 +3513,9 @@ describe("mail flag write-back (issue #251)", () => {
     await chokePoint.updateItem({ databaseId: emailsId, itemId: emailItemId, propertiesPatch: { read: true } });
     const observedConvergence: ImapMailClient = {
       ...initial,
-      fetchMessagesSince: async () => [{ uid: 1, message: { ...message, flags: [IMAP_SEEN_FLAG] } }],
+      fetchMessagesSince: async (path) => [
+        { uid: path === "INBOX" ? 1 : 2, message: { ...message, flags: [IMAP_SEEN_FLAG] } },
+      ],
       setMessageFlag: async () => {
         throw new Error("a provider observation matching desired state must not be echoed");
       },
