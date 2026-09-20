@@ -80,6 +80,61 @@ function decodePartText(part: GmailPayloadPart | undefined): string | undefined 
 }
 
 /**
+ * Gmail sometimes represents a Drive- or Docs-backed "attachment" as a tiny MIME part
+ * containing its share URL. The actual file never accompanies that part, so passing it to
+ * attachment ingest would create a Files item for the URL bytes. Ignore query/hash decoration
+ * because Gmail can render the same share with a different `usp` value in the message body.
+ */
+function normalizedGoogleShareUrl(value: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || (url.hostname !== "drive.google.com" && url.hostname !== "docs.google.com"))
+    return null;
+
+  const path = url.pathname.replace(/\/+$/, "");
+  if (!path) return null;
+  // `open`/`uc` carry the share identity in `id`, unlike the usual `/file/d/<id>` path.
+  // Retaining it prevents two unrelated shorthand URLs from being treated as the same link,
+  // on both hostnames that use this shorthand form.
+  if (path === "/open" || path === "/uc") {
+    const id = url.searchParams.get("id");
+    if (!id) return null;
+    return `${url.hostname}${path}?id=${id}`;
+  }
+  return `${url.hostname}${path}`;
+}
+
+function normalizedGoogleShareUrls(text: string | undefined): Set<string> {
+  const urls = new Set<string>();
+  if (!text) return urls;
+  for (const match of text.matchAll(/https:\/\/[^\s<>"']+/gi)) {
+    // Strip trailing prose punctuation (`.`, `,`, `)`, …) that commonly follows a URL in
+    // plain text — left in place it defeats matching against the rendered body's normalized
+    // form, since that form was parsed straight from an anchor's `href` with no such tail.
+    const trimmed = match[0].replace(/[.,;:!?)\]}>]+$/, "");
+    const normalized = normalizedGoogleShareUrl(trimmed);
+    if (normalized) urls.add(normalized);
+  }
+  return urls;
+}
+
+/** A replacement part reports only a small placeholder size even though its decoded URL text is much larger. */
+function isGmailDriveReplacement(part: GmailPayloadPart, renderedDriveUrls: Set<string>): boolean {
+  const reportedSize = part.body?.size;
+  const decodedText = decodePartText(part);
+  if (reportedSize === undefined || !decodedText || reportedSize * 2 >= Buffer.byteLength(decodedText)) return false;
+
+  for (const placeholderUrl of normalizedGoogleShareUrls(decodedText)) {
+    if (renderedDriveUrls.has(placeholderUrl)) return true;
+  }
+  return false;
+}
+
+/**
  * Builds each candidate attachment's lazy byte source. Gmail's REST API has no true streamed
  * download (unlike imapflow's `download()`/Graph's `$value`) — its only per-attachment
  * primitive is a single JSON response containing the whole part as base64. What this still
@@ -92,33 +147,39 @@ function classifyGmailAttachmentParts(
   fetchAttachmentBytes: (attachmentId: string) => Promise<Buffer>,
   parts: GmailPayloadPart[],
   html: string | undefined,
+  text: string | undefined,
 ): ClassifiedAttachment[] {
-  const candidates = parts.map((part): ClassifiedAttachment => {
+  const renderedDriveUrls = new Set([...normalizedGoogleShareUrls(html), ...normalizedGoogleShareUrls(text)]);
+  const candidates = parts.flatMap((part): ClassifiedAttachment[] => {
+    if (isGmailDriveReplacement(part, renderedDriveUrls)) return [];
+
     const dispositionHeader = partHeader(part, "Content-Disposition");
     const disposition: "attachment" | "inline" = dispositionHeader?.toLowerCase().trim().startsWith("inline")
       ? "inline"
       : "attachment";
     const contentIdHeader = partHeader(part, "Content-ID");
     const contentId = contentIdHeader ? contentIdHeader.replace(/^<|>$/g, "") : null;
-    return {
-      filename: part.filename || "attachment",
-      contentType: part.mimeType,
-      contentId,
-      disposition,
-      openStream: async () => {
-        if (part.body?.data) {
-          if ((part.body.size ?? 0) > MAX_ATTACHMENT_BYTES) {
-            throw new Error(
-              `Gmail inline attachment part is ${part.body.size} bytes, over the ${MAX_ATTACHMENT_BYTES}-byte cap`,
-            );
+    return [
+      {
+        filename: part.filename || "attachment",
+        contentType: part.mimeType,
+        contentId,
+        disposition,
+        openStream: async () => {
+          if (part.body?.data) {
+            if ((part.body.size ?? 0) > MAX_ATTACHMENT_BYTES) {
+              throw new Error(
+                `Gmail inline attachment part is ${part.body.size} bytes, over the ${MAX_ATTACHMENT_BYTES}-byte cap`,
+              );
+            }
+            return Readable.from(decodeBase64Url(part.body.data));
           }
-          return Readable.from(decodeBase64Url(part.body.data));
-        }
-        if (!part.body?.attachmentId)
-          throw new Error("Gmail attachment part has neither inline data nor an attachmentId");
-        return Readable.from(await fetchAttachmentBytes(part.body.attachmentId));
+          if (!part.body?.attachmentId)
+            throw new Error("Gmail attachment part has neither inline data nor an attachmentId");
+          return Readable.from(await fetchAttachmentBytes(part.body.attachmentId));
+        },
       },
-    };
+    ];
   });
   // Same "inline part actually referenced via cid: in the HTML body is a rendering asset, not
   // a document" rule the other two adapters apply (attachments.ts / imapFlowClient.ts).
@@ -134,6 +195,7 @@ async function toFetchedMessage(
 ): Promise<FetchedMessage> {
   const parsedHeaders = await parseGmailHeaders(payload.headers ?? []);
   const tree = walkGmailPayload(payload);
+  const bodyText = decodePartText(tree.textPlainPart);
   const bodyHtml = decodePartText(tree.textHtmlPart);
   const contentType = parseContentTypeHeader(partHeader(payload, "Content-Type"));
 
@@ -166,10 +228,10 @@ async function toFetchedMessage(
       cc: toList(parsedHeaders.cc),
       bcc: toList(parsedHeaders.bcc),
     },
-    bodyText: decodePartText(tree.textPlainPart),
+    bodyText,
     bodyHtml,
     date: parsedHeaders.date,
-    attachments: classifyGmailAttachmentParts(fetchAttachmentBytes, tree.attachmentParts, bodyHtml),
+    attachments: classifyGmailAttachmentParts(fetchAttachmentBytes, tree.attachmentParts, bodyHtml, bodyText),
     deliveredToHeaders: partHeaderValues(payload, "Delivered-To"),
     xOriginalTo: partHeaderValues(payload, "X-Original-To")[0] ?? null,
     envelopeTo: partHeaderValues(payload, "Envelope-To")[0] ?? null,
