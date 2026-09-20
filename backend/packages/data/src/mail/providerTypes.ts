@@ -31,6 +31,14 @@ export class MailConnectionLimitError extends Error {}
 export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 
 /**
+ * Thrown by an adapter's attachment stream when a chunk would push the attachment past
+ * `MAX_ATTACHMENT_BYTES` — a policy violation, not a transient stream failure. Lives here
+ * (not in a specific adapter like imapFlowClient.ts) so provider-agnostic callers like
+ * mail/attachments.ts can catch it without depending on any one adapter's module.
+ */
+export class AttachmentCapExceededError extends Error {}
+
+/**
  * Minimal module-boundary validation for a REST client's parsed JSON response (gmailRestClient.ts,
  * graphRestClient.ts): not a full per-endpoint schema — that would mean hand-maintaining a
  * shape for every Gmail/Graph resource this issue touches, which is exactly the kind of

@@ -42,7 +42,7 @@ async function pendingTickJobs(): Promise<TickJobRow[]> {
      FROM graphile_worker._private_jobs j
      JOIN graphile_worker._private_tasks t ON t.id = j.task_id
      LEFT JOIN graphile_worker._private_job_queues jq ON jq.id = j.job_queue_id
-     WHERE t.identifier = 'heartbeatFire'`,
+     WHERE t.identifier = 'heartbeatFireCore'`,
   );
   return rows;
 }

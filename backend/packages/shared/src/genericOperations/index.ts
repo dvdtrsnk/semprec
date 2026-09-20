@@ -7,3 +7,4 @@ export * from "./schemas.js";
 export * from "./capabilities.js";
 export * from "./port.js";
 export * from "./bindings.js";
+export * from "./jsonSchema.js";

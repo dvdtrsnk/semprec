@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { runOnce } from "@semprec/queue";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import {
@@ -20,6 +20,14 @@ import { EMAILS_RELATION_CONTEXT } from "../mail/emailsRelationContext.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
+
+async function createUser(): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
+    [`${randomUUID()}@example.com`],
+  );
+  return rows[0]!.id;
+}
 
 const noopStorage: BlobStorageWriter = {
   async writeStream(_key, source) {
@@ -71,6 +79,7 @@ describe("newEmail heartbeat (issue #99)", () => {
     chokePoint ??= createChokePoint(pool);
     await resetDatabase(pool);
     await seedSystem(pool);
+    await createUser();
   });
 
   afterAll(async () => {

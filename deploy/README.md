@@ -33,6 +33,10 @@ contract `docker-compose.yml`'s `env_file:` already uses. A service that needs a
 process needs (e.g. `PORT`) still reads it out of this one file; nothing service-specific is ever
 shipped inside a release directory, so a release contains no secret of any kind.
 
+`semprec-agents` has no HTTP listener: it is the second graphile-worker composition root (issue
+#91), owning the agent-affinity task catalog over the same Postgres-backed queue `semprec-api`
+uses. Its unit is a long-running worker, not socket-activated.
+
 No proxy-level auth, rate-limiting, IP filtering, or subdomains — all of that stays in the
 application (`services/semprec-api`), by design.
 

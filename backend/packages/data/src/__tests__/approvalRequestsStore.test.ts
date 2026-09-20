@@ -31,6 +31,7 @@ async function createPendingRequest(): Promise<string> {
     toolName: "search_web",
     riskClass: "unclassified",
     payload,
+    resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
   });
   return created.id;
 }
@@ -41,6 +42,7 @@ describe("approvalRequestsStore (issue #130)", () => {
     const viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry();
     await resetDatabase(pool);
     await seedSystem(pool, viewTypeRegistry);
+    await createUser();
   });
 
   afterAll(async () => {
@@ -56,6 +58,7 @@ describe("approvalRequestsStore (issue #130)", () => {
       toolName: "search_web",
       riskClass: "unclassified",
       payload,
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
 
     expect(created.status).toBe("pending");
@@ -167,6 +170,21 @@ describe("approvalRequestsStore (issue #130)", () => {
       const stored = await getApprovalRequest(pool, id);
       expect(stored!.executionError).toBe(false);
       expect(stored!.executionResult).toBe("ok");
+      expect(stored!.executionStatus).toBe("succeeded");
+    });
+
+    it("records a failed outcome as 'conflict', not 'succeeded' (issue #89)", async () => {
+      const id = await createPendingRequest();
+      const userId = await createUser();
+      await decideApprovalRequest(pool, id, "approved", userId);
+      await claimApprovalRequestExecution(pool, id);
+
+      await recordApprovalRequestOutcome(pool, id, { error: true, result: "it broke" });
+
+      const stored = await getApprovalRequest(pool, id);
+      expect(stored!.executionError).toBe(true);
+      expect(stored!.executionResult).toBe("it broke");
+      expect(stored!.executionStatus).toBe("conflict");
     });
   });
 });

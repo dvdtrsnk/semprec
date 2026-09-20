@@ -1,5 +1,6 @@
 import type { ModuleManifest } from "@semprec/module-registry";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
+import { FILES_TRANSCRIPTION_TRIGGER_ACTION_ID } from "../transcription/transcriptionActions.js";
 import {
   AREAS_MODULE_ID,
   COMPANIES_MODULE_ID,
@@ -12,6 +13,9 @@ import {
   TASKS_MODULE_ID,
   TRANSCRIPTS_MODULE_ID,
 } from "./tenDatabaseKeys.js";
+export { backfillTaskTimeProperties } from "../tasks/deriveTaskTime.js";
+
+export { createCreateTranscriptionRouteHandler } from "../transcription/transcriptionRouteHandlers.js";
 
 /**
  * Retrofit manifest (module-contract issue #226) for the ten hardcoded system databases
@@ -29,7 +33,7 @@ import {
  */
 export const manifest: ModuleManifest = {
   id: "systemDatabases",
-  version: "1.0.0",
+  version: "1.1.0",
   name: "System Databases",
   removable: false,
   systemProject: true,
@@ -48,5 +52,25 @@ export const manifest: ModuleManifest = {
   capabilities: [],
   agentTools: [],
   viewTypes: [TEMPORAL_SWITCHER_VIEW_TYPE],
+  heartbeatActions: [FILES_TRANSCRIPTION_TRIGGER_ACTION_ID],
   migrations: ["0004_ten_databases.sql"],
+  dataMigrations: [
+    {
+      databaseKey: TASKS_MODULE_ID,
+      fromVersion: "1.0.0",
+      toVersion: "1.1.0",
+      converterExport: "backfillTaskTimeProperties",
+    },
+  ],
+  customRoutes: [
+    {
+      name: "createTranscription",
+      method: "POST",
+      path: "/api/transcriptions",
+      handlerExport: "createCreateTranscriptionRouteHandler",
+      // The existing-job check and the enqueue must commit together (issue #180's dedup
+      // guarantee), a shape the generic item-write endpoint can't express.
+      justification: "transactional-semantics",
+    },
+  ],
 };

@@ -1,14 +1,25 @@
 import { z } from "zod";
 
 /**
- * A single scheduled/queued unit of work a module contributes. Deliberately just these three
- * fields (issue #108) — affinity-safe runtime ownership (which worker process may run it) is
- * added later by #91, and actually registering it with the queue is out of scope here too.
+ * Which long-lived runtime (issue #91's two graphile-worker composition roots) a module task
+ * runs under: `'api'` for deterministic/data/mail/library-style handlers, `'agents'` only for a
+ * handler that starts or continues an agent session. Mirrors `@semprec/queue`'s own
+ * `TaskAffinity` values — kept as a local literal type rather than an import so this package
+ * doesn't gain a dependency on `@semprec/queue` just for one string union.
+ */
+export const MODULE_TASK_AFFINITIES = ["api", "agents"] as const;
+export type ModuleTaskAffinity = (typeof MODULE_TASK_AFFINITIES)[number];
+
+/**
+ * A single scheduled/queued unit of work a module contributes (issue #108). `queueAffinity`
+ * (issue #221) is mandatory for every active module task — it names which runtime may run it;
+ * actually registering it with the queue is a later composition-root concern (#91).
  */
 export interface ModuleTaskDescriptor {
   name: string;
   payloadSchemaExport: string;
   handlerExport: string;
+  queueAffinity: ModuleTaskAffinity;
 }
 
 export interface ModuleWorkerDescriptor {
@@ -118,6 +129,7 @@ const moduleTaskDescriptorSchema = z.object({
   name: z.string().min(1),
   payloadSchemaExport: z.string().min(1),
   handlerExport: z.string().min(1),
+  queueAffinity: z.enum(MODULE_TASK_AFFINITIES),
 });
 
 const moduleWorkerDescriptorSchema = z.object({

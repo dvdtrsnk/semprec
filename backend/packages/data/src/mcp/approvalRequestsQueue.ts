@@ -1,7 +1,11 @@
 import type { Queryable } from "../db/pool.js";
 import { getAgentRunsByIds } from "../agentRuns/agentRunsStore.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
-import { listPendingApprovalRequests, type ApprovalRequest } from "./approvalRequestsStore.js";
+import {
+  isGenericOperationApprovalRequestPayload,
+  listPendingApprovalRequests,
+  type ApprovalRequest,
+} from "./approvalRequestsStore.js";
 
 /**
  * A payload summary safe to send to the client: which target and which argument *names* the
@@ -9,12 +13,16 @@ import { listPendingApprovalRequests, type ApprovalRequest } from "./approvalReq
  * or other sensitive value would live (issue #132's "sensitive credential values are never
  * rendered" criterion). A reviewer who needs the actual values still has the audit trail
  * (`approval_requests.payload` in the database); this queue is a triage list, not that trail.
+ *
+ * A discriminated union, not all-optional fields: `mcpToolRegistrationId`/`mcpServerItemId` are
+ * only ever present together (an MCP-invoke-originated request), `operationName` only for a
+ * generic-operation-originated request (issue #220) — the two payload shapes never mix on the
+ * same entry, and the `kind` tag lets a client narrow to the right one instead of every field
+ * reading `string | undefined` regardless of the entry's actual origin.
  */
-export interface ApprovalRequestSafeSummary {
-  mcpToolRegistrationId: string;
-  mcpServerItemId: string;
-  argKeys: string[];
-}
+export type ApprovalRequestSafeSummary =
+  | { kind: "mcpInvoke"; mcpToolRegistrationId: string; mcpServerItemId: string; argKeys: string[] }
+  | { kind: "genericOperation"; operationName: string; argKeys: string[] };
 
 export interface ApprovalRequestQueueEntry {
   id: string;
@@ -30,7 +38,16 @@ export interface ApprovalRequestQueueEntry {
 }
 
 function safeSummaryOf(payload: ApprovalRequest["payload"]): ApprovalRequestSafeSummary {
+  if (isGenericOperationApprovalRequestPayload(payload)) {
+    const canonicalInput = payload.canonicalInput;
+    return {
+      kind: "genericOperation",
+      operationName: payload.operationName,
+      argKeys: canonicalInput && typeof canonicalInput === "object" ? Object.keys(canonicalInput) : [],
+    };
+  }
   return {
+    kind: "mcpInvoke",
     mcpToolRegistrationId: payload.mcpToolRegistrationId,
     mcpServerItemId: payload.mcpServerItemId,
     argKeys: Object.keys(payload.args),

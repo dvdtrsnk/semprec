@@ -43,3 +43,9 @@ export {
   type ResolvedMcpInvocation,
   type RejectedMcpInvocation,
 } from "./mcpInvokeTool.js";
+export {
+  createGenericOperationAgentTools,
+  listGrantedGenericOperationAgentTools,
+  type GenericOperationAgentTool,
+  type GenericOperationAgentToolResult,
+} from "./tools/generic/genericOperationAgentTools.js";

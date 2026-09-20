@@ -6,6 +6,8 @@ import { createItemWithClient, createRelationWithClient } from "../chokePoint/ch
 import type { BlobStorageWriter } from "./blobStorage.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { extractAttachmentText, isTextExtractableContentType } from "./attachmentTextExtraction.js";
+import { AttachmentCapExceededError } from "./providerTypes.js";
+import { logger } from "./logger.js";
 
 /**
  * The shape every provider adapter (imap/gmail/graph) normalizes an attachment part down to.
@@ -83,64 +85,83 @@ export async function ingestAttachments(
   for (const attachment of input.attachments) {
     const storageKey = `${input.storageKeyPrefix}/${randomUUID()}-${safeStorageFilename(attachment.filename)}`;
 
-    let source = await attachment.openStream();
-    if (isTextExtractableContentType(attachment.contentType)) {
-      // The one case this issue buffers an attachment's bytes in memory rather than pure-
-      // streaming through to storage — extracting text needs the whole file, and every
-      // attachment reaching here already passed the adapter's own MAX_ATTACHMENT_BYTES cap
-      // (imapFlowClient.ts/gmailRestClient.ts/graphRestClient.ts), so this is bounded by the
-      // same limit, not unbounded. Re-wrapped into a fresh stream afterward so the storage
-      // write below still goes through the same `writeStream` path as every other attachment.
-      const buffered = await bufferStream(source);
-      // Best-effort: a corrupt/password-protected/malformed file must not fail the whole
-      // message ingest over a search-indexing nicety.
-      const extractedText = await extractAttachmentText(attachment.contentType, buffered).catch(() => null);
-      if (extractedText) extractedTexts.push(extractedText);
-      source = Readable.from(buffered);
-    }
+    try {
+      let source = await attachment.openStream();
+      if (isTextExtractableContentType(attachment.contentType)) {
+        // The one case this issue buffers an attachment's bytes in memory rather than pure-
+        // streaming through to storage — extracting text needs the whole file, and every
+        // attachment reaching here already passed the adapter's own MAX_ATTACHMENT_BYTES cap
+        // (imapFlowClient.ts/gmailRestClient.ts/graphRestClient.ts), so this is bounded by the
+        // same limit, not unbounded. Re-wrapped into a fresh stream afterward so the storage
+        // write below still goes through the same `writeStream` path as every other attachment.
+        const buffered = await bufferStream(source);
+        // Best-effort: a corrupt/password-protected/malformed file must not fail the whole
+        // message ingest over a search-indexing nicety.
+        const extractedText = await extractAttachmentText(attachment.contentType, buffered).catch(() => null);
+        if (extractedText) extractedTexts.push(extractedText);
+        source = Readable.from(buffered);
+      }
 
-    const { byteSize, contentHash } = await input.storage.writeStream(storageKey, source);
+      const { byteSize, contentHash } = await input.storage.writeStream(storageKey, source);
 
-    const blob = await findOrCreateBlob(client, {
-      mimeType: attachment.contentType,
-      byteSize,
-      storageKey,
-      contentHash,
-    });
-    // A content-hash dedup hit means `blob` already existed under a different storageKey —
-    // the bytes just streamed above are an unneeded duplicate on disk, not the ones kept.
-    if (blob.storageKey !== storageKey) {
-      await input.storage.delete(storageKey);
-    }
-
-    await client.query(
-      `INSERT INTO mail_attachments (message_item_id, blob_id, filename, content_type, content_id, disposition, byte_size)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        input.messageItemId,
-        blob.id,
-        attachment.filename,
-        attachment.contentType,
-        attachment.contentId,
-        attachment.disposition,
+      const blob = await findOrCreateBlob(client, {
+        mimeType: attachment.contentType,
         byteSize,
-      ],
-    );
+        storageKey,
+        contentHash,
+      });
+      // A content-hash dedup hit means `blob` already existed under a different storageKey —
+      // the bytes just streamed above are an unneeded duplicate on disk, not the ones kept.
+      if (blob.storageKey !== storageKey) {
+        await input.storage.delete(storageKey);
+      }
 
-    const fileItem = await createItemWithClient(client, {
-      databaseId: input.filesDatabaseId,
-      properties: { name: attachment.filename, file: { blobId: blob.id } },
-    });
+      await client.query(
+        `INSERT INTO mail_attachments (message_item_id, blob_id, filename, content_type, content_id, disposition, byte_size)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          input.messageItemId,
+          blob.id,
+          attachment.filename,
+          attachment.contentType,
+          attachment.contentId,
+          attachment.disposition,
+          byteSize,
+        ],
+      );
 
-    await createRelationWithClient(
-      client,
-      {
-        relationPropertyId: input.attachmentsRelationPropertyId,
-        callerItemId: input.messageItemId,
-        targetItemId: fileItem.id,
-      },
-      EMAILS_RELATION_CONTEXT,
-    );
+      const fileItem = await createItemWithClient(client, {
+        databaseId: input.filesDatabaseId,
+        properties: { name: attachment.filename, file: { blobId: blob.id } },
+      });
+
+      await createRelationWithClient(
+        client,
+        {
+          relationPropertyId: input.attachmentsRelationPropertyId,
+          callerItemId: input.messageItemId,
+          targetItemId: fileItem.id,
+        },
+        EMAILS_RELATION_CONTEXT,
+      );
+    } catch (err) {
+      // The IMAP fallback partial-fetch path throws this when the server keeps sending bytes
+      // past MAX_ATTACHMENT_BYTES — a hostile/oversized attachment, not a transient failure. It
+      // can surface either synchronously from openStream() or, for the real IMAP adapter (whose
+      // openStream() returns a lazy Readable that never throws synchronously), as a stream
+      // 'error' during bufferStream()'s/writeStream()'s consumption below — this try wraps the
+      // whole per-attachment block so both cases are caught here, not just the open call.
+      // Best-effort: skip just this one attachment rather than failing the whole message ingest
+      // over it, matching the text-extraction fallback above.
+      if (err instanceof AttachmentCapExceededError) {
+        logger.warn(
+          { filename: attachment.filename, err: err.message },
+          "Skipping attachment that exceeded the size cap",
+        );
+        continue;
+      }
+      throw err;
+    }
   }
   return { extractedTexts };
 }

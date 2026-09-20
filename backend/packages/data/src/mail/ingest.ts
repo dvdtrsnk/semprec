@@ -16,6 +16,7 @@ import type { BlobStorageWriter } from "./blobStorage.js";
 import { reindexItemSearch } from "./search.js";
 import { resolveDeliveredToAddress } from "./deliveredTo.js";
 import { messageFlagProperties } from "./messageFlags.js";
+import { recordObservedMailMessageFlags } from "./mailMessageFlagSyncStore.js";
 
 /** Shared with mail/draft.ts and mail/send.ts, whose draft/outgoing display fields are formatted identically to a synced message's. */
 export function formatAddress(address: MailEnvelopeAddress): string {
@@ -199,6 +200,17 @@ export async function ingestEmailMessage(
       itemId = winner.itemId;
       created = false;
     }
+  }
+
+  // Provider observations establish current state but deliberately never replace a desired
+  // user value already awaiting write-back. A newly created IMAP message gets matching desired
+  // and current state; later reconciles merely converge the current half.
+  if (input.flags) {
+    const flags = messageFlagProperties(input.flags);
+    await recordObservedMailMessageFlags(client, itemId, {
+      read: flags.read ?? false,
+      flagged: flags.flagged ?? false,
+    });
   }
 
   await createRelationWithClient(

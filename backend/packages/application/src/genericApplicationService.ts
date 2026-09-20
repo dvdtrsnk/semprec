@@ -12,8 +12,15 @@ import type { AuthenticatedActor, Database, GenericApplicationPort, Item, Page }
  * path into the 28-operation catalog's business logic.
  */
 
-/** Every generic-catalog write governs `createdBy`/`creatorProjectItemId` (views) and edge/property ownership (relations) through this — an agent actor is identified by carrying `agentProjectItemId`, matching how #220's AgentTool/MCP composition root will populate `AuthenticatedActor`. */
-function toActor(actor: AuthenticatedActor): Actor {
+/**
+ * Every generic-catalog write governs `createdBy`/`creatorProjectItemId` (views) and edge/property
+ * ownership (relations) through this — an agent actor is identified by carrying
+ * `agentProjectItemId`, matching how #220's AgentTool/MCP composition root will populate
+ * `AuthenticatedActor`. Exported so `ApprovedOperationExecutor` and `DestructiveApprovalPreflight`
+ * (issue #89, in `genericOperationGateway.ts`) can convert the same actor shape without
+ * duplicating this mapping.
+ */
+export function toActor(actor: AuthenticatedActor): Actor {
   return actor.agentProjectItemId !== undefined
     ? { type: "ai_agent", agentProjectItemId: actor.agentProjectItemId }
     : { type: "user" };

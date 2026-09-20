@@ -42,6 +42,7 @@ async function createPendingRequest(): Promise<string> {
     toolName: "search_web",
     riskClass: "unclassified",
     payload,
+    resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
   });
   return created.id;
 }
@@ -56,6 +57,7 @@ describe("createApprovalRequestsRequestListener", () => {
     chokePoint ??= createChokePoint(pool);
     const viewTypeRegistry = createViewTypeRegistry();
     await resetDatabase(pool);
+    await createUser();
     await seedSystem(pool, viewTypeRegistry);
 
     server = createServer(createApprovalRequestsRequestListener(pool));
@@ -231,6 +233,7 @@ describe("createApprovalRequestsRequestListener", () => {
         toolName: "send_email",
         riskClass: "moderate",
         payload,
+        resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
       });
 
       const res = await fetch(`${baseUrl}/api/approval-requests`, {

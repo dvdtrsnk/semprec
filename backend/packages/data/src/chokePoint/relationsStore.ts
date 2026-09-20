@@ -169,6 +169,21 @@ export async function updateItemRelationMetadata(
   return rows[0] ? mapItemRelationRow(rows[0]) : null;
 }
 
+/** Read-only counterpart to `deleteItemRelation`'s tuple lookup — used where the caller needs the edge's own `id` (and full row) without removing it, e.g. a destructive-approval snapshot (issue #89). */
+export async function getItemRelationByTuple(
+  client: PoolClient,
+  relationDefinitionId: string,
+  itemA: string,
+  itemB: string,
+): Promise<ItemRelationRow | null> {
+  const { rows } = await client.query<ItemRelationDbRow>(
+    `SELECT id, relation_definition_id, item_a, item_b, metadata FROM item_relations
+     WHERE relation_definition_id = $1 AND item_a = $2 AND item_b = $3`,
+    [relationDefinitionId, itemA, itemB],
+  );
+  return rows[0] ? mapItemRelationRow(rows[0]) : null;
+}
+
 export async function deleteItemRelation(
   client: PoolClient,
   relationDefinitionId: string,

@@ -27,6 +27,22 @@ describe("ModuleRegistry.loadModule", () => {
     );
   });
 
+  it("rejects a task descriptor missing queueAffinity", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await expect(registry.loadModule(fixturePath("missingQueueAffinityTaskModule.js"))).rejects.toThrow(
+      /invalid manifest/,
+    );
+    expect(registry.listModuleIds()).toEqual([]);
+  });
+
+  it("rejects a task descriptor with an unknown queueAffinity value", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await expect(registry.loadModule(fixturePath("invalidQueueAffinityTaskModule.js"))).rejects.toThrow(
+      /invalid manifest/,
+    );
+    expect(registry.listModuleIds()).toEqual([]);
+  });
+
   it("rejects a heartbeat rule kind whose schemaExport isn't schema-shaped (no safeParse)", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     await expect(registry.loadModule(fixturePath("malformedRuleKindSchemaModule.js"))).rejects.toThrow(
@@ -210,6 +226,7 @@ describe("ModuleRegistry projections", () => {
         name: "fixtureGood.processThing",
         payloadSchemaExport: "processThingPayloadSchema",
         handlerExport: "handleProcessThing",
+        queueAffinity: "api",
       },
     ]);
 
