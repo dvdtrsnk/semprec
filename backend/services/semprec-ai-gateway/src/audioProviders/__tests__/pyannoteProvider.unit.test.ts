@@ -44,6 +44,32 @@ describe("createPyannoteDiarizationProvider", () => {
     ).rejects.toBeInstanceOf(AudioProviderCallError);
   });
 
+  it("rejects a diarization turn whose end precedes its start", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ jobId: "job-1" })))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            status: "succeeded",
+            output: { diarization: [{ speaker: "SPEAKER_00", start: 5, end: 2 }] },
+          }),
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pending = createPyannoteDiarizationProvider("test-key").diarize({
+      audioUrl: "https://audio.example/meeting.opus",
+    });
+    // Attach the rejection assertion before advancing timers, so `pending` has a handler in
+    // place the instant it rejects rather than for one unobserved microtask turn.
+    const assertion = expect(pending).rejects.toBeInstanceOf(AudioProviderCallError);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await assertion;
+  });
+
   describe("SSRF guard on audioUrl", () => {
     const fetchMock = vi.fn();
 

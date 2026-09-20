@@ -6,7 +6,10 @@ const PYANNOTE_API_URL = "https://api.pyannote.ai/v1";
 const PYANNOTE_DIARIZATION_MODEL = "pyannote-3";
 const MAX_RESPONSE_BODY_BYTES = 10 * 1024 * 1024;
 const POLL_INTERVAL_MS = 1_000;
-const MAX_POLLS = 300;
+// Each attempt can take up to POLL_INTERVAL_MS + the 55s per-request HTTP timeout below, so this
+// bounds wall-clock time at roughly 300 * 56s ≈ 4.7h worst case, not 300s — a name like MAX_POLLS
+// alone would suggest the shorter figure.
+const MAX_POLL_ATTEMPTS = 300;
 
 /** IPv4 octets or lowercased IPv6 groups that are loopback, link-local, or RFC 1918/4193 private. */
 function isPrivateOrReservedIp(hostname: string, family: 4 | 6): boolean {
@@ -94,7 +97,8 @@ function parseTurns(output: unknown): DiarizationTurn[] {
       typeof turn.start !== "number" ||
       !Number.isFinite(turn.start) ||
       typeof turn.end !== "number" ||
-      !Number.isFinite(turn.end)
+      !Number.isFinite(turn.end) ||
+      turn.end < turn.start
     ) {
       throw new AudioProviderCallError("pyannoteAI job included an invalid diarization turn");
     }
@@ -128,7 +132,7 @@ export function createPyannoteDiarizationProvider(apiKey: string): DiarizationPr
       const jobId = parseJob(await readJsonBodyWithSizeCap(created, "pyannoteAI", MAX_RESPONSE_BODY_BYTES)).jobId;
       if (typeof jobId !== "string") throw new AudioProviderCallError("pyannoteAI did not return a job id");
 
-      for (let poll = 0; poll < MAX_POLLS; poll += 1) {
+      for (let poll = 0; poll < MAX_POLL_ATTEMPTS; poll += 1) {
         await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
         let response: Response;
         try {
