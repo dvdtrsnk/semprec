@@ -28,12 +28,12 @@ export interface RecordTokenCallInput {
   operation?: string | null;
 }
 
+/** Audio calls never carry an agent_run_id — there is no agent-run attribution for transcription/diarization. */
 export interface RecordAudioCallInput {
   provider: string;
   model: string;
   audioSeconds: number;
   costUsd: number;
-  agentRunId?: string | null;
 }
 
 /** The raw `ai_gateway_calls` row shape this module reads back from Postgres. */
@@ -97,9 +97,9 @@ export async function recordAudioGatewayCall(
 ): Promise<AiGatewayCallRow> {
   const { rows } = await client.query<AiGatewayCallDbRow>(
     `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation)
-     VALUES ($1, $2, NULL, NULL, $3, $4, $5, NULL, NULL)
+     VALUES ($1, $2, NULL, NULL, $3, $4, NULL, NULL, NULL)
      RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation`,
-    [input.provider, input.model, input.audioSeconds, input.costUsd, input.agentRunId ?? null],
+    [input.provider, input.model, input.audioSeconds, input.costUsd],
   );
   return mapRow(requireSingleRow(rows, "ai_gateway_calls row"));
 }

@@ -413,7 +413,9 @@ export async function seedTenDatabasesInTransaction(
     inverse: { key: "healthRecords", name: "Health records" },
   });
   // Transcripts -> People ("speakers"): one-directional; edges carry { speaker } metadata,
-  // written by the transcription pipeline (a later issue), not here.
+  // validated and written through `transcription/transcriptionSpeakerEdges.ts`'s
+  // `writeTranscriptSpeakerEdge` — the transcription pipeline that calls it with real speaker
+  // labels is a later issue, not here.
   await relate({
     sourceDatabaseId: transcripts.id,
     key: "speakers",

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -7,10 +8,19 @@ import { getAiUsageReport } from "../aiGateway/aiUsageReport.js";
 
 let pool: Pool;
 
+async function createUser(): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
+    [`${randomUUID()}@example.com`],
+  );
+  return rows[0]!.id;
+}
+
 describe("getAiUsageReport", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    await createUser();
   });
 
   afterAll(async () => {

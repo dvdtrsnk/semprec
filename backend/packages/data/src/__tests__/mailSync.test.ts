@@ -34,6 +34,7 @@ import {
 import type { ClassifiedAttachment } from "../mail/attachments.js";
 import { sanitizeMailHtml } from "../mail/htmlSanitize.js";
 import { parseMailSearchQuery, reindexItemSearch, searchItems } from "../mail/search.js";
+import { ValidationError } from "../errors.js";
 import { storeCredential, getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import { reconcileImapAccount, type ImapFetchedMessage, type ImapMailClient } from "../mail/imapReconcile.js";
 import { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
@@ -49,7 +50,11 @@ import {
   defaultSyncModeForProvider,
 } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
-import { MailConnectionLimitError, MailReauthorizationRequiredError } from "../mail/providerTypes.js";
+import {
+  AttachmentCapExceededError,
+  MailConnectionLimitError,
+  MailReauthorizationRequiredError,
+} from "../mail/providerTypes.js";
 import { logger } from "../mail/logger.js";
 import {
   walkBodyStructure,
@@ -60,8 +65,7 @@ import {
 } from "../mail/imapFlowClient.js";
 import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG, messageFlagProperties } from "../mail/messageFlags.js";
-import type { ImapFlow } from "imapflow";
-import type { MessageStructureObject } from "imapflow";
+import type { FetchMessageObject, ImapFlow, MessageStructureObject } from "imapflow";
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { createUser } from "../auth/usersStore.js";
@@ -696,6 +700,57 @@ describe("attachment ingest (issue #26)", () => {
     const found = await searchItems(pool, { databaseId: emailsId, query: "UniqueInvoiceKeyword" });
     expect(found.map((f) => f.itemId)).toContain(result.itemId);
   });
+
+  it("skips an attachment that exceeds the size cap instead of failing the whole message ingest", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+    const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+    const folder = await withTransaction(pool, (client) =>
+      createItemWithClient(
+        client,
+        { databaseId: foldersId, properties: { name: "INBOX" } },
+        { allowedSystemKeys: ["name"] },
+      ),
+    );
+
+    // Mirrors the real IMAP adapter: openStream() returns a lazy Readable synchronously, and
+    // the cap violation only surfaces as a stream error once something actually consumes it —
+    // never as a synchronous throw from openStream() itself.
+    async function* oversizedChunks() {
+      yield Buffer.from("first-chunk");
+      throw new AttachmentCapExceededError("IMAP attachment exceeded the cap");
+    }
+    const oversized: ClassifiedAttachment = {
+      filename: "huge.bin",
+      contentType: "application/octet-stream",
+      contentId: null,
+      disposition: "attachment",
+      openStream: () => Readable.from(oversizedChunks()),
+    };
+
+    const result = await withTransaction(pool, (client) =>
+      ingestEmailMessage(client, {
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        folderRelationPropertyId: folderProperty.id,
+        attachmentsRelationPropertyId: attachmentsProperty.id,
+        folderItemId: folder.id,
+        messageId: "<with-oversized-attachment@x>",
+        envelope: {},
+        attachments: [oversized, attachment("kept.pdf", Buffer.from("kept-bytes"))],
+        storage: noopStorage,
+        storageKeyPrefix: "test",
+      }),
+    );
+
+    const { rows: attachmentRows } = await pool.query(
+      `SELECT filename FROM mail_attachments WHERE message_item_id = $1`,
+      [result.itemId],
+    );
+    expect(attachmentRows.map((r) => r.filename)).toEqual(["kept.pdf"]);
+  });
 });
 
 describe("IMAP BODYSTRUCTURE walking (issue #26)", () => {
@@ -867,6 +922,45 @@ describe("full-text search over Emails (issue #26)", () => {
       expect(parseMailSearchQuery("just some words")).toEqual({ freeText: "just some words" });
     });
 
+    it("is:read/is:unread and is:flagged/is:unflagged parse into independent boolean dimensions", () => {
+      expect(parseMailSearchQuery("invoice is:unread is:unflagged")).toEqual({
+        freeText: "invoice",
+        read: false,
+        flagged: false,
+      });
+      expect(parseMailSearchQuery("is:read is:flagged")).toEqual({ freeText: "", read: true, flagged: true });
+    });
+
+    it("identical repeated is: operators collapse instead of conflicting", () => {
+      expect(parseMailSearchQuery("is:unread is:unread")).toEqual({ freeText: "", read: false });
+      expect(parseMailSearchQuery("is:flagged is:flagged")).toEqual({ freeText: "", flagged: true });
+    });
+
+    it("an unrecognized is: value is left in free text rather than silently discarded", () => {
+      expect(parseMailSearchQuery("invoice is:spam")).toEqual({ freeText: "invoice is:spam" });
+    });
+
+    it("is:read is:unread fails as a contradictory validation error", () => {
+      expect(() => parseMailSearchQuery("is:read is:unread")).toThrow(ValidationError);
+      try {
+        parseMailSearchQuery("is:read is:unread");
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(ValidationError);
+        expect((err as ValidationError).details).toEqual({ field: "is:read", conflict: ["read", "unread"] });
+      }
+    });
+
+    it("is:flagged is:unflagged fails as a contradictory validation error", () => {
+      try {
+        parseMailSearchQuery("is:flagged is:unflagged");
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(ValidationError);
+        expect((err as ValidationError).details).toEqual({ field: "is:flagged", conflict: ["flagged", "unflagged"] });
+      }
+    });
+
     it("from: filters by the sender display text", async () => {
       const emailsId = await databaseIdFor("emails");
       const foldersId = await databaseIdFor("folders");
@@ -914,6 +1008,64 @@ describe("full-text search over Emails (issue #26)", () => {
 
       const results = await searchItems(pool, { databaseId: emailsId, query: "report from:alice@x.com" });
       expect(results.map((r) => r.itemId)).toEqual([fromAlice.itemId]);
+    });
+
+    it("is:read/is:unread and is:flagged/is:unflagged filter on the canonical structured properties (issue #90)", async () => {
+      const emailsId = await databaseIdFor("emails");
+      const foldersId = await databaseIdFor("folders");
+      const filesId = await databaseIdFor("files");
+      const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+      const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+      const folder = await withTransaction(pool, (client) =>
+        createItemWithClient(
+          client,
+          { databaseId: foldersId, properties: { name: "INBOX" } },
+          { allowedSystemKeys: ["name"] },
+        ),
+      );
+
+      const ingest = (messageId: string, flags: string[] | undefined) =>
+        withTransaction(pool, (client) =>
+          ingestEmailMessage(client, {
+            emailsDatabaseId: emailsId,
+            filesDatabaseId: filesId,
+            folderRelationPropertyId: folderProperty.id,
+            attachmentsRelationPropertyId: attachmentsProperty.id,
+            folderItemId: folder.id,
+            messageId,
+            subject: "Report",
+            envelope: { from: { address: "alice@x.com" } },
+            attachments: [],
+            storage: noopStorage,
+            storageKeyPrefix: "test",
+            flags,
+          }),
+        );
+
+      // Legacy row: no flags reported at ingest at all, the documented default is unread/unflagged.
+      const legacy = await ingest("<legacy@x>", undefined);
+      const readOnly = await ingest("<read@x>", [IMAP_SEEN_FLAG]);
+      const flaggedOnly = await ingest("<flagged@x>", [IMAP_FLAGGED_FLAG]);
+      const readAndFlagged = await ingest("<both@x>", [IMAP_SEEN_FLAG, IMAP_FLAGGED_FLAG]);
+
+      const unread = await searchItems(pool, { databaseId: emailsId, query: "report is:unread" });
+      expect(unread.map((r) => r.itemId).sort()).toEqual([flaggedOnly.itemId, legacy.itemId].sort());
+
+      const read = await searchItems(pool, { databaseId: emailsId, query: "report is:read" });
+      expect(read.map((r) => r.itemId).sort()).toEqual([readAndFlagged.itemId, readOnly.itemId].sort());
+
+      const unflagged = await searchItems(pool, { databaseId: emailsId, query: "report is:unflagged" });
+      expect(unflagged.map((r) => r.itemId).sort()).toEqual([legacy.itemId, readOnly.itemId].sort());
+
+      const flagged = await searchItems(pool, { databaseId: emailsId, query: "report is:flagged" });
+      expect(flagged.map((r) => r.itemId).sort()).toEqual([flaggedOnly.itemId, readAndFlagged.itemId].sort());
+
+      // Read and flagged dimensions compose with AND, and with an unrelated existing operator (from:).
+      const readAndFlaggedQuery = await searchItems(pool, {
+        databaseId: emailsId,
+        query: "report is:read is:flagged from:alice@x.com",
+      });
+      expect(readAndFlaggedQuery.map((r) => r.itemId)).toEqual([readAndFlagged.itemId]);
     });
   });
 });
@@ -2683,6 +2835,122 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
     expect(fetched[0]!.message.bodyText).toBeDefined();
     expect(raw.calls).toContain("download");
     expect(raw.calls.some((c) => c.startsWith("messageFlagsAdd"))).toBe(false);
+  });
+
+  async function attachmentStream(client: ImapFlowMailClient): Promise<Readable> {
+    const fetched = await client.fetchMessagesSince("INBOX", 1);
+    return await fetched[0]!.message.attachments[0]!.openStream();
+  }
+
+  function attachmentFetch(): AsyncIterableIterator<FetchMessageObject> {
+    return (async function* () {
+      yield {
+        seq: 1,
+        uid: 1,
+        envelope: { from: [{ address: "a@x.com" }], to: [], cc: [] },
+        bodyStructure: { type: "application/pdf", part: "2", disposition: "attachment" },
+        headers: Buffer.from(""),
+      };
+    })();
+  }
+
+  it("replaces a failed attachment download with ordered bounded IMAP partial ranges", async () => {
+    const ranges: Array<{ start: number; maxLength: number }> = [];
+    const raw = fakeImapFlow({
+      async download() {
+        return {
+          content: Readable.from(
+            (async function* () {
+              yield Buffer.from("abc");
+              throw new Error("midstream failure");
+            })(),
+          ),
+        };
+      },
+      fetch: attachmentFetch,
+      async fetchOne(_uid: string, query: { bodyParts?: Array<{ key: string; start?: number; maxLength?: number }> }) {
+        const range = query.bodyParts?.[0];
+        if (range?.start === undefined || range.maxLength === undefined) throw new Error("missing partial range");
+        ranges.push({ start: range.start, maxLength: range.maxLength });
+        return { bodyParts: new Map([[range.key, Buffer.from("def")]]) };
+      },
+    });
+
+    const stream = await attachmentStream(new ImapFlowMailClient(raw));
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+
+    expect(Buffer.concat(chunks).toString()).toBe("abcdef");
+    expect(ranges).toEqual([{ start: 3, maxLength: 64 * 1024 }]);
+  });
+
+  it("recognizes EOF from a short partial range and rejects a partial fetch that makes no progress", async () => {
+    const eofChunk = Buffer.alloc(100);
+    const eofStarts: number[] = [];
+    const eofRaw = fakeImapFlow({
+      async download() {
+        throw new Error("download failed");
+      },
+      fetch: attachmentFetch,
+      async fetchOne(_uid: string, query: { bodyParts?: Array<{ key: string; start?: number }> }) {
+        const range = query.bodyParts?.[0];
+        if (range?.start === undefined) throw new Error("missing partial range");
+        eofStarts.push(range.start);
+        return { bodyParts: new Map([[range.key, eofChunk]]) };
+      },
+    });
+    const eofStream = await attachmentStream(new ImapFlowMailClient(eofRaw));
+    let eofBytes = 0;
+    for await (const chunk of eofStream) eofBytes += Buffer.byteLength(chunk);
+    expect(eofBytes).toBe(eofChunk.length);
+    expect(eofStarts).toEqual([0]);
+
+    const stalledRaw = fakeImapFlow({
+      async download() {
+        throw new Error("download failed");
+      },
+      fetch: attachmentFetch,
+      async fetchOne(_uid: string, query: { bodyParts?: Array<{ key: string }> }) {
+        const key = query.bodyParts?.[0]?.key;
+        if (!key) throw new Error("missing partial range");
+        return { bodyParts: new Map([[key, Buffer.alloc(0)]]) };
+      },
+    });
+    const stalledStream = await attachmentStream(new ImapFlowMailClient(stalledRaw));
+    await expect(async () => {
+      for await (const _chunk of stalledStream) {
+        // Draining is required to make the lazy fallback perform its first partial request.
+      }
+    }).rejects.toThrow("made no progress");
+  });
+
+  it("rejects a partial download that reaches the attachment cap and still has bytes", async () => {
+    const fullChunk = Buffer.alloc(64 * 1024);
+    let fetches = 0;
+    const raw = fakeImapFlow({
+      async download() {
+        throw new Error("download failed");
+      },
+      fetch: attachmentFetch,
+      async fetchOne(_uid: string, query: { bodyParts?: Array<{ key: string }> }) {
+        const key = query.bodyParts?.[0]?.key;
+        if (!key) throw new Error("missing partial range");
+        fetches += 1;
+        // 1600 = MAX_ATTACHMENT_BYTES (104_857_600) / IMAP_PARTIAL_FETCH_BYTES (65_536), both
+        // private to imapFlowClient.ts so not importable here — the number of full-size chunks
+        // needed to reach the cap exactly.
+        return { bodyParts: new Map([[key, fetches <= 1600 ? fullChunk : Buffer.from("x")]]) };
+      },
+    });
+    const stream = await attachmentStream(new ImapFlowMailClient(raw));
+
+    await expect(async () => {
+      for await (const _chunk of stream) {
+        // Draining confirms the cap is enforced by the fallback before storage sees an extra byte.
+      }
+    }).rejects.toThrow("exceeded the 104857600-byte cap");
+    // 1601 = the 1600 full-size chunks above plus the EOF probe fetch that discovers extra bytes.
+    expect(fetches).toBe(1601);
   });
 
   it("setMessageFlag — the only explicit flag-writing path — issues STORE +FLAGS / -FLAGS for the given UID", async () => {

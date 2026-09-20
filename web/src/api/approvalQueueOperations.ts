@@ -13,16 +13,26 @@ import { OperationError } from "./genericOperations.js";
  * `aiUsageOperations.ts`.
  */
 
+const approvalRequestSafeSummarySchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("mcpInvoke"),
+    mcpToolRegistrationId: z.string(),
+    mcpServerItemId: z.string(),
+    argKeys: z.array(z.string()),
+  }),
+  z.object({
+    kind: z.literal("genericOperation"),
+    operationName: z.string(),
+    argKeys: z.array(z.string()),
+  }),
+]);
+
 const approvalRequestRowSchema = z.object({
   id: z.string(),
   toolName: z.string(),
   riskClass: z.string(),
   requestedAt: z.string(),
-  safeSummary: z.object({
-    mcpToolRegistrationId: z.string(),
-    mcpServerItemId: z.string(),
-    argKeys: z.array(z.string()),
-  }),
+  safeSummary: approvalRequestSafeSummarySchema,
   agentRunId: z.string(),
   projectItemId: z.string().nullable(),
   projectName: z.string().nullable(),

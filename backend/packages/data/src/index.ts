@@ -10,6 +10,18 @@ export type {
   UpdateRelationInput,
   DeleteRelationInput,
   RelationEdge,
+  ResourceSnapshot,
+  ResourceSnapshotKind,
+  DestructiveResourceProjection,
+  DestructiveOperationCheck,
+} from "./chokePoint/chokePoint.js";
+export {
+  databaseArchiveWithClient,
+  propertyDeleteWithClient,
+  viewDeleteWithClient,
+  itemDeleteWithClient,
+  deleteRelationWithClient,
+  computeDestructiveResourceProjection,
 } from "./chokePoint/chokePoint.js";
 export type { CreateDatabaseInput } from "./chokePoint/databasesStore.js";
 export { getDatabaseByModuleId } from "./chokePoint/databasesStore.js";
@@ -36,7 +48,12 @@ export { computeNextFireAt } from "./scheduler/nextFireAt.js";
 export * from "./scheduler/schedulerStore.js";
 export * from "./scheduler/actions.js";
 export * from "./scheduler/heartbeatAgentTools.js";
-export { handleHeartbeatSweepTask, createHeartbeatFireTask } from "./scheduler/sweep.js";
+export {
+  handleHeartbeatSweepTask,
+  createHeartbeatFireCoreTask,
+  createHeartbeatFireAgentTask,
+} from "./scheduler/sweep.js";
+export { runHeartbeatFireQueueSplitMigration } from "./scheduler/heartbeatFireQueueSplitMigration.js";
 
 export * from "./rollup/config.js";
 export * from "./rollup/dependencies.js";
@@ -93,8 +110,18 @@ export * from "./seed/tenDatabaseKeys.js";
 export { seedTenDatabasesInTransaction, type TenDatabases } from "./seed/seedTenDatabases.js";
 export { manifest as systemDatabasesModuleManifest } from "./seed/systemDatabasesModuleManifest.js";
 export * from "./systemSettings.js";
-export { createCoreTaskList, CORE_CRONTAB } from "./worker.js";
-export { mergeModuleTaskList, CORE_TASK_NAME_SET } from "./moduleTasks.js";
+export { createCoreTaskList, createApiCoreTaskList, CORE_CRONTAB } from "./worker.js";
+export { createAgentTaskList, noopAgentQueueTask, type AgentQueueTaskHandler } from "./agentWorker.js";
+export {
+  mergeModuleTaskList,
+  mergeModuleTaskListForAffinity,
+  assertTaskListMatchesAffinity,
+  CORE_TASK_NAME_SET,
+  AGENT_TASK_NAME_SET,
+  RESERVED_TASK_NAMES,
+  resolveTaskAffinitySets,
+  type TaskAffinitySets,
+} from "./moduleTasks.js";
 export {
   deriveDesiredWorkerInstances,
   createModuleWorkerInstanceReconciler,
@@ -231,25 +258,43 @@ export {
 export type {
   ApprovalRequest,
   ApprovalRequestPayload,
+  McpInvokeApprovalRequestPayload,
+  GenericOperationApprovalRequestPayload,
   ApprovalRequestStatus,
   ApprovalRequestDecision,
   CreatePendingApprovalRequestInput,
+  ApprovalRequestOutcome,
 } from "./mcp/approvalRequestsStore.js";
 export {
   createPendingApprovalRequest,
   getApprovalRequest,
   listPendingApprovalRequests,
+  isGenericOperationApprovalRequestPayload,
+  terminalizeApprovalRequestAsConflict,
+  markApprovalRequestExecutionSucceeded,
 } from "./mcp/approvalRequestsStore.js";
 export type { ApprovalRequestQueueEntry, ApprovalRequestSafeSummary } from "./mcp/approvalRequestsQueue.js";
 export { listApprovalRequestsQueue } from "./mcp/approvalRequestsQueue.js";
 export type { McpInvokeResult, McpInvokeArgs, McpInvokeOptions } from "./mcp/mcpToolExecution.js";
 export { executeMcpInvocation } from "./mcp/mcpToolExecution.js";
+export type { GenericOperationApprovalReplay } from "./mcp/approvalRequestExecution.js";
 // `approvalRequestsStore.ts`'s `decideApprovalRequest` is deliberately NOT exported here — see
 // that file's header comment (issue #131), same convention as `mcpGrantsAdminStore.ts`. Only
 // this wrapper (which also enqueues the reserved execution job in the same transaction) is
 // reachable from a route handler.
 export type { DecideApprovalRequestInput } from "./mcp/approvalDecisionAction.js";
 export { decideAndEnqueueApprovalRequest } from "./mcp/approvalDecisionAction.js";
+
+// `mcpRunCredentialsStore.ts`'s raw hash-keyed lookup is deliberately NOT exported here, mirroring
+// `sessionsStore.ts`'s `getActiveSessionByTokenHash`: only the action-layer wrapper that hashes the
+// presented token internally (`resolveMcpRunCredential`) is reachable from a composition root.
+export type { ActiveMcpRunCredential } from "./mcp/mcpRunCredentialsStore.js";
+export type { MintMcpRunCredentialInput, MintMcpRunCredentialResult } from "./mcp/mcpRunCredentialAction.js";
+export {
+  mintMcpRunCredential,
+  resolveMcpRunCredential,
+  MCP_RUN_CREDENTIAL_TTL_SECONDS,
+} from "./mcp/mcpRunCredentialAction.js";
 
 export {
   projectAgentGuidanceStore,

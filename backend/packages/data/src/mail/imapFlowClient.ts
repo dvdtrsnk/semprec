@@ -1,10 +1,25 @@
 import type { ImapFlow, FetchMessageObject, MessageAddressObject, MessageStructureObject } from "imapflow";
+import { Readable } from "node:stream";
 import type { ImapFetchedMessage, ImapFolderRef, ImapFolderSelection, ImapMailClient } from "./imapReconcile.js";
-import { MAX_ATTACHMENT_BYTES, type FetchedMessage } from "./providerTypes.js";
+import { AttachmentCapExceededError, MAX_ATTACHMENT_BYTES, type FetchedMessage } from "./providerTypes.js";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { isDeliveryStatusReport } from "./dsn.js";
 import type { WritableImapFlag } from "./messageFlags.js";
+import { logger } from "./logger.js";
+
+// This is deliberately the same order of magnitude as imapflow's default download chunk.
+// The fallback makes at most MAX_ATTACHMENT_BYTES / IMAP_PARTIAL_FETCH_BYTES requests, plus
+// one EOF probe at the cap, so neither a broken server nor a failed stream can create an
+// unbounded retry loop.
+const IMAP_PARTIAL_FETCH_BYTES = 64 * 1024;
+
+// imapflow's FetchOptions has no per-call timeout/signal of its own (unlike the REST adapters'
+// fetch() calls elsewhere in this module, which pass AbortSignal.timeout()), so the bounded
+// partial-fetch loop below races each fetchOne() against this timer itself — otherwise a server
+// that stops responding mid-response, rather than closing the socket, could hang the sync
+// worker indefinitely on this one request.
+const IMAP_PARTIAL_FETCH_TIMEOUT_MS = 30_000;
 
 /**
  * `MAX_ATTACHMENT_BYTES` (providerTypes.ts, shared with the Gmail/Graph adapters) is passed to
@@ -145,6 +160,114 @@ export class ImapFlowMailClient implements ImapMailClient {
     return Buffer.concat(chunks).toString("utf8");
   }
 
+  /**
+   * Streams a body part through imapflow's normal decoder first. If that stream fails after
+   * yielding bytes, continue at that decoded-byte offset with bounded BINARY body ranges. A
+   * BINARY range is already transfer-decoded by the server, so it can join the normal decoded
+   * stream without changing the attachment bytes seen by storage.
+   */
+  private openAttachmentStream(uid: number, part: string): Readable {
+    return Readable.from(this.streamAttachment(uid, part));
+  }
+
+  private async *streamAttachment(uid: number, part: string): AsyncGenerator<Buffer> {
+    let offset = 0;
+    let completed = false;
+    let content: Readable | undefined;
+
+    try {
+      const result = await this.client.download(String(uid), part, {
+        uid: true,
+        maxBytes: MAX_ATTACHMENT_BYTES,
+      });
+      content = result.content;
+      for await (const chunk of content) {
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        offset = this.nextAttachmentOffset(offset, bytes.length);
+        yield bytes;
+      }
+      completed = true;
+      return;
+    } catch (err) {
+      // A cap violation is a policy decision already made by nextAttachmentOffset, not a
+      // stream failure — rethrow it so it reaches the caller instead of being masked by the
+      // fallback below, which would silently re-run into the very same cap.
+      if (err instanceof AttachmentCapExceededError) throw err;
+      // A replacement source below is the specified recovery path. The original stream is
+      // destroyed in finally so a failed or abandoned download cannot keep its socket alive.
+      // Logged here (not just swallowed) since this is the only place that ever sees the
+      // original stream failure — the fallback path below has no way to report it itself.
+      logger.warn(
+        { uid, part, err: err instanceof Error ? err.message : String(err) },
+        "IMAP attachment stream failed before completing; falling back to bounded partial fetches",
+      );
+    } finally {
+      if (!completed && content !== undefined && !content.destroyed) content.destroy();
+    }
+
+    yield* this.fetchAttachmentRanges(uid, part, offset);
+  }
+
+  private nextAttachmentOffset(offset: number, length: number): number {
+    if (length === 0) {
+      throw new Error("IMAP attachment stream yielded an empty chunk without making progress");
+    }
+    if (offset + length > MAX_ATTACHMENT_BYTES) {
+      throw new AttachmentCapExceededError(`IMAP attachment exceeded the ${MAX_ATTACHMENT_BYTES}-byte cap`);
+    }
+    return offset + length;
+  }
+
+  /** Races a single `fetchOne()` call against a timer, since imapflow's `FetchOptions` has no timeout/signal of its own — see `IMAP_PARTIAL_FETCH_TIMEOUT_MS`'s comment. */
+  private async fetchOneWithTimeout(...args: Parameters<ImapFlow["fetchOne"]>): ReturnType<ImapFlow["fetchOne"]> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        this.client.fetchOne(...args),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`IMAP partial fetch timed out after ${IMAP_PARTIAL_FETCH_TIMEOUT_MS}ms`)),
+            IMAP_PARTIAL_FETCH_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async *fetchAttachmentRanges(uid: number, part: string, offset: number): AsyncGenerator<Buffer> {
+    const key = part.toLowerCase().trim();
+    let needsEofProbe = offset === MAX_ATTACHMENT_BYTES;
+
+    while (offset < MAX_ATTACHMENT_BYTES || needsEofProbe) {
+      const maxLength = needsEofProbe ? 1 : Math.min(IMAP_PARTIAL_FETCH_BYTES, MAX_ATTACHMENT_BYTES - offset);
+      needsEofProbe = false;
+      const response = await this.fetchOneWithTimeout(
+        String(uid),
+        { bodyParts: [{ key, start: offset, maxLength }] },
+        { uid: true, binary: true },
+      );
+      const chunk = response === false ? undefined : response.bodyParts?.get(key);
+
+      if (chunk === undefined || chunk.length === 0) {
+        if (offset === MAX_ATTACHMENT_BYTES) return;
+        throw new Error("IMAP attachment partial fetch made no progress");
+      }
+      if (chunk.length > maxLength) {
+        throw new Error("IMAP attachment partial fetch exceeded its requested range");
+      }
+      if (offset === MAX_ATTACHMENT_BYTES) {
+        throw new AttachmentCapExceededError(`IMAP attachment exceeded the ${MAX_ATTACHMENT_BYTES}-byte cap`);
+      }
+
+      offset = this.nextAttachmentOffset(offset, chunk.length);
+      yield chunk;
+      if (chunk.length < maxLength) return;
+      if (offset === MAX_ATTACHMENT_BYTES) needsEofProbe = true;
+    }
+  }
+
   private classifyAttachmentParts(
     uid: number,
     parts: MessageStructureObject[],
@@ -162,13 +285,7 @@ export class ImapFlowMailClient implements ImapMailClient {
         // Lazy: bytes only flow once `ingestAttachments` (mail/attachments.ts) actually calls
         // this, streamed straight from the socket through `download()`'s decoder pipeline into
         // `blobStorage.ts`'s `pipeline()` — never buffered whole in between.
-        openStream: async () => {
-          const { content } = await this.client.download(String(uid), partId, {
-            uid: true,
-            maxBytes: MAX_ATTACHMENT_BYTES,
-          });
-          return content;
-        },
+        openStream: () => this.openAttachmentStream(uid, partId),
       };
     });
     // An inline part actually referenced via `cid:` inside the HTML body is a rendering asset
