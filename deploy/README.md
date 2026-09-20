@@ -1,9 +1,8 @@
 # deploy/
 
 Host-level operational configuration for the single-server production deployment (`operations`
-batch). Provisioning (`provision.sh`, service units) is delivered by later issues in the same
-batch (#244, #176); this directory holds the network boundary (#174) and the bootstrap secrets
-contract (#175):
+batch). This directory holds the network boundary (#174), the bootstrap secrets contract (#175),
+and the first provisioning slice (#244):
 
 - `Caddyfile` — the single public entry point. One domain, automatic TLS, HSTS without
   `includeSubDomains`/`preload`, compression, JSON access log to stderr, and the two-tier
@@ -15,6 +14,10 @@ contract (#175):
   production secrets file every service and both Docker Compose services read. See its header
   comment for the full contract (ownership/mode, distribution, backup exclusion). `provision.sh`
   (#244) copies this template into place only when no `.env` already exists there.
+- `provision.sh` — idempotently prepares a supported Debian or Ubuntu host: Node 22 LTS with
+  pnpm, Docker Compose, Caddy, restic, ffmpeg/ffprobe, the `semprec` service user, and the
+  `/opt/semprec/{releases,shared}` tree. Run it as root from this directory's checked-out copy.
+  Existing release contents and `/opt/semprec/shared/.env` are deliberately left untouched.
 
 `semprec-api` and `semprec-ai-gateway` aren't containerized — they run as systemd units (#176)
 and bind to loopback in their own `server.listen(port, "127.0.0.1", ...)` call, so that binding
