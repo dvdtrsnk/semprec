@@ -71,7 +71,6 @@ async function withAudioAccounting<T extends AudioCallResult>(
     model: ctx.model,
     audioSeconds: result.audioSeconds,
     costUsd: result.costUsd,
-    agentRunId: ctx.agentRunId,
   });
   return result;
 }
