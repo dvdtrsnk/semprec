@@ -40,6 +40,8 @@ import { getSystemSettingsItemId } from "../systemSettings.js";
 import { createComputedKeyRegistry, type ComputedKeyRegistry } from "./computedKeyRegistry.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "./viewTypeRegistry.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
+import { recordDesiredMailMessageFlags } from "../mail/mailMessageFlagSyncStore.js";
 
 interface AssertWritablePropertiesOptions {
   /**
@@ -580,6 +582,13 @@ export async function updateItemWithClient(
     propertiesPatch: input.propertiesPatch,
     ifVersion: input.ifVersion,
   });
+  // The generic item mutation is the sole origin for user/agent triage intent. Persist it
+  // in the same transaction as the Email patch so a crash cannot leave UI state committed
+  // without a restart-safe provider write to perform.
+  const database = await databasesStore.getDatabase(client, input.databaseId);
+  if (database?.ownerModuleId === EMAILS_MODULE_ID) {
+    await recordDesiredMailMessageFlags(client, item.id, input.propertiesPatch);
+  }
   await triggerOnItemEventHeartbeats(client, input.databaseId, "update", item.id, options.queueAffinity);
 
   for (const key of patchKeys) {
