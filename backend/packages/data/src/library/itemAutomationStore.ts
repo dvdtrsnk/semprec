@@ -36,7 +36,7 @@ const COLUMNS = "item_id, status, error, attempts, last_attempt_at";
 
 /**
  * Idempotent: a second call for the same item is a no-op, so re-firing the onItemEvent
- * 'create' trigger (e.g. a retried heartbeatFire job) never resets an in-flight or
+ * 'create' trigger (e.g. a retried heartbeatFireCore job) never resets an in-flight or
  * already-resolved row back to 'pending'.
  */
 export async function ensureItemAutomation(client: PoolClient, itemId: string): Promise<ItemAutomationRow> {

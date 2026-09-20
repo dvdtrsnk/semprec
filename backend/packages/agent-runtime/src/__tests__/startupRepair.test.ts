@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { createAgentRun, insertAgentRunEvent } from "@semprec/data";
+import { createAgentRun, createUser, hashPassword, insertAgentRunEvent } from "@semprec/data";
 import { repairInterruptedRuns } from "../startupRepair.js";
 
 let pool: Pool;
@@ -10,6 +10,8 @@ describe("repairInterruptedRuns", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    const passwordHash = await hashPassword("s3cret-password");
+    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
   });
 
   afterAll(async () => {

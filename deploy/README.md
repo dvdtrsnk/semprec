@@ -19,9 +19,14 @@ and the first provisioning slice (#244):
   `/opt/semprec/{releases,shared}` tree. Run it as root from this directory's checked-out copy.
   Existing release contents and `/opt/semprec/shared/.env` are deliberately left untouched.
 
-`semprec-api` and `semprec-ai-gateway` aren't containerized — they run as systemd units (#176)
-and bind to loopback in their own `server.listen(port, "127.0.0.1", ...)` call, so that binding
-lives in `backend/services/*/src/serve.ts`, not here. Each unit loads the same
+`semprec-api`, `semprec-ai-gateway`, and `semprec-agents` aren't containerized — they run as
+systemd units (#176). `semprec-api` and `semprec-ai-gateway` bind to loopback in their own
+`server.listen(port, "127.0.0.1", ...)` call, so that binding lives in
+`backend/services/*/src/serve.ts`, not here; `semprec-agents` has no HTTP listener at all — it is
+the second graphile-worker composition root (issue #91), owning the closed agent task catalog
+(`heartbeatFireAgent`/`agentRun`/`delegatedAgentRun`) over the same Postgres-backed queue
+`semprec-api` uses, and needs its own long-running unit with no `Type=notify`/socket activation.
+Each unit loads the same
 `/opt/semprec/shared/.env` via `EnvironmentFile=` — the systemd half of the same distribution
 contract `docker-compose.yml`'s `env_file:` already uses. A service that needs a value no other
 process needs (e.g. `PORT`) still reads it out of this one file; nothing service-specific is ever

@@ -1,8 +1,12 @@
 import type { Pool } from "pg";
-import { CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
+import { AGENT_TASK_NAMES, CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
 import { withTraceContext } from "@semprec/shared";
 import type { ModuleRegistry } from "@semprec/module-registry";
-import { handleHeartbeatSweepTask, createHeartbeatFireTask } from "./scheduler/sweep.js";
+import {
+  handleHeartbeatSweepTask,
+  createHeartbeatFireCoreTask,
+  createHeartbeatFireAgentTask,
+} from "./scheduler/sweep.js";
 import { handleRollupRecomputeTask, handleRollupRecomputeFullTask } from "./rollup/recompute.js";
 import { handleJournalInboxRecomputeTask } from "./inbox/journalInboxCompute.js";
 import { handlePropertyTypeMigrationTask } from "./migrationJob/propertyTypeMigration.js";
@@ -32,11 +36,15 @@ import {
   noopLegacyRawMimeFetcher,
   type LegacyRawMimeFetcher,
 } from "./migrationJob/mailLegacyEmailMigration.js";
-import { handleApprovalRequestExecuteTask } from "./mcp/approvalRequestExecution.js";
+import {
+  handleApprovalRequestExecuteTask,
+  type GenericOperationApprovalReplay,
+} from "./mcp/approvalRequestExecution.js";
 import { handleNotificationFanoutTask } from "./notifications/notificationFanoutJob.js";
 import type { PushSenders } from "./push/pushSenders.js";
 import { handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
 import { handleObservabilityCheckSystemTask } from "./observability/observabilityCheckSystem.js";
+import { handleTranscriptionJobTask } from "./transcription/transcriptionJob.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -75,6 +83,7 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 30 3 * * * ${CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP}
 45 3 * * * ${CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP}
 * * * * * ${CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM}
+0 4 * * * ${CORE_TASK_NAMES.TRASH_PURGE}
 `;
 
 /**
@@ -96,12 +105,16 @@ export function createCoreTaskList(
   legacyRawMimeFetcher: LegacyRawMimeFetcher = noopLegacyRawMimeFetcher,
   moduleRegistry?: ModuleRegistry,
   pushSenders?: PushSenders,
+  genericOperationApprovalReplay?: GenericOperationApprovalReplay,
 ): TaskList {
   const handlers: TaskList = {
     [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {
       await handleHeartbeatSweepTask(pool, moduleRegistry);
     },
-    [CORE_TASK_NAMES.HEARTBEAT_FIRE]: createHeartbeatFireTask(pool, actionRegistry, moduleRegistry),
+    // Issue #222: both split handlers run in this single-process test/dev task list until a
+    // future issue (#91) hosts them under their own separate api/agents composition roots.
+    [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: createHeartbeatFireCoreTask(pool, actionRegistry, moduleRegistry),
+    [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: createHeartbeatFireAgentTask(pool, actionRegistry, moduleRegistry),
     [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: async (payload) => {
       await handleRollupRecomputeTask(pool, {
         rollupPropertyId: requireString(payload, "rollupPropertyId"),
@@ -166,7 +179,11 @@ export function createCoreTaskList(
       );
     },
     [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: async (payload) => {
-      await handleApprovalRequestExecuteTask(pool, { approvalRequestId: requireString(payload, "approvalRequestId") });
+      await handleApprovalRequestExecuteTask(
+        pool,
+        { approvalRequestId: requireString(payload, "approvalRequestId") },
+        genericOperationApprovalReplay,
+      );
     },
     [CORE_TASK_NAMES.NOTIFICATION_FANOUT]: async (payload) => {
       await handleNotificationFanoutTask(
@@ -178,9 +195,22 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: async () => {
       await handleItemTrashPurgeSweepTask(pool);
     },
+    // Issue #221 declared `trashPurge` as a second daily crontab entry alongside
+    // `itemTrashPurgeSweep`, distinct in name but not in effect — it runs the same purge sweep.
+    [CORE_TASK_NAMES.TRASH_PURGE]: async () => {
+      await handleItemTrashPurgeSweepTask(pool);
+    },
     [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: async (_payload, taskHelpers) => {
       await handleObservabilityCheckSystemTask(pool, { job: { id: taskHelpers.job.id } });
     },
+    [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: async (payload) => {
+      await handleTranscriptionJobTask(payload);
+    },
+    // Issue #221 declared this name in the closed API affinity set ("handler and enqueue routing
+    // are delivered later") but nothing enqueues it yet — no crontab line, no producer. A no-op
+    // placeholder keeps the `api` runtime's registered handlers matching its affinity set exactly
+    // (issue #91's startup validation) until the deferred issue gives it a real body.
+    [CORE_TASK_NAMES.DOC_HISTORY_SQUASH]: async () => {},
   };
 
   // Issue #167: every core task restores the trace its `enqueueJob` producer stamped (or, for a
@@ -190,4 +220,18 @@ export function createCoreTaskList(
       .filter((entry): entry is [string, Task] => entry[1] !== undefined)
       .map(([name, task]) => [name, registerTask(name, task)]),
   );
+}
+
+/**
+ * Issue #91's `api` composition root's own task list: every `createCoreTaskList` handler except
+ * `AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT`, which belongs to the agents runtime's affinity set,
+ * not the API runtime's. `createCoreTaskList` keeps hosting both split heartbeat handlers for the
+ * single-process test/dev list its own comment describes; the API runtime's registered handler
+ * set must match `resolveTaskAffinitySets(...).api` exactly, so it never registers a handler for
+ * a task name outside that set.
+ */
+export function createApiCoreTaskList(...args: Parameters<typeof createCoreTaskList>): TaskList {
+  const taskList = createCoreTaskList(...args);
+  delete taskList[AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT];
+  return taskList;
 }

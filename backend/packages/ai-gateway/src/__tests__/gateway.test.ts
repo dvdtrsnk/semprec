@@ -1,10 +1,12 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import {
   createAgentRun,
   createChokePoint,
+  createUser,
   getSystemSettingsDatabaseId,
   getSystemSettingsItemId,
+  hashPassword,
   seedSystem,
 } from "@semprec/data";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
@@ -32,6 +34,8 @@ describe("gateway", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    const passwordHash = await hashPassword("s3cret-password");
+    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
   });
 
   afterAll(async () => {
@@ -95,6 +99,19 @@ describe("gateway", () => {
     expect(Number(rows[0].audio_seconds)).toBe(240);
   });
 
+  it("diarize() always stores a null agent_run_id, even when the caller supplies one", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "diarize something" });
+
+    await diarize(pool, { provider: "pyannoteai", model: "pyannote-3", agentRunId: run.id }, async () => ({
+      audioSeconds: 60,
+      costUsd: 0.01,
+    }));
+
+    const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].agent_run_id).toBeNull();
+  });
+
   it("does not record a row when the provider call fails", async () => {
     await expect(
       complete(pool, { provider: "anthropic", model: "claude-sonnet-5" }, async () => {
@@ -127,6 +144,38 @@ describe("gateway", () => {
 
       const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
       expect(rows).toHaveLength(1); // only the seeded row above, nothing from the rejected call
+    });
+
+    it("rejects an audio call before its provider is invoked", async () => {
+      await setBudgets(pool, { dailyBudgetUsd: 1, monthlyBudgetUsd: null });
+      await pool.query(
+        `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, cost_usd) VALUES ('anthropic', 'claude-sonnet-5', 10, 10, 1)`,
+      );
+      const invoke = vi.fn(async () => ({ audioSeconds: 180, costUsd: 0.03 }));
+
+      await expect(transcribe(pool, { provider: "deepinfra", model: "whisper-large-v3" }, invoke)).rejects.toThrow(
+        BudgetExceededError,
+      );
+
+      expect(invoke).not.toHaveBeenCalled();
+      const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
+      expect(rows).toHaveLength(1);
+    });
+
+    it("rejects a diarize() call before its provider is invoked", async () => {
+      await setBudgets(pool, { dailyBudgetUsd: 1, monthlyBudgetUsd: null });
+      await pool.query(
+        `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, cost_usd) VALUES ('anthropic', 'claude-sonnet-5', 10, 10, 1)`,
+      );
+      const invoke = vi.fn(async () => ({ audioSeconds: 240, costUsd: 0.04 }));
+
+      await expect(diarize(pool, { provider: "pyannoteai", model: "pyannote-3" }, invoke)).rejects.toThrow(
+        BudgetExceededError,
+      );
+
+      expect(invoke).not.toHaveBeenCalled();
+      const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
+      expect(rows).toHaveLength(1);
     });
 
     it("rejects the call once the monthly cap is already reached, independently of the daily cap", async () => {

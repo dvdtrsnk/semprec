@@ -429,7 +429,7 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
   return async (actionConfig: Record<string, unknown>, context: ActionContext) => {
     if (!context.itemId) return;
     // Throws (surfacing as a recorded heartbeat failure + notification, see sweep.ts's
-    // createHeartbeatFireTask) rather than silently no-op'ing on a misconfigured heartbeat.
+    // createHeartbeatFireCoreTask) rather than silently no-op'ing on a misconfigured heartbeat.
     const config = semprecTickActionConfigSchema.parse(actionConfig);
     const sourceItemId = context.itemId;
     await withTransaction(pool, async (client) => {

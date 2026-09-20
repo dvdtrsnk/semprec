@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { enqueueJob } from "@semprec/queue";
 import { NotFoundError } from "../errors.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { requireSingleRow, withTransaction } from "../db/pool.js";
@@ -11,7 +11,7 @@ import {
   type AnyHeartbeatRule,
   type HeartbeatRuleKindRegistry,
 } from "./rule.js";
-import type { ActionQueueAffinity } from "./actions.js";
+import { resolveHeartbeatFireTaskName, type ActionQueueAffinity } from "./actions.js";
 
 export interface HeartbeatRow {
   id: string;
@@ -318,7 +318,7 @@ export async function triggerOnItemEventHeartbeats(
   for (const row of rows) {
     await enqueueJob(
       client,
-      CORE_TASK_NAMES.HEARTBEAT_FIRE,
+      resolveHeartbeatFireTaskName(row.action_id),
       { heartbeatId: row.id, itemId },
       { jobKey: heartbeatFireJobKey(row.id, itemId), maxAttempts: 3, queueName: queueAffinity.get(row.action_id) },
     );
@@ -438,8 +438,8 @@ export async function sweepDueHeartbeats(
   client: PoolClient,
   moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
 ): Promise<SweptHeartbeat[]> {
-  const { rows } = await client.query<{ id: string; rule: unknown; next_fire_at: Date }>(
-    `SELECT id, rule, next_fire_at FROM project_heartbeats
+  const { rows } = await client.query<{ id: string; rule: unknown; next_fire_at: Date; action_id: string }>(
+    `SELECT id, rule, next_fire_at, action_id FROM project_heartbeats
      WHERE enabled AND next_fire_at IS NOT NULL AND next_fire_at <= now()
      FOR UPDATE SKIP LOCKED`,
   );
@@ -452,7 +452,7 @@ export async function sweepDueHeartbeats(
     // A row whose rule kind belongs to a module deactivated since it was last scheduled must
     // not be newly dispatched: record the failure and leave next_fire_at as-is (still due) so
     // reactivating the module lets the next sweep pick it back up, instead of enqueueing a
-    // heartbeatFire job for a rule core can no longer even parse.
+    // heartbeat fire job for a rule core can no longer even parse.
     let rule: AnyHeartbeatRule;
     let calendarNextFireAt: Date | null;
     try {
@@ -472,7 +472,7 @@ export async function sweepDueHeartbeats(
     await client.query(`UPDATE project_heartbeats SET next_fire_at = $2 WHERE id = $1`, [row.id, nextFireAt]);
     await enqueueJob(
       client,
-      CORE_TASK_NAMES.HEARTBEAT_FIRE,
+      resolveHeartbeatFireTaskName(row.action_id),
       { heartbeatId: row.id, occurrenceId, generation },
       { jobKey: occurrenceFireJobKey(row.id, occurrenceId, generation), maxAttempts: 3, jobKeyMode },
     );

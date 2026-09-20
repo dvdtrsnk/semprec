@@ -9,7 +9,14 @@ export const manifest: ModuleManifest = {
   databases: [],
   capabilities: [],
   agentTools: [],
-  taskNames: [{ name: "fixtureGood.processThing", payloadSchemaExport: "payloadSchema", handlerExport: "handleTask" }],
+  taskNames: [
+    {
+      name: "fixtureGood.processThing",
+      payloadSchemaExport: "payloadSchema",
+      handlerExport: "handleTask",
+      queueAffinity: "api",
+    },
+  ],
 };
 
 export const payloadSchema = { parse: (value: unknown) => value };
