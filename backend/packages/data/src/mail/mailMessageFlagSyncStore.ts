@@ -68,7 +68,7 @@ export async function recordConfirmedMailMessageFlag(
   requireAffectedRows(result, "mail message flag confirmation");
 }
 
-/** Pending IMAP writes are resolved through the message's folder-edge UID metadata. */
+/** Pending IMAP writes are resolved through every folder edge carrying the message's UID. */
 export async function listPendingImapFlagWrites(
   client: Queryable,
   input: { folderRelationDefinitionId: string; mailboxFolderRelationDefinitionId: string; mailboxItemId: string },
@@ -80,8 +80,7 @@ export async function listPendingImapFlagWrites(
     folder_path: string;
     uid: string;
   }>(
-    `SELECT DISTINCT ON (state.message_item_id, state.property_key)
-       state.message_item_id, state.property_key, state.desired_state,
+    `SELECT state.message_item_id, state.property_key, state.desired_state,
        folder.properties ->> 'providerId' AS folder_path, email_folder.metadata ->> 'uid' AS uid
      FROM mail_message_flag_sync_state state
      JOIN item_relations email_folder

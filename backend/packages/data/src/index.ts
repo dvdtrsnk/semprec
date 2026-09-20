@@ -143,12 +143,7 @@ export {
   type MailLiveSyncRootOptions,
 } from "./mail/mailLiveSyncRoot.js";
 export { manifest as mailModuleManifest } from "./mail/mailModuleManifest.js";
-export {
-  createImapMailFlagWritebackAdapter,
-  gmailMailFlagWritebackAdapter,
-  graphMailFlagWritebackAdapter,
-  type MailFlagWritebackAdapter,
-} from "./mail/mailFlagWriteback.js";
+export { createImapMailFlagWritebackAdapter, type MailFlagWritebackAdapter } from "./mail/mailFlagWriteback.js";
 export {
   handleGraphChangeNotification,
   type GraphChangeNotification,

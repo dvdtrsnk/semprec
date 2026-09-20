@@ -311,13 +311,26 @@ export async function reconcileImapAccount(
   // A state observation that equals the desired state has no row in this result, preventing
   // a reconcile of a provider-originated change from echoing it straight back over STORE.
   const writeback = createImapMailFlagWritebackAdapter(imap);
-  for (const pending of await listPendingImapFlagWrites(dbClient, {
+  const pendingWrites = await listPendingImapFlagWrites(dbClient, {
     folderRelationDefinitionId: folderRelationDefinition.id,
     mailboxFolderRelationDefinitionId: mailboxFolderRelationDefinition.id,
     mailboxItemId: params.mailboxItemId,
-  })) {
-    const outcome = await writeback.write(pending);
-    if (outcome !== "applied") continue;
+  });
+  const pendingByFlag = new Map<string, typeof pendingWrites>();
+  for (const pending of pendingWrites) {
+    const key = `${pending.messageItemId}:${pending.propertyKey}`;
+    const writes = pendingByFlag.get(key) ?? [];
+    writes.push(pending);
+    pendingByFlag.set(key, writes);
+  }
+  for (const writes of pendingByFlag.values()) {
+    const pending = writes[0]!;
+    let allApplied = true;
+    for (const write of writes) {
+      const outcome = await writeback.write(write);
+      if (outcome !== "applied") allApplied = false;
+    }
+    if (!allApplied) continue;
     await recordConfirmedMailMessageFlag(dbClient, pending.messageItemId, pending.propertyKey, pending.desiredState);
   }
 

@@ -20,17 +20,3 @@ export function createImapMailFlagWritebackAdapter(imap: ImapMailClient): MailFl
     },
   };
 }
-
-/** #199 supplies the Gmail REST mutation; until then desired state remains durably pending. */
-export const gmailMailFlagWritebackAdapter: MailFlagWritebackAdapter = {
-  async write() {
-    return "pending";
-  },
-};
-
-/** #199 supplies the Graph PATCH mutation; until then desired state remains durably pending. */
-export const graphMailFlagWritebackAdapter: MailFlagWritebackAdapter = {
-  async write() {
-    return "pending";
-  },
-};

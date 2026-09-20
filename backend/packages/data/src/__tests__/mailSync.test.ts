@@ -3422,7 +3422,7 @@ describe("mail flag write-back (issue #251)", () => {
     await seedSystem(pool);
   });
 
-  it("persists desired/current state, writes all four IMAP transitions, and does not echo a converged observation", async () => {
+  it("persists desired/current state, writes every IMAP folder copy for all four transitions, and does not echo a converged observation", async () => {
     const [emailsId, foldersId, filesId, mailboxesId] = await Promise.all([
       databaseIdFor("emails"),
       databaseIdFor("folders"),
@@ -3455,9 +3455,12 @@ describe("mail flag write-back (issue #251)", () => {
     };
     const initial: ImapMailClient = {
       getCapabilities: async () => new Set(),
-      listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
+      listFolders: async () => [
+        { path: "INBOX", specialUse: "\\Inbox" },
+        { path: "Archive", specialUse: "\\Archive" },
+      ],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
-      fetchMessagesSince: async () => [{ uid: 1, message }],
+      fetchMessagesSince: async (path) => [{ uid: path === "INBOX" ? 1 : 2, message }],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [1],
       setMessageFlag: async () => {},
@@ -3472,19 +3475,24 @@ describe("mail flag write-back (issue #251)", () => {
       propertiesPatch: { read: true, flagged: true },
     });
 
-    const writes: Array<{ flag: string; value: boolean }> = [];
+    const writes: Array<{ path: string; flag: string; value: boolean }> = [];
     const writingClient: ImapMailClient = {
       ...initial,
       fetchMessagesSince: async () => [],
-      setMessageFlag: async (_path, _uid, flag, value) => {
-        writes.push({ flag, value });
+      setMessageFlag: async (path, _uid, flag, value) => {
+        writes.push({ path, flag, value });
       },
     };
     await withTransaction(pool, (client) => reconcileImapAccount(client, writingClient, params));
-    expect(writes).toEqual([
-      { flag: IMAP_FLAGGED_FLAG, value: true },
-      { flag: IMAP_SEEN_FLAG, value: true },
-    ]);
+    expect(writes).toHaveLength(4);
+    expect(writes).toEqual(
+      expect.arrayContaining([
+        { path: "INBOX", flag: IMAP_FLAGGED_FLAG, value: true },
+        { path: "Archive", flag: IMAP_FLAGGED_FLAG, value: true },
+        { path: "INBOX", flag: IMAP_SEEN_FLAG, value: true },
+        { path: "Archive", flag: IMAP_SEEN_FLAG, value: true },
+      ]),
+    );
 
     await chokePoint.updateItem({
       databaseId: emailsId,
@@ -3492,10 +3500,15 @@ describe("mail flag write-back (issue #251)", () => {
       propertiesPatch: { read: false, flagged: false },
     });
     await withTransaction(pool, (client) => reconcileImapAccount(client, writingClient, params));
-    expect(writes.slice(2)).toEqual([
-      { flag: IMAP_FLAGGED_FLAG, value: false },
-      { flag: IMAP_SEEN_FLAG, value: false },
-    ]);
+    expect(writes.slice(4)).toHaveLength(4);
+    expect(writes.slice(4)).toEqual(
+      expect.arrayContaining([
+        { path: "INBOX", flag: IMAP_FLAGGED_FLAG, value: false },
+        { path: "Archive", flag: IMAP_FLAGGED_FLAG, value: false },
+        { path: "INBOX", flag: IMAP_SEEN_FLAG, value: false },
+        { path: "Archive", flag: IMAP_SEEN_FLAG, value: false },
+      ]),
+    );
 
     await chokePoint.updateItem({ databaseId: emailsId, itemId: emailItemId, propertiesPatch: { read: true } });
     const observedConvergence: ImapMailClient = {
@@ -3518,7 +3531,12 @@ describe("mail flag write-back (issue #251)", () => {
       withTransaction(pool, (client) => reconcileImapAccount(client, failingClient, params)),
     ).rejects.toThrow("temporary IMAP failure");
     await withTransaction(pool, (client) => reconcileImapAccount(client, writingClient, params));
-    expect(writes.at(-1)).toEqual({ flag: IMAP_FLAGGED_FLAG, value: true });
+    expect(writes.slice(-2)).toEqual(
+      expect.arrayContaining([
+        { path: "INBOX", flag: IMAP_FLAGGED_FLAG, value: true },
+        { path: "Archive", flag: IMAP_FLAGGED_FLAG, value: true },
+      ]),
+    );
   });
 });
 
