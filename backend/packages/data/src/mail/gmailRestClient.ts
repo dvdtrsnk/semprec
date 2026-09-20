@@ -348,11 +348,35 @@ export class GmailRestClient implements GmailMailClient {
     const message = await toFetchedMessage(json.id, json.payload, (attachmentId) =>
       this.fetchAttachmentBytes(json.id, attachmentId),
     );
-    return { id: json.id, threadId: json.threadId, labelIds: json.labelIds ?? [], message };
+    const labelIds = json.labelIds ?? [];
+    return {
+      id: json.id,
+      threadId: json.threadId,
+      labelIds,
+      message: {
+        ...message,
+        flags: [
+          ...(!labelIds.includes("UNREAD") ? ["\\Seen"] : []),
+          ...(labelIds.includes("STARRED") ? ["\\Flagged"] : []),
+        ],
+      },
+    };
   }
 
   async listLabels(): Promise<GmailLabelRef[]> {
     const { json } = await this.request<{ labels?: { id: string; name: string; type: string }[] }>("/labels");
     return (json?.labels ?? []).map((l) => ({ id: l.id, name: l.name, type: l.type === "system" ? "system" : "user" }));
+  }
+
+  async modifyMessageLabels(messageId: string, addLabelIds: string[], removeLabelIds: string[]): Promise<void> {
+    const token = await this.getAccessToken();
+    const response = await fetch(`${BASE_URL}/messages/${encodeURIComponent(messageId)}/modify`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ addLabelIds, removeLabelIds }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) throw new Error(`Gmail label modification failed with status ${response.status}`);
+    await response.body?.cancel();
   }
 }

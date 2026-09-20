@@ -12,6 +12,13 @@ export interface PendingImapFlagWrite {
   uid: number;
 }
 
+export interface PendingProviderFlagWrite {
+  messageItemId: string;
+  providerMessageId: string;
+  propertyKey: MailMessageFlagKey;
+  desiredState: boolean;
+}
+
 function isMailMessageFlagKey(value: string): value is MailMessageFlagKey {
   return value === READ_PROPERTY_KEY || value === FLAGGED_PROPERTY_KEY;
 }
@@ -113,6 +120,47 @@ export async function listPendingImapFlagWrites(
       },
     ];
   });
+}
+
+/** Pending Gmail/Graph writes are scoped through the message's Folder -> Mailbox membership. */
+export async function listPendingProviderFlagWrites(
+  client: Queryable,
+  input: { folderRelationDefinitionId: string; mailboxFolderRelationDefinitionId: string; mailboxItemId: string },
+): Promise<PendingProviderFlagWrite[]> {
+  const { rows } = await client.query<{
+    message_item_id: string;
+    provider_message_id: string;
+    property_key: string;
+    desired_state: boolean;
+  }>(
+    `SELECT DISTINCT state.message_item_id, meta.provider_message_id, state.property_key, state.desired_state
+     FROM mail_message_flag_sync_state state
+     JOIN mail_message_meta meta ON meta.item_id = state.message_item_id
+     JOIN item_relations email_folder
+       ON email_folder.relation_definition_id = $1
+      AND (email_folder.item_a = state.message_item_id OR email_folder.item_b = state.message_item_id)
+     JOIN item_relations mailbox_folder
+       ON mailbox_folder.relation_definition_id = $2
+      AND (mailbox_folder.item_a = CASE WHEN email_folder.item_a = state.message_item_id THEN email_folder.item_b ELSE email_folder.item_a END
+        OR mailbox_folder.item_b = CASE WHEN email_folder.item_a = state.message_item_id THEN email_folder.item_b ELSE email_folder.item_a END)
+      AND (mailbox_folder.item_a = $3 OR mailbox_folder.item_b = $3)
+     WHERE state.current_state IS DISTINCT FROM state.desired_state
+       AND meta.provider_message_id IS NOT NULL
+     ORDER BY state.message_item_id, state.property_key`,
+    [input.folderRelationDefinitionId, input.mailboxFolderRelationDefinitionId, input.mailboxItemId],
+  );
+  return rows.flatMap((row) =>
+    isMailMessageFlagKey(row.property_key)
+      ? [
+          {
+            messageItemId: row.message_item_id,
+            providerMessageId: row.provider_message_id,
+            propertyKey: row.property_key,
+            desiredState: row.desired_state,
+          },
+        ]
+      : [],
+  );
 }
 
 export function imapFlagForProperty(propertyKey: MailMessageFlagKey): WritableImapFlag {

@@ -5,6 +5,8 @@ import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } fr
 import { ValidationError } from "../errors.js";
 import { ensureFolderItem } from "./folderDiscovery.js";
 import { ingestEmailMessage } from "./ingest.js";
+import { createGmailMailFlagWritebackAdapter } from "./mailFlagWriteback.js";
+import { listPendingProviderFlagWrites, recordConfirmedMailMessageFlag } from "./mailMessageFlagSyncStore.js";
 import { getMailMessageMetaByProviderMessageId } from "./mailMessageMetaStore.js";
 import {
   ensureMailAccountSyncState,
@@ -46,6 +48,7 @@ export interface GmailMailClient {
   /** null = the message no longer exists (raced with a delete between the history event and this fetch). */
   fetchMessage(id: string): Promise<GmailFetchedMessage | null>;
   listLabels(): Promise<GmailLabelRef[]>;
+  modifyMessageLabels(messageId: string, addLabelIds: string[], removeLabelIds: string[]): Promise<void>;
 }
 
 function specialPurposeForLabel(label: GmailLabelRef): string {
@@ -200,6 +203,22 @@ export async function reconcileGmailAccount(
         EMAILS_RELATION_CONTEXT,
       );
     }
+  }
+
+  const [folderRelationDefinition, mailboxFolderRelationDefinition] = await Promise.all([
+    getRelationDefinitionByPropertyId(dbClient, params.folderRelationPropertyId),
+    getRelationDefinitionByPropertyId(dbClient, params.mailboxFolderRelationPropertyId),
+  ]);
+  if (!folderRelationDefinition || !mailboxFolderRelationDefinition)
+    throw new ValidationError("Mail folder relation definitions are missing from the email module schema");
+  const writeback = createGmailMailFlagWritebackAdapter(gmail);
+  for (const pending of await listPendingProviderFlagWrites(dbClient, {
+    folderRelationDefinitionId: folderRelationDefinition.id,
+    mailboxFolderRelationDefinitionId: mailboxFolderRelationDefinition.id,
+    mailboxItemId: params.mailboxItemId,
+  })) {
+    if ((await writeback.write(pending)) === "applied")
+      await recordConfirmedMailMessageFlag(dbClient, pending.messageItemId, pending.propertyKey, pending.desiredState);
   }
 
   await recordGmailActivity(dbClient, {
