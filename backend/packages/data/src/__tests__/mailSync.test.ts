@@ -58,6 +58,7 @@ import {
   headerValues,
   ImapFlowMailClient,
   isImapConnectionLimitError,
+  AttachmentCapExceededError,
 } from "../mail/imapFlowClient.js";
 import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG, messageFlagProperties } from "../mail/messageFlags.js";
@@ -695,6 +696,52 @@ describe("attachment ingest (issue #26)", () => {
 
     const found = await searchItems(pool, { databaseId: emailsId, query: "UniqueInvoiceKeyword" });
     expect(found.map((f) => f.itemId)).toContain(result.itemId);
+  });
+
+  it("skips an attachment that exceeds the size cap instead of failing the whole message ingest", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
+    const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
+    const folder = await withTransaction(pool, (client) =>
+      createItemWithClient(
+        client,
+        { databaseId: foldersId, properties: { name: "INBOX" } },
+        { allowedSystemKeys: ["name"] },
+      ),
+    );
+
+    const oversized: ClassifiedAttachment = {
+      filename: "huge.bin",
+      contentType: "application/octet-stream",
+      contentId: null,
+      disposition: "attachment",
+      openStream: () => {
+        throw new AttachmentCapExceededError("IMAP attachment exceeded the cap");
+      },
+    };
+
+    const result = await withTransaction(pool, (client) =>
+      ingestEmailMessage(client, {
+        emailsDatabaseId: emailsId,
+        filesDatabaseId: filesId,
+        folderRelationPropertyId: folderProperty.id,
+        attachmentsRelationPropertyId: attachmentsProperty.id,
+        folderItemId: folder.id,
+        messageId: "<with-oversized-attachment@x>",
+        envelope: {},
+        attachments: [oversized, attachment("kept.pdf", Buffer.from("kept-bytes"))],
+        storage: noopStorage,
+        storageKeyPrefix: "test",
+      }),
+    );
+
+    const { rows: attachmentRows } = await pool.query(
+      `SELECT filename FROM mail_attachments WHERE message_item_id = $1`,
+      [result.itemId],
+    );
+    expect(attachmentRows.map((r) => r.filename)).toEqual(["kept.pdf"]);
   });
 });
 
@@ -2881,6 +2928,9 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
         const key = query.bodyParts?.[0]?.key;
         if (!key) throw new Error("missing partial range");
         fetches += 1;
+        // 1600 = MAX_ATTACHMENT_BYTES (104_857_600) / IMAP_PARTIAL_FETCH_BYTES (65_536), both
+        // private to imapFlowClient.ts so not importable here — the number of full-size chunks
+        // needed to reach the cap exactly.
         return { bodyParts: new Map([[key, fetches <= 1600 ? fullChunk : Buffer.from("x")]]) };
       },
     });
@@ -2891,6 +2941,7 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
         // Draining confirms the cap is enforced by the fallback before storage sees an extra byte.
       }
     }).rejects.toThrow("exceeded the 104857600-byte cap");
+    // 1601 = the 1600 full-size chunks above plus the EOF probe fetch that discovers extra bytes.
     expect(fetches).toBe(1601);
   });
 

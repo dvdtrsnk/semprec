@@ -6,6 +6,8 @@ import { createItemWithClient, createRelationWithClient } from "../chokePoint/ch
 import type { BlobStorageWriter } from "./blobStorage.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { extractAttachmentText, isTextExtractableContentType } from "./attachmentTextExtraction.js";
+import { AttachmentCapExceededError } from "./imapFlowClient.js";
+import { logger } from "./logger.js";
 
 /**
  * The shape every provider adapter (imap/gmail/graph) normalizes an attachment part down to.
@@ -83,7 +85,23 @@ export async function ingestAttachments(
   for (const attachment of input.attachments) {
     const storageKey = `${input.storageKeyPrefix}/${randomUUID()}-${safeStorageFilename(attachment.filename)}`;
 
-    let source = await attachment.openStream();
+    let source: Readable;
+    try {
+      source = await attachment.openStream();
+    } catch (err) {
+      // The IMAP fallback partial-fetch path throws this when the server keeps sending bytes
+      // past MAX_ATTACHMENT_BYTES — a hostile/oversized attachment, not a transient failure.
+      // Best-effort here too: skip just this one attachment rather than failing the whole
+      // message ingest over it, matching the text-extraction fallback below.
+      if (err instanceof AttachmentCapExceededError) {
+        logger.warn(
+          { filename: attachment.filename, err: err.message },
+          "Skipping attachment that exceeded the size cap",
+        );
+        continue;
+      }
+      throw err;
+    }
     if (isTextExtractableContentType(attachment.contentType)) {
       // The one case this issue buffers an attachment's bytes in memory rather than pure-
       // streaming through to storage — extracting text needs the whole file, and every
