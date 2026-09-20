@@ -80,12 +80,12 @@ function decodePartText(part: GmailPayloadPart | undefined): string | undefined 
 }
 
 /**
- * Gmail sometimes represents a Drive-backed "attachment" as a tiny MIME part containing its
- * share URL. The actual file never accompanies that part, so passing it to attachment ingest
- * would create a Files item for the URL bytes. Ignore query/hash decoration because Gmail can
- * render the same share with a different `usp` value in the message body.
+ * Gmail sometimes represents a Drive- or Docs-backed "attachment" as a tiny MIME part
+ * containing its share URL. The actual file never accompanies that part, so passing it to
+ * attachment ingest would create a Files item for the URL bytes. Ignore query/hash decoration
+ * because Gmail can render the same share with a different `usp` value in the message body.
  */
-function normalizedGoogleDriveShareUrl(value: string): string | null {
+function normalizedGoogleShareUrl(value: string): string | null {
   let url: URL;
   try {
     url = new URL(value);
@@ -98,8 +98,9 @@ function normalizedGoogleDriveShareUrl(value: string): string | null {
   const path = url.pathname.replace(/\/+$/, "");
   if (!path) return null;
   // `open`/`uc` carry the share identity in `id`, unlike the usual `/file/d/<id>` path.
-  // Retaining it prevents two unrelated shorthand URLs from being treated as the same link.
-  if (url.hostname === "drive.google.com" && (path === "/open" || path === "/uc")) {
+  // Retaining it prevents two unrelated shorthand URLs from being treated as the same link,
+  // on both hostnames that use this shorthand form.
+  if (path === "/open" || path === "/uc") {
     const id = url.searchParams.get("id");
     if (!id) return null;
     return `${url.hostname}${path}?id=${id}`;
@@ -107,11 +108,15 @@ function normalizedGoogleDriveShareUrl(value: string): string | null {
   return `${url.hostname}${path}`;
 }
 
-function normalizedGoogleDriveShareUrls(text: string | undefined): Set<string> {
+function normalizedGoogleShareUrls(text: string | undefined): Set<string> {
   const urls = new Set<string>();
   if (!text) return urls;
   for (const match of text.matchAll(/https:\/\/[^\s<>"']+/gi)) {
-    const normalized = normalizedGoogleDriveShareUrl(match[0]);
+    // Strip trailing prose punctuation (`.`, `,`, `)`, …) that commonly follows a URL in
+    // plain text — left in place it defeats matching against the rendered body's normalized
+    // form, since that form was parsed straight from an anchor's `href` with no such tail.
+    const trimmed = match[0].replace(/[.,;:!?)\]}>]+$/, "");
+    const normalized = normalizedGoogleShareUrl(trimmed);
     if (normalized) urls.add(normalized);
   }
   return urls;
@@ -123,7 +128,7 @@ function isGmailDriveReplacement(part: GmailPayloadPart, renderedDriveUrls: Set<
   const decodedText = decodePartText(part);
   if (reportedSize === undefined || !decodedText || reportedSize * 2 >= Buffer.byteLength(decodedText)) return false;
 
-  for (const placeholderUrl of normalizedGoogleDriveShareUrls(decodedText)) {
+  for (const placeholderUrl of normalizedGoogleShareUrls(decodedText)) {
     if (renderedDriveUrls.has(placeholderUrl)) return true;
   }
   return false;
@@ -144,7 +149,7 @@ function classifyGmailAttachmentParts(
   html: string | undefined,
   text: string | undefined,
 ): ClassifiedAttachment[] {
-  const renderedDriveUrls = new Set([...normalizedGoogleDriveShareUrls(html), ...normalizedGoogleDriveShareUrls(text)]);
+  const renderedDriveUrls = new Set([...normalizedGoogleShareUrls(html), ...normalizedGoogleShareUrls(text)]);
   const candidates = parts.flatMap((part): ClassifiedAttachment[] => {
     if (isGmailDriveReplacement(part, renderedDriveUrls)) return [];
 
