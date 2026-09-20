@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Semprec daily backup skeleton
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+Unit=semprec-backup.service
+
+[Install]
+WantedBy=timers.target

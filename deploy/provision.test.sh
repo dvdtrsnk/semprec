@@ -14,9 +14,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$TEST_BIN" "$TEST_STATE"
+mkdir -p "$TEST_BIN" "$TEST_STATE" "$TEST_ROOT/systemd/system"
 cp -R "$REPOSITORY_ROOT/deploy" "$TEST_DEPLOY"
 sed -i "s|readonly SEMPREC_ROOT=/opt/semprec|readonly SEMPREC_ROOT=$TEST_ROOT/opt/semprec|" \
+  "$TEST_DEPLOY/provision.sh"
+sed -i "s|readonly SYSTEMD_UNIT_DIR=/etc/systemd/system|readonly SYSTEMD_UNIT_DIR=$TEST_ROOT/systemd/system|" \
+  "$TEST_DEPLOY/provision.sh"
+sed -i "s|readonly JOURNALD_CONFIG_DIR=/etc/systemd/journald.conf.d|readonly JOURNALD_CONFIG_DIR=$TEST_ROOT/systemd/journald.conf.d|" \
   "$TEST_DEPLOY/provision.sh"
 sed -i "s|readonly APT_KEYRING_DIR=/etc/apt/keyrings|readonly APT_KEYRING_DIR=$TEST_ROOT/keyrings|" \
   "$TEST_DEPLOY/provision.sh"
@@ -38,6 +42,8 @@ write_mock curl 'printf key'
 write_mock gpg 'while [[ "$#" -gt 0 ]]; do if [[ "$1" == "--output" ]]; then printf key > "$2"; exit 0; fi; shift; done; exit 1'
 write_mock dpkg 'echo amd64'
 write_mock corepack 'echo "corepack $*" >> "$TEST_STATE/commands"'
+write_mock systemctl 'echo "systemctl $*" >> "$TEST_STATE/commands"'
+write_mock systemd-analyze 'echo "systemd-analyze $*" >> "$TEST_STATE/commands"'
 write_mock install 'args=(); while [[ "$#" -gt 0 ]]; do case "$1" in -o|-g) shift 2;; *) args+=("$1"); shift;; esac; done; /usr/bin/install "${args[@]}"'
 
 run_provision() {
@@ -49,6 +55,13 @@ test -d "$TEST_ROOT/opt/semprec/releases"
 test -d "$TEST_ROOT/opt/semprec/shared"
 test -f "$TEST_ROOT/opt/semprec/shared/.env"
 test -f "$TEST_STATE/semprec-user"
+test -f "$TEST_ROOT/systemd/system/semprec-api.service"
+test -f "$TEST_ROOT/systemd/system/semprec-ai-gateway.service"
+test -f "$TEST_ROOT/systemd/system/semprec-mailsync@.service"
+test -f "$TEST_ROOT/systemd/system/semprec-transcribe.service"
+test -f "$TEST_ROOT/systemd/system/semprec-agents.service"
+test -f "$TEST_ROOT/systemd/system/semprec-dead-man.timer"
+test -f "$TEST_ROOT/systemd/journald.conf.d/semprec.conf"
 
 printf 'OPERATOR_CONFIGURED_SECRET=preserved\n' > "$TEST_ROOT/opt/semprec/shared/.env"
 mkdir "$TEST_ROOT/opt/semprec/releases/release-one"

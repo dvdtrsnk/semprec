@@ -3,9 +3,33 @@
 set -euo pipefail
 
 readonly SEMPREC_ROOT=/opt/semprec
+readonly SYSTEMD_UNIT_DIR=/etc/systemd/system
+readonly JOURNALD_CONFIG_DIR=/etc/systemd/journald.conf.d
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly APT_KEYRING_DIR=/etc/apt/keyrings
 readonly APT_SOURCES_DIR=/etc/apt/sources.list.d
+
+readonly -a SERVICE_UNITS=(
+  semprec-api.service
+  semprec-agents.service
+  semprec-mailsync@.service
+  semprec-transcribe.service
+  semprec-ai-gateway.service
+)
+
+readonly -a TIMER_UNITS=(
+  semprec-dead-man.timer
+  semprec-backup.timer
+  semprec-restore-test.timer
+  semprec-trash-purge.timer
+)
+
+readonly -a TIMER_SERVICES=(
+  semprec-dead-man.service
+  semprec-backup.service
+  semprec-restore-test.service
+  semprec-trash-purge.service
+)
 
 require_root() {
   if [[ "$(id -u)" -ne 0 ]]; then
@@ -87,11 +111,49 @@ ensure_release_tree() {
   ensure_directory "$SEMPREC_ROOT" 0755
   ensure_directory "$SEMPREC_ROOT/releases" 0755
   ensure_directory "$SEMPREC_ROOT/shared" 0700
+  ensure_directory "$SEMPREC_ROOT/shared/bin" 0750
 
   local shared_env="$SEMPREC_ROOT/shared/.env"
   if [[ ! -e "$shared_env" && ! -L "$shared_env" ]]; then
     install -o root -g root -m 0600 "$SCRIPT_DIR/shared/.env.example" "$shared_env"
   fi
+}
+
+install_systemd_units() {
+  local unit
+  for unit in "${SERVICE_UNITS[@]}" "${TIMER_SERVICES[@]}" "${TIMER_UNITS[@]}"; do
+    install -o root -g root -m 0644 "$SCRIPT_DIR/systemd/$unit" "$SYSTEMD_UNIT_DIR/$unit"
+  done
+
+  install -d -o root -g root -m 0755 "$JOURNALD_CONFIG_DIR"
+  install -o root -g root -m 0644 \
+    "$SCRIPT_DIR/systemd/journald-semprec.conf" \
+    "$JOURNALD_CONFIG_DIR/semprec.conf"
+}
+
+install_timer_scripts() {
+  local script
+  for script in dead-man backup restore-test trash-purge; do
+    install -o root -g root -m 0750 \
+      "$SCRIPT_DIR/systemd/scripts/semprec-$script.sh" \
+      "$SEMPREC_ROOT/shared/bin/semprec-$script.sh"
+  done
+}
+
+verify_systemd_units() {
+  local -a unit_paths=()
+  local unit
+  for unit in "${SERVICE_UNITS[@]}" "${TIMER_SERVICES[@]}" "${TIMER_UNITS[@]}"; do
+    unit_paths+=("$SYSTEMD_UNIT_DIR/$unit")
+  done
+  systemd-analyze verify "${unit_paths[@]}"
+}
+
+enable_timers() {
+  local timer
+  for timer in "${TIMER_UNITS[@]}"; do
+    systemctl enable --now "$timer"
+  done
 }
 
 main() {
@@ -100,6 +162,12 @@ main() {
   install_host_packages
   ensure_service_user
   ensure_release_tree
+  install_systemd_units
+  install_timer_scripts
+  verify_systemd_units
+  systemctl daemon-reload
+  systemctl restart systemd-journald
+  enable_timers
 }
 
 main "$@"
