@@ -6,12 +6,22 @@ import type { ClassifiedAttachment } from "./attachments.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { isDeliveryStatusReport } from "./dsn.js";
 import type { WritableImapFlag } from "./messageFlags.js";
+import { logger } from "./logger.js";
 
 // This is deliberately the same order of magnitude as imapflow's default download chunk.
 // The fallback makes at most MAX_ATTACHMENT_BYTES / IMAP_PARTIAL_FETCH_BYTES requests, plus
 // one EOF probe at the cap, so neither a broken server nor a failed stream can create an
 // unbounded retry loop.
 const IMAP_PARTIAL_FETCH_BYTES = 64 * 1024;
+
+/**
+ * Thrown by `nextAttachmentOffset` when a chunk would push the attachment past
+ * `MAX_ATTACHMENT_BYTES` — a policy violation, not a transient stream failure.
+ * `streamAttachment`'s catch block checks for this type specifically so it can rethrow it
+ * instead of silently retrying via the bounded partial-fetch fallback, which would just
+ * re-derive the same cap violation through a different code path after wasted requests.
+ */
+export class AttachmentCapExceededError extends Error {}
 
 /**
  * `MAX_ATTACHMENT_BYTES` (providerTypes.ts, shared with the Gmail/Graph adapters) is passed to
@@ -180,9 +190,19 @@ export class ImapFlowMailClient implements ImapMailClient {
       }
       completed = true;
       return;
-    } catch {
+    } catch (err) {
+      // A cap violation is a policy decision already made by nextAttachmentOffset, not a
+      // stream failure — rethrow it so it reaches the caller instead of being masked by the
+      // fallback below, which would silently re-run into the very same cap.
+      if (err instanceof AttachmentCapExceededError) throw err;
       // A replacement source below is the specified recovery path. The original stream is
       // destroyed in finally so a failed or abandoned download cannot keep its socket alive.
+      // Logged here (not just swallowed) since this is the only place that ever sees the
+      // original stream failure — the fallback path below has no way to report it itself.
+      logger.warn(
+        { uid, part, err: err instanceof Error ? err.message : String(err) },
+        "IMAP attachment stream failed before completing; falling back to bounded partial fetches",
+      );
     } finally {
       if (!completed && content !== undefined && !content.destroyed) content.destroy();
     }
@@ -191,8 +211,11 @@ export class ImapFlowMailClient implements ImapMailClient {
   }
 
   private nextAttachmentOffset(offset: number, length: number): number {
-    if (length === 0 || offset + length > MAX_ATTACHMENT_BYTES) {
-      throw new Error(`IMAP attachment exceeded the ${MAX_ATTACHMENT_BYTES}-byte cap`);
+    if (length === 0) {
+      throw new Error("IMAP attachment stream yielded an empty chunk without making progress");
+    }
+    if (offset + length > MAX_ATTACHMENT_BYTES) {
+      throw new AttachmentCapExceededError(`IMAP attachment exceeded the ${MAX_ATTACHMENT_BYTES}-byte cap`);
     }
     return offset + length;
   }
@@ -219,7 +242,7 @@ export class ImapFlowMailClient implements ImapMailClient {
         throw new Error("IMAP attachment partial fetch exceeded its requested range");
       }
       if (offset === MAX_ATTACHMENT_BYTES) {
-        throw new Error(`IMAP attachment exceeded the ${MAX_ATTACHMENT_BYTES}-byte cap`);
+        throw new AttachmentCapExceededError(`IMAP attachment exceeded the ${MAX_ATTACHMENT_BYTES}-byte cap`);
       }
 
       offset = this.nextAttachmentOffset(offset, chunk.length);
