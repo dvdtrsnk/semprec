@@ -155,7 +155,7 @@ describe("library module (issue #25)", () => {
     });
 
     // `runOnce` drains cascading enqueues within one call: the choke-point's onItemEvent
-    // trigger -> heartbeatFire -> our trigger action (seeds item_automation, enqueues the
+    // trigger -> heartbeatFireCore -> our trigger action (seeds item_automation, enqueues the
     // real job) -> processLibraryMetadata itself, using an injected fetcher (the real
     // metadata source is out of this issue's scope).
     const fetcher: LibraryMetadataFetcher = async () => ({
@@ -299,7 +299,7 @@ describe("library module (issue #25)", () => {
     ]);
     await withTransaction(pool, (client) => sweepDueHeartbeats(client));
 
-    await drainQueue(registry); // heartbeatFire -> retry sweep action -> re-enqueues processLibraryMetadata
+    await drainQueue(registry); // heartbeatFireCore -> retry sweep action -> re-enqueues processLibraryMetadata
     await drainQueue(registry, async () => ({})); // the re-enqueued job itself, now succeeding
 
     const recovered = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
