@@ -50,7 +50,11 @@ import {
   defaultSyncModeForProvider,
 } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
-import { MailConnectionLimitError, MailReauthorizationRequiredError } from "../mail/providerTypes.js";
+import {
+  AttachmentCapExceededError,
+  MailConnectionLimitError,
+  MailReauthorizationRequiredError,
+} from "../mail/providerTypes.js";
 import { logger } from "../mail/logger.js";
 import {
   walkBodyStructure,
@@ -58,7 +62,6 @@ import {
   headerValues,
   ImapFlowMailClient,
   isImapConnectionLimitError,
-  AttachmentCapExceededError,
 } from "../mail/imapFlowClient.js";
 import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG, messageFlagProperties } from "../mail/messageFlags.js";
@@ -712,14 +715,19 @@ describe("attachment ingest (issue #26)", () => {
       ),
     );
 
+    // Mirrors the real IMAP adapter: openStream() returns a lazy Readable synchronously, and
+    // the cap violation only surfaces as a stream error once something actually consumes it —
+    // never as a synchronous throw from openStream() itself.
+    async function* oversizedChunks() {
+      yield Buffer.from("first-chunk");
+      throw new AttachmentCapExceededError("IMAP attachment exceeded the cap");
+    }
     const oversized: ClassifiedAttachment = {
       filename: "huge.bin",
       contentType: "application/octet-stream",
       contentId: null,
       disposition: "attachment",
-      openStream: () => {
-        throw new AttachmentCapExceededError("IMAP attachment exceeded the cap");
-      },
+      openStream: () => Readable.from(oversizedChunks()),
     };
 
     const result = await withTransaction(pool, (client) =>

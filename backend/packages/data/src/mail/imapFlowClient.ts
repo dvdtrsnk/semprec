@@ -1,7 +1,7 @@
 import type { ImapFlow, FetchMessageObject, MessageAddressObject, MessageStructureObject } from "imapflow";
 import { Readable } from "node:stream";
 import type { ImapFetchedMessage, ImapFolderRef, ImapFolderSelection, ImapMailClient } from "./imapReconcile.js";
-import { MAX_ATTACHMENT_BYTES, type FetchedMessage } from "./providerTypes.js";
+import { AttachmentCapExceededError, MAX_ATTACHMENT_BYTES, type FetchedMessage } from "./providerTypes.js";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { isDeliveryStatusReport } from "./dsn.js";
@@ -20,15 +20,6 @@ const IMAP_PARTIAL_FETCH_BYTES = 64 * 1024;
 // that stops responding mid-response, rather than closing the socket, could hang the sync
 // worker indefinitely on this one request.
 const IMAP_PARTIAL_FETCH_TIMEOUT_MS = 30_000;
-
-/**
- * Thrown by `nextAttachmentOffset` when a chunk would push the attachment past
- * `MAX_ATTACHMENT_BYTES` — a policy violation, not a transient stream failure.
- * `streamAttachment`'s catch block checks for this type specifically so it can rethrow it
- * instead of silently retrying via the bounded partial-fetch fallback, which would just
- * re-derive the same cap violation through a different code path after wasted requests.
- */
-export class AttachmentCapExceededError extends Error {}
 
 /**
  * `MAX_ATTACHMENT_BYTES` (providerTypes.ts, shared with the Gmail/Graph adapters) is passed to
