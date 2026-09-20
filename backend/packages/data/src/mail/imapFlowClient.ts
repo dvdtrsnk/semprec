@@ -14,6 +14,13 @@ import { logger } from "./logger.js";
 // unbounded retry loop.
 const IMAP_PARTIAL_FETCH_BYTES = 64 * 1024;
 
+// imapflow's FetchOptions has no per-call timeout/signal of its own (unlike the REST adapters'
+// fetch() calls elsewhere in this module, which pass AbortSignal.timeout()), so the bounded
+// partial-fetch loop below races each fetchOne() against this timer itself — otherwise a server
+// that stops responding mid-response, rather than closing the socket, could hang the sync
+// worker indefinitely on this one request.
+const IMAP_PARTIAL_FETCH_TIMEOUT_MS = 30_000;
+
 /**
  * Thrown by `nextAttachmentOffset` when a chunk would push the attachment past
  * `MAX_ATTACHMENT_BYTES` — a policy violation, not a transient stream failure.
@@ -220,6 +227,24 @@ export class ImapFlowMailClient implements ImapMailClient {
     return offset + length;
   }
 
+  /** Races a single `fetchOne()` call against a timer, since imapflow's `FetchOptions` has no timeout/signal of its own — see `IMAP_PARTIAL_FETCH_TIMEOUT_MS`'s comment. */
+  private async fetchOneWithTimeout(...args: Parameters<ImapFlow["fetchOne"]>): ReturnType<ImapFlow["fetchOne"]> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        this.client.fetchOne(...args),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`IMAP partial fetch timed out after ${IMAP_PARTIAL_FETCH_TIMEOUT_MS}ms`)),
+            IMAP_PARTIAL_FETCH_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async *fetchAttachmentRanges(uid: number, part: string, offset: number): AsyncGenerator<Buffer> {
     const key = part.toLowerCase().trim();
     let needsEofProbe = offset === MAX_ATTACHMENT_BYTES;
@@ -227,7 +252,7 @@ export class ImapFlowMailClient implements ImapMailClient {
     while (offset < MAX_ATTACHMENT_BYTES || needsEofProbe) {
       const maxLength = needsEofProbe ? 1 : Math.min(IMAP_PARTIAL_FETCH_BYTES, MAX_ATTACHMENT_BYTES - offset);
       needsEofProbe = false;
-      const response = await this.client.fetchOne(
+      const response = await this.fetchOneWithTimeout(
         String(uid),
         { bodyParts: [{ key, start: offset, maxLength }] },
         { uid: true, binary: true },
