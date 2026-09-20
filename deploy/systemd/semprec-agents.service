@@ -1,0 +1,17 @@
+[Unit]
+Description=Semprec agents queue worker
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=simple
+User=semprec
+Group=semprec
+WorkingDirectory=/opt/semprec/current/backend
+EnvironmentFile=/opt/semprec/shared/.env
+ExecStart=/usr/bin/env node /opt/semprec/current/backend/services/semprec-agents/dist/serve.js
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

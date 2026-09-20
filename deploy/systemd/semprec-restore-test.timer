@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Semprec monthly restore-test skeleton
+
+[Timer]
+OnCalendar=monthly
+Persistent=true
+Unit=semprec-restore-test.service
+
+[Install]
+WantedBy=timers.target
