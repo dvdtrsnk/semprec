@@ -67,5 +67,8 @@ describe("createPyannoteDiarizationProvider", () => {
     it("rejects a literal IPv6 loopback address", () => rejects("https://[::1]/meeting.opus"));
     it("rejects an IPv4-mapped IPv6 loopback address", () => rejects("https://[::ffff:127.0.0.1]/meeting.opus"));
     it("rejects an IPv4-mapped IPv6 private address", () => rejects("https://[::ffff:192.168.1.5]/meeting.opus"));
+    it("rejects the fe80:: literal IPv6 link-local address", () => rejects("https://[fe80::1]/meeting.opus"));
+    it("rejects an fe80::/10 IPv6 link-local address outside the fe80 literal prefix", () =>
+      rejects("https://[febf::1]/meeting.opus"));
   });
 });

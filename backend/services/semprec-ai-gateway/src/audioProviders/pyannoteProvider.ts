@@ -19,14 +19,15 @@ function isPrivateOrReservedIp(hostname: string, family: 4 | 6): boolean {
     return false;
   }
   const lower = hostname.toLowerCase();
-  if (
-    lower === "::1" ||
-    lower === "::" ||
-    lower.startsWith("fc") ||
-    lower.startsWith("fd") ||
-    lower.startsWith("fe80")
-  ) {
+  if (lower === "::1" || lower === "::" || lower.startsWith("fc") || lower.startsWith("fd")) {
     return true;
+  }
+  // Link-local is the full fe80::/10 range (first hextet 0xfe80-0xfebf), not just the literal
+  // "fe80" prefix — fe90::, fea0::, febf:: etc are link-local too and were previously missed.
+  const firstGroup = lower.split(":", 1)[0];
+  if (firstGroup && /^[0-9a-f]{1,4}$/.test(firstGroup)) {
+    const groupVal = parseInt(firstGroup, 16);
+    if (groupVal >= 0xfe80 && groupVal <= 0xfebf) return true;
   }
   // IPv4-mapped IPv6 (::ffff:a.b.c.d) embeds an IPv4 address that WHATWG URL canonicalizes to
   // hex groups (e.g. ::ffff:7f00:1 for 127.0.0.1), which the textual-prefix check above misses.

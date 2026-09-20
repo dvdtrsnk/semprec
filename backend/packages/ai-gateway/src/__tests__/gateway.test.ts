@@ -162,6 +162,22 @@ describe("gateway", () => {
       expect(rows).toHaveLength(1);
     });
 
+    it("rejects a diarize() call before its provider is invoked", async () => {
+      await setBudgets(pool, { dailyBudgetUsd: 1, monthlyBudgetUsd: null });
+      await pool.query(
+        `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, cost_usd) VALUES ('anthropic', 'claude-sonnet-5', 10, 10, 1)`,
+      );
+      const invoke = vi.fn(async () => ({ audioSeconds: 240, costUsd: 0.04 }));
+
+      await expect(diarize(pool, { provider: "pyannoteai", model: "pyannote-3" }, invoke)).rejects.toThrow(
+        BudgetExceededError,
+      );
+
+      expect(invoke).not.toHaveBeenCalled();
+      const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
+      expect(rows).toHaveLength(1);
+    });
+
     it("rejects the call once the monthly cap is already reached, independently of the daily cap", async () => {
       await setBudgets(pool, { dailyBudgetUsd: null, monthlyBudgetUsd: 5 });
       await pool.query(
