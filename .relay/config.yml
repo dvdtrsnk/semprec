@@ -1,0 +1,17 @@
+version: 1
+protected-paths: [".relay/**", ".github/workflows/**", ".github/scripts/check-protected-paths.mjs"]
+defaults:
+  worker: any                 # any preset in project.workerIds, or a preset name
+  max-concurrent: 2           # per workflow (runs of this one workflow), unless it overrides it;
+                              # the cross-workflow cap on issues in flight is the project's
+                              # maxConcurrent in the plugin
+  timeout-minutes: 120        # per command step
+review:
+  bot: { repo: dvdtrsnk/code-review-bot, ref: fc7d3fe86c6c0a6a7d1c63f5378846d96fba3982 }
+  check-name: code-review
+  env: { REVIEW_BLOCK_SEVERITY: medium, PROMOTION_SOURCE: develop, PROMOTION_TARGET: main }
+merge:
+  method: rebase              # the only method Relay implements
+labels:                       # names the shipped workflows use; free to rename
+  blocked: agent:blocked
+  needs-human-action: agent:needs-human-action

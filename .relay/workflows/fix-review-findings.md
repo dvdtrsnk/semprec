@@ -1,0 +1,30 @@
+---
+id: fix-review-findings
+name: Fix review findings
+on:
+  pull-requests: { label: review:changes-requested }
+steps:
+  - id: fix
+    uses: agent
+    workspace: pr-branch                         # thread + BB worktree on the PR's existing branch
+    prompt: "#fix"
+  - { id: verify, uses: command, run: pnpm run verify, cwd: backend, on-failure: { goto: fix, max-rounds: 3 } }
+  - { id: verify-web, uses: command, run: pnpm run verify, cwd: web, on-failure: { goto: fix, max-rounds: 3 } }
+  - { id: guard, uses: guard-paths }
+  - { id: draft, uses: pull-request-draft }
+  - { id: relabel, uses: labels, remove: [review:changes-requested], add: [review:ready] }
+  - { id: push, uses: push, force-with-lease: true }
+  - { id: ready, uses: pull-request-ready }      # run ends here; the review workflow's own trigger picks the new head up
+on-failure:
+  - { uses: labels, remove: [review:changes-requested], add: [relay:needs-human-action] }
+  - { uses: comment, body: "Relay could not fix the review findings on this pull request.{{errorLine}}" }
+on-blocked:
+  - { uses: labels, remove: [review:changes-requested], add: [agent:blocked] }
+  - { uses: comment, body: "Relay fix run is blocked and needs manual follow-up.{{errorLine}}" }
+---
+
+## prompt: fix
+
+You are Relay, an automated fix worker for pull request #{{prNumber}} in {{repo}} (base branch {{baseBranch}}). Your workspace is a BB-managed git worktree checked out on this pull request's branch: stay on it — never create, switch or rename branches. The code review requested changes; the inline findings are:{{reviewFeedbackLine}}
+
+Address every finding: fix the code, reply to each review thread with what you changed, and resolve the threads you addressed. Keep the change scoped to the findings and the pull request's own intent. Never change anything under `.relay/` or `.github/workflows/` — those paths are protected and a change there blocks the run. Commit locally as you go; do not push. Run every command in the foreground and wait for its exit status; **never end your turn waiting to be notified that something finished**. End your final answer with `Relay-Step-Status: pass` once every finding is addressed, `Relay-Step-Status: fail` with the reason if you cannot, or `Relay-Step-Status: blocked` if a finding needs a decision only a human can make. Answer in English — it is posted directly to GitHub.
