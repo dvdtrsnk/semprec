@@ -3,7 +3,5 @@ Description=Semprec backup
 
 [Service]
 Type=oneshot
-User=semprec
-Group=semprec
 EnvironmentFile=/opt/semprec/shared/.env
 ExecStart=/bin/bash /opt/semprec/shared/bin/semprec-backup.sh

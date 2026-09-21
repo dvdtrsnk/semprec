@@ -37,6 +37,22 @@ shipped inside a release directory, so a release contains no secret of any kind.
 #91), owning the agent-affinity task catalog over the same Postgres-backed queue `semprec-api`
 uses. Its unit is a long-running worker, not socket-activated.
 
+## Encrypted off-site backups (issue #177)
+
+`semprec-backup.timer` runs daily at 03:30. Its root-owned service first writes a PostgreSQL
+custom-format dump to `/var/backups/semprec/postgres.dump`; only a completed dump is included in
+the following restic snapshot. The same snapshot includes the Docker volume mounted at MinIO's
+`/data`, discovered from the running MinIO container rather than assuming a Compose volume name.
+The restic repository is S3-compatible and encrypted by restic. Only after `restic backup`
+succeeds does the job run `restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 12 --prune`.
+
+The backup input inventory is intentionally narrow: the custom PostgreSQL dump and MinIO data
+only. It excludes `/opt/semprec/shared/.env`, `apns-key.p8`, all credentials including
+`CREDENTIALS_MASTER_KEY` (the deployment's secrets master key), `/var/log/journal`, certificates,
+and reproducible release or deployment configuration. No restic invocation traverses a parent
+directory that could include those paths. The daily schedule gives a maximum data-loss window
+(RPO) of 24 hours, plus changes since the last completed daily backup.
+
 No proxy-level auth, rate-limiting, IP filtering, or subdomains — all of that stays in the
 application (`services/semprec-api`), by design.
 
