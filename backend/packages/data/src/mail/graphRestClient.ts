@@ -68,7 +68,7 @@ function safeAttachmentLabel(name: unknown): string {
   const withoutControls = Array.from(typeof name === "string" ? name : "")
     .map((character) => {
       const code = character.charCodeAt(0);
-      return code <= 31 || code === 127 ? " " : character;
+      return code <= 31 || (code >= 127 && code <= 159) || code === 0x2028 || code === 0x2029 ? " " : character;
     })
     .join("");
   const normalized = withoutControls.trim().replace(/\s+/g, " ");
@@ -187,7 +187,8 @@ export async function toFetchedGraphMessage(
       nonFileAttachments,
       "text",
     ),
-    bodyHtml: html ? appendGraphNonFileAttachmentAnnotations(html, nonFileAttachments, "html") : undefined,
+    bodyHtml:
+      html !== undefined ? appendGraphNonFileAttachmentAnnotations(html, nonFileAttachments, "html") : undefined,
     date: resource.receivedDateTime ? new Date(resource.receivedDateTime) : undefined,
     attachments,
     deliveredToHeaders: headerValues(resource, "Delivered-To"),

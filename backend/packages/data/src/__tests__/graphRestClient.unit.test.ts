@@ -13,7 +13,11 @@ describe("Graph non-file attachments (issue #203)", () => {
       async () => [
         { "@odata.type": "#microsoft.graph.referenceAttachment", id: "ref-2", name: "zeta link" },
         { "@odata.type": "#microsoft.graph.fileAttachment", id: "file-1", name: "report.pdf" },
-        { "@odata.type": "#microsoft.graph.itemAttachment", id: "item-2", name: "second\nitem" },
+        {
+          "@odata.type": "#microsoft.graph.itemAttachment",
+          id: "item-2",
+          name: "second\nitem\u0085\u2028line\u2029paragraph",
+        },
         { "@odata.type": "#microsoft.graph.itemAttachment", id: "item-1", name: "<first>" },
         { "@odata.type": "#microsoft.graph.referenceAttachment", id: "ref-1" },
         { "@odata.type": "#microsoft.graph.unknownAttachment", id: "unknown", name: "ignored" },
@@ -27,7 +31,7 @@ describe("Graph non-file attachments (issue #203)", () => {
     expect(attachment).toMatchObject({ filename: "report.pdf", disposition: "attachment" });
     expect(await attachment.openStream()).toBeInstanceOf(Readable);
     expect(message.bodyHtml).toBe(
-      "<p>Message</p><p>[itemAttachment: &lt;first&gt;]</p><p>[itemAttachment: second item]</p><p>[referenceAttachment: attachment]</p><p>[referenceAttachment: zeta link]</p>",
+      "<p>Message</p><p>[itemAttachment: &lt;first&gt;]</p><p>[itemAttachment: second item line paragraph]</p><p>[referenceAttachment: attachment]</p><p>[referenceAttachment: zeta link]</p>",
     );
   });
 
@@ -40,5 +44,15 @@ describe("Graph non-file attachments (issue #203)", () => {
 
     expect(message.bodyText).toBe("Message\n\n[itemAttachment: attachment]");
     expect(message.bodyHtml).toBeUndefined();
+  });
+
+  it("retains annotations when Graph provides an empty HTML body", async () => {
+    const message = await toFetchedGraphMessage(
+      { id: "message-3", hasAttachments: true, body: { contentType: "html", content: "" } },
+      async () => [{ "@odata.type": "#microsoft.graph.referenceAttachment", id: "reference-1", name: "link" }],
+      async () => Readable.from([]),
+    );
+
+    expect(message.bodyHtml).toBe("<p>[referenceAttachment: link]</p>");
   });
 });
