@@ -117,7 +117,13 @@ async function toFetchedMessage(
     xOriginalTo: headerValues(resource, "X-Original-To")[0] ?? null,
     envelopeTo: headerValues(resource, "Envelope-To")[0] ?? null,
     isDsn: isDeliveryStatusReport(contentType?.type, contentType?.params),
-    flags: [...(resource.isRead ? ["\\Seen"] : []), ...(resource.flag?.flagStatus === "flagged" ? ["\\Flagged"] : [])],
+    // Delta links created before `isRead` was added to our `$select` do not carry that field.
+    // Preserve the stored observation in that case instead of treating the incomplete payload
+    // as an explicit unread state and scheduling a spurious provider write-back.
+    flags:
+      resource.isRead === undefined
+        ? undefined
+        : [...(resource.isRead ? ["\\Seen"] : []), ...(resource.flag?.flagStatus === "flagged" ? ["\\Flagged"] : [])],
   };
 }
 
