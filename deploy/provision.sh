@@ -9,6 +9,9 @@ readonly JOURNALD_CONFIG_DIR=/etc/systemd/journald.conf.d
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly APT_KEYRING_DIR=/etc/apt/keyrings
 readonly APT_SOURCES_DIR=/etc/apt/sources.list.d
+readonly HUNSPELL_BASENAME=cs_CZ
+readonly HUNSPELL_DICT_SOURCE=/usr/share/hunspell/cs_CZ.dic
+readonly HUNSPELL_AFFIX_SOURCE=/usr/share/hunspell/cs_CZ.aff
 
 readonly -a SERVICE_UNITS=(
   semprec-api.service
@@ -89,8 +92,76 @@ install_host_packages() {
     docker-compose-plugin \
     caddy \
     restic \
-    ffmpeg
+    ffmpeg \
+    hunspell-cs
   corepack enable pnpm
+}
+
+require_readable_hunspell_asset() {
+  local path="$1"
+  local mode
+
+  if [[ ! -s "$path" || ! -r "$path" ]]; then
+    echo "Czech Hunspell asset is missing, empty, or unreadable: $path" >&2
+    exit 1
+  fi
+
+  mode="$(stat --format '%a' "$path")"
+  if (( (8#$mode & 0444) == 0 )); then
+    echo "Czech Hunspell asset is missing, empty, or unreadable: $path" >&2
+    exit 1
+  fi
+}
+
+copy_hunspell_asset() {
+  local postgres_container="$1"
+  local source="$2"
+  local destination="$3"
+  local source_checksum
+  local destination_checksum
+
+  source_checksum="$(sha256sum "$source" | awk '{print $1}')"
+  destination_checksum="$(docker exec "$postgres_container" sha256sum "$destination" 2>/dev/null | awk '{print $1}' || true)"
+
+  if [[ "$source_checksum" != "$destination_checksum" ]]; then
+    docker cp "$source" "$postgres_container:$destination"
+  fi
+
+  # The image's PostgreSQL process runs as an unprivileged user. Docker copies files
+  # as root, so fix their mode only when that user cannot read the copied asset.
+  if ! docker exec --user postgres "$postgres_container" test -s "$destination" -a -r "$destination"; then
+    docker exec --user root "$postgres_container" chmod 0644 "$destination"
+  fi
+  if ! docker exec --user postgres "$postgres_container" test -s "$destination" -a -r "$destination"; then
+    echo "Installed Czech Hunspell asset is empty or unreadable: $destination" >&2
+    exit 1
+  fi
+}
+
+install_postgresql_hunspell_assets() {
+  require_readable_hunspell_asset "$HUNSPELL_DICT_SOURCE"
+  require_readable_hunspell_asset "$HUNSPELL_AFFIX_SOURCE"
+
+  local postgres_container
+  if ! postgres_container="$(docker compose -f "$SCRIPT_DIR/docker-compose.yml" ps --quiet postgres)" || [[ -z "$postgres_container" ]]; then
+    echo "Cannot install Czech Hunspell assets: the PostgreSQL container is not active" >&2
+    exit 1
+  fi
+
+  local postgres_sharedir
+  if ! postgres_sharedir="$(docker exec "$postgres_container" pg_config --sharedir)" || [[ -z "$postgres_sharedir" ]]; then
+    echo "Cannot locate PostgreSQL tsearch_data: pg_config returned an empty sharedir" >&2
+    exit 1
+  fi
+
+  local tsearch_data_dir="$postgres_sharedir/tsearch_data"
+  if ! docker exec "$postgres_container" test -d "$tsearch_data_dir"; then
+    echo "Cannot locate PostgreSQL tsearch_data directory: $tsearch_data_dir" >&2
+    exit 1
+  fi
+
+  copy_hunspell_asset "$postgres_container" "$HUNSPELL_DICT_SOURCE" "$tsearch_data_dir/$HUNSPELL_BASENAME.dict"
+  copy_hunspell_asset "$postgres_container" "$HUNSPELL_AFFIX_SOURCE" "$tsearch_data_dir/$HUNSPELL_BASENAME.affix"
 }
 
 ensure_service_user() {
@@ -169,6 +240,7 @@ main() {
   require_root
   require_supported_distribution
   install_host_packages
+  install_postgresql_hunspell_assets
   ensure_service_user
   ensure_release_tree
   ensure_backup_directory

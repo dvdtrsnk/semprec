@@ -16,6 +16,9 @@ trap cleanup EXIT
 
 mkdir -p "$TEST_BIN" "$TEST_STATE" "$TEST_ROOT/systemd/system"
 cp -R "$REPOSITORY_ROOT/deploy" "$TEST_DEPLOY"
+mkdir -p "$TEST_STATE/hunspell" "$TEST_STATE/tsearch_data"
+printf 'Czech dictionary\n' > "$TEST_STATE/hunspell/cs_CZ.dic"
+printf 'Czech affix\n' > "$TEST_STATE/hunspell/cs_CZ.aff"
 sed -i "s|readonly SEMPREC_ROOT=/opt/semprec|readonly SEMPREC_ROOT=$TEST_ROOT/opt/semprec|" \
   "$TEST_DEPLOY/provision.sh"
 sed -i "s|readonly BACKUP_DIRECTORY=/var/backups/semprec|readonly BACKUP_DIRECTORY=$TEST_ROOT/var/backups/semprec|" \
@@ -27,6 +30,10 @@ sed -i "s|readonly JOURNALD_CONFIG_DIR=/etc/systemd/journald.conf.d|readonly JOU
 sed -i "s|readonly APT_KEYRING_DIR=/etc/apt/keyrings|readonly APT_KEYRING_DIR=$TEST_ROOT/keyrings|" \
   "$TEST_DEPLOY/provision.sh"
 sed -i "s|readonly APT_SOURCES_DIR=/etc/apt/sources.list.d|readonly APT_SOURCES_DIR=$TEST_ROOT/sources|" \
+  "$TEST_DEPLOY/provision.sh"
+sed -i "s|readonly HUNSPELL_DICT_SOURCE=/usr/share/hunspell/cs_CZ.dic|readonly HUNSPELL_DICT_SOURCE=$TEST_STATE/hunspell/cs_CZ.dic|" \
+  "$TEST_DEPLOY/provision.sh"
+sed -i "s|readonly HUNSPELL_AFFIX_SOURCE=/usr/share/hunspell/cs_CZ.aff|readonly HUNSPELL_AFFIX_SOURCE=$TEST_STATE/hunspell/cs_CZ.aff|" \
   "$TEST_DEPLOY/provision.sh"
 
 write_mock() {
@@ -47,6 +54,31 @@ write_mock corepack 'echo "corepack $*" >> "$TEST_STATE/commands"'
 write_mock systemctl 'echo "systemctl $*" >> "$TEST_STATE/commands"'
 write_mock systemd-analyze 'echo "systemd-analyze $*" >> "$TEST_STATE/commands"'
 write_mock install 'args=(); while [[ "$#" -gt 0 ]]; do case "$1" in -o|-g) shift 2;; *) args+=("$1"); shift;; esac; done; /usr/bin/install "${args[@]}"'
+write_mock docker '
+if [[ "$1" == "compose" ]]; then
+  printf "postgres-container\\n"
+  exit 0
+fi
+if [[ "$1" == "cp" ]]; then
+  echo "docker cp $*" >> "$TEST_STATE/commands"
+  cp "$2" "$TEST_STATE/tsearch_data/$(basename "${3#*:}")"
+  exit 0
+fi
+if [[ "$1" == "exec" ]]; then
+  shift
+  if [[ "$1" == "--user" ]]; then shift 2; fi
+  shift
+  case "$1" in
+    pg_config) printf "/mock/postgresql\\n"; exit 0 ;;
+    sha256sum) sha256sum "$TEST_STATE/tsearch_data/$(basename "$2")"; exit $? ;;
+    chmod) chmod "$2" "$TEST_STATE/tsearch_data/$(basename "$3")"; exit $? ;;
+    test)
+      if [[ "$2" == "-d" ]]; then test -d "$TEST_STATE/tsearch_data"; else test -s "$TEST_STATE/tsearch_data/$(basename "$3")" -a -r "$TEST_STATE/tsearch_data/$(basename "$3")"; fi
+      exit $?
+      ;;
+    *) exit 1 ;;
+  esac
+fi'
 
 run_provision() {
   PATH="$TEST_BIN:$PATH" bash "$TEST_DEPLOY/provision.sh"
@@ -67,6 +99,10 @@ test -f "$TEST_ROOT/systemd/system/semprec-agents.service"
 test -f "$TEST_ROOT/systemd/system/semprec-dead-man.timer"
 test -f "$TEST_ROOT/systemd/system/semprec-failping@.service"
 test -f "$TEST_ROOT/systemd/journald.conf.d/semprec.conf"
+test -s "$TEST_STATE/tsearch_data/cs_CZ.dict"
+test -s "$TEST_STATE/tsearch_data/cs_CZ.affix"
+test -r "$TEST_STATE/tsearch_data/cs_CZ.dict"
+test -r "$TEST_STATE/tsearch_data/cs_CZ.affix"
 grep -qx 'Storage=persistent' "$TEST_ROOT/systemd/journald.conf.d/semprec.conf"
 grep -qx 'SystemMaxUse=2G' "$TEST_ROOT/systemd/journald.conf.d/semprec.conf"
 grep -qx 'MaxRetentionSec=90day' "$TEST_ROOT/systemd/journald.conf.d/semprec.conf"
@@ -93,5 +129,21 @@ grep -q 'docker-compose-plugin' "$TEST_STATE/commands"
 grep -q 'caddy' "$TEST_STATE/commands"
 grep -q 'restic' "$TEST_STATE/commands"
 grep -q 'ffmpeg' "$TEST_STATE/commands"
+grep -q 'hunspell-cs' "$TEST_STATE/commands"
+test "$(grep -c '^docker cp ' "$TEST_STATE/commands")" -eq 2
+
+chmod 000 "$TEST_STATE/hunspell/cs_CZ.dic"
+if run_provision >"$TEST_STATE/unreadable-asset.out" 2>&1; then
+  echo 'provision unexpectedly succeeded with an unreadable Czech dictionary' >&2
+  exit 1
+fi
+grep -q 'Czech Hunspell asset is missing, empty, or unreadable' "$TEST_STATE/unreadable-asset.out"
+
+rm "$TEST_STATE/hunspell/cs_CZ.dic"
+if run_provision >"$TEST_STATE/missing-asset.out" 2>&1; then
+  echo 'provision unexpectedly succeeded without the Czech dictionary' >&2
+  exit 1
+fi
+grep -q 'Czech Hunspell asset is missing, empty, or unreadable' "$TEST_STATE/missing-asset.out"
 
 echo 'provision.sh idempotence test passed'
