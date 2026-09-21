@@ -20,7 +20,7 @@ on-failure:
   - { uses: comment, body: "Relay could not fix the review findings on this pull request.{{errorLine}}" }
 on-blocked:
   - { uses: labels, remove: [review:changes-requested], add: [agent:blocked] }
-  - { uses: comment, body: "Relay fix run is blocked and needs manual follow-up.{{errorLine}}" }
+  - { uses: comment, body: "Relay fix run is blocked.{{errorLine}}\n\nThe `recover-blocked-issue` workflow picks this pull request up on its existing branch while it carries `agent:blocked`; remove the label to stop that." }
 ---
 
 ## prompt: fix

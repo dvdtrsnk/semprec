@@ -53,7 +53,7 @@ on-failure:
   - { uses: comment, body: "Relay could not merge this pull request.{{errorLine}}" }
 on-blocked:
   - { uses: labels, remove: [review:passed], add: [agent:blocked] }
-  - { uses: comment, body: "Relay merge run is blocked and needs manual follow-up.{{errorLine}}" }
+  - { uses: comment, body: "Relay merge run is blocked.{{errorLine}}\n\nThe `recover-blocked-issue` workflow picks this pull request up on its existing branch while it carries `agent:blocked`; remove the label to stop that." }
 ---
 
 ## prompt: resolve-conflicts
