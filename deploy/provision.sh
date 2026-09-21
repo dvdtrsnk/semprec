@@ -3,6 +3,7 @@
 set -euo pipefail
 
 readonly SEMPREC_ROOT=/opt/semprec
+readonly BACKUP_DIRECTORY=/var/backups/semprec
 readonly SYSTEMD_UNIT_DIR=/etc/systemd/system
 readonly JOURNALD_CONFIG_DIR=/etc/systemd/journald.conf.d
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,6 +33,10 @@ readonly -a TIMER_SERVICES=(
   semprec-backup.service
   semprec-restore-test.service
   semprec-trash-purge.service
+)
+
+readonly -a FAILURE_SERVICE_UNITS=(
+  semprec-failping@.service
 )
 
 require_root() {
@@ -190,9 +195,13 @@ ensure_release_tree() {
   fi
 }
 
+ensure_backup_directory() {
+  ensure_directory "$BACKUP_DIRECTORY" 0700
+}
+
 install_systemd_units() {
   local unit
-  for unit in "${SERVICE_UNITS[@]}" "${TIMER_SERVICES[@]}" "${TIMER_UNITS[@]}"; do
+  for unit in "${SERVICE_UNITS[@]}" "${TIMER_SERVICES[@]}" "${TIMER_UNITS[@]}" "${FAILURE_SERVICE_UNITS[@]}"; do
     install -o root -g root -m 0644 "$SCRIPT_DIR/systemd/$unit" "$SYSTEMD_UNIT_DIR/$unit"
   done
 
@@ -204,7 +213,7 @@ install_systemd_units() {
 
 install_timer_scripts() {
   local script
-  for script in dead-man backup restore-test trash-purge; do
+  for script in dead-man failping backup restore-test trash-purge; do
     install -o root -g root -m 0750 \
       "$SCRIPT_DIR/systemd/scripts/semprec-$script.sh" \
       "$SEMPREC_ROOT/shared/bin/semprec-$script.sh"
@@ -214,7 +223,7 @@ install_timer_scripts() {
 verify_systemd_units() {
   local -a unit_paths=()
   local unit
-  for unit in "${SERVICE_UNITS[@]}" "${TIMER_SERVICES[@]}" "${TIMER_UNITS[@]}"; do
+  for unit in "${SERVICE_UNITS[@]}" "${TIMER_SERVICES[@]}" "${TIMER_UNITS[@]}" "${FAILURE_SERVICE_UNITS[@]}"; do
     unit_paths+=("$SYSTEMD_UNIT_DIR/$unit")
   done
   systemd-analyze verify "${unit_paths[@]}"
@@ -234,6 +243,7 @@ main() {
   install_postgresql_hunspell_assets
   ensure_service_user
   ensure_release_tree
+  ensure_backup_directory
   install_systemd_units
   install_timer_scripts
   verify_systemd_units

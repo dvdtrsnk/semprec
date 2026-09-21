@@ -21,6 +21,8 @@ printf 'Czech dictionary\n' > "$TEST_STATE/hunspell/cs_CZ.dic"
 printf 'Czech affix\n' > "$TEST_STATE/hunspell/cs_CZ.aff"
 sed -i "s|readonly SEMPREC_ROOT=/opt/semprec|readonly SEMPREC_ROOT=$TEST_ROOT/opt/semprec|" \
   "$TEST_DEPLOY/provision.sh"
+sed -i "s|readonly BACKUP_DIRECTORY=/var/backups/semprec|readonly BACKUP_DIRECTORY=$TEST_ROOT/var/backups/semprec|" \
+  "$TEST_DEPLOY/provision.sh"
 sed -i "s|readonly SYSTEMD_UNIT_DIR=/etc/systemd/system|readonly SYSTEMD_UNIT_DIR=$TEST_ROOT/systemd/system|" \
   "$TEST_DEPLOY/provision.sh"
 sed -i "s|readonly JOURNALD_CONFIG_DIR=/etc/systemd/journald.conf.d|readonly JOURNALD_CONFIG_DIR=$TEST_ROOT/systemd/journald.conf.d|" \
@@ -85,6 +87,8 @@ run_provision() {
 run_provision
 test -d "$TEST_ROOT/opt/semprec/releases"
 test -d "$TEST_ROOT/opt/semprec/shared"
+test -d "$TEST_ROOT/var/backups/semprec"
+test "$(stat -c %a "$TEST_ROOT/var/backups/semprec")" -eq 700
 test -f "$TEST_ROOT/opt/semprec/shared/.env"
 test -f "$TEST_STATE/semprec-user"
 test -f "$TEST_ROOT/systemd/system/semprec-api.service"
@@ -93,11 +97,24 @@ test -f "$TEST_ROOT/systemd/system/semprec-mailsync@.service"
 test -f "$TEST_ROOT/systemd/system/semprec-transcribe.service"
 test -f "$TEST_ROOT/systemd/system/semprec-agents.service"
 test -f "$TEST_ROOT/systemd/system/semprec-dead-man.timer"
+test -f "$TEST_ROOT/systemd/system/semprec-failping@.service"
 test -f "$TEST_ROOT/systemd/journald.conf.d/semprec.conf"
 test -s "$TEST_STATE/tsearch_data/cs_CZ.dict"
 test -s "$TEST_STATE/tsearch_data/cs_CZ.affix"
 test -r "$TEST_STATE/tsearch_data/cs_CZ.dict"
 test -r "$TEST_STATE/tsearch_data/cs_CZ.affix"
+grep -qx 'Storage=persistent' "$TEST_ROOT/systemd/journald.conf.d/semprec.conf"
+grep -qx 'SystemMaxUse=2G' "$TEST_ROOT/systemd/journald.conf.d/semprec.conf"
+grep -qx 'MaxRetentionSec=90day' "$TEST_ROOT/systemd/journald.conf.d/semprec.conf"
+grep -qx 'SyslogIdentifier=semprec-api' "$TEST_ROOT/systemd/system/semprec-api.service"
+grep -qx 'OnFailure=semprec-failping@%n.service' "$TEST_ROOT/systemd/system/semprec-api.service"
+grep -qx 'SyslogIdentifier=semprec-agents' "$TEST_ROOT/systemd/system/semprec-agents.service"
+grep -qx 'SyslogIdentifier=semprec-mailsync-%i' "$TEST_ROOT/systemd/system/semprec-mailsync@.service"
+grep -qx 'SyslogIdentifier=semprec-transcribe' "$TEST_ROOT/systemd/system/semprec-transcribe.service"
+grep -qx 'SyslogIdentifier=semprec-ai-gateway' "$TEST_ROOT/systemd/system/semprec-ai-gateway.service"
+grep -qx 'OnFailure=semprec-failping@%n.service' "$TEST_ROOT/systemd/system/semprec-agents.service"
+grep -qx 'OnFailure=semprec-failping@%n.service' "$TEST_ROOT/systemd/system/semprec-transcribe.service"
+grep -qx 'OnFailure=semprec-failping@%n.service' "$TEST_ROOT/systemd/system/semprec-ai-gateway.service"
 
 printf 'OPERATOR_CONFIGURED_SECRET=preserved\n' > "$TEST_ROOT/opt/semprec/shared/.env"
 mkdir "$TEST_ROOT/opt/semprec/releases/release-one"

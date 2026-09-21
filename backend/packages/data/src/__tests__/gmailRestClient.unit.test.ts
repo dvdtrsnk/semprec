@@ -139,3 +139,21 @@ describe("Gmail Drive replacement attachments", () => {
     expect(fetched?.message.attachments[0]).toMatchObject({ filename: "invoice.pdf", disposition: "attachment" });
   });
 });
+
+describe("Gmail flag write-back", () => {
+  it("posts label additions and removals to users.messages.modify", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GmailRestClient(async () => "test-token");
+
+    await client.modifyMessageLabels("message/1", ["STARRED"], ["UNREAD"]);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://gmail.googleapis.com/gmail/v1/users/me/messages/message%2F1/modify",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ addLabelIds: ["STARRED"], removeLabelIds: ["UNREAD"] }),
+      }),
+    );
+  });
+});
