@@ -37,8 +37,11 @@ describe("Graph flag write-back", () => {
     const delta = await client.fetchDelta("https://graph.example/old-delta");
 
     expect(delta.changes).toHaveLength(1);
-    expect(delta.changes[0]).toMatchObject({ id: "message-1", removed: false });
-    expect(delta.changes[0]?.removed ? undefined : delta.changes[0]?.message.flags).toBeUndefined();
+    const [change] = delta.changes;
+    if (!change || change.removed) throw new Error("Expected an active Graph message change");
+    if (!change.message) throw new Error("Expected the active Graph message change to include a message payload");
+    expect(change).toMatchObject({ id: "message-1", removed: false });
+    expect(change.message.flags).toBeUndefined();
   });
 });
 
