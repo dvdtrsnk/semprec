@@ -37,6 +37,36 @@ shipped inside a release directory, so a release contains no secret of any kind.
 #91), owning the agent-affinity task catalog over the same Postgres-backed queue `semprec-api`
 uses. Its unit is a long-running worker, not socket-activated.
 
+## Logs and external liveness (issue #171)
+
+Every Semprec systemd service supplies a distinct `SyslogIdentifier`; PostgreSQL and MinIO use
+the Docker Compose `journald` driver with their own tags. This keeps process and container logs
+filterable in one persistent journal. Provisioning configures `Storage=persistent`, a 2 GiB
+maximum, and 90-day retention. Journal state is operational evidence, not backup input: #177's
+restic job excludes `/var/log/journal` along with secrets and reproducible configuration.
+
+The `semprec-dead-man` timer probes `https://$SEMPREC_DOMAIN/healthz` every five minutes before
+pinging `HEALTHCHECKS_PING_URL`; failed health probes therefore never report a false success. The
+four long-running services restart up to three times in five minutes. Only when that restart
+limit is exhausted does systemd invoke `semprec-failping@%n.service`, which sends the failed unit
+name to the monitor's `/fail` endpoint. A crash recovered by a restart does not trigger `/fail`.
+
+## Encrypted off-site backups (issue #177)
+
+`semprec-backup.timer` runs daily at 03:30. Its root-owned service first writes a PostgreSQL
+custom-format dump to `/var/backups/semprec/postgres.dump`; only a completed dump is included in
+the following restic snapshot. The same snapshot includes the Docker volume mounted at MinIO's
+`/data`, discovered from the running MinIO container rather than assuming a Compose volume name.
+The restic repository is S3-compatible and encrypted by restic. Only after `restic backup`
+succeeds does the job run `restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 12 --prune`.
+
+The backup input inventory is intentionally narrow: the custom PostgreSQL dump and MinIO data
+only. It excludes `/opt/semprec/shared/.env`, `apns-key.p8`, all credentials including
+`CREDENTIALS_MASTER_KEY` (the deployment's secrets master key), `/var/log/journal`, certificates,
+and reproducible release or deployment configuration. No restic invocation traverses a parent
+directory that could include those paths. The daily schedule gives a maximum data-loss window
+(RPO) of 24 hours, plus changes since the last completed daily backup.
+
 No proxy-level auth, rate-limiting, IP filtering, or subdomains — all of that stays in the
 application (`services/semprec-api`), by design.
 
