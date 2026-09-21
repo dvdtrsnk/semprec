@@ -1695,6 +1695,58 @@ describe("Graph reconcile core (issue #26)", () => {
     expect(rows[0].count).toBe("1");
   });
 
+  it("keeps Graph item/reference annotations in the message body without creating placeholder Files rows on repeat reconcile", async () => {
+    const params = await reconcileParams();
+    const graphMessage = {
+      messageId: "<graph-non-file@x>",
+      envelope: { from: { address: "a@x.com" } },
+      subject: "Mixed attachments",
+      bodyHtml: "<p>Message</p><p>[itemAttachment: meeting]</p><p>[referenceAttachment: shared document]</p>",
+      attachments: [
+        {
+          filename: "report.txt",
+          contentType: "text/plain",
+          contentId: null,
+          disposition: "attachment" as const,
+          openStream: () => Readable.from("real file"),
+        },
+      ],
+    };
+    const graph = fakeGraphClient({
+      fetchDelta: async () => ({
+        invalidated: false,
+        newDeltaLink: "link-mixed",
+        changes: [{ id: "mixed-1", parentFolderId: "f1", removed: false, message: graphMessage }],
+      }),
+    });
+
+    await withTransaction(pool, (client) => reconcileGraphAccount(client, graph, params));
+    await withTransaction(pool, (client) => reconcileGraphAccount(client, graph, params));
+
+    const [emailRows, fileRows, attachmentRows] = await Promise.all([
+      pool.query<{ body: string }>(
+        `SELECT properties->>'body' AS body FROM items WHERE database_id = $1 AND properties->>'name' = $2`,
+        [params.emailsDatabaseId, "Mixed attachments"],
+      ),
+      pool.query<{ count: string }>(`SELECT count(*) FROM items WHERE database_id = $1`, [params.filesDatabaseId]),
+      pool.query<{ count: string }>(
+        `SELECT count(*) FROM mail_attachments WHERE message_item_id = (SELECT id FROM items WHERE database_id = $1 AND properties->>'name' = $2)`,
+        [params.emailsDatabaseId, "Mixed attachments"],
+      ),
+    ]);
+
+    expect(emailRows.rows).toHaveLength(1);
+    const email = emailRows.rows[0];
+    const fileCount = fileRows.rows[0];
+    const attachmentCount = attachmentRows.rows[0];
+    if (!email || !fileCount || !attachmentCount) throw new Error("Expected reconciled Graph attachment rows");
+    expect(email.body).toBe(
+      "<p>Message</p><p>[itemAttachment: meeting]</p><p>[referenceAttachment: shared document]</p>",
+    );
+    expect(fileCount.count).toBe("1");
+    expect(attachmentCount.count).toBe("1");
+  });
+
   it("a deltaLink 410 Gone (invalidated) clears the stored deltaLink and runs a full resync (fetchDelta(null)) instead of resuming", async () => {
     const params = await reconcileParams();
     await withTransaction(pool, (client) => reconcileGraphAccount(client, fakeGraphClient(), params));
