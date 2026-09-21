@@ -1,6 +1,49 @@
 import { Readable } from "node:stream";
-import { describe, expect, it } from "vitest";
-import { toFetchedGraphMessage } from "../mail/graphRestClient.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { GraphRestClient, toFetchedGraphMessage } from "../mail/graphRestClient.js";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("Graph flag write-back", () => {
+  it("patches the message resource with the requested flag state", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GraphRestClient(async () => "test-token");
+
+    await client.patchMessage("message/1", { flag: { flagStatus: "flagged" } });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://graph.microsoft.com/v1.0/me/messages/message%2F1",
+      expect.objectContaining({ method: "PATCH", body: JSON.stringify({ flag: { flagStatus: "flagged" } }) }),
+    );
+  });
+
+  it("leaves flags undefined for an old delta link that omits isRead", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            value: [{ id: "message-1", internetMessageId: "<message-1@example.com>", flag: { flagStatus: "flagged" } }],
+            "@odata.deltaLink": "https://graph.example/delta-next",
+          }),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GraphRestClient(async () => "test-token");
+
+    const delta = await client.fetchDelta("https://graph.example/old-delta");
+
+    expect(delta.changes).toHaveLength(1);
+    const [change] = delta.changes;
+    if (!change || change.removed) throw new Error("Expected an active Graph message change");
+    if (!change.message) throw new Error("Expected the active Graph message change to include a message payload");
+    expect(change).toMatchObject({ id: "message-1", removed: false });
+    expect(change.message.flags).toBeUndefined();
+  });
+});
 
 describe("Graph non-file attachments (issue #203)", () => {
   it("streams file attachments while appending item/reference annotations in deterministic safe order", async () => {

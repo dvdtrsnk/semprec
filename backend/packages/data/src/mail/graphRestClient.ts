@@ -22,6 +22,8 @@ interface GraphMessageResource {
   receivedDateTime?: string;
   internetMessageHeaders?: { name: string; value: string }[];
   hasAttachments?: boolean;
+  isRead?: boolean;
+  flag?: { flagStatus?: string };
   ["@removed"]?: { reason: string };
 }
 
@@ -195,6 +197,13 @@ export async function toFetchedGraphMessage(
     xOriginalTo: headerValues(resource, "X-Original-To")[0] ?? null,
     envelopeTo: headerValues(resource, "Envelope-To")[0] ?? null,
     isDsn: isDeliveryStatusReport(contentType?.type, contentType?.params),
+    // Delta links created before `isRead` was added to our `$select` do not carry that field.
+    // Preserve the stored observation in that case instead of treating the incomplete payload
+    // as an explicit unread state and scheduling a spurious provider write-back.
+    flags:
+      resource.isRead === undefined
+        ? undefined
+        : [...(resource.isRead ? ["\\Seen"] : []), ...(resource.flag?.flagStatus === "flagged" ? ["\\Flagged"] : [])],
   };
 }
 
@@ -337,7 +346,7 @@ export class GraphRestClient implements GraphMailClient {
   async fetchDelta(deltaLink: string | null): Promise<GraphDeltaResult> {
     let url =
       deltaLink ??
-      `${BASE_URL}/messages/delta?$select=internetMessageId,subject,from,toRecipients,ccRecipients,bccRecipients,body,bodyPreview,receivedDateTime,parentFolderId,internetMessageHeaders,hasAttachments`;
+      `${BASE_URL}/messages/delta?$select=internetMessageId,subject,from,toRecipients,ccRecipients,bccRecipients,body,bodyPreview,receivedDateTime,parentFolderId,internetMessageHeaders,hasAttachments,isRead,flag`;
     const changes: GraphChangedMessage[] = [];
     let newDeltaLink = "";
 
@@ -375,5 +384,20 @@ export class GraphRestClient implements GraphMailClient {
     }
 
     return { invalidated: false, newDeltaLink, changes };
+  }
+
+  async patchMessage(
+    messageId: string,
+    patch: { isRead: boolean } | { flag: { flagStatus: "flagged" | "notFlagged" } },
+  ): Promise<void> {
+    const token = await this.getAccessToken();
+    const response = await fetch(`${BASE_URL}/messages/${encodeURIComponent(messageId)}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) throw new GraphApiError(response.status);
+    await response.body?.cancel();
   }
 }

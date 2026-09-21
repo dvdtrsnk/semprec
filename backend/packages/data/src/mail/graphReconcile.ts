@@ -5,6 +5,8 @@ import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } fr
 import { ValidationError } from "../errors.js";
 import { ensureFolderItem } from "./folderDiscovery.js";
 import { ingestEmailMessage } from "./ingest.js";
+import { createGraphMailFlagWritebackAdapter } from "./mailFlagWriteback.js";
+import { listPendingProviderFlagWrites, recordConfirmedMailMessageFlag } from "./mailMessageFlagSyncStore.js";
 import { getMailMessageMetaByProviderMessageId } from "./mailMessageMetaStore.js";
 import {
   ensureMailAccountSyncState,
@@ -39,6 +41,10 @@ export interface GraphMailClient {
   listFolders(): Promise<GraphFolderRef[]>;
   /** `deltaLink: null` = initial/full-resync fetch (mailbox-wide `/me/messages/delta`, not per-folder — see the migration's `graph_delta_link` note). */
   fetchDelta(deltaLink: string | null): Promise<GraphDeltaResult>;
+  patchMessage(
+    messageId: string,
+    patch: { isRead: boolean } | { flag: { flagStatus: "flagged" | "notFlagged" } },
+  ): Promise<void>;
 }
 
 function specialPurposeForGraphFolder(folder: GraphFolderRef): string {
@@ -167,6 +173,22 @@ export async function reconcileGraphAccount(
         );
       }
     }
+  }
+
+  const [folderRelationDefinition, mailboxFolderRelationDefinition] = await Promise.all([
+    getRelationDefinitionByPropertyId(dbClient, params.folderRelationPropertyId),
+    getRelationDefinitionByPropertyId(dbClient, params.mailboxFolderRelationPropertyId),
+  ]);
+  if (!folderRelationDefinition || !mailboxFolderRelationDefinition)
+    throw new ValidationError("Mail folder relation definitions are missing from the email module schema");
+  const writeback = createGraphMailFlagWritebackAdapter(graph);
+  for (const pending of await listPendingProviderFlagWrites(dbClient, {
+    folderRelationDefinitionId: folderRelationDefinition.id,
+    mailboxFolderRelationDefinitionId: mailboxFolderRelationDefinition.id,
+    mailboxItemId: params.mailboxItemId,
+  })) {
+    if ((await writeback.write(pending)) === "applied")
+      await recordConfirmedMailMessageFlag(dbClient, pending.messageItemId, pending.propertyKey, pending.desiredState);
   }
 
   await recordGraphActivity(dbClient, {

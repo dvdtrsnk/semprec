@@ -39,8 +39,6 @@ import { storeCredential, getDecryptedCredential } from "../credentials/external
 import { reconcileImapAccount, type ImapFetchedMessage, type ImapMailClient } from "../mail/imapReconcile.js";
 import { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
 import { reconcileGraphAccount, type GraphMailClient } from "../mail/graphReconcile.js";
-import { createGmailMailFlagWritebackAdapter, createGraphMailFlagWritebackAdapter } from "../mail/mailFlagWriteback.js";
-import type { PendingImapFlagWrite } from "../mail/mailMessageFlagSyncStore.js";
 import {
   handleMailSearchReindexSweepTask,
   handleSyncMailAccountTask,
@@ -66,7 +64,7 @@ import {
   isImapConnectionLimitError,
 } from "../mail/imapFlowClient.js";
 import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
-import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG, READ_PROPERTY_KEY, messageFlagProperties } from "../mail/messageFlags.js";
+import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG, messageFlagProperties } from "../mail/messageFlags.js";
 import type { FetchMessageObject, ImapFlow, MessageStructureObject } from "imapflow";
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
@@ -1494,6 +1492,7 @@ describe("Gmail reconcile core (issue #26)", () => {
         message: { messageId: `<${id}@x>`, envelope: { from: { address: "a@x.com" } }, subject: "Hi", attachments: [] },
       }),
       listLabels: async () => [{ id: "INBOX", name: "INBOX", type: "system" }],
+      modifyMessageLabels: async () => {},
       ...overrides,
     };
   }
@@ -1568,6 +1567,66 @@ describe("Gmail reconcile core (issue #26)", () => {
     const { rows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [params.emailsDatabaseId]);
     expect(rows[0].count).toBe("2"); // the first sync's message plus the resync's new one
   });
+
+  it("writes Gmail read and flagged transitions, and a matching history observation converges without an echo", async () => {
+    const params = await reconcileParams();
+    await withTransaction(pool, (client) => reconcileGmailAccount(client, fakeGmailClient(), params));
+    const emailItemId = (
+      await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [params.emailsDatabaseId])
+    ).rows[0]!.id;
+    const writes: Array<{ id: string; add: string[]; remove: string[] }> = [];
+    const writer = fakeGmailClient({
+      modifyMessageLabels: async (id, add, remove) => {
+        writes.push({ id, add, remove });
+      },
+    });
+
+    await chokePoint.updateItem({
+      databaseId: params.emailsDatabaseId,
+      itemId: emailItemId,
+      propertiesPatch: { read: true, flagged: true },
+    });
+    await withTransaction(pool, (client) => reconcileGmailAccount(client, writer, params));
+    expect(writes).toEqual([
+      { id: "m1", add: ["STARRED"], remove: [] },
+      { id: "m1", add: [], remove: ["UNREAD"] },
+    ]);
+
+    await chokePoint.updateItem({
+      databaseId: params.emailsDatabaseId,
+      itemId: emailItemId,
+      propertiesPatch: { read: false, flagged: false },
+    });
+    await withTransaction(pool, (client) => reconcileGmailAccount(client, writer, params));
+    expect(writes.slice(2)).toEqual([
+      { id: "m1", add: [], remove: ["STARRED"] },
+      { id: "m1", add: ["UNREAD"], remove: [] },
+    ]);
+
+    await chokePoint.updateItem({
+      databaseId: params.emailsDatabaseId,
+      itemId: emailItemId,
+      propertiesPatch: { read: true },
+    });
+    const observed = fakeGmailClient({
+      listHistorySince: async () => ({
+        invalidated: false,
+        newHistoryId: "102",
+        changedMessageIds: ["m1"],
+        removedMessageIds: [],
+      }),
+      fetchMessage: async () => ({
+        id: "m1",
+        threadId: "t1",
+        labelIds: ["INBOX"],
+        message: { messageId: "<m1@x>", envelope: {}, attachments: [], flags: [IMAP_SEEN_FLAG] },
+      }),
+      modifyMessageLabels: async () => {
+        throw new Error("converged Gmail observation must not echo");
+      },
+    });
+    await withTransaction(pool, (client) => reconcileGmailAccount(client, observed, params));
+  });
 });
 
 describe("Graph reconcile core (issue #26)", () => {
@@ -1598,6 +1657,7 @@ describe("Graph reconcile core (issue #26)", () => {
           },
         ],
       }),
+      patchMessage: async () => {},
       ...overrides,
     };
   }
@@ -1724,6 +1784,66 @@ describe("Graph reconcile core (issue #26)", () => {
     expect(state?.graphDeltaLink).toBe("link-2");
     const { rows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [params.emailsDatabaseId]);
     expect(rows[0].count).toBe("2");
+  });
+
+  it("writes Graph read and flagged transitions, and a matching delta observation converges without an echo", async () => {
+    const params = await reconcileParams();
+    await withTransaction(pool, (client) => reconcileGraphAccount(client, fakeGraphClient(), params));
+    const emailItemId = (
+      await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [params.emailsDatabaseId])
+    ).rows[0]!.id;
+    const writes: Array<{ id: string; patch: object }> = [];
+    const writer = fakeGraphClient({
+      patchMessage: async (id, patch) => {
+        writes.push({ id, patch });
+      },
+    });
+
+    await chokePoint.updateItem({
+      databaseId: params.emailsDatabaseId,
+      itemId: emailItemId,
+      propertiesPatch: { read: true, flagged: true },
+    });
+    await withTransaction(pool, (client) => reconcileGraphAccount(client, writer, params));
+    expect(writes).toEqual([
+      { id: "m1", patch: { flag: { flagStatus: "flagged" } } },
+      { id: "m1", patch: { isRead: true } },
+    ]);
+
+    await chokePoint.updateItem({
+      databaseId: params.emailsDatabaseId,
+      itemId: emailItemId,
+      propertiesPatch: { read: false, flagged: false },
+    });
+    await withTransaction(pool, (client) => reconcileGraphAccount(client, writer, params));
+    expect(writes.slice(2)).toEqual([
+      { id: "m1", patch: { flag: { flagStatus: "notFlagged" } } },
+      { id: "m1", patch: { isRead: false } },
+    ]);
+
+    await chokePoint.updateItem({
+      databaseId: params.emailsDatabaseId,
+      itemId: emailItemId,
+      propertiesPatch: { read: true },
+    });
+    const observed = fakeGraphClient({
+      fetchDelta: async () => ({
+        invalidated: false,
+        newDeltaLink: "link-2",
+        changes: [
+          {
+            id: "m1",
+            parentFolderId: "f1",
+            removed: false,
+            message: { messageId: "<m1@x>", envelope: {}, attachments: [], flags: [IMAP_SEEN_FLAG] },
+          },
+        ],
+      }),
+      patchMessage: async () => {
+        throw new Error("converged Graph observation must not echo");
+      },
+    });
+    await withTransaction(pool, (client) => reconcileGraphAccount(client, observed, params));
   });
 });
 
@@ -3594,18 +3714,6 @@ describe("mail flag write-back (issue #251)", () => {
         { path: "Archive", flag: IMAP_FLAGGED_FLAG, value: true },
       ]),
     );
-  });
-
-  it("Gmail and Graph write-back adapters persist desired state as pending without a provider call", async () => {
-    const pendingWrite: PendingImapFlagWrite = {
-      messageItemId: "00000000-0000-0000-0000-000000000000",
-      propertyKey: READ_PROPERTY_KEY,
-      desiredState: true,
-      folderPath: "INBOX",
-      uid: 1,
-    };
-    await expect(createGmailMailFlagWritebackAdapter().write(pendingWrite)).resolves.toBe("pending");
-    await expect(createGraphMailFlagWritebackAdapter().write(pendingWrite)).resolves.toBe("pending");
   });
 });
 
