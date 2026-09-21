@@ -25,14 +25,22 @@ interface GraphMessageResource {
   ["@removed"]?: { reason: string };
 }
 
-/** `/messages/{id}/attachments` resource — `fileAttachment` is the common real-world case this adapter handles; `itemAttachment`/`referenceAttachment` (a forwarded calendar item, a OneDrive share link) are rare enough that issue #26's scope doesn't ask for them. */
+/** `/messages/{id}/attachments` resource. */
 interface GraphAttachmentResource {
-  ["@odata.type"]: string;
+  ["@odata.type"]: unknown;
   id: string;
-  name: string;
+  name?: unknown;
   contentType?: string;
   isInline?: boolean;
   contentId?: string;
+}
+
+type GraphNonFileAttachmentType = "itemAttachment" | "referenceAttachment";
+
+interface GraphNonFileAttachment {
+  filename: string;
+  providerType: GraphNonFileAttachmentType;
+  id: string;
 }
 
 function toEnvelopeAddress(v?: { emailAddress: { name?: string; address: string } }): MailEnvelopeAddress | undefined {
@@ -54,6 +62,64 @@ function headerValues(resource: GraphMessageResource, name: string): string[] {
     .map((h) => h.value);
 }
 
+function safeAttachmentLabel(name: unknown): string {
+  // Graph attachment names are untrusted input. Remove control characters so the text form
+  // cannot forge extra annotations, and escape the HTML form before it joins the stored body.
+  const withoutControls = Array.from(typeof name === "string" ? name : "")
+    .map((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 31 || (code >= 127 && code <= 159) || code === 0x2028 || code === 0x2029 ? " " : character;
+    })
+    .join("");
+  const normalized = withoutControls.trim().replace(/\s+/g, " ");
+  return normalized || "attachment";
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => {
+    const entities: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+    return entities[character]!;
+  });
+}
+
+function graphNonFileAttachmentType(odataType: unknown): GraphNonFileAttachmentType | undefined {
+  switch (odataType) {
+    case "#microsoft.graph.itemAttachment":
+      return "itemAttachment";
+    case "#microsoft.graph.referenceAttachment":
+      return "referenceAttachment";
+    default:
+      return undefined;
+  }
+}
+
+function compareGraphNonFileAttachments(a: GraphNonFileAttachment, b: GraphNonFileAttachment): number {
+  if (a.providerType !== b.providerType) return a.providerType < b.providerType ? -1 : 1;
+  if (a.filename !== b.filename) return a.filename < b.filename ? -1 : 1;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+function appendGraphNonFileAttachmentAnnotations(
+  body: string | undefined,
+  attachments: GraphNonFileAttachment[],
+  format: "html" | "text",
+): string | undefined {
+  if (attachments.length === 0) return body;
+
+  const annotations = [...attachments].sort(compareGraphNonFileAttachments).map((attachment) => {
+    const text = `[${attachment.providerType}: ${attachment.filename}]`;
+    return format === "html" ? `<p>${escapeHtml(text)}</p>` : text;
+  });
+  const separator = format === "html" ? "" : "\n\n";
+  return [body, ...annotations].filter((part): part is string => Boolean(part)).join(separator);
+}
+
 /**
  * Builds each candidate attachment's lazy byte source over Graph's `/attachments/{id}/$value`
  * — unlike the Gmail REST API (gmailRestClient.ts), Graph's `$value` is a true streamed byte
@@ -68,7 +134,7 @@ function classifyGraphAttachments(
   const candidates = metas
     .filter((m) => m["@odata.type"] === "#microsoft.graph.fileAttachment")
     .map((m): ClassifiedAttachment => ({
-      filename: m.name || "attachment",
+      filename: safeAttachmentLabel(m.name),
       contentType: m.contentType || "application/octet-stream",
       contentId: m.contentId ?? null,
       disposition: m.isInline ? "inline" : "attachment",
@@ -81,7 +147,12 @@ function classifyGraphAttachments(
   );
 }
 
-async function toFetchedMessage(
+/**
+ * Graph has no bytes to stream for item/reference attachments. They are retained as literal
+ * body annotations rather than synthesized Files rows, so repeated delta reconciliation
+ * converges through ingestEmailMessage's message identity deduplication just like the body.
+ */
+export async function toFetchedGraphMessage(
   resource: GraphMessageResource,
   listAttachmentMetadata: (messageId: string) => Promise<GraphAttachmentResource[]>,
   fetchAttachmentStream: (messageId: string, attachmentId: string) => Promise<Readable>,
@@ -94,6 +165,10 @@ async function toFetchedMessage(
     attachmentMetas,
     html,
   );
+  const nonFileAttachments = attachmentMetas.flatMap((attachment): GraphNonFileAttachment[] => {
+    const providerType = graphNonFileAttachmentType(attachment["@odata.type"]);
+    return providerType ? [{ filename: safeAttachmentLabel(attachment.name), providerType, id: attachment.id }] : [];
+  });
   const contentType = parseContentTypeHeader(header(resource, "Content-Type"));
 
   return {
@@ -107,8 +182,13 @@ async function toFetchedMessage(
       cc: toEnvelopeAddressList(resource.ccRecipients),
       bcc: toEnvelopeAddressList(resource.bccRecipients),
     },
-    bodyText: resource.body?.contentType === "text" ? resource.body.content : resource.bodyPreview,
-    bodyHtml: html,
+    bodyText: appendGraphNonFileAttachmentAnnotations(
+      resource.body?.contentType === "text" ? resource.body.content : resource.bodyPreview,
+      nonFileAttachments,
+      "text",
+    ),
+    bodyHtml:
+      html !== undefined ? appendGraphNonFileAttachmentAnnotations(html, nonFileAttachments, "html") : undefined,
     date: resource.receivedDateTime ? new Date(resource.receivedDateTime) : undefined,
     attachments,
     deliveredToHeaders: headerValues(resource, "Delivered-To"),
@@ -272,7 +352,7 @@ export class GraphRestClient implements GraphMailClient {
           if (resource["@removed"]) {
             changes.push({ id: resource.id, removed: true });
           } else {
-            const message = await toFetchedMessage(
+            const message = await toFetchedGraphMessage(
               resource,
               (messageId) => this.listAttachmentMetadata(messageId),
               (messageId, attachmentId) => this.fetchAttachmentStream(messageId, attachmentId),
