@@ -18,6 +18,8 @@ mkdir -p "$TEST_BIN" "$TEST_STATE" "$TEST_ROOT/systemd/system"
 cp -R "$REPOSITORY_ROOT/deploy" "$TEST_DEPLOY"
 sed -i "s|readonly SEMPREC_ROOT=/opt/semprec|readonly SEMPREC_ROOT=$TEST_ROOT/opt/semprec|" \
   "$TEST_DEPLOY/provision.sh"
+sed -i "s|readonly BACKUP_DIRECTORY=/var/backups/semprec|readonly BACKUP_DIRECTORY=$TEST_ROOT/var/backups/semprec|" \
+  "$TEST_DEPLOY/provision.sh"
 sed -i "s|readonly SYSTEMD_UNIT_DIR=/etc/systemd/system|readonly SYSTEMD_UNIT_DIR=$TEST_ROOT/systemd/system|" \
   "$TEST_DEPLOY/provision.sh"
 sed -i "s|readonly JOURNALD_CONFIG_DIR=/etc/systemd/journald.conf.d|readonly JOURNALD_CONFIG_DIR=$TEST_ROOT/systemd/journald.conf.d|" \
@@ -53,6 +55,8 @@ run_provision() {
 run_provision
 test -d "$TEST_ROOT/opt/semprec/releases"
 test -d "$TEST_ROOT/opt/semprec/shared"
+test -d "$TEST_ROOT/var/backups/semprec"
+test "$(stat -c %a "$TEST_ROOT/var/backups/semprec")" -eq 700
 test -f "$TEST_ROOT/opt/semprec/shared/.env"
 test -f "$TEST_STATE/semprec-user"
 test -f "$TEST_ROOT/systemd/system/semprec-api.service"

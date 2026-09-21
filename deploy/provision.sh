@@ -3,6 +3,7 @@
 set -euo pipefail
 
 readonly SEMPREC_ROOT=/opt/semprec
+readonly BACKUP_DIRECTORY=/var/backups/semprec
 readonly SYSTEMD_UNIT_DIR=/etc/systemd/system
 readonly JOURNALD_CONFIG_DIR=/etc/systemd/journald.conf.d
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -123,6 +124,10 @@ ensure_release_tree() {
   fi
 }
 
+ensure_backup_directory() {
+  ensure_directory "$BACKUP_DIRECTORY" 0700
+}
+
 install_systemd_units() {
   local unit
   for unit in "${SERVICE_UNITS[@]}" "${TIMER_SERVICES[@]}" "${TIMER_UNITS[@]}" "${FAILURE_SERVICE_UNITS[@]}"; do
@@ -166,6 +171,7 @@ main() {
   install_host_packages
   ensure_service_user
   ensure_release_tree
+  ensure_backup_directory
   install_systemd_units
   install_timer_scripts
   verify_systemd_units

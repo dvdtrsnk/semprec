@@ -1,8 +1,8 @@
 [Unit]
-Description=Run the Semprec daily backup skeleton
+Description=Run the Semprec daily backup
 
 [Timer]
-OnCalendar=*-*-* 02:00:00
+OnCalendar=*-*-* 03:30:00
 Persistent=true
 Unit=semprec-backup.service
 
