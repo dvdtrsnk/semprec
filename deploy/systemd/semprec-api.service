@@ -2,6 +2,9 @@
 Description=Semprec API
 Wants=network-online.target
 After=network-online.target docker.service
+StartLimitIntervalSec=5min
+StartLimitBurst=3
+OnFailure=semprec-failping@%n.service
 
 [Service]
 Type=simple
@@ -9,6 +12,7 @@ User=semprec
 Group=semprec
 WorkingDirectory=/opt/semprec/current/backend
 EnvironmentFile=/opt/semprec/shared/.env
+SyslogIdentifier=semprec-api
 ExecStart=/usr/bin/env node /opt/semprec/current/backend/services/semprec-api/dist/serve.js
 Restart=on-failure
 RestartSec=5s
