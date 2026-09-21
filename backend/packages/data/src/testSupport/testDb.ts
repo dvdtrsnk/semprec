@@ -24,6 +24,7 @@ const TABLES = [
   "task_recurrence",
   "item_automation",
   "mail_attachments",
+  "mail_message_flag_sync_state",
   "mail_message_meta",
   "mail_threads",
   "mail_folder_sync_state",

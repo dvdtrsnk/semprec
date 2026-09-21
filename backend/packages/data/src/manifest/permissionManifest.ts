@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
 import type { ModuleRegistry } from "@semprec/module-registry";
+import { CAPABILITY_IDS, type CapabilityId } from "@semprec/shared";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { heartbeatRuleSchema, type HeartbeatRule } from "../scheduler/rule.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
@@ -71,6 +72,15 @@ export interface PermissionManifest {
   capabilities: ManifestCapabilities;
   /** A project run's granted MCP tools (issue #126) — the manifest's fourth source, alongside databases/heartbeats/capabilities. */
   agentTools: McpAgentToolProjection[];
+  /**
+   * The generic-operation capability ids (#252's `CAPABILITY_IDS`) granted to this run (issue
+   * #220): every active module's registered capability, narrowed to the eight this catalog
+   * defines. `packages/agent-runtime`'s generic AgentTool factories construct only the subset of
+   * the 28 operations whose `OPERATION_METADATA.requiresCapability` appears here — an ungranted
+   * one is absent from the run's tool list, not present-but-forbidden. Empty when `moduleRegistry`
+   * isn't supplied (matching every other `moduleRegistry`-gated field on this manifest).
+   */
+  grantedCapabilities: CapabilityId[];
 }
 
 export interface GeneratePermissionManifestOptions {
@@ -159,5 +169,10 @@ export async function generatePermissionManifest(
 
   const agentTools = await getGrantedMcpAgentTools(client, projectItemId);
 
-  return { projectItemId, databases, heartbeats, capabilities, agentTools };
+  const grantedModuleCapabilities = moduleRegistry
+    ? new Set(await moduleRegistry.getCapabilities())
+    : new Set<string>();
+  const grantedCapabilities = CAPABILITY_IDS.filter((id) => grantedModuleCapabilities.has(id));
+
+  return { projectItemId, databases, heartbeats, capabilities, agentTools, grantedCapabilities };
 }

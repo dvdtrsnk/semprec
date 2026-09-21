@@ -2,8 +2,8 @@
 
 Host-level operational configuration for the single-server production deployment (`operations`
 batch). Provisioning (`provision.sh`, service units) is delivered by later issues in the same
-batch (#244, #176); this directory holds the network boundary (#174) and the bootstrap secrets
-contract (#175):
+batch. This directory holds the network boundary (#174), the bootstrap secrets contract (#175),
+and host provisioning (#244, #176):
 
 - `Caddyfile` — the single public entry point. One domain, automatic TLS, HSTS without
   `includeSubDomains`/`preload`, compression, JSON access log to stderr, and the two-tier
@@ -15,14 +15,27 @@ contract (#175):
   production secrets file every service and both Docker Compose services read. See its header
   comment for the full contract (ownership/mode, distribution, backup exclusion). `provision.sh`
   (#244) copies this template into place only when no `.env` already exists there.
+- `provision.sh` — idempotently installs the host packages/tree from #244 plus the systemd units,
+  timer skeletons, shared timer scripts, and journald retention configuration from #176. Run it as
+  root from this directory's checked-out copy. It never overwrites an existing shared `.env` or a
+  release.
+- `systemd/` — source units installed into `/etc/systemd/system`, a journald drop-in installed at
+  `/etc/systemd/journald.conf.d/semprec.conf`, and timer-script skeletons installed under
+  `/opt/semprec/shared/bin`. The timer bodies belong to #171, #177, and #178; their schedules are
+  installed now so later provisioning updates replace only non-secret operational templates.
 
-`semprec-api` and `semprec-ai-gateway` aren't containerized — they run as systemd units (#176)
-and bind to loopback in their own `server.listen(port, "127.0.0.1", ...)` call, so that binding
-lives in `backend/services/*/src/serve.ts`, not here. Each unit loads the same
+`semprec-api`, `semprec-agents`, `semprec-mailsync@`, `semprec-transcribe`, and
+`semprec-ai-gateway` run as systemd units. The internal HTTP listeners bind to loopback in their
+own `server.listen(port, "127.0.0.1", ...)` call, so that binding lives in
+`backend/services/*/src/serve.ts`, not in a unit file. Each unit loads the same
 `/opt/semprec/shared/.env` via `EnvironmentFile=` — the systemd half of the same distribution
 contract `docker-compose.yml`'s `env_file:` already uses. A service that needs a value no other
 process needs (e.g. `PORT`) still reads it out of this one file; nothing service-specific is ever
 shipped inside a release directory, so a release contains no secret of any kind.
+
+`semprec-agents` has no HTTP listener: it is the second graphile-worker composition root (issue
+#91), owning the agent-affinity task catalog over the same Postgres-backed queue `semprec-api`
+uses. Its unit is a long-running worker, not socket-activated.
 
 No proxy-level auth, rate-limiting, IP filtering, or subdomains — all of that stays in the
 application (`services/semprec-api`), by design.

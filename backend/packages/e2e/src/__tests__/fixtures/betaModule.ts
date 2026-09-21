@@ -15,7 +15,14 @@ export const manifest: ModuleManifest = {
   heartbeatRuleKinds: [
     { kind: "e2eBeta.onTick", schemaExport: "betaTickRuleSchema", nextFireAtExport: "computeBetaTickNextFireAt" },
   ],
-  taskNames: [{ name: "e2eBeta.relay", payloadSchemaExport: "relayPayloadSchema", handlerExport: "handleRelay" }],
+  taskNames: [
+    {
+      name: "e2eBeta.relay",
+      payloadSchemaExport: "relayPayloadSchema",
+      handlerExport: "handleRelay",
+      queueAffinity: "api",
+    },
+  ],
   migrations: ["0001_e2e_beta_marker.sql"],
 };
 
