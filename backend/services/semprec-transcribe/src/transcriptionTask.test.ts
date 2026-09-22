@@ -4,6 +4,7 @@ import {
   createBlob,
   createItemWithClient,
   createViewTypeRegistry,
+  ForbiddenError,
   getDatabaseByModuleId,
   getItemById,
   seedSystem,
@@ -62,5 +63,29 @@ describe("transcription step 0", () => {
       [rows[0]?.id],
     );
     expect(automationRows).toEqual([{ status: "pending" }]);
+  });
+
+  it("rejects writing the transcripts 'status'/'link' system properties under the wrong systemOwnerProcess", async () => {
+    const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
+    if (!transcripts) throw new Error("Transcripts database was not seeded");
+
+    const promise = withTransaction(pool, (client) =>
+      createItemWithClient(
+        client,
+        {
+          databaseId: transcripts.id,
+          properties: { name: "recording.mp3", status: "processing", link: "semprec://items/does-not-matter" },
+        },
+        { allowedSystemKeys: ["status", "link"], systemOwnerProcess: "wrong-process" },
+      ),
+    );
+
+    await expect(promise).rejects.toBeInstanceOf(ForbiddenError);
+    try {
+      await promise;
+      expect.unreachable("expected an owner_violation ForbiddenError");
+    } catch (err) {
+      expect((err as ForbiddenError).code).toBe("owner_violation");
+    }
   });
 });
