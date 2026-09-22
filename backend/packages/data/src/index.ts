@@ -35,7 +35,7 @@ export type { CreateDatabaseInput } from "./chokePoint/databasesStore.js";
 export { getDatabaseByModuleId } from "./chokePoint/databasesStore.js";
 export type { CreatePropertyInput } from "./chokePoint/propertiesStore.js";
 export type { ListItemsOptions } from "./chokePoint/itemsStore.js";
-export { getItemById, getItemsByIds } from "./chokePoint/itemsStore.js";
+export { getItemById, getItemsByIds, lockItemById } from "./chokePoint/itemsStore.js";
 export { writeComputed } from "./chokePoint/itemsStore.js";
 export type { CreateViewInput, PatchViewInput } from "./chokePoint/viewsStore.js";
 export * from "./chokePoint/viewTypeRegistry.js";
