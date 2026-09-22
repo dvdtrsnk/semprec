@@ -8,5 +8,7 @@
  */
 /** Step 0 stores the created Transcripts item id on the source Files item. */
 export const TRANSCRIPTION_CREATE_COMPUTED_KEY = "create";
+/** Step 1 stores the normalized-audio blob reference and source duration (seconds) on the source Files item. */
+export const TRANSCRIPTION_PREPARE_COMPUTED_KEY = "prepare";
 export const TRANSCRIPT_SEGMENTS_COMPUTED_KEY = "segments";
 export const TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY = "summaryByInstruction";

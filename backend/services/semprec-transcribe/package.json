@@ -13,7 +13,8 @@
     "@semprec/module-registry": "workspace:*",
     "@semprec/queue": "workspace:*",
     "@semprec/shared": "workspace:*",
-    "pg": "^8.23.0"
+    "pg": "^8.23.0",
+    "zod": "^4.1.11"
   },
   "devDependencies": {
     "@types/pg": "^8.23.1",
