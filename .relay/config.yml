@@ -7,15 +7,12 @@ defaults:
                               # maxConcurrent in the plugin
   timeout-minutes: 120        # per command step
 review:
-  # PENDING PIN BUMP: fc7d3fe is the bot's current origin/main. The out-of-Actions
-  # contract Relay's review-pipeline is written against (CRB_TMP_DIR/TMPDIR
-  # scratch directory, BOT_USERNAME in both spellings, the substantial-increment
-  # full-pass rule) lands with dvdtrsnk/code-review-bot commit 57f5428 (branch
-  # feat/relay-out-of-actions). Once that is merged, set `ref` to the merged SHA
-  # and remove the `max-concurrent: 1` override in workflows/review-pull-request.md.
-  # Until then Relay compensates where it can (it sets GH_BOT_LOGIN as well as
-  # BOT_USERNAME, and TMPDIR for the paths this revision derives from it).
-  bot: { repo: dvdtrsnk/code-review-bot, ref: fc7d3fe86c6c0a6a7d1c63f5378846d96fba3982 }
+  # dvdtrsnk/code-review-bot#24 (feat/relay-out-of-actions) merged to main as
+  # 96a0439137f4424700ff3c76209f146498f101d1: the out-of-Actions contract
+  # (CRB_TMP_DIR/TMPDIR scratch isolation, BOT_USERNAME in both spellings the
+  # bot reads) is now what this pin runs. `max-concurrent: 1` was dropped from
+  # workflows/review-pull-request.md accordingly.
+  bot: { repo: dvdtrsnk/code-review-bot, ref: 96a0439137f4424700ff3c76209f146498f101d1 }
   check-name: code-review
   env: { REVIEW_BLOCK_SEVERITY: medium, PROMOTION_SOURCE: develop, PROMOTION_TARGET: main }
 merge:

@@ -5,12 +5,6 @@ on:
   pull-requests:
     label: review:ready
     exclude-labels: [agent:blocked, agent:needs-human-action, relay:needs-human-action]   # park labels are consumed by humans (plan §4.4)
-# One review at a time until the bot pin in config.yml moves past
-# fc7d3fe86c6c…: that revision writes fixed-name scratch files under /tmp
-# (review-memory.txt, mcp-config.json), so two concurrent reviews on one host
-# would read each other's files. Drop this override once `review.bot.ref`
-# points at a revision that honours CRB_TMP_DIR (see config.yml).
-max-concurrent: 1
 steps:
   - { id: claim, uses: labels, remove: [review:ready, relay:needs-human-action], add: [review:in-progress] }   # drops a stale park label from a prior failed round
   - { id: guard, uses: guard-paths }
