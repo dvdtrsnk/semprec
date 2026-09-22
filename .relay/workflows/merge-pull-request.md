@@ -2,20 +2,21 @@
 id: merge-pull-request
 name: Merge pull request
 on:
-  pull-requests: { label: review:passed }
+  pull-requests:
+    label: review:passed
+    exclude-labels: [agent:blocked, agent:needs-human-action, relay:needs-human-action]   # park labels are consumed by humans (plan §4.4)
 steps:
   - { id: guard, uses: guard-paths }
   - id: rebase
     uses: rebase                                 # deterministic; no model involved
     on-failure: { goto: resolve, max-rounds: 2 } # conflict
-  - id: push-rebased
-    uses: push
-    force-with-lease: true
-    if: "{{steps.rebase.changed}}"               # skipped when already on top of base
-    on-success: { goto: requeue }                # a new head must be reviewed again
+  - id: requeue                                  # a rebased head must be reviewed again: draft FIRST, so the push below
+    uses: pull-request-draft                     # never reaches CI's own code-review job on a ready pull request (§5.2)
+    if: "{{steps.rebase.changed}}"               # skipped when already on top of base → checks
+    on-success: { goto: relabel2 }               # → relabel → push → ready, at the end of the file
   - id: checks
     uses: wait-checks
-    names: [ci, review, code-review]
+    names: [ci, review, code-review, protected-paths]   # every required context on the base branch; keep in step with branch protection
     pending-timeout-minutes: 45
     on-failure: { goto: fix, max-rounds: 3 }
   - id: merge
@@ -41,12 +42,12 @@ steps:
   - { id: rebased-check, uses: command, run: "git fetch origin {{baseBranch}} && git merge-base --is-ancestor origin/{{baseBranch}} HEAD", on-failure: blocked }
   - { id: guard2, uses: guard-paths }
   - { id: draft, uses: pull-request-draft }
-  - { id: relabel, uses: labels, remove: [review:passed, review:changes-requested], add: [review:ready] }
+  - { id: relabel, uses: labels, remove: [review:passed, review:changes-requested, relay:needs-human-action], add: [review:ready] }
   - { id: push, uses: push, force-with-lease: true }
   - { id: ready, uses: pull-request-ready, on-success: end }   # the review workflow's own trigger decides what happens next
-  # --- after a clean rebase push: same hand-off, no agent involved
-  - { id: requeue, uses: pull-request-draft }
-  - { id: relabel2, uses: labels, remove: [review:passed], add: [review:ready] }
+  # --- after a clean rebase: same hand-off as the fix path (draft → relabel → push → ready), no agent involved
+  - { id: relabel2, uses: labels, remove: [review:passed, relay:needs-human-action], add: [review:ready] }
+  - { id: push-rebased, uses: push, force-with-lease: true }
   - { id: ready2, uses: pull-request-ready }
 on-failure:
   - { uses: labels, remove: [review:passed], add: [relay:needs-human-action] }
@@ -74,4 +75,4 @@ You are Relay, an automated merge worker for pull request #{{prNumber}} in {{rep
 {{steps.failed.outputTail}}
 ```
 
-This is the failing check names and summaries (from `wait-checks`), the inline review comments when the failing check is `code-review`, or the merge step's reason (`unresolved-threads`, `behind`, `conflicted`, `protection`). Fix the cause in this worktree, committing locally as you go; reply to and resolve the review threads you address. Never change anything under `.relay/` or `.github/workflows/`. Do not push. Run every command in the foreground and wait for its exit status; never end your turn waiting to be notified that something finished. End your final answer with `Relay-Step-Status: pass` once the cause is fixed, or `Relay-Step-Status: fail` with the reason if you cannot fix it. Answer in English — it is posted directly to GitHub.
+This is one line per failing check — name, conclusion, link and the check's own summary — from `wait-checks`, or the merge step's reason (`unresolved-threads`, `behind`, `conflicted`, `protection`). It does not include review comments: when the failing check is `code-review`, or the reason is `unresolved-threads`, read the pull request's review threads and inline comments yourself before changing anything. Fix the cause in this worktree, committing locally as you go; reply to and resolve the review threads you address. Never change anything under `.relay/` or `.github/workflows/`. Do not push. Run every command in the foreground and wait for its exit status; never end your turn waiting to be notified that something finished. End your final answer with `Relay-Step-Status: pass` once the cause is fixed, or `Relay-Step-Status: fail` with the reason if you cannot fix it. Answer in English — it is posted directly to GitHub.

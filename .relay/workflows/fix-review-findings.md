@@ -2,7 +2,9 @@
 id: fix-review-findings
 name: Fix review findings
 on:
-  pull-requests: { label: review:changes-requested }
+  pull-requests:
+    label: review:changes-requested
+    exclude-labels: [agent:blocked, agent:needs-human-action, relay:needs-human-action]   # park labels are consumed by humans (plan §4.4)
 steps:
   - id: fix
     uses: agent
@@ -12,7 +14,7 @@ steps:
   - { id: verify-web, uses: command, run: pnpm run verify, cwd: web, on-failure: { goto: fix, max-rounds: 3 } }
   - { id: guard, uses: guard-paths }
   - { id: draft, uses: pull-request-draft }
-  - { id: relabel, uses: labels, remove: [review:changes-requested], add: [review:ready] }
+  - { id: relabel, uses: labels, remove: [review:changes-requested, relay:needs-human-action], add: [review:ready] }
   - { id: push, uses: push, force-with-lease: true }
   - { id: ready, uses: pull-request-ready }      # run ends here; the review workflow's own trigger picks the new head up
 on-failure:

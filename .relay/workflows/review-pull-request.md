@@ -2,15 +2,20 @@
 id: review-pull-request
 name: Review pull request
 on:
-  pull-requests: { label: review:ready }
+  pull-requests:
+    label: review:ready
+    exclude-labels: [agent:blocked, agent:needs-human-action, relay:needs-human-action]   # park labels are consumed by humans (plan §4.4)
+# One review at a time until the bot pin in config.yml moves past
+# fc7d3fe86c6c…: that revision writes fixed-name scratch files under /tmp
+# (review-memory.txt, mcp-config.json), so two concurrent reviews on one host
+# would read each other's files. Drop this override once `review.bot.ref`
+# points at a revision that honours CRB_TMP_DIR (see config.yml).
+max-concurrent: 1
 steps:
-  - { id: claim, uses: labels, remove: [review:ready], add: [review:in-progress] }
+  - { id: claim, uses: labels, remove: [review:ready, relay:needs-human-action], add: [review:in-progress] }   # drops a stale park label from a prior failed round
   - { id: guard, uses: guard-paths }
   - id: review
-    uses: review-pipeline
-    bot: { repo: dvdtrsnk/code-review-bot, ref: fc7d3fe86c6c0a6a7d1c63f5378846d96fba3982 }
-    check-name: code-review
-    env: { REVIEW_BLOCK_SEVERITY: medium, PROMOTION_SOURCE: develop, PROMOTION_TARGET: main }
+    uses: review-pipeline             # bot pin, check name and env come from config.yml's `review:` — one place to bump
     max-reruns: 2                     # timeout-minutes defaults to 150 for this step
   - { id: passed, uses: labels, remove: [review:in-progress], add: [review:passed] }
 on-failure:                           # findings at/above the blocking severity
