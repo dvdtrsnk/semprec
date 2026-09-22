@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { requireSingleRow, type Queryable } from "../db/pool.js";
+import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
 import { ConflictError, NotFoundError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 
@@ -388,9 +388,10 @@ export async function writeComputed(
   key: string,
   value: unknown,
 ): Promise<void> {
-  await client.query(
+  const result = await client.query(
     `UPDATE items SET computed = jsonb_set(computed, ARRAY[$3]::text[], $4::jsonb, true)
      WHERE database_id = $1 AND id = $2`,
     [databaseId, itemId, key, JSON.stringify(value)],
   );
+  requireAffectedRows(result, `computed key '${key}' for item '${itemId}'`);
 }

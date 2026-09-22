@@ -40,6 +40,7 @@ describe("transcription step 0", () => {
     const task = createTranscriptionTask(pool);
 
     await task({ fileItemId: file.id });
+    await pool.query("UPDATE items SET properties = '{}'::jsonb WHERE id = $1", [file.id]);
     await task({ fileItemId: file.id });
 
     const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));

@@ -1,4 +1,4 @@
-import { createPool, startProcessHeartbeat } from "@semprec/data";
+import { createPool, loadFullModuleRegistry, startProcessHeartbeat } from "@semprec/data";
 import { installFatalHandlers } from "@semprec/shared";
 import { logger } from "./logger.js";
 import { createTranscribeQueueRuntime } from "./queueRuntime.js";
@@ -13,6 +13,7 @@ startProcessHeartbeat(
   { process: "transcribe", pid: process.pid, version: process.env.APP_VERSION ?? "0.0.0" },
   { onError: (err) => logger.error({ err }, "Failed to record this process's heartbeat") },
 );
-const queueRuntime = await createTranscribeQueueRuntime(pool);
+const moduleRegistry = await loadFullModuleRegistry();
+const queueRuntime = await createTranscribeQueueRuntime(pool, moduleRegistry);
 registerShutdownSignals(createGracefulShutdown({ queueRuntime, pool, logger }));
 logger.info({}, "semprec-transcribe queue runtime started");
