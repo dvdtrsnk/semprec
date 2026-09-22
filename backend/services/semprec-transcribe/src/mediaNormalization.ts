@@ -7,11 +7,11 @@ import { spawn } from "node:child_process";
 import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 import type { BlobStorageWriter } from "@semprec/data";
+import { logger } from "./logger.js";
 
 /**
- * The one and only place in the codebase that shells out to `ffmpeg`/`ffprobe` (issue #246's
- * acceptance criterion: "Only `semprec-transcribe` invokes `ffmpeg`/`ffprobe`; no other package
- * or process references them").
+ * The only production code in the monorepo that shells out to `ffmpeg`/`ffprobe` — see
+ * `docs/adr/2026-09-22-ffmpeg-confined-to-semprec-transcribe.md`.
  */
 
 // A hung ffmpeg/ffprobe process (a corrupt or adversarial input) must not wedge the worker
@@ -27,12 +27,41 @@ export interface NormalizedAudioResult {
 
 export interface MediaProbeResult {
   durationSeconds: number;
-  /** `null` when the source carries no `creation_time` container tag — the caller falls back to another timestamp. */
+  /** `null` when the source carries no usable `creation_time` container tag (see `parseCreationTime`) — the caller falls back to another timestamp. */
   creationTime: string | null;
 }
 
 function describeExit(command: string, code: number | null, signal: NodeJS.Signals | null, stderr: string): Error {
   return new Error(`${command} exited with code ${code ?? "null"}${signal ? ` (signal ${signal})` : ""}: ${stderr}`);
+}
+
+/**
+ * Runs cleanup that must never replace the error — or the result — of the work it follows. A
+ * failure only leaves an unreferenced file behind, so it is logged for manual removal instead.
+ */
+async function cleanUpLeftover(
+  cleanup: () => Promise<void>,
+  fields: Record<string, string>,
+  message: string,
+): Promise<void> {
+  try {
+    await cleanup();
+  } catch (err) {
+    logger.warn({ ...fields, err }, message);
+  }
+}
+
+export function removeTempFile(path: string): Promise<void> {
+  return cleanUpLeftover(() => rm(path, { force: true }), { path }, "Failed to remove a transcription temp file");
+}
+
+/** Deletes normalized audio that no `blobs` row references, e.g. a failed or superseded normalization's output. */
+export function discardStoredAudio(blobStorage: BlobStorageWriter, storageKey: string): Promise<void> {
+  return cleanUpLeftover(
+    () => blobStorage.delete(storageKey),
+    { storageKey },
+    "Failed to delete normalized audio that no blob references",
+  );
 }
 
 /**
@@ -42,12 +71,14 @@ function describeExit(command: string, code: number | null, signal: NodeJS.Signa
  */
 export async function downloadToTempFile(blobStorage: BlobStorageWriter, storageKey: string): Promise<string> {
   const path = join(tmpdir(), `semprec-transcribe-${randomUUID()}`);
-  await pipeline(blobStorage.readStream(storageKey), createWriteStream(path));
+  try {
+    await pipeline(blobStorage.readStream(storageKey), createWriteStream(path));
+  } catch (err) {
+    // The write stream has usually created the file by the time the read side fails.
+    await removeTempFile(path);
+    throw err;
+  }
   return path;
-}
-
-export async function removeTempFile(path: string): Promise<void> {
-  await rm(path, { force: true });
 }
 
 const ffprobeOutputSchema = z.object({
@@ -57,7 +88,24 @@ const ffprobeOutputSchema = z.object({
   }),
 });
 
-/** Runs `ffprobe` on a local file and reads back its duration and (if present) `creation_time` tag. */
+const creationTimeTagSchema = z.iso.datetime({ offset: true });
+
+/**
+ * `creation_time` is free text from an uploaded file, bound for a `date` property that views cast
+ * to `timestamptz`. Only an ISO 8601 timestamp with an explicit zone whose UTC instant falls in
+ * years 1–9999 is kept — outside that range lies either year 0, which Postgres does not have, or
+ * a year `toISOString()` writes in an expanded `+010000` form Postgres cannot parse. The value is
+ * re-serialized in the canonical `toISOString()` form every other stored `date` uses; anything
+ * else counts as no tag at all.
+ */
+export function parseCreationTime(tag: string | undefined): string | null {
+  if (tag === undefined || !creationTimeTagSchema.safeParse(tag).success) return null;
+  const instant = new Date(tag);
+  const year = instant.getUTCFullYear();
+  return year >= 1 && year <= 9999 ? instant.toISOString() : null;
+}
+
+/** Runs `ffprobe` on a local file and reads back its duration and (if present and valid) `creation_time` tag. */
 export function probeMedia(inputPath: string): Promise<MediaProbeResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -92,7 +140,13 @@ export function probeMedia(inputPath: string): Promise<MediaProbeResult> {
             reject(new Error(`ffprobe reported a non-numeric duration: '${parsed.format.duration}'`));
             return;
           }
-          resolve({ durationSeconds, creationTime: parsed.format.tags?.creation_time ?? null });
+          const tag = parsed.format.tags?.creation_time;
+          const creationTime = parseCreationTime(tag);
+          if (tag !== undefined && creationTime === null) {
+            // The tag's own text is file content, not an identifier, so it stays out of the log.
+            logger.warn({}, "Ignoring a creation_time tag that is not a usable timestamp");
+          }
+          resolve({ durationSeconds, creationTime });
         } catch (err) {
           reject(err instanceof Error ? err : new Error(String(err)));
         }
@@ -102,10 +156,11 @@ export function probeMedia(inputPath: string): Promise<MediaProbeResult> {
 }
 
 /**
- * Normalizes a local input file to 16 kHz mono Opus (audio/ogg) and streams the result straight
- * into `blobStorage` under `storageKey` — no intermediate output file. For a video input, `-vn`
- * drops the video stream and keeps only its audio, so a single command covers both the audio and
- * video acceptance criteria.
+ * Normalizes a local input file to 16 kHz mono Opus (audio/ogg) at 16 kb/s — about 7 MB per hour
+ * of audio — and streams the result straight into `blobStorage` under `storageKey`, with no
+ * intermediate output file. For a video input, `-vn` drops the video stream and keeps only its
+ * audio, so a single command covers both the audio and video acceptance criteria. On failure,
+ * whatever already reached `storageKey` is deleted before the error propagates.
  */
 export async function normalizeAudio(
   inputPath: string,
@@ -127,6 +182,8 @@ export async function normalizeAudio(
       "16000",
       "-c:a",
       "libopus",
+      "-b:a",
+      "16k",
       "-f",
       "ogg",
       "pipe:1",
@@ -150,11 +207,16 @@ export async function normalizeAudio(
       exit,
       blobStorage.writeStream(storageKey, child.stdout),
     ]);
+    // Checked first: once storage stops reading ffmpeg's stdout, ffmpeg dies of a broken pipe,
+    // and that exit is only the symptom of the storage failure.
+    if (writeResult.status === "rejected") {
+      await discardStoredAudio(blobStorage, storageKey);
+      throw writeResult.reason;
+    }
     if (exitResult.status === "rejected") {
-      await blobStorage.delete(storageKey).catch(() => {});
+      await discardStoredAudio(blobStorage, storageKey);
       throw exitResult.reason;
     }
-    if (writeResult.status === "rejected") throw writeResult.reason;
     return { storageKey, byteSize: writeResult.value.byteSize, contentHash: writeResult.value.contentHash };
   } finally {
     clearTimeout(timer);
