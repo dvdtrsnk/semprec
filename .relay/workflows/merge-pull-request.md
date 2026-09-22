@@ -37,8 +37,9 @@ steps:
     uses: agent
     workspace: pr-branch
     prompt: "#fix"
-  - { id: verify, uses: command, run: pnpm run verify, cwd: backend, on-failure: { goto: fix, max-rounds: 3 } }
-  - { id: verify-web, uses: command, run: pnpm run verify, cwd: web, on-failure: { goto: fix, max-rounds: 3 } }
+  # a fresh BB worktree carries no node_modules, so each verify installs its own workspace first
+  - { id: verify, uses: command, run: "pnpm install --frozen-lockfile && pnpm run verify", cwd: backend, on-failure: { goto: fix, max-rounds: 3 } }
+  - { id: verify-web, uses: command, run: "pnpm install --frozen-lockfile && pnpm run verify", cwd: web, on-failure: { goto: fix, max-rounds: 3 } }
   - { id: rebased-check, uses: command, run: "git fetch origin {{baseBranch}} && git merge-base --is-ancestor origin/{{baseBranch}} HEAD", on-failure: blocked }
   - { id: guard2, uses: guard-paths }
   - { id: draft, uses: pull-request-draft }

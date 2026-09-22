@@ -10,8 +10,9 @@ steps:
     uses: agent
     workspace: pr-branch                         # thread + BB worktree on the PR's existing branch
     prompt: "#fix"
-  - { id: verify, uses: command, run: pnpm run verify, cwd: backend, on-failure: { goto: fix, max-rounds: 3 } }
-  - { id: verify-web, uses: command, run: pnpm run verify, cwd: web, on-failure: { goto: fix, max-rounds: 3 } }
+  # a fresh BB worktree carries no node_modules, so each verify installs its own workspace first
+  - { id: verify, uses: command, run: "pnpm install --frozen-lockfile && pnpm run verify", cwd: backend, on-failure: { goto: fix, max-rounds: 3 } }
+  - { id: verify-web, uses: command, run: "pnpm install --frozen-lockfile && pnpm run verify", cwd: web, on-failure: { goto: fix, max-rounds: 3 } }
   - { id: guard, uses: guard-paths }
   - { id: draft, uses: pull-request-draft }
   - { id: relabel, uses: labels, remove: [review:changes-requested, relay:needs-human-action], add: [review:ready] }
