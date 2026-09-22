@@ -3,9 +3,17 @@ export { runMigrations } from "./db/migrate.js";
 export * from "./errors.js";
 export * from "./types.js";
 
-export { createChokePoint, createItemWithClient, type ChokePoint, type Actor } from "./chokePoint/chokePoint.js";
+export {
+  createChokePoint,
+  createItemWithClient,
+  updateItemWithClient,
+  type ChokePoint,
+  type Actor,
+} from "./chokePoint/chokePoint.js";
 export type {
   CreateItemInput,
+  UpdateItemInput,
+  UpdateItemWithClientOptions,
   CreateRelationInput,
   UpdateRelationInput,
   DeleteRelationInput,
@@ -113,7 +121,11 @@ export {
   TRANSCRIPTION_OWNER_PROCESS,
   type TranscriptionJobPayload,
 } from "./transcription/transcriptionJob.js";
-export { TRANSCRIPTION_CREATE_COMPUTED_KEY } from "./transcription/transcriptionComputedKeys.js";
+export {
+  TRANSCRIPTION_CREATE_COMPUTED_KEY,
+  TRANSCRIPTION_PREPARE_COMPUTED_KEY,
+} from "./transcription/transcriptionComputedKeys.js";
+export { readBlobId } from "./transcription/transcriptionActions.js";
 export { ensureItemAutomation } from "./library/itemAutomationStore.js";
 export { seedTenDatabasesInTransaction, type TenDatabases } from "./seed/seedTenDatabases.js";
 export { manifest as systemDatabasesModuleManifest } from "./seed/systemDatabasesModuleManifest.js";
