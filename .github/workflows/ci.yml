@@ -97,6 +97,13 @@ jobs:
         working-directory: backend
         run: pnpm run check:boundaries
 
+      # `semprec-transcribe` shells out to ffmpeg/ffprobe (#246), and the integration
+      # tier exercises that for real rather than mocking the binaries away. They are a
+      # system dependency, not an npm one, and the GitHub-hosted runner image does not
+      # carry them — without this step the tier fails with `spawn ffmpeg ENOENT`.
+      - name: Backend — install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
       # Both tiers provision their own ephemeral PostgreSQL through
       # `packages/data/src/testSupport/globalSetup.ts` — no service container needed.
       # Measured at ~3 minutes together, well inside this job's 20-minute budget.
