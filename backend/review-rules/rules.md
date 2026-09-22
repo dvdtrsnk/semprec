@@ -17,6 +17,11 @@
   critical finding — it bypasses both cost control and observability — unless the
   diff is inside the gateway itself.
   (`docs/adr/2026-09-10-ai-gateway-monopoly-on-provider-calls.md`)
+- Only `semprec-transcribe` runs `ffmpeg`/`ffprobe`, and its production code spawns them
+  only from `src/mediaNormalization.ts`. Spawning either binary anywhere else, or adding
+  an npm package that bundles them, is a high-severity finding — it spreads a native host
+  dependency and a parser of untrusted uploads to a process with neither the timeout nor
+  the cleanup handling. (`docs/adr/2026-09-22-ffmpeg-confined-to-semprec-transcribe.md`)
 - AI/agent code never writes persisted state directly: agent-originated changes are
   proposals that go through the approval queue / `confirm` flow, where a human (or an
   explicit grant) authorizes the write. Agent code calling a write endpoint or the
