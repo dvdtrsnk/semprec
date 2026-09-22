@@ -6,5 +6,7 @@
  * collision with a future property/relation of the same name — the values themselves are written
  * by the transcription pipeline, a later issue's scope.
  */
+/** Step 0 stores the created Transcripts item id on the source Files item. */
+export const TRANSCRIPTION_CREATE_COMPUTED_KEY = "create";
 export const TRANSCRIPT_SEGMENTS_COMPUTED_KEY = "segments";
 export const TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY = "summaryByInstruction";

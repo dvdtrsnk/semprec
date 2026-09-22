@@ -21,15 +21,15 @@ Issue #243. Two roles, created by migration `0040_least_privilege_roles.sql`
 
 ## Which connection string each service gets
 
-| Service | Role | Why |
-|---|---|---|
-| `semprec-api` | `semprec_data` | Hosts the choke-point (every `*Handler.ts` route calls `createChokePoint(pool)`). |
-| `semprec-ai-gateway` | `semprec_side` | Only ever writes `ai_gateway_calls`, a side table. |
-| `semprec-agents` | `semprec_side` | Not yet built; never calls the choke-point directly. |
-| `semprec-mailsync` | `semprec_side` | Not yet built; mail ingest writes side tables only. |
-| `semprec-transcribe` | `semprec_side` | Not yet built; writes side tables only. |
+| Service              | Role           | Why                                                                               |
+| -------------------- | -------------- | --------------------------------------------------------------------------------- |
+| `semprec-api`        | `semprec_data` | Hosts the choke-point (every `*Handler.ts` route calls `createChokePoint(pool)`). |
+| `semprec-ai-gateway` | `semprec_side` | Only ever writes `ai_gateway_calls`, a side table.                                |
+| `semprec-agents`     | `semprec_side` | Not yet built; never calls the choke-point directly.                              |
+| `semprec-mailsync`   | `semprec_side` | Not yet built; mail ingest writes side tables only.                               |
+| `semprec-transcribe` | `semprec_data` | Hosts the narrow in-process choke-point writer for Transcriptions pipeline state. |
 
-No service other than `semprec-api` is ever configured with the `semprec_data` connection
+Only `semprec-api` and `semprec-transcribe` are configured with the `semprec_data` connection
 string. Each service's `.env.example` documents which role its `DATABASE_URL` must
 authenticate as, for local development. In production, the actual per-environment connection
 strings (with real passwords) come from issue #175's `deploy/shared/.env.example` —

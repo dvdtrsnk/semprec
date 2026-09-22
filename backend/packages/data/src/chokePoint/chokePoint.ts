@@ -57,6 +57,8 @@ interface AssertWritablePropertiesOptions {
    * database's system-owned field it was never granted. Never set from a request-handling path.
    */
   allowedSystemKeys?: readonly string[];
+  /** The identity of a trusted in-process system writer, required to match each system field it writes. */
+  systemOwnerProcess?: string;
 }
 
 /** Keys the generic write path never accepts: relation values live only in item_relations, and computed is internal-only. */
@@ -88,10 +90,19 @@ function assertWritableProperties(
         },
       );
     }
-    if (property.owner === "system" && !options.allowedSystemKeys?.includes(key)) {
-      throw new ForbiddenError(`Property '${key}' is owned by 'system' and cannot be written by this caller`, {
-        field: key,
-      });
+    if (property.owner === "system") {
+      if (!options.allowedSystemKeys?.includes(key)) {
+        throw new ForbiddenError(`Property '${key}' is owned by 'system' and cannot be written by this caller`, {
+          field: key,
+        });
+      }
+      if (options.systemOwnerProcess && property.ownerProcess !== options.systemOwnerProcess) {
+        throw new ForbiddenError(
+          `Property '${key}' is not owned by this system process`,
+          { field: key },
+          "owner_violation",
+        );
+      }
     }
   }
 }
