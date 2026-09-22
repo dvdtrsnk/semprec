@@ -29,6 +29,12 @@ jobs:
         with:
           node-version: 22
 
+      # The protected-paths check (Relay may never change its own flows) is NOT here:
+      # this workflow runs on `pull_request`, i.e. from the pull request's own tree,
+      # so the very pull request it would catch could edit the step or the script
+      # away. It lives in protected-paths.yml on `pull_request_target`, which always
+      # runs the base branch's copy of both.
+
       # The review bot reads every `review-rules/scope.md` as literal glob patterns and
       # silently skips whatever they don't match, so a corrupted scope file turns the
       # required `code-review` check into a green light that reviewed nothing — which is

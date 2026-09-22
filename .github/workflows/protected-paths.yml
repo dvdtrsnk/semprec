@@ -1,0 +1,50 @@
+name: Protected paths
+
+# Relay (the GitHub App that implements issues here) may never change its own
+# flows: `.relay/**`, `.github/workflows/**` and this check's own script are
+# off-limits to a pull request it authored. Relay checks that itself before
+# pushing (`guard-paths`); this is the half GitHub enforces regardless, and it
+# must not trust the pull request: on `pull_request_target` the workflow file
+# and the script are read from the BASE branch, never from the pull request,
+# so a pull request that edits either changes nothing about how it is checked.
+#
+# Nothing from the pull request is checked out or executed here — the script
+# only lists the pull request's files through the API with the read-only token
+# below. That is what makes `pull_request_target` safe to use for this job.
+#
+# The job id is a required status check context on `develop` alongside `ci`.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  # The check lists the pull request's files through the API.
+  pull-requests: read
+
+concurrency:
+  group: protected-paths-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  protected-paths:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # On pull_request_target this is the base branch's tree: the script that runs
+      # is the one on `develop`, whatever the pull request did to its copy.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The script's own self-test runs first so a regression in it fails the build
+      # rather than quietly approving everything. No `node_modules` needed.
+      - name: Check protected paths
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELAY_BOT_LOGIN: bb-agent-relay[bot]
+        run: |
+          node .github/scripts/check-protected-paths.mjs --self-test
+          node .github/scripts/check-protected-paths.mjs
