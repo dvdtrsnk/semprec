@@ -77,7 +77,7 @@ export const CORE_TASK_NAMES = {
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
 /** Which long-lived runtime (issue #91's two composition roots) owns a queue task. */
-export const TASK_AFFINITIES = ["api", "agents"] as const;
+export const TASK_AFFINITIES = ["api", "agents", "transcribe"] as const;
 export type TaskAffinity = (typeof TASK_AFFINITIES)[number];
 
 /**
@@ -105,7 +105,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: "api",
   [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: "api",
   [CORE_TASK_NAMES.TRASH_PURGE]: "api",
-  [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: "api",
+  [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: "transcribe",
 };
 
 /**

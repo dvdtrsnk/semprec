@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import { requireAffectedRows, requireSingleRow, withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { PEOPLE_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { TRANSCRIPTION_OWNER_PROCESS } from "./transcriptionJob.js";
 
 /**
  * One-time populated-upgrade cutover for issue #180's Transcripts catalog extension
@@ -25,6 +26,15 @@ export async function runTranscriptsCatalogCutoverMigration(pool: Pool): Promise
     // the cutover, so a reader never observes the `status` option added without `speakers`, or
     // either mid-write.
     await client.query(`LOCK TABLE properties IN EXCLUSIVE MODE`);
+
+    // #245 assigns the three pipeline-owned properties to its sole composition root. This is
+    // part of the catalog cutover as populated installs have locked Transcripts schemas.
+    await client.query(
+      `UPDATE properties SET owner_process = $2
+       WHERE database_id = $1 AND key = ANY($3::text[]) AND owner = 'system'
+         AND owner_process IS DISTINCT FROM $2`,
+      [transcripts.id, TRANSCRIPTION_OWNER_PROCESS, ["status", "date", "link"]],
+    );
 
     const { rows: statusRows } = await client.query<{
       id: string;

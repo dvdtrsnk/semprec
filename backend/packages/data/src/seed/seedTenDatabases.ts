@@ -22,6 +22,7 @@ import {
   TRANSCRIPTS_MODULE_ID,
   type TenDatabaseModuleId,
 } from "./tenDatabaseKeys.js";
+import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 
 export type TenDatabases = Record<TenDatabaseModuleId, DatabaseRow>;
 
@@ -41,6 +42,7 @@ interface PropSpec {
   name: string;
   type: PropertyType;
   owner?: PropertyOwner;
+  ownerProcess?: string;
   locked?: boolean;
   config?: Record<string, unknown>;
 }
@@ -59,6 +61,7 @@ async function createProps(client: PoolClient, databaseId: string, specs: PropSp
       name: null,
       type: spec.type,
       owner: spec.owner,
+      ownerProcess: spec.ownerProcess,
       locked: spec.locked,
       config: spec.config,
     });
@@ -228,12 +231,20 @@ export async function seedTenDatabasesInTransaction(
       name: "Status",
       type: "select",
       owner: "system",
+      ownerProcess: TRANSCRIPTION_OWNER_PROCESS,
       config: selectConfig(["recording", "processing", "done", "error"]),
     },
     // The recording time, not user input.
-    { key: "date", name: "Date", type: "date", owner: "system", config: { includeTime: true } },
+    {
+      key: "date",
+      name: "Date",
+      type: "date",
+      owner: "system",
+      ownerProcess: TRANSCRIPTION_OWNER_PROCESS,
+      config: { includeTime: true },
+    },
     { key: "notes", name: "Notes", type: "longText", owner: "user" },
-    { key: "link", name: "Link", type: "url", owner: "system" },
+    { key: "link", name: "Link", type: "url", owner: "system", ownerProcess: TRANSCRIPTION_OWNER_PROCESS },
     // `segments`/`summaryByInstruction` deliberately live in items.computed (issue #21's
     // cache), not here — see the issue's "non-generic" note; not properties at all.
   ]);

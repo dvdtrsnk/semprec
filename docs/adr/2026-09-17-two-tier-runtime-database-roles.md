@@ -1,9 +1,9 @@
 ---
-status: accepted
+status: superseded
 date: 2026-09-17
 area: [backend]
 supersedes: []
-superseded-by: null
+superseded-by: 2026-09-22-transcription-worker-choke-point-access
 ---
 
 # Two-tier runtime Postgres roles: semprec_data vs. semprec_side

@@ -27,7 +27,8 @@ export type { CreateDatabaseInput } from "./chokePoint/databasesStore.js";
 export { getDatabaseByModuleId } from "./chokePoint/databasesStore.js";
 export type { CreatePropertyInput } from "./chokePoint/propertiesStore.js";
 export type { ListItemsOptions } from "./chokePoint/itemsStore.js";
-export { getItemsByIds } from "./chokePoint/itemsStore.js";
+export { getItemById, getItemsByIds } from "./chokePoint/itemsStore.js";
+export { writeComputed } from "./chokePoint/itemsStore.js";
 export type { CreateViewInput, PatchViewInput } from "./chokePoint/viewsStore.js";
 export * from "./chokePoint/viewTypeRegistry.js";
 export { manifest as schemaCoreModuleManifest } from "./chokePoint/schemaCoreModuleManifest.js";
@@ -107,6 +108,13 @@ export * from "./observability/observabilityCheckSystem.js";
 export * from "./observability/systemHealthReport.js";
 export { seedSystem } from "./seed/seedSystem.js";
 export * from "./seed/tenDatabaseKeys.js";
+export {
+  transcriptionJobPayloadSchema,
+  TRANSCRIPTION_OWNER_PROCESS,
+  type TranscriptionJobPayload,
+} from "./transcription/transcriptionJob.js";
+export { TRANSCRIPTION_CREATE_COMPUTED_KEY } from "./transcription/transcriptionComputedKeys.js";
+export { ensureItemAutomation } from "./library/itemAutomationStore.js";
 export { seedTenDatabasesInTransaction, type TenDatabases } from "./seed/seedTenDatabases.js";
 export { manifest as systemDatabasesModuleManifest } from "./seed/systemDatabasesModuleManifest.js";
 export * from "./systemSettings.js";

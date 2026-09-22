@@ -1,5 +1,6 @@
 import {
   AGENT_TASK_NAMES,
+  CORE_TASK_AFFINITY,
   CORE_TASK_NAMES,
   registerTask,
   type Task,
@@ -24,6 +25,8 @@ export interface TaskAffinitySets {
   api: ReadonlySet<string>;
   /** Every task name the agents runtime's composition root (#91) must register a handler for. */
   agents: ReadonlySet<string>;
+  /** Every task name the transcription composition root must register a handler for. */
+  transcribe: ReadonlySet<string>;
 }
 
 /**
@@ -38,16 +41,21 @@ export interface TaskAffinitySets {
  * land in both sets: its `queueAffinity` is a single mandatory enum value, not a list.
  */
 export async function resolveTaskAffinitySets(moduleRegistry: ModuleRegistry): Promise<TaskAffinitySets> {
-  const api = new Set<string>(CORE_TASK_NAME_SET);
+  const api = new Set<string>();
   const agents = new Set<string>(AGENT_TASK_NAME_SET);
+  const transcribe = new Set<string>();
+  for (const [name, affinity] of Object.entries(CORE_TASK_AFFINITY)) {
+    if (affinity === "api") api.add(name);
+    else if (affinity === "transcribe") transcribe.add(name);
+  }
   const moduleTasks = await moduleRegistry.getTasks();
   for (const task of moduleTasks) {
-    if (api.has(task.name) || agents.has(task.name)) {
+    if (api.has(task.name) || agents.has(task.name) || transcribe.has(task.name)) {
       throw new Error(`Module "${task.moduleId}" task "${task.name}" collides with a core/agent task name`);
     }
-    (task.queueAffinity === "api" ? api : agents).add(task.name);
+    (task.queueAffinity === "api" ? api : task.queueAffinity === "agents" ? agents : transcribe).add(task.name);
   }
-  return { api, agents };
+  return { api, agents, transcribe };
 }
 
 /**

@@ -2,6 +2,9 @@ import type { PoolClient } from "pg";
 import { z } from "zod";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 
+/** The sole process allowed to write Transcriptions' system-owned fields. */
+export const TRANSCRIPTION_OWNER_PROCESS = "transcribe";
+
 /** Issue #180's fixed job-key scheme: a repeat enqueue for the same file converges onto one job (`jobKeyMode` default `'replace'`), satisfying "repeated delivery converges on one job" without any extra dedup check. */
 export function transcriptionJobKey(fileItemId: string): string {
   return `transcription-job:${fileItemId}`;

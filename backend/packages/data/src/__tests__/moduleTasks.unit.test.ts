@@ -60,13 +60,15 @@ describe("resolveTaskAffinitySets", () => {
       },
     ]);
 
-    const { api, agents } = await resolveTaskAffinitySets(registry);
+    const { api, agents, transcribe } = await resolveTaskAffinitySets(registry);
     expect(api.has(CORE_TASK_NAMES.HEARTBEAT_SWEEP)).toBe(true);
     expect(api.has("fixtureModule.apiThing")).toBe(true);
     expect(agents.has(AGENT_TASK_NAMES.AGENT_RUN)).toBe(true);
     expect(agents.has("fixtureModule.agentThing")).toBe(true);
     expect(api.has("fixtureModule.agentThing")).toBe(false);
     expect(agents.has("fixtureModule.apiThing")).toBe(false);
+    expect(transcribe.has(CORE_TASK_NAMES.TRANSCRIPTION_JOB)).toBe(true);
+    expect(api.has(CORE_TASK_NAMES.TRANSCRIPTION_JOB)).toBe(false);
   });
 
   it("rejects a module task name colliding with a core/agent catalog name, even if the registry didn't reserve it", async () => {

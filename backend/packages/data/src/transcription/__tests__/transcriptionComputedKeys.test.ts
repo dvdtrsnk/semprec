@@ -6,6 +6,7 @@ import { createComputedKeyRegistry, type ComputedKeyRegistry } from "../../choke
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import {
+  TRANSCRIPTION_CREATE_COMPUTED_KEY,
   TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
   TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
 } from "../transcriptionComputedKeys.js";
@@ -40,13 +41,14 @@ describe("Transcripts computed key registration (issue #180)", () => {
     await pool?.end();
   });
 
-  it.each([TRANSCRIPT_SEGMENTS_COMPUTED_KEY, TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY])(
-    "rejects a new property named %s as a computed-key collision",
-    async (key) => {
-      const chokePoint = createChokePoint(pool, computedKeyRegistry);
-      await expect(
-        chokePoint.createProperty({ databaseId: transcriptsId, key, name: key, type: "text", owner: "user" }),
-      ).rejects.toThrow(/declared module cache key/i);
-    },
-  );
+  it.each([
+    TRANSCRIPTION_CREATE_COMPUTED_KEY,
+    TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
+    TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
+  ])("rejects a new property named %s as a computed-key collision", async (key) => {
+    const chokePoint = createChokePoint(pool, computedKeyRegistry);
+    await expect(
+      chokePoint.createProperty({ databaseId: transcriptsId, key, name: key, type: "text", owner: "user" }),
+    ).rejects.toThrow(/declared module cache key/i);
+  });
 });

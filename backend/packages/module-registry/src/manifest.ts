@@ -7,7 +7,7 @@ import { z } from "zod";
  * `TaskAffinity` values — kept as a local literal type rather than an import so this package
  * doesn't gain a dependency on `@semprec/queue` just for one string union.
  */
-export const MODULE_TASK_AFFINITIES = ["api", "agents"] as const;
+export const MODULE_TASK_AFFINITIES = ["api", "agents", "transcribe"] as const;
 export type ModuleTaskAffinity = (typeof MODULE_TASK_AFFINITIES)[number];
 
 /**
