@@ -546,6 +546,7 @@ async function runFinalizeStep(
       { databaseId: transcriptsDatabaseId, itemId: transcriptId, propertiesPatch: { status: "done" } },
       { allowedSystemKeys: ["status"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
     );
+    // Touches no row only when a user locked it; `locked` is theirs to keep, so that is not a failure.
     await markItemAutomationDone(client, transcriptId);
   });
 }
