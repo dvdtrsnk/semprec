@@ -6,8 +6,9 @@ export interface DiarizationTurn {
 }
 
 export interface DiarizationRequest {
-  /** pyannoteAI fetches this URL itself, so it must be accessible to the provider. */
-  audioUrl: string;
+  audio: Uint8Array;
+  filename: string;
+  mimeType: string;
 }
 
 export interface DiarizationProvider {

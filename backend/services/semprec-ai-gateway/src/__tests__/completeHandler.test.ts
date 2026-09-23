@@ -6,11 +6,24 @@ import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { getTraceContext } from "@semprec/shared";
 import { createDispatcher } from "../app.js";
 import type { CompleteHandlerOptions } from "../completeHandler.js";
+import type { AudioHandlerOptions } from "../audioHandler.js";
 import {
   ProviderCallError,
   type StructuredCompletionProvider,
   type StructuredCompletionRequest,
 } from "../structuredProviders/types.js";
+
+const FAKE_AUDIO_OPTIONS: AudioHandlerOptions = {
+  internalToken: "test-internal-token",
+  diarizationProvider: { id: "fake-diarizer", model: "fake-model", diarize: async () => [] },
+  transcriptionProvider: {
+    id: "fake-transcriber",
+    model: "fake-model",
+    transcribe: async () => ({ text: "", language: null, segments: [] }),
+  },
+  pyannotePricePerAudioHour: 1,
+  deepInfraPricePerAudioHour: 1,
+};
 
 let pool: Pool;
 let server: Server;
@@ -73,7 +86,7 @@ function startServer(provider: StructuredCompletionProvider, overrides: Partial<
     pricePerMillionOutputTokens: 15,
     ...overrides,
   };
-  server = createServer(createDispatcher(pool, options));
+  server = createServer(createDispatcher(pool, options, FAKE_AUDIO_OPTIONS));
 }
 
 async function listen(): Promise<void> {

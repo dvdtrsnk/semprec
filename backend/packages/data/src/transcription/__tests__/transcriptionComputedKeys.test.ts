@@ -8,6 +8,8 @@ import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import {
   TRANSCRIPTION_CREATE_COMPUTED_KEY,
   TRANSCRIPTION_PREPARE_COMPUTED_KEY,
+  TRANSCRIPTION_DIARIZE_COMPUTED_KEY,
+  TRANSCRIPTION_ASR_COMPUTED_KEY,
   TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
   TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
 } from "../transcriptionComputedKeys.js";
@@ -45,6 +47,8 @@ describe("Transcripts computed key registration (issue #180)", () => {
   it.each([
     TRANSCRIPTION_CREATE_COMPUTED_KEY,
     TRANSCRIPTION_PREPARE_COMPUTED_KEY,
+    TRANSCRIPTION_DIARIZE_COMPUTED_KEY,
+    TRANSCRIPTION_ASR_COMPUTED_KEY,
     TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
     TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
   ])("rejects a new property named %s as a computed-key collision", async (key) => {

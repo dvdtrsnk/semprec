@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import type { Pool, PoolClient } from "pg";
+import { z } from "zod";
 import {
   TRANSCRIPTS_MODULE_ID,
   FILES_MODULE_ID,
   TRANSCRIPTION_CREATE_COMPUTED_KEY,
   TRANSCRIPTION_PREPARE_COMPUTED_KEY,
+  TRANSCRIPTION_DIARIZE_COMPUTED_KEY,
+  TRANSCRIPTION_ASR_COMPUTED_KEY,
   TRANSCRIPTION_OWNER_PROCESS,
   createItemWithClient,
   createBlob,
@@ -26,6 +30,7 @@ import type { ItemRow } from "@semprec/data";
 import {
   discardStoredAudio,
   downloadToTempFile,
+  extractAudioChunkBytes,
   normalizeAudio,
   probeMedia,
   probeNormalizedDuration,
@@ -33,6 +38,8 @@ import {
   type MediaProbeResult,
   type NormalizedAudioResult,
 } from "./mediaNormalization.js";
+import { computeAsrChunkBoundaries } from "./asrChunking.js";
+import { createHttpAudioGatewayClient, type AudioGatewayClient } from "./audioGatewayClient.js";
 
 function sourceName(properties: Record<string, unknown>): string {
   if (typeof properties.name === "string" && properties.name.length > 0) return properties.name;
@@ -85,6 +92,44 @@ function requireTranscriptId(source: ItemRow, fileItemId: string): string {
       itemId: fileItemId,
     });
   return transcriptId;
+}
+
+const prepareCheckpointSchema = z.object({
+  normalizedBlobId: z.string(),
+  durationSeconds: z.number(),
+  creationTime: z.string().nullable(),
+});
+
+/** Reads step 1's checkpoint, the input steps 2 and 3 both consume. */
+function requirePrepareCheckpoint(source: ItemRow, fileItemId: string): PrepareStepResult {
+  const parsed = prepareCheckpointSchema.safeParse(source.computed[TRANSCRIPTION_PREPARE_COMPUTED_KEY]);
+  if (!parsed.success)
+    throw new NotFoundError(
+      `Files item '${fileItemId}' has no '${TRANSCRIPTION_PREPARE_COMPUTED_KEY}' checkpoint yet`,
+      {
+        resource: "item",
+        itemId: fileItemId,
+      },
+    );
+  return parsed.data;
+}
+
+const asrChunkResultSchema = z.object({
+  text: z.string(),
+  segments: z.array(z.object({ start: z.number(), end: z.number(), text: z.string() })),
+});
+
+const asrCheckpointSchema = z.object({
+  language: z.string().nullable(),
+  chunks: z.record(z.string(), asrChunkResultSchema),
+});
+type AsrCheckpoint = z.infer<typeof asrCheckpointSchema>;
+
+/** The ASR checkpoint written so far, or the empty shape before step 3's first chunk lands. */
+function readAsrCheckpoint(source: ItemRow): AsrCheckpoint {
+  const raw = source.computed[TRANSCRIPTION_ASR_COMPUTED_KEY];
+  if (raw === undefined) return { language: null, chunks: {} };
+  return asrCheckpointSchema.parse(raw);
 }
 
 /**
@@ -207,21 +252,166 @@ async function runPrepareStep(
   }
 }
 
-function createTranscriptionSteps(blobStorage: BlobStorageWriter): readonly TranscriptionStep[] {
-  return [runCreateStep, (context) => runPrepareStep(context, blobStorage)];
+/**
+ * Step 2 (`diarize`): calls `gateway.diarize()` exactly once over the entire normalized recording
+ * — diarization is never chunked — and checkpoints its speaker turns before step 3 starts, per
+ * issue #182. No transaction stays open across the gateway call, mirroring step 1's bracket.
+ */
+async function runDiarizeStep(
+  { pool, filesDatabaseId, fileItemId }: TranscriptionStepContext,
+  blobStorage: BlobStorageWriter,
+  gatewayClient: AudioGatewayClient,
+): Promise<void> {
+  const prepare = await withTransaction(pool, async (client) => {
+    const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
+    if (Object.hasOwn(source.computed, TRANSCRIPTION_DIARIZE_COMPUTED_KEY)) return null;
+    return requirePrepareCheckpoint(source, fileItemId);
+  });
+  if (!prepare) return;
+
+  const blob = await withTransaction(pool, (client) => getBlob(client, prepare.normalizedBlobId));
+  if (!blob) throw new NotFoundError(`Blob '${prepare.normalizedBlobId}' not found`, { resource: "blob" });
+
+  const tempPath = await downloadToTempFile(blobStorage, blob.storageKey);
+  let turns;
+  try {
+    const audio = await readFile(tempPath);
+    turns = await gatewayClient.diarize({
+      audio,
+      filename: "recording.opus",
+      mimeType: blob.mimeType,
+      audioSeconds: prepare.durationSeconds,
+    });
+  } finally {
+    await removeTempFile(tempPath);
+  }
+
+  await withTransaction(pool, async (client) => {
+    // Locked, so a concurrent run that checkpointed first is not overwritten.
+    const source = requireSource(await lockItemById(client, filesDatabaseId, fileItemId), fileItemId);
+    if (Object.hasOwn(source.computed, TRANSCRIPTION_DIARIZE_COMPUTED_KEY)) return;
+    await writeComputed(client, filesDatabaseId, fileItemId, TRANSCRIPTION_DIARIZE_COMPUTED_KEY, turns);
+  });
 }
 
-/** Runs each declared transcription step in order; each skips itself once its checkpoint exists. `blobStorage` defaults to the same local-filesystem backend semprec-api writes Files blobs to (issue #246), configured via `FILES_STORAGE_DIR`. */
+/**
+ * Step 3 (`ASR`): calls `gateway.transcribe()` once per 20-minute, 30-second-overlap chunk of the
+ * normalized recording (`computeAsrChunkBoundaries`), checkpointing each chunk's raw result right
+ * after it completes so a crash mid-stage repeats only the unfinished chunks. The language detected
+ * on chunk 0 is passed explicitly to every later chunk, including across a resume.
+ */
+async function runAsrStep(
+  { pool, filesDatabaseId, fileItemId }: TranscriptionStepContext,
+  blobStorage: BlobStorageWriter,
+  gatewayClient: AudioGatewayClient,
+): Promise<void> {
+  const prepare = await withTransaction(pool, async (client) => {
+    const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
+    return requirePrepareCheckpoint(source, fileItemId);
+  });
+  const boundaries = computeAsrChunkBoundaries(prepare.durationSeconds);
+  if (boundaries.length === 0) return;
+
+  const alreadyDone = await withTransaction(pool, async (client) => {
+    const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
+    const checkpoint = readAsrCheckpoint(source);
+    return boundaries.every((_boundary, index) => Object.hasOwn(checkpoint.chunks, String(index)));
+  });
+  if (alreadyDone) return;
+
+  const blob = await withTransaction(pool, (client) => getBlob(client, prepare.normalizedBlobId));
+  if (!blob) throw new NotFoundError(`Blob '${prepare.normalizedBlobId}' not found`, { resource: "blob" });
+
+  const tempPath = await downloadToTempFile(blobStorage, blob.storageKey);
+  try {
+    let language: string | null = null;
+    for (let index = 0; index < boundaries.length; index += 1) {
+      const boundary = boundaries[index]!;
+      const current = await withTransaction(pool, async (client) => {
+        const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
+        return readAsrCheckpoint(source);
+      });
+      const existingChunk = current.chunks[String(index)];
+      if (existingChunk) {
+        language = current.language;
+        continue;
+      }
+
+      const chunkAudio = await extractAudioChunkBytes(tempPath, boundary.start, boundary.end - boundary.start);
+      const result = await gatewayClient.transcribe({
+        audio: chunkAudio,
+        filename: `chunk-${index}.opus`,
+        mimeType: "audio/ogg",
+        audioSeconds: boundary.end - boundary.start,
+        language: index === 0 ? undefined : (language ?? undefined),
+      });
+      if (index === 0) language = result.language;
+
+      await withTransaction(pool, async (client) => {
+        // Locked, so a concurrent run that checkpointed this chunk first is not overwritten.
+        const source = requireSource(await lockItemById(client, filesDatabaseId, fileItemId), fileItemId);
+        const base = readAsrCheckpoint(source);
+        if (Object.hasOwn(base.chunks, String(index))) return;
+        const merged: AsrCheckpoint = {
+          language: index === 0 ? result.language : base.language,
+          chunks: { ...base.chunks, [String(index)]: { text: result.text, segments: result.segments } },
+        };
+        await writeComputed(client, filesDatabaseId, fileItemId, TRANSCRIPTION_ASR_COMPUTED_KEY, merged);
+      });
+    }
+  } finally {
+    await removeTempFile(tempPath);
+  }
+}
+
+function createTranscriptionSteps(
+  blobStorage: BlobStorageWriter,
+  gatewayClient: AudioGatewayClient,
+): readonly TranscriptionStep[] {
+  return [
+    runCreateStep,
+    (context) => runPrepareStep(context, blobStorage),
+    (context) => runDiarizeStep(context, blobStorage, gatewayClient),
+    (context) => runAsrStep(context, blobStorage, gatewayClient),
+  ];
+}
+
+function requireGatewayInternalToken(): string {
+  const token = process.env.AI_GATEWAY_INTERNAL_TOKEN;
+  if (!token) throw new Error("AI_GATEWAY_INTERNAL_TOKEN is not set");
+  return token;
+}
+
+/**
+ * Runs each declared transcription step in order; each skips itself once its checkpoint exists.
+ * `blobStorage` defaults to the same local-filesystem backend semprec-api writes Files blobs to
+ * (issue #246), configured via `FILES_STORAGE_DIR`. `gatewayClient` defaults to a loopback HTTP
+ * client for `semprec-ai-gateway`'s `/internal/diarize` and `/internal/transcribe` routes
+ * (issue #182), configured via `AI_GATEWAY_PORT`/`AI_GATEWAY_INTERNAL_TOKEN` — the only path from
+ * this service to an AI provider, per `docs/adr/2026-09-10-ai-gateway-monopoly-on-provider-calls.md`.
+ */
 export function createTranscriptionTask(
   pool: Pool,
   blobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(process.env.FILES_STORAGE_DIR ?? "/tmp/semprec-files"),
+  gatewayClient?: AudioGatewayClient,
 ) {
-  const transcriptionSteps = createTranscriptionSteps(blobStorage);
+  // Constructed lazily (only when a run actually reaches step 2), not as an eagerly-evaluated
+  // default parameter: callers who omit `gatewayClient` and never run a job that reaches
+  // diarize/ASR (e.g. queue-runtime handler-registration checks) must not fail just because
+  // AI_GATEWAY_INTERNAL_TOKEN happens to be unset in their environment.
+  const resolveGatewayClient = (): AudioGatewayClient =>
+    gatewayClient ??
+    createHttpAudioGatewayClient({
+      port: Number(process.env.AI_GATEWAY_PORT ?? "3002"),
+      token: requireGatewayInternalToken(),
+    });
+
   return async (payload: unknown): Promise<void> => {
     const { fileItemId } = transcriptionJobPayloadSchema.parse(payload);
     const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, FILES_MODULE_ID));
     if (!files) throw new NotFoundError("Files database not found");
 
+    const transcriptionSteps = createTranscriptionSteps(blobStorage, resolveGatewayClient());
     for (const step of transcriptionSteps) await step({ pool, filesDatabaseId: files.id, fileItemId });
   };
 }

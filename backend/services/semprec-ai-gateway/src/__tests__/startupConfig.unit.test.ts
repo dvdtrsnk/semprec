@@ -14,6 +14,10 @@ const BASE_ENV: NodeJS.ProcessEnv = {
   AI_GATEWAY_STRUCTURED_MODEL: "claude-sonnet-5",
   AI_GATEWAY_STRUCTURED_INPUT_PRICE_PER_MTOK: "1",
   AI_GATEWAY_STRUCTURED_OUTPUT_PRICE_PER_MTOK: "1",
+  PYANNOTEAI_API_KEY: "pyannote-key",
+  DEEPINFRA_API_KEY: "deepinfra-key",
+  AI_GATEWAY_PYANNOTE_PRICE_PER_AUDIO_HOUR: "1",
+  AI_GATEWAY_DEEPINFRA_PRICE_PER_AUDIO_HOUR: "1",
 };
 
 describe("resolveStartupConfig database url resolution", () => {

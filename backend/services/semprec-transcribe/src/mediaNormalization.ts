@@ -180,6 +180,57 @@ export async function probeNormalizedDuration(blobStorage: BlobStorageWriter, st
 }
 
 /**
+ * Extracts `[startSeconds, startSeconds + durationSeconds)` of a local (already-normalized) audio
+ * file as its own standalone Ogg Opus byte buffer, for step 3's per-chunk ASR calls. `-ss` before
+ * `-i` seeks the input directly rather than decoding and discarding every sample before the chunk,
+ * which matters once `startSeconds` is deep into a multi-hour recording.
+ */
+export async function extractAudioChunkBytes(
+  inputPath: string,
+  startSeconds: number,
+  durationSeconds: number,
+): Promise<Buffer> {
+  const child = spawn(
+    "ffmpeg",
+    [
+      "-y",
+      "-loglevel",
+      "error",
+      "-ss",
+      startSeconds.toString(),
+      "-t",
+      durationSeconds.toString(),
+      "-i",
+      inputPath,
+      "-c:a",
+      "libopus",
+      "-f",
+      "ogg",
+      "pipe:1",
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  const stdoutChunks: Buffer[] = [];
+  const stderrChunks: Buffer[] = [];
+  child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
+  child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+
+  const timer = setTimeout(() => child.kill("SIGKILL"), FFMPEG_TIMEOUT_MS);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      child.on("error", reject);
+      child.on("close", (code, signal) => {
+        if (code === 0) resolve();
+        else reject(describeExit("ffmpeg", code, signal, Buffer.concat(stderrChunks).toString("utf8").trim()));
+      });
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+  return Buffer.concat(stdoutChunks);
+}
+
+/**
  * Normalizes a local input file to 16 kHz mono Opus (audio/ogg) at 16 kb/s — about 7 MB per hour
  * of audio — and streams the result straight into `blobStorage` under `storageKey`, with no
  * intermediate output file. For a video input, `-vn` drops the video stream and keeps only its
