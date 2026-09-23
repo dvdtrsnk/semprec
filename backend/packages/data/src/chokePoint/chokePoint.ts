@@ -574,6 +574,24 @@ export async function createItemWithClient(
   return item;
 }
 
+/**
+ * `itemsStore.writeComputed` for a declared module cache writer whose computed value the UI
+ * shows live (the transcription worker's Transcripts `segments`/`language`/summaries): writes
+ * the key inside the caller's transaction, then announces it over the generic realtime channel
+ * once that transaction commits — `writeComputed` alone announces nothing. The announced
+ * `updatedAt` is the one the write itself read back, not a caller's earlier snapshot.
+ */
+export async function writeComputedAndAnnounce(
+  client: PoolClient,
+  databaseId: string,
+  itemId: string,
+  key: string,
+  value: unknown,
+): Promise<void> {
+  const updatedAt = await itemsStore.writeComputed(client, databaseId, itemId, key, value);
+  runAfterCommit(client, () => notifyInvalidation({ scope: "item", databaseId, itemId, op: "update", updatedAt }));
+}
+
 export interface UpdateItemInput {
   databaseId: string;
   itemId: string;

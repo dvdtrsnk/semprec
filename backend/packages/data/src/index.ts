@@ -1,11 +1,4 @@
-export {
-  createPool,
-  withTransaction,
-  withClient,
-  requireAffectedRows,
-  runAfterCommit,
-  type Queryable,
-} from "./db/pool.js";
+export { createPool, withTransaction, withClient, requireAffectedRows, type Queryable } from "./db/pool.js";
 export { runMigrations } from "./db/migrate.js";
 export * from "./errors.js";
 export * from "./types.js";
@@ -14,6 +7,7 @@ export {
   createChokePoint,
   createItemWithClient,
   updateItemWithClient,
+  writeComputedAndAnnounce,
   type ChokePoint,
   type Actor,
 } from "./chokePoint/chokePoint.js";

@@ -379,7 +379,7 @@ export async function getItemsByIdsInDatabaseIncludingDeleted(
  * `updated_at`/the ifVersion token — a background rollup recompute must not cause a
  * spurious 409 on the client's next properties write. Not reachable from the generic
  * update path; only the rollup recompute worker and declared module cache writers may
- * call this.
+ * call this. Returns the row's `updated_at` as read back by the same statement.
  */
 export async function writeComputed(
   client: Queryable,
@@ -387,11 +387,13 @@ export async function writeComputed(
   itemId: string,
   key: string,
   value: unknown,
-): Promise<void> {
-  const result = await client.query(
+): Promise<string> {
+  const result = await client.query<{ updated_at: Date }>(
     `UPDATE items SET computed = jsonb_set(computed, ARRAY[$3]::text[], $4::jsonb, true)
-     WHERE database_id = $1 AND id = $2`,
+     WHERE database_id = $1 AND id = $2
+     RETURNING updated_at`,
     [databaseId, itemId, key, JSON.stringify(value)],
   );
   requireAffectedRows(result, `computed key '${key}' for item '${itemId}'`);
+  return requireSingleRow(result.rows, "items row").updated_at.toISOString();
 }
