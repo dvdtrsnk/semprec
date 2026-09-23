@@ -27,8 +27,8 @@ forgotten, at each call site.
 spawns them only from `src/mediaNormalization.ts`; its tests also run them, to generate media
 fixtures instead of committing binary ones. Concretely:
 
-- They are system packages installed by `deploy/provision.sh`, never an npm dependency or a bundled
-  static binary. The provisioning script is the only other place that names them.
+- They are system packages — installed by `deploy/provision.sh` on the production host and by CI's
+  own install step on its runner — never an npm dependency or a bundled static binary.
 - Every invocation passes a fixed argument vector with no shell, reads a server-generated temp
   path, runs under a timeout that `SIGKILL`s the process, and validates what it printed before
   anything leaves the module (`ffprobe`'s JSON through zod, `creation_time` down to a canonical
