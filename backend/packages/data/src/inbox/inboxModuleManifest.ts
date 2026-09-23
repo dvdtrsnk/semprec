@@ -24,6 +24,12 @@ export { createConfirmProposalRouteHandler, createInboxTypesRouteHandler } from 
  * no dedicated agent tool for confirm/reject/revise (issue #105) — those go through the
  * generic item-update choke point, the same "single path" every other module uses — so
  * `agentTools` stays empty. Authoring this manifest changes no behavior.
+ *
+ * Ownership handoff for Processing proposals
+ * (`docs/adr/2026-09-23-processing-proposals-card-creation-owned-per-kind.md`): each card
+ * `kind` has exactly one producer that creates its cards — `inbox` by `semprec.tick`,
+ * `transcript` by `semprec-transcribe`'s match step (`transcription/transcriptEventMatch.ts`).
+ * Everything after creation (confirm/reject/revise) stays with this module's proposal actions.
  */
 export const manifest: ModuleManifest = {
   id: "inboxPipeline",
