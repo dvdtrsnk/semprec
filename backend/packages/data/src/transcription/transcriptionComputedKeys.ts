@@ -14,5 +14,9 @@ export const TRANSCRIPTION_PREPARE_COMPUTED_KEY = "prepare";
 export const TRANSCRIPTION_DIARIZE_COMPUTED_KEY = "diarize";
 /** Step 3 stores `{ language, chunks }` on the source Files item: the language detected on chunk 0, and each ASR chunk's raw result keyed by its index, written as each chunk finishes. */
 export const TRANSCRIPTION_ASR_COMPUTED_KEY = "asr";
+/** Step 4 stores the merged `[{ speaker, text, startsAt, endsAt }]` on the Transcripts item, written once; speaker keys stay the diarization's own. */
 export const TRANSCRIPT_SEGMENTS_COMPUTED_KEY = "segments";
+/** Step 4 stores the language detected on ASR chunk 0 (`null` when Whisper reported none) on the Transcripts item, alongside `segments`. */
+export const TRANSCRIPT_LANGUAGE_COMPUTED_KEY = "language";
+/** Step 5 stores `{ [instructionKey]: summary }` on the Transcripts item: one cached summary per instruction, never overwritten. */
 export const TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY = "summaryByInstruction";

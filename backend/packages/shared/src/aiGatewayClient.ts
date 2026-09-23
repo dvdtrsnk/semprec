@@ -13,9 +13,12 @@ export interface AiGatewayMessage {
 }
 
 export interface AiGatewayCompletionInput {
-  /** The project item the call is billed/attributed to; written verbatim into `ai_gateway_calls`. */
-  projectItemId: string;
-  /** Caller identifier for audit/attribution; #85 is this batch's only caller, using `'agent_guidance_drift'`. */
+  /**
+   * The project item the call is billed/attributed to; written verbatim into `ai_gateway_calls`.
+   * `null` only for an operation the gateway attributes to no project (`'transcript_summary'`).
+   */
+  projectItemId: string | null;
+  /** Caller identifier for audit/attribution: `'agent_guidance_drift'` (#85) or `'transcript_summary'` (#183). */
   operation: string;
   temperature: number;
   system: string;

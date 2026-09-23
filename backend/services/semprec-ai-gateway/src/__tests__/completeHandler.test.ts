@@ -148,7 +148,7 @@ describe("POST /internal/complete", () => {
     expect(res.status).toBe(401);
   });
 
-  it("rejects an operation other than agent_guidance_drift with 400 validation_failed", async () => {
+  it("rejects an unsupported operation with 400 validation_failed", async () => {
     const provider = new FakeProvider();
     startServer(provider);
     await listen();
@@ -158,6 +158,52 @@ describe("POST /internal/complete", () => {
     expect(res.status).toBe(400);
     expect(((await res.json()) as { code: string }).code).toBe("validation_failed");
     expect(provider.calls).toHaveLength(0);
+  });
+
+  it("rejects agent_guidance_drift with a null projectItemId with 400 validation_failed", async () => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", { ...VALID_BODY, projectItemId: null });
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { code: string }).code).toBe("validation_failed");
+    expect(provider.calls).toHaveLength(0);
+  });
+
+  it.each([
+    ["a project item id", "11111111-1111-1111-1111-111111111111"],
+    ["no projectItemId at all", undefined],
+  ])("rejects transcript_summary with %s with 400 validation_failed", async (_label, projectItemId) => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", { ...VALID_BODY, operation: "transcript_summary", projectItemId });
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { code: string }).code).toBe("validation_failed");
+    expect(provider.calls).toHaveLength(0);
+  });
+
+  it("dispatches transcript_summary with a null projectItemId and records an unattributed audit row", async () => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", {
+      ...VALID_BODY,
+      operation: "transcript_summary",
+      projectItemId: null,
+    });
+
+    expect(res.status).toBe(200);
+    expect(provider.calls).toHaveLength(1);
+    const { rows } = await pool.query<{ project_item_id: string | null; operation: string; input_tokens: number }>(
+      "SELECT project_item_id, operation, input_tokens FROM ai_gateway_calls",
+    );
+    expect(rows).toEqual([{ project_item_id: null, operation: "transcript_summary", input_tokens: 100 }]);
   });
 
   it("rejects a temperature outside [0, 1] with 400 validation_failed", async () => {

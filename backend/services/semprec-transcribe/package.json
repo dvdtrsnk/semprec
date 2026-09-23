@@ -9,9 +9,11 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@semprec/ai-gateway-client": "workspace:*",
     "@semprec/data": "workspace:*",
     "@semprec/module-registry": "workspace:*",
     "@semprec/queue": "workspace:*",
+    "@semprec/realtime": "workspace:*",
     "@semprec/shared": "workspace:*",
     "pg": "^8.23.0",
     "zod": "^4.1.11"

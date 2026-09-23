@@ -473,6 +473,9 @@ importers:
 
   services/semprec-transcribe:
     dependencies:
+      '@semprec/ai-gateway-client':
+        specifier: workspace:*
+        version: link:../../packages/ai-gateway-client
       '@semprec/data':
         specifier: workspace:*
         version: link:../../packages/data
@@ -482,6 +485,9 @@ importers:
       '@semprec/queue':
         specifier: workspace:*
         version: link:../../packages/queue
+      '@semprec/realtime':
+        specifier: workspace:*
+        version: link:../../packages/realtime
       '@semprec/shared':
         specifier: workspace:*
         version: link:../../packages/shared

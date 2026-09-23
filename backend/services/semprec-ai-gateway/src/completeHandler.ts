@@ -13,12 +13,16 @@ import {
 import { logger } from "./logger.js";
 
 /**
- * #85 is this batch's only consumer of `POST /internal/complete`, and it always sends this exact
- * `operation`. The route rejects anything else outright rather than accepting an arbitrary string
- * that nothing yet knows how to interpret — extending this set is a later issue's job, not a
- * silent side effect of this one.
+ * Every `operation` `POST /internal/complete` accepts, mapped to whether the call is attributed to
+ * a Projects item. #85's guidance-drift check always is; #183's transcript summary runs in
+ * `semprec-transcribe` with no project in scope, so it sends `projectItemId: null` and its
+ * `ai_gateway_calls` row carries none. The route rejects any other operation outright rather than
+ * accepting an arbitrary string that nothing yet knows how to interpret.
  */
-const SUPPORTED_OPERATIONS = new Set(["agent_guidance_drift"]);
+const OPERATION_REQUIRES_PROJECT_ITEM = new Map<string, boolean>([
+  ["agent_guidance_drift", true],
+  ["transcript_summary", false],
+]);
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -35,7 +39,7 @@ export interface CompleteHandlerOptions {
 }
 
 interface CompleteRequestBody {
-  projectItemId: string;
+  projectItemId: string | null;
   operation: string;
   temperature: number;
   system: string;
@@ -106,11 +110,24 @@ function validateBody(raw: unknown): CompleteRequestBody {
   }
   const body = raw as Record<string, unknown>;
 
-  if (typeof body.projectItemId !== "string" || !UUID_PATTERN.test(body.projectItemId)) {
-    throw new ValidationError("'projectItemId' must be a UUID string", { field: "projectItemId" });
-  }
-  if (typeof body.operation !== "string" || !SUPPORTED_OPERATIONS.has(body.operation)) {
+  const requiresProjectItem =
+    typeof body.operation === "string" ? OPERATION_REQUIRES_PROJECT_ITEM.get(body.operation) : undefined;
+  if (typeof body.operation !== "string" || requiresProjectItem === undefined) {
     throw new ValidationError("'operation' is missing or unsupported", { field: "operation" });
+  }
+  let projectItemId: string | null;
+  if (requiresProjectItem) {
+    if (typeof body.projectItemId !== "string" || !UUID_PATTERN.test(body.projectItemId)) {
+      throw new ValidationError("'projectItemId' must be a UUID string", { field: "projectItemId" });
+    }
+    projectItemId = body.projectItemId;
+  } else {
+    if (body.projectItemId !== null) {
+      throw new ValidationError(`'projectItemId' must be null for operation '${body.operation}'`, {
+        field: "projectItemId",
+      });
+    }
+    projectItemId = null;
   }
   if (
     typeof body.temperature !== "number" ||
@@ -135,7 +152,7 @@ function validateBody(raw: unknown): CompleteRequestBody {
   }
 
   return {
-    projectItemId: body.projectItemId,
+    projectItemId,
     operation: body.operation,
     temperature: body.temperature,
     system: body.system,
