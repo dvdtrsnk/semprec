@@ -1,6 +1,9 @@
 import type { ModuleManifest } from "@semprec/module-registry";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
-import { FILES_TRANSCRIPTION_TRIGGER_ACTION_ID } from "../transcription/transcriptionActions.js";
+import {
+  FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
+  TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
+} from "../transcription/transcriptionActions.js";
 import {
   AREAS_MODULE_ID,
   COMPANIES_MODULE_ID,
@@ -17,6 +20,7 @@ export { backfillTaskTimeProperties } from "../tasks/deriveTaskTime.js";
 
 export {
   createCreateTranscriptionRouteHandler,
+  createRerunTranscriptionRouteHandler,
   createTranscriptSpeakersRouteHandler,
 } from "../transcription/transcriptionRouteHandlers.js";
 
@@ -55,7 +59,7 @@ export const manifest: ModuleManifest = {
   capabilities: [],
   agentTools: [],
   viewTypes: [TEMPORAL_SWITCHER_VIEW_TYPE],
-  heartbeatActions: [FILES_TRANSCRIPTION_TRIGGER_ACTION_ID],
+  heartbeatActions: [FILES_TRANSCRIPTION_TRIGGER_ACTION_ID, TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID],
   migrations: ["0004_ten_databases.sql"],
   dataMigrations: [
     {
@@ -73,6 +77,15 @@ export const manifest: ModuleManifest = {
       handlerExport: "createCreateTranscriptionRouteHandler",
       // The existing-job check and the enqueue must commit together (issue #180's dedup
       // guarantee), a shape the generic item-write endpoint can't express.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "rerunTranscription",
+      method: "POST",
+      path: "/api/transcriptions/:id/rerun",
+      handlerExport: "createRerunTranscriptionRouteHandler",
+      // The `locked` check and the enqueue must commit together (issue #186: a locked row is never
+      // rerun), and the route writes no item, so the generic item-write endpoint can't express it.
       justification: "transactional-semantics",
     },
     {

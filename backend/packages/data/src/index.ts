@@ -119,6 +119,7 @@ export { seedSystem } from "./seed/seedSystem.js";
 export * from "./seed/tenDatabaseKeys.js";
 export {
   transcriptionJobPayloadSchema,
+  transcriptionSourceLink,
   TRANSCRIPTION_OWNER_PROCESS,
   type TranscriptionJobPayload,
 } from "./transcription/transcriptionJob.js";
@@ -132,7 +133,8 @@ export {
   TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
   TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY,
 } from "./transcription/transcriptionComputedKeys.js";
-export { readBlobId } from "./transcription/transcriptionActions.js";
+export { createTranscriptionRequeueSweepAction, readBlobId } from "./transcription/transcriptionActions.js";
+export { createRerunTranscriptionRouteHandler } from "./transcription/transcriptionRouteHandlers.js";
 export { matchTranscriptToEvent } from "./transcription/transcriptEventMatch.js";
 export {
   proposeSpeakerMappings,

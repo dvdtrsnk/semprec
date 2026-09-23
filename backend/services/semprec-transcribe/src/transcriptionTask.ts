@@ -14,6 +14,7 @@ import {
   TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
   TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY,
   TRANSCRIPTION_OWNER_PROCESS,
+  transcriptionSourceLink,
   createItemWithClient,
   createBlob,
   getBlob,
@@ -226,7 +227,7 @@ async function runCreateStep({ pool, filesDatabaseId, fileItemId }: Transcriptio
         properties: {
           name: sourceName(source.properties),
           status: "processing",
-          link: `semprec://items/${fileItemId}`,
+          link: transcriptionSourceLink(fileItemId),
         },
       },
       { allowedSystemKeys: ["status", "link"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
