@@ -1,6 +1,7 @@
 ---
 id: review-pull-request
 name: Review pull request
+priority: 80   # a finished pull request waiting on its verdict; until it has one, nothing downstream of it can move
 on:
   pull-requests:
     label: review:ready

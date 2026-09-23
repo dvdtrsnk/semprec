@@ -1,6 +1,7 @@
 ---
 id: implement-issue
 name: Implement issue
+priority: 20   # the only step that creates new work in flight, so it goes last: a full queue must never starve the four above
 on:
   issues:
     label: agent:ready
