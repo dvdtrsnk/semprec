@@ -21,6 +21,7 @@ import {
   getDatabaseByModuleId,
   lockItemById,
   markItemAutomationDone,
+  matchTranscriptToEvent,
   readBlobId,
   transcriptionJobPayloadSchema,
   updateItemWithClient,
@@ -511,7 +512,21 @@ async function runSummarizeStep(
 }
 
 /**
- * Step 6 (`finalize`): sets `status = done` and `item_automation` to `done` in one transaction,
+ * Step 6 (`match`): `matchTranscriptToEvent` in one transaction — links the one Event whose
+ * `date` falls inside the recording's window, or otherwise creates the transcript's single
+ * suggestion card. Re-running it converges: an existing edge or card is left as it is.
+ */
+async function runMatchStep({ pool, filesDatabaseId, fileItemId }: TranscriptionStepContext): Promise<void> {
+  await withTransaction(pool, async (client) => {
+    const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
+    const transcriptId = requireTranscriptId(source, fileItemId);
+    const { durationSeconds } = requirePrepareCheckpoint(source, fileItemId);
+    await matchTranscriptToEvent(client, { transcriptId, durationSeconds });
+  });
+}
+
+/**
+ * Step 7 (`finalize`): sets `status = done` and `item_automation` to `done` in one transaction,
  * and only once that transaction itself sees the committed `segments` and this instruction's
  * summary — a run that failed before either landed leaves the row `processing`. `status` goes
  * through `updateItemWithClient`, which announces it over the generic realtime channel.
@@ -556,6 +571,7 @@ function createTranscriptionSteps(
     (context) => runAsrStep(context, blobStorage, gatewayClient),
     runMergeStep,
     (context) => runSummarizeStep(context, summaryClient, summaryInstruction),
+    runMatchStep,
     (context) => runFinalizeStep(context, summaryInstruction),
   ];
 }
@@ -575,7 +591,7 @@ function requireGatewayInternalToken(): string {
  * `/internal/complete` route (issue #183), both configured via
  * `AI_GATEWAY_PORT`/`AI_GATEWAY_INTERNAL_TOKEN` — the only path from this service to an AI
  * provider, per `docs/adr/2026-09-10-ai-gateway-monopoly-on-provider-calls.md`.
- * `summaryInstruction` selects the instruction step 5 summarizes with and step 6 requires.
+ * `summaryInstruction` selects the instruction step 5 summarizes with and step 7 requires.
  */
 export function createTranscriptionTask(
   pool: Pool,

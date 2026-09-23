@@ -16,6 +16,7 @@ import {
   LocalFsBlobStorageWriter,
   NotFoundError,
   seedSystem,
+  TRANSCRIPTION_OWNER_PROCESS,
   setAgentRunEventHook,
   setDocUpdateHook,
   setInvalidationHook,
@@ -405,17 +406,31 @@ describe("transcription step 1 (prepare)", () => {
       }),
     );
     const concurrentCheckpoint = { normalizedBlobId: concurrentBlob.id, durationSeconds: 1, creationTime: null };
+    // The concurrent run's own `date`, which it writes in the same transaction as its checkpoint.
+    const concurrentDate = "2020-01-01T00:00:00.000Z";
     const storage = storageWithMidNormalizationHook(async () => {
-      await withTransaction(pool, (client) =>
-        writeComputed(client, files.id, file.id, "prepare", concurrentCheckpoint),
-      );
+      await withTransaction(pool, async (client) => {
+        const source = await getItemById(client, files.id, file.id);
+        const transcripts = await getDatabaseByModuleId(client, "transcripts");
+        if (!transcripts) throw new Error("Transcripts database was not seeded");
+        await updateItemWithClient(
+          client,
+          {
+            databaseId: transcripts.id,
+            itemId: z.string().parse(source?.computed.create),
+            propertiesPatch: { date: concurrentDate },
+          },
+          { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+        );
+        await writeComputed(client, files.id, file.id, "prepare", concurrentCheckpoint);
+      });
     });
 
     await createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id });
 
     const source = await readSource(files.id, file.id);
     expect(source?.computed.prepare).toEqual(concurrentCheckpoint);
-    expect(await readTranscriptDate(source)).toBeUndefined();
+    expect(await readTranscriptDate(source)).toBe(concurrentDate);
     expect(await readNormalizedLeftovers()).toEqual({
       blobRows: 1,
       storedFiles: [concurrentStorageKey.slice("transcriptions/".length)],
@@ -829,6 +844,57 @@ describe("transcription steps 4-6 (merge, summarize, finalize)", () => {
     expect(summaryClient.calls).toHaveLength(0);
   });
 
+  async function readMatch(transcriptId: string) {
+    const { rows: edges } = await pool.query<{ other: string }>(
+      `SELECT CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END AS other
+       FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
+       JOIN properties p ON p.id IN (d.property_id_a, d.property_id_b)
+       WHERE p.key = 'event' AND (r.item_a = $1 OR r.item_b = $1)`,
+      [transcriptId],
+    );
+    const { rows: cards } = await pool.query<{ id: string; kind: string }>(
+      `SELECT i.id, i.properties ->> 'kind' AS kind FROM items i JOIN databases d ON d.id = i.database_id
+       WHERE d.owner_module_id = 'processingProposals'`,
+    );
+    return { eventIds: edges.map((edge) => edge.other), cards };
+  }
+
+  async function createEvent(date: string): Promise<string> {
+    const events = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "events"));
+    if (!events) throw new Error("Events database was not seeded");
+    const event = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: events.id, properties: { name: "Sync", type: "meeting", date } }),
+    );
+    return event.id;
+  }
+
+  it("links the one Event in the recording's window before finalizing, and a rerun adds nothing", async () => {
+    const { file } = await createSourceFile();
+    const eventId = await createEvent(FIXTURE_CREATION_TIME);
+    const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+
+    await task({ fileItemId: file.id });
+    await task({ fileItemId: file.id });
+
+    const transcript = await readTranscript(file.id);
+    expect(transcript.properties.status).toBe("done");
+    expect(await readMatch(transcript.id)).toEqual({ eventIds: [eventId], cards: [] });
+  });
+
+  it("creates one transcript card when no Event matches, and a rerun converges on it", async () => {
+    const { file } = await createSourceFile();
+    const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+
+    await task({ fileItemId: file.id });
+    await task({ fileItemId: file.id });
+
+    const transcript = await readTranscript(file.id);
+    expect(transcript.properties.status).toBe("done");
+    const match = await readMatch(transcript.id);
+    expect(match.eventIds).toEqual([]);
+    expect(match.cards).toEqual([{ id: expect.any(String), kind: "transcript" }]);
+  });
+
   it("publishes each output write and the done transition on the generic realtime channel", async () => {
     const { file } = await createSourceFile();
     wireRealtimeHooks(pool);
@@ -842,7 +908,7 @@ describe("transcription steps 4-6 (merge, summarize, finalize)", () => {
       const transcript = await readTranscript(file.id);
       const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
 
-      // Step 1 (date), step 4 (segments, then language), step 5 (summary) and step 6 (status done).
+      // Step 1 (date), step 4 (segments, then language), step 5 (summary) and step 7 (status done).
       await vi.waitFor(() => {
         const updates = received.filter(
           (message) =>

@@ -132,6 +132,7 @@ export {
   TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
 } from "./transcription/transcriptionComputedKeys.js";
 export { readBlobId } from "./transcription/transcriptionActions.js";
+export { matchTranscriptToEvent, type TranscriptEventMatchOutcome } from "./transcription/transcriptEventMatch.js";
 export { ensureItemAutomation, markItemAutomationDone } from "./library/itemAutomationStore.js";
 export { seedTenDatabasesInTransaction, type TenDatabases } from "./seed/seedTenDatabases.js";
 export { manifest as systemDatabasesModuleManifest } from "./seed/systemDatabasesModuleManifest.js";
