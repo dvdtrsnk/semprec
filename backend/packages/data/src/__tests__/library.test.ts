@@ -20,7 +20,9 @@ import {
   ensureItemAutomation,
   getItemAutomation,
   markItemAutomationDone,
+  recordItemAutomationFailure,
   setItemAutomationLocked,
+  startItemAutomationAttempt,
 } from "../library/itemAutomationStore.js";
 import {
   enqueueLibraryMetadataProcessing,
@@ -389,6 +391,67 @@ describe("library module (issue #25)", () => {
 
     const settled = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
     expect(settled?.status).toBe("done");
+  });
+
+  it("startItemAutomationAttempt reopens a row as pending and counts the attempt, keeping the earlier error (issue #248)", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const item = await chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } });
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+    await withTransaction(pool, (client) => recordItemAutomationFailure(client, item.id, "earlier failure", "error"));
+
+    const started = await withTransaction(pool, (client) => startItemAutomationAttempt(client, item.id));
+    expect(started).toMatchObject({ itemId: item.id, status: "pending", error: "earlier failure", attempts: 1 });
+    expect(started?.lastAttemptAt).not.toBeNull();
+
+    const again = await withTransaction(pool, (client) => startItemAutomationAttempt(client, item.id));
+    expect(again?.attempts).toBe(2);
+  });
+
+  it("startItemAutomationAttempt returns null and changes nothing on a locked or absent row (issue #248)", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const item = await chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } });
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+    await withTransaction(pool, (client) => setItemAutomationLocked(client, item.id, true));
+
+    expect(await withTransaction(pool, (client) => startItemAutomationAttempt(client, item.id))).toBeNull();
+    const locked = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
+    expect(locked).toMatchObject({ status: "locked", attempts: 0, lastAttemptAt: null });
+
+    const absentId = "00000000-0000-4000-8000-000000000000";
+    expect(await withTransaction(pool, (client) => startItemAutomationAttempt(client, absentId))).toBeNull();
+  });
+
+  it("recordItemAutomationFailure writes the error and status without counting an attempt, and never touches a locked row (issue #248)", async () => {
+    const booksId = await getDatabaseIdByModule("books");
+    const item = await chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } });
+    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+
+    expect(
+      await withTransaction(pool, (client) => recordItemAutomationFailure(client, item.id, "transient", "pending")),
+    ).toBe(true);
+    expect(await withTransaction(pool, (client) => getItemAutomation(client, item.id))).toMatchObject({
+      status: "pending",
+      error: "transient",
+      attempts: 0,
+    });
+
+    expect(
+      await withTransaction(pool, (client) => recordItemAutomationFailure(client, item.id, "permanent", "error")),
+    ).toBe(true);
+    expect(await withTransaction(pool, (client) => getItemAutomation(client, item.id))).toMatchObject({
+      status: "error",
+      error: "permanent",
+      attempts: 0,
+    });
+
+    await withTransaction(pool, (client) => setItemAutomationLocked(client, item.id, true));
+    expect(
+      await withTransaction(pool, (client) => recordItemAutomationFailure(client, item.id, "ignored", "error")),
+    ).toBe(false);
+    expect(await withTransaction(pool, (client) => getItemAutomation(client, item.id))).toMatchObject({
+      status: "locked",
+      error: "permanent",
+    });
   });
 
   it("unlocking a row only transitions it if it was actually locked, never clobbering 'done'/'error'", async () => {

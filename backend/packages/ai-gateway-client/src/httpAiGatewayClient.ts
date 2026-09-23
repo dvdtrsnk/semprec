@@ -64,10 +64,26 @@ function isCompletionResult(value: unknown): value is AiGatewayCompletionResult 
 }
 
 /**
+ * Whether a non-2xx response is the gateway's own budget rejection (`403` with
+ * `code: "budget_exceeded"`, as `completeHandler.ts` sends it). A body that can't be read or
+ * parsed is just not one: the caller still reports the response as a plain `http` failure.
+ */
+async function isBudgetRejection(res: Response): Promise<boolean> {
+  if (res.status !== 403) return false;
+  let body: unknown;
+  try {
+    body = await readJsonBodyWithSizeCap(res, MAX_RESPONSE_BODY_BYTES);
+  } catch {
+    return false;
+  }
+  return typeof body === "object" && body !== null && (body as { code?: unknown }).code === "budget_exceeded";
+}
+
+/**
  * `packages/ai-gateway-client`'s only implementation of `AiGatewayClientPort` (#215): a plain
  * `fetch` against `semprec-ai-gateway`'s `POST /internal/complete`, with a 60s timeout and
- * strict response validation. Every failure mode — timeout, non-2xx, invalid JSON, schema
- * mismatch — collapses to `AiGatewayFailedError` with only a `reason`, never the provider's own
+ * strict response validation. Every failure mode — timeout, non-2xx (`budget_exceeded` for the
+ * gateway's budget rejection), invalid JSON, schema mismatch — collapses to `AiGatewayFailedError` with only a `reason`, never the provider's own
  * error body, a response snippet, or the bearer token.
  */
 export function createHttpAiGatewayClient(config: HttpAiGatewayClientConfig): AiGatewayClientPort {
@@ -94,7 +110,7 @@ export function createHttpAiGatewayClient(config: HttpAiGatewayClientConfig): Ai
       }
 
       if (!res.ok) {
-        throw new AiGatewayFailedError("http");
+        throw new AiGatewayFailedError((await isBudgetRejection(res)) ? "budget_exceeded" : "http");
       }
 
       let body: unknown;

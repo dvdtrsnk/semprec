@@ -21,7 +21,9 @@ export interface EnqueueTranscriptionJobInput {
  * Shared by both producers (the Files `onItemEvent:create` trigger and `POST /api/transcriptions`)
  * so the job-key/task-name pairing can't drift between them. Takes an already-open `client` so a
  * caller can enqueue inside its own transaction (state-writes: the enqueue is the write here,
- * there is nothing else to gate it against).
+ * there is nothing else to gate it against). `maxAttempts: 3` with graphile-worker's built-in
+ * exponential backoff is the job's retry policy (issue #248); every attempt resumes from the
+ * pipeline's checkpoints.
  */
 export async function enqueueTranscriptionJob(client: PoolClient, input: EnqueueTranscriptionJobInput): Promise<void> {
   await enqueueJob(

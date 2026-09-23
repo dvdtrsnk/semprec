@@ -85,6 +85,45 @@ export async function markItemAutomationError(client: PoolClient, itemId: string
 }
 
 /**
+ * Opens one processing attempt of a job that counts every attempt, not only failed ones (issue
+ * #248's transcription pipeline): moves the row back to `pending`, increments the cumulative
+ * `attempts` and stamps `last_attempt_at`, keeping `error` until a later success clears it.
+ * Returns the updated row, or `null` when the row is `locked` or absent — either way the caller
+ * must not process the item.
+ */
+export async function startItemAutomationAttempt(
+  client: PoolClient,
+  itemId: string,
+): Promise<ItemAutomationRow | null> {
+  const result = await client.query<ItemAutomationDbRow>(
+    `UPDATE item_automation SET status = 'pending', attempts = attempts + 1, last_attempt_at = now()
+     WHERE item_id = $1 AND status != 'locked' RETURNING ${COLUMNS}`,
+    [itemId],
+  );
+  if (result.rowCount === 0 || !result.rows[0]) return null;
+  return mapRow(result.rows[0]);
+}
+
+/**
+ * Records a failed attempt's reason without counting it again (`startItemAutomationAttempt`
+ * already did): `status` stays `pending` while retries remain, and becomes `error` once the
+ * failure is permanent. Returns whether a row was written — `false` when the row is `locked`
+ * or absent.
+ */
+export async function recordItemAutomationFailure(
+  client: PoolClient,
+  itemId: string,
+  error: string,
+  status: Extract<ItemAutomationStatus, "pending" | "error">,
+): Promise<boolean> {
+  const result = await client.query(
+    `UPDATE item_automation SET status = $3, error = $2 WHERE item_id = $1 AND status != 'locked'`,
+    [itemId, error, status],
+  );
+  return result.rowCount === 1;
+}
+
+/**
  * The one status transition the heartbeat may never make on its own — settable only by
  * the user (or an authorized agent). Unlocking only transitions a row that is actually
  * `'locked'` (guarded in the WHERE clause, not just by convention): without this, calling

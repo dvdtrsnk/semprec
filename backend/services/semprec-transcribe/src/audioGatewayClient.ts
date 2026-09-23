@@ -54,6 +54,14 @@ export class AudioGatewayCallError extends Error {
   }
 }
 
+/** The gateway rejected the call against its budget caps (`403`, `code: "budget_exceeded"`); retrying it cannot succeed. */
+export class AudioGatewayBudgetExceededError extends AudioGatewayCallError {
+  constructor() {
+    super("Gateway rejected the call: budget exceeded");
+    this.name = "AudioGatewayBudgetExceededError";
+  }
+}
+
 export interface HttpAudioGatewayClientConfig {
   /** The port `semprec-ai-gateway` listens on; the client always addresses it over loopback. */
   port: number;
@@ -142,8 +150,27 @@ async function post(config: HttpAudioGatewayClientConfig, path: string, body: un
   } catch (err) {
     throw new AudioGatewayCallError(`Gateway request failed: ${err instanceof Error ? err.name : "unknown error"}`);
   }
-  if (!res.ok) throw new AudioGatewayCallError(`Gateway responded with HTTP ${res.status}`);
+  if (!res.ok) {
+    if (await isBudgetRejection(res)) throw new AudioGatewayBudgetExceededError();
+    throw new AudioGatewayCallError(`Gateway responded with HTTP ${res.status}`);
+  }
   return readJsonBodyWithSizeCap(res);
+}
+
+/**
+ * Whether a non-2xx response is the gateway's budget rejection, as `audioHandler.ts` sends it. A
+ * body that can't be read or parsed is just not one: the caller reports the plain HTTP status.
+ */
+async function isBudgetRejection(res: Response): Promise<boolean> {
+  if (res.status !== 403) return false;
+  let body: unknown;
+  try {
+    body = await readJsonBodyWithSizeCap(res);
+  } catch (err) {
+    if (err instanceof AudioGatewayCallError) return false;
+    throw err;
+  }
+  return isObject(body) && body.code === "budget_exceeded";
 }
 
 /** The production `AudioGatewayClient`: a loopback HTTP call to `semprec-ai-gateway`'s audio routes. */
