@@ -1,9 +1,9 @@
 ---
-status: accepted
+status: superseded
 date: 2026-09-23
 area: [backend]
 supersedes: []
-superseded-by: null
+superseded-by: 2026-09-23-speaker-mappings-are-edges-proposed-on-transcript-cards
 ---
 
 # Processing proposals: each `kind` has exactly one card-creating producer

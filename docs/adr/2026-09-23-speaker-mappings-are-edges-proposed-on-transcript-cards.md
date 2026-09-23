@@ -1,8 +1,8 @@
 ---
 status: accepted
 date: 2026-09-23
-area: [backend]
-supersedes: []
+area: [backend, web, apple]
+supersedes: [2026-09-23-processing-proposals-card-creation-owned-per-kind]
 superseded-by: null
 ---
 
@@ -57,6 +57,23 @@ undecided:
   suggestion under a deterministic idempotency key, with its `sourceTranscript` edge, and writes
   the step's checkpoint in the same transaction. It never writes a `speakers` edge. With no
   linked Event it asks nothing and checkpoints nothing, so a later run can still ask.
+- **This replaces [[2026-09-23-processing-proposals-card-creation-owned-per-kind]]'s "exactly one
+  producer per `kind`".** Processing proposals stays a multi-producer queue partitioned by `kind`,
+  and each `kind` still has exactly one producing *process*; only that process creates cards of
+  that kind:
+
+  | `kind`       | Producer process | Production sites | Source relation |
+  |--------------|------------------|------------------|-----------------|
+  | `inbox`      | Inbox pipeline, `semprec.tick` | `inboxTickAction.ts` | `sourceInbox` |
+  | `transcript` | `semprec-transcribe` | match step (`transcriptEventMatch.ts`), suggestion step (`transcriptSpeakerSuggestion.ts`) | `sourceTranscript` |
+
+  Everything else that ADR decided carries over unchanged: a producer creates cards through the
+  choke-point package, sets only the system keys it needs at creation, writes its source relation
+  under the Processing proposals' `SystemRelationWriteContext`, and never updates or deletes a
+  card of another kind; `confirm`, `reject` and `revise` stay with the Processing proposals
+  module's proposal actions for every kind; the `inboxPipeline` manifest records this table as its
+  ownership handoff; and adding a new `kind`, a new producer process, or a new production site is
+  a new decision.
 
 ## Consequences
 
@@ -65,8 +82,13 @@ undecided:
   `GET /api/transcripts/:id/speakers` route) can rely on one key per person and one person per key.
 - Replacing who a key belongs to takes two writes: remove the current person's edge, then add
   the new one. Moving a person to another key is one metadata replace.
-- The Processing proposals schema is unchanged. The `transcript` kind now has two production
-  sites in one process (`transcriptEventMatch.ts`, `transcriptSpeakerSuggestion.ts`), and they
-  are told apart by the envelope.
+- The Processing proposals database schema is unchanged and needs no migration: `proposal` is a
+  JSONB value, and the `'relation'` envelope's new `metadata` field is optional, so existing cards
+  and clients that ignore it keep working. The `transcript` kind now has two production sites in
+  one process (`transcriptEventMatch.ts`, `transcriptSpeakerSuggestion.ts`), and they are told
+  apart by the envelope. A `transcript` card created anywhere else is an ownership violation.
+- Clients (web, apple) that let a user reassign a speaker key must issue the two writes above in
+  that order, and cannot expect suggestions for a transcript whose Event was linked after its
+  pipeline run.
 - A transcript whose Event is only linked later, by confirming its Event card, gets no speaker
   suggestions until the pipeline runs for it again.
