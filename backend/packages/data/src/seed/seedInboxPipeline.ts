@@ -150,7 +150,8 @@ export async function seedInboxPipelineInTransaction(
     { key: "kind", name: "Kind", type: "select", owner: "system", config: selectConfig(["inbox", "transcript"]) },
     { key: "fingerprint", name: "Fingerprint", type: "text", owner: "system" },
     // { entityKind, target, properties } — a single generic envelope regardless of
-    // processingMethod, so a chat-driven revise can rewrite it wholesale (issue #105).
+    // processingMethod, so a chat-driven revise can rewrite it wholesale (issue #105);
+    // `entityKind` is 'database', 'pageContent' or 'relation' (issue #184).
     { key: "proposal", name: "Proposal", type: "json", owner: "system" },
     // [{ author: 'ai'|'user', message, at }] — chat + decision log.
     { key: "history", name: "History", type: "json", owner: "system" },
