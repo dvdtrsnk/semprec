@@ -62,6 +62,28 @@ export function generateMp4Fixture(options: { withVideo?: boolean; creationTime?
   ]);
 }
 
+/**
+ * A three-second streamed WebM/Matroska recording, the shape browser `MediaRecorder` output takes.
+ * Piped straight to `pipe:1` rather than muxed to a seekable file, its container header carries no
+ * `format.duration` — unlike `generateMp4Fixture`, which does store one even when fragmented.
+ */
+export function generateWebmFixture(): Promise<Buffer> {
+  return runToBuffer("ffmpeg", [
+    "-y",
+    "-loglevel",
+    "error",
+    "-f",
+    "lavfi",
+    "-i",
+    "sine=duration=3",
+    "-c:a",
+    "libopus",
+    "-f",
+    "webm",
+    "pipe:1",
+  ]);
+}
+
 /** A one-second MP3 recording. Unlike mp4, which only stores a real timestamp, its ID3v2 tag keeps a free-text `creation_time` verbatim. */
 export function generateMp3Fixture(creationTimeTag: string): Promise<Buffer> {
   return runToBuffer("ffmpeg", [

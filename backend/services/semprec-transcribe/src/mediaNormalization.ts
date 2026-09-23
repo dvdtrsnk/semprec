@@ -26,7 +26,8 @@ export interface NormalizedAudioResult {
 }
 
 export interface MediaProbeResult {
-  durationSeconds: number;
+  /** `null` when the container's `format.duration` is absent, e.g. a streamed WebM/Matroska recording — see `probeNormalizedDuration`. */
+  durationSeconds: number | null;
   /** `null` when the source carries no usable `creation_time` container tag (see `parseCreationTime`) — the caller falls back to another timestamp. */
   creationTime: string | null;
 }
@@ -83,7 +84,9 @@ export async function downloadToTempFile(blobStorage: BlobStorageWriter, storage
 
 const ffprobeOutputSchema = z.object({
   format: z.object({
-    duration: z.string(),
+    // Absent, not "0" or "N/A", when the container's header carries no duration — most commonly a
+    // streamed WebM/Matroska recording such as browser `MediaRecorder` output.
+    duration: z.string().optional(),
     tags: z.object({ creation_time: z.string().optional() }).partial().optional(),
   }),
 });
@@ -135,10 +138,13 @@ export function probeMedia(inputPath: string): Promise<MediaProbeResult> {
       finish(() => {
         try {
           const parsed = ffprobeOutputSchema.parse(JSON.parse(Buffer.concat(stdoutChunks).toString("utf8")));
-          const durationSeconds = Number.parseFloat(parsed.format.duration);
-          if (!Number.isFinite(durationSeconds)) {
-            reject(new Error(`ffprobe reported a non-numeric duration: '${parsed.format.duration}'`));
-            return;
+          let durationSeconds: number | null = null;
+          if (parsed.format.duration !== undefined) {
+            durationSeconds = Number.parseFloat(parsed.format.duration);
+            if (!Number.isFinite(durationSeconds)) {
+              reject(new Error(`ffprobe reported a non-numeric duration: '${parsed.format.duration}'`));
+              return;
+            }
           }
           const tag = parsed.format.tags?.creation_time;
           const creationTime = parseCreationTime(tag);
@@ -153,6 +159,24 @@ export function probeMedia(inputPath: string): Promise<MediaProbeResult> {
       });
     });
   });
+}
+
+/**
+ * Falls back to the normalized Ogg Opus output's own duration when the source container had none
+ * (see `MediaProbeResult.durationSeconds`) — normalization always produces a format that carries
+ * one, unlike some streamed source containers (e.g. WebM/Matroska from a browser `MediaRecorder`).
+ * Downloads the already-uploaded output back to a temp file to probe it, since `probeMedia` needs
+ * a seekable local file.
+ */
+export async function probeNormalizedDuration(blobStorage: BlobStorageWriter, storageKey: string): Promise<number> {
+  const path = await downloadToTempFile(blobStorage, storageKey);
+  try {
+    const { durationSeconds } = await probeMedia(path);
+    if (durationSeconds === null) throw new Error(`ffprobe reported no duration for normalized output '${storageKey}'`);
+    return durationSeconds;
+  } finally {
+    await removeTempFile(path);
+  }
 }
 
 /**

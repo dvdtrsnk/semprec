@@ -24,7 +24,12 @@ import {
 } from "@semprec/data";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createTranscriptionTask, TranscriptionSourceChangedError } from "./transcriptionTask.js";
-import { FIXTURE_CREATION_TIME, generateMp4Fixture, probeNormalizedAudio } from "./__tests__/fixtures/mediaFixtures.js";
+import {
+  FIXTURE_CREATION_TIME,
+  generateMp4Fixture,
+  generateWebmFixture,
+  probeNormalizedAudio,
+} from "./__tests__/fixtures/mediaFixtures.js";
 
 let pool: Pool;
 
@@ -234,6 +239,17 @@ describe("transcription step 1 (prepare)", () => {
       expect(await readTranscriptDate(source)).toBe("2024-03-01T12:00:00.000Z");
     },
   );
+
+  it("checkpoints the normalized output's own duration when the source container has none", async () => {
+    const { files, file } = await createSourceFile("audio/webm", await generateWebmFixture());
+
+    await createTranscriptionTask(pool, blobStorage)({ fileItemId: file.id });
+
+    const source = await readSource(files.id, file.id);
+    const prepare = prepareCheckpointSchema.parse(source?.computed.prepare);
+    expect(prepare.durationSeconds).toBeGreaterThan(2.9);
+    expect(prepare.durationSeconds).toBeLessThan(3.5);
+  });
 
   it("falls back to the upload time for date when the recording has no creation_time", async () => {
     const { files, file, blob } = await createSourceFile("audio/mp4", untaggedAudioFixture);

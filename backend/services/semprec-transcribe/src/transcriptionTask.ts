@@ -28,6 +28,7 @@ import {
   downloadToTempFile,
   normalizeAudio,
   probeMedia,
+  probeNormalizedDuration,
   removeTempFile,
   type MediaProbeResult,
   type NormalizedAudioResult,
@@ -162,6 +163,11 @@ async function runPrepareStep(
   // worse than leaving an unreferenced file behind.
   let referenced = false;
   try {
+    // The source container can carry no duration at all (e.g. a streamed WebM/Matroska recording);
+    // the normalized Ogg Opus output always does.
+    const durationSeconds =
+      probe.durationSeconds ?? (await probeNormalizedDuration(blobStorage, normalized.storageKey));
+
     await withRepeatableReadTransaction(pool, async (client) => {
       // Locked, so the checks below still hold when this transaction's writes land.
       const source = requireSource(await lockItemById(client, filesDatabaseId, fileItemId), fileItemId);
@@ -190,7 +196,7 @@ async function runPrepareStep(
       );
       const result: PrepareStepResult = {
         normalizedBlobId: normalizedBlob.id,
-        durationSeconds: probe.durationSeconds,
+        durationSeconds,
         creationTime: probe.creationTime,
       };
       await writeComputed(client, filesDatabaseId, fileItemId, TRANSCRIPTION_PREPARE_COMPUTED_KEY, result);
