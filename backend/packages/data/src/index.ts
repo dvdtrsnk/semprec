@@ -1,4 +1,11 @@
-export { createPool, withTransaction, withClient, requireAffectedRows, type Queryable } from "./db/pool.js";
+export {
+  createPool,
+  withTransaction,
+  withClient,
+  requireAffectedRows,
+  runAfterCommit,
+  type Queryable,
+} from "./db/pool.js";
 export { runMigrations } from "./db/migrate.js";
 export * from "./errors.js";
 export * from "./types.js";
@@ -126,9 +133,12 @@ export {
   TRANSCRIPTION_PREPARE_COMPUTED_KEY,
   TRANSCRIPTION_DIARIZE_COMPUTED_KEY,
   TRANSCRIPTION_ASR_COMPUTED_KEY,
+  TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
+  TRANSCRIPT_LANGUAGE_COMPUTED_KEY,
+  TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
 } from "./transcription/transcriptionComputedKeys.js";
 export { readBlobId } from "./transcription/transcriptionActions.js";
-export { ensureItemAutomation } from "./library/itemAutomationStore.js";
+export { ensureItemAutomation, markItemAutomationDone } from "./library/itemAutomationStore.js";
 export { seedTenDatabasesInTransaction, type TenDatabases } from "./seed/seedTenDatabases.js";
 export { manifest as systemDatabasesModuleManifest } from "./seed/systemDatabasesModuleManifest.js";
 export * from "./systemSettings.js";

@@ -9,6 +9,9 @@ import {
   TRANSCRIPTION_PREPARE_COMPUTED_KEY,
   TRANSCRIPTION_DIARIZE_COMPUTED_KEY,
   TRANSCRIPTION_ASR_COMPUTED_KEY,
+  TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
+  TRANSCRIPT_LANGUAGE_COMPUTED_KEY,
+  TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
   TRANSCRIPTION_OWNER_PROCESS,
   createItemWithClient,
   createBlob,
@@ -17,7 +20,10 @@ import {
   getItemById,
   getDatabaseByModuleId,
   lockItemById,
+  markItemAutomationDone,
+  notifyInvalidation,
   readBlobId,
+  runAfterCommit,
   transcriptionJobPayloadSchema,
   updateItemWithClient,
   withTransaction,
@@ -38,8 +44,17 @@ import {
   type MediaProbeResult,
   type NormalizedAudioResult,
 } from "./mediaNormalization.js";
+import { createHttpAiGatewayClient } from "@semprec/ai-gateway-client";
+import type { AiGatewayClientPort } from "@semprec/shared";
 import { computeAsrChunkBoundaries } from "./asrChunking.js";
 import { createHttpAudioGatewayClient, type AudioGatewayClient } from "./audioGatewayClient.js";
+import { mergeTranscriptSegments, type TranscriptSegment } from "./segmentMerge.js";
+import {
+  buildSummaryRequest,
+  DEFAULT_SUMMARY_INSTRUCTION,
+  parseSummaryContent,
+  type SummaryInstruction,
+} from "./transcriptSummary.js";
 
 function sourceName(properties: Record<string, unknown>): string {
   if (typeof properties.name === "string" && properties.name.length > 0) return properties.name;
@@ -364,15 +379,197 @@ async function runAsrStep(
   }
 }
 
+const diarizeCheckpointSchema = z.array(z.object({ speaker: z.string(), start: z.number(), end: z.number() }));
+
+const segmentsSchema = z.array(
+  z.object({ speaker: z.string(), text: z.string(), startsAt: z.number(), endsAt: z.number() }),
+);
+
+const summaryByInstructionSchema = z.record(z.string(), z.string());
+
+async function requireTranscriptsDatabaseId(client: PoolClient): Promise<string> {
+  const transcripts = await getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);
+  if (!transcripts) throw new NotFoundError("Transcripts database not found");
+  return transcripts.id;
+}
+
+function requireTranscript(transcript: ItemRow | null, transcriptId: string): ItemRow {
+  if (!transcript)
+    throw new NotFoundError(`Transcripts item '${transcriptId}' not found`, { resource: "item", itemId: transcriptId });
+  return transcript;
+}
+
+/** Step 4's output, the input steps 5 and 6 both require. */
+function requireSegments(transcript: ItemRow): TranscriptSegment[] {
+  const parsed = segmentsSchema.safeParse(transcript.computed[TRANSCRIPT_SEGMENTS_COMPUTED_KEY]);
+  if (!parsed.success)
+    throw new NotFoundError(`Transcripts item '${transcript.id}' has no '${TRANSCRIPT_SEGMENTS_COMPUTED_KEY}' yet`, {
+      resource: "item",
+      itemId: transcript.id,
+    });
+  return parsed.data;
+}
+
+/** The summaries cached so far, or none before step 5 first writes one. */
+function readSummaries(transcript: ItemRow): Record<string, string> {
+  const raw = transcript.computed[TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY];
+  if (raw === undefined) return {};
+  return summaryByInstructionSchema.parse(raw);
+}
+
+/**
+ * Announces a computed write on the Transcripts row over the generic realtime channel, after the
+ * commit. `writeComputed` fires no invalidation itself (unlike `updateItemWithClient`), so without
+ * this the UI would not see steps 4 and 5 land until `done`.
+ */
+function announceTranscriptUpdate(client: PoolClient, transcriptsDatabaseId: string, transcript: ItemRow): void {
+  runAfterCommit(client, () =>
+    notifyInvalidation({
+      scope: "item",
+      databaseId: transcriptsDatabaseId,
+      itemId: transcript.id,
+      op: "update",
+      updatedAt: transcript.updatedAt,
+    }),
+  );
+}
+
+/**
+ * Step 4 (`merge`): database-only, so one transaction reads steps 1–3's checkpoints, runs the pure
+ * `mergeTranscriptSegments` over them, and writes `segments` and `language` onto the Transcripts
+ * row together. Written once: a transcript that already has `segments` is left untouched, so its
+ * speaker keys are never rewritten.
+ */
+async function runMergeStep({ pool, filesDatabaseId, fileItemId }: TranscriptionStepContext): Promise<void> {
+  await withTransaction(pool, async (client) => {
+    const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
+    const transcriptId = requireTranscriptId(source, fileItemId);
+    const transcriptsDatabaseId = await requireTranscriptsDatabaseId(client);
+    // Locked, so a concurrent run that merged first is not overwritten.
+    const transcript = requireTranscript(
+      await lockItemById(client, transcriptsDatabaseId, transcriptId),
+      transcriptId,
+    );
+    if (Object.hasOwn(transcript.computed, TRANSCRIPT_SEGMENTS_COMPUTED_KEY)) return;
+
+    const prepare = requirePrepareCheckpoint(source, fileItemId);
+    const turns = diarizeCheckpointSchema.parse(source.computed[TRANSCRIPTION_DIARIZE_COMPUTED_KEY]);
+    const asr = readAsrCheckpoint(source);
+    const chunks = computeAsrChunkBoundaries(prepare.durationSeconds).map((boundary, index) => {
+      const chunk = asr.chunks[String(index)];
+      if (!chunk)
+        throw new NotFoundError(`Files item '${fileItemId}' has no ASR checkpoint for chunk ${index} yet`, {
+          resource: "item",
+          itemId: fileItemId,
+        });
+      return { boundary, segments: chunk.segments };
+    });
+
+    const segments = mergeTranscriptSegments(turns, chunks);
+    await writeComputed(client, transcriptsDatabaseId, transcriptId, TRANSCRIPT_SEGMENTS_COMPUTED_KEY, segments);
+    await writeComputed(client, transcriptsDatabaseId, transcriptId, TRANSCRIPT_LANGUAGE_COMPUTED_KEY, asr.language);
+    announceTranscriptUpdate(client, transcriptsDatabaseId, transcript);
+  });
+}
+
+/**
+ * Step 5 (`summarize`): calls `gateway.complete()` over the merged transcript for `instruction`
+ * and caches the result under the instruction's key in `summaryByInstruction`, next to any other
+ * instruction's summary. Bracketed like steps 2 and 3, so no transaction stays open across the
+ * gateway call; `segments` is written once by step 4, so the write transaction only has to
+ * re-check that no concurrent run cached this instruction first. A transcript with no segments
+ * (no speech) gets an empty summary without a paid call.
+ */
+async function runSummarizeStep(
+  { pool, filesDatabaseId, fileItemId }: TranscriptionStepContext,
+  summaryClient: AiGatewayClientPort,
+  instruction: SummaryInstruction,
+): Promise<void> {
+  const snapshot = await withRepeatableReadTransaction(pool, async (client) => {
+    const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
+    const transcriptId = requireTranscriptId(source, fileItemId);
+    const transcriptsDatabaseId = await requireTranscriptsDatabaseId(client);
+    const transcript = requireTranscript(await getItemById(client, transcriptsDatabaseId, transcriptId), transcriptId);
+    if (Object.hasOwn(readSummaries(transcript), instruction.key)) return null;
+    const language = z.string().nullable().parse(transcript.computed[TRANSCRIPT_LANGUAGE_COMPUTED_KEY]);
+    return { transcriptsDatabaseId, transcriptId, segments: requireSegments(transcript), language };
+  });
+  if (!snapshot) return;
+
+  let summary = "";
+  if (snapshot.segments.length > 0) {
+    const result = await summaryClient.complete(buildSummaryRequest(snapshot.segments, snapshot.language, instruction));
+    summary = parseSummaryContent(result.content);
+  }
+
+  await withTransaction(pool, async (client) => {
+    // Locked, so a concurrent run's summary for another instruction is kept, and one for this instruction wins.
+    const transcript = requireTranscript(
+      await lockItemById(client, snapshot.transcriptsDatabaseId, snapshot.transcriptId),
+      snapshot.transcriptId,
+    );
+    const summaries = readSummaries(transcript);
+    if (Object.hasOwn(summaries, instruction.key)) return;
+    await writeComputed(
+      client,
+      snapshot.transcriptsDatabaseId,
+      snapshot.transcriptId,
+      TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
+      { ...summaries, [instruction.key]: summary },
+    );
+    announceTranscriptUpdate(client, snapshot.transcriptsDatabaseId, transcript);
+  });
+}
+
+/**
+ * Step 6 (`finalize`): sets `status = done` and `item_automation` to `done` in one transaction,
+ * and only once that transaction itself sees the committed `segments` and this instruction's
+ * summary — a run that failed before either landed leaves the row `processing`. `status` goes
+ * through `updateItemWithClient`, which announces it over the generic realtime channel.
+ */
+async function runFinalizeStep(
+  { pool, filesDatabaseId, fileItemId }: TranscriptionStepContext,
+  instruction: SummaryInstruction,
+): Promise<void> {
+  await withTransaction(pool, async (client) => {
+    const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
+    const transcriptId = requireTranscriptId(source, fileItemId);
+    const transcriptsDatabaseId = await requireTranscriptsDatabaseId(client);
+    const transcript = requireTranscript(
+      await lockItemById(client, transcriptsDatabaseId, transcriptId),
+      transcriptId,
+    );
+    if (transcript.properties.status === "done") return;
+    requireSegments(transcript);
+    if (!Object.hasOwn(readSummaries(transcript), instruction.key))
+      throw new NotFoundError(`Transcripts item '${transcriptId}' has no '${instruction.key}' summary yet`, {
+        resource: "item",
+        itemId: transcriptId,
+      });
+
+    await updateItemWithClient(
+      client,
+      { databaseId: transcriptsDatabaseId, itemId: transcriptId, propertiesPatch: { status: "done" } },
+      { allowedSystemKeys: ["status"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+    );
+    await markItemAutomationDone(client, transcriptId);
+  });
+}
+
 function createTranscriptionSteps(
   blobStorage: BlobStorageWriter,
   gatewayClient: AudioGatewayClient,
+  summaryClient: AiGatewayClientPort,
+  summaryInstruction: SummaryInstruction,
 ): readonly TranscriptionStep[] {
   return [
     runCreateStep,
     (context) => runPrepareStep(context, blobStorage),
     (context) => runDiarizeStep(context, blobStorage, gatewayClient),
     (context) => runAsrStep(context, blobStorage, gatewayClient),
+    runMergeStep,
+    (context) => runSummarizeStep(context, summaryClient, summaryInstruction),
+    (context) => runFinalizeStep(context, summaryInstruction),
   ];
 }
 
@@ -387,13 +584,18 @@ function requireGatewayInternalToken(): string {
  * `blobStorage` defaults to the same local-filesystem backend semprec-api writes Files blobs to
  * (issue #246), configured via `FILES_STORAGE_DIR`. `gatewayClient` defaults to a loopback HTTP
  * client for `semprec-ai-gateway`'s `/internal/diarize` and `/internal/transcribe` routes
- * (issue #182), configured via `AI_GATEWAY_PORT`/`AI_GATEWAY_INTERNAL_TOKEN` — the only path from
- * this service to an AI provider, per `docs/adr/2026-09-10-ai-gateway-monopoly-on-provider-calls.md`.
+ * (issue #182), and `summaryClient` to `@semprec/ai-gateway-client`'s client for its
+ * `/internal/complete` route (issue #183), both configured via
+ * `AI_GATEWAY_PORT`/`AI_GATEWAY_INTERNAL_TOKEN` — the only path from this service to an AI
+ * provider, per `docs/adr/2026-09-10-ai-gateway-monopoly-on-provider-calls.md`.
+ * `summaryInstruction` selects the instruction step 5 summarizes with and step 6 requires.
  */
 export function createTranscriptionTask(
   pool: Pool,
   blobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(process.env.FILES_STORAGE_DIR ?? "/tmp/semprec-files"),
   gatewayClient?: AudioGatewayClient,
+  summaryClient?: AiGatewayClientPort,
+  summaryInstruction: SummaryInstruction = DEFAULT_SUMMARY_INSTRUCTION,
 ) {
   // Constructed lazily (only when a run actually reaches step 2), not as an eagerly-evaluated
   // default parameter: callers who omit `gatewayClient` and never run a job that reaches
@@ -405,13 +607,24 @@ export function createTranscriptionTask(
       port: Number(process.env.AI_GATEWAY_PORT ?? "3002"),
       token: requireGatewayInternalToken(),
     });
+  const resolveSummaryClient = (): AiGatewayClientPort =>
+    summaryClient ??
+    createHttpAiGatewayClient({
+      port: Number(process.env.AI_GATEWAY_PORT ?? "3002"),
+      token: requireGatewayInternalToken(),
+    });
 
   return async (payload: unknown): Promise<void> => {
     const { fileItemId } = transcriptionJobPayloadSchema.parse(payload);
     const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, FILES_MODULE_ID));
     if (!files) throw new NotFoundError("Files database not found");
 
-    const transcriptionSteps = createTranscriptionSteps(blobStorage, resolveGatewayClient());
+    const transcriptionSteps = createTranscriptionSteps(
+      blobStorage,
+      resolveGatewayClient(),
+      resolveSummaryClient(),
+      summaryInstruction,
+    );
     for (const step of transcriptionSteps) await step({ pool, filesDatabaseId: files.id, fileItemId });
   };
 }
