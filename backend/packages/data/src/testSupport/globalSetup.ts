@@ -11,6 +11,7 @@ import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsA
 import { runApprovalRequestExecutionStatusCutoverMigration } from "../mcp/approvalRequestExecutionStatusCutoverMigration.js";
 import { runHeartbeatFireQueueSplitMigration } from "../scheduler/heartbeatFireQueueSplitMigration.js";
 import { runTranscriptsCatalogCutoverMigration } from "../transcription/transcriptsCatalogCutoverMigration.js";
+import { activateCzechHunspellSearch } from "../mail/czechHunspellSearch.js";
 
 /**
  * A fixed port made any second test run on the same machine fail in a way that reads like a
@@ -68,6 +69,7 @@ export default async function setup(): Promise<() => Promise<void>> {
 
   const pool = new Pool({ connectionString });
   await runMigrations(pool);
+  await activateCzechHunspellSearch(pool);
   await runDocHistoryCutoverMigration(pool);
   await runAgentRunsActorUserIdCutoverMigration(pool);
   await runApprovalRequestExecutionStatusCutoverMigration(pool);

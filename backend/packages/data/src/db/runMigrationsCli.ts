@@ -6,6 +6,7 @@ import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsA
 import { runApprovalRequestExecutionStatusCutoverMigration } from "../mcp/approvalRequestExecutionStatusCutoverMigration.js";
 import { runHeartbeatFireQueueSplitMigration } from "../scheduler/heartbeatFireQueueSplitMigration.js";
 import { runTranscriptsCatalogCutoverMigration } from "../transcription/transcriptsCatalogCutoverMigration.js";
+import { activateCzechHunspellSearch } from "../mail/czechHunspellSearch.js";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -15,6 +16,9 @@ if (!connectionString) {
 const pool = createPool(connectionString);
 try {
   await runMigrations(pool);
+  // Issue #207: upgrades a database migrated before provisioning installed the Czech Hunspell
+  // assets; a no-op once active, and keeps the fallback while the assets are still missing.
+  await activateCzechHunspellSearch(pool);
   await runDocHistoryCutoverMigration(pool);
   await runAgentRunsActorUserIdCutoverMigration(pool);
   await runApprovalRequestExecutionStatusCutoverMigration(pool);
