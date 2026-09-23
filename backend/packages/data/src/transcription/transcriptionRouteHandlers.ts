@@ -103,9 +103,15 @@ const transcriptIdSchema = z.string().uuid();
 
 let speakerCatalogsPromise: Promise<ModuleCatalogs> | undefined;
 
-/** Lazily loaded once per process — `transcription/i18n/{cs,en}.json` never changes at runtime. */
+/**
+ * Lazily loaded once per process — `transcription/i18n/{cs,en}.json` never changes at runtime. A
+ * failed load is not cached, so the next request retries instead of failing until restart.
+ */
 function getSpeakerCatalogs(): Promise<ModuleCatalogs> {
-  speakerCatalogsPromise ??= loadModuleCatalogs(import.meta.url);
+  speakerCatalogsPromise ??= loadModuleCatalogs(import.meta.url).catch((error: unknown) => {
+    speakerCatalogsPromise = undefined;
+    throw error;
+  });
   return speakerCatalogsPromise;
 }
 
