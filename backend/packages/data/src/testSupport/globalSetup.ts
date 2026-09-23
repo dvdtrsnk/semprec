@@ -11,6 +11,7 @@ import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsA
 import { runApprovalRequestExecutionStatusCutoverMigration } from "../mcp/approvalRequestExecutionStatusCutoverMigration.js";
 import { runHeartbeatFireQueueSplitMigration } from "../scheduler/heartbeatFireQueueSplitMigration.js";
 import { runTranscriptsCatalogCutoverMigration } from "../transcription/transcriptsCatalogCutoverMigration.js";
+import { runTranscriptionRequeueHeartbeatCutoverMigration } from "../transcription/transcriptionRequeueHeartbeatCutoverMigration.js";
 import { activateCzechHunspellSearch } from "../mail/czechHunspellSearch.js";
 
 /**
@@ -74,6 +75,7 @@ export default async function setup(): Promise<() => Promise<void>> {
   await runAgentRunsActorUserIdCutoverMigration(pool);
   await runApprovalRequestExecutionStatusCutoverMigration(pool);
   await runTranscriptsCatalogCutoverMigration(pool);
+  await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
   await ensureQueueSchema(pool);
   await grantQueueSchemaPrivileges(pool);
   await runHeartbeatFireQueueSplitMigration(pool);

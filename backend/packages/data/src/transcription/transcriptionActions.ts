@@ -12,6 +12,16 @@ import { enqueueTranscriptionJob, readTranscriptionSourceFileItemId } from "./tr
 export const FILES_TRANSCRIPTION_TRIGGER_ACTION_ID = "core.filesTranscriptionTrigger";
 export const TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID = "core.transcriptionRequeueSweep";
 
+/**
+ * The requeue sweep's heartbeat, shared by `seedSystem` (fresh install) and
+ * `runTranscriptionRequeueHeartbeatCutoverMigration` (populated upgrade) so both create the same
+ * one. 04:30 keeps it clear of the other daily heartbeats (03:05, 04:00).
+ */
+export const TRANSCRIPTION_REQUEUE_HEARTBEAT = {
+  name: "Transcription requeue sweep",
+  rule: { kind: "dailyTime", at: "04:30" },
+} as const;
+
 const logger = createLogger("transcription");
 
 /** The heartbeat's `action_config`: the Files database this action is scoped to, plus the Emails.attachments relation property to check a candidate file against — resolved once at seed time (seed/seedSystem.ts), not re-resolved on every fire. */

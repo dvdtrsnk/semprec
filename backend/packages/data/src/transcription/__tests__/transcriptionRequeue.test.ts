@@ -8,7 +8,12 @@ import { withTransaction } from "../../db/pool.js";
 import { createItemWithClient } from "../../chokePoint/chokePoint.js";
 import { ensureItemAutomation, type ItemAutomationStatus } from "../../library/itemAutomationStore.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../../errors.js";
-import { createTranscriptionRequeueSweepAction } from "../transcriptionActions.js";
+import {
+  createTranscriptionRequeueSweepAction,
+  FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
+  TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
+} from "../transcriptionActions.js";
+import { runTranscriptionRequeueHeartbeatCutoverMigration } from "../transcriptionRequeueHeartbeatCutoverMigration.js";
 import { createRerunTranscriptionRouteHandler } from "../transcriptionRouteHandlers.js";
 import {
   readTranscriptionSourceFileItemId,
@@ -147,6 +152,68 @@ describe("transcription requeue sweep and rerun route (issue #186)", () => {
       await runSweep();
 
       expect(await readJobs()).toEqual([]);
+    });
+  });
+
+  describe("requeue heartbeat", () => {
+    async function readSweepHeartbeats() {
+      const { rows } = await pool.query<{ project_item_id: string; rule: unknown; action_config: unknown }>(
+        `SELECT project_item_id, rule, action_config FROM project_heartbeats WHERE action_id = $1`,
+        [TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID],
+      );
+      return rows;
+    }
+
+    async function readTriggerProjectId(): Promise<string> {
+      const { rows } = await pool.query<{ project_item_id: string }>(
+        `SELECT project_item_id FROM project_heartbeats WHERE action_id = $1`,
+        [FILES_TRANSCRIPTION_TRIGGER_ACTION_ID],
+      );
+      if (!rows[0]) throw new Error("expected the seeded Files transcription trigger");
+      return rows[0].project_item_id;
+    }
+
+    it("is seeded as one daily heartbeat on the Semprec project, scheduled from now", async () => {
+      const { rows } = await pool.query<{ next_fire_at: Date | null }>(
+        `SELECT next_fire_at FROM project_heartbeats WHERE action_id = $1`,
+        [TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID],
+      );
+      expect(await readSweepHeartbeats()).toEqual([
+        {
+          project_item_id: await readTriggerProjectId(),
+          rule: { kind: "dailyTime", at: "04:30" },
+          action_config: { transcriptsDatabaseId: transcriptsId },
+        },
+      ]);
+      expect(rows[0]?.next_fire_at?.getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it("is backfilled once onto a populated install seeded without it", async () => {
+      const seeded = await readSweepHeartbeats();
+      await pool.query(`DELETE FROM project_heartbeats WHERE action_id = $1`, [TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID]);
+
+      await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
+      await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
+
+      expect(await readSweepHeartbeats()).toEqual(seeded);
+    });
+
+    it("backfills nothing when there is no Files transcription trigger to anchor it to", async () => {
+      await pool.query(`DELETE FROM project_heartbeats WHERE action_id = ANY($1::text[])`, [
+        [TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID, FILES_TRANSCRIPTION_TRIGGER_ACTION_ID],
+      ]);
+
+      await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
+
+      expect(await readSweepHeartbeats()).toEqual([]);
+    });
+
+    it("is a no-op on a database that has not been seeded yet", async () => {
+      await resetDatabase(pool);
+
+      await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
+
+      expect(await readSweepHeartbeats()).toEqual([]);
     });
   });
 
