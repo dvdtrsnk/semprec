@@ -286,12 +286,7 @@ export async function assertValidProposalEnvelope(client: PoolClient, envelope: 
     const { propertyKey, metadata, ...rest } = envelope.properties;
     const metadataValid =
       metadata === undefined || (typeof metadata === "object" && metadata !== null && !Array.isArray(metadata));
-    if (
-      Object.keys(rest).length > 0 ||
-      typeof propertyKey !== "string" ||
-      propertyKey.length === 0 ||
-      !metadataValid
-    ) {
+    if (Object.keys(rest).length > 0 || typeof propertyKey !== "string" || propertyKey.length === 0 || !metadataValid) {
       throw new ValidationError(
         "Proposal properties for entityKind 'relation' must be { propertyKey } plus an optional metadata object",
         { field: "properties" },
