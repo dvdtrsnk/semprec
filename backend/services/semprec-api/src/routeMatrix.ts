@@ -176,6 +176,13 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
   },
   {
+    name: "transcript speakers",
+    method: "GET",
+    path: `/api/transcripts/${EXAMPLE_ID}/speakers`,
+    surface: "api",
+    public: false,
+  },
+  {
     name: "inbox types",
     method: "GET",
     path: "/api/inbox-types",

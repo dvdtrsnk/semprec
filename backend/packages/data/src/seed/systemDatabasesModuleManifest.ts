@@ -15,7 +15,10 @@ import {
 } from "./tenDatabaseKeys.js";
 export { backfillTaskTimeProperties } from "../tasks/deriveTaskTime.js";
 
-export { createCreateTranscriptionRouteHandler } from "../transcription/transcriptionRouteHandlers.js";
+export {
+  createCreateTranscriptionRouteHandler,
+  createTranscriptSpeakersRouteHandler,
+} from "../transcription/transcriptionRouteHandlers.js";
 
 /**
  * Retrofit manifest (module-contract issue #226) for the ten hardcoded system databases
@@ -71,6 +74,16 @@ export const manifest: ModuleManifest = {
       // The existing-job check and the enqueue must commit together (issue #180's dedup
       // guarantee), a shape the generic item-write endpoint can't express.
       justification: "transactional-semantics",
+    },
+    {
+      name: "listTranscriptSpeakers",
+      method: "GET",
+      path: "/api/transcripts/:id/speakers",
+      handlerExport: "createTranscriptSpeakersRouteHandler",
+      // Shaped for exactly one consumer, a transcript's speaker labels: it joins the transcript's
+      // computed segment keys with its `speakers` edge metadata and the mapped People's names,
+      // which no generic item read returns together.
+      justification: "single-consumer-read",
     },
   ],
 };
