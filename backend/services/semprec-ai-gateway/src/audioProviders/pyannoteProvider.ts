@@ -60,9 +60,26 @@ function isPrivateOrReservedIp(hostname: string, family: 4 | 6): boolean {
     return false;
   }
   const lower = hostname.toLowerCase();
-  return (
-    lower === "::1" || lower === "::" || lower.startsWith("fc") || lower.startsWith("fd") || lower.startsWith("fe80")
-  );
+  if (lower === "::1" || lower === "::" || lower.startsWith("fc") || lower.startsWith("fd")) {
+    return true;
+  }
+  // Link-local is the full fe80::/10 range (first hextet 0xfe80-0xfebf), not just the literal
+  // "fe80" prefix — fe90::, fea0::, febf:: etc are link-local too.
+  const firstGroup = lower.split(":", 1)[0];
+  if (firstGroup && /^[0-9a-f]{1,4}$/.test(firstGroup)) {
+    const groupVal = parseInt(firstGroup, 16);
+    if (groupVal >= 0xfe80 && groupVal <= 0xfebf) return true;
+  }
+  // IPv4-mapped IPv6 (::ffff:a.b.c.d) embeds an IPv4 address that WHATWG URL canonicalizes to
+  // hex groups (e.g. ::ffff:7f00:1 for 127.0.0.1), which the textual-prefix check above misses.
+  const mappedV4 = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mappedV4?.[1] !== undefined && mappedV4[2] !== undefined) {
+    const high = parseInt(mappedV4[1], 16);
+    const low = parseInt(mappedV4[2], 16);
+    const octets = [(high >> 8) & 0xff, high & 0xff, (low >> 8) & 0xff, low & 0xff];
+    return isPrivateOrReservedIp(octets.join("."), 4);
+  }
+  return false;
 }
 
 /**
@@ -85,8 +102,11 @@ function assertPublicUploadUrl(uploadUrl: string): void {
   if (hostname === "localhost" || hostname.endsWith(".internal") || hostname.endsWith(".local")) {
     throw new AudioProviderCallError("pyannoteAI presigned upload URL targets a disallowed host");
   }
-  const family = isIP(hostname);
-  if (family && isPrivateOrReservedIp(hostname, family as 4 | 6)) {
+  // URL.hostname wraps IPv6 literals in brackets (e.g. "[::1]"); isIP rejects the brackets
+  // outright, which would otherwise skip the IPv6 branch below for every IPv6 literal.
+  const bareHostname = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  const family = isIP(bareHostname);
+  if (family && isPrivateOrReservedIp(bareHostname, family as 4 | 6)) {
     throw new AudioProviderCallError("pyannoteAI presigned upload URL targets a private or reserved address");
   }
 }
