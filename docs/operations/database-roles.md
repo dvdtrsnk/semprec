@@ -21,13 +21,14 @@ Issue #243. Two roles, created by migration `0040_least_privilege_roles.sql`
 
 ## Which connection string each service gets
 
-| Service              | Role           | Why                                                                                                                                                                                     |
-| -------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `semprec-api`        | `semprec_data` | Hosts the choke-point (every `*Handler.ts` route calls `createChokePoint(pool)`).                                                                                                       |
-| `semprec-ai-gateway` | `semprec_side` | Only ever writes `ai_gateway_calls`, a side table.                                                                                                                                      |
-| `semprec-agents`     | `semprec_side` | Not yet built; never calls the choke-point directly.                                                                                                                                    |
-| `semprec-mailsync`   | `semprec_side` | Not yet built; mail ingest writes side tables only.                                                                                                                                     |
-| `semprec-transcribe` | `semprec_data` | Hosts the narrow in-process choke-point writer for Transcriptions pipeline state and its Event-match result (`docs/adr/2026-09-23-transcription-worker-writes-event-match-results.md`). |
+| Service                | Role           | Why                                                                                                                                                                                     |
+| ---------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `semprec-api`          | `semprec_data` | Hosts the choke-point (every `*Handler.ts` route calls `createChokePoint(pool)`).                                                                                                       |
+| `semprec-ai-gateway`   | `semprec_side` | Only ever writes `ai_gateway_calls`, a side table.                                                                                                                                      |
+| `semprec-agents`       | `semprec_side` | Not yet built; never calls the choke-point directly.                                                                                                                                    |
+| `semprec-mailsync`     | `semprec_side` | Not yet built; mail ingest writes side tables only.                                                                                                                                     |
+| `semprec-transcribe`   | `semprec_data` | Hosts the narrow in-process choke-point writer for Transcriptions pipeline state and its Event-match result (`docs/adr/2026-09-23-transcription-worker-writes-event-match-results.md`). |
+| `semprec-restore-test` | `semprec_side` | Records the monthly restore test's result: `observability_checks` and `notifications` only (issue #178).                                                                                |
 
 Only `semprec-api` and `semprec-transcribe` are configured with the `semprec_data` connection
 string. Each service's `.env.example` documents which role its `DATABASE_URL` must

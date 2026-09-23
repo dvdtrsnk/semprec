@@ -8,5 +8,6 @@
   "notification.agent_guidance_drift_resolved.title": "Agent guidance conflict resolved",
   "notification.process_stale.title": "A process stopped reporting",
   "notification.queue_backlog.title": "Job queue is backed up",
-  "notification.mail_sync_stalled.title": "Mail sync has stalled"
+  "notification.mail_sync_stalled.title": "Mail sync has stalled",
+  "notification.backup_restore_failed.title": "Backup restore test failed"
 }

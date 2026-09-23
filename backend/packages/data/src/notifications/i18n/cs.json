@@ -8,5 +8,6 @@
   "notification.agent_guidance_drift_resolved.title": "Rozpor v pokynech pro agenta vyřešen",
   "notification.process_stale.title": "Proces přestal hlásit stav",
   "notification.queue_backlog.title": "Fronta úloh se hromadí",
-  "notification.mail_sync_stalled.title": "Synchronizace pošty se zasekla"
+  "notification.mail_sync_stalled.title": "Synchronizace pošty se zasekla",
+  "notification.backup_restore_failed.title": "Test obnovy zálohy selhal"
 }
