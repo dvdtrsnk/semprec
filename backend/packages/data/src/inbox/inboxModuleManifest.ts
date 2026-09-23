@@ -28,7 +28,9 @@ export { createConfirmProposalRouteHandler, createInboxTypesRouteHandler } from 
  * Ownership handoff for Processing proposals
  * (`docs/adr/2026-09-23-processing-proposals-card-creation-owned-per-kind.md`): each card
  * `kind` has exactly one producer that creates its cards — `inbox` by `semprec.tick`,
- * `transcript` by `semprec-transcribe`'s match step (`transcription/transcriptEventMatch.ts`).
+ * `transcript` by `semprec-transcribe`'s match step (`transcription/transcriptEventMatch.ts`) and,
+ * for speaker mappings, its suggestion step (`transcription/transcriptSpeakerSuggestion.ts`,
+ * `docs/adr/2026-09-23-speaker-mappings-are-edges-proposed-on-transcript-cards.md`).
  * Everything after creation (confirm/reject/revise) stays with this module's proposal actions.
  */
 export const manifest: ModuleManifest = {

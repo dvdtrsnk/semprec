@@ -117,7 +117,8 @@ export async function proposeSpeakerMappings(
     processingProposalsDatabaseId,
     "sourceTranscript",
   );
-  if (!sourceTranscriptProperty) throw new NotFoundError(`Property 'sourceTranscript' not found on Processing proposals`);
+  if (!sourceTranscriptProperty)
+    throw new NotFoundError(`Property 'sourceTranscript' not found on Processing proposals`);
 
   const candidateIds = new Set(context.candidates.map((candidate) => candidate.id));
   const openSpeakers = new Set(context.unmappedSpeakers);
