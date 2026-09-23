@@ -34,8 +34,8 @@ rejects anything outside its closed argument contract. The restore test's entryp
 `observability/restoreTestResultCli.ts`: it keeps the `backup:restoreTest` check (`ok` or
 `alerting`) and, on failure, writes one notification per run.
 
-The entrypoint connects with `SEMPREC_SIDE_DATABASE_URL` (`semprec_side`), since it writes only
-side tables. It never touches a choke-point table.
+The entrypoint reads `DATABASE_URL`; the host script populates it from `$SEMPREC_SIDE_DATABASE_URL`
+so the process connects as `semprec_side`, since it writes only side tables. It never touches a choke-point table.
 
 ## Consequences
 
