@@ -68,6 +68,9 @@ interface AudioRequestBody {
   language?: string;
 }
 
+/** Canonical padded standard base64, as produced by `Buffer#toString("base64")`. */
+const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
 function validateBody(raw: unknown): AudioRequestBody {
   if (typeof raw !== "object" || raw === null) throw new ValidationError("Request body must be a JSON object");
   const body = raw as Record<string, unknown>;
@@ -88,15 +91,14 @@ function validateBody(raw: unknown): AudioRequestBody {
     throw new ValidationError("'language' must be a string when present", { field: "language" });
   }
 
-  let audio: Uint8Array;
-  try {
-    audio = new Uint8Array(Buffer.from(body.audioBase64, "base64"));
-  } catch {
+  // Buffer.from(..., "base64") never throws — it silently drops invalid characters — so the
+  // format is checked up front instead of forwarding garbled bytes to the provider.
+  if (!BASE64_PATTERN.test(body.audioBase64)) {
     throw new ValidationError("'audioBase64' is not valid base64", { field: "audioBase64" });
   }
 
   return {
-    audio,
+    audio: new Uint8Array(Buffer.from(body.audioBase64, "base64")),
     filename: body.filename,
     mimeType: body.mimeType,
     audioSeconds: body.audioSeconds,
