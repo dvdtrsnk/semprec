@@ -39,11 +39,12 @@ export interface AiGatewayCompletionResult {
 
 /**
  * The one failure mode `AiGatewayClientPort.complete` is allowed to signal: a network timeout,
- * a non-2xx response, an unparseable body, or a response that fails schema validation. `reason`
+ * a non-2xx response, the gateway's own budget rejection (`budget_exceeded`, which a caller can
+ * treat as not worth retrying), an unparseable body, or a response that fails schema validation. `reason`
  * is the only detail exposed — never the provider's own error body or any secret — so a caller
  * that surfaces this to a user or a log can't leak gateway internals.
  */
-export type AiGatewayFailureReason = "timeout" | "http" | "invalid_response";
+export type AiGatewayFailureReason = "timeout" | "http" | "budget_exceeded" | "invalid_response";
 
 export class AiGatewayFailedError extends Error {
   readonly code = "ai_gateway_failed" as const;

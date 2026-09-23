@@ -140,7 +140,14 @@ export {
   type SpeakerMappingSuggestion,
   type SpeakerSuggestionContext,
 } from "./transcription/transcriptSpeakerSuggestion.js";
-export { ensureItemAutomation, markItemAutomationDone } from "./library/itemAutomationStore.js";
+export {
+  ensureItemAutomation,
+  getItemAutomation,
+  lockItemAutomation,
+  markItemAutomationDone,
+  recordItemAutomationFailure,
+  startItemAutomationAttempt,
+} from "./library/itemAutomationStore.js";
 export { seedTenDatabasesInTransaction, type TenDatabases } from "./seed/seedTenDatabases.js";
 export { manifest as systemDatabasesModuleManifest } from "./seed/systemDatabasesModuleManifest.js";
 export * from "./systemSettings.js";

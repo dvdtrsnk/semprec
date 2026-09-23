@@ -33,7 +33,10 @@ import {
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { wireRealtimeHooks } from "@semprec/realtime";
 import type { AiGatewayClientPort, AiGatewayCompletionInput, AiGatewayCompletionResult } from "@semprec/shared";
+import { CORE_TASK_NAMES, enqueueJob, registerTask, runOnce } from "@semprec/queue";
+import { AiGatewayFailedError } from "@semprec/shared";
 import { createTranscriptionTask, TranscriptionSourceChangedError } from "./transcriptionTask.js";
+import { AudioGatewayBudgetExceededError } from "./audioGatewayClient.js";
 import type {
   AudioGatewayClient,
   DiarizationTurn,
@@ -49,6 +52,9 @@ import {
 } from "./__tests__/fixtures/mediaFixtures.js";
 
 let pool: Pool;
+
+/** A job's first of three attempts: a failure in it is transient, so it is retried rather than recorded as permanent. */
+const FIRST_ATTEMPT = { job: { attempts: 1, max_attempts: 3 } };
 
 /** A fake `AudioGatewayClient` for steps 0/1's tests, which do not exercise diarization/ASR themselves but still run through them as later pipeline steps. Counts calls so resume tests can assert on them. */
 class FakeAudioGatewayClient implements AudioGatewayClient {
@@ -154,9 +160,9 @@ describe("transcription step 0", () => {
       segments: [{ start: 0, end: 0.5, text: "Hello." }],
     });
 
-    await expect(task({ fileItemId: file.id })).rejects.toBe(summaryClient.failure);
+    await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toBe(summaryClient.failure);
     await pool.query("UPDATE items SET properties = '{}'::jsonb WHERE id = $1", [file.id]);
-    await expect(task({ fileItemId: file.id })).rejects.toBe(summaryClient.failure);
+    await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toBe(summaryClient.failure);
 
     const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
     if (!transcripts) throw new Error("Transcripts database was not seeded");
@@ -300,7 +306,12 @@ describe("transcription step 1 (prepare)", () => {
     async (_label, mimeType, getBytes) => {
       const { files, file } = await createSourceFile(mimeType, getBytes());
 
-      await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+      await createTranscriptionTask(
+        pool,
+        blobStorage,
+        gatewayClient,
+        summaryClient,
+      )({ fileItemId: file.id }, FIRST_ATTEMPT);
 
       const source = await readSource(files.id, file.id);
       const prepare = prepareCheckpointSchema.parse(source?.computed.prepare);
@@ -326,7 +337,12 @@ describe("transcription step 1 (prepare)", () => {
   it("checkpoints the normalized output's own duration when the source container has none", async () => {
     const { files, file } = await createSourceFile("audio/webm", await generateWebmFixture());
 
-    await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     const source = await readSource(files.id, file.id);
     const prepare = prepareCheckpointSchema.parse(source?.computed.prepare);
@@ -337,7 +353,12 @@ describe("transcription step 1 (prepare)", () => {
   it("falls back to the upload time for date when the recording has no creation_time", async () => {
     const { files, file, blob } = await createSourceFile("audio/mp4", untaggedAudioFixture);
 
-    await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     const source = await readSource(files.id, file.id);
     expect(prepareCheckpointSchema.parse(source?.computed.prepare).creationTime).toBeNull();
@@ -348,7 +369,7 @@ describe("transcription step 1 (prepare)", () => {
     const { files, file } = await createSourceFile("audio/mp4", audioFixture);
     const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
 
-    await task({ fileItemId: file.id });
+    await task({ fileItemId: file.id }, FIRST_ATTEMPT);
     const beforeReplay = await readSource(files.id, file.id);
     expect(beforeReplay?.computed.prepare).toBeDefined();
 
@@ -356,7 +377,7 @@ describe("transcription step 1 (prepare)", () => {
     // the (now-missing) source file, so a clean replay proves the checkpoint skip actually fired.
     await rm(tmpBlobDir, { recursive: true, force: true });
 
-    await expect(task({ fileItemId: file.id })).resolves.toBeUndefined();
+    await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).resolves.toBeUndefined();
     const afterReplay = await readSource(files.id, file.id);
     expect(afterReplay?.computed.prepare).toEqual(beforeReplay?.computed.prepare);
   });
@@ -368,7 +389,7 @@ describe("transcription step 1 (prepare)", () => {
       checkedOutDuringFfmpeg = pool.totalCount - pool.idleCount;
     });
 
-    await createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id });
+    await createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     expect(checkedOutDuringFfmpeg).toBe(0);
     expect((await readSource(files.id, file.id))?.computed.prepare).toBeDefined();
@@ -390,7 +411,7 @@ describe("transcription step 1 (prepare)", () => {
     });
 
     await expect(
-      createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id }),
+      createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
     ).rejects.toBeInstanceOf(TranscriptionSourceChangedError);
 
     const source = await readSource(files.id, file.id);
@@ -433,7 +454,7 @@ describe("transcription step 1 (prepare)", () => {
       });
     });
 
-    await createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id });
+    await createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     const source = await readSource(files.id, file.id);
     expect(source?.computed.prepare).toEqual(concurrentCheckpoint);
@@ -454,7 +475,7 @@ describe("transcription step 1 (prepare)", () => {
     });
 
     await expect(
-      createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id }),
+      createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
     ).rejects.toBeInstanceOf(NotFoundError);
 
     expect((await readSource(files.id, file.id))?.computed).not.toHaveProperty("prepare");
@@ -530,7 +551,12 @@ describe("transcription steps 2 and 3 (diarize, ASR)", () => {
     const { files, file } = await createSourceFile(audioFixture);
     gatewayClient.diarizeResult = [{ speaker: "SPEAKER_00", start: 0, end: 1 }];
 
-    await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     expect(gatewayClient.diarizeCalls).toHaveLength(1);
     expect(gatewayClient.diarizeCalls[0]?.audioSeconds).toBeGreaterThan(0);
@@ -543,11 +569,11 @@ describe("transcription steps 2 and 3 (diarize, ASR)", () => {
     const { files, file } = await createSourceFile(audioFixture);
     const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
 
-    await task({ fileItemId: file.id });
+    await task({ fileItemId: file.id }, FIRST_ATTEMPT);
     expect(gatewayClient.diarizeCalls).toHaveLength(1);
     const beforeReplay = await readSource(files.id, file.id);
 
-    await task({ fileItemId: file.id });
+    await task({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     expect(gatewayClient.diarizeCalls).toHaveLength(1);
     const afterReplay = await readSource(files.id, file.id);
@@ -556,7 +582,12 @@ describe("transcription steps 2 and 3 (diarize, ASR)", () => {
 
   it("splits ASR into one chunk per 20-minute boundary, checkpoints each immediately, and passes chunk 0's detected language to later chunks", async () => {
     const { files, file } = await createSourceFile(audioFixture);
-    await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
     await inflateDurationAndResetLaterSteps(file.id, 25 * 60);
     gatewayClient.diarizeCalls = [];
     gatewayClient.transcribeCalls = [];
@@ -566,7 +597,12 @@ describe("transcription steps 2 and 3 (diarize, ASR)", () => {
       segments: [],
     });
 
-    await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     expect(gatewayClient.diarizeCalls).toHaveLength(1);
     expect(gatewayClient.transcribeCalls).toHaveLength(2);
@@ -582,7 +618,12 @@ describe("transcription steps 2 and 3 (diarize, ASR)", () => {
 
   it("resumes after a crash mid-ASR: the retried run repeats no already-checkpointed chunk and no diarize call", async () => {
     const { files, file } = await createSourceFile(audioFixture);
-    await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
     await inflateDurationAndResetLaterSteps(file.id, 25 * 60);
     gatewayClient.diarizeCalls = [];
     gatewayClient.transcribeCalls = [];
@@ -594,7 +635,7 @@ describe("transcription steps 2 and 3 (diarize, ASR)", () => {
     };
 
     await expect(
-      createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id }),
+      createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
     ).rejects.toThrow("simulated crash");
 
     const midSource = await readSource(files.id, file.id);
@@ -608,7 +649,12 @@ describe("transcription steps 2 and 3 (diarize, ASR)", () => {
       segments: [],
     });
 
-    await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     expect(gatewayClient.diarizeCalls).toHaveLength(0);
     expect(gatewayClient.transcribeCalls).toHaveLength(1);
@@ -698,7 +744,12 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
   it("merges into speaker segments with the language, summarizes, and finalizes done with item_automation done", async () => {
     const { file } = await createSourceFile();
 
-    await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     const transcript = await readTranscript(file.id);
     expect(transcript.computed.segments).toEqual([
@@ -728,7 +779,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       throw diarizeFailure;
     };
     await expect(
-      createTranscriptionTask(pool, blobStorage, failingGateway, summaryClient)({ fileItemId: file.id }),
+      createTranscriptionTask(pool, blobStorage, failingGateway, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
     ).rejects.toBe(diarizeFailure);
     // 25 minutes: chunk 0 = [0, 1200], chunk 1 = [1170, 1500], cut at 1185.
     await pool.query(
@@ -754,7 +805,12 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
             ],
           };
 
-    await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     const transcript = await readTranscript(file.id);
     expect(transcript.computed.segments).toEqual([
@@ -768,22 +824,32 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     const { file } = await createSourceFile();
     const actionItems = { key: "actionItems", prompt: "List only the action items." };
 
-    await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
     await createTranscriptionTask(
       pool,
       blobStorage,
       gatewayClient,
       summaryClient,
       actionItems,
-    )({ fileItemId: file.id });
-    await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
     await createTranscriptionTask(
       pool,
       blobStorage,
       gatewayClient,
       summaryClient,
       actionItems,
-    )({ fileItemId: file.id });
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     const transcript = await readTranscript(file.id);
     const summaries = z.record(z.string(), z.string()).parse(transcript.computed.summaryByInstruction);
@@ -801,7 +867,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     summaryClient.failure = summaryFailure;
 
     await expect(
-      createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id }),
+      createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT),
     ).rejects.toBe(summaryFailure);
 
     const failed = await readTranscript(file.id);
@@ -811,7 +877,12 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     expect(await readAutomationStatus(failed.id)).toBe("pending");
 
     summaryClient.failure = null;
-    await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     const finalized = await readTranscript(file.id);
     expect(finalized.computed.segments).toEqual(failed.computed.segments);
@@ -824,7 +895,12 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
 
   it("never rewrites merged segments or their speaker keys on a replay", async () => {
     const { file } = await createSourceFile();
-    await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
     const before = await readTranscript(file.id);
     await pool.query(
       `UPDATE items SET computed = jsonb_set(computed, '{diarize}', '[{"speaker":"SPEAKER_09","start":0,"end":1}]')
@@ -832,7 +908,12 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       [file.id],
     );
 
-    await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     expect((await readTranscript(file.id)).computed.segments).toEqual(before.computed.segments);
   });
@@ -841,7 +922,12 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     const { file } = await createSourceFile();
     gatewayClient.transcribeResult = () => ({ text: "", language: null, segments: [] });
 
-    await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     const transcript = await readTranscript(file.id);
     expect(transcript.computed.segments).toEqual([]);
@@ -880,8 +966,8 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     const eventId = await createEvent(FIXTURE_CREATION_TIME);
     const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
 
-    await task({ fileItemId: file.id });
-    await task({ fileItemId: file.id });
+    await task({ fileItemId: file.id }, FIRST_ATTEMPT);
+    await task({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     const transcript = await readTranscript(file.id);
     expect(transcript.properties.status).toBe("done");
@@ -892,8 +978,8 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     const { file } = await createSourceFile();
     const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
 
-    await task({ fileItemId: file.id });
-    await task({ fileItemId: file.id });
+    await task({ fileItemId: file.id }, FIRST_ATTEMPT);
+    await task({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     const transcript = await readTranscript(file.id);
     expect(transcript.properties.status).toBe("done");
@@ -950,8 +1036,8 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     summaryClient.speakerMappings = [{ speaker: "SPEAKER_01", personId: aliceId }];
     const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
 
-    await task({ fileItemId: file.id });
-    await task({ fileItemId: file.id });
+    await task({ fileItemId: file.id }, FIRST_ATTEMPT);
+    await task({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     const suggestionCalls = summaryClient.calls.filter((call) => call.operation === "transcript_speaker_suggestion");
     expect(suggestionCalls).toHaveLength(1);
@@ -987,12 +1073,17 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     };
 
     await expect(
-      createTranscriptionTask(pool, blobStorage, gatewayClient, failing)({ fileItemId: file.id }),
+      createTranscriptionTask(pool, blobStorage, gatewayClient, failing)({ fileItemId: file.id }, FIRST_ATTEMPT),
     ).rejects.toThrow("gateway refused");
     expect((await readTranscript(file.id)).properties.status).toBe("processing");
     expect(await readSpeakerCards()).toEqual([]);
 
-    await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     expect((await readTranscript(file.id)).properties.status).toBe("done");
     expect(await readSpeakerCards()).toHaveLength(1);
@@ -1007,7 +1098,12 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       await listenClient.query("LISTEN semprec_events");
       listenClient.on("notification", (message) => received.push(JSON.parse(message.payload ?? "null")));
 
-      await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+      await createTranscriptionTask(
+        pool,
+        blobStorage,
+        gatewayClient,
+        summaryClient,
+      )({ fileItemId: file.id }, FIRST_ATTEMPT);
       const transcript = await readTranscript(file.id);
       const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
 
@@ -1027,5 +1123,345 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       listenClient.release(true);
       resetRealtimeHooks();
     }
+  });
+
+  describe("retries and permanent failures (issue #248)", () => {
+    const FINAL_ATTEMPT = { job: { attempts: 3, max_attempts: 3 } };
+
+    async function createUser(): Promise<string> {
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
+        [`owner-${randomUUID()}@example.test`],
+      );
+      if (!rows[0]) throw new Error("expected a user row");
+      return rows[0].id;
+    }
+
+    async function readAutomation(transcriptId: string) {
+      const { rows } = await pool.query<{ status: string; error: string | null; attempts: number }>(
+        "SELECT status, error, attempts FROM item_automation WHERE item_id = $1",
+        [transcriptId],
+      );
+      return rows[0];
+    }
+
+    async function readNotifications(transcriptId: string) {
+      const { rows } = await pool.query(
+        `SELECT user_id, kind, link_href, source_table, transition_instance FROM notifications WHERE source_id = $1`,
+        [transcriptId],
+      );
+      return rows;
+    }
+
+    it("records a transient failure as pending, then resumes from the checkpoints and settles done", async () => {
+      const { file } = await createSourceFile();
+      await createUser();
+      const failure = new Error("simulated summary outage");
+      summaryClient.failure = failure;
+      const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+
+      await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toBe(failure);
+
+      const failed = await readTranscript(file.id);
+      expect(failed.properties.status).toBe("processing");
+      expect(await readAutomation(failed.id)).toEqual({ status: "pending", error: failure.message, attempts: 1 });
+      expect(await readNotifications(failed.id)).toEqual([]);
+
+      summaryClient.failure = null;
+      await task({ fileItemId: file.id }, { job: { attempts: 2, max_attempts: 3 } });
+
+      const done = await readTranscript(file.id);
+      expect(done.properties.status).toBe("done");
+      expect(await readAutomation(done.id)).toEqual({ status: "done", error: null, attempts: 2 });
+      expect(await readNotifications(done.id)).toEqual([]);
+      expect(gatewayClient.diarizeCalls).toHaveLength(1);
+      expect(gatewayClient.transcribeCalls).toHaveLength(1);
+      expect(summaryClient.calls).toHaveLength(2);
+    });
+
+    it("records the last attempt's failure as permanent, with exactly one automation_error notification", async () => {
+      const { file } = await createSourceFile();
+      const userId = await createUser();
+      const failure = new Error("simulated summary outage");
+      summaryClient.failure = failure;
+      const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+
+      for (const attempts of [1, 2, 3]) {
+        await expect(task({ fileItemId: file.id }, { job: { attempts, max_attempts: 3 } })).rejects.toBe(failure);
+      }
+
+      const transcript = await readTranscript(file.id);
+      expect(transcript.properties.status).toBe("error");
+      expect(await readAutomation(transcript.id)).toEqual({ status: "error", error: failure.message, attempts: 3 });
+      expect(await readNotifications(transcript.id)).toEqual([
+        {
+          user_id: userId,
+          kind: "automation_error",
+          link_href: null,
+          source_table: "item_automation",
+          transition_instance: "attempt:3",
+        },
+      ]);
+      expect(gatewayClient.diarizeCalls).toHaveLength(1);
+      expect(gatewayClient.transcribeCalls).toHaveLength(1);
+    });
+
+    it("treats a gateway budget rejection as permanent on any attempt and completes the job instead of retrying", async () => {
+      await createUser();
+      const speech = gatewayClient.transcribeResult;
+      const rejections: Array<() => void> = [
+        () => {
+          gatewayClient.transcribeResult = () => {
+            throw new AudioGatewayBudgetExceededError();
+          };
+          summaryClient.failure = null;
+        },
+        () => {
+          gatewayClient.transcribeResult = speech;
+          summaryClient.failure = new AiGatewayFailedError("budget_exceeded");
+        },
+      ];
+
+      for (const reject of rejections) {
+        const { file } = await createSourceFile();
+        reject();
+
+        await expect(
+          createTranscriptionTask(
+            pool,
+            blobStorage,
+            gatewayClient,
+            summaryClient,
+          )({ fileItemId: file.id }, FIRST_ATTEMPT),
+        ).resolves.toBeUndefined();
+
+        const transcript = await readTranscript(file.id);
+        expect(transcript.properties.status).toBe("error");
+        expect(await readAutomation(transcript.id)).toMatchObject({ status: "error", attempts: 1 });
+        expect(await readNotifications(transcript.id)).toHaveLength(1);
+      }
+    });
+
+    it("commits none of a permanent failure's writes when its transaction rolls back, and rethrows the original failure", async () => {
+      const { file } = await createSourceFile();
+      await createUser();
+      const failure = new Error("simulated summary outage");
+      summaryClient.failure = failure;
+      await pool.query(`CREATE FUNCTION test_reject_notification() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'simulated notification failure'; END $$`);
+      await pool.query(`CREATE TRIGGER test_reject_notification BEFORE INSERT ON notifications
+        FOR EACH ROW EXECUTE FUNCTION test_reject_notification()`);
+      try {
+        await expect(
+          createTranscriptionTask(
+            pool,
+            blobStorage,
+            gatewayClient,
+            summaryClient,
+          )({ fileItemId: file.id }, FINAL_ATTEMPT),
+        ).rejects.toBe(failure);
+      } finally {
+        await pool.query("DROP TRIGGER test_reject_notification ON notifications");
+        await pool.query("DROP FUNCTION test_reject_notification()");
+      }
+
+      const transcript = await readTranscript(file.id);
+      expect(transcript.properties.status).toBe("processing");
+      expect(await readAutomation(transcript.id)).toEqual({ status: "pending", error: null, attempts: 1 });
+      expect(await readNotifications(transcript.id)).toEqual([]);
+    });
+
+    it("still records a permanent failure when no user exists to notify", async () => {
+      const { file } = await createSourceFile();
+      summaryClient.failure = new Error("simulated summary outage");
+
+      await expect(
+        createTranscriptionTask(
+          pool,
+          blobStorage,
+          gatewayClient,
+          summaryClient,
+        )({ fileItemId: file.id }, FINAL_ATTEMPT),
+      ).rejects.toBe(summaryClient.failure);
+
+      const transcript = await readTranscript(file.id);
+      expect(transcript.properties.status).toBe("error");
+      expect(await readAutomation(transcript.id)).toMatchObject({ status: "error", attempts: 1 });
+      const { rows } = await pool.query("SELECT id FROM notifications");
+      expect(rows).toEqual([]);
+    });
+
+    it("clears the error and settles done when a later run succeeds, without duplicate output or edges", async () => {
+      const { file } = await createSourceFile();
+      await createUser();
+      summaryClient.failure = new AiGatewayFailedError("budget_exceeded");
+      const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+      await task({ fileItemId: file.id }, FIRST_ATTEMPT);
+      const failed = await readTranscript(file.id);
+      expect(failed.properties.status).toBe("error");
+
+      summaryClient.failure = null;
+      await task({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+      const done = await readTranscript(file.id);
+      expect(done.properties.status).toBe("done");
+      expect(done.computed.segments).toEqual(failed.computed.segments);
+      expect(await readAutomation(done.id)).toEqual({ status: "done", error: null, attempts: 2 });
+      expect(await readMatch(done.id)).toEqual({
+        eventIds: [],
+        cards: [{ id: expect.any(String), kind: "transcript" }],
+      });
+      expect(await readNotifications(done.id)).toHaveLength(1);
+      expect(gatewayClient.diarizeCalls).toHaveLength(1);
+      expect(gatewayClient.transcribeCalls).toHaveLength(1);
+    });
+
+    it("never processes a row a user locked", async () => {
+      const { file } = await createSourceFile();
+      summaryClient.failure = new Error("simulated summary outage");
+      const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+      await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).rejects.toBe(summaryClient.failure);
+      const transcript = await readTranscript(file.id);
+      await pool.query("UPDATE item_automation SET status = 'locked' WHERE item_id = $1", [transcript.id]);
+
+      summaryClient.failure = null;
+      await task({ fileItemId: file.id }, { job: { attempts: 2, max_attempts: 3 } });
+
+      expect((await readTranscript(file.id)).properties.status).toBe("processing");
+      expect(await readAutomation(transcript.id)).toMatchObject({ status: "locked", attempts: 1 });
+      expect(summaryClient.calls).toHaveLength(1);
+    });
+
+    /** A summary client that locks the file's transcript while its call is in flight, then answers or fails. */
+    class LockingSummaryClient extends FakeSummaryClient {
+      constructor(private readonly fileItemId: string) {
+        super();
+      }
+
+      override async complete(input: AiGatewayCompletionInput): Promise<AiGatewayCompletionResult> {
+        await pool.query(
+          `UPDATE item_automation SET status = 'locked'
+           WHERE item_id = (SELECT (computed ->> 'create')::uuid FROM items WHERE id = $1)`,
+          [this.fileItemId],
+        );
+        return super.complete(input);
+      }
+    }
+
+    it("keeps the running step's write from landing and stops once a user locks the row mid-run", async () => {
+      const { file } = await createSourceFile();
+
+      await createTranscriptionTask(
+        pool,
+        blobStorage,
+        gatewayClient,
+        new LockingSummaryClient(file.id),
+      )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+      const stopped = await readTranscript(file.id);
+      expect(stopped.properties.status).toBe("processing");
+      expect(stopped.computed).not.toHaveProperty("summaryByInstruction");
+      expect(await readMatch(stopped.id)).toEqual({ eventIds: [], cards: [] });
+      expect(await readAutomation(stopped.id)).toEqual({ status: "locked", error: null, attempts: 1 });
+    });
+
+    it("writes no diarize checkpoint and makes no ASR call once a user locks the row during diarization", async () => {
+      const { file } = await createSourceFile();
+      const lockingGateway = new (class extends FakeAudioGatewayClient {
+        override async diarize(request: DiarizeRequest): Promise<DiarizationTurn[]> {
+          await pool.query(
+            `UPDATE item_automation SET status = 'locked'
+             WHERE item_id = (SELECT (computed ->> 'create')::uuid FROM items WHERE id = $1)`,
+            [file.id],
+          );
+          return super.diarize(request);
+        }
+      })();
+
+      await createTranscriptionTask(
+        pool,
+        blobStorage,
+        lockingGateway,
+        summaryClient,
+      )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+      const { rows } = await pool.query<{ computed: Record<string, unknown> }>(
+        "SELECT computed FROM items WHERE id = $1",
+        [file.id],
+      );
+      expect(rows[0]?.computed).toHaveProperty("prepare");
+      expect(rows[0]?.computed).not.toHaveProperty("diarize");
+      expect(lockingGateway.diarizeCalls).toHaveLength(1);
+      expect(lockingGateway.transcribeCalls).toEqual([]);
+      expect(summaryClient.calls).toEqual([]);
+      const transcript = await readTranscript(file.id);
+      expect(await readAutomation(transcript.id)).toEqual({ status: "locked", error: null, attempts: 1 });
+    });
+
+    it("records nothing of a final failure on a row a user locked mid-run", async () => {
+      const { file } = await createSourceFile();
+      await createUser();
+      const lockingSummary = new LockingSummaryClient(file.id);
+      lockingSummary.failure = new Error("simulated summary outage");
+
+      await expect(
+        createTranscriptionTask(
+          pool,
+          blobStorage,
+          gatewayClient,
+          lockingSummary,
+        )({ fileItemId: file.id }, FINAL_ATTEMPT),
+      ).rejects.toBe(lockingSummary.failure);
+
+      const transcript = await readTranscript(file.id);
+      expect(transcript.properties.status).toBe("processing");
+      expect(await readAutomation(transcript.id)).toEqual({ status: "locked", error: null, attempts: 1 });
+      expect(await readNotifications(transcript.id)).toEqual([]);
+    });
+
+    it("retries through graphile-worker at most three times with growing backoff, then records the failure once", async () => {
+      const { file } = await createSourceFile();
+      await createUser();
+      const failure = new Error("simulated summary outage");
+      summaryClient.failure = failure;
+      const taskList = {
+        [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+          CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+          createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient),
+        ),
+      };
+      const jobKey = `transcription-job:${file.id}`;
+      await enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId: file.id }, { jobKey, maxAttempts: 3 });
+
+      async function runDueJob(): Promise<{ attempts: number; delaySeconds: number }> {
+        await pool.query("UPDATE graphile_worker._private_jobs SET run_at = now() WHERE key = $1", [jobKey]);
+        await runOnce({ pgPool: pool, taskList });
+        const { rows } = await pool.query<{ attempts: number; delay_seconds: number }>(
+          `SELECT attempts, EXTRACT(EPOCH FROM run_at - now())::float8 AS delay_seconds
+           FROM graphile_worker._private_jobs WHERE key = $1`,
+          [jobKey],
+        );
+        if (!rows[0]) throw new Error("expected the failed job to remain queued");
+        return { attempts: rows[0].attempts, delaySeconds: rows[0].delay_seconds };
+      }
+
+      const first = await runDueJob();
+      const second = await runDueJob();
+      const third = await runDueJob();
+      expect([first.attempts, second.attempts, third.attempts]).toEqual([1, 2, 3]);
+      expect(first.delaySeconds).toBeGreaterThan(1);
+      expect(second.delaySeconds).toBeGreaterThan(first.delaySeconds);
+
+      // Exhausted: graphile-worker runs it no more.
+      expect((await runDueJob()).attempts).toBe(3);
+      expect(summaryClient.calls).toHaveLength(3);
+      expect(gatewayClient.diarizeCalls).toHaveLength(1);
+      expect(gatewayClient.transcribeCalls).toHaveLength(1);
+
+      const transcript = await readTranscript(file.id);
+      expect(transcript.properties.status).toBe("error");
+      expect(await readAutomation(transcript.id)).toEqual({ status: "error", error: failure.message, attempts: 3 });
+      expect(await readNotifications(transcript.id)).toHaveLength(1);
+    });
   });
 });

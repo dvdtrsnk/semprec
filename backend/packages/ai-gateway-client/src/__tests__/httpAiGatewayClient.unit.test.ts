@@ -93,6 +93,37 @@ describe("createHttpAiGatewayClient", () => {
     expect(JSON.stringify(error)).not.toContain("secret");
   });
 
+  it("maps the gateway's 403 budget rejection to ai_gateway_failed with reason 'budget_exceeded'", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ error: "Daily cap reached", code: "budget_exceeded" }), { status: 403 }),
+      ),
+    );
+
+    const client = createHttpAiGatewayClient({ port: 4100, token: "secret-token" });
+    const error = await client.complete(INPUT).catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(AiGatewayFailedError);
+    expect((error as InstanceType<typeof AiGatewayFailedError>).reason).toBe("budget_exceeded");
+  });
+
+  it("maps a 403 that is not a budget rejection to ai_gateway_failed with reason 'http'", async () => {
+    for (const body of [JSON.stringify({ code: "forbidden" }), "not json"]) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(body, { status: 403 })),
+      );
+
+      const client = createHttpAiGatewayClient({ port: 4100, token: "secret-token" });
+      const error = await client.complete(INPUT).catch((err: unknown) => err);
+
+      expect(error).toBeInstanceOf(AiGatewayFailedError);
+      expect((error as InstanceType<typeof AiGatewayFailedError>).reason).toBe("http");
+    }
+  });
+
   it("maps an invalid JSON body to ai_gateway_failed with reason 'invalid_response'", async () => {
     vi.stubGlobal(
       "fetch",

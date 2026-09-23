@@ -84,6 +84,19 @@ describe("Files transcription trigger (issue #180)", () => {
     expect(await jobExists(transcriptionJobKey(fileItemId))).toBe(true);
   });
 
+  it("enqueues the job with at most three attempts (issue #248)", async () => {
+    const fileItemId = await createFileItem("audio/mpeg");
+    const handler = createFilesTranscriptionTriggerAction(pool);
+
+    await handler(actionConfig(), { heartbeatId: "hb", projectItemId: "proj", itemId: fileItemId });
+
+    const { rows } = await pool.query<{ max_attempts: number }>(
+      `SELECT max_attempts FROM graphile_worker.jobs WHERE key = $1`,
+      [transcriptionJobKey(fileItemId)],
+    );
+    expect(rows).toEqual([{ max_attempts: 3 }]);
+  });
+
   it("does not enqueue for a file with an Emails.attachments edge", async () => {
     const fileItemId = await createFileItem("audio/mpeg");
     const emailItem = await withTransaction(pool, (client) =>
