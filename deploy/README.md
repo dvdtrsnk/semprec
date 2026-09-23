@@ -115,3 +115,20 @@ pings the monitor's `/fail` endpoint, and exits non-zero. It never sends the suc
   `.env` already exists there; `apns-key.p8` is never generated (Apple issues it, an operator
   uploads it manually) and provisioning never touches it once present. Rerunning provisioning
   never overwrites either an operator-configured `.env` value or an already-uploaded key.
+
+## Czech full-text search (issues #206, #207)
+
+`provision.sh` copies the `hunspell-cs` dictionary and affix files into the PostgreSQL container's
+`tsearch_data` directory as `cs_cz.dict` and `cs_cz.affix` (PostgreSQL rejects uppercase
+dictionary basenames). Backend migration `0046_czech_hunspell_search.sql` then switches the
+`czech` text search configuration to lemmatize words through that dictionary ahead of the
+`unaccent`/`simple` fallback. Without the files, the migration still succeeds and search keeps the
+fallback.
+
+The switch is re-attempted by the migrations CLI on every deploy and is a no-op once active, so a
+database migrated before the files were installed is upgraded by the first deploy after
+provisioning. Messages indexed before that keep their fallback lexemes until they are reindexed.
+
+The files live in the container's filesystem, not in a volume. Once the dictionary is active,
+PostgreSQL needs them to index or search any message, so rerun `provision.sh` whenever the
+`postgres` container is recreated.
