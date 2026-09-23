@@ -18,6 +18,8 @@ import { JOURNAL_INBOX_COMPUTED_KEY } from "../inbox/journalInboxCompute.js";
 import {
   TRANSCRIPTION_CREATE_COMPUTED_KEY,
   TRANSCRIPTION_PREPARE_COMPUTED_KEY,
+  TRANSCRIPTION_DIARIZE_COMPUTED_KEY,
+  TRANSCRIPTION_ASR_COMPUTED_KEY,
   TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
   TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
 } from "../transcription/transcriptionComputedKeys.js";
@@ -81,6 +83,8 @@ export async function seedSystem(
   computedKeyRegistry.add(TRANSCRIPT_SEGMENTS_COMPUTED_KEY);
   computedKeyRegistry.add(TRANSCRIPTION_CREATE_COMPUTED_KEY);
   computedKeyRegistry.add(TRANSCRIPTION_PREPARE_COMPUTED_KEY);
+  computedKeyRegistry.add(TRANSCRIPTION_DIARIZE_COMPUTED_KEY);
+  computedKeyRegistry.add(TRANSCRIPTION_ASR_COMPUTED_KEY);
   computedKeyRegistry.add(TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY);
 
   // The systemDatabases module is always active for this seed: it's the retrofit manifest

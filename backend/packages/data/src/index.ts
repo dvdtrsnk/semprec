@@ -124,6 +124,8 @@ export {
 export {
   TRANSCRIPTION_CREATE_COMPUTED_KEY,
   TRANSCRIPTION_PREPARE_COMPUTED_KEY,
+  TRANSCRIPTION_DIARIZE_COMPUTED_KEY,
+  TRANSCRIPTION_ASR_COMPUTED_KEY,
 } from "./transcription/transcriptionComputedKeys.js";
 export { readBlobId } from "./transcription/transcriptionActions.js";
 export { ensureItemAutomation } from "./library/itemAutomationStore.js";

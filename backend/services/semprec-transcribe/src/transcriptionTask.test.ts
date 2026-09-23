@@ -24,6 +24,13 @@ import {
 } from "@semprec/data";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createTranscriptionTask, TranscriptionSourceChangedError } from "./transcriptionTask.js";
+import type {
+  AudioGatewayClient,
+  DiarizationTurn,
+  DiarizeRequest,
+  TranscribeRequest,
+  TranscriptionResult,
+} from "./audioGatewayClient.js";
 import {
   FIXTURE_CREATION_TIME,
   generateMp4Fixture,
@@ -33,6 +40,28 @@ import {
 
 let pool: Pool;
 
+/** A fake `AudioGatewayClient` for steps 0/1's tests, which do not exercise diarization/ASR themselves but still run through them as later pipeline steps. Counts calls so resume tests can assert on them. */
+class FakeAudioGatewayClient implements AudioGatewayClient {
+  diarizeCalls: DiarizeRequest[] = [];
+  transcribeCalls: TranscribeRequest[] = [];
+  diarizeResult: DiarizationTurn[] = [];
+  transcribeResult: (request: TranscribeRequest) => TranscriptionResult = () => ({
+    text: "",
+    language: "en",
+    segments: [],
+  });
+
+  async diarize(request: DiarizeRequest): Promise<DiarizationTurn[]> {
+    this.diarizeCalls.push(request);
+    return this.diarizeResult;
+  }
+
+  async transcribe(request: TranscribeRequest): Promise<TranscriptionResult> {
+    this.transcribeCalls.push(request);
+    return this.transcribeResult(request);
+  }
+}
+
 afterAll(async () => {
   await pool?.end();
 });
@@ -40,6 +69,7 @@ afterAll(async () => {
 describe("transcription step 0", () => {
   let tmpBlobDir: string;
   let blobStorage: LocalFsBlobStorageWriter;
+  let gatewayClient: FakeAudioGatewayClient;
   let audioFixture: Buffer;
 
   beforeAll(async () => {
@@ -52,6 +82,7 @@ describe("transcription step 0", () => {
     await seedSystem(pool, createViewTypeRegistry());
     tmpBlobDir = join(tmpdir(), `semprec-transcribe-test-${randomUUID()}`);
     blobStorage = new LocalFsBlobStorageWriter(tmpBlobDir);
+    gatewayClient = new FakeAudioGatewayClient();
   });
 
   afterEach(async () => {
@@ -72,7 +103,7 @@ describe("transcription step 0", () => {
         properties: { name: "recording.mp3", file: { blobId: blob.id } },
       }),
     );
-    const task = createTranscriptionTask(pool, blobStorage);
+    const task = createTranscriptionTask(pool, blobStorage, gatewayClient);
 
     await task({ fileItemId: file.id });
     await pool.query("UPDATE items SET properties = '{}'::jsonb WHERE id = $1", [file.id]);
@@ -133,6 +164,7 @@ const prepareCheckpointSchema = z.object({
 describe("transcription step 1 (prepare)", () => {
   let tmpBlobDir: string;
   let blobStorage: LocalFsBlobStorageWriter;
+  let gatewayClient: FakeAudioGatewayClient;
   let audioFixture: Buffer;
   let videoFixture: Buffer;
   let untaggedAudioFixture: Buffer;
@@ -151,6 +183,7 @@ describe("transcription step 1 (prepare)", () => {
     await seedSystem(pool, createViewTypeRegistry());
     tmpBlobDir = join(tmpdir(), `semprec-transcribe-test-${randomUUID()}`);
     blobStorage = new LocalFsBlobStorageWriter(tmpBlobDir);
+    gatewayClient = new FakeAudioGatewayClient();
   });
 
   afterEach(async () => {
@@ -217,7 +250,7 @@ describe("transcription step 1 (prepare)", () => {
     async (_label, mimeType, getBytes) => {
       const { files, file } = await createSourceFile(mimeType, getBytes());
 
-      await createTranscriptionTask(pool, blobStorage)({ fileItemId: file.id });
+      await createTranscriptionTask(pool, blobStorage, gatewayClient)({ fileItemId: file.id });
 
       const source = await readSource(files.id, file.id);
       const prepare = prepareCheckpointSchema.parse(source?.computed.prepare);
@@ -243,7 +276,7 @@ describe("transcription step 1 (prepare)", () => {
   it("checkpoints the normalized output's own duration when the source container has none", async () => {
     const { files, file } = await createSourceFile("audio/webm", await generateWebmFixture());
 
-    await createTranscriptionTask(pool, blobStorage)({ fileItemId: file.id });
+    await createTranscriptionTask(pool, blobStorage, gatewayClient)({ fileItemId: file.id });
 
     const source = await readSource(files.id, file.id);
     const prepare = prepareCheckpointSchema.parse(source?.computed.prepare);
@@ -254,7 +287,7 @@ describe("transcription step 1 (prepare)", () => {
   it("falls back to the upload time for date when the recording has no creation_time", async () => {
     const { files, file, blob } = await createSourceFile("audio/mp4", untaggedAudioFixture);
 
-    await createTranscriptionTask(pool, blobStorage)({ fileItemId: file.id });
+    await createTranscriptionTask(pool, blobStorage, gatewayClient)({ fileItemId: file.id });
 
     const source = await readSource(files.id, file.id);
     expect(prepareCheckpointSchema.parse(source?.computed.prepare).creationTime).toBeNull();
@@ -263,7 +296,7 @@ describe("transcription step 1 (prepare)", () => {
 
   it("skips step 1 on a replay without invoking ffmpeg/ffprobe again", async () => {
     const { files, file } = await createSourceFile("audio/mp4", audioFixture);
-    const task = createTranscriptionTask(pool, blobStorage);
+    const task = createTranscriptionTask(pool, blobStorage, gatewayClient);
 
     await task({ fileItemId: file.id });
     const beforeReplay = await readSource(files.id, file.id);
@@ -285,7 +318,7 @@ describe("transcription step 1 (prepare)", () => {
       checkedOutDuringFfmpeg = pool.totalCount - pool.idleCount;
     });
 
-    await createTranscriptionTask(pool, storage)({ fileItemId: file.id });
+    await createTranscriptionTask(pool, storage, gatewayClient)({ fileItemId: file.id });
 
     expect(checkedOutDuringFfmpeg).toBe(0);
     expect((await readSource(files.id, file.id))?.computed.prepare).toBeDefined();
@@ -306,7 +339,7 @@ describe("transcription step 1 (prepare)", () => {
       );
     });
 
-    await expect(createTranscriptionTask(pool, storage)({ fileItemId: file.id })).rejects.toBeInstanceOf(
+    await expect(createTranscriptionTask(pool, storage, gatewayClient)({ fileItemId: file.id })).rejects.toBeInstanceOf(
       TranscriptionSourceChangedError,
     );
 
@@ -318,19 +351,33 @@ describe("transcription step 1 (prepare)", () => {
 
   it("keeps the checkpoint of a concurrent run that finished step 1 first and discards its own audio", async () => {
     const { files, file } = await createSourceFile("audio/mp4", audioFixture);
-    const concurrentCheckpoint = { normalizedBlobId: randomUUID(), durationSeconds: 1, creationTime: null };
+    // A real blob, so the later diarize/ASR steps (which now run unconditionally after step 1) have
+    // something to download — simulating the concurrent run's own normalized output, not this run's.
+    const concurrentStorageKey = `transcriptions/${randomUUID()}`;
+    await blobStorage.writeStream(concurrentStorageKey, Readable.from(audioFixture));
+    const concurrentBlob = await withTransaction(pool, (client) =>
+      createBlob(client, {
+        mimeType: "audio/mp4",
+        byteSize: audioFixture.byteLength,
+        storageKey: concurrentStorageKey,
+      }),
+    );
+    const concurrentCheckpoint = { normalizedBlobId: concurrentBlob.id, durationSeconds: 1, creationTime: null };
     const storage = storageWithMidNormalizationHook(async () => {
       await withTransaction(pool, (client) =>
         writeComputed(client, files.id, file.id, "prepare", concurrentCheckpoint),
       );
     });
 
-    await createTranscriptionTask(pool, storage)({ fileItemId: file.id });
+    await createTranscriptionTask(pool, storage, gatewayClient)({ fileItemId: file.id });
 
     const source = await readSource(files.id, file.id);
     expect(source?.computed.prepare).toEqual(concurrentCheckpoint);
     expect(await readTranscriptDate(source)).toBeUndefined();
-    expect(await readNormalizedLeftovers()).toEqual({ blobRows: 0, storedFiles: [] });
+    expect(await readNormalizedLeftovers()).toEqual({
+      blobRows: 1,
+      storedFiles: [concurrentStorageKey.slice("transcriptions/".length)],
+    });
   });
 
   it("rolls back and discards its audio when the write transaction fails", async () => {
@@ -342,9 +389,167 @@ describe("transcription step 1 (prepare)", () => {
       );
     });
 
-    await expect(createTranscriptionTask(pool, storage)({ fileItemId: file.id })).rejects.toBeInstanceOf(NotFoundError);
+    await expect(createTranscriptionTask(pool, storage, gatewayClient)({ fileItemId: file.id })).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
 
     expect((await readSource(files.id, file.id))?.computed).not.toHaveProperty("prepare");
     expect(await readNormalizedLeftovers()).toEqual({ blobRows: 0, storedFiles: [] });
+  });
+});
+
+const asrCheckpointSchema = z.object({
+  language: z.string().nullable(),
+  chunks: z.record(z.string(), z.object({ text: z.string(), segments: z.array(z.any()) })),
+});
+
+describe("transcription steps 2 and 3 (diarize, ASR)", () => {
+  let tmpBlobDir: string;
+  let blobStorage: LocalFsBlobStorageWriter;
+  let gatewayClient: FakeAudioGatewayClient;
+  let audioFixture: Buffer;
+
+  beforeAll(async () => {
+    audioFixture = await generateMp4Fixture({ creationTime: FIXTURE_CREATION_TIME });
+  });
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool, createViewTypeRegistry());
+    tmpBlobDir = join(tmpdir(), `semprec-transcribe-test-${randomUUID()}`);
+    blobStorage = new LocalFsBlobStorageWriter(tmpBlobDir);
+    gatewayClient = new FakeAudioGatewayClient();
+  });
+
+  afterEach(async () => {
+    await rm(tmpBlobDir, { recursive: true, force: true });
+  });
+
+  async function createSourceFile(bytes: Buffer) {
+    const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "files"));
+    if (!files) throw new Error("Files database was not seeded");
+    const storageKey = `source/${randomUUID()}`;
+    await blobStorage.writeStream(storageKey, Readable.from(bytes));
+    const blob = await withTransaction(pool, (client) =>
+      createBlob(client, { mimeType: "audio/mp4", byteSize: bytes.byteLength, storageKey }),
+    );
+    const file = await withTransaction(pool, (client) =>
+      createItemWithClient(client, {
+        databaseId: files.id,
+        properties: { name: "recording", file: { blobId: blob.id } },
+      }),
+    );
+    return { files, file };
+  }
+
+  function readSource(filesId: string, fileId: string): Promise<ItemRow | null> {
+    return withTransaction(pool, (client) => getItemById(client, filesId, fileId));
+  }
+
+  /**
+   * Inflates step 1's checkpointed duration and clears steps 2/3's checkpoints, so a replay
+   * exercises multiple ASR chunk boundaries against the fixture's real (sub-second) audio without
+   * generating a 20+ minute fixture file: `ffmpeg -t` past the real file's end simply stops at EOF.
+   */
+  async function inflateDurationAndResetLaterSteps(fileId: string, durationSeconds: number): Promise<void> {
+    await pool.query(
+      `UPDATE items
+       SET computed = jsonb_set(computed, '{prepare,durationSeconds}', to_jsonb($2::float8)) - 'diarize' - 'asr'
+       WHERE id = $1`,
+      [fileId, durationSeconds],
+    );
+  }
+
+  it("diarizes the whole recording exactly once, checkpoints its turns, and also runs ASR", async () => {
+    const { files, file } = await createSourceFile(audioFixture);
+    gatewayClient.diarizeResult = [{ speaker: "SPEAKER_00", start: 0, end: 1 }];
+
+    await createTranscriptionTask(pool, blobStorage, gatewayClient)({ fileItemId: file.id });
+
+    expect(gatewayClient.diarizeCalls).toHaveLength(1);
+    expect(gatewayClient.diarizeCalls[0]?.audioSeconds).toBeGreaterThan(0);
+    expect(gatewayClient.transcribeCalls.length).toBeGreaterThan(0);
+    const source = await readSource(files.id, file.id);
+    expect(source?.computed.diarize).toEqual(gatewayClient.diarizeResult);
+  });
+
+  it("skips diarization on replay without calling the gateway again", async () => {
+    const { files, file } = await createSourceFile(audioFixture);
+    const task = createTranscriptionTask(pool, blobStorage, gatewayClient);
+
+    await task({ fileItemId: file.id });
+    expect(gatewayClient.diarizeCalls).toHaveLength(1);
+    const beforeReplay = await readSource(files.id, file.id);
+
+    await task({ fileItemId: file.id });
+
+    expect(gatewayClient.diarizeCalls).toHaveLength(1);
+    const afterReplay = await readSource(files.id, file.id);
+    expect(afterReplay?.computed.diarize).toEqual(beforeReplay?.computed.diarize);
+  });
+
+  it("splits ASR into one chunk per 20-minute boundary, checkpoints each immediately, and passes chunk 0's detected language to later chunks", async () => {
+    const { files, file } = await createSourceFile(audioFixture);
+    await createTranscriptionTask(pool, blobStorage, gatewayClient)({ fileItemId: file.id });
+    await inflateDurationAndResetLaterSteps(file.id, 25 * 60);
+    gatewayClient.diarizeCalls = [];
+    gatewayClient.transcribeCalls = [];
+    gatewayClient.transcribeResult = (request) => ({
+      text: `chunk-${gatewayClient.transcribeCalls.length - 1}`,
+      language: request.language ?? "cs",
+      segments: [],
+    });
+
+    await createTranscriptionTask(pool, blobStorage, gatewayClient)({ fileItemId: file.id });
+
+    expect(gatewayClient.diarizeCalls).toHaveLength(1);
+    expect(gatewayClient.transcribeCalls).toHaveLength(2);
+    expect(gatewayClient.transcribeCalls[0]?.language).toBeUndefined();
+    expect(gatewayClient.transcribeCalls[1]?.language).toBe("cs");
+    const source = await readSource(files.id, file.id);
+    const asr = asrCheckpointSchema.parse(source?.computed.asr);
+    expect(asr.language).toBe("cs");
+    expect(Object.keys(asr.chunks)).toEqual(["0", "1"]);
+    expect(asr.chunks["0"]?.text).toBe("chunk-0");
+    expect(asr.chunks["1"]?.text).toBe("chunk-1");
+  });
+
+  it("resumes after a crash mid-ASR: the retried run repeats no already-checkpointed chunk and no diarize call", async () => {
+    const { files, file } = await createSourceFile(audioFixture);
+    await createTranscriptionTask(pool, blobStorage, gatewayClient)({ fileItemId: file.id });
+    await inflateDurationAndResetLaterSteps(file.id, 25 * 60);
+    gatewayClient.diarizeCalls = [];
+    gatewayClient.transcribeCalls = [];
+    let callCount = 0;
+    gatewayClient.transcribeResult = () => {
+      callCount += 1;
+      if (callCount === 2) throw new Error("simulated crash");
+      return { text: "chunk-0", language: "cs", segments: [] };
+    };
+
+    await expect(createTranscriptionTask(pool, blobStorage, gatewayClient)({ fileItemId: file.id })).rejects.toThrow(
+      "simulated crash",
+    );
+
+    const midSource = await readSource(files.id, file.id);
+    expect(Object.keys(asrCheckpointSchema.parse(midSource?.computed.asr).chunks)).toEqual(["0"]);
+
+    gatewayClient.diarizeCalls = [];
+    gatewayClient.transcribeCalls = [];
+    gatewayClient.transcribeResult = (request) => ({
+      text: "chunk-1",
+      language: request.language ?? "cs",
+      segments: [],
+    });
+
+    await createTranscriptionTask(pool, blobStorage, gatewayClient)({ fileItemId: file.id });
+
+    expect(gatewayClient.diarizeCalls).toHaveLength(0);
+    expect(gatewayClient.transcribeCalls).toHaveLength(1);
+    expect(gatewayClient.transcribeCalls[0]?.language).toBe("cs");
+    const finalSource = await readSource(files.id, file.id);
+    const asr = asrCheckpointSchema.parse(finalSource?.computed.asr);
+    expect(Object.keys(asr.chunks)).toEqual(["0", "1"]);
   });
 });

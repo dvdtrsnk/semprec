@@ -7,8 +7,21 @@ import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import type { Logger } from "@semprec/shared";
 import { createDispatcher } from "../app.js";
 import type { CompleteHandlerOptions } from "../completeHandler.js";
+import type { AudioHandlerOptions } from "../audioHandler.js";
 import type { StructuredCompletionProvider, StructuredCompletionRequest } from "../structuredProviders/types.js";
 import { createGracefulShutdown, POOL_END_TIMEOUT_MS } from "../shutdown.js";
+
+const FAKE_AUDIO_OPTIONS: AudioHandlerOptions = {
+  internalToken: "test-internal-token",
+  diarizationProvider: { id: "fake-diarizer", model: "fake-model", diarize: async () => [] },
+  transcriptionProvider: {
+    id: "fake-transcriber",
+    model: "fake-model",
+    transcribe: async () => ({ text: "", language: null, segments: [] }),
+  },
+  pyannotePricePerAudioHour: 1,
+  deepInfraPricePerAudioHour: 1,
+};
 
 const VALID_BODY = {
   projectItemId: "11111111-1111-1111-1111-111111111111",
@@ -379,7 +392,7 @@ describe("createGracefulShutdown against the ai-gateway dispatcher with a real p
       pricePerMillionInputTokens: 3,
       pricePerMillionOutputTokens: 15,
     };
-    server = createServer(createDispatcher(pool, options));
+    server = createServer(createDispatcher(pool, options, FAKE_AUDIO_OPTIONS));
     return listenOn(server);
   }
 

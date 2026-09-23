@@ -1,6 +1,9 @@
 import { createAnthropicStructuredProvider } from "./structuredProviders/anthropicProvider.js";
 import { createStructuredProviderRegistry, type StructuredCompletionProvider } from "./structuredProviders/types.js";
 import type { CompleteHandlerOptions } from "./completeHandler.js";
+import type { AudioHandlerOptions } from "./audioHandler.js";
+import { createPyannoteDiarizationProvider } from "./audioProviders/pyannoteProvider.js";
+import { createDeepInfraWhisperProvider } from "./audioProviders/deepInfraWhisperProvider.js";
 
 /** Every provider this deployment of `semprec-ai-gateway` knows how to construct, keyed by id. */
 function buildRegisteredProviders(env: NodeJS.ProcessEnv): StructuredCompletionProvider[] {
@@ -32,6 +35,7 @@ export interface StartupConfig {
   port: number;
   databaseUrl: string;
   handlerOptions: CompleteHandlerOptions;
+  audioHandlerOptions: AudioHandlerOptions;
 }
 
 export function resolveStartupConfig(
@@ -69,6 +73,11 @@ export function resolveStartupConfig(
   const pricePerMillionInputTokens = requirePositiveFloat(env, "AI_GATEWAY_STRUCTURED_INPUT_PRICE_PER_MTOK");
   const pricePerMillionOutputTokens = requirePositiveFloat(env, "AI_GATEWAY_STRUCTURED_OUTPUT_PRICE_PER_MTOK");
 
+  const diarizationProvider = createPyannoteDiarizationProvider(requireEnv(env, "PYANNOTEAI_API_KEY"));
+  const transcriptionProvider = createDeepInfraWhisperProvider(requireEnv(env, "DEEPINFRA_API_KEY"));
+  const pyannotePricePerAudioHour = requirePositiveFloat(env, "AI_GATEWAY_PYANNOTE_PRICE_PER_AUDIO_HOUR");
+  const deepInfraPricePerAudioHour = requirePositiveFloat(env, "AI_GATEWAY_DEEPINFRA_PRICE_PER_AUDIO_HOUR");
+
   return {
     port,
     databaseUrl,
@@ -78,6 +87,13 @@ export function resolveStartupConfig(
       model,
       pricePerMillionInputTokens,
       pricePerMillionOutputTokens,
+    },
+    audioHandlerOptions: {
+      internalToken,
+      diarizationProvider,
+      transcriptionProvider,
+      pyannotePricePerAudioHour,
+      deepInfraPricePerAudioHour,
     },
   };
 }
