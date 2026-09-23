@@ -446,10 +446,7 @@ async function runMergeStep({ pool, filesDatabaseId, fileItemId }: Transcription
     const transcriptId = requireTranscriptId(source, fileItemId);
     const transcriptsDatabaseId = await requireTranscriptsDatabaseId(client);
     // Locked, so a concurrent run that merged first is not overwritten.
-    const transcript = requireTranscript(
-      await lockItemById(client, transcriptsDatabaseId, transcriptId),
-      transcriptId,
-    );
+    const transcript = requireTranscript(await lockItemById(client, transcriptsDatabaseId, transcriptId), transcriptId);
     if (Object.hasOwn(transcript.computed, TRANSCRIPT_SEGMENTS_COMPUTED_KEY)) return;
 
     const prepare = requirePrepareCheckpoint(source, fileItemId);
@@ -535,10 +532,7 @@ async function runFinalizeStep(
     const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
     const transcriptId = requireTranscriptId(source, fileItemId);
     const transcriptsDatabaseId = await requireTranscriptsDatabaseId(client);
-    const transcript = requireTranscript(
-      await lockItemById(client, transcriptsDatabaseId, transcriptId),
-      transcriptId,
-    );
+    const transcript = requireTranscript(await lockItemById(client, transcriptsDatabaseId, transcriptId), transcriptId);
     if (transcript.properties.status === "done") return;
     requireSegments(transcript);
     if (!Object.hasOwn(readSummaries(transcript), instruction.key))
