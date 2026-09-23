@@ -25,7 +25,10 @@ import {
   TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
   TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY,
 } from "../transcription/transcriptionComputedKeys.js";
-import { FILES_TRANSCRIPTION_TRIGGER_ACTION_ID } from "../transcription/transcriptionActions.js";
+import {
+  FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
+  TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
+} from "../transcription/transcriptionActions.js";
 import { seedTenDatabasesInTransaction } from "./seedTenDatabases.js";
 import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
 import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
@@ -249,6 +252,15 @@ export async function seedSystem(
         filesDatabaseId: tenDatabases.files.id,
         attachmentsRelationPropertyId: attachmentsProperty.id,
       },
+    });
+    // Daily transcription requeue (issue #186): puts every failed Transcriptions row back into
+    // the pipeline as a fresh batch. Offset from the other daily heartbeats (03:05, 04:00).
+    await createHeartbeat(client, {
+      projectItemId: semprecProject.id,
+      name: "Transcription requeue sweep",
+      rule: { kind: "dailyTime", at: "04:30" },
+      actionId: TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
+      actionConfig: { transcriptsDatabaseId: tenDatabases.transcripts.id },
     });
 
     // Inbox / Inbox item types / Processing proposals (issue #101): the three databases

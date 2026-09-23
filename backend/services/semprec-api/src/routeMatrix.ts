@@ -176,6 +176,13 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
   },
   {
+    name: "transcription rerun",
+    method: "POST",
+    path: `/api/transcriptions/${EXAMPLE_ID}/rerun`,
+    surface: "api",
+    public: false,
+  },
+  {
     name: "transcript speakers",
     method: "GET",
     path: `/api/transcripts/${EXAMPLE_ID}/speakers`,

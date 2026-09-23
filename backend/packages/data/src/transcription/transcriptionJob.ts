@@ -10,6 +10,24 @@ export function transcriptionJobKey(fileItemId: string): string {
   return `transcription-job:${fileItemId}`;
 }
 
+const TRANSCRIPTION_SOURCE_LINK_PREFIX = "semprec://items/";
+
+/** The Transcriptions row's `link`: the Files item it was transcribed from, which is also its job's key. */
+export function transcriptionSourceLink(fileItemId: string): string {
+  return `${TRANSCRIPTION_SOURCE_LINK_PREFIX}${fileItemId}`;
+}
+
+/**
+ * Reads the Files item id back out of a Transcriptions row's `link` (issue #186's requeue and
+ * rerun paths), or `null` when the value is not a link `transcriptionSourceLink` produced — the
+ * property is read from a JSONB column, so it is checked here rather than trusted.
+ */
+export function readTranscriptionSourceFileItemId(link: unknown): string | null {
+  if (typeof link !== "string" || !link.startsWith(TRANSCRIPTION_SOURCE_LINK_PREFIX)) return null;
+  const parsed = z.string().uuid().safeParse(link.slice(TRANSCRIPTION_SOURCE_LINK_PREFIX.length));
+  return parsed.success ? parsed.data : null;
+}
+
 export const transcriptionJobPayloadSchema = z.object({ fileItemId: z.string().uuid() });
 export type TranscriptionJobPayload = z.infer<typeof transcriptionJobPayloadSchema>;
 
@@ -18,8 +36,10 @@ export interface EnqueueTranscriptionJobInput {
 }
 
 /**
- * Shared by both producers (the Files `onItemEvent:create` trigger and `POST /api/transcriptions`)
- * so the job-key/task-name pairing can't drift between them. Takes an already-open `client` so a
+ * Shared by every producer (the Files `onItemEvent:create` trigger, `POST /api/transcriptions`,
+ * the daily requeue sweep and `POST /api/transcriptions/:id/rerun`) so the job-key/task-name
+ * pairing can't drift between them. A repeat enqueue replaces the queued job under the same key
+ * and resets its attempt count, so a requeued row gets a fresh batch rather than a second job. Takes an already-open `client` so a
  * caller can enqueue inside its own transaction (state-writes: the enqueue is the write here,
  * there is nothing else to gate it against). `maxAttempts: 3` with graphile-worker's built-in
  * exponential backoff is the job's retry policy (issue #248); every attempt resumes from the
