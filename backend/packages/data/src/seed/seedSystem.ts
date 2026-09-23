@@ -27,6 +27,7 @@ import {
 } from "../transcription/transcriptionComputedKeys.js";
 import {
   FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
+  TRANSCRIPTION_REQUEUE_HEARTBEAT,
   TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
 } from "../transcription/transcriptionActions.js";
 import { seedTenDatabasesInTransaction } from "./seedTenDatabases.js";
@@ -254,11 +255,11 @@ export async function seedSystem(
       },
     });
     // Daily transcription requeue (issue #186): puts every failed Transcriptions row back into
-    // the pipeline as a fresh batch. Offset from the other daily heartbeats (03:05, 04:00).
+    // the pipeline as a fresh batch. A populated install gets it from
+    // runTranscriptionRequeueHeartbeatCutoverMigration instead.
     await createHeartbeat(client, {
       projectItemId: semprecProject.id,
-      name: "Transcription requeue sweep",
-      rule: { kind: "dailyTime", at: "04:30" },
+      ...TRANSCRIPTION_REQUEUE_HEARTBEAT,
       actionId: TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
       actionConfig: { transcriptsDatabaseId: tenDatabases.transcripts.id },
     });
