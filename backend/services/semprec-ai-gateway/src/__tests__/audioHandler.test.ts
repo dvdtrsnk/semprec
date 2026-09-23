@@ -1,4 +1,4 @@
-import { createServer, type Server } from "node:http";
+import { createServer, request, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createChokePoint, getSystemSettingsDatabaseId, getSystemSettingsItemId, seedSystem } from "@semprec/data";
@@ -101,6 +101,42 @@ function post(path: string, body: unknown, token = "test-internal-token"): Promi
     method: "POST",
     headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Streams `totalBytes` of body through `node:http` rather than `fetch`, so the whole oversized
+ * payload never has to sit in memory and the early 413 is read as soon as the server sends it.
+ */
+function postOversized(path: string, totalBytes: number): Promise<number> {
+  const { port } = new URL(baseUrl);
+  return new Promise<number>((resolve, reject) => {
+    const req = request({
+      host: "127.0.0.1",
+      port: Number(port),
+      method: "POST",
+      path,
+      headers: { "content-type": "application/json", authorization: "Bearer test-internal-token" },
+    });
+    req.on("response", (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+    });
+    req.on("error", reject);
+    const chunk = Buffer.alloc(1024 * 1024, 0x61);
+    let written = 0;
+    const writeMore = (): void => {
+      while (written < totalBytes) {
+        const slice = chunk.subarray(0, Math.min(chunk.length, totalBytes - written));
+        written += slice.length;
+        if (!req.write(slice)) {
+          req.once("drain", writeMore);
+          return;
+        }
+      }
+      req.end();
+    };
+    writeMore();
   });
 }
 
@@ -244,6 +280,42 @@ describe("POST /internal/diarize and /internal/transcribe", () => {
 
     expect(res.status).toBe(502);
     expect(((await res.json()) as { code: string }).code).toBe("provider_failed");
+
+    const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
+    expect(rows).toHaveLength(0);
+  });
+
+  it("returns 404 for a method the audio routes do not serve", async () => {
+    startServer(diarizationProvider, transcriptionProvider);
+    await listen();
+
+    const res = await fetch(`${baseUrl}/internal/diarize`, {
+      headers: { authorization: "Bearer test-internal-token" },
+    });
+
+    expect(res.status).toBe(404);
+    expect(diarizationProvider.calls).toHaveLength(0);
+  });
+
+  it("returns 413 and never calls the provider when the body exceeds the size cap", async () => {
+    startServer(diarizationProvider, transcriptionProvider);
+    await listen();
+
+    const status = await postOversized("/internal/diarize", 150 * 1024 * 1024 + 1);
+
+    expect(status).toBe(413);
+    expect(diarizationProvider.calls).toHaveLength(0);
+  });
+
+  it("returns 500 and records no row when the provider throws an unexpected error", async () => {
+    transcriptionProvider.failure = new Error("unexpected");
+    startServer(diarizationProvider, transcriptionProvider);
+    await listen();
+
+    const res = await post("/internal/transcribe", VALID_TRANSCRIBE_BODY);
+
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "Internal server error" });
 
     const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
     expect(rows).toHaveLength(0);
