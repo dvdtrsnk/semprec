@@ -70,10 +70,9 @@ async function czechVector(pool: Pool, text: string): Promise<string> {
 }
 
 async function lexize(pool: Pool, word: string): Promise<string[] | null> {
-  const { rows } = await pool.query<{ lexemes: string[] | null }>(
-    "SELECT ts_lexize('czech_hunspell', $1) AS lexemes",
-    [word],
-  );
+  const { rows } = await pool.query<{ lexemes: string[] | null }>("SELECT ts_lexize('czech_hunspell', $1) AS lexemes", [
+    word,
+  ]);
   if (!rows[0]) throw new Error("ts_lexize returned no row");
   return rows[0].lexemes;
 }
