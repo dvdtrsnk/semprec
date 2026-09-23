@@ -8,6 +8,7 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import {
   createBlob,
+  createChokePoint,
   createItemWithClient,
   createViewTypeRegistry,
   ForbiddenError,
@@ -71,14 +72,20 @@ class FakeAudioGatewayClient implements AudioGatewayClient {
   }
 }
 
-/** A fake `AiGatewayClientPort` for step 5: answers every summary request with a text naming its instruction, and counts calls. */
+/**
+ * A fake `AiGatewayClientPort` for steps 5 and 7: answers every summary request with a text naming
+ * its instruction, every speaker-suggestion request with `speakerMappings`, and counts calls.
+ */
 class FakeSummaryClient implements AiGatewayClientPort {
   calls: AiGatewayCompletionInput[] = [];
   failure: Error | null = null;
+  speakerMappings: Array<{ speaker: string; personId: string }> = [];
 
   async complete(input: AiGatewayCompletionInput): Promise<AiGatewayCompletionResult> {
     this.calls.push(input);
     if (this.failure) throw this.failure;
+    if (input.operation === "transcript_speaker_suggestion")
+      return { content: { mappings: this.speakerMappings }, usage: { inputTokens: 10, outputTokens: 5 } };
     const instruction = input.messages[0]?.content.split("\n")[1] ?? "";
     return { content: { summary: `summary for: ${instruction}` }, usage: { inputTokens: 10, outputTokens: 5 } };
   }
@@ -617,7 +624,7 @@ const transcriptOutputSchema = z.object({
   computed: z.record(z.string(), z.unknown()),
 });
 
-describe("transcription steps 4-6 (merge, summarize, finalize)", () => {
+describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, finalize)", () => {
   let tmpBlobDir: string;
   let blobStorage: LocalFsBlobStorageWriter;
   let gatewayClient: FakeAudioGatewayClient;
@@ -893,6 +900,102 @@ describe("transcription steps 4-6 (merge, summarize, finalize)", () => {
     const match = await readMatch(transcript.id);
     expect(match.eventIds).toEqual([]);
     expect(match.cards).toEqual([{ id: expect.any(String), kind: "transcript" }]);
+    // No linked Event, so no participants to suggest speakers from: nothing is asked.
+    expect(summaryClient.calls.map((call) => call.operation)).toEqual(["transcript_summary"]);
+  });
+
+  async function createParticipant(eventId: string, name: string): Promise<string> {
+    const { person, peoplePropertyId } = await withTransaction(pool, async (client) => {
+      const people = await getDatabaseByModuleId(client, "people");
+      const events = await getDatabaseByModuleId(client, "events");
+      if (!people || !events) throw new Error("People/Events databases were not seeded");
+      const created = await createItemWithClient(client, { databaseId: people.id, properties: { name } });
+      const { rows } = await client.query<{ id: string }>(
+        "SELECT id FROM properties WHERE database_id = $1 AND key = 'people'",
+        [events.id],
+      );
+      if (!rows[0]) throw new Error("Events 'people' property was not seeded");
+      return { person: created, peoplePropertyId: rows[0].id };
+    });
+    await createChokePoint(pool).createRelation({
+      relationPropertyId: peoplePropertyId,
+      callerItemId: eventId,
+      targetItemId: person.id,
+    });
+    return person.id;
+  }
+
+  async function readSpeakerCards() {
+    const { rows } = await pool.query<{ proposal: unknown; status: string }>(
+      `SELECT i.properties -> 'proposal' AS proposal, i.properties ->> 'status' AS status
+       FROM items i JOIN databases d ON d.id = i.database_id
+       WHERE d.owner_module_id = 'processingProposals' AND i.properties ->> 'kind' = 'transcript'`,
+    );
+    return rows;
+  }
+
+  async function countSpeakerEdges(): Promise<number> {
+    const { rows } = await pool.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
+       JOIN properties p ON p.id = d.property_id_a WHERE p.key = 'speakers'`,
+    );
+    return rows[0]?.count ?? 0;
+  }
+
+  it("suggests speakers from the linked Event's participants as cards, writes no mapping, and a rerun pays once", async () => {
+    const { file } = await createSourceFile();
+    const eventId = await createEvent(FIXTURE_CREATION_TIME);
+    const aliceId = await createParticipant(eventId, "Alice");
+    await createParticipant(eventId, "Bob");
+    summaryClient.speakerMappings = [{ speaker: "SPEAKER_01", personId: aliceId }];
+    const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+
+    await task({ fileItemId: file.id });
+    await task({ fileItemId: file.id });
+
+    const suggestionCalls = summaryClient.calls.filter((call) => call.operation === "transcript_speaker_suggestion");
+    expect(suggestionCalls).toHaveLength(1);
+    expect(suggestionCalls[0]).toMatchObject({ projectItemId: null });
+    const content = suggestionCalls[0]?.messages[0]?.content ?? "";
+    expect(content).toContain(`${aliceId}: Alice`);
+    expect(content).toContain("SPEAKER_00\nSPEAKER_01");
+    expect(await readSpeakerCards()).toEqual([
+      {
+        proposal: {
+          entityKind: "relation",
+          target: aliceId,
+          properties: { propertyKey: "speakers", metadata: { speaker: "SPEAKER_01" } },
+        },
+        status: "proposed",
+      },
+    ]);
+    expect(await countSpeakerEdges()).toBe(0);
+    const transcript = await readTranscript(file.id);
+    expect(transcript.properties.status).toBe("done");
+  });
+
+  it("leaves the row processing when the speaker suggestion fails, then suggests on retry", async () => {
+    const { file } = await createSourceFile();
+    const eventId = await createEvent(FIXTURE_CREATION_TIME);
+    const aliceId = await createParticipant(eventId, "Alice");
+    summaryClient.speakerMappings = [{ speaker: "SPEAKER_00", personId: aliceId }];
+    const failing: AiGatewayClientPort = {
+      complete: (input) =>
+        input.operation === "transcript_speaker_suggestion"
+          ? Promise.reject(new Error("gateway refused"))
+          : summaryClient.complete(input),
+    };
+
+    await expect(
+      createTranscriptionTask(pool, blobStorage, gatewayClient, failing)({ fileItemId: file.id }),
+    ).rejects.toThrow("gateway refused");
+    expect((await readTranscript(file.id)).properties.status).toBe("processing");
+    expect(await readSpeakerCards()).toEqual([]);
+
+    await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId: file.id });
+
+    expect((await readTranscript(file.id)).properties.status).toBe("done");
+    expect(await readSpeakerCards()).toHaveLength(1);
   });
 
   it("publishes each output write and the done transition on the generic realtime channel", async () => {
@@ -908,7 +1011,7 @@ describe("transcription steps 4-6 (merge, summarize, finalize)", () => {
       const transcript = await readTranscript(file.id);
       const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
 
-      // Step 1 (date), step 4 (segments, then language), step 5 (summary) and step 7 (status done).
+      // Step 1 (date), step 4 (segments, then language), step 5 (summary) and step 8 (status done).
       await vi.waitFor(() => {
         const updates = received.filter(
           (message) =>

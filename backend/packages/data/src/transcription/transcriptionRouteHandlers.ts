@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
+import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
 import { withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
@@ -8,6 +9,8 @@ import { FILES_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { readBlobId } from "./transcriptionActions.js";
 import { enqueueTranscriptionJob, findTranscriptionJobId } from "./transcriptionJob.js";
+import { listTranscriptSpeakers } from "./transcriptionSpeakerEdges.js";
+import { toManifestLocale } from "../manifest/catalogResolution.js";
 
 /**
  * Duck-typed the same way `inboxRouteHandlers.ts` is: matches `semprec-api`'s
@@ -87,5 +90,66 @@ export function createCreateTranscriptionRouteHandler(pool: Pool) {
       await enqueueTranscriptionJob(client, { fileItemId });
       return { status: 202, body: { fileItemId } };
     });
+  };
+}
+
+/** `GET /api/transcripts/:id/speakers`'s request context: also reads the caller's locale, which the REST adapter supplies with every authenticated request. */
+interface SpeakersRouteRequestContext {
+  params: Record<string, string>;
+  identity: { user: { locale: string } };
+}
+
+const transcriptIdSchema = z.string().uuid();
+
+let speakerCatalogsPromise: Promise<ModuleCatalogs> | undefined;
+
+/**
+ * Lazily loaded once per process — `transcription/i18n/{cs,en}.json` never changes at runtime. A
+ * failed load is not cached, so the next request retries instead of failing until restart.
+ */
+function getSpeakerCatalogs(): Promise<ModuleCatalogs> {
+  speakerCatalogsPromise ??= loadModuleCatalogs(import.meta.url).catch((error: unknown) => {
+    speakerCatalogsPromise = undefined;
+    throw error;
+  });
+  return speakerCatalogsPromise;
+}
+
+/** One speaker key as a client shows it: the mapped person's name, or the localized "Speaker N". */
+interface SpeakerEnvelope {
+  speaker: string;
+  label: string;
+  personId: string | null;
+}
+
+/**
+ * `GET /api/transcripts/:id/speakers` (issue #185): the transcript's speaker keys in order of first
+ * appearance, each with the display label a client renders it under — the mapped person's name, or
+ * `transcript.speaker.unmappedLabel` ("Speaker N" / "Mluvčí N") in the caller's `users.locale` for
+ * a key with no mapping, and for a mapped person with no name. Composed from the `speakers` edges
+ * at read time, so a mapping change shows here without `computed.segments` ever being rewritten.
+ * Mapping itself is written through the generic relation endpoint, not here.
+ */
+export function createTranscriptSpeakersRouteHandler(pool: Pool) {
+  return async (ctx: SpeakersRouteRequestContext): Promise<CustomRouteResult> => {
+    const parsedId = transcriptIdSchema.safeParse(ctx.params.id);
+    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+    const speakers = await withTransaction(pool, (client) => listTranscriptSpeakers(client, parsedId.data));
+
+    const catalogs = await getSpeakerCatalogs();
+    const unmappedTemplate = resolveCatalogLabel(
+      null,
+      catalogs[toManifestLocale(ctx.identity.user.locale)],
+      catalogs.en,
+      "transcript.speaker.unmappedLabel",
+    );
+    const body: { speakers: SpeakerEnvelope[] } = {
+      speakers: speakers.map((entry) => ({
+        speaker: entry.speaker,
+        label: entry.person?.name ?? unmappedTemplate.replace("{ordinal}", String(entry.ordinal)),
+        personId: entry.person?.id ?? null,
+      })),
+    };
+    return { status: 200, body };
   };
 }

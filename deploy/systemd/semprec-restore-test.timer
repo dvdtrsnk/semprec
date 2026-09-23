@@ -1,5 +1,5 @@
 [Unit]
-Description=Run the Semprec monthly restore-test skeleton
+Description=Run the Semprec monthly restore test
 
 [Timer]
 OnCalendar=monthly

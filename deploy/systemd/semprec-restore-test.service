@@ -1,10 +1,12 @@
 [Unit]
 Description=Semprec monthly restore test
+Wants=network-online.target
+After=network-online.target docker.service
 
 [Service]
 Type=oneshot
-User=semprec
-Group=semprec
+# Root, like semprec-backup.service: the test drives Docker and restic directly.
 EnvironmentFile=/opt/semprec/shared/.env
 SyslogIdentifier=semprec-restore-test
+TimeoutStartSec=6h
 ExecStart=/bin/bash /opt/semprec/shared/bin/semprec-restore-test.sh

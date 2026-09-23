@@ -2,7 +2,13 @@ import type { PoolClient } from "pg";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import { createItemWithClient, updateItemWithClient } from "../chokePoint/chokePoint.js";
+import * as relationsStore from "../chokePoint/relationsStore.js";
+import {
+  assertRelationCreatableWithClient,
+  createItemWithClient,
+  createRelationWithClient,
+  updateItemWithClient,
+} from "../chokePoint/chokePoint.js";
 import { putBlockWithClient } from "../docs/docStore.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
 import {
@@ -13,6 +19,8 @@ import {
 } from "./inboxTickAction.js";
 import { enqueueJournalInboxRecomputeForProposal } from "./journalInboxCompute.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
+import { EVENTS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { TRANSCRIPT_SPEAKERS_PROPERTY_KEY } from "../transcription/transcriptionSpeakerEdges.js";
 import { storeCredential, type CredentialType } from "../credentials/externalCredentialsStore.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
@@ -47,6 +55,146 @@ async function resolveResultLabel(client: PoolClient, databaseId: string, item: 
   return typeof value === "string" && value.length > 0 ? value : item.id;
 }
 
+/** The Transcripts `event` relation property: the Transcription<->Event edge a transcript card's confirm writes. */
+const TRANSCRIPT_EVENT_PROPERTY_KEY = "event";
+
+/**
+ * What a `kind = 'transcript'` card proposes (issue #185): either the transcript's Event (create a
+ * new one, or link an existing one through Transcripts `event`), or one speaker-to-person mapping
+ * (a link through Transcripts `speakers` whose metadata names the speaker key). A card keeps its
+ * role for life — `revise` may change the Event or the person, never turn one role into the other.
+ */
+type TranscriptCardRole = "event" | "speaker";
+
+/** What a transcript card's confirm writes: an edge from its source transcript through `relationPropertyId`. */
+interface TranscriptCardEdge {
+  role: TranscriptCardRole;
+  transcriptId: string;
+  relationPropertyId: string;
+}
+
+function transcriptCardRole(envelope: ProposalEnvelope): TranscriptCardRole {
+  return envelope.entityKind === "relation" && envelope.properties.propertyKey === TRANSCRIPT_SPEAKERS_PROPERTY_KEY
+    ? "speaker"
+    : "event";
+}
+
+/** A `'relation'` envelope's optional edge metadata; `assertValidProposalEnvelope` has already rejected anything but a plain object. */
+function relationEnvelopeMetadata(envelope: ProposalEnvelope): Record<string, unknown> | undefined {
+  const { metadata } = envelope.properties;
+  if (metadata === undefined) return undefined;
+  if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) {
+    throw new ValidationError("Relation proposal metadata must be an object", { field: "properties" });
+  }
+  return { ...metadata };
+}
+
+async function requireDatabaseIdByModuleId(client: PoolClient, moduleId: string): Promise<string> {
+  const database = await databasesStore.getDatabaseByModuleId(client, moduleId);
+  if (!database) throw new NotFoundError(`Database for module '${moduleId}' not found`);
+  return database.id;
+}
+
+async function requireRelationPropertyId(client: PoolClient, databaseId: string, key: string): Promise<string> {
+  const property = await propertiesStore.getPropertyByKey(client, databaseId, key);
+  if (!property) throw new NotFoundError(`Property '${key}' not found on database ${databaseId}`);
+  return property.id;
+}
+
+/** The transcript a `kind = 'transcript'` card was created for, via its `sourceTranscript` edge (written with the card by the match step). */
+async function requireSourceTranscriptId(
+  client: PoolClient,
+  config: ProposalActionConfig,
+  proposal: ItemRow,
+): Promise<string> {
+  const propertyId = await requireRelationPropertyId(client, config.processingProposalsDatabaseId, "sourceTranscript");
+  const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, propertyId);
+  if (!relationDefinition)
+    throw new NotFoundError(`Relation definition for Processing proposals 'sourceTranscript' not found`);
+  const [edge] = await relationsStore.listRelationsForItem(client, relationDefinition.id, proposal.id);
+  if (!edge) {
+    throw new ValidationError(`Transcript proposal ${proposal.id} has no source transcript`, {
+      field: "sourceTranscript",
+    });
+  }
+  return relationsStore.otherSide(edge, proposal.id);
+}
+
+/**
+ * Validates an envelope against the card it is for (issue #184), on top of the envelope's own
+ * shape (`assertValidProposalEnvelope`). A `'relation'` envelope needs a source item to link from,
+ * which only a `kind = 'transcript'` card has. A transcript card accepts exactly three shapes:
+ * create a new Event (`'database'` targeting Events), link its transcript to an existing Event
+ * (`'relation'` through the Transcripts `event` property), or map one of its speaker keys to a
+ * person (`'relation'` through `speakers`, issue #185) — and never switches between an Event shape
+ * and a speaker mapping (`transcriptCardRole`). A link is checked against the relation's
+ * integrity, ownership and edge-metadata rules now, with the same canonical errors the write
+ * itself would raise. Returns the edge confirm must write for a transcript card, `null` for any
+ * other card.
+ */
+async function assertValidEnvelopeForCard(
+  client: PoolClient,
+  config: ProposalActionConfig,
+  proposal: ItemRow,
+  envelope: ProposalEnvelope,
+): Promise<TranscriptCardEdge | null> {
+  await assertValidProposalEnvelope(client, envelope);
+  if (proposal.properties.kind !== "transcript") {
+    if (envelope.entityKind === "relation") {
+      throw new ValidationError("entityKind 'relation' is only valid on a transcript proposal", {
+        field: "entityKind",
+      });
+    }
+    return null;
+  }
+
+  const role = transcriptCardRole(envelope);
+  const current = proposal.properties.proposal as ProposalEnvelope | null;
+  if (current && transcriptCardRole(current) !== role) {
+    throw new ValidationError("A transcript proposal cannot switch between an Event and a speaker mapping", {
+      field: "entityKind",
+    });
+  }
+
+  const transcriptId = await requireSourceTranscriptId(client, config, proposal);
+  const transcriptsDatabaseId = await requireDatabaseIdByModuleId(client, TRANSCRIPTS_MODULE_ID);
+  const relationPropertyId = await requireRelationPropertyId(
+    client,
+    transcriptsDatabaseId,
+    role === "speaker" ? TRANSCRIPT_SPEAKERS_PROPERTY_KEY : TRANSCRIPT_EVENT_PROPERTY_KEY,
+  );
+  switch (envelope.entityKind) {
+    case "database": {
+      const eventsDatabaseId = await requireDatabaseIdByModuleId(client, EVENTS_MODULE_ID);
+      if (envelope.target !== eventsDatabaseId) {
+        throw new ValidationError("A transcript proposal can only create an Event", { field: "target" });
+      }
+      break;
+    }
+    case "relation":
+      if (role === "event" && envelope.properties.propertyKey !== TRANSCRIPT_EVENT_PROPERTY_KEY) {
+        throw new ValidationError(
+          `A transcript proposal can only link through the '${TRANSCRIPT_EVENT_PROPERTY_KEY}' or '${TRANSCRIPT_SPEAKERS_PROPERTY_KEY}' relation`,
+          { field: "properties" },
+        );
+      }
+      await assertRelationCreatableWithClient(client, {
+        relationPropertyId,
+        callerItemId: transcriptId,
+        targetItemId: envelope.target,
+        metadata: relationEnvelopeMetadata(envelope),
+      });
+      break;
+    case "pageContent":
+      throw new ValidationError("A transcript proposal cannot append page content", { field: "entityKind" });
+    default: {
+      const exhaustive: never = envelope.entityKind;
+      throw new Error(`Unhandled proposal entityKind: ${String(exhaustive)}`);
+    }
+  }
+  return { role, transcriptId, relationPropertyId };
+}
+
 /**
  * `POST /api/proposals/:id/confirm` (issue #105): the sole cross-destination write path —
  * an agent proposes via `processingProposals`, only a user-context confirm may ever create
@@ -77,6 +225,17 @@ async function resolveResultLabel(client: PoolClient, databaseId: string, item: 
  * satisfying "stores server and encrypted credential or neither." Not every server needs one
  * (e.g. a local `stdio` command with no auth), so a proposal with no `credential` argument at
  * all is confirmed normally, item-only.
+ *
+ * For `'relation'` (issue #184) the write is the generic relation write behind
+ * `PUT /api/items/:id/relations/:propertyKey/:targetItemId`, from the card's source item to
+ * `envelope.target`, and the result is that existing item. A `kind = 'transcript'` card also
+ * gets its Transcription<->Event edge: for `'relation'` that edge is the relation write itself;
+ * for `'database'` it is written right after the Event is created. Both run in the caller's one
+ * transaction, so a failed edge write (e.g. the 1:1 relation's `cardinality_violation` when the
+ * transcript or Event is already linked elsewhere) leaves no Event, no edge and the card still
+ * `proposed`. A speaker-mapping transcript card (issue #185) writes its `speakers` edge with the
+ * envelope's `{ speaker }` metadata as the relation write itself — the user-owned mapping only
+ * ever exists once a human confirmed it.
  */
 export async function confirmProposalWithClient(
   client: PoolClient,
@@ -93,7 +252,7 @@ export async function confirmProposalWithClient(
 
   const envelope = proposal.properties.proposal as ProposalEnvelope | null;
   if (!envelope) throw new ValidationError("Proposal has no computed envelope to confirm", { field: "proposal" });
-  await assertValidProposalEnvelope(client, envelope);
+  const transcriptCardEdge = await assertValidEnvelopeForCard(client, config, proposal, envelope);
 
   let resultItemId: string;
   let resultLabel: string;
@@ -119,6 +278,28 @@ export async function confirmProposalWithClient(
         plaintext: credential.plaintext,
       });
     }
+    // A 'database' envelope on a transcript card is always its create-Event shape.
+    if (transcriptCardEdge) {
+      await createRelationWithClient(client, {
+        relationPropertyId: transcriptCardEdge.relationPropertyId,
+        callerItemId: transcriptCardEdge.transcriptId,
+        targetItemId: created.id,
+      });
+    }
+  } else if (envelope.entityKind === "relation") {
+    // `assertValidEnvelopeForCard` above only accepts a 'relation' envelope on a transcript
+    // card, through the Transcripts `event` or `speakers` property — so `transcriptCardEdge`
+    // names this write.
+    if (!transcriptCardEdge) throw new Error(`Relation proposal ${proposal.id} has no source item to link from`);
+    await createRelationWithClient(client, {
+      relationPropertyId: transcriptCardEdge.relationPropertyId,
+      callerItemId: transcriptCardEdge.transcriptId,
+      targetItemId: envelope.target,
+      metadata: relationEnvelopeMetadata(envelope),
+    });
+    const [linked] = await itemsStore.getItemsByIds(client, [envelope.target]);
+    resultItemId = envelope.target;
+    resultLabel = linked ? await resolveResultLabel(client, linked.databaseId, linked) : envelope.target;
   } else {
     // Safe to cast without a further runtime check here: `assertValidProposalEnvelope`
     // above already rejects a 'pageContent' envelope whose `flavour` isn't a non-empty
@@ -201,9 +382,12 @@ export interface ReviseProposalInput {
 /**
  * `POST /api/proposals/:id/revise` (issue #105): a chat-driven correction. Always replaces
  * the complete envelope — including `entityKind`, so a revise can switch a proposal from
- * `database` to `pageContent` or vice versa atomically — never a partial patch onto the
+ * `database` to `pageContent` or vice versa atomically, or a transcript card from creating a
+ * new Event to linking an existing one and back (issue #184) — never a partial patch onto the
  * existing one, since a partial merge of `target`/`properties` across different
- * `entityKind`s would produce a nonsensical envelope. Refused on a locked (`confirmed`/
+ * `entityKind`s would produce a nonsensical envelope. The new envelope is checked against the
+ * card as confirm would check it (`assertValidEnvelopeForCard`), so an invalid link target is
+ * refused here with its canonical error rather than only at confirm. Refused on a locked (`confirmed`/
  * `rejected`) proposal, per the epic's "a locked card is never recomputed again"; allowed
  * from `needsClarification`/`invalid` as well as `proposed`, since a user resolving one of
  * those into a valid envelope is exactly how a proposal is meant to leave that state.
@@ -225,7 +409,7 @@ export async function reviseProposalWithClient(
     target: input.target,
     properties: input.properties,
   };
-  await assertValidProposalEnvelope(client, envelope);
+  await assertValidEnvelopeForCard(client, config, proposal, envelope);
 
   const updated = await updateItemWithClient(
     client,

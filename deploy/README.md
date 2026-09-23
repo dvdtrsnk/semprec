@@ -70,6 +70,27 @@ directory that could include those paths. The daily schedule gives a maximum dat
 No proxy-level auth, rate-limiting, IP filtering, or subdomains — all of that stays in the
 application (`services/semprec-api`), by design.
 
+## Monthly restore test (issue #178)
+
+`semprec-restore-test.timer` runs monthly. Its root-owned service restores the newest restic
+snapshot into a temporary directory under `/var/tmp`, then starts a disposable PostgreSQL and a
+disposable MinIO container on a new `--internal` Docker network. It never addresses the
+production Compose containers or volumes. The run passes only if all of these hold:
+
+- `pg_restore --exit-on-error` of the restored custom dump succeeds;
+- `items` is non-empty and its newest `updated_at` is at most 48 hours old;
+- `doc_snapshots` is non-empty and no row has an empty `state`;
+- 20 random hashed `blobs` rows (all of them, when fewer exist) each read back from the
+  disposable MinIO's `$MINIO_BLOB_BUCKET` with exactly the recorded size and SHA-256 hash.
+
+Every container, the network, and the restored files are removed on every exit path; a cleanup
+that cannot finish fails the run. Only then does a passing run mark the `backup:restoreTest`
+observability check `ok` and ping `HEALTHCHECKS_RESTORE_PING_URL`. A failed run marks that check
+`alerting`, writes one `backup_restore_failed` notification through the data layer's
+`writeNotification` (the `restoreTestResultCli.js` of the current release, as `semprec_side`),
+pings the monitor's `/fail` endpoint, and exits non-zero. It never sends the success ping.
+`deploy/systemd/scripts/semprec-restore-test.test.sh` is the hermetic behavior test.
+
 ## Bootstrap secrets (issue #175)
 
 - **Two files, one contract.** `/opt/semprec/shared/.env` (this directory's `shared/.env.example`

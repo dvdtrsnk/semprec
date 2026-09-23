@@ -20,3 +20,5 @@ export const TRANSCRIPT_SEGMENTS_COMPUTED_KEY = "segments";
 export const TRANSCRIPT_LANGUAGE_COMPUTED_KEY = "language";
 /** Step 5 stores `{ [instructionKey]: summary }` on the Transcripts item: one cached summary per instruction, never overwritten. */
 export const TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY = "summaryByInstruction";
+/** Step 7 stores `{ proposedSpeakers }` on the source Files item once its one speaker-suggestion call has been turned into cards: the keys that got a card. */
+export const TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY = "suggestSpeakers";

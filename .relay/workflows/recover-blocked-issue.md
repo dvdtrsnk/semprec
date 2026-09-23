@@ -41,6 +41,7 @@
 # the claim budget lasts.
 id: recover-blocked-issue
 name: Recover blocked issue
+priority: 60   # parked work: rarer than the rest, and worth unparking before another issue is begun
 on:
   pull-requests:
     label: agent:blocked

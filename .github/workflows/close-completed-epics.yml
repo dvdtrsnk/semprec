@@ -1,0 +1,62 @@
+name: Close completed epics
+
+# Closes a parent issue once GitHub reports every one of its sub-issues closed.
+# GitHub has no such behaviour of its own — its documented auto-close covers only
+# "a merged pull request closes the issue it names" — so a finished epic stays open
+# until someone notices.
+#
+# Daily is deliberate, and the schedule is the whole point: the work is repository
+# housekeeping, not part of implementing anything, so it must keep running when no
+# agent is. Relay cannot host it for two reasons: its workflows trigger on an issue
+# or pull-request label and have no schedule, and its tick only runs for an *enabled*
+# project — the sweep would stop the moment the project is paused, which is exactly
+# when stale epics pile up.
+#
+# The run is cheap on purpose. `sub_issues_summary` rides along on the issues
+# listing, so one request per hundred open issues answers it for every epic; only an
+# epic that already looks complete costs a second request for its comments.
+#
+# `workflow_dispatch` takes `dry_run` (default true) so a manual run reports what it
+# would do and writes nothing.
+
+on:
+  schedule:
+    # 04:15 UTC — off the hour, so it does not join the stampede of jobs that
+    # every cron scheduler fires at :00.
+    - cron: "15 4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report what would happen without writing anything
+        type: boolean
+        default: true
+      grace_hours:
+        description: How old the announcement must be before the epic is closed
+        type: string
+        default: "20"
+
+permissions:
+  contents: read
+  # Posts the announcement, withdraws it, and closes the epic.
+  issues: write
+
+concurrency:
+  group: close-completed-epics
+  cancel-in-progress: false
+
+jobs:
+  close-completed-epics:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Close epics whose sub-issues are all done
+        run: node .github/scripts/close-completed-epics.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A scheduled run always writes; a manual one defaults to reporting only.
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          GRACE_HOURS: ${{ inputs.grace_hours || '20' }}

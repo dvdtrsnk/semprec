@@ -41,8 +41,18 @@ export const semprecTickActionConfigSchema = z.object({
 
 export type SemprecTickActionConfig = z.infer<typeof semprecTickActionConfigSchema>;
 
-/** The generic proposal envelope (issue #100/#223): exactly `entityKind`, `target`, `properties`. */
-export type ProposalEntityKind = "pageContent" | "database";
+/**
+ * The generic proposal envelope (issue #100/#223): exactly `entityKind`, `target`, `properties`.
+ * `'relation'` (issue #184) links the card's source item to the existing item `target` through the
+ * relation property named by `properties.propertyKey`, with `properties.metadata` (optional) as
+ * the edge's metadata — never computed by the Inbox tick. A transcript card reaches the
+ * Event-link shape only through a human `revise`; its speaker-mapping shape (issue #185) is
+ * proposed by the transcription pipeline.
+ */
+export type ProposalEntityKind = "pageContent" | "database" | "relation";
+
+/** The entity kinds the Inbox tick itself computes, one per `processingMethod`. */
+type ComputedProposalEntityKind = Exclude<ProposalEntityKind, "relation">;
 
 export interface ProposalEnvelope {
   entityKind: ProposalEntityKind;
@@ -55,7 +65,7 @@ export interface ProposalComputationInput {
   sourceItem: ItemRow;
   /** The Inbox item's resolved, recognized type. */
   type: ItemRow;
-  entityKind: ProposalEntityKind;
+  entityKind: ComputedProposalEntityKind;
   /** Resolved target database id for `entityKind: 'database'`; absent for `'pageContent'`, where the target page is itself part of the content decision. */
   targetDatabaseId?: string;
 }
@@ -151,7 +161,7 @@ async function computeProposalEnvelope(
   type: ItemRow,
   processingMethod: ProcessingMethod,
 ): Promise<ProposalEnvelope> {
-  const entityKind: ProposalEntityKind = processingMethod === "database" ? "database" : "pageContent";
+  const entityKind: ComputedProposalEntityKind = processingMethod === "database" ? "database" : "pageContent";
 
   if (entityKind === "database") {
     const targetModuleId = type.properties.targetDatabase;
@@ -203,7 +213,11 @@ export function appendHistoryEntry(
  * unknown/malformed target, or properties the destination could not accept.
  */
 export async function assertValidProposalEnvelope(client: PoolClient, envelope: ProposalEnvelope): Promise<void> {
-  if (envelope.entityKind !== "pageContent" && envelope.entityKind !== "database") {
+  if (
+    envelope.entityKind !== "pageContent" &&
+    envelope.entityKind !== "database" &&
+    envelope.entityKind !== "relation"
+  ) {
     throw new ValidationError(`Proposal envelope has unknown entityKind '${String(envelope.entityKind)}'`, {
       field: "entityKind",
     });
@@ -259,6 +273,24 @@ export async function assertValidProposalEnvelope(client: PoolClient, envelope: 
       if (property.owner === "system") {
         throw new ValidationError(`Proposal properties cannot set system-owned property '${key}'`, { field: key });
       }
+    }
+    return;
+  }
+
+  if (envelope.entityKind === "relation") {
+    // Only the envelope's own shape is checked here: whether the edge may be written depends on
+    // the card's source item, which proposalActions.ts resolves and checks against the relation.
+    if (!UUID_RE.test(envelope.target)) {
+      throw new ValidationError(`Proposal envelope target '${envelope.target}' is not an item id`, { field: "target" });
+    }
+    const { propertyKey, metadata, ...rest } = envelope.properties;
+    const metadataValid =
+      metadata === undefined || (typeof metadata === "object" && metadata !== null && !Array.isArray(metadata));
+    if (Object.keys(rest).length > 0 || typeof propertyKey !== "string" || propertyKey.length === 0 || !metadataValid) {
+      throw new ValidationError(
+        "Proposal properties for entityKind 'relation' must be { propertyKey } plus an optional metadata object",
+        { field: "properties" },
+      );
     }
     return;
   }

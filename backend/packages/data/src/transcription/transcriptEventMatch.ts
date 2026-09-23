@@ -22,7 +22,8 @@ const MATCH_WINDOW_LEAD_MS = 30 * 60 * 1000;
 /** An Events `date` carrying a time of day; a date-only value has no time to fall inside the window. */
 const DATE_WITH_TIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
 
-const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = {
+/** The context a `transcript` card producer writes its card's `sourceTranscript` edge under. */
+export const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = {
   ownerProcess: PROCESSING_PROPOSALS_MODULE_ID,
 };
 
