@@ -205,6 +205,26 @@ describe("POST /internal/diarize and /internal/transcribe", () => {
     expect(diarizationProvider.calls).toHaveLength(0);
   });
 
+  it.each([
+    ["an invalid character", "ZmFr!2F1ZGlv"],
+    ["a length that is not a multiple of four", "ZmFrZQ"],
+    ["padding in the middle", "ZmE=ZmFr"],
+  ])(
+    "rejects audioBase64 with %s with 400 validation_failed and never calls the provider",
+    async (_label, audioBase64) => {
+      startServer(diarizationProvider, transcriptionProvider);
+      await listen();
+
+      const res = await post("/internal/diarize", { ...VALID_DIARIZE_BODY, audioBase64 });
+
+      expect(res.status).toBe(400);
+      const json = (await res.json()) as { code: string; details: { field: string } };
+      expect(json.code).toBe("validation_failed");
+      expect(json.details.field).toBe("audioBase64");
+      expect(diarizationProvider.calls).toHaveLength(0);
+    },
+  );
+
   it("rejects a non-positive audioSeconds with 400 validation_failed", async () => {
     startServer(diarizationProvider, transcriptionProvider);
     await listen();
