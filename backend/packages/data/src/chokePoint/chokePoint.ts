@@ -45,6 +45,7 @@ import { PROJECTS_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js"
 import { deriveTaskTime } from "../tasks/deriveTaskTime.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { recordDesiredMailMessageFlags } from "../mail/mailMessageFlagSyncStore.js";
+import { assertSpeakerEdgeWritable, isTranscriptSpeakersProperty } from "../transcription/transcriptionSpeakerEdges.js";
 
 interface AssertWritablePropertiesOptions {
   /**
@@ -822,17 +823,40 @@ async function loadCreatableRelationEdgeContext(
 }
 
 /**
+ * Rejects edge metadata its relation gives a required shape to — today only the Transcripts
+ * `speakers` relation (issue #185), whose edges each map one speaker key of the transcript to one
+ * person. Runs on both add and metadata replace, so neither can leave a mapping the render path
+ * cannot read; removing an edge needs no metadata and is not checked here.
+ */
+async function assertRelationEdgeMetadataValid(
+  client: PoolClient,
+  edgeContext: RelationEdgeContext,
+  input: CreateRelationInput,
+): Promise<void> {
+  if (!(await isTranscriptSpeakersProperty(client, edgeContext.property))) return;
+  await assertSpeakerEdgeWritable(client, {
+    relationDefinitionId: edgeContext.reldef.id,
+    transcriptsDatabaseId: edgeContext.property.databaseId,
+    transcriptId: input.callerItemId,
+    personId: input.targetItemId,
+    metadata: input.metadata,
+  });
+}
+
+/**
  * Rejects an edge `createRelationWithClient` would reject for authorization or integrity —
- * `database_archived`, `owner_violation`, `validation_failed` — without writing it (issue #184:
- * a revised link-existing proposal is refused when it is made, not only when it is confirmed).
- * Cardinality is not checked here: that is enforced by the write itself, at confirm time.
+ * `database_archived`, `owner_violation`, `validation_failed` (including its edge-metadata rules,
+ * issue #185) — without writing it (issue #184: a revised link-existing proposal is refused when
+ * it is made, not only when it is confirmed). Cardinality is not checked here: that is enforced by
+ * the write itself, at confirm time.
  */
 export async function assertRelationCreatableWithClient(
   client: PoolClient,
-  input: DeleteRelationInput,
+  input: CreateRelationInput,
   context?: SystemRelationWriteContext,
 ): Promise<void> {
-  await loadCreatableRelationEdgeContext(client, input, context);
+  const edgeContext = await loadCreatableRelationEdgeContext(client, input, context);
+  await assertRelationEdgeMetadataValid(client, edgeContext, input);
 }
 
 /**
@@ -850,6 +874,7 @@ export async function createRelationWithClient(
   context?: SystemRelationWriteContext,
 ): Promise<RelationEdge> {
   const edgeContext = await loadCreatableRelationEdgeContext(client, input, context);
+  await assertRelationEdgeMetadataValid(client, edgeContext, input);
 
   const { itemA, itemB } = normalizeRelationSides(
     edgeContext.reldef,
@@ -877,6 +902,7 @@ export async function updateRelationWithClient(
   await assertRelationDatabasesNotArchived(client, edgeContext);
   assertRelationPropertyWritable(edgeContext.property, context);
   await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
+  await assertRelationEdgeMetadataValid(client, edgeContext, input);
 
   const { itemA, itemB } = normalizeRelationSides(
     edgeContext.reldef,

@@ -44,8 +44,10 @@ export type SemprecTickActionConfig = z.infer<typeof semprecTickActionConfigSche
 /**
  * The generic proposal envelope (issue #100/#223): exactly `entityKind`, `target`, `properties`.
  * `'relation'` (issue #184) links the card's source item to the existing item `target` through the
- * relation property named by `properties.propertyKey` — only ever set by a human `revise`, never
- * computed by the Inbox tick.
+ * relation property named by `properties.propertyKey`, with `properties.metadata` (optional) as
+ * the edge's metadata — never computed by the Inbox tick. A transcript card reaches the
+ * Event-link shape only through a human `revise`; its speaker-mapping shape (issue #185) is
+ * proposed by the transcription pipeline.
  */
 export type ProposalEntityKind = "pageContent" | "database" | "relation";
 
@@ -281,12 +283,19 @@ export async function assertValidProposalEnvelope(client: PoolClient, envelope: 
     if (!UUID_RE.test(envelope.target)) {
       throw new ValidationError(`Proposal envelope target '${envelope.target}' is not an item id`, { field: "target" });
     }
-    const keys = Object.keys(envelope.properties);
-    const { propertyKey } = envelope.properties;
-    if (keys.length !== 1 || typeof propertyKey !== "string" || propertyKey.length === 0) {
-      throw new ValidationError("Proposal properties for entityKind 'relation' must be exactly { propertyKey }", {
-        field: "properties",
-      });
+    const { propertyKey, metadata, ...rest } = envelope.properties;
+    const metadataValid =
+      metadata === undefined || (typeof metadata === "object" && metadata !== null && !Array.isArray(metadata));
+    if (
+      Object.keys(rest).length > 0 ||
+      typeof propertyKey !== "string" ||
+      propertyKey.length === 0 ||
+      !metadataValid
+    ) {
+      throw new ValidationError(
+        "Proposal properties for entityKind 'relation' must be { propertyKey } plus an optional metadata object",
+        { field: "properties" },
+      );
     }
     return;
   }

@@ -12,6 +12,7 @@ import {
   TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
   TRANSCRIPT_LANGUAGE_COMPUTED_KEY,
   TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
+  TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY,
   TRANSCRIPTION_OWNER_PROCESS,
   createItemWithClient,
   createBlob,
@@ -22,6 +23,8 @@ import {
   lockItemById,
   markItemAutomationDone,
   matchTranscriptToEvent,
+  proposeSpeakerMappings,
+  readSpeakerSuggestionContext,
   readBlobId,
   transcriptionJobPayloadSchema,
   updateItemWithClient,
@@ -55,6 +58,7 @@ import {
   parseSummaryContent,
   type SummaryInstruction,
 } from "./transcriptSummary.js";
+import { buildSpeakerSuggestionRequest, parseSpeakerSuggestionContent } from "./speakerSuggestion.js";
 
 function sourceName(properties: Record<string, unknown>): string {
   if (typeof properties.name === "string" && properties.name.length > 0) return properties.name;
@@ -399,7 +403,7 @@ function requireTranscript(transcript: ItemRow | null, transcriptId: string): It
   return transcript;
 }
 
-/** Step 4's output, the input steps 5 and 6 both require. */
+/** Step 4's output, the input steps 5 and 7 both require. */
 function requireSegments(transcript: ItemRow): TranscriptSegment[] {
   const parsed = segmentsSchema.safeParse(transcript.computed[TRANSCRIPT_SEGMENTS_COMPUTED_KEY]);
   if (!parsed.success)
@@ -526,7 +530,47 @@ async function runMatchStep({ pool, filesDatabaseId, fileItemId }: Transcription
 }
 
 /**
- * Step 7 (`finalize`): sets `status = done` and `item_automation` to `done` in one transaction,
+ * Step 7 (`suggestSpeakers`, issue #185): when the transcript is linked to an Event with named
+ * participants and has unmapped speaker keys, calls `gateway.complete()` once to suggest which
+ * participant each key is, and turns the suggestions into `kind = 'transcript'` cards
+ * (`proposeSpeakerMappings`) — it never writes a mapping; only a human's `confirm` does.
+ * Bracketed like step 5, so no transaction stays open across the gateway call, and checkpointed
+ * with the cards in one transaction, so a retried run never pays for the call twice. When there is
+ * nothing to ask (no Event yet, no participants) nothing is paid for and nothing is checkpointed,
+ * so a later run of the pipeline for the same file can still ask.
+ */
+async function runSuggestSpeakersStep(
+  { pool, filesDatabaseId, fileItemId }: TranscriptionStepContext,
+  completionClient: AiGatewayClientPort,
+): Promise<void> {
+  const snapshot = await withRepeatableReadTransaction(pool, async (client) => {
+    const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
+    if (Object.hasOwn(source.computed, TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY)) return null;
+    const transcriptId = requireTranscriptId(source, fileItemId);
+    const transcriptsDatabaseId = await requireTranscriptsDatabaseId(client);
+    const transcript = requireTranscript(await getItemById(client, transcriptsDatabaseId, transcriptId), transcriptId);
+    const segments = requireSegments(transcript);
+    const context = await readSpeakerSuggestionContext(client, transcriptId);
+    return context ? { transcriptId, segments, context } : null;
+  });
+  if (!snapshot) return;
+
+  const result = await completionClient.complete(buildSpeakerSuggestionRequest(snapshot.segments, snapshot.context));
+  const suggestions = parseSpeakerSuggestionContent(result.content);
+
+  await withTransaction(pool, async (client) => {
+    // Locked, so a concurrent run that checkpointed first is not doubled.
+    const source = requireSource(await lockItemById(client, filesDatabaseId, fileItemId), fileItemId);
+    if (Object.hasOwn(source.computed, TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY)) return;
+    const proposedSpeakers = await proposeSpeakerMappings(client, { transcriptId: snapshot.transcriptId, suggestions });
+    await writeComputed(client, filesDatabaseId, fileItemId, TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY, {
+      proposedSpeakers,
+    });
+  });
+}
+
+/**
+ * Step 8 (`finalize`): sets `status = done` and `item_automation` to `done` in one transaction,
  * and only once that transaction itself sees the committed `segments` and this instruction's
  * summary — a run that failed before either landed leaves the row `processing`. `status` goes
  * through `updateItemWithClient`, which announces it over the generic realtime channel.
@@ -572,6 +616,7 @@ function createTranscriptionSteps(
     runMergeStep,
     (context) => runSummarizeStep(context, summaryClient, summaryInstruction),
     runMatchStep,
+    (context) => runSuggestSpeakersStep(context, summaryClient),
     (context) => runFinalizeStep(context, summaryInstruction),
   ];
 }
@@ -588,10 +633,11 @@ function requireGatewayInternalToken(): string {
  * (issue #246), configured via `FILES_STORAGE_DIR`. `gatewayClient` defaults to a loopback HTTP
  * client for `semprec-ai-gateway`'s `/internal/diarize` and `/internal/transcribe` routes
  * (issue #182), and `summaryClient` to `@semprec/ai-gateway-client`'s client for its
- * `/internal/complete` route (issue #183), both configured via
+ * `/internal/complete` route (issue #183) — also the client step 7 suggests speaker mappings
+ * with (issue #185) — both configured via
  * `AI_GATEWAY_PORT`/`AI_GATEWAY_INTERNAL_TOKEN` — the only path from this service to an AI
  * provider, per `docs/adr/2026-09-10-ai-gateway-monopoly-on-provider-calls.md`.
- * `summaryInstruction` selects the instruction step 5 summarizes with and step 7 requires.
+ * `summaryInstruction` selects the instruction step 5 summarizes with and step 8 requires.
  */
 export function createTranscriptionTask(
   pool: Pool,

@@ -423,10 +423,9 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "many_to_many",
     inverse: { key: "healthRecords", name: "Health records" },
   });
-  // Transcripts -> People ("speakers"): one-directional; edges carry { speaker } metadata,
-  // validated and written through `transcription/transcriptionSpeakerEdges.ts`'s
-  // `writeTranscriptSpeakerEdge` — the transcription pipeline that calls it with real speaker
-  // labels is a later issue, not here.
+  // Transcripts -> People ("speakers"): one-directional; each edge maps one diarization speaker
+  // key to a person through its { speaker } metadata, which the choke point's relation write
+  // validates (`transcription/transcriptionSpeakerEdges.ts`'s `assertSpeakerEdgeWritable`).
   await relate({
     sourceDatabaseId: transcripts.id,
     key: "speakers",

@@ -20,6 +20,7 @@ import {
 import { enqueueJournalInboxRecomputeForProposal } from "./journalInboxCompute.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { EVENTS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { TRANSCRIPT_SPEAKERS_PROPERTY_KEY } from "../transcription/transcriptionSpeakerEdges.js";
 import { storeCredential, type CredentialType } from "../credentials/externalCredentialsStore.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
@@ -57,10 +58,35 @@ async function resolveResultLabel(client: PoolClient, databaseId: string, item: 
 /** The Transcripts `event` relation property: the Transcription<->Event edge a transcript card's confirm writes. */
 const TRANSCRIPT_EVENT_PROPERTY_KEY = "event";
 
-/** What a `kind = 'transcript'` card's confirm links: its source transcript, through the Transcripts `event` property. */
-interface TranscriptEventEdge {
+/**
+ * What a `kind = 'transcript'` card proposes (issue #185): either the transcript's Event (create a
+ * new one, or link an existing one through Transcripts `event`), or one speaker-to-person mapping
+ * (a link through Transcripts `speakers` whose metadata names the speaker key). A card keeps its
+ * role for life — `revise` may change the Event or the person, never turn one role into the other.
+ */
+type TranscriptCardRole = "event" | "speaker";
+
+/** What a transcript card's confirm writes: an edge from its source transcript through `relationPropertyId`. */
+interface TranscriptCardEdge {
+  role: TranscriptCardRole;
   transcriptId: string;
-  eventPropertyId: string;
+  relationPropertyId: string;
+}
+
+function transcriptCardRole(envelope: ProposalEnvelope): TranscriptCardRole {
+  return envelope.entityKind === "relation" && envelope.properties.propertyKey === TRANSCRIPT_SPEAKERS_PROPERTY_KEY
+    ? "speaker"
+    : "event";
+}
+
+/** A `'relation'` envelope's optional edge metadata; `assertValidProposalEnvelope` has already rejected anything but a plain object. */
+function relationEnvelopeMetadata(envelope: ProposalEnvelope): Record<string, unknown> | undefined {
+  const { metadata } = envelope.properties;
+  if (metadata === undefined) return undefined;
+  if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) {
+    throw new ValidationError("Relation proposal metadata must be an object", { field: "properties" });
+  }
+  return { ...metadata };
 }
 
 async function requireDatabaseIdByModuleId(client: PoolClient, moduleId: string): Promise<string> {
@@ -97,19 +123,21 @@ async function requireSourceTranscriptId(
 /**
  * Validates an envelope against the card it is for (issue #184), on top of the envelope's own
  * shape (`assertValidProposalEnvelope`). A `'relation'` envelope needs a source item to link from,
- * which only a `kind = 'transcript'` card has. A transcript card accepts exactly two shapes: create
- * a new Event (`'database'` targeting Events), or link its transcript to an existing Event
- * (`'relation'` through the Transcripts `event` property) — the latter checked against the
- * relation's integrity and ownership rules now, with the same canonical errors the write itself
- * would raise. Returns the Transcription<->Event edge confirm must write for a transcript card,
- * `null` for any other card.
+ * which only a `kind = 'transcript'` card has. A transcript card accepts exactly three shapes:
+ * create a new Event (`'database'` targeting Events), link its transcript to an existing Event
+ * (`'relation'` through the Transcripts `event` property), or map one of its speaker keys to a
+ * person (`'relation'` through `speakers`, issue #185) — and never switches between an Event shape
+ * and a speaker mapping (`transcriptCardRole`). A link is checked against the relation's
+ * integrity, ownership and edge-metadata rules now, with the same canonical errors the write
+ * itself would raise. Returns the edge confirm must write for a transcript card, `null` for any
+ * other card.
  */
 async function assertValidEnvelopeForCard(
   client: PoolClient,
   config: ProposalActionConfig,
   proposal: ItemRow,
   envelope: ProposalEnvelope,
-): Promise<TranscriptEventEdge | null> {
+): Promise<TranscriptCardEdge | null> {
   await assertValidProposalEnvelope(client, envelope);
   if (proposal.properties.kind !== "transcript") {
     if (envelope.entityKind === "relation") {
@@ -120,9 +148,21 @@ async function assertValidEnvelopeForCard(
     return null;
   }
 
+  const role = transcriptCardRole(envelope);
+  const current = proposal.properties.proposal as ProposalEnvelope | null;
+  if (current && transcriptCardRole(current) !== role) {
+    throw new ValidationError("A transcript proposal cannot switch between an Event and a speaker mapping", {
+      field: "entityKind",
+    });
+  }
+
   const transcriptId = await requireSourceTranscriptId(client, config, proposal);
   const transcriptsDatabaseId = await requireDatabaseIdByModuleId(client, TRANSCRIPTS_MODULE_ID);
-  const eventPropertyId = await requireRelationPropertyId(client, transcriptsDatabaseId, TRANSCRIPT_EVENT_PROPERTY_KEY);
+  const relationPropertyId = await requireRelationPropertyId(
+    client,
+    transcriptsDatabaseId,
+    role === "speaker" ? TRANSCRIPT_SPEAKERS_PROPERTY_KEY : TRANSCRIPT_EVENT_PROPERTY_KEY,
+  );
   switch (envelope.entityKind) {
     case "database": {
       const eventsDatabaseId = await requireDatabaseIdByModuleId(client, EVENTS_MODULE_ID);
@@ -132,16 +172,17 @@ async function assertValidEnvelopeForCard(
       break;
     }
     case "relation":
-      if (envelope.properties.propertyKey !== TRANSCRIPT_EVENT_PROPERTY_KEY) {
+      if (role === "event" && envelope.properties.propertyKey !== TRANSCRIPT_EVENT_PROPERTY_KEY) {
         throw new ValidationError(
-          `A transcript proposal can only link through the '${TRANSCRIPT_EVENT_PROPERTY_KEY}' relation`,
+          `A transcript proposal can only link through the '${TRANSCRIPT_EVENT_PROPERTY_KEY}' or '${TRANSCRIPT_SPEAKERS_PROPERTY_KEY}' relation`,
           { field: "properties" },
         );
       }
       await assertRelationCreatableWithClient(client, {
-        relationPropertyId: eventPropertyId,
+        relationPropertyId,
         callerItemId: transcriptId,
         targetItemId: envelope.target,
+        metadata: relationEnvelopeMetadata(envelope),
       });
       break;
     case "pageContent":
@@ -151,7 +192,7 @@ async function assertValidEnvelopeForCard(
       throw new Error(`Unhandled proposal entityKind: ${String(exhaustive)}`);
     }
   }
-  return { transcriptId, eventPropertyId };
+  return { role, transcriptId, relationPropertyId };
 }
 
 /**
@@ -192,7 +233,9 @@ async function assertValidEnvelopeForCard(
  * for `'database'` it is written right after the Event is created. Both run in the caller's one
  * transaction, so a failed edge write (e.g. the 1:1 relation's `cardinality_violation` when the
  * transcript or Event is already linked elsewhere) leaves no Event, no edge and the card still
- * `proposed`.
+ * `proposed`. A speaker-mapping transcript card (issue #185) writes its `speakers` edge with the
+ * envelope's `{ speaker }` metadata as the relation write itself — the user-owned mapping only
+ * ever exists once a human confirmed it.
  */
 export async function confirmProposalWithClient(
   client: PoolClient,
@@ -209,7 +252,7 @@ export async function confirmProposalWithClient(
 
   const envelope = proposal.properties.proposal as ProposalEnvelope | null;
   if (!envelope) throw new ValidationError("Proposal has no computed envelope to confirm", { field: "proposal" });
-  const transcriptEventEdge = await assertValidEnvelopeForCard(client, config, proposal, envelope);
+  const transcriptCardEdge = await assertValidEnvelopeForCard(client, config, proposal, envelope);
 
   let resultItemId: string;
   let resultLabel: string;
@@ -235,21 +278,24 @@ export async function confirmProposalWithClient(
         plaintext: credential.plaintext,
       });
     }
-    if (transcriptEventEdge) {
+    // A 'database' envelope on a transcript card is always its create-Event shape.
+    if (transcriptCardEdge) {
       await createRelationWithClient(client, {
-        relationPropertyId: transcriptEventEdge.eventPropertyId,
-        callerItemId: transcriptEventEdge.transcriptId,
+        relationPropertyId: transcriptCardEdge.relationPropertyId,
+        callerItemId: transcriptCardEdge.transcriptId,
         targetItemId: created.id,
       });
     }
   } else if (envelope.entityKind === "relation") {
     // `assertValidEnvelopeForCard` above only accepts a 'relation' envelope on a transcript
-    // card, through the Transcripts `event` property — so `transcriptEventEdge` names this write.
-    if (!transcriptEventEdge) throw new Error(`Relation proposal ${proposal.id} has no source item to link from`);
+    // card, through the Transcripts `event` or `speakers` property — so `transcriptCardEdge`
+    // names this write.
+    if (!transcriptCardEdge) throw new Error(`Relation proposal ${proposal.id} has no source item to link from`);
     await createRelationWithClient(client, {
-      relationPropertyId: transcriptEventEdge.eventPropertyId,
-      callerItemId: transcriptEventEdge.transcriptId,
+      relationPropertyId: transcriptCardEdge.relationPropertyId,
+      callerItemId: transcriptCardEdge.transcriptId,
       targetItemId: envelope.target,
+      metadata: relationEnvelopeMetadata(envelope),
     });
     const [linked] = await itemsStore.getItemsByIds(client, [envelope.target]);
     resultItemId = envelope.target;
