@@ -12,6 +12,9 @@ import { seedSystem } from "../seed/seedSystem.js";
 
 const FIXTURE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "czech-hunspell");
 const ASSET_FILES = ["cs_cz.dict", "cs_cz.affix"];
+// Each test creates and fully migrates its own database; late in the integration run that
+// competes with the instance's checkpoint I/O and can take well past the default 30 s.
+const FRESH_DATABASE_TEST_TIMEOUT_MS = 120_000;
 
 function testDatabaseUrl(): string {
   const url = process.env.TEST_DATABASE_URL;
@@ -101,74 +104,86 @@ async function searchHits(pool: Pool, emailsId: string, query: string): Promise<
 }
 
 describe("Czech Hunspell full-text search (issue #207)", () => {
-  it("keeps the unaccent/simple fallback when the migration runs without the assets", async () => {
-    await withFreshDatabase(async (pool) => {
-      await removeAssets(pool);
-      await runMigrations(pool);
-
-      expect(await activateCzechHunspellSearch(pool)).toBe(false);
-      expect(await czechHunspellDictionaryCount(pool)).toBe(0);
-      expect(await czechVector(pool, "Posílám faktury")).toBe("'faktury':2 'posilam':1");
-
-      const { emailsId, itemId } = await indexEmail(pool, "Posílám faktury");
-      expect(await searchHits(pool, emailsId, "posilam faktury")).toEqual([itemId]);
-      // No stemming without the dictionary: another inflection of the same word does not match.
-      expect(await searchHits(pool, emailsId, "fakturu")).toEqual([]);
-    });
-  });
-
-  it("lemmatizes inflected Czech terms when the assets exist at migration time", async () => {
-    await withFreshDatabase(async (pool) => {
-      await installAssets(pool);
-      try {
+  it(
+    "keeps the unaccent/simple fallback when the migration runs without the assets",
+    async () => {
+      await withFreshDatabase(async (pool) => {
+        await removeAssets(pool);
         await runMigrations(pool);
 
-        expect(await lexize(pool, "fakturu")).toEqual(["faktura"]);
-        expect(await lexize(pool, "zprávách")).toEqual(["zpráva"]);
-        expect(await lexize(pool, "příliš")).toBeNull();
-        // Recognized words become their lemma; an unknown one still falls through to unaccent/simple.
-        expect(await czechVector(pool, "Příliš faktury")).toBe("'faktura':2 'prilis':1");
+        expect(await activateCzechHunspellSearch(pool)).toBe(false);
+        expect(await czechHunspellDictionaryCount(pool)).toBe(0);
+        expect(await czechVector(pool, "Posílám faktury")).toBe("'faktury':2 'posilam':1");
 
-        const { emailsId, itemId } = await indexEmail(pool, "Posílám faktury ve zprávách");
-        expect(await searchHits(pool, emailsId, "fakturu zpráva")).toEqual([itemId]);
-      } finally {
+        const { emailsId, itemId } = await indexEmail(pool, "Posílám faktury");
+        expect(await searchHits(pool, emailsId, "posilam faktury")).toEqual([itemId]);
+        // No stemming without the dictionary: another inflection of the same word does not match.
+        expect(await searchHits(pool, emailsId, "fakturu")).toEqual([]);
+      });
+    },
+    FRESH_DATABASE_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "lemmatizes inflected Czech terms when the assets exist at migration time",
+    async () => {
+      await withFreshDatabase(async (pool) => {
+        await installAssets(pool);
+        try {
+          await runMigrations(pool);
+
+          expect(await lexize(pool, "fakturu")).toEqual(["faktura"]);
+          expect(await lexize(pool, "zprávách")).toEqual(["zpráva"]);
+          expect(await lexize(pool, "příliš")).toBeNull();
+          // Recognized words become their lemma; an unknown one still falls through to unaccent/simple.
+          expect(await czechVector(pool, "Příliš faktury")).toBe("'faktura':2 'prilis':1");
+
+          const { emailsId, itemId } = await indexEmail(pool, "Posílám faktury ve zprávách");
+          expect(await searchHits(pool, emailsId, "fakturu zpráva")).toEqual([itemId]);
+        } finally {
+          await removeAssets(pool);
+        }
+      });
+    },
+    FRESH_DATABASE_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "upgrades a database migrated before the assets existed, and repeated activation is a no-op",
+    async () => {
+      await withFreshDatabase(async (pool) => {
         await removeAssets(pool);
-      }
-    });
-  });
+        await runMigrations(pool);
+        const { rows: applied } = await pool.query<{ id: string }>(
+          "SELECT id FROM schema_migrations WHERE id = '0046_czech_hunspell_search.sql'",
+        );
+        expect(applied).toHaveLength(1);
+        expect(await czechVector(pool, "faktury")).toBe("'faktury':1");
 
-  it("upgrades a database migrated before the assets existed, and repeated activation is a no-op", async () => {
-    await withFreshDatabase(async (pool) => {
-      await removeAssets(pool);
-      await runMigrations(pool);
-      const { rows: applied } = await pool.query<{ id: string }>(
-        "SELECT id FROM schema_migrations WHERE id = '0046_czech_hunspell_search.sql'",
-      );
-      expect(applied).toHaveLength(1);
-      expect(await czechVector(pool, "faktury")).toBe("'faktury':1");
+        await installAssets(pool);
+        try {
+          expect(await activateCzechHunspellSearch(pool)).toBe(true);
+          expect(await lexize(pool, "faktury")).toEqual(["faktura"]);
+          expect(await czechVector(pool, "faktury")).toBe("'faktura':1");
 
-      await installAssets(pool);
-      try {
-        expect(await activateCzechHunspellSearch(pool)).toBe(true);
-        expect(await lexize(pool, "faktury")).toEqual(["faktura"]);
-        expect(await czechVector(pool, "faktury")).toBe("'faktura':1");
-
-        const mappingState = async () =>
-          (
-            await pool.query<{ state: string }>(
-              `SELECT string_agg(m.maptokentype || ':' || m.mapseqno || ':' || m.mapdict || ':' || m.xmin, ','
+          const mappingState = async () =>
+            (
+              await pool.query<{ state: string }>(
+                `SELECT string_agg(m.maptokentype || ':' || m.mapseqno || ':' || m.mapdict || ':' || m.xmin, ','
                  ORDER BY m.maptokentype, m.mapseqno) AS state
                FROM pg_ts_config_map m WHERE m.mapcfg = 'czech'::regconfig`,
-            )
-          ).rows[0]?.state;
-        const before = await mappingState();
+              )
+            ).rows[0]?.state;
+          const before = await mappingState();
 
-        expect(await activateCzechHunspellSearch(pool)).toBe(true);
-        expect(await mappingState()).toBe(before);
-        expect(await czechHunspellDictionaryCount(pool)).toBe(1);
-      } finally {
-        await removeAssets(pool);
-      }
-    });
-  });
+          expect(await activateCzechHunspellSearch(pool)).toBe(true);
+          expect(await mappingState()).toBe(before);
+          expect(await czechHunspellDictionaryCount(pool)).toBe(1);
+        } finally {
+          await removeAssets(pool);
+        }
+      });
+    },
+    FRESH_DATABASE_TEST_TIMEOUT_MS,
+  );
 });
