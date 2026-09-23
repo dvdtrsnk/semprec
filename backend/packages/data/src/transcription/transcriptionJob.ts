@@ -38,8 +38,9 @@ export interface EnqueueTranscriptionJobInput {
 /**
  * Shared by every producer (the Files `onItemEvent:create` trigger, `POST /api/transcriptions`,
  * the daily requeue sweep and `POST /api/transcriptions/:id/rerun`) so the job-key/task-name
- * pairing can't drift between them. A repeat enqueue replaces the queued job under the same key
- * and resets its attempt count, so a requeued row gets a fresh batch rather than a second job. Takes an already-open `client` so a
+ * pairing can't drift between them. A repeat enqueue replaces a still-queued job under the same
+ * key with a fresh batch; one graphile-worker has exhausted is detached from the key and never
+ * runs again, while the fresh batch takes the key — either way one runnable job per file. Takes an already-open `client` so a
  * caller can enqueue inside its own transaction (state-writes: the enqueue is the write here,
  * there is nothing else to gate it against). `maxAttempts: 3` with graphile-worker's built-in
  * exponential backoff is the job's retry policy (issue #248); every attempt resumes from the
