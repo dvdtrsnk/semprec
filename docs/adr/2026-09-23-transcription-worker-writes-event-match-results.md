@@ -33,4 +33,6 @@ to a human through the card's `confirm`. The decision of
 The match reads the checkpoint and writes its outcome in a single transaction that row-locks the
 transcript, so a retried or concurrent job converges on one edge or one card instead of racing a
 second process. The worker's write surface grows by exactly these two writes; any further write
-it needs is a new decision.
+it needs is a new decision. Creating the card makes the worker a second producer of Processing
+proposals; how card creation is divided between producers is recorded in
+[[2026-09-23-processing-proposals-card-creation-owned-per-kind]].
