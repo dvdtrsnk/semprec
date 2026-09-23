@@ -3,8 +3,9 @@ import { readFile } from "node:fs/promises";
 import { z } from "zod";
 
 /**
- * Test-only media fixtures and probes, shared by the unit and integration tiers. Fixtures come from
- * ffmpeg's `lavfi` test sources, streamed straight to a buffer — no binary fixture checked into git.
+ * Test-only media fixtures and probes for the integration-tier tests that run the real binaries.
+ * Fixtures come from ffmpeg's `lavfi` test sources, streamed straight to a buffer — no binary
+ * fixture checked into git.
  */
 
 export const FIXTURE_CREATION_TIME = "2024-03-01T12:00:00Z";
