@@ -10,6 +10,8 @@ import {
   createBlob,
   createChokePoint,
   createItemWithClient,
+  createRerunTranscriptionRouteHandler,
+  createTranscriptionRequeueSweepAction,
   createViewTypeRegistry,
   ForbiddenError,
   getDatabaseByModuleId,
@@ -1462,6 +1464,151 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       expect(transcript.properties.status).toBe("error");
       expect(await readAutomation(transcript.id)).toEqual({ status: "error", error: failure.message, attempts: 3 });
       expect(await readNotifications(transcript.id)).toHaveLength(1);
+    });
+
+    describe("daily requeue and manual rerun (issue #186)", () => {
+      function createTaskList() {
+        return {
+          [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
+            CORE_TASK_NAMES.TRANSCRIPTION_JOB,
+            createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient),
+          ),
+        };
+      }
+
+      /** Makes every queued transcription job due now and runs whatever is runnable once. */
+      async function runDueJobs(): Promise<void> {
+        await pool.query(
+          "UPDATE graphile_worker._private_jobs SET run_at = now() WHERE key LIKE 'transcription-job:%'",
+        );
+        await runOnce({ pgPool: pool, taskList: createTaskList() });
+      }
+
+      async function runSweep(): Promise<void> {
+        const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
+        if (!transcripts) throw new Error("Transcripts database was not seeded");
+        await createTranscriptionRequeueSweepAction(pool)(
+          { transcriptsDatabaseId: transcripts.id },
+          { heartbeatId: randomUUID(), projectItemId: randomUUID() },
+        );
+      }
+
+      async function readRunnableJobs(): Promise<Array<{ key: string; attempts: number }>> {
+        const { rows } = await pool.query<{ key: string; attempts: number }>(
+          "SELECT key, attempts FROM graphile_worker.jobs WHERE key LIKE 'transcription-job:%' AND attempts < max_attempts",
+        );
+        return rows;
+      }
+
+      async function countTranscripts(): Promise<number> {
+        const { rows } = await pool.query<{ count: number }>(
+          `SELECT count(*)::int AS count FROM items i JOIN databases d ON d.id = i.database_id
+           WHERE d.owner_module_id = 'transcripts'`,
+        );
+        return rows[0]?.count ?? 0;
+      }
+
+      /** Runs the file's job through all three attempts, each failing at the summary, so the row ends `error`. */
+      async function failPermanently(fileItemId: string): Promise<string> {
+        summaryClient.failure = new Error("simulated summary outage");
+        const jobKey = `transcription-job:${fileItemId}`;
+        await enqueueJob(pool, CORE_TASK_NAMES.TRANSCRIPTION_JOB, { fileItemId }, { jobKey, maxAttempts: 3 });
+        for (let attempt = 0; attempt < 3; attempt += 1) await runDueJobs();
+        const transcript = await readTranscript(fileItemId);
+        expect(await readAutomation(transcript.id)).toMatchObject({ status: "error", attempts: 3 });
+        summaryClient.failure = null;
+        return transcript.id;
+      }
+
+      it("requeues an error row daily under its key and resumes the same row without repeating a paid stage", async () => {
+        const { file } = await createSourceFile();
+        await createUser();
+        const transcriptId = await failPermanently(file.id);
+
+        await runSweep();
+        await runSweep();
+        expect(await readRunnableJobs()).toEqual([{ key: `transcription-job:${file.id}`, attempts: 0 }]);
+        await runDueJobs();
+
+        const done = await readTranscript(file.id);
+        expect(done.id).toBe(transcriptId);
+        expect(done.properties.status).toBe("done");
+        expect(await readAutomation(transcriptId)).toEqual({ status: "done", error: null, attempts: 4 });
+        expect(await countTranscripts()).toBe(1);
+        expect(gatewayClient.diarizeCalls).toHaveLength(1);
+        expect(gatewayClient.transcribeCalls).toHaveLength(1);
+        // Three failed summary attempts, then the one that succeeded — never a repeat of a cached summary.
+        expect(summaryClient.calls).toHaveLength(4);
+
+        await runSweep();
+        expect(await readRunnableJobs()).toEqual([]);
+      });
+
+      it("reruns a done row by hand on the same row and key without any paid call", async () => {
+        const { file } = await createSourceFile();
+        await createTranscriptionTask(
+          pool,
+          blobStorage,
+          gatewayClient,
+          summaryClient,
+        )({ fileItemId: file.id }, FIRST_ATTEMPT);
+        const transcript = await readTranscript(file.id);
+        const paidCalls = [
+          gatewayClient.diarizeCalls.length,
+          gatewayClient.transcribeCalls.length,
+          summaryClient.calls.length,
+        ];
+
+        const result = await createRerunTranscriptionRouteHandler(pool)({
+          params: { id: transcript.id },
+          body: undefined,
+        });
+        expect(result.status).toBe(202);
+        expect(await readRunnableJobs()).toEqual([{ key: `transcription-job:${file.id}`, attempts: 0 }]);
+        await runDueJobs();
+
+        expect(await readRunnableJobs()).toEqual([]);
+        expect((await readTranscript(file.id)).properties.status).toBe("done");
+        expect(await readAutomation(transcript.id)).toMatchObject({ status: "done", attempts: 2 });
+        expect(await countTranscripts()).toBe(1);
+        expect([
+          gatewayClient.diarizeCalls.length,
+          gatewayClient.transcribeCalls.length,
+          summaryClient.calls.length,
+        ]).toEqual(paidCalls);
+      });
+
+      it("reruns an error row by hand from its checkpoints", async () => {
+        const { file } = await createSourceFile();
+        await createUser();
+        const transcriptId = await failPermanently(file.id);
+
+        await createRerunTranscriptionRouteHandler(pool)({ params: { id: transcriptId }, body: undefined });
+        await runDueJobs();
+
+        expect((await readTranscript(file.id)).properties.status).toBe("done");
+        expect(await countTranscripts()).toBe(1);
+        expect(gatewayClient.diarizeCalls).toHaveLength(1);
+        expect(gatewayClient.transcribeCalls).toHaveLength(1);
+        expect(summaryClient.calls).toHaveLength(4);
+      });
+
+      it("never reruns a locked row by either path", async () => {
+        const { file } = await createSourceFile();
+        await createUser();
+        const transcriptId = await failPermanently(file.id);
+        await pool.query("UPDATE item_automation SET status = 'locked' WHERE item_id = $1", [transcriptId]);
+
+        await runSweep();
+        await expect(
+          createRerunTranscriptionRouteHandler(pool)({ params: { id: transcriptId }, body: undefined }),
+        ).rejects.toMatchObject({ status: 403, code: "transcription_locked" });
+        await runDueJobs();
+
+        expect(await readRunnableJobs()).toEqual([]);
+        expect(await readAutomation(transcriptId)).toMatchObject({ status: "locked", attempts: 3 });
+        expect(summaryClient.calls).toHaveLength(3);
+      });
     });
   });
 });
