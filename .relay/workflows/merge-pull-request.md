@@ -1,6 +1,7 @@
 ---
 id: merge-pull-request
 name: Merge pull request
+priority: 90   # closest to done: a pull request that has already passed review costs one rebase-and-merge and frees the slot
 on:
   pull-requests:
     label: review:passed

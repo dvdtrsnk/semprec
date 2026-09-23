@@ -1,6 +1,7 @@
 ---
 id: fix-review-findings
 name: Fix review findings
+priority: 70   # work already reviewed once — finishing it is worth more than starting something new
 on:
   pull-requests:
     label: review:changes-requested
