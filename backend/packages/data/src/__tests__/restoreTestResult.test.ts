@@ -21,9 +21,10 @@ interface CheckRow {
 }
 
 async function getRestoreCheck(): Promise<CheckRow | undefined> {
-  const { rows } = await pool.query<CheckRow>(`SELECT id, status, detail FROM observability_checks WHERE check_key = $1`, [
-    RESTORE_TEST_CHECK_KEY,
-  ]);
+  const { rows } = await pool.query<CheckRow>(
+    `SELECT id, status, detail FROM observability_checks WHERE check_key = $1`,
+    [RESTORE_TEST_CHECK_KEY],
+  );
   return rows[0];
 }
 
