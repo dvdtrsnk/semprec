@@ -21,13 +21,12 @@ import {
   getDatabaseByModuleId,
   lockItemById,
   markItemAutomationDone,
-  notifyInvalidation,
   readBlobId,
-  runAfterCommit,
   transcriptionJobPayloadSchema,
   updateItemWithClient,
   withTransaction,
   writeComputed,
+  writeComputedAndAnnounce,
   LocalFsBlobStorageWriter,
 } from "@semprec/data";
 import type { BlobStorageWriter } from "@semprec/data";
@@ -418,23 +417,6 @@ function readSummaries(transcript: ItemRow): Record<string, string> {
 }
 
 /**
- * Announces a computed write on the Transcripts row over the generic realtime channel, after the
- * commit. `writeComputed` fires no invalidation itself (unlike `updateItemWithClient`), so without
- * this the UI would not see steps 4 and 5 land until `done`.
- */
-function announceTranscriptUpdate(client: PoolClient, transcriptsDatabaseId: string, transcript: ItemRow): void {
-  runAfterCommit(client, () =>
-    notifyInvalidation({
-      scope: "item",
-      databaseId: transcriptsDatabaseId,
-      itemId: transcript.id,
-      op: "update",
-      updatedAt: transcript.updatedAt,
-    }),
-  );
-}
-
-/**
  * Step 4 (`merge`): database-only, so one transaction reads steps 1–3's checkpoints, runs the pure
  * `mergeTranscriptSegments` over them, and writes `segments` and `language` onto the Transcripts
  * row together. Written once: a transcript that already has `segments` is left untouched, so its
@@ -463,9 +445,20 @@ async function runMergeStep({ pool, filesDatabaseId, fileItemId }: Transcription
     });
 
     const segments = mergeTranscriptSegments(turns, chunks);
-    await writeComputed(client, transcriptsDatabaseId, transcriptId, TRANSCRIPT_SEGMENTS_COMPUTED_KEY, segments);
-    await writeComputed(client, transcriptsDatabaseId, transcriptId, TRANSCRIPT_LANGUAGE_COMPUTED_KEY, asr.language);
-    announceTranscriptUpdate(client, transcriptsDatabaseId, transcript);
+    await writeComputedAndAnnounce(
+      client,
+      transcriptsDatabaseId,
+      transcriptId,
+      TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
+      segments,
+    );
+    await writeComputedAndAnnounce(
+      client,
+      transcriptsDatabaseId,
+      transcriptId,
+      TRANSCRIPT_LANGUAGE_COMPUTED_KEY,
+      asr.language,
+    );
   });
 }
 
@@ -507,14 +500,13 @@ async function runSummarizeStep(
     );
     const summaries = readSummaries(transcript);
     if (Object.hasOwn(summaries, instruction.key)) return;
-    await writeComputed(
+    await writeComputedAndAnnounce(
       client,
       snapshot.transcriptsDatabaseId,
       snapshot.transcriptId,
       TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
       { ...summaries, [instruction.key]: summary },
     );
-    announceTranscriptUpdate(client, snapshot.transcriptsDatabaseId, transcript);
   });
 }
 
