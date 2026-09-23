@@ -99,6 +99,25 @@ describe("createPyannoteDiarizationProvider", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  describe.each([
+    ["an IPv6 loopback address", "https://[::1]/presigned"],
+    ["an IPv6 unique-local address", "https://[fc00::1]/presigned"],
+    ["an fe80 link-local address", "https://[fe80::1]/presigned"],
+    ["a link-local address beyond the fe80 prefix", "https://[febf::1]/presigned"],
+    ["an IPv4-mapped IPv6 loopback address", "https://[::ffff:127.0.0.1]/presigned"],
+    ["an IPv4-mapped IPv6 private address", "https://[::ffff:192.168.1.5]/presigned"],
+  ])("rejects a presigned upload URL that targets %s", (_label, url) => {
+    it("without uploading to it", async () => {
+      const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ url })));
+      vi.stubGlobal("fetch", fetchMock);
+
+      await expect(createPyannoteDiarizationProvider("test-key").diarize(REQUEST)).rejects.toBeInstanceOf(
+        AudioProviderCallError,
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("fails when pyannoteAI rejects job creation", async () => {
     const fetchMock = vi
       .fn()
