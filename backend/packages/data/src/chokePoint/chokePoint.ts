@@ -808,6 +808,33 @@ function assertRelationPropertyWritable(property: PropertyRow, context: SystemRe
   }
 }
 
+/** Every check `createRelationWithClient` runs before its write, in the same order, so both raise the same canonical error for the same input. */
+async function loadCreatableRelationEdgeContext(
+  client: PoolClient,
+  input: DeleteRelationInput,
+  context: SystemRelationWriteContext | undefined,
+): Promise<RelationEdgeContext> {
+  const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
+  await assertRelationDatabasesNotArchived(client, edgeContext);
+  assertRelationPropertyWritable(edgeContext.property, context);
+  await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
+  return edgeContext;
+}
+
+/**
+ * Rejects an edge `createRelationWithClient` would reject for authorization or integrity —
+ * `database_archived`, `owner_violation`, `validation_failed` — without writing it (issue #184:
+ * a revised link-existing proposal is refused when it is made, not only when it is confirmed).
+ * Cardinality is not checked here: that is enforced by the write itself, at confirm time.
+ */
+export async function assertRelationCreatableWithClient(
+  client: PoolClient,
+  input: DeleteRelationInput,
+  context?: SystemRelationWriteContext,
+): Promise<void> {
+  await loadCreatableRelationEdgeContext(client, input, context);
+}
+
 /**
  * The relation-linking logic, factored out for the same reason as `createItemWithClient` above.
  * Idempotent on the normalized `(relationDefinitionId, itemA, itemB)` tuple: a repeat create
@@ -822,10 +849,7 @@ export async function createRelationWithClient(
   input: CreateRelationInput,
   context?: SystemRelationWriteContext,
 ): Promise<RelationEdge> {
-  const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
-  await assertRelationDatabasesNotArchived(client, edgeContext);
-  assertRelationPropertyWritable(edgeContext.property, context);
-  await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
+  const edgeContext = await loadCreatableRelationEdgeContext(client, input, context);
 
   const { itemA, itemB } = normalizeRelationSides(
     edgeContext.reldef,
