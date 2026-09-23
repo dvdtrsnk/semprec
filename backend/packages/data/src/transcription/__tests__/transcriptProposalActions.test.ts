@@ -296,16 +296,38 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
       await expect(revise(cardId, linkExisting(eventId))).rejects.toMatchObject({ code: "owner_violation" });
     });
 
-    it("rejects a link through any relation other than the transcript's 'event'", async () => {
+    it("rejects a link through any relation other than the transcript's 'event' or 'speakers'", async () => {
       const { cardId } = await createTranscriptCard();
       const eventId = await createItem(eventsId, "Planning");
 
       await expect(
-        revise(cardId, { entityKind: "relation", target: eventId, properties: { propertyKey: "speakers" } }),
+        revise(cardId, { entityKind: "relation", target: eventId, properties: { propertyKey: "people" } }),
       ).rejects.toMatchObject({ code: "validation_failed", details: { field: "properties" } });
     });
 
-    it("rejects a relation envelope whose properties carry anything besides propertyKey", async () => {
+    it("refuses to turn an Event card into a speaker mapping", async () => {
+      const { cardId } = await createTranscriptCard();
+      const personId = await createItem(await databaseIdFor("people"), "Alice");
+
+      await expect(
+        revise(cardId, {
+          entityKind: "relation",
+          target: personId,
+          properties: { propertyKey: "speakers", metadata: { speaker: "SPEAKER_00" } },
+        }),
+      ).rejects.toMatchObject({ code: "validation_failed", details: { field: "entityKind" } });
+    });
+
+    it("rejects a relation envelope whose metadata is not an object", async () => {
+      const { cardId } = await createTranscriptCard();
+      const eventId = await createItem(eventsId, "Planning");
+
+      await expect(
+        revise(cardId, { entityKind: "relation", target: eventId, properties: { propertyKey: "event", metadata: [] } }),
+      ).rejects.toMatchObject({ code: "validation_failed", details: { field: "properties" } });
+    });
+
+    it("rejects a relation envelope whose properties carry anything besides propertyKey and metadata", async () => {
       const { cardId } = await createTranscriptCard();
       const eventId = await createItem(eventsId, "Planning");
 
