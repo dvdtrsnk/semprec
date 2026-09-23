@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isIP } from "node:net";
 import {
   AudioProviderCallError,
   type DiarizationProvider,
@@ -48,10 +49,53 @@ function parseTurns(output: unknown): DiarizationTurn[] {
   });
 }
 
+/** IPv4 octets or lowercased IPv6 groups that are loopback, link-local, or RFC 1918/4193 private. */
+function isPrivateOrReservedIp(hostname: string, family: 4 | 6): boolean {
+  if (family === 4) {
+    const [a = 0, b = 0] = hostname.split(".").map(Number);
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    return false;
+  }
+  const lower = hostname.toLowerCase();
+  return (
+    lower === "::1" || lower === "::" || lower.startsWith("fc") || lower.startsWith("fd") || lower.startsWith("fe80")
+  );
+}
+
+/**
+ * The presigned PUT URL comes from pyannoteAI's own response, not from our code — if pyannoteAI
+ * were compromised or its TLS connection MitM'd, a crafted response could redirect the upload to
+ * an internal/loopback address. Rejects anything that isn't an https URL with a public-looking
+ * host before it's ever fetched.
+ */
+function assertPublicUploadUrl(uploadUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(uploadUrl);
+  } catch {
+    throw new AudioProviderCallError("pyannoteAI presigned upload URL is not a valid URL");
+  }
+  if (parsed.protocol !== "https:") {
+    throw new AudioProviderCallError("pyannoteAI presigned upload URL must use https");
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  if (hostname === "localhost" || hostname.endsWith(".internal") || hostname.endsWith(".local")) {
+    throw new AudioProviderCallError("pyannoteAI presigned upload URL targets a disallowed host");
+  }
+  const family = isIP(hostname);
+  if (family && isPrivateOrReservedIp(hostname, family as 4 | 6)) {
+    throw new AudioProviderCallError("pyannoteAI presigned upload URL targets a private or reserved address");
+  }
+}
+
 function parseUploadUrl(value: unknown): string {
   if (!isObject(value) || typeof value.url !== "string") {
     throw new AudioProviderCallError("pyannoteAI media upload did not return a URL");
   }
+  assertPublicUploadUrl(value.url);
   return value.url;
 }
 

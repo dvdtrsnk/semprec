@@ -63,6 +63,42 @@ describe("createPyannoteDiarizationProvider", () => {
     );
   });
 
+  it("rejects a presigned upload URL that is not https", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ url: "http://upload.example/presigned" })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(createPyannoteDiarizationProvider("test-key").diarize(REQUEST)).rejects.toBeInstanceOf(
+      AudioProviderCallError,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a presigned upload URL that targets a private address", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ url: "https://127.0.0.1:5432/presigned" })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(createPyannoteDiarizationProvider("test-key").diarize(REQUEST)).rejects.toBeInstanceOf(
+      AudioProviderCallError,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a presigned upload URL that targets localhost", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ url: "https://localhost/presigned" })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(createPyannoteDiarizationProvider("test-key").diarize(REQUEST)).rejects.toBeInstanceOf(
+      AudioProviderCallError,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("fails when pyannoteAI rejects job creation", async () => {
     const fetchMock = vi
       .fn()
