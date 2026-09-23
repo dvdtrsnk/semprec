@@ -43,7 +43,8 @@ fixtures instead of committing binary ones. Concretely:
   provisioning step, not of every service.
 - Parsing untrusted media, and the CPU it burns, stays inside the process whose job it is: a hung or
   hostile input can stall that worker for at most its timeouts, never the API.
-- Anything that runs `semprec-transcribe`'s tests — a developer machine, CI — needs `ffmpeg` and
-  `ffprobe` on `PATH`.
+- Anything that runs `semprec-transcribe`'s integration tests — a developer machine, CI — needs
+  `ffmpeg` and `ffprobe` on `PATH`. Its unit tier must not: CI runs that tier before it installs
+  them, so every test that spawns either binary is an integration test.
 - Enforcement is review: running either binary outside `backend/services/semprec-transcribe/` is a
   finding under `backend/review-rules/rules.md`. No lint rule or CI scan checks it mechanically.
