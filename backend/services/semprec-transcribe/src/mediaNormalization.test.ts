@@ -5,11 +5,18 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocalFsBlobStorageWriter, type BlobStorageWriter } from "@semprec/data";
-import { downloadToTempFile, normalizeAudio, probeMedia, removeTempFile } from "./mediaNormalization.js";
+import {
+  downloadToTempFile,
+  normalizeAudio,
+  probeMedia,
+  probeNormalizedDuration,
+  removeTempFile,
+} from "./mediaNormalization.js";
 import {
   FIXTURE_CREATION_TIME,
   generateMp3Fixture,
   generateMp4Fixture,
+  generateWebmFixture,
   probeNormalizedAudio,
 } from "./__tests__/fixtures/mediaFixtures.js";
 
@@ -95,7 +102,8 @@ describe("mediaNormalization", () => {
     // 16 kb/s is about 7 MB per hour; libopus's own mono default of 64 kb/s is four times that. The
     // bound leaves room for the Ogg headers a one-second clip cannot amortize.
     const { durationSeconds } = await probeMedia(fixturePath);
-    expect((result.byteSize * 8) / durationSeconds).toBeLessThan(32_000);
+    expect(durationSeconds).not.toBeNull();
+    expect((result.byteSize * 8) / durationSeconds!).toBeLessThan(32_000);
   });
 
   it("rejects and removes any partial output when ffmpeg fails on an invalid input", async () => {
@@ -140,5 +148,23 @@ describe("mediaNormalization", () => {
   it("rejects with a descriptive error when ffprobe cannot read the input", async () => {
     const missingPath = join(tmpdir(), `semprec-media-normalization-missing-${randomUUID()}`);
     await expect(probeMedia(missingPath)).rejects.toThrow(/ffprobe exited with code/);
+  });
+
+  it("reports no duration for a streamed WebM/Matroska source whose header carries none", async () => {
+    const probe = await probeMedia(await writeToTempFile(await generateWebmFixture()));
+
+    expect(probe.durationSeconds).toBeNull();
+  });
+
+  it("still normalizes a source with no duration, and probeNormalizedDuration reads the output's own", async () => {
+    const fixturePath = await writeToTempFile(await generateWebmFixture());
+    expect((await probeMedia(fixturePath)).durationSeconds).toBeNull();
+
+    const outputStorageKey = `transcriptions/${randomUUID()}.opus`;
+    await normalizeAudio(fixturePath, blobStorage, outputStorageKey);
+
+    const durationSeconds = await probeNormalizedDuration(blobStorage, outputStorageKey);
+    expect(durationSeconds).toBeGreaterThan(2.9);
+    expect(durationSeconds).toBeLessThan(3.5);
   });
 });
