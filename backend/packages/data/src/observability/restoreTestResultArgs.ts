@@ -20,8 +20,7 @@ export const RESTORE_TEST_FAILED_CHECKS = [
 export type RestoreTestFailedCheck = (typeof RESTORE_TEST_FAILED_CHECKS)[number];
 
 export type RestoreTestResult =
-  | { status: "passed"; runId: string }
-  | { status: "failed"; runId: string; failedCheck: RestoreTestFailedCheck };
+  { status: "passed"; runId: string } | { status: "failed"; runId: string; failedCheck: RestoreTestFailedCheck };
 
 const RUN_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
 
