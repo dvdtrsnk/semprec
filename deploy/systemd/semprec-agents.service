@@ -12,6 +12,7 @@ User=semprec
 Group=semprec
 WorkingDirectory=/opt/semprec/current/backend
 EnvironmentFile=/opt/semprec/shared/.env
+EnvironmentFile=/opt/semprec/current/release.env
 SyslogIdentifier=semprec-agents
 ExecStart=/usr/bin/env node /opt/semprec/current/backend/services/semprec-agents/dist/serve.js
 Restart=on-failure
