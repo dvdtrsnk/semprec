@@ -4,7 +4,7 @@ import { filterNodeSchema, sortSpecSchema } from "./filterSort.js";
 import type { GenericOperationName } from "./operationNames.js";
 
 /**
- * Strict Zod input schemas for the 28-operation catalog (issue #252), extracted from #37's
+ * Strict Zod input schemas for the 29-operation catalog (issue #252), extracted from #37's
  * domain-command validators into transport-independent shape. Every schema below is a strict
  * object: an unrecognized key — including a spoofed `actor`/`userId`/`agentProjectItemId` or a
  * server-derived/protected field like `system`, `schemaLocked`, `ownerProjectItemId`,
@@ -52,6 +52,16 @@ export type PropertyListInput = z.infer<typeof PropertyListInputSchema>;
 
 export const PropertyGetInputSchema = z.object({ propertyId: z.string() }).strict();
 export type PropertyGetInput = z.infer<typeof PropertyGetInputSchema>;
+
+/** Key lookup within one database (issue #432), optionally narrowed to one property type. */
+export const PropertyGetByKeyInputSchema = z
+  .object({
+    databaseId: z.string(),
+    key: z.string(),
+    type: z.enum(PROPERTY_TYPES).optional(),
+  })
+  .strict();
+export type PropertyGetByKeyInput = z.infer<typeof PropertyGetByKeyInputSchema>;
 
 const NON_RELATION_PROPERTY_TYPES = PROPERTY_TYPES.filter((type) => type !== "relation");
 const nonRelationPropertyTypeSchema = z.enum(
@@ -237,7 +247,7 @@ export const RelationDeleteInputSchema = z
   .strict();
 export type RelationDeleteInput = z.infer<typeof RelationDeleteInputSchema>;
 
-/** Exhaustive mapped type over the 28 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 29 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
 export interface InputByOperation {
   "database.list": DatabaseListInput;
   "database.get": DatabaseGetInput;
@@ -247,6 +257,7 @@ export interface InputByOperation {
   "database.restore": DatabaseRestoreInput;
   "property.list": PropertyListInput;
   "property.get": PropertyGetInput;
+  "property.getByKey": PropertyGetByKeyInput;
   "property.create": PropertyCreateInput;
   "property.patch": PropertyPatchInput;
   "property.delete": PropertyDeleteInput;

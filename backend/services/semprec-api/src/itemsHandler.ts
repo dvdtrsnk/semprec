@@ -24,19 +24,10 @@ type RelationPropertyResolution = { property: Property } | { conflict: { status:
  * shared code→status table fixes `validation_failed` to 400 everywhere else and this route's own
  * validator — the issue's Task calls it out as route-local, not the canonical command schema — is
  * the one place `validation_failed` answers 409 instead. Both the item lookup and the property
- * list go through the injected `GenericApplicationPort`, same as every other route in this family.
- *
- * The property list is fetched in full and filtered in memory — O(N) in the database's property
- * count — rather than an indexed key lookup. This is deliberate, not an oversight: the pre-#219
- * `chokePoint.getPropertyByKey(databaseId, key)` this replaced was O(1) but satisfies none of the
- * three requirements above — it doesn't filter by type (a non-relation property with the same key
- * would wrongly resolve), it doesn't produce this route's `{ resource: 'relationProperty', ... }`
- * 404 shape, and it returns at most one row, so it can't detect the ambiguous-match case at all. A
- * `property.getByKey` operation on `GenericApplicationPort` that did all three would be the
- * coherent fix, but #219 closes the generic-operation catalog at exactly 28 operations; adding a
- * 29th for this one call site is the scope growth
- * `docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md` rules out here. Tracked as
- * follow-up in #432.
+ * lookup go through the injected `GenericApplicationPort`, same as every other route in this family;
+ * the property lookup is `property.getByKey` (issue #432), an indexed `(database_id, key)` query
+ * that applies the RELATION type filter in the database and returns every match, so this function
+ * — not the operation — maps none/one/many onto this route's own 404/200/409 shapes.
  */
 async function resolveRelationProperty(
   service: GenericApplicationPort,
@@ -45,8 +36,11 @@ async function resolveRelationProperty(
   propertyKey: string,
 ): Promise<RelationPropertyResolution> {
   const item = await dispatchGenericOperation(service, "item.get", actor, { itemId: callerItemId });
-  const properties = await dispatchGenericOperation(service, "property.list", actor, { databaseId: item.databaseId });
-  const matches = properties.filter((property) => property.key === propertyKey && property.type === "relation");
+  const matches = await dispatchGenericOperation(service, "property.getByKey", actor, {
+    databaseId: item.databaseId,
+    key: propertyKey,
+    type: "relation",
+  });
   if (matches.length === 0) {
     throw new NotFoundError(`Relation property '${propertyKey}' not found`, {
       resource: "relationProperty",
@@ -73,7 +67,7 @@ async function resolveRelationProperty(
  * `PUT`/`DELETE /api/items/:id/relations/:propertyKey/:targetItemId`. Every route assembles a
  * canonical command object and dispatches it through `dispatchGenericOperation` against the
  * injected `GenericApplicationPort` — no route constructs its own `createChokePoint(pool)` for an
- * operation the 28-operation catalog covers. `?include=path`'s breadcrumb chain
+ * operation the 29-operation catalog covers. `?include=path`'s breadcrumb chain
  * (`chokePoint.getItemPath`) is the one read this family still reaches `pool` for directly: it has
  * no corresponding generic operation, so there is no binding to rebase it onto.
  */

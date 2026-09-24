@@ -104,13 +104,13 @@ interface Case {
 }
 
 /**
- * One AgentTool call per operation in the closed 28-operation catalog, mirroring
+ * One AgentTool call per operation in the closed 29-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern and `mcpGenericOperationsContract.test.ts`'s
  * MCP pattern one adapter over (the code-review finding on issue #220's diff: parameterized
- * contract tests across all 28 operations were missing for the AgentTool adapter). Every
+ * contract tests across all of the then-28 operations were missing for the AgentTool adapter). Every
  * destructive operation is expected to return the synthetic-success/pending-approval result
  * `genericOperationAgentTools.test.ts` already covers for `view.delete` alone — this file extends
- * that coverage to the other four destructive operations, plus dispatch coverage for the 23
+ * that coverage to the other four destructive operations, plus dispatch coverage for the 24
  * non-destructive ones.
  */
 const CASES: Record<GenericOperationName, Case> = {
@@ -127,6 +127,7 @@ const CASES: Record<GenericOperationName, Case> = {
   },
   "property.list": { args: (fx) => ({ databaseId: fx.database.id }) },
   "property.get": { args: (fx) => ({ propertyId: fx.property.id }) },
+  "property.getByKey": { args: (fx) => ({ databaseId: fx.database.id, key: fx.property.key }) },
   "property.create": { args: (fx) => ({ databaseId: fx.database.id, key: "score", name: "Score", type: "number" }) },
   "property.patch": { args: (fx) => ({ propertyId: fx.property.id, patch: { name: "New Title" } }) },
   "property.delete": { args: (fx) => ({ propertyId: fx.property.id }) },

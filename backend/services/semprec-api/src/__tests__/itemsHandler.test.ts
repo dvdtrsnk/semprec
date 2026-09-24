@@ -1,4 +1,4 @@
-import { createServer, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,10 +12,13 @@ import {
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
+  type AuthenticatedIdentity,
   type ChokePoint,
   type PasswordResetMailer,
 } from "@semprec/data";
+import { createGenericApplicationService } from "@semprec/application";
 import { createDispatcher } from "../app.js";
+import { createItemRoutes } from "../itemsHandler.js";
 
 const PASSWORD = "s3cret-password";
 const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
@@ -731,6 +734,24 @@ describe("item routes (issue #241)", () => {
         expect(res.status).toBe(404);
       });
 
+      it("returns 404 relationProperty for a non-relation property with that key on the caller's own database (issue #432)", async () => {
+        const { source } = await makePairedRelation();
+        await chokePoint.createProperty({ databaseId: source.id, key: "notes", name: "Notes", type: "text" });
+        const item = await chokePoint.createItem({ databaseId: source.id, properties: {} });
+        const headers = await authHeader();
+
+        const res = await fetch(`${baseUrl}/api/items/${item.id}/relations/notes/${randomUUID()}`, {
+          method: "PUT",
+          headers,
+        });
+        expect(res.status).toBe(404);
+        const body = (await res.json()) as ErrorBody;
+        expect(body.error).toEqual({
+          code: "not_found",
+          details: { resource: "relationProperty", databaseId: source.id, propertyKey: "notes" },
+        });
+      });
+
       it("creates an edge from the direct (A) side and returns 200 with the full envelope, never 204", async () => {
         const { source, target, property } = await makePairedRelation();
         const task = await chokePoint.createItem({ databaseId: source.id, properties: {} });
@@ -960,5 +981,61 @@ describe("item routes (issue #241)", () => {
         expect(body.error.code).toBe("owner_violation");
       });
     });
+  });
+
+  describe("relation property resolution through property.getByKey (issue #432)", () => {
+    /**
+     * `UNIQUE(database_id, key)` makes more than one match unreachable through a real database, so
+     * the ambiguous branch is driven by the real service with only `getPropertyByKey` overridden.
+     */
+    async function callRelationRoute(method: "PUT" | "DELETE") {
+      const { source, property } = await makeAmbiguousFixture();
+      const item = await chokePoint.createItem({ databaseId: source.id, properties: {} });
+      const lookups: unknown[] = [];
+      const service = {
+        ...createGenericApplicationService(pool),
+        async getPropertyByKey(_actor: unknown, input: unknown) {
+          lookups.push(input);
+          return [property, { ...property, id: randomUUID() }];
+        },
+      };
+      const route = createItemRoutes(service, pool).find(
+        (candidate) => candidate.method === method && candidate.path.includes("/relations/"),
+      );
+      if (!route) throw new Error(`expected a ${method} relation route`);
+      const identity = { user: { id: randomUUID() } } as AuthenticatedIdentity;
+      const result = await route.handler({
+        req: {} as IncomingMessage,
+        identity,
+        params: { id: item.id, propertyKey: property.key, targetItemId: randomUUID() },
+        body: undefined,
+      });
+      return { result, lookups, databaseId: source.id, propertyKey: property.key };
+    }
+
+    async function makeAmbiguousFixture() {
+      const source = await chokePoint.createDatabase({ name: "Tasks" });
+      const target = await chokePoint.createDatabase({ name: "People" });
+      const { property } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: source.id,
+        key: "assignedTo",
+        name: "Assigned To",
+        targetDatabaseId: target.id,
+        inverse: { key: "assignedTasks", name: "Assigned Tasks" },
+      });
+      return { source, property };
+    }
+
+    it.each(["PUT", "DELETE"] as const)(
+      "%s answers 409 validation_failed ambiguous when the lookup returns more than one match",
+      async (method) => {
+        const { result, lookups, databaseId, propertyKey } = await callRelationRoute(method);
+        expect(result).toEqual({
+          status: 409,
+          body: { error: { code: "validation_failed", details: { field: "propertyKey", reason: "ambiguous" } } },
+        });
+        expect(lookups).toEqual([{ databaseId, key: propertyKey, type: "relation" }]);
+      },
+    );
   });
 });

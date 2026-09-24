@@ -3,7 +3,7 @@ import type { GenericOperationName } from "./operationNames.js";
 import type { InputByOperation } from "./schemas.js";
 import type { Database, Item, ItemPage, Page, Property, RelationEdge, View, ViewItem } from "./rows.js";
 
-/** Exhaustive mapped type over the 28 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 29 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
 export interface OutputByOperation {
   "database.list": Page<Database>;
   "database.get": Database;
@@ -13,6 +13,12 @@ export interface OutputByOperation {
   "database.restore": Database;
   "property.list": Property[];
   "property.get": Property;
+  /**
+   * Every property in `databaseId` whose key is `key` (and whose type is `type`, when given) —
+   * returned as a list rather than one row so a caller can tell no match, exactly one, and an
+   * ambiguous match apart itself.
+   */
+  "property.getByKey": Property[];
   "property.create": Property;
   "property.patch": Property;
   "property.delete": Property;
@@ -80,6 +86,10 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["property.get"],
   ): Promise<OutputByOperation["property.get"]>;
+  getPropertyByKey(
+    actor: AuthenticatedActor,
+    input: InputByOperation["property.getByKey"],
+  ): Promise<OutputByOperation["property.getByKey"]>;
   createProperty(
     actor: AuthenticatedActor,
     input: InputByOperation["property.create"],

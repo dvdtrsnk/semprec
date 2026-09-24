@@ -9,7 +9,7 @@ import type { AuthenticatedActor, Database, GenericApplicationPort, Item, Page }
  * `dependency-cruiser.rules.json`) and stays ignorant of which transport (REST today, MCP/AgentTool
  * in #220) is calling it. A composition root (e.g. `semprec-api`'s `app.ts`) constructs one
  * instance per injected `Pool` and threads it through every binding dispatch; there is no other
- * path into the 28-operation catalog's business logic.
+ * path into the 29-operation catalog's business logic.
  */
 
 /**
@@ -108,6 +108,10 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
         });
       }
       return property;
+    },
+
+    async getPropertyByKey(_actor, input) {
+      return chokePoint.findPropertiesByKey(input.databaseId, input.key, input.type);
     },
 
     async createProperty(actor, input) {

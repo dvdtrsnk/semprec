@@ -18,6 +18,7 @@ const EXPECTED_ROWS: Record<
   "database.restore": { schema: schemas.DatabaseRestoreInputSchema, method: "restoreDatabase" },
   "property.list": { schema: schemas.PropertyListInputSchema, method: "listProperties" },
   "property.get": { schema: schemas.PropertyGetInputSchema, method: "getProperty" },
+  "property.getByKey": { schema: schemas.PropertyGetByKeyInputSchema, method: "getPropertyByKey" },
   "property.create": { schema: schemas.PropertyCreateInputSchema, method: "createProperty" },
   "property.patch": { schema: schemas.PropertyPatchInputSchema, method: "patchProperty" },
   "property.delete": { schema: schemas.PropertyDeleteInputSchema, method: "deleteProperty" },
@@ -53,6 +54,7 @@ const EXPECTED_METADATA: Record<
   "database.restore": { requiresCapability: "core.database.write", requiresApproval: false, riskClass: null },
   "property.list": { requiresCapability: "core.schema.read", requiresApproval: false, riskClass: null },
   "property.get": { requiresCapability: "core.schema.read", requiresApproval: false, riskClass: null },
+  "property.getByKey": { requiresCapability: "core.schema.read", requiresApproval: false, riskClass: null },
   "property.create": { requiresCapability: "core.schema.write", requiresApproval: false, riskClass: null },
   "property.patch": { requiresCapability: "core.schema.write", requiresApproval: false, riskClass: null },
   "property.delete": { requiresCapability: "core.schema.write", requiresApproval: true, riskClass: "destructive" },
@@ -75,14 +77,14 @@ const EXPECTED_METADATA: Record<
 };
 
 describe("GENERIC_OPERATION_NAMES", () => {
-  it("has exactly 28 entries with no duplicates", () => {
-    expect(GENERIC_OPERATION_NAMES).toHaveLength(28);
-    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(28);
+  it("has exactly 29 entries with no duplicates", () => {
+    expect(GENERIC_OPERATION_NAMES).toHaveLength(29);
+    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(29);
   });
 });
 
 describe("GENERIC_OPERATION_BINDINGS", () => {
-  it("has exactly the 28 catalog rows and no others", () => {
+  it("has exactly the 29 catalog rows and no others", () => {
     expect(Object.keys(GENERIC_OPERATION_BINDINGS).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 

@@ -76,7 +76,7 @@ export interface PermissionManifest {
    * The generic-operation capability ids (#252's `CAPABILITY_IDS`) granted to this run (issue
    * #220): every active module's registered capability, narrowed to the eight this catalog
    * defines. `packages/agent-runtime`'s generic AgentTool factories construct only the subset of
-   * the 28 operations whose `OPERATION_METADATA.requiresCapability` appears here — an ungranted
+   * the 29 operations whose `OPERATION_METADATA.requiresCapability` appears here — an ungranted
    * one is absent from the run's tool list, not present-but-forbidden. Empty when `moduleRegistry`
    * isn't supplied (matching every other `moduleRegistry`-gated field on this manifest).
    */
