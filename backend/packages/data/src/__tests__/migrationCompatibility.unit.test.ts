@@ -114,9 +114,9 @@ describe("findIncompatibleStatements", () => {
 
   it("accepts a file only when the exemption comment carries a reason", () => {
     expect(rulesOf("-- expand-contract-exemption:\nALTER TABLE notes DROP COLUMN title;")).toEqual(["dropColumn"]);
-    expect(
-      rulesOf("-- expand-contract-exemption: unused since v1.2.0\nALTER TABLE notes DROP COLUMN title;"),
-    ).toEqual([]);
+    expect(rulesOf("-- expand-contract-exemption: unused since v1.2.0\nALTER TABLE notes DROP COLUMN title;")).toEqual(
+      [],
+    );
   });
 
   it("does not treat the exemption text inside a string literal as an exemption", () => {

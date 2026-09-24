@@ -15,12 +15,7 @@
  */
 
 export type MigrationCompatibilityRule =
-  | "dropTable"
-  | "dropColumn"
-  | "rename"
-  | "changeColumnType"
-  | "setNotNull"
-  | "addRequiredColumn";
+  "dropTable" | "dropColumn" | "rename" | "changeColumnType" | "setNotNull" | "addRequiredColumn";
 
 export interface MigrationCompatibilityFinding {
   rule: MigrationCompatibilityRule;
@@ -93,6 +88,7 @@ function splitTopLevel(text: string): string[] {
   return parts.map((p) => p.trim()).filter((p) => p.length > 0);
 }
 
+// Every capture group below is mandatory, so a match always has it; `?? ""` only satisfies the type.
 const NAME = String.raw`((?:"[^"]+"|[\w$]+)(?:\.(?:"[^"]+"|[\w$]+))?)`;
 const CREATE_TABLE = new RegExp(
   String.raw`\bCREATE\s+(?:(?:GLOBAL\s+|LOCAL\s+)?(?:TEMP|TEMPORARY|UNLOGGED)\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?${NAME}`,
@@ -121,7 +117,7 @@ export function findIncompatibleStatements(sql: string): MigrationCompatibilityF
   const { code, lineComments } = blankCommentsAndStrings(sql);
   if (lineComments.some((comment) => EXEMPTION_MARKER.test(comment))) return [];
 
-  const createdTables = new Set([...code.matchAll(CREATE_TABLE)].map((m) => normalizeName(m[1])));
+  const createdTables = new Set([...code.matchAll(CREATE_TABLE)].map((m) => normalizeName(m[1] ?? "")));
   const findings: MigrationCompatibilityFinding[] = [];
 
   for (const rawStatement of code.split(";")) {
@@ -130,8 +126,8 @@ export function findIncompatibleStatements(sql: string): MigrationCompatibilityF
 
     const alterTable = ALTER_TABLE.exec(statement);
     if (alterTable) {
-      if (createdTables.has(normalizeName(alterTable[1]))) continue;
-      for (const clause of splitTopLevel(alterTable[2])) {
+      if (createdTables.has(normalizeName(alterTable[1] ?? ""))) continue;
+      for (const clause of splitTopLevel(alterTable[2] ?? "")) {
         const rule = classifyAlterTableClause(clause);
         if (rule) findings.push({ rule, statement });
       }
@@ -140,7 +136,7 @@ export function findIncompatibleStatements(sql: string): MigrationCompatibilityF
 
     const dropTable = DROP_TABLE.exec(statement);
     if (dropTable) {
-      const dropped = splitTopLevel(dropTable[1]).map(normalizeName);
+      const dropped = splitTopLevel(dropTable[1] ?? "").map(normalizeName);
       if (dropped.some((name) => !createdTables.has(name))) findings.push({ rule: "dropTable", statement });
       continue;
     }
