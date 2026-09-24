@@ -50,10 +50,14 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
         client,
         sourceInboxProperty!.id,
       );
+      // Every edge, not `edges[0]`: the same scan production's `findExistingProposal` does, so a
+      // soft-deleted proposal still linked to the item is skipped here as it is there.
       const edges = await relationsStore.listRelationsForItem(client, relationDefinition!.id, itemId);
-      if (edges.length === 0) return null;
-      const proposalItemId = relationsStore.otherSide(edges[0]!, itemId);
-      return itemsStore.getItemById(client, proposalsId, proposalItemId);
+      for (const edge of edges) {
+        const proposal = await itemsStore.getItemById(client, proposalsId, relationsStore.otherSide(edge, itemId));
+        if (proposal && !proposal.deletedAt) return proposal;
+      }
+      return null;
     });
   }
 
@@ -230,53 +234,56 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     expect(rows[0].n).toBe(1);
   });
 
-  it("a confirmed or rejected proposal is never modified by a later tick, even when the source changes", async () => {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Task",
-        emoji: "☑️",
-        processingMethod: "database",
-        targetDatabase: "tasks",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        journalDatabaseId: journalId,
-        timezone: "Europe/Prague",
-        date: "2026-08-28",
-        time: "09:00",
-        text: "Buy milk",
-        type: type.id,
-      }),
-    );
-    await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const proposal = await findProposalForItem(item.id);
+  it.each(["confirmed", "rejected"] as const)(
+    "a %s proposal is never modified by a later tick, even when the source changes",
+    async (lockedStatus) => {
+      const type = await withTransaction(pool, (client) =>
+        createInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          name: "Task",
+          emoji: "☑️",
+          processingMethod: "database",
+          targetDatabase: "tasks",
+        }),
+      );
+      const item = await withTransaction(pool, (client) =>
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: inboxId,
+          journalDatabaseId: journalId,
+          timezone: "Europe/Prague",
+          date: "2026-08-28",
+          time: "09:00",
+          text: "Buy milk",
+          type: type.id,
+        }),
+      );
+      await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+      const proposal = await findProposalForItem(item.id);
 
-    await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, {
-        databaseId: proposalsId,
-        itemId: proposal!.id,
-        propertiesPatch: { status: "confirmed" },
-      }),
-    );
-    await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, {
-        databaseId: inboxId,
-        itemId: item.id,
-        propertiesPatch: { text: "Something totally different" },
-      }),
-    );
+      await withTransaction(pool, (client) =>
+        itemsStore.updateItemProperties(client, {
+          databaseId: proposalsId,
+          itemId: proposal!.id,
+          propertiesPatch: { status: lockedStatus },
+        }),
+      );
+      await withTransaction(pool, (client) =>
+        itemsStore.updateItemProperties(client, {
+          databaseId: inboxId,
+          itemId: item.id,
+          propertiesPatch: { text: "Something totally different" },
+        }),
+      );
 
-    await runTick(item.id, async () => {
-      throw new Error("computeProposal must not be called for a locked proposal");
-    });
+      await runTick(item.id, async () => {
+        throw new Error("computeProposal must not be called for a locked proposal");
+      });
 
-    const stillLocked = await findProposalForItem(item.id);
-    expect(stillLocked!.properties.status).toBe("confirmed");
-    expect(stillLocked!.properties.fingerprint).toBe(sha256Of("☑️", "Buy milk"));
-  });
+      const stillLocked = await findProposalForItem(item.id);
+      expect(stillLocked!.properties.status).toBe(lockedStatus);
+      expect(stillLocked!.properties.fingerprint).toBe(sha256Of("☑️", "Buy milk"));
+    },
+  );
 
   it("a soft-deleted existing proposal is treated as absent — a later tick creates a fresh one instead of throwing", async () => {
     const type = await withTransaction(pool, (client) =>
@@ -445,10 +452,14 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
         client,
         sourceInboxProperty!.id,
       );
+      // Every edge, not `edges[0]`: the same scan production's `findExistingProposal` does, so a
+      // soft-deleted proposal still linked to the item is skipped here as it is there.
       const edges = await relationsStore.listRelationsForItem(client, relationDefinition!.id, itemId);
-      if (edges.length === 0) return null;
-      const proposalItemId = relationsStore.otherSide(edges[0]!, itemId);
-      return itemsStore.getItemById(client, proposalsId, proposalItemId);
+      for (const edge of edges) {
+        const proposal = await itemsStore.getItemById(client, proposalsId, relationsStore.otherSide(edge, itemId));
+        if (proposal && !proposal.deletedAt) return proposal;
+      }
+      return null;
     });
   }
 
