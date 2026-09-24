@@ -9,7 +9,7 @@ on:
     respect-blocked-by: true          # "Blocked by: #12" line in the body
     skip-if-open-pull-request: true   # the duplicate-PR guard
 worker: any                           # or a worker preset name; must be in project.workerIds
-max-concurrent: 2
+max-concurrent: 3                     # batches decompose as a dependency DAG now (docs/adr/2026-09-24-issue-batches-as-dependency-dags.md); up to 3 independent issues can be eligible at once
 protected-paths: [".relay/**", ".github/workflows/**"]
 steps:
   - id: pickup
