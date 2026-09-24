@@ -72,6 +72,28 @@ release directory contains no secret. A host provisioned before this issue needs
 rerun (for the updated units) and `SEMPREC_MIGRATE_DATABASE_URL` added to its shared `.env` by
 hand. `deploy.test.sh` is the hermetic behavior test.
 
+## Rolling back (issue #191)
+
+`deploy.sh --rollback <tag>` moves `current` back to the release before the newest one
+([ADR](../docs/adr/2026-09-24-rollback-one-release-back-with-checked-migrations.md)):
+
+```sh
+sudo deploy/deploy.sh --rollback v1.2.2
+```
+
+It builds nothing, fetches nothing and runs no migration — the schema stays as the newest release
+left it, which [the migration rules](../docs/operations/migrations.md) keep compatible with the
+code one release back. It refuses, before changing anything, unless:
+
+- `releases/<tag>` is a complete release directory whose `release.env` declares
+  `APP_VERSION=<tag>`;
+- `<tag>` is the release directly before the newest release on disk;
+- `current` still points at that newest release (so a second rollback in a row is refused).
+
+Then it swaps `current` with the same `rename(2)`, restarts the same services, and fails unless
+every process reports `<tag>`. It takes the same lock as a deploy. The way forward from a rollback
+is a new, fixed release deployed normally. `deploy.test.sh` covers rollback too.
+
 ## Logs and external liveness (issue #171)
 
 Every Semprec systemd service supplies a distinct `SyslogIdentifier`; PostgreSQL and MinIO use
