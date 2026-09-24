@@ -12,7 +12,7 @@ review:
   # (CRB_TMP_DIR/TMPDIR scratch isolation, BOT_USERNAME in both spellings the
   # bot reads) is now what this pin runs. `max-concurrent: 1` was dropped from
   # workflows/review-pull-request.md accordingly.
-  bot: { repo: dvdtrsnk/code-review-bot, ref: 96a0439137f4424700ff3c76209f146498f101d1 }
+  bot: { repo: dvdtrsnk/code-review-bot, ref: 52497aca626b5b64f5c32e2344137502968d3d74 }
   check-name: code-review
   env: { REVIEW_BLOCK_SEVERITY: medium, PROMOTION_SOURCE: develop, PROMOTION_TARGET: main }
 merge:
