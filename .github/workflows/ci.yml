@@ -53,8 +53,7 @@ jobs:
   # The job id is a required status check context on both `develop` and `main`
   # (docs/operations/required-checks.md) — renaming it would leave `ci` permanently
   # pending on every pull request. It carries every check that is not one of the named
-  # tiers below: repository scans, lint, format, the build, the e2e tier and the web
-  # workspace.
+  # tiers below: repository scans, lint, format, the build and the web workspace.
   ci:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -91,8 +90,8 @@ jobs:
         working-directory: backend
         run: pnpm run check:write-safety
 
-      # Backend static checks and the build. The unit and integration tiers and the
-      # boundary check run as their own jobs below; the e2e tier stays here until #188.
+      # Backend static checks and the build. Every test tier and the boundary check
+      # run as their own jobs below.
       - name: Backend — install
         working-directory: backend
         run: pnpm install --frozen-lockfile
@@ -109,13 +108,6 @@ jobs:
         working-directory: backend
         run: pnpm -r run build
 
-      # Guards the pi-runtime contract suite's premise: production code (and the
-      # suite itself) may only reach pi through its documented package-root exports,
-      # never an internal or example path that pi could change without a version bump.
-      - name: Backend — check pi import paths
-        working-directory: backend
-        run: pnpm run check:pi-import-paths
-
       # Catches two independently-created branches each picking the same
       # next migration ordinal (e.g. two branches both adding 0011_*.sql).
       # The migration runner keys applied migrations by full filename, so a
@@ -124,12 +116,6 @@ jobs:
       - name: Backend — check migration numbering
         working-directory: backend
         run: pnpm --filter @semprec/data run check-migration-numbering
-
-      # Provisions its own ephemeral PostgreSQL through
-      # `packages/data/src/testSupport/globalSetup.ts` — no service container needed.
-      - name: Backend — e2e tests
-        working-directory: backend
-        run: pnpm run test:e2e
 
       - name: Web — install
         working-directory: web
@@ -151,7 +137,7 @@ jobs:
         working-directory: web
         run: pnpm test
 
-  # The named test tiers (#250). Each job id is a required status check context on
+  # The named test tiers (#250, #188). Each job id is a required status check context on
   # `develop` and `main` and a stable identifier in docs/operations/required-checks.md:
   # renaming one is a contract change that must update branch protection and that
   # document together. They run alongside `ci`, not after it, so a failing tier is
@@ -236,3 +222,58 @@ jobs:
       - name: Backend — module boundaries
         working-directory: backend
         run: pnpm run check:boundaries
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Backend — install
+        working-directory: backend
+        run: pnpm install --frozen-lockfile
+
+      # Provisions its own ephemeral PostgreSQL through
+      # `packages/data/src/testSupport/globalSetup.ts` — no service container needed.
+      - name: Backend — test:e2e
+        working-directory: backend
+        run: pnpm run test:e2e
+
+  # The pinned pi runtime's contract (#134): the same suite the unit tier runs, under a
+  # required name of its own so a pi upgrade that breaks it is reported as exactly that.
+  pi-agent-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Backend — install
+        working-directory: backend
+        run: pnpm install --frozen-lockfile
+
+      # Guards the suite's premise: production code (and the suite itself) may only
+      # reach pi through its documented package-root exports, never an internal or
+      # example path that pi could change without a version bump.
+      - name: Backend — check pi import paths
+        working-directory: backend
+        run: pnpm run check:pi-import-paths
+
+      - name: Backend — pi runtime contract suite
+        working-directory: backend
+        run: pnpm exec vitest run --config vitest.unit.config.ts packages/agent-runtime/src/__tests__/piRuntimeContract.unit.test.ts
