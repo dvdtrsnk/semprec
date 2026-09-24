@@ -9,10 +9,11 @@ const MIGRATIONS_DIR = path.join(DB_DIR, "migrations");
 const EXAMPLES_DIR = path.join(DB_DIR, "migrationExamples");
 
 /**
- * Adds required columns without defaults to `users`. Written before the check existed (issue #191)
- * and before any release was tagged, so no previous release ever ran against the schema it changed.
+ * Written before the check existed (issue #191) and before any release was tagged, so no previous
+ * release ever ran against the schema they changed: 0025 adds required columns without defaults to
+ * `users`, 0030 drops the `notifications` stub table before recreating it with a new shape.
  */
-const PREDATES_CHECK = ["0025_auth_schema.sql"];
+const PREDATES_CHECK = ["0025_auth_schema.sql", "0030_notifications_schema.sql"];
 
 const REJECTED_EXAMPLES: Record<string, MigrationCompatibilityRule> = {
   "add-required-column.sql": "addRequiredColumn",
@@ -101,6 +102,11 @@ describe("findIncompatibleStatements", () => {
       "DROP TABLE IF EXISTS scratch CASCADE;",
     ].join("\n");
     expect(rulesOf(sql)).toEqual([]);
+  });
+
+  it("flags a DROP TABLE of a table the file only creates afterwards", () => {
+    const sql = "DROP TABLE notes;\nCREATE TABLE notes (id int);\nALTER TABLE notes DROP COLUMN id;";
+    expect(rulesOf(sql)).toEqual(["dropTable"]);
   });
 
   it("still flags a DROP TABLE that also names a table the file did not create", () => {
