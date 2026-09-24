@@ -78,6 +78,17 @@ describe("approvalRequestsStore (issue #130)", () => {
   });
 
   describe("resource_snapshot shape at the read boundary", () => {
+    it("reads back a snapshot whose sha256 is null", async () => {
+      const id = await createPendingRequest();
+      await pool.query(`UPDATE approval_requests SET resource_snapshot = $2 WHERE id = $1`, [
+        id,
+        JSON.stringify({ kind: "item", resourceId: "item-1", sha256: null }),
+      ]);
+
+      const read = await getApprovalRequest(pool, id);
+      expect(read?.resourceSnapshot).toEqual({ kind: "item", resourceId: "item-1", sha256: null });
+    });
+
     it("reads back a snapshot that carries a sha256", async () => {
       const id = await createPendingRequest();
       await pool.query(`UPDATE approval_requests SET resource_snapshot = $2 WHERE id = $1`, [

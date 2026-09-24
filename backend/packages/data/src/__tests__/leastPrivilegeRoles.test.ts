@@ -96,6 +96,8 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
     it("can insert into a bigserial-keyed side table created after 0040 ran", async () => {
       // A table the migrating role creates later, granted the way a migration adding a side table
       // would grant it: table DML only. Its sequence must be covered by 0047's default privileges.
+      // Interpolated because DDL cannot take a bind parameter; safe only because the name is
+      // built here from hex UUID characters, never from input.
       const table = `least_privilege_late_${randomUUID().replaceAll("-", "")}`;
       await adminPool.query(`CREATE TABLE ${table} (id bigserial PRIMARY KEY, note text)`);
       try {
