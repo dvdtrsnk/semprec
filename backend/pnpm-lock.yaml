@@ -354,6 +354,12 @@ importers:
         specifier: ^8.18.0
         version: 8.21.3
 
+  packages/release:
+    dependencies:
+      zod:
+        specifier: ^4.1.11
+        version: 4.4.3
+
   packages/shared:
     dependencies:
       pino:

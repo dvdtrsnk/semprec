@@ -38,3 +38,7 @@ but is not a required context.
 
 Every job in `ci.yml` runs on every pull-request update and on every push to `develop` and
 `main`, so every commit on either branch carries its own result.
+
+The release command checks those per-commit results before it tags a `main` commit
+([releases](releases.md)); renaming a `ci.yml` job also updates its list of required jobs in
+`backend/packages/release/src/releaseTag.ts`.
