@@ -115,7 +115,7 @@ jobs:
           repository: dvdtrsnk/code-review-bot
           # The code-review Check Run is required on `develop`; keep its producer
           # stable so a bot default-branch change cannot rename that context.
-          ref: fc7d3fe86c6c0a6a7d1c63f5378846d96fba3982
+          ref: 52497aca626b5b64f5c32e2344137502968d3d74
           token: ${{ secrets.CODE_REVIEW_BOT_TOKEN }}
           path: .code-review-bot
 
