@@ -48,6 +48,21 @@ The module contract distinguishes structural migrations (DDL, run at deploy) fro
 data migrations (backfills with a cursor, run by the queue). Keep them in separate
 files; a deploy must never block on a long backfill.
 
+## Ordinal collisions between parallel issues
+
+Two issues implemented at the same time can pick the same next migration
+ordinal (e.g. both adding `0048_*.sql`) — it never conflicts in git (different
+filenames) and never fails at the database layer (the runner keys applied
+migrations by full filename), so the required `ci` job's
+`check-migration-numbering` step is the only thing that catches it, on
+whichever of the two PRs rebases second (`docs/adr/2026-09-24-issue-batches-as-dependency-dags.md`,
+`.github/ISSUE_FORMAT.md`'s "Touches and conflict hotspots"). Take the next
+free ordinal right before pushing, not when the issue was drafted. On a
+collision — caught locally by `pnpm --filter @semprec/data run
+check-migration-numbering` or by CI after a rebase — renumber only your own
+branch's migration file to the next free ordinal; never renumber a migration
+that already merged into the base branch.
+
 ## Escape hatch
 
 An intentionally breaking change is allowed only when the linked issue's Task

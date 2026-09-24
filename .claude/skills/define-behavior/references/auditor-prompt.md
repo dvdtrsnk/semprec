@@ -49,8 +49,11 @@ in a class is not reported.
   includes an earlier, unrelated mention of the words "blocked by" anywhere above
   the real line, since Relay's parser matches only the first occurrence in the
   body and would silently read the wrong line — a cycle, an issue that could be
-  dispatched before a real prerequisite closes, or a cited blocker that does not
-  actually deliver the capability it is cited for.
+  dispatched before a real prerequisite closes, a cited blocker that does not
+  actually deliver the capability it is cited for, or two issues that could be
+  eligible at the same time (neither transitively `Blocked by:` the other) whose
+  `## Touches` sections name overlapping files or areas with no dependency added
+  and no shared change extracted into an earlier issue.
 - **C6 — Format violation.** Title pattern, section order, a missing mandatory
   section, non-English text, a canonical stored key that is not English camelCase
   (view types kebab-case), or a reference to a document outside the issue graph.
