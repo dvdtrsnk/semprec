@@ -247,8 +247,9 @@ jobs:
         working-directory: backend
         run: pnpm run test:e2e
 
-  # The pinned pi runtime's contract (#134): the same suite the unit tier runs, under a
-  # required name of its own so a pi upgrade that breaks it is reported as exactly that.
+  # The pinned pi runtime's contract (#134): the one `piRuntimeContract` suite file,
+  # which the full unit tier also includes, run here under a required name of its own
+  # so a pi upgrade that breaks it is reported as exactly that.
   pi-agent-contract:
     runs-on: ubuntu-latest
     timeout-minutes: 5
