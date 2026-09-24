@@ -5,8 +5,9 @@
  *
  * It is a lexical check, not a SQL parser. Comments and string literals are blanked out first, so
  * a word in a comment or inside `EXECUTE '...'` is never flagged; statements inside a `DO $$ ... $$`
- * body are checked like top-level ones. A statement against a table the same file creates is never
- * flagged, since no previous release can use that table.
+ * body are checked like top-level ones. A statement against a table an earlier statement of the same
+ * file creates is never flagged, since no previous release can use that table; a table dropped before
+ * the file (re)creates it is still the previous release's table and is flagged.
  *
  * A file whose change is safe for a reason a lexical check cannot see opts out with a line comment
  * `-- expand-contract-exemption: <reason>`: a contract step (the removal half of expand/contract,
@@ -117,12 +118,14 @@ export function findIncompatibleStatements(sql: string): MigrationCompatibilityF
   const { code, lineComments } = blankCommentsAndStrings(sql);
   if (lineComments.some((comment) => EXEMPTION_MARKER.test(comment))) return [];
 
-  const createdTables = new Set([...code.matchAll(CREATE_TABLE)].map((m) => normalizeName(m[1] ?? "")));
+  const createdTables = new Set<string>();
   const findings: MigrationCompatibilityFinding[] = [];
 
   for (const rawStatement of code.split(";")) {
     const statement = rawStatement.replace(/\s+/g, " ").trim();
     if (statement.length === 0) continue;
+
+    for (const created of statement.matchAll(CREATE_TABLE)) createdTables.add(normalizeName(created[1] ?? ""));
 
     const alterTable = ALTER_TABLE.exec(statement);
     if (alterTable) {
