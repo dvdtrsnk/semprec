@@ -47,3 +47,18 @@ Every job in `ci.yml` runs on every pull-request update and on every push to `de
 The release command checks those per-commit results before it tags a `main` commit
 ([releases](releases.md)); renaming a `ci.yml` job also updates its list of required jobs in
 `backend/packages/release/src/releaseTag.ts`.
+
+## Why there is no separate "is this head up to date" check
+
+With `implement-issue` and `merge-pull-request` both running with more than one
+worker at a time (docs/adr/2026-09-24-issue-batches-as-dependency-dags.md), two pull
+requests can legitimately race to merge into the same base branch. That race needs no
+extra CI job: branch protection's `strict` mode already refuses to merge a head that
+is not up to date with the base, and `merge-pull-request`'s own steps
+(`rebase` → `resolve-conflicts` → `verify`/`verify-web` → `rebased-check`'s
+`git merge-base --is-ancestor origin/{{baseBranch}} HEAD` → `push` with
+`force-with-lease`) already rebase onto the latest base, re-verify, and confirm the
+result is an ancestor-clean fast-forward before ever attempting the merge. A losing
+pull request in the race simply gets rebased and re-reviewed on its next
+`merge-pull-request` run; adding a redundant "is this branch current" job would only
+duplicate a guarantee GitHub and this workflow already enforce.
