@@ -58,9 +58,10 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
       [EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID].sort(),
     );
     expect(await registry.getViewTypes()).toEqual([MAILBOX_CLIENT_VIEW_TYPE]);
-    expect(await registry.getHeartbeatActions()).toEqual(
-      expect.arrayContaining([MAIL_REINDEX_PERSON_EMAILS_ACTION_ID, MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID]),
-    );
+    expect(await registry.getHeartbeatActions()).toEqual([
+      MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
+      MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID,
+    ]);
     expect(await registry.getTasks()).toEqual([]);
     const workers = await registry.getWorkers();
     expect(workers).toEqual([
