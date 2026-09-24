@@ -1,8 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import {
-  getAiBudgets,
+  getAiBudgetsWithTimezone,
   getGatewaySpend,
-  getSystemTimezone,
   recordAudioGatewayCall,
   recordTokenGatewayCall,
 } from "@semprec/data";
@@ -24,10 +23,9 @@ export class BudgetExceededError extends Error {
  * accepts rather than serializing gateway calls.
  */
 async function assertWithinBudget(client: Pool | PoolClient): Promise<void> {
-  const { dailyBudgetUsd, monthlyBudgetUsd } = await getAiBudgets(client);
+  const { dailyBudgetUsd, monthlyBudgetUsd, timezone } = await getAiBudgetsWithTimezone(client);
   if (dailyBudgetUsd === null && monthlyBudgetUsd === null) return;
 
-  const timezone = await getSystemTimezone(client);
   const { spentToday, spentMonth } = await getGatewaySpend(client, timezone);
   if (dailyBudgetUsd !== null && spentToday >= dailyBudgetUsd) {
     throw new BudgetExceededError(`Daily AI budget of $${dailyBudgetUsd} reached (spent $${spentToday} today)`);
