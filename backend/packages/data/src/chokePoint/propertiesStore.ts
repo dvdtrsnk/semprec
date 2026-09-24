@@ -96,6 +96,24 @@ export async function getPropertyByKey(
   return rows[0] ? mapPropertyRow(rows[0]) : null;
 }
 
+/**
+ * Issue #432: the `(database_id, key)` lookup `UNIQUE(database_id, key)` indexes, with an optional
+ * type filter applied in the same query. Returns every matching row rather than the first, so the
+ * caller — not this query — decides what more than one match means.
+ */
+export async function findPropertiesByKey(
+  client: PoolClient,
+  databaseId: string,
+  key: string,
+  type?: PropertyType,
+): Promise<PropertyRow[]> {
+  const { rows } = await client.query<PropertyDbRow>(
+    `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = $1 AND key = $2 AND ($3::text IS NULL OR type = $3) ORDER BY id`,
+    [databaseId, key, type ?? null],
+  );
+  return rows.map(mapPropertyRow);
+}
+
 export async function listPropertiesByDatabase(client: PoolClient, databaseId: string): Promise<PropertyRow[]> {
   const { rows } = await client.query<PropertyDbRow>(
     `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = $1 ORDER BY key`,

@@ -92,15 +92,16 @@ async function buildFixtures(): Promise<Fixtures> {
 type ContractCase = (fx: Fixtures, headers: Record<string, string>, baseUrl: string) => Promise<void>;
 
 /**
- * One REST exercise per operation in the closed 28-operation catalog (issue #219's acceptance
- * criterion: "a parameterized contract test covers all 28 operations over REST"). Each case
+ * One REST exercise per operation in the closed 29-operation catalog (issue #219's acceptance
+ * criterion: "a parameterized contract test covers all 28 operations over REST", extended to
+ * `property.getByKey` by issue #432). Each case
  * issues the real HTTP request a REST caller would send and asserts only that it reaches
  * `genericApplicationService` through `GENERIC_OPERATION_BINDINGS` and succeeds — the exhaustive
  * per-field/per-error-branch behavior for each route already lives in its own handler test file
  * (`itemsHandler.test.ts`, `databasesHandler.test.ts`, `propertiesHandler.test.ts`,
  * `viewsHandler.test.ts`). The `Object.keys(CASES)` assertion below is what keeps this list
- * honest as the catalog evolves: a 29th operation with no case here fails that assertion, not
- * silently passes with 28 stale entries.
+ * honest as the catalog evolves: a 30th operation with no case here fails that assertion, not
+ * silently passes with 29 stale entries.
  */
 const CASES: Record<GenericOperationName, ContractCase> = {
   "database.list": async (fx, headers, baseUrl) => {
@@ -157,6 +158,21 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     const body = (await res.json()) as { id: string; config: Record<string, unknown> };
     expect(body.id).toBe(fx.property.id);
     expect(body.config).toBeDefined();
+  },
+  // REST exposes `property.getByKey` only through the relation routes' `:propertyKey` resolution
+  // (issue #432): a RELATION key resolves, a same-database non-relation key is filtered out by the
+  // operation's `type` and answers 404.
+  "property.getByKey": async (fx, headers, baseUrl) => {
+    const resolved = await fetch(
+      `${baseUrl}/api/items/${fx.itemB.id}/relations/${fx.relationProperty.key}/${fx.targetItem.id}`,
+      { method: "PUT", headers, body: "{}" },
+    );
+    expect(resolved.status).toBe(200);
+    const filtered = await fetch(
+      `${baseUrl}/api/items/${fx.itemB.id}/relations/${fx.property.key}/${fx.targetItem.id}`,
+      { method: "PUT", headers, body: "{}" },
+    );
+    expect(filtered.status).toBe(404);
   },
   "property.create": async (fx, headers, baseUrl) => {
     const res = await fetch(`${baseUrl}/api/databases/${fx.database.id}/properties`, {

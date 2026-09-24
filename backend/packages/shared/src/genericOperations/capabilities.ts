@@ -44,7 +44,7 @@ const destructive = (requiresCapability: CapabilityId): OperationMetadata => ({
 });
 
 /**
- * Exhaustive over the 28 literal operation names, capability and approval/risk metadata checked
+ * Exhaustive over the 29 literal operation names, capability and approval/risk metadata checked
  * together in one object literal per operation: assigning this object literal to a type with
  * exactly these keys is what makes an operation missing (or an extra, misspelled one) a compile
  * error rather than a runtime gap.
@@ -59,6 +59,7 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   "database.restore": nonDestructive("core.database.write"),
   "property.list": nonDestructive("core.schema.read"),
   "property.get": nonDestructive("core.schema.read"),
+  "property.getByKey": nonDestructive("core.schema.read"),
   "property.create": nonDestructive("core.schema.write"),
   "property.patch": nonDestructive("core.schema.write"),
   "property.delete": destructive("core.schema.write"),

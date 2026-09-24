@@ -86,7 +86,7 @@ function extractBearerToken(req: IncomingMessage): string | null {
 
 /**
  * The authenticated MCP JSON-RPC endpoint (issue #220): `POST /mcp`, `tools/list` and
- * `tools/call` over the same 28-operation generic catalog REST (#219) and the AgentTool
+ * `tools/call` over the same 29-operation generic catalog REST (#219) and the AgentTool
  * composition root (`packages/agent-runtime/src/tools/generic`) dispatch through — MCP names are
  * the operation names prefixed `semprec.` (`fromMcpToolName`/`toMcpToolName`).
  *

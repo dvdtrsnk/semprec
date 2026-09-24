@@ -18,6 +18,7 @@ import {
   ItemRestoreInputSchema,
   PropertyCreateInputSchema,
   PropertyDeleteInputSchema,
+  PropertyGetByKeyInputSchema,
   PropertyGetInputSchema,
   PropertyListInputSchema,
   PropertyPatchInputSchema,
@@ -47,7 +48,7 @@ export interface OperationBinding<I, O> {
   invoke(service: GenericApplicationPort, actor: AuthenticatedActor, input: I): Promise<O>;
 }
 
-/** Exhaustive over the 28 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
+/** Exhaustive over the 29 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
 export type GenericOperationBindings = {
   [K in GenericOperationName]: OperationBinding<InputByOperation[K], OutputByOperation[K]>;
 };
@@ -90,6 +91,10 @@ export const GENERIC_OPERATION_BINDINGS: GenericOperationBindings = {
   "property.get": {
     input: PropertyGetInputSchema,
     invoke: (service, actor, input) => service.getProperty(actor, input),
+  },
+  "property.getByKey": {
+    input: PropertyGetByKeyInputSchema,
+    invoke: (service, actor, input) => service.getPropertyByKey(actor, input),
   },
   "property.create": {
     input: PropertyCreateInputSchema,

@@ -1,5 +1,5 @@
 /**
- * The closed 28-operation catalog (issue #252). Every other file in `genericOperations` is
+ * The closed 29-operation catalog (issue #252). Every other file in `genericOperations` is
  * keyed off this exact list — adding or removing an operation means touching this array and
  * letting the compile-time exhaustiveness checks in `schemas.ts`, `port.ts`, `capabilities.ts`,
  * and `bindings.ts` point at whatever is now missing or extra.
@@ -15,6 +15,7 @@ export const GENERIC_OPERATION_NAMES = [
   "database.restore",
   "property.list",
   "property.get",
+  "property.getByKey",
   "property.create",
   "property.patch",
   "property.delete",

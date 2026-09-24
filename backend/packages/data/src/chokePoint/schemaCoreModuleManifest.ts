@@ -31,7 +31,7 @@ export { createSystemHealthRouteHandler } from "../observability/systemHealthRou
  *
  * `capabilities` registers the eight generic-operation capability ids from #252's
  * `CAPABILITY_IDS` (issue #220) — the same eight `OPERATION_METADATA.requiresCapability` values
- * every one of the 28 generic operations is keyed against, so a project's granted subset of
+ * every one of the 29 generic operations is keyed against, so a project's granted subset of
  * these is what `packages/application`'s `genericOperationGateway.ts` filters AgentTool/MCP
  * discovery and invocation by.
  */

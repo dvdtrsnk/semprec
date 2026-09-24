@@ -1414,6 +1414,11 @@ export function createChokePoint(
       return withTransaction(pool, (client) => propertiesStore.getPropertyByKey(client, databaseId, key));
     },
 
+    /** Backs the `property.getByKey` generic operation (issue #432) — see `propertiesStore.findPropertiesByKey`. */
+    async findPropertiesByKey(databaseId: string, key: string, type?: PropertyType): Promise<PropertyRow[]> {
+      return withTransaction(pool, (client) => propertiesStore.findPropertiesByKey(client, databaseId, key, type));
+    },
+
     async createProperty(input: propertiesStore.CreatePropertyInput, actingUserId?: string): Promise<PropertyRow> {
       assertNoComputedKeyCollision(computedKeyRegistry, input.key);
       if (input.type === "rollup") {

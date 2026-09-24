@@ -14,6 +14,7 @@ import {
   ItemRestoreInputSchema,
   PropertyCreateInputSchema,
   PropertyDeleteInputSchema,
+  PropertyGetByKeyInputSchema,
   PropertyGetInputSchema,
   PropertyListInputSchema,
   PropertyPatchInputSchema,
@@ -39,6 +40,7 @@ const ALL_SCHEMAS = [
   DatabaseRestoreInputSchema,
   PropertyListInputSchema,
   PropertyGetInputSchema,
+  PropertyGetByKeyInputSchema,
   PropertyCreateInputSchema,
   PropertyPatchInputSchema,
   PropertyDeleteInputSchema,
@@ -83,6 +85,27 @@ describe("DatabaseCreateInputSchema", () => {
       expect(DatabaseCreateInputSchema.safeParse({ name: "Tasks", [field]: "x" }).success).toBe(false);
     },
   );
+});
+
+describe("PropertyGetByKeyInputSchema", () => {
+  it("accepts a database id and key, with or without a type filter", () => {
+    expect(PropertyGetByKeyInputSchema.safeParse({ databaseId: "db1", key: "assignedTo" }).success).toBe(true);
+    expect(
+      PropertyGetByKeyInputSchema.safeParse({ databaseId: "db1", key: "assignedTo", type: "relation" }).success,
+    ).toBe(true);
+  });
+
+  it("rejects a type outside the property-type enum", () => {
+    expect(PropertyGetByKeyInputSchema.safeParse({ databaseId: "db1", key: "k", type: "nonsense" }).success).toBe(
+      false,
+    );
+  });
+
+  it.each(["databaseId", "key"])("requires '%s'", (field) => {
+    const input: Record<string, string> = { databaseId: "db1", key: "k" };
+    delete input[field];
+    expect(PropertyGetByKeyInputSchema.safeParse(input).success).toBe(false);
+  });
 });
 
 describe("PropertyPatchInputSchema", () => {

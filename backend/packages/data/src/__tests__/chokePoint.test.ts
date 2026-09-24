@@ -508,6 +508,37 @@ describe("choke-point", () => {
     expect(rows[0]?.count).toBe("1");
   });
 
+  describe("findPropertiesByKey (issue #432)", () => {
+    it("returns the property with that key in that database when no type is given", async () => {
+      const db = await makeMoviesDb();
+
+      const found = await chokePoint.findPropertiesByKey(db.id, "title");
+      expect(found.map((p) => [p.databaseId, p.key, p.type])).toEqual([[db.id, "title", "text"]]);
+    });
+
+    it("returns the property when its type matches the filter", async () => {
+      const db = await makeMoviesDb();
+
+      const found = await chokePoint.findPropertiesByKey(db.id, "rating", "number");
+      expect(found.map((p) => [p.key, p.type])).toEqual([["rating", "number"]]);
+    });
+
+    it("returns nothing when the key exists but the type does not match", async () => {
+      const db = await makeMoviesDb();
+
+      expect(await chokePoint.findPropertiesByKey(db.id, "title", "relation")).toEqual([]);
+    });
+
+    it("returns nothing for an unknown key, or a key that only exists in another database", async () => {
+      const db = await makeMoviesDb();
+      const other = await chokePoint.createDatabase({ name: "Other" });
+      await chokePoint.createProperty({ databaseId: other.id, key: "director", name: "Director", type: "text" });
+
+      expect(await chokePoint.findPropertiesByKey(db.id, "nope")).toEqual([]);
+      expect(await chokePoint.findPropertiesByKey(db.id, "director")).toEqual([]);
+    });
+  });
+
   describe("findItem", () => {
     it("returns the item for an existing id, cross-partition", async () => {
       const db = await makeMoviesDb();

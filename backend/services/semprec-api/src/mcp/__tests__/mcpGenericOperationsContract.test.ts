@@ -162,9 +162,9 @@ interface Case {
 }
 
 /**
- * One `tools/call` case per operation in the closed 28-operation catalog, mirroring
+ * One `tools/call` case per operation in the closed 29-operation catalog, mirroring
  * `genericOperationsContract.test.ts`'s REST pattern one adapter over (the code-review finding on
- * issue #220's diff: parameterized contract tests across all 28 operations were missing for the
+ * issue #220's diff: parameterized contract tests across all of the then-28 operations were missing for the
  * MCP and AgentTool adapters). Reused across two describe-blocks below: dispatched by a plain
  * human-session actor (never approval-gated, matching `mcpHandler.test.ts`'s existing "no approval
  * gate for MCP actors" case) and by a restricted run-credential actor scoped to exactly the
@@ -191,6 +191,12 @@ const CASES: Record<GenericOperationName, Case> = {
   },
   "property.list": { tool: (fx) => ({ name: "semprec.property.list", arguments: { databaseId: fx.database.id } }) },
   "property.get": { tool: (fx) => ({ name: "semprec.property.get", arguments: { propertyId: fx.property.id } }) },
+  "property.getByKey": {
+    tool: (fx) => ({
+      name: "semprec.property.getByKey",
+      arguments: { databaseId: fx.database.id, key: fx.relationProperty.key, type: "relation" },
+    }),
+  },
   "property.create": {
     tool: (fx) => ({
       name: "semprec.property.create",
