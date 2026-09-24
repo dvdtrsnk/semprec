@@ -12,7 +12,9 @@ name: Protected paths
 # only lists the pull request's files through the API with the read-only token
 # below. That is what makes `pull_request_target` safe to use for this job.
 #
-# The job id is a required status check context on `develop` alongside `ci`.
+# The job reports on every pull request but is not a required status check context
+# on either branch (docs/operations/required-checks.md); Relay's own `guard-paths`
+# refuses the change before it is pushed.
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]

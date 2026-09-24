@@ -63,7 +63,9 @@ Vitest. Apple app: stack to be decided when its first issue lands.
 PR, gated by an automated code review. `main` holds released versions only:
 it advances exclusively through a `develop -> main` promotion PR, which on
 merge triggers a release pipeline that tags and publishes a GitHub Release
-from the version in `backend/package.json`.
+from the version in `backend/package.json`. Both branches are protected; the
+checks a pull request must pass are listed in
+[`docs/operations/required-checks.md`](docs/operations/required-checks.md).
 
 ## Architecture decisions
 
