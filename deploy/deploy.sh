@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# Deploy one release tag as an immutable release behind the atomic `current` symlink (issue #190).
+# Deploy one release tag as an immutable release behind the atomic `current` symlink (issue #190),
+# or roll `current` back to the release before it (issue #191).
 #
 # Usage: deploy.sh vMAJOR.MINOR.PATCH
+#        deploy.sh --rollback vMAJOR.MINOR.PATCH
 #
 # Run as root from an operator checkout of the repository whose `origin` holds the release tags.
 # Everything up to the symlink swap happens in a hidden staging directory; any failure there
 # removes it and leaves `current` and the running services untouched.
+#
+# A rollback builds nothing, fetches nothing and runs no migration: it repoints `current` at a
+# release already on disk and restarts the services. Migrations are forward-only and compatible
+# with the code one release back only, so the target must be the release directly before the
+# newest one on disk, and `current` must still name that newest release.
 set -euo pipefail
 
 readonly SEMPREC_ROOT=/opt/semprec
@@ -147,7 +154,7 @@ active_mailsync_instances() {
 restart_services() {
   local unit
   for unit in "$@"; do
-    systemctl restart "$unit" || fail "$unit failed to restart after current moved to the new release"
+    systemctl restart "$unit" || fail "$unit failed to restart after current moved"
   done
 }
 
@@ -183,30 +190,58 @@ report_versions() {
   fi
 }
 
-main() {
-  if [[ "$#" -ne 1 ]]; then
-    echo "Usage: deploy.sh vMAJOR.MINOR.PATCH" >&2
-    exit 2
-  fi
+# Prints the release directories under releases/ (hidden staging directories excluded), oldest
+# first.
+releases_by_version() {
+  local path
+  local name
+  for path in "$RELEASES_DIR"/v*; do
+    name="${path##*/}"
+    if [[ -d "$path" && ! -L "$path" && "$name" =~ $TAG_PATTERN ]]; then
+      printf '%s\n' "$name"
+    fi
+  done | sort -V
+}
+
+# Refuses, before anything changes, every target except the complete release directly before the
+# newest release on disk while `current` still names that newest release.
+validate_rollback_target() {
   local tag="$1"
-  local commit
+  local target="$RELEASES_DIR/$tag"
+  local -a releases
+  local newest
+  local previous
+  local current_target
 
-  validate_tag_format "$tag"
-  require_root
-  require_release_tree
-  acquire_lock
-  if [[ -e "$RELEASES_DIR/$tag" || -L "$RELEASES_DIR/$tag" ]]; then
-    fail "$RELEASES_DIR/$tag already exists; releases are immutable"
+  if [[ ! -d "$target" || -L "$target" ]]; then
+    fail "$target is not a deployed release; a rollback only repoints current at a release already on disk"
+  fi
+  if ! grep -qx "APP_VERSION=$tag" "$target/release.env" 2> /dev/null; then
+    fail "$target/release.env does not declare APP_VERSION=$tag; refusing an incomplete release"
   fi
 
-  commit="$(resolve_release_commit "$tag")"
-  trap remove_staging EXIT
-  stage_release "$tag" "$commit"
-  build_release
-  write_release_env "$tag"
-  run_migrations
-  promote_release "$tag"
+  mapfile -t releases < <(releases_by_version)
+  newest="${releases[-1]}"
+  if (( ${#releases[@]} < 2 )); then
+    fail "$newest is the only release on disk; there is no previous release to roll back to"
+  fi
+  previous="${releases[-2]}"
+  if [[ "$tag" != "$previous" ]]; then
+    fail "can only roll back to $previous, the release before the newest release $newest; migrations are compatible one release back only"
+  fi
 
+  if [[ ! -L "$CURRENT_LINK" ]]; then
+    fail "$CURRENT_LINK is not a symlink; nothing to roll back"
+  fi
+  current_target="$(readlink -- "$CURRENT_LINK")"
+  if [[ "$current_target" != "$RELEASES_DIR/$newest" ]]; then
+    fail "current points at $current_target, not at the newest release $newest; nothing to roll back"
+  fi
+}
+
+# Moves `current` to an already complete release and restarts every process onto it.
+activate_release() {
+  local tag="$1"
   local mailsync_instances
   local -a units=("${LONG_RUNNING_SERVICES[@]}")
   mailsync_instances="$(active_mailsync_instances)"
@@ -219,7 +254,56 @@ main() {
   swap_current "$tag"
   restart_services "${units[@]}"
   report_versions "$tag" "${units[@]}"
+}
+
+deploy() {
+  local tag="$1"
+  local commit
+
+  if [[ -e "$RELEASES_DIR/$tag" || -L "$RELEASES_DIR/$tag" ]]; then
+    fail "$RELEASES_DIR/$tag already exists; releases are immutable"
+  fi
+
+  commit="$(resolve_release_commit "$tag")"
+  trap remove_staging EXIT
+  stage_release "$tag" "$commit"
+  build_release
+  write_release_env "$tag"
+  run_migrations
+  promote_release "$tag"
+  activate_release "$tag"
   echo "Deployed $tag ($commit)"
+}
+
+rollback() {
+  local tag="$1"
+  validate_rollback_target "$tag"
+  activate_release "$tag"
+  echo "Rolled back to $tag; the database schema was not changed"
+}
+
+usage() {
+  echo "Usage: deploy.sh vMAJOR.MINOR.PATCH" >&2
+  echo "       deploy.sh --rollback vMAJOR.MINOR.PATCH" >&2
+  exit 2
+}
+
+main() {
+  local mode=deploy
+  if [[ "${1:-}" == "--rollback" ]]; then
+    mode=rollback
+    shift
+  fi
+  if [[ "$#" -ne 1 ]]; then
+    usage
+  fi
+  local tag="$1"
+
+  validate_tag_format "$tag"
+  require_root
+  require_release_tree
+  acquire_lock
+  "$mode" "$tag"
 }
 
 main "$@"

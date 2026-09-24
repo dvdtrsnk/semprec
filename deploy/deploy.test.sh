@@ -40,7 +40,9 @@ git -C "$AUTHOR" tag -a v1.0.0 -m v1.0.0
 commit_release_content two
 git -C "$AUTHOR" tag -a v1.1.0 -m v1.1.0
 git -C "$AUTHOR" tag v1.2.0
-git -C "$AUTHOR" push --quiet origin main v1.0.0 v1.1.0 v1.2.0
+commit_release_content three
+git -C "$AUTHOR" tag -a v1.3.0 -m v1.3.0
+git -C "$AUTHOR" push --quiet origin main v1.0.0 v1.1.0 v1.2.0 v1.3.0
 git -C "$AUTHOR" checkout --quiet -b feature
 commit_release_content off-main
 git -C "$AUTHOR" tag -a v9.0.0 -m v9.0.0
@@ -196,6 +198,56 @@ for unit in semprec-ai-gateway semprec-api semprec-agents semprec-transcribe; do
   grep -qx "$unit.service: v1.1.0" "$TEST_STATE/deploy.out"
 done
 assert_no_partial_releases
+
+# ---- Rollback (issue #191): only to the release before the newest, with no build or migration. ----
+
+run_deploy v1.3.0 > "$TEST_STATE/deploy.out"
+assert_current v1.3.0
+printf 'semprec-mailsync@alice.service loaded active running Semprec mail sync worker for alice\n' \
+  > "$TEST_STATE/mailsync-units"
+rm "$TEST_STATE/commands"
+# A staging directory left by an interrupted deploy is not a release and must not count as the newest.
+mkdir "$TEST_SEMPREC_ROOT/releases/.v1.4.0.partial.test"
+releases_before="$(ls -a "$TEST_SEMPREC_ROOT/releases")"
+previous_release_inode="$(stat -c %i "$TEST_SEMPREC_ROOT/releases/v1.1.0")"
+
+expect_refused 'invalid release tag' --rollback v1.1
+expect_refused 'Usage' --rollback
+expect_refused 'Usage' --rollback v1.1.0 extra
+expect_refused 'is not a deployed release' --rollback v1.2.0
+expect_refused 'can only roll back to v1.1.0' --rollback v1.0.0
+expect_refused 'can only roll back to v1.1.0' --rollback v1.3.0
+cp "$TEST_SEMPREC_ROOT/releases/v1.1.0/release.env" "$TEST_STATE/release.env.saved"
+printf 'APP_VERSION=v1.0.0\n' > "$TEST_SEMPREC_ROOT/releases/v1.1.0/release.env"
+expect_refused 'does not declare APP_VERSION=v1.1.0' --rollback v1.1.0
+cp "$TEST_STATE/release.env.saved" "$TEST_SEMPREC_ROOT/releases/v1.1.0/release.env"
+assert_current v1.3.0
+test ! -e "$TEST_STATE/commands"
+
+readonly ROLLBACK_OUTPUT="$TEST_STATE/rollback.out"
+run_deploy --rollback v1.1.0 > "$ROLLBACK_OUTPUT"
+assert_current v1.1.0
+grep -qx 'Rolled back to v1.1.0; the database schema was not changed' "$ROLLBACK_OUTPUT"
+for unit in semprec-ai-gateway semprec-api semprec-agents semprec-transcribe semprec-mailsync@alice; do
+  grep -qx "systemctl restart $unit.service" "$TEST_STATE/commands"
+  grep -qx "$unit.service: v1.1.0" "$ROLLBACK_OUTPUT"
+done
+# No build and no migration: the only commands issued are the restarts.
+if grep -v '^systemctl restart ' "$TEST_STATE/commands"; then
+  echo 'a rollback ran something other than service restarts' >&2
+  exit 1
+fi
+test "$(ls -a "$TEST_SEMPREC_ROOT/releases")" == "$releases_before"
+test "$(stat -c %i "$TEST_SEMPREC_ROOT/releases/v1.1.0")" == "$previous_release_inode"
+grep -qx two "$TEST_SEMPREC_ROOT/releases/v1.1.0/backend/marker"
+rm -r "$TEST_SEMPREC_ROOT/releases/.v1.4.0.partial.test"
+
+# Two releases back is refused: the schema is already the newest release's.
+rm "$TEST_STATE/commands"
+expect_refused 'not at the newest release v1.3.0' --rollback v1.1.0
+expect_refused 'can only roll back to v1.1.0' --rollback v1.0.0
+assert_current v1.1.0
+test ! -e "$TEST_STATE/commands"
 
 test "$(sha256sum "$TEST_SEMPREC_ROOT/shared/.env" | awk '{print $1}')" == "$SHARED_ENV_CHECKSUM"
 test ! -e "$TEST_STATE/violations"
