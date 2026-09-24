@@ -22,11 +22,13 @@ The two compose as `dry-run audit #N`, which reads the live issue and writes
 nothing at all — no edit, no label. There are no draft files to edit in this
 combination, so report the findings and the edits you would have made instead.
 
-The pipeline this feeds is fully autonomous: once issues get `spec:approved`,
-a headless agent on the VPS implements them one by one with **no human in the
-loop**, reading nothing but the issue bodies. That is why this skill is
-deliberately slow and thorough up front — every ambiguity you leave in an issue
-becomes a wrong guess made by an unsupervised agent at 3 a.m.
+The pipeline this feeds is fully autonomous: once an issue carries `agent:ready`
+(this skill also sets `spec:approved` alongside it — see Phase 5), Relay
+dispatches a BB worker to implement it with **no human in the loop**, reading
+nothing but the issue body and, for each of its blockers, the pull request that
+closed it (see "Hand-over context" in `.github/ISSUE_FORMAT.md`). That is why
+this skill is deliberately slow and thorough up front — every ambiguity you
+leave in an issue becomes a wrong guess made by an unsupervised agent at 3 a.m.
 
 Converse with the user in the language they use. Everything written to GitHub is
 English. The issue structure contract is `.github/ISSUE_FORMAT.md` — read it
@@ -84,9 +86,10 @@ in the spec, go back to the user — do not fill it silently.
 
 1. Choose a short kebab-case batch slug.
 2. Decompose the spec into a **strictly sequential** chain of issues. Each issue
-   must be implementable by an agent that reads only that issue (plus comments on
-   its blockers). Inline everything it needs — copy context in, do not point
-   elsewhere. **One issue implements exactly one mechanism** — not one
+   must be implementable by an agent that reads only that issue (plus, for each
+   blocker, the pull request that closed it). Inline everything it needs — copy
+   context in, do not point elsewhere. **One issue implements exactly one
+   mechanism** — not one
    coherent-sounding bundle of mechanisms: a bundled issue's PR carries every
    bundled mechanism's review surface at once, so one finding blocks the whole
    PR and the fix-review loop repeats for all of them together (see
@@ -100,6 +103,12 @@ in the spec, go back to the user — do not fill it silently.
    predecessor). When citing a cross-batch blocker, verify (recon findings or a
    quick look at the issue) that the cited issue actually *delivers* the needed
    capability — if unsure, block on the latest issue known to already use it.
+   If an issue's Task would touch a path under `.relay/config.yml`'s
+   `protected-paths` (`.relay/**`, `.github/workflows/**`,
+   `.github/scripts/check-protected-paths.mjs`) or change branch protection,
+   flag it now, per `.github/ISSUE_FORMAT.md`'s "Protected paths" note: it is
+   maintainer-implemented, not dispatched to Relay, and Phase 5 must never label
+   it `agent:ready`.
 4. Avoid forward references: an issue's Context may point to its predecessors
    freely, but reference a *later* sibling only when genuinely needed.
 5. If decomposition genuinely requires a new architectural decision (not
@@ -133,10 +142,17 @@ in the spec, go back to the user — do not fill it silently.
    that authority belongs here, before creation, not after.
 8. **Real mode:** create the epic first, then the issues **in batch order**
    (`gh issue create -R dvdtrsnk/semprec`) — creating sequentially means every
-   backward in-batch reference already has its real `#N` at write time. Then do
+   backward in-batch reference already has its real `#N` at write time.
+   Immediately after creating each implementation issue, link it to the epic as
+   a GitHub sub-issue:
+   `gh api -X POST repos/dvdtrsnk/semprec/issues/<epic-number>/sub_issues -F sub_issue_id=<child-id>`,
+   where `<child-id>` is the child's numeric `id` (`gh api
+   repos/dvdtrsnk/semprec/issues/<n> --jq .id`), not its issue number. This is
+   what lets `.github/workflows/close-completed-epics.yml` close the epic once
+   the batch is done — a batch created without it never self-closes. Then do
    one substitution pass: edit the epic checklist and any issue that used a
    forward reference, replacing placeholders with real numbers. No `#TBD` may
-   survive — the dispatcher only parses `#N`.
+   survive — Relay only parses `#N`.
    **dry-run:** write epic + issues as separate files into the scratchpad
    directory, using `#TBD-NN` for in-batch references (real cross-batch
    blockers keep their real `#N`). No gh calls, no labels.
@@ -229,10 +245,15 @@ Apply the consensus gate again. Then stop: there is no round 3.
 ### Terminal states
 
 - **No blocking finding survives round 2, real mode** → label every implementation
-  issue (NEVER the epic) `spec:approved`. Open advisory findings do not hold the
-  label back; list them to the user instead, so they can decide. Report: batch
-  summary, issue numbers, the advisory findings left on the table, and that the
-  VPS dispatcher will pick up the first issue within ~10 minutes.
+  issue — NEVER the epic, and NEVER an issue flagged in Phase 4 as touching a
+  protected path or requiring admin rights — both `spec:approved` **and**
+  `agent:ready`: Relay's `implement-issue` workflow dispatches on `agent:ready`
+  (`.relay/workflows/implement-issue.md`), not on `spec:approved` alone. Open
+  advisory findings do not hold the labels back; list them to the user instead,
+  so they can decide. Report: batch summary, issue numbers, the advisory
+  findings left on the table, any issue deliberately left unarmed because it
+  touches a protected path, and that Relay picks up the first eligible issue on
+  its next tick.
 - **No blocking finding survives round 2, dry-run** → report the summary, the file
   paths and the advisory findings; no labeling.
 - **A blocking finding passes the gate in round 2** → if its `fix` is a single

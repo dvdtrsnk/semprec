@@ -6,9 +6,11 @@ description: "The execution contract for implementing one Semprec issue end to e
 # Implementing one issue
 
 The issue body is your source of truth. It is written to be self-contained:
-everything you need is in it, plus the comments on the issues named in its
-`Blocked by:` line (those carry merge SHAs and hand-over notes from the work
-this one builds on).
+everything you need is in it, plus the hand-over context from the work this one
+builds on — for each issue named in its `Blocked by:` line, that context lives in
+the pull request that closed it, not in a comment on the issue itself:
+`gh issue view <blocker> --json closedByPullRequestsReferences`, then read that
+pull request's body.
 
 ## 1. Read before you write
 

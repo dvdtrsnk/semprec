@@ -124,10 +124,12 @@ Write a body that says what changed, why, and how it was verified.
 
 ## 5. Review loop (repeat until green, at most 4 rounds)
 
-Three checks are required on `develop`: **`ci`**, **`review`** and
-**`code-review`**. All three must pass, and
-**`required_conversation_resolution` is on**, so every inline review thread
-must also be resolved before the merge button unblocks.
+`develop` requires the checks listed in `docs/operations/required-checks.md`
+(`ci`, `unit`, `integration`, `dependency-check`, `e2e`, `pi-agent-contract`,
+`review`, `code-review` — that document is authoritative if this list and it
+ever disagree). All of them must pass, and **`required_conversation_resolution`
+is on**, so every inline review thread must also be resolved before the merge
+button unblocks.
 
 1. Wait in the **background**, never the foreground: `ci` alone runs about
    seven minutes on this repository, which outlives the shell tool's timeout,
