@@ -38,4 +38,5 @@ force, so a commit that stopped being the head or a tag that appeared meanwhile 
 refused. Exit code 1 means the command could not finish (git, `gh` or the network failed) —
 read its error; nothing is released unless the push itself succeeded.
 
-Pushing a tag does not deploy anything yet.
+Pushing a tag does not deploy anything by itself. A tag is deployed by hand with
+`deploy/deploy.sh <tag>` ([deploy/README.md](../../deploy/README.md#deploying-a-release-issue-190)).
