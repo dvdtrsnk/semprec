@@ -93,6 +93,22 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
       ).resolves.toBeDefined();
     });
 
+    it("can insert into a bigserial-keyed side table created after 0040 ran", async () => {
+      // A table the migrating role creates later, granted the way a migration adding a side table
+      // would grant it: table DML only. Its sequence must be covered by 0047's default privileges.
+      const table = `least_privilege_late_${randomUUID().replaceAll("-", "")}`;
+      await adminPool.query(`CREATE TABLE ${table} (id bigserial PRIMARY KEY, note text)`);
+      try {
+        await adminPool.query(`GRANT SELECT, INSERT ON ${table} TO semprec_side`);
+        const { rows } = await sidePool.query<{ id: string }>(
+          `INSERT INTO ${table} (note) VALUES ('late') RETURNING id`,
+        );
+        expect(rows).toEqual([{ id: "1" }]);
+      } finally {
+        await adminPool.query(`DROP TABLE ${table}`);
+      }
+    });
+
     it("can enqueue and read graphile-worker jobs", async () => {
       await expect(
         sidePool.query(`SELECT graphile_worker.add_job('least_privilege_test_task', '{}'::json)`),
