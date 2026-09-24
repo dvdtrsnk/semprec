@@ -32,8 +32,10 @@ This repo is a monorepo for the whole product, not just the backend:
 This repo does **not** follow `backend.html` directly. Each unit of work has
 its own fully self-contained GitHub Issue — context, task, and scope are
 written directly in the issue, with no need to open the planning repo.
-Issues are worked in order by number (`[N/21]` in the title), sequentially,
-one at a time.
+Issues within a batch form a dependency DAG rather than a strict chain
+(`.github/ISSUE_FORMAT.md`): an issue is worked only after the issues it is
+actually `Blocked by:` are merged, but issues with no dependency between them
+may be worked in parallel.
 
 ## Structure
 

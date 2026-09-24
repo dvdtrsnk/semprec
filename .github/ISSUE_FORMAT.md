@@ -9,13 +9,17 @@ implementer needs must be inside it.
 
 ## Why these rules exist
 
-- **Strictly sequential batches.** Issues in a batch are executed one at a time, in
-  the order their `Blocked by:` chain enforces — no issue in a batch is eligible
-  until its in-batch predecessor has merged and closed
-  (`respect-blocked-by: true` in `.relay/workflows/implement-issue.md`). Relay may
-  run other, unrelated issues at the same time — `implement-issue`'s
-  `max-concurrent: 2` — but nothing inside one batch's own chain ever runs out of
-  order or in parallel with itself.
+- **A dependency DAG, not a chain.** `Blocked by:` names a real dependency only
+  — a capability another issue's Task delivers that this one needs, or a
+  shared-file overlap that can't be split (see "Touches and conflict hotspots"
+  below) — never "the previous issue in the batch" by default. Two issues that
+  need nothing from each other and touch disjoint files carry no `Blocked by:`
+  relationship between them, are both eligible as soon as their real
+  dependencies close, and Relay may implement several of them at once, up to
+  `implement-issue`'s `max-concurrent` (`respect-blocked-by: true` in
+  `.relay/workflows/implement-issue.md` still enforces every real edge; it no
+  longer serializes a whole batch by default). See
+  `docs/adr/2026-09-24-issue-batches-as-dependency-dags.md` for why.
 - **Fully self-contained.** The implementing agent reads the issue body and, for
   each issue named in its `Blocked by:` line, the pull request that closed it (see
   "Hand-over context" below) — nothing else. Referencing an external specification
@@ -34,7 +38,11 @@ implementer needs must be inside it.
 ```
 
 - `batch-slug` — short kebab-case identifier of the batch (e.g. `inbox-v2`).
-- `NN/MM` — position in the batch / batch size, zero-padded (`03/07`).
+- `NN/MM` — the issue's position in the batch's **topological creation order**
+  (every issue after every issue named on its own `Blocked by:` line) / batch
+  size, zero-padded (`03/07`). Not an execution-order promise: two issues with
+  no dependency between them may implement in either order, or at the same
+  time.
 - Historical note: the founding batch #21–#41+#50 uses plain `[NN/22]` without a
   slug; do not rename it.
 
@@ -54,8 +62,13 @@ or, for the first issue of an independent batch:
 
 Rules:
 - Every issue has this line. "I forgot" is not a state Relay can parse.
-- Each issue after the first lists **at least the previous issue in its batch**;
-  add any real cross-batch dependencies on top.
+- List every issue whose delivered capability this issue's Task genuinely
+  needs, plus any real cross-batch dependency. Do **not** add the previous
+  issue in the batch by default — that serializes the batch again for no
+  reason. The one case that still puts a same-batch issue here without a
+  capability dependency is an unavoidable shared-file overlap (see "Touches
+  and conflict hotspots" below): when two issues' edits to the same file
+  can't be split apart, block the later-numbered one on the earlier.
 - Relay's parser matches the words "blocked by" (case-insensitive) **only once**
   — the first occurrence in the body — and extracts every `#N` on that one line as
   a blocker. Keep all blocker references on this one line, and never let the words
@@ -91,7 +104,7 @@ it, the client call that hits it) — they are not fine when they enumerate
 separable mechanisms ("X, Y, and Z") that don't need each other's code to
 exist or to be tested. Mechanical test: could a reviewer approve the first
 bullet without having read the third? If yes, this is more than one issue and
-belongs in sequential siblings instead.
+belongs in sibling issues instead.
 
 **Protected paths.** If the Task would touch a path under `.relay/config.yml`'s
 `protected-paths` (`.relay/**`, `.github/workflows/**`,
@@ -104,7 +117,24 @@ separately waits on GitHub's `protected-paths` check before merging — see
 anyway just burns a run before failing: issues #249, #250 and #188 were entirely
 CI-workflow changes and each blocked Relay this way.
 
-### 4. `## Scope`
+### 4. `## Touches`
+
+```
+### Touches
+- backend/packages/data/src/mail/mailModuleManifest.ts
+- backend/packages/data/src/index.ts (new manifest export line)
+```
+
+Every file this issue's Task will create or modify, one per line — a narrow
+area within a file (a specific export block, a specific key namespace) where
+that is more precise than the whole file. This is what lets decomposition
+(`/define-behavior` Phase 4) and the Phase 5 audit catch two
+concurrently-eligible issues that would otherwise collide on the same file;
+see "Touches and conflict hotspots" below. A file the issue creates counts
+too, so a sibling planning to create the same file is caught before either is
+dispatched.
+
+### 5. `## Scope`
 
 ```
 ### In scope
@@ -114,10 +144,54 @@ CI-workflow changes and each blocked Relay this way.
 Out of scope lists what is deliberately deferred and which issue (if known) picks
 it up. The code-review bot treats implementing an out-of-scope item as a finding.
 
-### 5. `## Acceptance criteria`
+### 6. `## Acceptance criteria`
 
 Observable, testable behaviors — "when X happens, Y is observable". The
 implementing agent's self-check and tests are written against these.
+
+## Touches and conflict hotspots
+
+Decomposition (`/define-behavior` Phase 4) checks that no two issues eligible
+at the same time — neither transitively `Blocked by:` the other — declare
+overlapping `## Touches`. When they do, either add a real `Blocked by:` edge,
+or extract the shared change into its own earlier issue that both then
+depend on (a registry entry, a shared type, a migration).
+
+Known hotspots and the convention for each:
+
+- **Migration ordinals** — `backend/packages/data/src/db/migrations/NNNN_*.sql`.
+  Two branches picking the same next number never conflict in git (different
+  filenames) and never fail at the database layer (the runner keys applied
+  migrations by full filename) — only `check-migration-numbering` in the
+  required `ci` job catches it (#288). Convention: take the next free ordinal
+  at commit time, right before pushing, not when the issue is drafted — the
+  free ordinal moves as sibling issues merge. On a rebase collision, renumber
+  only your own branch's migration file to the next free ordinal; never
+  renumber a migration that already merged.
+- **Module manifests and registries** —
+  `backend/packages/module-registry/src/{manifest,registry,catalog}.ts` and
+  each module's own `*ModuleManifest.ts`. Two issues that both add an entry
+  to the same manifest array or registry call overlap even though each
+  issue's own new file does not. Convention: one issue owns one manifest
+  file's edit for a given batch; a batch that needs several modules
+  registered puts all of those registrations in one earlier issue, or splits
+  them across issues that are genuinely `Blocked by:` each other.
+- **Barrel `index.ts` files** — e.g. `backend/packages/data/src/index.ts`,
+  `backend/packages/module-registry/src/index.ts`. Every new exported
+  module or manifest adds a line here, so two sibling issues touching it in
+  the same region collide even when their real code lives in disjoint files.
+  Declare the barrel file in `## Touches`; if two concurrently-eligible
+  issues both need to add an export there, block the later on the earlier.
+- **i18n message catalogs** — `web/src/i18n/cs.json`, `web/src/i18n/en.json`,
+  `web/src/i18n/messages.ts`. Same shape as the barrel case: declare these
+  files in `## Touches` whenever the Task adds or changes a user-facing
+  string, and resolve an overlapping key/namespace between siblings with a
+  dependency rather than leaving it to the merge.
+
+A hotspot file appearing in two issues' `## Touches` is not itself a defect —
+it only matters when those two issues could be eligible at the same time. An
+issue and its own `Blocked by:` dependency touching the same file is normal
+and expected.
 
 ## Epic issue (one per batch)
 

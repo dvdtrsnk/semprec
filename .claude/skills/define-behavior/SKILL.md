@@ -1,6 +1,6 @@
 ---
 name: define-behavior
-description: Turn a feature idea into a user-approved behavior specification and a batch of sequential, self-contained GitHub issues (epic + implementation issues) in dvdtrsnk/semprec, finishing with a bounded, consensus-gated two-agent audit and automatic spec:approved labeling. Invoked explicitly as /define-behavior <idea>; supports a dry-run mode.
+description: Turn a feature idea into a user-approved behavior specification and a batch of dependency-ordered, self-contained GitHub issues (epic + implementation issues) in dvdtrsnk/semprec, finishing with a bounded, consensus-gated two-agent audit and automatic spec:approved labeling. Invoked explicitly as /define-behavior <idea>; supports a dry-run mode.
 disable-model-invocation: true
 ---
 
@@ -85,11 +85,19 @@ in the spec, go back to the user — do not fill it silently.
 ## Phase 4 — Decomposition and creation
 
 1. Choose a short kebab-case batch slug.
-2. Decompose the spec into a **strictly sequential** chain of issues. Each issue
-   must be implementable by an agent that reads only that issue (plus, for each
-   blocker, the pull request that closed it). Inline everything it needs — copy
-   context in, do not point elsewhere. **One issue implements exactly one
-   mechanism** — not one
+2. Decompose the spec into a **dependency DAG** of issues, not a chain: an
+   issue is `Blocked by:` another only when its Task genuinely needs a
+   capability that issue delivers, or when the two would otherwise collide on
+   the same file (a hotspot — see step 8 below and
+   `.github/ISSUE_FORMAT.md`'s "Touches and conflict hotspots"). Issues with no
+   such dependency between them are concurrently eligible once created — Relay
+   may implement several of them at once, up to `implement-issue`'s
+   `max-concurrent` — so leaving an unrelated issue off another's `Blocked by:`
+   line is what buys that parallelism, not something to add "to be safe."
+   Each issue must be implementable by an agent that reads only that issue
+   (plus, for each blocker, the pull request that closed it). Inline
+   everything it needs — copy context in, do not point elsewhere. **One issue
+   implements exactly one mechanism** — not one
    coherent-sounding bundle of mechanisms: a bundled issue's PR carries every
    bundled mechanism's review surface at once, so one finding blocks the whole
    PR and the fix-review loop repeats for all of them together (see
@@ -98,9 +106,11 @@ in the spec, go back to the user — do not fill it silently.
    step 7 is confirmation, not a rewrite.
 3. Write every issue per `.github/ISSUE_FORMAT.md` — that document is the
    authority on the Blocked-by rules (in short: `none` only for a batch with no
-   dependencies at all; a dependent batch's first issue lists its real
-   cross-batch blockers; every later issue lists at least its in-batch
-   predecessor). When citing a cross-batch blocker, verify (recon findings or a
+   dependencies at all; every other issue lists the real dependencies its Task
+   needs, and nothing else by default) and on the mandatory `## Touches`
+   section (every file or narrow area the issue's Task creates or modifies —
+   step 8 below is where this gets checked for overlap). When citing a
+   cross-batch blocker, verify (recon findings or a
    quick look at the issue) that the cited issue actually *delivers* the needed
    capability — if unsure, block on the latest issue known to already use it.
    If an issue's Task would touch a path under `.relay/config.yml`'s
@@ -125,8 +135,10 @@ in the spec, go back to the user — do not fill it silently.
    grouping the Phase 5 audit's C4 class (Task/criteria asymmetry) checks for.
    If two or more groups are independent (neither's code, state, or test
    setup depends on the other), the issue is oversized: split it into
-   sequential siblings along that grouping, one mechanism per issue, and fix
-   up the batch's numbering and Blocked-by chain. Apply the same test to the
+   sibling issues along that grouping, one mechanism per issue, and fix
+   up the batch's numbering and Blocked-by edges — a split along independent
+   groups produces siblings with no dependency between them by default (step 8
+   next still has to check they don't collide on `## Touches`). Apply the same test to the
    title and Context: if the one-sentence summary of the Task reads as an
    enumeration ("X, Y, and Z") naming mechanisms that don't need each other's
    code to exist or to be tested, that enumeration is the split line. A Task
@@ -140,9 +152,20 @@ in the spec, go back to the user — do not fill it silently.
    be: Phase 5's auditors are barred from proposing a different
    decomposition (see "What is never a finding" in the auditor prompt) —
    that authority belongs here, before creation, not after.
-8. **Real mode:** create the epic first, then the issues **in batch order**
-   (`gh issue create -R dvdtrsnk/semprec`) — creating sequentially means every
-   backward in-batch reference already has its real `#N` at write time.
+8. **Touch-set overlap check — mechanical, before creation.** For every pair
+   of drafted issues that could be eligible at the same time (neither
+   transitively `Blocked by:` the other), compare their `## Touches` sections
+   against each other and against `.github/ISSUE_FORMAT.md`'s hotspot list. An
+   overlapping file or area means the pair cannot safely implement in
+   parallel: add a real `Blocked by:` edge between them, or extract the
+   shared change (a registry entry, a shared type, a migration) into an
+   earlier issue both then depend on. Re-run this check after every split
+   from step 7 — extracting a shared change can itself need its own issue,
+   which changes the DAG.
+9. **Real mode:** create the epic first, then the issues **in topological
+   order** (every issue after every issue named on its own `Blocked by:`
+   line; `gh issue create -R dvdtrsnk/semprec`) — creating in that order means
+   every backward reference already has its real `#N` at write time.
    Immediately after creating each implementation issue, link it to the epic as
    a GitHub sub-issue:
    `gh api -X POST repos/dvdtrsnk/semprec/issues/<epic-number>/sub_issues -F sub_issue_id=<child-id>`,
