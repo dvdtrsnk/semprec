@@ -2,7 +2,7 @@
 status: accepted
 date: 2026-09-24
 area: [cross-cutting]
-supersedes: []
+supersedes: [2026-09-10-develop-main-branching-with-release-promotion]
 superseded-by: null
 ---
 
@@ -24,6 +24,13 @@ from a workflow on every push to `main` (which would tag every promotion whether
 was intended, and would have to wait on the other jobs of the same push).
 
 ## Decision
+
+This replaces [[2026-09-10-develop-main-branching-with-release-promotion]] as a whole; its branch
+model carries over unchanged. `develop` is the integration branch — all feature/issue work targets
+it via PR, gated by the automated code review. `main` holds released versions only and advances
+exclusively through a `develop -> main` promotion PR, reviewed under the release-readiness rules
+rather than a per-issue acceptance-criteria check. What changes is how a release is made: merging
+the promotion PR no longer tags or publishes anything by itself.
 
 The monorepo has exactly one version: a `vMAJOR.MINOR.PATCH` git tag (no leading zeros, no
 pre-release or build suffix). No `package.json` carries a version of its own — each keeps the

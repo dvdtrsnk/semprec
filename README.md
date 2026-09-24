@@ -61,9 +61,11 @@ Vitest. Apple app: stack to be decided when its first issue lands.
 
 `develop` is the integration branch — all feature/issue work targets it via
 PR, gated by an automated code review. `main` holds released versions only:
-it advances exclusively through a `develop -> main` promotion PR, which on
-merge triggers a release pipeline that tags and publishes a GitHub Release
-from the version in `backend/package.json`. Both branches are protected; the
+it advances exclusively through a `develop -> main` promotion PR. A release
+is a single monorepo `vMAJOR.MINOR.PATCH` tag, created only by the guarded
+command in `backend/packages/release` on a green `main` commit — merging the
+promotion PR does not tag anything by itself (see
+[`docs/operations/releases.md`](docs/operations/releases.md)). Both branches are protected; the
 checks a pull request must pass are listed in
 [`docs/operations/required-checks.md`](docs/operations/required-checks.md).
 

@@ -10,7 +10,7 @@ and this document in the same change.
 
 `develop` is the integration branch every issue targets; `main` holds released versions and
 advances only through a `develop -> main` promotion pull request
-([ADR](../adr/2026-09-10-develop-main-branching-with-release-promotion.md)). Both branches
+([ADR](../adr/2026-09-24-monorepo-release-tag-from-guarded-command.md)). Both branches
 are protected: a pull request is required, required checks are `strict` (the head must be up
 to date with the base), the rules apply to administrators too, and force pushes and
 deletions are refused.
