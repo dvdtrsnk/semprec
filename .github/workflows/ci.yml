@@ -51,9 +51,10 @@ jobs:
           exit 1
 
   # The job id is a required status check context on both `develop` and `main`
-  # (docs/operations/required-checks.md) — renaming it or splitting it into several
-  # jobs would leave `ci` permanently pending on every pull request. Keep both
-  # workspaces inside this one job.
+  # (docs/operations/required-checks.md) — renaming it would leave `ci` permanently
+  # pending on every pull request. It carries every check that is not one of the named
+  # tiers below: repository scans, lint, format, the build, the e2e tier and the web
+  # workspace.
   ci:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -90,8 +91,8 @@ jobs:
         working-directory: backend
         run: pnpm run check:write-safety
 
-      # Backend static checks plus the unit tier; the database-backed tiers are
-      # added to this same job further down.
+      # Backend static checks and the build. The unit and integration tiers and the
+      # boundary check run as their own jobs below; the e2e tier stays here until #188.
       - name: Backend — install
         working-directory: backend
         run: pnpm install --frozen-lockfile
@@ -107,12 +108,6 @@ jobs:
       - name: Backend — build
         working-directory: backend
         run: pnpm -r run build
-
-      # No PostgreSQL needed: the unit tier (including the pi-runtime contract suite
-      # in packages/agent-runtime) never imports anything that touches a real database.
-      - name: Backend — test:unit
-        working-directory: backend
-        run: pnpm run test:unit
 
       # Guards the pi-runtime contract suite's premise: production code (and the
       # suite itself) may only reach pi through its documented package-root exports,
@@ -130,26 +125,8 @@ jobs:
         working-directory: backend
         run: pnpm --filter @semprec/data run check-migration-numbering
 
-      # Import-boundary rules (dependency-cruiser.rules.json). Cheap enough (~2s) that
-      # there is no reason for it to be a script nobody runs.
-      - name: Backend — module boundaries
-        working-directory: backend
-        run: pnpm run check:boundaries
-
-      # `semprec-transcribe` shells out to ffmpeg/ffprobe (#246), and the integration
-      # tier exercises that for real rather than mocking the binaries away. They are a
-      # system dependency, not an npm one, and the GitHub-hosted runner image does not
-      # carry them — without this step the tier fails with `spawn ffmpeg ENOENT`.
-      - name: Backend — install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
-
-      # Both tiers provision their own ephemeral PostgreSQL through
+      # Provisions its own ephemeral PostgreSQL through
       # `packages/data/src/testSupport/globalSetup.ts` — no service container needed.
-      # Measured at ~3 minutes together, well inside this job's 20-minute budget.
-      - name: Backend — integration tests
-        working-directory: backend
-        run: pnpm run test:integration
-
       - name: Backend — e2e tests
         working-directory: backend
         run: pnpm run test:e2e
@@ -173,3 +150,89 @@ jobs:
       - name: Web — test
         working-directory: web
         run: pnpm test
+
+  # The named test tiers (#250). Each job id is a required status check context on
+  # `develop` and `main` and a stable identifier in docs/operations/required-checks.md:
+  # renaming one is a contract change that must update branch protection and that
+  # document together. They run alongside `ci`, not after it, so a failing tier is
+  # reported without waiting for the rest of the gate.
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Backend — install
+        working-directory: backend
+        run: pnpm install --frozen-lockfile
+
+      # No PostgreSQL and no build needed: the unit tier (including the pi-runtime
+      # contract suite in packages/agent-runtime) never imports anything that touches a
+      # real database, and vitest resolves workspace packages from their sources.
+      - name: Backend — test:unit
+        working-directory: backend
+        run: pnpm run test:unit
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Backend — install
+        working-directory: backend
+        run: pnpm install --frozen-lockfile
+
+      # `semprec-transcribe` shells out to ffmpeg/ffprobe (#246), and the integration
+      # tier exercises that for real rather than mocking the binaries away. They are a
+      # system dependency, not an npm one, and the GitHub-hosted runner image does not
+      # carry them — without this step the tier fails with `spawn ffmpeg ENOENT`.
+      - name: Backend — install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      # The ephemeral PostgreSQL is created for this run and removed after it by
+      # `packages/data/src/testSupport/globalSetup.ts` (an embedded server, no service
+      # container and no external database).
+      - name: Backend — test:integration
+        working-directory: backend
+        run: pnpm run test:integration
+
+  dependency-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Backend — install
+        working-directory: backend
+        run: pnpm install --frozen-lockfile
+
+      # Import-boundary rules from #173 (dependency-cruiser.rules.json). Reads the
+      # sources directly, so it needs the install but no build.
+      - name: Backend — module boundaries
+        working-directory: backend
+        run: pnpm run check:boundaries
