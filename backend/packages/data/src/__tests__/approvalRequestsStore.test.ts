@@ -77,6 +77,36 @@ describe("approvalRequestsStore (issue #130)", () => {
     expect(await getApprovalRequest(pool, randomUUID())).toBeNull();
   });
 
+  describe("resource_snapshot shape at the read boundary", () => {
+    it("reads back a snapshot that carries a sha256", async () => {
+      const id = await createPendingRequest();
+      await pool.query(`UPDATE approval_requests SET resource_snapshot = $2 WHERE id = $1`, [
+        id,
+        JSON.stringify({ kind: "item", resourceId: "item-1", sha256: "abc" }),
+      ]);
+
+      const read = await getApprovalRequest(pool, id);
+      expect(read?.resourceSnapshot).toEqual({ kind: "item", resourceId: "item-1", sha256: "abc" });
+    });
+
+    it.each([
+      ["a JSON null", null],
+      ["a non-object", "item-1"],
+      ["a missing kind", { resourceId: "item-1", sha256: null }],
+      ["a non-string resourceId", { kind: "item", resourceId: 1, sha256: null }],
+      ["a missing sha256", { kind: "item", resourceId: "item-1" }],
+      ["a non-string sha256", { kind: "item", resourceId: "item-1", sha256: 1 }],
+    ])("rejects a row whose snapshot is %s instead of passing it through", async (_label, snapshot) => {
+      const id = await createPendingRequest();
+      await pool.query(`UPDATE approval_requests SET resource_snapshot = $2::jsonb WHERE id = $1`, [
+        id,
+        JSON.stringify(snapshot),
+      ]);
+
+      await expect(getApprovalRequest(pool, id)).rejects.toThrow("Malformed resource_snapshot in database row");
+    });
+  });
+
   describe("decideApprovalRequest (issue #131)", () => {
     it("transitions a pending request to approved and records who/when", async () => {
       const id = await createPendingRequest();
