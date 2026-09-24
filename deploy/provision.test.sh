@@ -115,6 +115,9 @@ grep -qx 'SyslogIdentifier=semprec-ai-gateway' "$TEST_ROOT/systemd/system/sempre
 grep -qx 'OnFailure=semprec-failping@%n.service' "$TEST_ROOT/systemd/system/semprec-agents.service"
 grep -qx 'OnFailure=semprec-failping@%n.service' "$TEST_ROOT/systemd/system/semprec-transcribe.service"
 grep -qx 'OnFailure=semprec-failping@%n.service' "$TEST_ROOT/systemd/system/semprec-ai-gateway.service"
+for unit in semprec-api semprec-agents semprec-mailsync@ semprec-transcribe semprec-ai-gateway; do
+  grep -qx 'EnvironmentFile=/opt/semprec/current/release.env' "$TEST_ROOT/systemd/system/$unit.service"
+done
 
 printf 'OPERATOR_CONFIGURED_SECRET=preserved\n' > "$TEST_ROOT/opt/semprec/shared/.env"
 mkdir "$TEST_ROOT/opt/semprec/releases/release-one"
