@@ -106,7 +106,10 @@ export function createCreateTranscriptionRouteHandler(pool: Pool) {
  * and repeats no paid stage. Performs no item write. A row a user set to `locked` is refused with
  * `403 transcription_locked`; the `item_automation` row is locked for the rest of the transaction,
  * so a lock set concurrently either lands before this check or waits for the enqueue to commit —
- * and the job itself re-checks the lock in every step. A row that is not a pipeline transcription
+ * and the job itself re-checks the lock in every step. Every other status is accepted, `pending`
+ * included: a still-queued job for the row is replaced under the same key (#180's `replace`
+ * contract) with a fresh 3-attempt batch, so the row still has exactly one runnable job, which
+ * resumes from the same checkpoints. A row that is not a pipeline transcription
  * (no `item_automation` row, or no Files item `link`) has no job to rerun and is a 404.
  */
 export function createRerunTranscriptionRouteHandler(pool: Pool) {

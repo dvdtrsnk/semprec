@@ -242,6 +242,19 @@ describe("transcription requeue sweep and rerun route (issue #186)", () => {
       },
     );
 
+    it("accepts a pending row by replacing its queued job under the same key with a fresh batch", async () => {
+      const row = await createTranscription("pending");
+      const key = transcriptionJobKey(fileItemIdOf(row.link));
+      const handler = createRerunTranscriptionRouteHandler(pool);
+      await handler({ params: { id: row.transcriptId }, body: undefined });
+      await pool.query("UPDATE graphile_worker._private_jobs SET attempts = 1 WHERE key = $1", [key]);
+
+      const result = await handler({ params: { id: row.transcriptId }, body: undefined });
+
+      expect(result).toEqual({ status: 202, body: { id: row.transcriptId, fileItemId: fileItemIdOf(row.link) } });
+      expect(await readJobs()).toEqual([{ key, attempts: 0 }]);
+    });
+
     it("collapses a repeated rerun onto one job", async () => {
       const row = await createTranscription("error");
       const handler = createRerunTranscriptionRouteHandler(pool);
