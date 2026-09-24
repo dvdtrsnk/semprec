@@ -1,9 +1,9 @@
 ---
-status: accepted
+status: superseded
 date: 2026-09-10
 area: [cross-cutting]
 supersedes: []
-superseded-by: null
+superseded-by: 2026-09-24-monorepo-release-tag-from-guarded-command
 ---
 
 # `develop` is the integration branch; `main` advances only via a promotion PR
