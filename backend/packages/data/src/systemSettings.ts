@@ -45,24 +45,46 @@ export interface AiBudgets {
   monthlyBudgetUsd: number | null;
 }
 
+type SettingsProperties = { dailyBudgetUsd?: number | null; monthlyBudgetUsd?: number | null; timezone?: string };
+
+function toAiBudgets(properties: SettingsProperties): AiBudgets {
+  return {
+    dailyBudgetUsd: properties.dailyBudgetUsd === undefined ? DEFAULT_DAILY_BUDGET_USD : properties.dailyBudgetUsd,
+    monthlyBudgetUsd: properties.monthlyBudgetUsd === undefined ? null : properties.monthlyBudgetUsd,
+  };
+}
+
+/** The settings row's properties, or `null` before the system is seeded (e.g. a bare test pool). */
+async function readSettingsProperties(client: Queryable): Promise<SettingsProperties | null> {
+  const databaseId = await getSystemSettingsDatabaseId(client).catch((err) => {
+    if (err instanceof NotFoundError) return null;
+    throw err;
+  });
+  if (databaseId === null) return null;
+
+  const { rows } = await client.query<{ properties: SettingsProperties }>(
+    `SELECT properties FROM items WHERE database_id = $1 LIMIT 1`,
+    [databaseId],
+  );
+  return rows[0]?.properties ?? {};
+}
+
 /**
  * The gateway's dual budget caps (#120). A property that is explicitly `null` means "uncapped"
  * and must be respected as such; only a genuinely missing key (an install caught between
  * upgrading and 0019_settings_ai_budgets.sql running) falls back to the hardcoded default.
  */
 export async function getAiBudgets(client: Queryable): Promise<AiBudgets> {
-  const databaseId = await getSystemSettingsDatabaseId(client).catch((err) => {
-    if (err instanceof NotFoundError) return null; // system not seeded yet (e.g. a bare test pool) — fall back to the defaults below
-    throw err;
-  });
-  if (databaseId === null) return { dailyBudgetUsd: DEFAULT_DAILY_BUDGET_USD, monthlyBudgetUsd: null };
+  return toAiBudgets((await readSettingsProperties(client)) ?? {});
+}
 
-  const { rows } = await client.query<{
-    properties: { dailyBudgetUsd?: number | null; monthlyBudgetUsd?: number | null };
-  }>(`SELECT properties FROM items WHERE database_id = $1 LIMIT 1`, [databaseId]);
-  const properties = rows[0]?.properties ?? {};
-  return {
-    dailyBudgetUsd: properties.dailyBudgetUsd === undefined ? DEFAULT_DAILY_BUDGET_USD : properties.dailyBudgetUsd,
-    monthlyBudgetUsd: properties.monthlyBudgetUsd === undefined ? null : properties.monthlyBudgetUsd,
-  };
+/**
+ * Budgets and timezone read from one snapshot of the settings row, in one query. The gateway's
+ * budget check needs both: calling `getAiBudgets` and `getSystemTimezone` separately costs twice
+ * the round-trips and can observe two different settings rows if a write lands in between,
+ * evaluating a cap against a timezone that was not active when that cap was set.
+ */
+export async function getAiBudgetsWithTimezone(client: Queryable): Promise<AiBudgets & { timezone: string }> {
+  const properties = (await readSettingsProperties(client)) ?? {};
+  return { ...toAiBudgets(properties), timezone: properties.timezone ?? DEFAULT_TIMEZONE };
 }
