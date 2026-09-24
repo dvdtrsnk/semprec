@@ -20,6 +20,8 @@ needed a new ADR; that check is each platform's own responsibility (see
 their `review-rules/rules.md`), using their own repo access to look at
 `docs/adr/` directly.
 
-Work is tracked as a strictly sequential queue of GitHub issues, each fully
-self-contained. A pull request is expected to close exactly one such issue
-and implement only what it describes.
+Work is planned as a dependency DAG of GitHub issues, each fully
+self-contained; an issue may be implemented in parallel with any other issue
+it does not declare a dependency on (`.github/ISSUE_FORMAT.md`). A pull
+request is expected to close exactly one such issue and implement only what
+it describes.

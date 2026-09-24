@@ -69,10 +69,12 @@ issue it's `Blocked by:`), not a promise about execution order.
 
 ## Consequences
 
-- `implement-issue`'s Relay workflow `max-concurrent` moves from 2 to 3 so a
-  batch that decomposes into three independent issues can actually run all
-  three at once, instead of the DAG shape existing on paper while the runner
-  still gates it to two.
+- `implement-issue`'s Relay workflow `max-concurrent` needs to move from 2 to
+  3 so a batch that decomposes into three independent issues can actually run
+  all three at once, instead of the DAG shape existing on paper while the
+  runner still gates it to two — `.relay/**` is a protected path, so this
+  ships as a follow-up maintainer pull request, not in the one that adds this
+  ADR.
 - A batch that genuinely is one long chain (each step needs the previous
   step's code) still ends up with every issue `Blocked by:` its predecessor —
   the DAG model produces the old chain as one of its shapes, it just stops
