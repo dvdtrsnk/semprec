@@ -24,6 +24,11 @@ steps:
     uses: merge
     method: rebase
     on-failure: { goto: fix, max-rounds: 2 }     # unresolved threads, protection
+  - id: dequeue                                  # the issue is done: without this it stays `agent:ready`, and GitHub's lagging
+    uses: labels                                 # issue listing can dispatch it again right after it closes (#432 ran twice)
+    subject: linked-issue
+    remove: [agent:ready, agent:blocked]
+    on-failure: { goto: notify }                 # a label hiccup must never route an already-merged pull request to on-failure
   - { id: notify, uses: comment, subject: linked-issue, body: "Resolved by #{{prNumber}}, merged into {{baseBranch}}." }
   - { id: cleanup, uses: archive-threads, on-success: end }
 
