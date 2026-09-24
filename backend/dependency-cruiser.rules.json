@@ -208,6 +208,17 @@
       "to": {
         "path": "^packages/data/src/chokePoint/itemsStore\\.ts$"
       }
+    },
+    {
+      "name": "no-choke-point-domain-cross-import",
+      "severity": "error",
+      "comment": "Issue #496 (choke-point-split batch): chokePoint.ts is split into per-domain modules under packages/data/src/chokePoint/, and a domain module never imports another domain module — otherwise the split quietly collapses back into one tangled unit. Domain modules may still import the shared modules (authorization.ts, databaseGuards.ts, computedKeyRegistry.ts, relationEdgeContext.ts, chokePointDeps.ts, mergeOps.ts, viewTypeRegistry.ts), the *Store.ts files, and anything outside chokePoint/. The domain modules are listed explicitly, so a new one must be added here to be covered.",
+      "from": {
+        "path": "^packages/data/src/chokePoint/(databaseOps|propertyOps|relationPropertyOps|relationOps|itemWrites|itemReads|itemTrash|viewOps|viewQueryOps|destructiveProjection)\\.ts$"
+      },
+      "to": {
+        "path": "^packages/data/src/chokePoint/(databaseOps|propertyOps|relationPropertyOps|relationOps|itemWrites|itemReads|itemTrash|viewOps|viewQueryOps|destructiveProjection)\\.ts$"
+      }
     }
   ]
 }

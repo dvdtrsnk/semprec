@@ -196,4 +196,21 @@ describe("checkModuleBoundaries", () => {
     expect(violation?.imported).toBe("packages/data/src/chokePoint/itemsStore.ts");
     expect(violation?.rules).toContain("items-store-private");
   });
+
+  it("rejects a choke-point domain module importing another domain module (issue #496: no-choke-point-domain-cross-import)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const violation = violations.find(
+      (v: BoundaryViolation) => v.importer === "packages/data/src/chokePoint/databaseOps.ts",
+    );
+
+    expect(violation?.imported).toBe("packages/data/src/chokePoint/propertyOps.ts");
+    expect(violation?.rules).toContain("no-choke-point-domain-cross-import");
+  });
+
+  it("lets a choke-point domain module import a shared module and a store (issue #496: no-choke-point-domain-cross-import)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const importers = violations.map((violation: BoundaryViolation) => violation.importer);
+
+    expect(importers).not.toContain("packages/data/src/chokePoint/itemReads.ts");
+  });
 });
