@@ -38,3 +38,8 @@ type, not per-user ownership: `Actor.type` is `'user' | 'ai_agent' | 'system'`
 `docs/adr/2026-09-10-agent-writes-are-proposals-not-direct-writes.md`. A missing or
 bypassable `actor.type === 'ai_agent'` check is the real privilege-escalation shape
 to flag here — a human-vs-human check is not.
+
+This platform also reviews changes to its own `review-rules/` directory — the
+rules, tasks, severities and scope enforced here — through
+`tasks/review-rules.md`, which reports nothing for a pull request that does not
+touch them.
