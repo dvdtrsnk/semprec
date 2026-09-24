@@ -21,30 +21,30 @@ the `ci` triggers on both branches, the `promotion-source` check, and this docum
 
 ## Contexts required today
 
-| Context            | Produced by                                                                                                                         | Required on       |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
-| `ci`               | `.github/workflows/ci.yml`, job `ci` — build, lint, format, all test tiers, repository checks                                       | `develop`, `main` |
-| `review`           | `.github/workflows/code-review.yml`, job `review` — runs the code-review bot                                                        | `develop`, `main` |
-| `code-review`      | the code-review bot's own Check Run (`GH_CHECK_NAME` in `code-review.yml`) — the review verdict                                     | `develop`, `main` |
-| `promotion-source` | `.github/workflows/ci.yml`, job `promotion-source` — fails a pull request into `main` whose head is not this repository's `develop` | `main`            |
+| Context            | Produced by                                                                                                                                 | Required on       |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| `ci`               | `.github/workflows/ci.yml`, job `ci` — repository scans, lint, format, build, the e2e tier, the web workspace                               | `develop`, `main` |
+| `unit`             | `.github/workflows/ci.yml`, job `unit` — the backend unit tier                                                                              | `develop`, `main` |
+| `integration`      | `.github/workflows/ci.yml`, job `integration` — the backend integration tier against an ephemeral PostgreSQL created and removed by the run | `develop`, `main` |
+| `dependency-check` | `.github/workflows/ci.yml`, job `dependency-check` — the #173 module-boundary rules                                                         | `develop`, `main` |
+| `review`           | `.github/workflows/code-review.yml`, job `review` — runs the code-review bot                                                                | `develop`, `main` |
+| `code-review`      | the code-review bot's own Check Run (`GH_CHECK_NAME` in `code-review.yml`) — the review verdict                                             | `develop`, `main` |
+| `promotion-source` | `.github/workflows/ci.yml`, job `promotion-source` — fails a pull request into `main` whose head is not this repository's `develop`         | `main`            |
 
 `protected-paths` (`.github/workflows/protected-paths.yml`) reports on every pull request
 but is not a required context.
 
-`ci` runs on every pull-request update and on every push to `develop` and `main`, so every
-commit on either branch carries its own result.
+Every job in `ci.yml` runs on every pull-request update and on every push to `develop` and
+`main`, so every commit on either branch carries its own result.
 
 ## Tier names reserved for the CI gate
 
-The `deployment` batch splits the single `ci` job into named tier jobs. These names are fixed
-now so branch protection can be written against them:
+Still to be split out of `ci` into their own jobs. The names are fixed now so branch
+protection can be written against them:
 
-| Context             | Tier                                              | Added by |
-| ------------------- | ------------------------------------------------- | -------- |
-| `unit`              | unit tests                                        | #250     |
-| `integration`       | integration tests against an ephemeral PostgreSQL | #250     |
-| `dependency-check`  | module-boundary and dependency checks             | #250     |
-| `e2e`               | end-to-end scenarios                              | #188     |
-| `pi-agent-contract` | pi agent runtime contract tests                   | #188     |
+| Context             | Tier                            | Added by |
+| ------------------- | ------------------------------- | -------- |
+| `e2e`               | end-to-end scenarios            | #188     |
+| `pi-agent-contract` | pi agent runtime contract tests | #188     |
 
 Each one becomes required on both `develop` and `main` in the change that adds its job.
