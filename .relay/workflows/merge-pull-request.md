@@ -17,7 +17,7 @@ steps:
     on-success: { goto: relabel2 }               # → relabel → push → ready, at the end of the file
   - id: checks
     uses: wait-checks
-    names: [ci, review, code-review, protected-paths]   # every required context on the base branch; keep in step with branch protection
+    names: [ci, unit, integration, dependency-check, e2e, pi-agent-contract, review, code-review, protected-paths]   # every required context on develop (docs/operations/required-checks.md), plus protected-paths; keep in step with branch protection
     pending-timeout-minutes: 45
     on-failure: { goto: fix, max-rounds: 3 }
   - id: merge

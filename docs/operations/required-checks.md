@@ -36,6 +36,11 @@ the `ci` triggers on both branches, the `promotion-source` check, and this docum
 `protected-paths` (`.github/workflows/protected-paths.yml`) reports on every pull request
 but is not a required context.
 
+Relay's `merge-pull-request` workflow waits for these same contexts before it merges
+(`names:` of its `wait-checks` step in `.relay/workflows/merge-pull-request.md`). Adding a
+required context without adding it there makes Relay attempt the merge while that check is
+still running, and GitHub refuses it.
+
 Every job in `ci.yml` runs on every pull-request update and on every push to `develop` and
 `main`, so every commit on either branch carries its own result.
 
