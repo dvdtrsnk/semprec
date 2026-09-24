@@ -219,6 +219,17 @@
       "to": {
         "path": "^packages/data/src/chokePoint/(databaseOps|propertyOps|relationPropertyOps|relationOps|itemWrites|itemReads|itemTrash|viewOps|viewQueryOps|destructiveProjection)\\.ts$"
       }
+    },
+    {
+      "name": "no-choke-point-rollup-cycle",
+      "severity": "error",
+      "comment": "Issue #497 (choke-point-split batch): the batch moves rollup helpers out of chokePoint.ts into packages/data/src/rollup/ and splits the choke point into modules under packages/data/src/chokePoint/. Code moving between two directories that import each other is how import cycles appear, and a cycle there would make module initialization order-dependent. This rule forbids any circular dependency that involves a module in either directory.",
+      "from": {
+        "path": "^packages/data/src/(chokePoint|rollup)/"
+      },
+      "to": {
+        "circular": true
+      }
     }
   ]
 }

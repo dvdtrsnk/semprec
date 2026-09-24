@@ -213,4 +213,21 @@ describe("checkModuleBoundaries", () => {
 
     expect(importers).not.toContain("packages/data/src/chokePoint/itemReads.ts");
   });
+
+  it("rejects an import cycle between chokePoint/ and rollup/ (issue #497: no-choke-point-rollup-cycle)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const violation = violations.find(
+      (v: BoundaryViolation) => v.importer === "packages/data/src/chokePoint/cycleWithRollup.ts",
+    );
+
+    expect(violation?.imported).toBe("packages/data/src/rollup/cycleWithChokePoint.ts");
+    expect(violation?.rules).toContain("no-choke-point-rollup-cycle");
+  });
+
+  it("lets a choke-point module import rollup code without a cycle (issue #497: no-choke-point-rollup-cycle)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["modules", "services", "packages"]);
+    const importers = violations.map((violation: BoundaryViolation) => violation.importer);
+
+    expect(importers).not.toContain("packages/data/src/chokePoint/usesRollup.ts");
+  });
 });
