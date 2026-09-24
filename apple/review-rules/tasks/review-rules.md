@@ -17,8 +17,9 @@ files outside a `review-rules/` directory.
    that directory, with `**` meaning "any characters, including `/`" and `*`
    meaning "any characters except `/`".
 3. A `scope.md` pattern that cannot match what it evidently intends — for
-   example `dir/**/*.md` for files that sit directly in `dir/`, which the bot's
-   matcher does not accept — high: it is a silent coverage gap.
+   example `dir/*.md` meant to cover `dir/sub/notes.md`, where the single `*`
+   never crosses a `/` — high: it is a silent coverage gap. (`dir/**/*.md` is
+   fine: `**/` also matches no directory at all, so it covers `dir/notes.md`.)
 4. A platform left with no `tasks/*.md` file while its `scope.md` still
    includes files — high. The bot refuses to report a clean review when no
    task ran, so every pull request matching that platform fails its
@@ -29,5 +30,5 @@ files outside a `review-rules/` directory.
 6. A checkable claim about this repository that is wrong — a path, file,
    script, command, job name or convention that does not exist or does not
    behave as stated — medium. Verify it against the repository.
-7. A rule added with no statement of why it exists, or with a severity that
-   disagrees with the platform's `severity.md` — low.
+7. A rule added with no statement of why it exists — low. A severity that
+   disagrees with the platform's `severity.md` is a contradiction under item 5.
