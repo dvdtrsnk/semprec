@@ -32,11 +32,3 @@ Release from the version in `backend/package.json`.
 - `main` is always deployable and tied to a published release; in exchange,
   shipping anything requires the extra step of a promotion PR rather than
   every merge to `develop` being independently releasable.
-
-## Amendment 2026-09-24
-
-Re-confirmed over the trunk-based model the `deployment` batch proposed (#187: retire
-`develop`, make `main` the only long-lived branch). The repository owner kept this decision;
-#249 completed the gate for it instead — `ci` runs on pushes to both branches, a
-`promotion-source` check refuses a pull request into `main` from anywhere but `develop`, and
-the required checks are listed in `docs/operations/required-checks.md`.

@@ -15,6 +15,10 @@ are protected: a pull request is required, required checks are `strict` (the hea
 to date with the base), the rules apply to administrators too, and force pushes and
 deletions are refused.
 
+The deployment epic (#187) proposed retiring `develop` for a trunk-based `main`. On
+2026-09-24 the repository owner kept this model instead; #249 completed the gate for it —
+the `ci` triggers on both branches, the `promotion-source` check, and this document.
+
 ## Contexts required today
 
 | Context            | Produced by                                                                                                                         | Required on       |
