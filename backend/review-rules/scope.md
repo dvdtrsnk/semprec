@@ -7,6 +7,7 @@ services/**/*.ts
 **/*.json
 **/*.yml
 **/*.yaml
+review-rules/**
 
 # Exclude
 

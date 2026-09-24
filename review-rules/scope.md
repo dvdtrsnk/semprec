@@ -5,6 +5,8 @@ docs/adr/*.md
 .bb/skills/**/*.md
 .bb/AGENTS.md
 README.md
+.github/workflows/**
+review-rules/**
 
 # Exclude
 

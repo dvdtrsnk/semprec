@@ -5,6 +5,7 @@
 **/*.js
 **/*.jsx
 **/*.css
+review-rules/**
 
 # Exclude
 

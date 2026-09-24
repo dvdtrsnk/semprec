@@ -11,3 +11,8 @@ Work is tracked as a strictly sequential queue of GitHub issues, each fully
 self-contained (context, requirements, explicit scope boundaries). A pull
 request is expected to close exactly one such issue and implement only what
 it describes.
+
+This platform also reviews changes to its own `review-rules/` directory — the
+rules, tasks, severities and scope enforced here — through
+`tasks/review-rules.md`, which reports nothing for a pull request that does not
+touch them.
