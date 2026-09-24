@@ -26,16 +26,19 @@ async function previousReleaseWritesAndReadsANote(pool: Pool): Promise<void> {
 async function withScratchSchema(fn: (pool: Pool) => Promise<void>): Promise<void> {
   const schema = `migration_compat_${randomUUID().replaceAll("-", "")}`;
   const adminPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
-  await adminPool.query(`CREATE SCHEMA "${schema}"`);
-  const scratchPool = new Pool({
-    connectionString: process.env.TEST_DATABASE_URL,
-    options: `-c search_path=${schema}`,
-  });
   try {
-    await fn(scratchPool);
+    await adminPool.query(`CREATE SCHEMA "${schema}"`);
+    const scratchPool = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      options: `-c search_path=${schema}`,
+    });
+    try {
+      await fn(scratchPool);
+    } finally {
+      await scratchPool.end();
+      await adminPool.query(`DROP SCHEMA "${schema}" CASCADE`);
+    }
   } finally {
-    await scratchPool.end();
-    await adminPool.query(`DROP SCHEMA "${schema}" CASCADE`);
     await adminPool.end();
   }
 }
