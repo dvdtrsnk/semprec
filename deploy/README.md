@@ -37,6 +37,41 @@ shipped inside a release directory, so a release contains no secret of any kind.
 #91), owning the agent-affinity task catalog over the same Postgres-backed queue `semprec-api`
 uses. Its unit is a long-running worker, not socket-activated.
 
+## Deploying a release (issue #190)
+
+`deploy.sh <tag>` deploys one release tag (`docs/operations/releases.md`) as an immutable
+directory behind the atomic `current` symlink
+([ADR](../docs/adr/2026-09-24-immutable-releases-behind-an-atomic-current-symlink.md)). Run it as
+root from an operator checkout of this repository whose `origin` holds the tags:
+
+```sh
+sudo deploy/deploy.sh v1.2.3
+```
+
+In order, it:
+
+1. refuses a tag that is not `vMAJOR.MINOR.PATCH`, is not an annotated tag on `origin`, does not
+   point at a commit on `main`, or already has a `releases/<tag>` directory;
+2. exports the tagged commit into a hidden `releases/.<tag>.partial.*` directory, runs
+   `pnpm install --frozen-lockfile` and `pnpm -r run build` in its `backend/`, and writes
+   `release.env` (`APP_VERSION=<tag>`, not a secret);
+3. runs the release's migrations CLI in a transient `systemd-run` unit that loads
+   `/opt/semprec/shared/.env` and connects with its `SEMPREC_MIGRATE_DATABASE_URL`;
+4. renames the staging directory to `releases/<tag>`, then replaces `current` with one
+   `rename(2)`;
+5. restarts `semprec-ai-gateway`, `semprec-api`, `semprec-agents`, `semprec-transcribe` and every
+   active `semprec-mailsync@` instance, and prints the `APP_VERSION` each running process has.
+
+A failure in steps 1–3 removes the staging directory and exits non-zero with `current` and every
+service untouched. A failure in step 5 exits non-zero too, but `current` already names the new
+release. Only one deploy runs at a time (`/opt/semprec/.deploy.lock`).
+
+Every unit loads `current/release.env` after the shared `.env`, so the version a process reports
+comes from the release it runs. The script never reads, copies or prints the shared `.env`; a
+release directory contains no secret. A host provisioned before this issue needs `provision.sh`
+rerun (for the updated units) and `SEMPREC_MIGRATE_DATABASE_URL` added to its shared `.env` by
+hand. `deploy.test.sh` is the hermetic behavior test.
+
 ## Logs and external liveness (issue #171)
 
 Every Semprec systemd service supplies a distinct `SyslogIdentifier`; PostgreSQL and MinIO use
