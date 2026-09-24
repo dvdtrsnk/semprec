@@ -1,6 +1,6 @@
 ---
 name: finish
-description: Finish a feature branch of dvdtrsnk/semprec end to end - bring it up to date with develop by merging (never rebasing), run the full CI pipeline locally, push, open the pull request against develop, drive the three required checks and the code-review-bot to green, resolve review threads, merge, then clean up the worktree and branch. Use when the user says the feature is done, asks to finish, land, merge or ship the branch, or invokes /finish.
+description: Finish a feature branch of dvdtrsnk/semprec end to end - bring it up to date with develop by merging (never rebasing), run the full CI pipeline locally, push, open the pull request against develop, drive all required checks and the code-review-bot to green, resolve review threads, merge, then clean up the worktree and branch. Use when the user says the feature is done, asks to finish, land, merge or ship the branch, or invokes /finish.
 ---
 
 # Finish a feature branch
@@ -124,10 +124,12 @@ Write a body that says what changed, why, and how it was verified.
 
 ## 5. Review loop (repeat until green, at most 4 rounds)
 
-Three checks are required on `develop`: **`ci`**, **`review`** and
-**`code-review`**. All three must pass, and
-**`required_conversation_resolution` is on**, so every inline review thread
-must also be resolved before the merge button unblocks.
+`develop` requires the checks listed in `docs/operations/required-checks.md`
+(`ci`, `unit`, `integration`, `dependency-check`, `e2e`, `pi-agent-contract`,
+`review`, `code-review` — that document is authoritative if this list and it
+ever disagree). All of them must pass, and **`required_conversation_resolution`
+is on**, so every inline review thread must also be resolved before the merge
+button unblocks.
 
 1. Wait in the **background**, never the foreground: `ci` alone runs about
    seven minutes on this repository, which outlives the shell tool's timeout,
@@ -189,9 +191,10 @@ user rather than merging around them.
 
 ## 6. Merge
 
-The user has standing authorization for this step: once `ci`, `review` and
-`code-review` all pass, no critical/high/medium finding is open and every
-thread is resolved, merge without pausing to ask again.
+The user has standing authorization for this step: once all required checks
+listed in `docs/operations/required-checks.md` pass, no critical/high/medium
+finding is open and every thread is resolved, merge without pausing to ask
+again.
 
 ```
 gh pr merge <n> --merge --delete-branch

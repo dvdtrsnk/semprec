@@ -45,9 +45,12 @@ in a class is not reported.
   *Proof: name the tier and the missing seam.*
 - **C4 — Task/criteria asymmetry.** A Task deliverable no acceptance criterion
   verifies, or a criterion that verifies something the Task never asks to build.
-- **C5 — Blocking-graph defect.** A missing or malformed `Blocked by:` line, a
-  cycle, an issue that could be dispatched before a real prerequisite closes, or a
-  cited blocker that does not actually deliver the capability it is cited for.
+- **C5 — Blocking-graph defect.** A missing or malformed `Blocked by:` line — this
+  includes an earlier, unrelated mention of the words "blocked by" anywhere above
+  the real line, since Relay's parser matches only the first occurrence in the
+  body and would silently read the wrong line — a cycle, an issue that could be
+  dispatched before a real prerequisite closes, or a cited blocker that does not
+  actually deliver the capability it is cited for.
 - **C6 — Format violation.** Title pattern, section order, a missing mandatory
   section, non-English text, a canonical stored key that is not English camelCase
   (view types kebab-case), or a reference to a document outside the issue graph.

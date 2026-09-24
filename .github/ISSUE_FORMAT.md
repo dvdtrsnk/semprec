@@ -2,22 +2,30 @@
 
 Every implementation issue in this repository follows this exact structure. It is
 the contract between the planning side (`/define-behavior`) and the execution side
-(`/work-issue`, the VPS agent loop, the code-review bot): the issue body is the
-implementing agent's **only** source of truth, so anything the implementer needs
-must be inside it.
+(Relay's `implement-issue` workflow — `.relay/workflows/implement-issue.md` — which
+loads `.bb/skills/implement-issue/SKILL.md`, plus the code-review bot): the issue
+body is the implementing agent's **only** source of truth, so anything the
+implementer needs must be inside it.
 
 ## Why these rules exist
 
-- **Strictly sequential batches.** Issues in a batch are executed one at a time,
-  in order. No parallel waves — parallelism multiplies integration risk and the
-  dispatcher intentionally runs a single agent at a time.
-- **Fully self-contained.** The implementing agent reads the issue body and the
-  comments on its blocker issues — nothing else. Referencing an external
-  specification ("see section 13 of the spec") is a defect: specs drift, issues
-  are the source of truth. An issue may reference **other issues** (`#NN`) only.
-- **Machine-parseable blocking.** The dispatcher decides "is this issue ready?"
-  by parsing the `Blocked by` line and checking that every referenced issue is
-  closed. A missing or malformed line silently breaks ordering.
+- **Strictly sequential batches.** Issues in a batch are executed one at a time, in
+  the order their `Blocked by:` chain enforces — no issue in a batch is eligible
+  until its in-batch predecessor has merged and closed
+  (`respect-blocked-by: true` in `.relay/workflows/implement-issue.md`). Relay may
+  run other, unrelated issues at the same time — `implement-issue`'s
+  `max-concurrent: 2` — but nothing inside one batch's own chain ever runs out of
+  order or in parallel with itself.
+- **Fully self-contained.** The implementing agent reads the issue body and, for
+  each issue named in its `Blocked by:` line, the pull request that closed it (see
+  "Hand-over context" below) — nothing else. Referencing an external specification
+  ("see section 13 of the spec") is a defect: specs drift, issues are the source of
+  truth. An issue may reference **other issues** (`#NN`) only.
+- **Machine-parseable blocking.** Relay decides "is this issue ready?" by parsing
+  the **first** line in the body that contains the words "blocked by" and treating
+  every `#N` on that line as a blocker (bb-plugin-relay's
+  `src/domain/blockers.ts`). A missing or malformed line, or any mention of
+  "blocked by" earlier in the body than the real one, silently breaks ordering.
 
 ## Title
 
@@ -45,12 +53,19 @@ or, for the first issue of an independent batch:
 ```
 
 Rules:
-- Every issue has this line. "I forgot" is not a state the dispatcher can parse.
+- Every issue has this line. "I forgot" is not a state Relay can parse.
 - Each issue after the first lists **at least the previous issue in its batch**;
   add any real cross-batch dependencies on top.
-- The dispatcher matches lines containing "blocked by" (case-insensitive) and
-  extracts every `#N` on them — keep all blocker references on this one line and
-  never write `#N` references on other lines containing the words "blocked by".
+- Relay's parser matches the words "blocked by" (case-insensitive) **only once**
+  — the first occurrence in the body — and extracts every `#N` on that one line as
+  a blocker. Keep all blocker references on this one line, and never let the words
+  "blocked by" appear anywhere earlier in the body (in `## Context`, for instance):
+  whichever mention comes first is the one the parser reads, so an earlier,
+  unrelated one silently steals the line and every real blocker on it is ignored.
+- A cited blocker that 404s when Relay looks it up is treated as **not** blocking
+  (dropped silently); any other lookup failure (rate limit, a 5xx from GitHub) is
+  treated as **still** blocking. Never cite an issue you expect to be deleted,
+  transferred or otherwise made unreachable.
 
 ### 2. `## Context`
 
@@ -78,6 +93,17 @@ exist or to be tested. Mechanical test: could a reviewer approve the first
 bullet without having read the third? If yes, this is more than one issue and
 belongs in sequential siblings instead.
 
+**Protected paths.** If the Task would touch a path under `.relay/config.yml`'s
+`protected-paths` (`.relay/**`, `.github/workflows/**`,
+`.github/scripts/check-protected-paths.mjs`) or change branch protection (an
+admin-only action), say so explicitly and note that it is maintainer-implemented,
+not dispatched to Relay — see Labels below. Relay's own `guard-paths` step blocks
+a run that touches one of these paths regardless (and `merge-pull-request`
+separately waits on GitHub's `protected-paths` check before merging — see
+`docs/operations/required-checks.md`), but an issue armed with `agent:ready`
+anyway just burns a run before failing: issues #249, #250 and #188 were entirely
+CI-workflow changes and each blocked Relay this way.
+
 ### 4. `## Scope`
 
 ```
@@ -102,24 +128,61 @@ Title: [<batch-slug>] <Batch name> — epic
 Body: the user-approved behavior specification, a `## Decisions` section
 recording the load-bearing Q&A from the specification interview (question →
 adopted answer → reason), and a checklist of the batch's issues
-(`- [ ] #NN — title`). The epic:
+(`- [ ] #NN — title`). The checklist is for human readers only — nothing
+consults it to decide whether the epic is done; see "Closing" below. The epic:
 
-- is **never** labeled `spec:approved` (it is not implementable work and the
-  dispatcher must never pick it up),
+- is **never** labeled `spec:approved` or `agent:ready` (it is not implementable
+  work and Relay must never pick it up),
 - does not appear in any `Blocked by:` line,
-- is closed manually when the whole batch is done.
+- gets every implementation issue linked to it as a GitHub sub-issue as soon as
+  that issue is created:
+  `gh api -X POST repos/dvdtrsnk/semprec/issues/<epic-number>/sub_issues -F sub_issue_id=<child-id>`
+  — `<child-id>` is the child issue's numeric `id`, not its issue number; get it
+  with `gh api repos/dvdtrsnk/semprec/issues/<n> --jq .id`.
 
-## Labels (workflow — set by tooling, not by hand-editing)
+### Closing
 
-Exactly one `agent:*` label is present at a time while a run is active; it is
-removed once the run reaches a terminal state (`agent:done`) or the pipeline
-halts for human attention (`agent:failed` / `agent:blocked`).
+`.github/workflows/close-completed-epics.yml` runs daily
+(`.github/scripts/close-completed-epics.mjs`) and closes an epic once GitHub's own
+`sub_issues_summary` reports every linked sub-issue closed — never by reading the
+checklist above, which may be stale. An epic with no sub-issues linked is never a
+candidate. On the run that first finds it complete, the workflow only announces
+that in a comment; it closes the epic on a later run once that announcement is at
+least `GRACE_HOURS` (default 20) old. Linking a new sub-issue in between withdraws
+the announcement and restarts the clock. Labeling the epic `epic:wip` opts it out
+of this entirely, for as long as the label is there — use it for a batch that is
+deliberately going to stay open. A normally-decomposed batch needs no one to close
+its epic by hand.
 
-| Label | Meaning |
-|---|---|
-| `spec:approved` | Issue's spec passed the batch audit — no blocking finding survived it; the VPS dispatcher may pick it up |
-| `agent:implementing` | An agent is writing the initial implementation — no PR yet |
-| `agent:reviewing-and-fixing` | PR is open; the agent is watching CI and addressing code-review-bot findings |
-| `agent:done` | Agent finished: PR merged, issue closed |
-| `agent:failed` | Agent run crashed/timed out; pipeline is halted until a human removes this label |
-| `agent:blocked` | Agent deliberately stopped on a spec ambiguity/impossible requirement (see its `BLOCKED:` comment) — a human decision is needed, not debugging; pipeline is halted until this is resolved |
+## Labels
+
+Exactly one `agent:*` / `review:*` state applies to an issue or pull request at a
+time; several are park labels that a human must clear before Relay resumes.
+
+| Label | Set by | Meaning |
+|---|---|---|
+| `spec:approved` | `/define-behavior` Phase 5 | Issue's spec passed the batch audit — no blocking finding survived it |
+| `agent:ready` | `/define-behavior` Phase 5, alongside `spec:approved` | Queued for Relay's `implement-issue` workflow — this is the label Relay actually dispatches on; `spec:approved` alone dispatches nothing |
+| `agent:blocked` | a Relay workflow's `on-blocked` chain (`implement-issue`, `merge-pull-request`, `fix-review-findings`), or a human | Park label: the run stopped deliberately on something only a human can decide. Excluded from every workflow's trigger; on a pull request, `recover-blocked-issue` may pick it up automatically on the same branch. A human resolves the issue and removes the label to let Relay pick it up again |
+| `agent:needs-human-action` | Relay (`recover-blocked-issue`'s `on-blocked` chain) | Park label: automatic recovery could not proceed without an action no worker credential can perform. A human takes that action, then removes the label |
+| `relay:needs-human-action` | Relay (`merge-pull-request`'s and `fix-review-findings`'s `on-failure` chains) | Park label: a run failed outright (not a deliberate block). A human reads the failure comment, fixes the cause, and removes the label — or pushes a new head, which also clears it |
+| `review:ready` | Relay (`implement-issue`, `fix-review-findings`, `recover-blocked-issue`) | Pull request is ready for `review-pull-request` to run the code-review bot |
+| `review:in-progress` | Relay (`review-pull-request`'s `claim` step) | The bot is running now |
+| `review:passed` | Relay (`review-pull-request`) | No blocking finding; `merge-pull-request` picks the pull request up next |
+| `review:changes-requested` | Relay (`review-pull-request`'s `on-failure` chain) | A blocking finding; `fix-review-findings` picks the pull request up next |
+| `epic:wip` | a human | Opts an epic out of `close-completed-epics`, even once every sub-issue is closed |
+
+`agent:ready` is not a label an issue keeps once it's done: `merge-pull-request`'s
+`dequeue` step removes `agent:ready` (and `agent:blocked`) from the linked issue
+once its pull request merges, so a lagging issue listing can't dispatch it a
+second time.
+
+## Hand-over context
+
+An issue's `Blocked by:` line names the issues its implementer needs context
+from. That context is not a comment on the blocker: `merge-pull-request` leaves
+only a short run-log comment there ("Resolved by #N, merged into develop"). The
+actual hand-over — what was implemented, notes for what comes next — is the
+**pull request description** of the PR that closed the blocker:
+`gh issue view <blocker> --json closedByPullRequestsReferences`, then read that
+pull request's body.
