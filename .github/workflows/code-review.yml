@@ -20,7 +20,14 @@ permissions:
   checks: write
 
 concurrency:
-  group: code-review-${{ inputs.pull_request || github.event.pull_request.number }}
+  # Draft and ready runs of one pull request use separate groups. Relay pushes a
+  # new head while the pull request is a draft and marks it ready right after, so
+  # the `synchronize` (draft) and `ready_for_review` events start two runs in the
+  # same second. In one shared group, whichever started second cancelled the
+  # other, and when the draft run won, its job was skipped and the real review
+  # was cancelled, leaving the required `review` check failed (PR #534, twice).
+  # A newer ready run still cancels an older ready run of the same pull request.
+  group: code-review-${{ inputs.pull_request || github.event.pull_request.number }}-${{ github.event.pull_request.draft && 'draft' || 'ready' }}
   cancel-in-progress: true
 
 jobs:
