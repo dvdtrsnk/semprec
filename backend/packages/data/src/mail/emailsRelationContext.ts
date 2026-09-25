@@ -1,4 +1,4 @@
-import type { SystemRelationWriteContext } from "../chokePoint/chokePoint.js";
+import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
 
 /**

@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
-import { createItemWithClient, createRelationWithClient } from "../chokePoint/chokePoint.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import type { ItemRow } from "../types.js";
 import { EMAIL_INGEST_ALLOWED_SYSTEM_KEYS, formatAddress, formatAddressList } from "./ingest.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";

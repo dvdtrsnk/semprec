@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { deleteRelationWithClient } from "../chokePoint/chokePoint.js";
+import { deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
 import { ValidationError } from "../errors.js";

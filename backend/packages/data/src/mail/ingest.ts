@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import sanitizeHtml from "sanitize-html";
-import { createItemWithClient, createRelationWithClient } from "../chokePoint/chokePoint.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { resolveThreadId } from "./threading.js";
 import {

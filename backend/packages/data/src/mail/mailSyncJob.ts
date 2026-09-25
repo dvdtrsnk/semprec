@@ -4,7 +4,7 @@ import type { Pool } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { withTransaction, type Queryable } from "../db/pool.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
-import { updateItemWithClient } from "../chokePoint/chokePoint.js";
+import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import { getEarliestUserId } from "../auth/usersStore.js";
