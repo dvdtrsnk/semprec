@@ -65,6 +65,57 @@ export async function itemDeleteWithClient(
 }
 
 /**
+ * The exact cascade `softDeleteItem` runs, in reverse — restores `itemId` and its whole
+ * subtree in one transaction, symmetric to how the delete side of it was trashed. Only
+ * restores subtree rows whose `deletedAt` exactly matches the root's own `deletedAt`: since
+ * Postgres's `now()` is fixed for the lifetime of a transaction, every row the original
+ * cascade delete touched shares one identical timestamp, which lets this tell "trashed
+ * together with the root" apart from a row that happened to already be independently trashed
+ * (earlier or later) before this subtree was ever cascaded — restoring the latter would
+ * silently resurrect data the user deleted on purpose.
+ */
+async function restoreItemWithClient(
+  client: PoolClient,
+  databaseId: string,
+  itemId: string,
+  actingUserId?: string,
+): Promise<ItemRow | null> {
+  await assertDatabaseNotArchived(client, databaseId);
+  // Locked for the same reason `softDeleteItem` locks its root: without it, two concurrent
+  // restores of the same item can both read `deletedAt` as set, both proceed, and the
+  // second one's SQL-level `itemsStore.restoreItem` then finds nothing left to restore and
+  // returns null — turning an already-successful restore into a spurious 404.
+  const before = await itemsStore.lockItemById(client, databaseId, itemId);
+  if (!before) return null;
+  if (!before.deletedAt) return before; // not trashed: idempotent no-op, same as a repeat restore
+  const cascadeEpoch = before.deletedAt;
+
+  const subtree = await collectItemSubtree(client, before);
+  for (const row of subtree) await assertDatabaseNotArchived(client, row.databaseId);
+
+  let rootResult: ItemRow | null = null;
+  for (const row of subtree) {
+    if (row.deletedAt !== cascadeEpoch) continue; // not trashed together with the root: leave as-is
+    const item = await itemsStore.restoreItem(client, row.databaseId, row.id);
+    if (!item) continue;
+    if (row.id === itemId) rootResult = item;
+    const edges = await relationsStore.listAllRelationsForItem(client, row.id);
+    for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
+    runAfterCommit(client, () =>
+      notifyInvalidation({
+        scope: "item",
+        databaseId: item.databaseId,
+        itemId: item.id,
+        op: "update",
+        updatedAt: item.updatedAt,
+        userId: actingUserId,
+      }),
+    );
+  }
+  return rootResult;
+}
+
+/**
  * Walks down from an already-fetched page item to every row nested underneath it — the inline
  * databases it owns directly (`databases.parent_item_id = itemId`), every item in each of those,
  * and recursively whatever inline databases *those* items own in turn — so delete/restore (issue
@@ -121,52 +172,9 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
       );
     },
 
-    /**
-     * The exact cascade `softDeleteItem` runs, in reverse — restores `itemId` and its whole
-     * subtree in one transaction, symmetric to how the delete side of it was trashed. Only
-     * restores subtree rows whose `deletedAt` exactly matches the root's own `deletedAt`: since
-     * Postgres's `now()` is fixed for the lifetime of a transaction, every row the original
-     * cascade delete touched shares one identical timestamp, which lets this tell "trashed
-     * together with the root" apart from a row that happened to already be independently trashed
-     * (earlier or later) before this subtree was ever cascaded — restoring the latter would
-     * silently resurrect data the user deleted on purpose.
-     */
+    /** Runs `restoreItemWithClient` in its own transaction. */
     async restoreItem(databaseId: string, itemId: string, actingUserId?: string): Promise<ItemRow | null> {
-      return withTransaction(pool, async (client) => {
-        await assertDatabaseNotArchived(client, databaseId);
-        // Locked for the same reason `softDeleteItem` locks its root: without it, two concurrent
-        // restores of the same item can both read `deletedAt` as set, both proceed, and the
-        // second one's SQL-level `itemsStore.restoreItem` then finds nothing left to restore and
-        // returns null — turning an already-successful restore into a spurious 404.
-        const before = await itemsStore.lockItemById(client, databaseId, itemId);
-        if (!before) return null;
-        if (!before.deletedAt) return before; // not trashed: idempotent no-op, same as a repeat restore
-        const cascadeEpoch = before.deletedAt;
-
-        const subtree = await collectItemSubtree(client, before);
-        for (const row of subtree) await assertDatabaseNotArchived(client, row.databaseId);
-
-        let rootResult: ItemRow | null = null;
-        for (const row of subtree) {
-          if (row.deletedAt !== cascadeEpoch) continue; // not trashed together with the root: leave as-is
-          const item = await itemsStore.restoreItem(client, row.databaseId, row.id);
-          if (!item) continue;
-          if (row.id === itemId) rootResult = item;
-          const edges = await relationsStore.listAllRelationsForItem(client, row.id);
-          for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
-          runAfterCommit(client, () =>
-            notifyInvalidation({
-              scope: "item",
-              databaseId: item.databaseId,
-              itemId: item.id,
-              op: "update",
-              updatedAt: item.updatedAt,
-              userId: actingUserId,
-            }),
-          );
-        }
-        return rootResult;
-      });
+      return withTransaction(pool, (client) => restoreItemWithClient(client, databaseId, itemId, actingUserId));
     },
 
     /**
