@@ -27,12 +27,6 @@ export { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
 // ==== block: rollup/config.ts ====
 
 // ==== block: relationEdgeContext.ts ====
-import {
-  assertRelationDatabasesNotArchived,
-  assertRelationPropertyWritable,
-  loadRelationEdgeContext,
-  normalizeRelationSides,
-} from "./relationEdgeContext.js";
 export type { SystemRelationWriteContext } from "./relationEdgeContext.js";
 
 // ==== block: databaseOps.ts ====
