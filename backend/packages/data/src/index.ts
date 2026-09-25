@@ -65,7 +65,15 @@ export {
 } from "./scheduler/sweep.js";
 export { runHeartbeatFireQueueSplitMigration } from "./scheduler/heartbeatFireQueueSplitMigration.js";
 
-export * from "./rollup/config.js";
+export {
+  ROLLUP_AGGREGATIONS,
+  parseRollupConfig,
+  validateRollupConfig,
+  assertAggregationCompatibleWithType,
+  type RollupAggregation,
+  type RollupConfig,
+  type ValidatedRollupConfig,
+} from "./rollup/config.js";
 export * from "./rollup/dependencies.js";
 export {
   enqueueRollupRecompute,
