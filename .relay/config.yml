@@ -12,12 +12,12 @@ review:
   # (CRB_TMP_DIR/TMPDIR scratch isolation, BOT_USERNAME in both spellings the
   # bot reads) is now what this pin runs. `max-concurrent: 1` was dropped from
   # workflows/review-pull-request.md accordingly.
-  # dvdtrsnk/code-review-bot#26 merged to main as
-  # b27080ebfeb687e8ec0cb1c76885e96db7f3b22b: fixes check_reuse gating cheap
-  # reuse-after-rebase on the PR's base SHA, which made it unreachable on
-  # essentially every rebase-triggered re-review (the base always moves). The
-  # gate is now diff hash + review-rules hash only.
-  bot: { repo: dvdtrsnk/code-review-bot, ref: b27080ebfeb687e8ec0cb1c76885e96db7f3b22b }
+  # dvdtrsnk/code-review-bot#27 merged to main as
+  # 9e732e791c6bcdbfa4683d6ad93ed1f7441a3d61: fixes cheap reuse-after-rebase
+  # never firing for a PR whose review found zero issues (the common case) —
+  # a clean PR's recorded verdict was silently dropped instead of persisted,
+  # so a rebase always fell through to a full review.
+  bot: { repo: dvdtrsnk/code-review-bot, ref: 9e732e791c6bcdbfa4683d6ad93ed1f7441a3d61 }
   check-name: code-review
   env: { REVIEW_BLOCK_SEVERITY: medium, PROMOTION_SOURCE: develop, PROMOTION_TARGET: main }
 merge:
