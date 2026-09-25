@@ -5,7 +5,7 @@ import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
-import { createItemWithClient } from "../../chokePoint/chokePoint.js";
+import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { ensureItemAutomation, type ItemAutomationStatus } from "../../library/itemAutomationStore.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../../errors.js";
 import {
