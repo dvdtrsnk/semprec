@@ -130,7 +130,9 @@ in the spec, go back to the user — do not fill it silently.
    section preserving the grilling Q&A (question → adopted answer → reason — the
    decision log would otherwise die with this conversation). Do not list the
    batch's issues in the epic body — they are tracked only as its GitHub
-   sub-issues (step 9).
+   sub-issues (step 9), which GitHub renders with their live open/closed state.
+   Nothing updates a hand-written copy, so it goes stale as soon as the first
+   issue closes.
 7. **Decomposition size gate — mechanical self-check, before anything is
    created.** For every drafted implementation issue (not the epic), group its
    acceptance criteria by which Task bullet each one verifies — the same
