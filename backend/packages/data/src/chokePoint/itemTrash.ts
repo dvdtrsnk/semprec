@@ -73,9 +73,15 @@ export async function itemDeleteWithClient(
  * state the caller read it in, before this transaction's own writes). Guards against a
  * `parent_item_id` cycle the same way `getItemPath` guards against one in the opposite direction:
  * tracking every database id already walked and refusing to walk it twice, so a corrupted loop
- * stops the traversal instead of hanging it.
+ * stops the traversal instead of hanging it. `include`, when given, filters the walk: a row for
+ * which it returns `false` is neither collected nor descended into, so everything nested under it
+ * is excluded too. The root is always included regardless of `include`.
  */
-async function collectItemSubtree(client: PoolClient, root: ItemRow): Promise<ItemRow[]> {
+async function collectItemSubtree(
+  client: PoolClient,
+  root: ItemRow,
+  include?: (row: ItemRow) => boolean,
+): Promise<ItemRow[]> {
   const subtree: ItemRow[] = [root];
   const visitedDatabaseIds = new Set<string>();
   let frontier = [root.id];
@@ -89,6 +95,7 @@ async function collectItemSubtree(client: PoolClient, root: ItemRow): Promise<It
         visitedDatabaseIds.add(database.id);
         const rows = await itemsStore.getAllItemsInDatabase(client, database.id);
         for (const row of rows) {
+          if (include && !include(row)) continue;
           subtree.push(row);
           nextFrontier.push(row.id);
         }
@@ -166,7 +173,7 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
      * Permanently removes an already-eligible trashed root together with its cascade subtree —
      * the 30-day purge sweep's (`trash/purgeExpiredTrash.ts`, issue #156) only path to a hard
      * delete, so it stays a choke-point-guarded write like every other item mutation instead of a
-     * second route into the `items` table. Mirrors `softDeleteItem`/`restoreItem`'s subtree walk,
+     * second route into the `items` table. Uses `softDeleteItem`/`restoreItem`'s subtree walk,
      * but only descends into a branch that is itself past `cutoff`: a still-live or
      * too-recently-trashed row blocks the purge of everything nested under it, since only a
      * branch that was cascade-deleted together with the root is safe to remove with it. Re-checks
@@ -185,26 +192,12 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
         const [root] = await itemsStore.getItemsByIdsIncludingDeleted(client, [rootItemId]);
         if (!root || !root.deletedAt || new Date(root.deletedAt) >= cutoff) return [];
 
-        const subtree: ItemRow[] = [root];
-        const visitedDatabaseIds = new Set<string>();
-        let frontier = [root.id];
-        while (frontier.length > 0) {
-          const nextFrontier: string[] = [];
-          for (const parentItemId of frontier) {
-            const childDatabases = await databasesStore.listDatabasesByParentItem(client, parentItemId);
-            for (const database of childDatabases) {
-              if (visitedDatabaseIds.has(database.id)) continue;
-              visitedDatabaseIds.add(database.id);
-              const rows = await itemsStore.getAllItemsInDatabase(client, database.id);
-              for (const row of rows) {
-                if (!row.deletedAt || new Date(row.deletedAt) >= cutoff) continue; // live or too fresh: branch stops here
-                subtree.push(row);
-                nextFrontier.push(row.id);
-              }
-            }
-          }
-          frontier = nextFrontier;
-        }
+        // A live or too-recently-trashed row stops its branch: only rows past `cutoff` are walked.
+        const subtree = await collectItemSubtree(
+          client,
+          root,
+          (row) => row.deletedAt !== null && new Date(row.deletedAt) < cutoff,
+        );
 
         const subtreeDatabaseIds = new Set(subtree.map((row) => row.databaseId));
         for (const id of subtreeDatabaseIds) await assertDatabaseNotArchived(client, id);
