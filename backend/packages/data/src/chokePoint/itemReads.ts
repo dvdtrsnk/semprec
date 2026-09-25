@@ -89,8 +89,10 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
      * /api/items/:id`, a trashed item is the expected target of either route, not a 404.
      */
     async findItemIncludingDeleted(itemId: string): Promise<ItemRow | null> {
-      const [item] = await itemsStore.getItemsByIdsIncludingDeleted(pool, [itemId]);
-      return item ?? null;
+      return withTransaction(pool, async (client) => {
+        const [item] = await itemsStore.getItemsByIdsIncludingDeleted(client, [itemId]);
+        return item ?? null;
+      });
     },
 
     /**

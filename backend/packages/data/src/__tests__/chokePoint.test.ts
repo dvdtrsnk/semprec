@@ -554,6 +554,34 @@ describe("choke-point", () => {
       const found = await chokePoint.findItem(randomUUID());
       expect(found).toBeNull();
     });
+
+    it("findItemIncludingDeleted returns a live item", async () => {
+      const db = await makeMoviesDb();
+      const created = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Arrival" } });
+
+      const found = await chokePoint.findItemIncludingDeleted(created.id);
+      expect(found?.id).toBe(created.id);
+      expect(found?.databaseId).toBe(db.id);
+      expect(found?.properties).toEqual({ title: "Arrival" });
+      expect(found?.deletedAt).toBeNull();
+    });
+
+    it("findItemIncludingDeleted returns a trashed item with deletedAt set", async () => {
+      const db = await makeMoviesDb();
+      const created = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Arrival" } });
+      await chokePoint.softDeleteItem(db.id, created.id);
+
+      expect(await chokePoint.findItem(created.id)).toBeNull();
+      const found = await chokePoint.findItemIncludingDeleted(created.id);
+      expect(found?.id).toBe(created.id);
+      expect(found?.databaseId).toBe(db.id);
+      expect(found?.deletedAt).not.toBeNull();
+    });
+
+    it("findItemIncludingDeleted returns null for an unknown id", async () => {
+      const found = await chokePoint.findItemIncludingDeleted(randomUUID());
+      expect(found).toBeNull();
+    });
   });
 
   describe("getItemPath", () => {
