@@ -1,7 +1,7 @@
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
 import { assertKnownValue } from "../dbRowValidation.js";
-import { createItemWithClient } from "../chokePoint/chokePoint.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { assertValidTimezone } from "../timezone.js";
 import type { ItemRow } from "../types.js";
 

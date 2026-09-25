@@ -1,6 +1,6 @@
 import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
-import { updateItemWithClient } from "../chokePoint/chokePoint.js";
+import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { NotFoundError, ValidationError } from "../errors.js";

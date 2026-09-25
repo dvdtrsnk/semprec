@@ -4,12 +4,9 @@ import { NotFoundError } from "../errors.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
-import {
-  createItemWithClient,
-  createRelationWithClient,
-  updateItemWithClient,
-  type SystemRelationWriteContext,
-} from "../chokePoint/chokePoint.js";
+import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { createRelationWithClient } from "../chokePoint/relationOps.js";
+import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import { assertValidTimezone } from "../timezone.js";
 import type { ItemRow } from "../types.js";
 import { computeNextDueDate } from "./nextDueDate.js";
