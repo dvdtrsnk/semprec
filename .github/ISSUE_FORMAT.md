@@ -199,11 +199,12 @@ and expected.
 Title: [<batch-slug>] <Batch name> — epic
 ```
 
-Body: the user-approved behavior specification, a `## Decisions` section
+Body: the user-approved behavior specification and a `## Decisions` section
 recording the load-bearing Q&A from the specification interview (question →
-adopted answer → reason), and a checklist of the batch's issues
-(`- [ ] #NN — title`). The checklist is for human readers only — nothing
-consults it to decide whether the epic is done; see "Closing" below. The epic:
+adopted answer → reason). The body does **not** list the batch's issues: they
+are the epic's GitHub sub-issues, which GitHub renders on the epic with their
+live open/closed state. A hand-written list next to them is a duplicate that
+nothing updates, so it goes stale as soon as the first issue closes. The epic:
 
 - is **never** labeled `spec:approved` or `agent:ready` (it is not implementable
   work and Relay must never pick it up),
@@ -218,15 +219,14 @@ consults it to decide whether the epic is done; see "Closing" below. The epic:
 
 `.github/workflows/close-completed-epics.yml` runs daily
 (`.github/scripts/close-completed-epics.mjs`) and closes an epic once GitHub's own
-`sub_issues_summary` reports every linked sub-issue closed — never by reading the
-checklist above, which may be stale. An epic with no sub-issues linked is never a
-candidate. On the run that first finds it complete, the workflow only announces
-that in a comment; it closes the epic on a later run once that announcement is at
-least `GRACE_HOURS` (default 20) old. Linking a new sub-issue in between withdraws
-the announcement and restarts the clock. Labeling the epic `epic:wip` opts it out
-of this entirely, for as long as the label is there — use it for a batch that is
-deliberately going to stay open. A normally-decomposed batch needs no one to close
-its epic by hand.
+`sub_issues_summary` reports every linked sub-issue closed. An epic with no
+sub-issues linked is never a candidate. On the run that first finds it complete,
+the workflow only announces that in a comment; it closes the epic on a later run
+once that announcement is at least `GRACE_HOURS` (default 20) old. Linking a new
+sub-issue in between withdraws the announcement and restarts the clock. Labeling
+the epic `epic:wip` opts it out of this entirely, for as long as the label is
+there — use it for a batch that is deliberately going to stay open. A
+normally-decomposed batch needs no one to close its epic by hand.
 
 ## Labels
 
