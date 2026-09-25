@@ -3,7 +3,6 @@ import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import type {
-  DatabaseRow,
   ItemRelationRow,
   ItemRow,
   PropertyOwner,
@@ -133,83 +132,8 @@ import {
 export type { SystemRelationWriteContext } from "./relationEdgeContext.js";
 
 // ==== block: databaseOps.ts ====
-/**
- * Transaction-scoped counterpart to `chokePoint.archiveDatabase` (issue #89): `databasesStore.archiveDatabase`
- * already takes a `client` rather than opening its own transaction, so this is a thin named alias —
- * kept alongside the other four `*WithClient` exports so `ApprovedOperationExecutor` has one uniform
- * naming convention to call the destructive half of each of the five approval-gated operations.
- */
-export async function databaseArchiveWithClient(
-  client: PoolClient,
-  id: string,
-  actingUserId?: string,
-): Promise<DatabaseRow> {
-  const database = await databasesStore.archiveDatabase(client, id);
-  runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }));
-  return database;
-}
-
-function createDatabaseOps(deps: Pick<ChokePointDeps, "pool">) {
-  const { pool } = deps;
-  return {
-    async createDatabase(input: databasesStore.CreateDatabaseInput, actingUserId?: string): Promise<DatabaseRow> {
-      return withTransaction(pool, async (client) => {
-        const database = await databasesStore.createDatabase(client, input);
-        runAfterCommit(client, () =>
-          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
-        );
-        return database;
-      });
-    },
-    async archiveDatabase(id: string, actingUserId?: string): Promise<DatabaseRow> {
-      return withTransaction(pool, (client) => databaseArchiveWithClient(client, id, actingUserId));
-    },
-    async restoreDatabase(id: string, actingUserId?: string): Promise<DatabaseRow> {
-      return withTransaction(pool, async (client) => {
-        const database = await databasesStore.restoreDatabase(client, id);
-        runAfterCommit(client, () =>
-          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
-        );
-        return database;
-      });
-    },
-    async renameDatabase(id: string, name: string, actingUserId?: string): Promise<DatabaseRow> {
-      return withTransaction(pool, async (client) => {
-        const database = await databasesStore.renameDatabase(client, id, name);
-        runAfterCommit(client, () =>
-          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
-        );
-        return database;
-      });
-    },
-    async getDatabase(id: string): Promise<DatabaseRow | null> {
-      return withTransaction(pool, (client) => databasesStore.getDatabase(client, id));
-    },
-    /** Every non-archived database system-wide (issue #240's `GET /api/databases`) — see `databasesStore.listAllDatabases` for why this includes the ten system databases. */
-    async listDatabases(): Promise<DatabaseRow[]> {
-      return withTransaction(pool, (client) => databasesStore.listAllDatabases(client));
-    },
-
-    /** Inline database creation (issue #22, point 7): a new, independent database owned by a page. Always `system: false` — mechanically, since the input type carries no `system` field to override it. */
-    async createInlineDatabase(
-      input: {
-        name: string;
-        parentItemId: string;
-        ownerProjectItemId?: string;
-        ownerModuleId?: string;
-      },
-      actingUserId?: string,
-    ): Promise<DatabaseRow> {
-      return withTransaction(pool, async (client) => {
-        const database = await databasesStore.createDatabase(client, { ...input, system: false });
-        runAfterCommit(client, () =>
-          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
-        );
-        return database;
-      });
-    },
-  };
-}
+import { createDatabaseOps } from "./databaseOps.js";
+export { databaseArchiveWithClient } from "./databaseOps.js";
 
 // ==== block: itemReads.ts ====
 import { createItemReadOps } from "./itemReads.js";
