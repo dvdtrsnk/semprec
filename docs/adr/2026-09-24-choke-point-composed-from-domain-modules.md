@@ -27,7 +27,7 @@ overwrite an earlier one with the same name.
 
 Several accepted ADRs cite `chokePoint.ts` for a helper or method. Their
 bodies are immutable, so a reader following such a citation needs a map from
-each declaration of the pre-split file to where it lives now.
+each declaration of the pre-split file to the module that owns it.
 
 ## Decision
 
@@ -48,11 +48,20 @@ each declaration of the pre-split file to where it lives now.
   (#529 for `backend/`, #530 for `web/`), so no module grows back into the
   shape this decision removes.
 
-### Where things moved
+### Where things move
 
 Every top-level declaration of the pre-split `chokePoint.ts`, plus the
-declarations this decision introduces, mapped to its destination. Paths are
-relative to `backend/packages/data/src/`.
+declarations this decision introduces, mapped to its destination module.
+Paths are relative to `backend/packages/data/src/`.
+
+This is a forward map, not a snapshot of the tree at the time of writing.
+Only `ChokePointDeps` (`chokePoint/chokePointDeps.ts`), `mergeOps`
+(`chokePoint/mergeOps.ts`), `createChokePoint` and `ChokePoint` already live
+at their destination. Every other declaration is, until #528 lands, still in
+`chokePoint/chokePoint.ts`, inside a contiguous block headed by a
+`// ==== block: <file> ====` marker naming its destination — even where that
+destination file already exists for other code (`computedKeyRegistry.ts`,
+`rollup/`). #528 moves each block into its file and removes the markers.
 
 | Declaration | Destination |
 |---|---|
@@ -132,7 +141,7 @@ relative to `backend/packages/data/src/`.
 | `createViewOps` | `chokePoint/viewOps.ts` |
 | `createViewQueryOps` | `chokePoint/viewQueryOps.ts` |
 
-The choke-point methods themselves (`createItem`, `patchView`, …) moved with
+The choke-point methods themselves (`createItem`, `patchView`, …) move with
 their section factory; the factory's row gives their module.
 
 ## Consequences
