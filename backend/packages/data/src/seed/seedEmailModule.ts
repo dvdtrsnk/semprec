@@ -2,11 +2,8 @@ import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
-import {
-  createRelationPropertyWithClient,
-  type CreateRelationPropertyInput,
-  type SystemRelationWriteContext,
-} from "../chokePoint/chokePoint.js";
+import { createRelationPropertyWithClient, type CreateRelationPropertyInput } from "../chokePoint/relationPropertyOps.js";
+import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import type { ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";

@@ -3,7 +3,7 @@ import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
-import { createRelationPropertyWithClient, type CreateRelationPropertyInput } from "../chokePoint/chokePoint.js";
+import { createRelationPropertyWithClient, type CreateRelationPropertyInput } from "../chokePoint/relationPropertyOps.js";
 import type { ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
