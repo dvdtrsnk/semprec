@@ -379,6 +379,73 @@ describe("views", () => {
       expect(patched.creatorProjectItemId).toBeNull();
     });
 
+    describe("patchView adoption", () => {
+      it("a user patching an agent's view returns the adopted row with the patched name and config", async () => {
+        const db = await makeTasksDb();
+        const view = await chokePoint.createView(
+          { databaseId: db.id, type: "table", name: "Agent view" },
+          agentActor(agentA),
+        );
+        const patched = await chokePoint.patchView({
+          id: view.id,
+          actor: userActor,
+          name: "Now mine",
+          config: { sort: [{ property: "due", direction: "asc" }] },
+        });
+        expect(patched.createdBy).toBe("user");
+        expect(patched.creatorProjectItemId).toBeNull();
+        expect(patched.name).toBe("Now mine");
+        expect(patched.config.sort).toEqual([{ property: "due", direction: "asc" }]);
+        expect(await chokePoint.getView(view.id)).toEqual(patched);
+      });
+
+      it("a user patching a user-created view leaves createdBy unchanged", async () => {
+        const db = await makeTasksDb();
+        const view = await chokePoint.createView({ databaseId: db.id, type: "table", name: "User view" });
+        const patched = await chokePoint.patchView({ id: view.id, actor: userActor, name: "Renamed" });
+        expect(patched.name).toBe("Renamed");
+        expect(patched.createdBy).toBe("user");
+        expect(patched.creatorProjectItemId).toBeNull();
+      });
+
+      it("an agent patching its own view keeps it agent-owned", async () => {
+        const db = await makeTasksDb();
+        const view = await chokePoint.createView(
+          { databaseId: db.id, type: "table", name: "Agent view" },
+          agentActor(agentA),
+        );
+        const patched = await chokePoint.patchView({ id: view.id, actor: agentActor(agentA), name: "Renamed" });
+        expect(patched.name).toBe("Renamed");
+        expect(patched.createdBy).toBe("ai_agent");
+        expect(patched.creatorProjectItemId).toBe(agentA);
+      });
+
+      it("an agent's rejected is_default patch adopts nothing and leaves the view unchanged", async () => {
+        const db = await makeTasksDb();
+        const view = await chokePoint.createView(
+          { databaseId: db.id, type: "table", name: "Agent view" },
+          agentActor(agentA),
+        );
+        await expect(
+          chokePoint.patchView({ id: view.id, actor: agentActor(agentA), name: "Renamed", isDefault: true }),
+        ).rejects.toBeInstanceOf(ForbiddenError);
+        expect(await chokePoint.getView(view.id)).toEqual(view);
+      });
+
+      it("a user's patch rejected after adoption rolls the adoption back with it", async () => {
+        const db = await makeTasksDb();
+        await chokePoint.createView({ databaseId: db.id, type: "table", name: "Default", isDefault: true });
+        const view = await chokePoint.createView(
+          { databaseId: db.id, type: "board", name: "Agent view" },
+          agentActor(agentA),
+        );
+        await expect(
+          chokePoint.patchView({ id: view.id, actor: userActor, name: "Renamed", isDefault: true }),
+        ).rejects.toBeInstanceOf(ConflictError);
+        expect(await chokePoint.getView(view.id)).toEqual(view);
+      });
+    });
+
     it("an agent may never set is_default via patch, even on its own view", async () => {
       const db = await makeTasksDb();
       const view = await chokePoint.createView(
