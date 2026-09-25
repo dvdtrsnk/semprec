@@ -1,10 +1,8 @@
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
-import {
-  createItemWithClient,
-  createRelationWithClient,
-  type SystemRelationWriteContext,
-} from "../chokePoint/chokePoint.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { createRelationWithClient } from "../chokePoint/relationOps.js";
+import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import type { ActionQueueAffinity } from "../scheduler/actions.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";

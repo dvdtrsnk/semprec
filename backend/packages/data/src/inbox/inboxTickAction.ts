@@ -6,12 +6,9 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import {
-  createItemWithClient,
-  createRelationWithClient,
-  updateItemWithClient,
-  type SystemRelationWriteContext,
-} from "../chokePoint/chokePoint.js";
+import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { createRelationWithClient } from "../chokePoint/relationOps.js";
+import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import { PROCESSING_METHODS, LOCKED_PROPOSAL_STATUSES, type ProcessingMethod } from "./inboxTypesStore.js";
 import { computeInboxFingerprint } from "./fingerprint.js";
 import { enqueueJournalInboxRecomputeForInboxItem } from "./journalInboxCompute.js";

@@ -3,12 +3,8 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
-import {
-  assertRelationCreatableWithClient,
-  createItemWithClient,
-  createRelationWithClient,
-  updateItemWithClient,
-} from "../chokePoint/chokePoint.js";
+import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { assertRelationCreatableWithClient, createRelationWithClient } from "../chokePoint/relationOps.js";
 import { putBlockWithClient } from "../docs/docStore.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
 import {
