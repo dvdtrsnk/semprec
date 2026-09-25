@@ -33,6 +33,8 @@ import { createActionQueueAffinity, type ActionQueueAffinity } from "../schedule
 import { createComputedKeyRegistry, type ComputedKeyRegistry } from "./computedKeyRegistry.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "./viewTypeRegistry.js";
 import { PROJECTS_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import type { ChokePointDeps } from "./chokePointDeps.js";
+import { mergeOps } from "./mergeOps.js";
 
 // Temporary scaffolding for the choke-point split: the `// ==== block: <file> ====` markers group each
 // future module's declarations into one contiguous block. The blocks and markers are removed by #528.
@@ -308,6 +310,68 @@ export async function databaseArchiveWithClient(
   return database;
 }
 
+function createDatabaseOps(deps: Pick<ChokePointDeps, "pool">) {
+  const { pool } = deps;
+  return {
+    async createDatabase(input: databasesStore.CreateDatabaseInput, actingUserId?: string): Promise<DatabaseRow> {
+      return withTransaction(pool, async (client) => {
+        const database = await databasesStore.createDatabase(client, input);
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
+        );
+        return database;
+      });
+    },
+    async archiveDatabase(id: string, actingUserId?: string): Promise<DatabaseRow> {
+      return withTransaction(pool, (client) => databaseArchiveWithClient(client, id, actingUserId));
+    },
+    async restoreDatabase(id: string, actingUserId?: string): Promise<DatabaseRow> {
+      return withTransaction(pool, async (client) => {
+        const database = await databasesStore.restoreDatabase(client, id);
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
+        );
+        return database;
+      });
+    },
+    async renameDatabase(id: string, name: string, actingUserId?: string): Promise<DatabaseRow> {
+      return withTransaction(pool, async (client) => {
+        const database = await databasesStore.renameDatabase(client, id, name);
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
+        );
+        return database;
+      });
+    },
+    async getDatabase(id: string): Promise<DatabaseRow | null> {
+      return withTransaction(pool, (client) => databasesStore.getDatabase(client, id));
+    },
+    /** Every non-archived database system-wide (issue #240's `GET /api/databases`) — see `databasesStore.listAllDatabases` for why this includes the ten system databases. */
+    async listDatabases(): Promise<DatabaseRow[]> {
+      return withTransaction(pool, (client) => databasesStore.listAllDatabases(client));
+    },
+
+    /** Inline database creation (issue #22, point 7): a new, independent database owned by a page. Always `system: false` — mechanically, since the input type carries no `system` field to override it. */
+    async createInlineDatabase(
+      input: {
+        name: string;
+        parentItemId: string;
+        ownerProjectItemId?: string;
+        ownerModuleId?: string;
+      },
+      actingUserId?: string,
+    ): Promise<DatabaseRow> {
+      return withTransaction(pool, async (client) => {
+        const database = await databasesStore.createDatabase(client, { ...input, system: false });
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
+        );
+        return database;
+      });
+    },
+  };
+}
+
 // ==== block: itemReads.ts ====
 import { compileFilterNode } from "../views/filterCompiler.js";
 import { buildFilterProperties } from "../views/filterProperties.js";
@@ -357,7 +421,122 @@ async function resolveFilterSql(
   return buildFilterSqlForDatabase(client, databaseId, options.filter);
 }
 
+function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
+  const { pool } = deps;
+  return {
+    async getItem(databaseId: string, itemId: string): Promise<ItemRow | null> {
+      return withTransaction(pool, (client) => itemsStore.getItemById(client, databaseId, itemId));
+    },
+
+    /**
+     * Cross-partition lookup by id alone (issue #241's `GET /api/items/:id`, whose URL carries no
+     * `databaseId` to route `getItem`'s partitioned lookup through). Backed by the same
+     * `getItemsByIds` scan `assertItemExists` already uses for view membership — acceptable here
+     * for the same reason: a single-row point lookup, not a scan over a large membership list.
+     */
+    async findItem(itemId: string): Promise<ItemRow | null> {
+      return withTransaction(pool, async (client) => {
+        const [item] = await itemsStore.getItemsByIds(client, [itemId]);
+        return item ?? null;
+      });
+    },
+
+    /**
+     * `findItem`'s counterpart that also resolves an already-trashed item — `DELETE
+     * /api/items/:id` and `POST /api/items/:id/restore` (issue #156) both need an item's
+     * `databaseId` before they can call `softDeleteItem`/`restoreItem`, and unlike `GET
+     * /api/items/:id`, a trashed item is the expected target of either route, not a 404.
+     */
+    async findItemIncludingDeleted(itemId: string): Promise<ItemRow | null> {
+      const [item] = await itemsStore.getItemsByIdsIncludingDeleted(pool, [itemId]);
+      return item ?? null;
+    },
+
+    /**
+     * The breadcrumb chain `GET /api/items/:id?include=path` needs (issue #241): starting at
+     * `itemId`, walks `databases.parent_item_id` outward — from the item's own database to
+     * whichever item (in whichever other database) that database is nested under, and that
+     * item's own database's parent, and so on — so a caller never has to assemble hierarchy
+     * itself. Ordered root-first, ending with `itemId`. Stops (rather than throwing) if an
+     * ancestor's item or database has since gone missing partway up the chain; the caller
+     * already has everything found below that point.
+     *
+     * Guards against a `parent_item_id` cycle (database A's parent item lives in a database
+     * whose own parent item is, transitively, back in database A) by tracking every database
+     * id already walked and stopping the moment one repeats — otherwise a cycle would hang this
+     * loop, and the request, forever.
+     *
+     * Iterative per-level walk rather than a single recursive CTE — the trade-off is recorded in
+     * `docs/adr/2026-09-11-iterative-parent-chain-traversal-in-choke-point.md`.
+     */
+    async getItemPath(itemId: string): Promise<ItemRow[]> {
+      return withTransaction(pool, async (client) => {
+        const chain: ItemRow[] = [];
+        const visitedDatabaseIds = new Set<string>();
+        let currentId: string | undefined = itemId;
+        while (currentId) {
+          const [item] = await itemsStore.getItemsByIds(client, [currentId]);
+          if (!item) break;
+          chain.unshift(item);
+          if (visitedDatabaseIds.has(item.databaseId)) break;
+          visitedDatabaseIds.add(item.databaseId);
+          const database = await databasesStore.getDatabase(client, item.databaseId);
+          currentId = database?.parentItemId ?? undefined;
+        }
+        return chain;
+      });
+    },
+
+    /** Filter with either `filter` (a filter tree, views/filterTree.ts) or `buildFilterSql`, never both. */
+    async listItems(databaseId: string, options?: ListItemsInput) {
+      return withTransaction(pool, async (client) => {
+        // `filter` is consumed by resolveFilterSql; `rest` is what the store itself takes.
+        const { filter, ...rest } = options ?? {};
+        const buildFilterSql = await resolveFilterSql(client, databaseId, {
+          filter,
+          buildFilterSql: rest.buildFilterSql,
+        });
+        return itemsStore.listItems(client, databaseId, { ...rest, buildFilterSql });
+      });
+    },
+
+    /** The matching count for the same `filter` `listItems` takes — a count without paging the rows in. */
+    async countItems(databaseId: string, options?: CountItemsInput): Promise<number> {
+      return withTransaction(pool, async (client) => {
+        const { filter, ...rest } = options ?? {};
+        const buildFilterSql = await resolveFilterSql(client, databaseId, {
+          filter,
+          buildFilterSql: rest.buildFilterSql,
+        });
+        return itemsStore.countItems(client, databaseId, { ...rest, buildFilterSql });
+      });
+    },
+  };
+}
+
 // ==== block: viewQueryOps.ts ====
+
+function createViewQueryOps(deps: Pick<ChokePointDeps, "pool">) {
+  const { pool } = deps;
+  return {
+    async queryView(viewId: string, options?: viewQuery.QueryViewOptions): Promise<viewQuery.QueryViewResult> {
+      return withTransaction(pool, (client) => viewQuery.queryView(client, viewId, options));
+    },
+
+    /** `POST /api/databases/:id/query` (issue #157): raw, request-boundary-validated filter/sort/cursor/limit/inTrash. */
+    async queryDatabaseItems(
+      databaseId: string,
+      input: viewQuery.DatabaseQueryInput,
+    ): Promise<viewQuery.QueryViewResult> {
+      return withTransaction(pool, (client) => viewQuery.queryDatabaseItems(client, databaseId, input));
+    },
+
+    /** `POST /api/views/:id/query` (issue #157): same raw request shape as `queryDatabaseItems`, resolved against a stored view. */
+    async queryViewItems(viewId: string, input: viewQuery.ViewQueryInput): Promise<viewQuery.QueryViewResult> {
+      return withTransaction(pool, (client) => viewQuery.queryViewItems(client, viewId, input));
+    },
+  };
+}
 
 // ==== block: viewOps.ts ====
 /** `view_items` carries no FK to `items` (partitioned, no single partition key) — this is the live existence check `addViewItem` runs in its place. */
@@ -403,6 +582,171 @@ export async function viewDeleteWithClient(
     runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId, userId: actingUserId }));
   }
   return view;
+}
+
+function createViewOps(deps: Pick<ChokePointDeps, "pool" | "viewTypeRegistry">) {
+  const { pool, viewTypeRegistry } = deps;
+  return {
+    // An agent write here is a direct write, not a proposal through the `confirm` flow — see
+    // [[2026-09-10-views-are-excluded-from-the-agent-proposal-flow]]. Issue #87 only tightens
+    // *which* agent may write to *which* view, it does not introduce agent direct-writes.
+    /**
+     * `actor` (default `{ type: 'user' }`) governs `createdBy`/`creatorProjectItemId` — a
+     * caller never sets either directly. Creating as `type: 'ai_agent'` requires and stores
+     * `actor.agentProjectItemId` (issue #87); a 'user'/'system' actor stores no creator.
+     */
+    async createView(
+      input: Omit<viewsStore.CreateViewInput, "createdBy" | "creatorProjectItemId">,
+      actor: Actor = { type: "user" },
+      actingUserId?: string,
+    ): Promise<ViewRow> {
+      return withTransaction(pool, async (client) => {
+        await assertAuthenticatedAgentIdentity(client, actor);
+        const view = await viewsStore.createView(
+          client,
+          {
+            ...input,
+            createdBy: actor.type,
+            creatorProjectItemId: actor.type === "ai_agent" ? actor.agentProjectItemId! : null,
+          },
+          viewTypeRegistry,
+        );
+        // Curated views (databaseId === null) have no schema to invalidate — nothing else's REST
+        // fetch is keyed by one, so there is no client-visible "database changed" to signal here.
+        if (view.databaseId !== null) {
+          const databaseId = view.databaseId;
+          runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId, userId: actingUserId }));
+        }
+        return view;
+      });
+    },
+
+    async getView(id: string): Promise<ViewRow | null> {
+      return withTransaction(pool, (client) => viewsStore.getView(client, id));
+    },
+
+    async listViewsByDatabase(databaseId: string): Promise<ViewRow[]> {
+      return withTransaction(pool, (client) => viewsStore.listViewsByDatabase(client, databaseId));
+    },
+
+    /** Curated views have no `databaseId` of their own, so they're listed separately rather than scoped to one database. */
+    async listCuratedViews(): Promise<ViewRow[]> {
+      return withTransaction(pool, (client) => viewsStore.listCuratedViews(client));
+    },
+
+    async patchView(input: {
+      id: string;
+      actor: Actor;
+      name?: string;
+      config?: Record<string, unknown>;
+      isDefault?: boolean;
+      actingUserId?: string;
+    }): Promise<ViewRow> {
+      return withTransaction(pool, async (client) => {
+        await assertAuthenticatedAgentIdentity(client, input.actor);
+        const view = await viewsStore.getView(client, input.id);
+        if (!view) throw new NotFoundError(`View ${input.id} not found`);
+        assertViewWritable(view, input.actor);
+        if (input.actor.type === "ai_agent" && input.isDefault !== undefined) {
+          throw new ForbiddenError(
+            "is_default cannot be set by an agent, not even on its own view",
+            { field: "isDefault" },
+            "owner_violation",
+          );
+        }
+        // One-way adoption: a user's write to an agent's view flips it to 'user' and clears the
+        // creator identity; a system view is never flipped by a user write.
+        const adopt = input.actor.type === "user" && view.createdBy === "ai_agent";
+        const patched = await viewsStore.patchView(
+          client,
+          input.id,
+          {
+            name: input.name,
+            config: input.config,
+            isDefault: input.isDefault,
+            createdBy: adopt ? "user" : undefined,
+            creatorProjectItemId: adopt ? null : undefined,
+          },
+          viewTypeRegistry,
+        );
+        if (patched.databaseId !== null) {
+          const databaseId = patched.databaseId;
+          runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId, userId: input.actingUserId }));
+        }
+        return patched;
+      });
+    },
+
+    /**
+     * Returns the row as it stood immediately before deletion (issue #219): fetched by this same
+     * transaction, not a caller-supplied snapshot from a separate `getView` call — a config change
+     * landing between a pre-check and this call could otherwise make a REST response describe a
+     * state the deleted row never actually had at the moment it was deleted.
+     */
+    async deleteView(input: { id: string; actor: Actor; actingUserId?: string }): Promise<ViewRow> {
+      return withTransaction(pool, (client) => viewDeleteWithClient(client, input.id, input.actor, input.actingUserId));
+    },
+
+    // ---- view_items (curated view membership) ----
+    async addViewItem(input: {
+      viewId: string;
+      itemId: string;
+      position?: number;
+      actor: Actor;
+    }): Promise<ViewItemRow> {
+      return withTransaction(pool, async (client) => {
+        await assertAuthenticatedAgentIdentity(client, input.actor);
+        const view = await viewsStore.getView(client, input.viewId);
+        if (!view) throw new NotFoundError(`View ${input.viewId} not found`);
+        if (view.databaseId !== null) {
+          throw new ValidationError("Only a curated view (databaseId = null) accepts view_items membership", {
+            field: "viewId",
+          });
+        }
+        assertViewWritable(view, input.actor);
+        await assertItemExists(client, input.itemId);
+        await adoptIfUserWrite(client, view, input.actor, viewTypeRegistry);
+        return viewItemsStore.addViewItem(client, input.viewId, input.itemId, input.position);
+      });
+    },
+
+    async removeViewItem(input: { viewId: string; itemId: string; actor: Actor }): Promise<void> {
+      return withTransaction(pool, async (client) => {
+        await assertAuthenticatedAgentIdentity(client, input.actor);
+        const view = await viewsStore.getView(client, input.viewId);
+        if (!view) throw new NotFoundError(`View ${input.viewId} not found`);
+        if (view.databaseId !== null) {
+          throw new ValidationError("Only a curated view (databaseId = null) accepts view_items membership", {
+            field: "viewId",
+          });
+        }
+        assertViewWritable(view, input.actor);
+        await adoptIfUserWrite(client, view, input.actor, viewTypeRegistry);
+        const removed = await viewItemsStore.removeViewItem(client, input.viewId, input.itemId);
+        if (!removed) throw new NotFoundError(`Item ${input.itemId} is not a member of view ${input.viewId}`);
+      });
+    },
+
+    async reorderViewItem(input: {
+      viewId: string;
+      itemId: string;
+      position: number;
+      actor: Actor;
+    }): Promise<ViewItemRow> {
+      return withTransaction(pool, async (client) => {
+        await assertAuthenticatedAgentIdentity(client, input.actor);
+        const view = await viewsStore.getView(client, input.viewId);
+        if (!view) throw new NotFoundError(`View ${input.viewId} not found`);
+        assertViewWritable(view, input.actor);
+        await adoptIfUserWrite(client, view, input.actor, viewTypeRegistry);
+        return viewItemsStore.reorderViewItem(client, input.viewId, input.itemId, input.position);
+      });
+    },
+
+    async listViewItems(viewId: string): Promise<ViewItemRow[]> {
+      return withTransaction(pool, (client) => viewItemsStore.listViewItems(client, viewId));
+    },
+  };
 }
 
 // ==== block: propertyOps.ts ====
@@ -492,6 +836,148 @@ async function changePropertyTypeWithClient(
   const updated = await propertiesStore.changePropertyType(client, id, newType, "pending");
   await enqueuePropertyTypeMigration(client, id, oldType);
   return updated;
+}
+
+function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedKeyRegistry">) {
+  const { pool, computedKeyRegistry } = deps;
+  return {
+    async listProperties(databaseId: string): Promise<PropertyRow[]> {
+      return withTransaction(pool, (client) => propertiesStore.listPropertiesByDatabase(client, databaseId));
+    },
+    async getProperty(id: string): Promise<PropertyRow | null> {
+      return withTransaction(pool, (client) => propertiesStore.getProperty(client, id));
+    },
+
+    /** Resolves a relation route's `:propertyKey` path segment (issue #157) — the choke-point's edge calls take a property id, never a key, so a REST caller must go through this first. */
+    async getPropertyByKey(databaseId: string, key: string): Promise<PropertyRow | null> {
+      return withTransaction(pool, (client) => propertiesStore.getPropertyByKey(client, databaseId, key));
+    },
+
+    /** Backs the `property.getByKey` generic operation (issue #432) — see `propertiesStore.findPropertiesByKey`. */
+    async findPropertiesByKey(databaseId: string, key: string, type?: PropertyType): Promise<PropertyRow[]> {
+      return withTransaction(pool, (client) => propertiesStore.findPropertiesByKey(client, databaseId, key, type));
+    },
+
+    async createProperty(input: propertiesStore.CreatePropertyInput, actingUserId?: string): Promise<PropertyRow> {
+      assertNoComputedKeyCollision(computedKeyRegistry, input.key);
+      if (input.type === "rollup") {
+        return withTransaction(pool, async (client) => {
+          const property = await propertiesStore.createProperty(client, input);
+          await applyRollupConfig(client, property);
+          await enqueueRollupBackfill(client, property.id);
+          const finalProperty = (await propertiesStore.getProperty(client, property.id)) as PropertyRow;
+          runAfterCommit(client, () =>
+            notifyInvalidation({ scope: "schema", databaseId: finalProperty.databaseId, userId: actingUserId }),
+          );
+          return finalProperty;
+        });
+      }
+      return withTransaction(pool, async (client) => {
+        const property = await propertiesStore.createProperty(client, input);
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
+        );
+        return property;
+      });
+    },
+
+    async renameProperty(id: string, name: string, actingUserId?: string): Promise<PropertyRow> {
+      return withTransaction(pool, async (client) => {
+        const property = await propertiesStore.renameProperty(client, id, name);
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
+        );
+        return property;
+      });
+    },
+
+    async updatePropertyConfig(
+      id: string,
+      config: Record<string, unknown>,
+      actingUserId?: string,
+    ): Promise<PropertyRow> {
+      return withTransaction(pool, async (client) => {
+        const property = await updatePropertyConfigWithClient(client, id, config);
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
+        );
+        return property;
+      });
+    },
+
+    async changePropertyType(id: string, newType: PropertyType, actingUserId?: string): Promise<PropertyRow> {
+      return withTransaction(pool, async (client) => {
+        const property = await changePropertyTypeWithClient(client, id, newType);
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
+        );
+        return property;
+      });
+    },
+
+    /**
+     * The single entry point for `PATCH /api/properties/:id` (issue #240): applies whichever of
+     * `name`/`config`/`type` were sent in one transaction, so a 403 from the locked-schema checks
+     * inside `updatePropertyConfigWithClient`/`changePropertyTypeWithClient` rolls back a rename
+     * requested in the same call instead of leaving it silently committed against the caller's
+     * expectation that a 403 response means nothing changed.
+     */
+    async updateProperty(
+      id: string,
+      input: { name?: string; config?: Record<string, unknown>; type?: PropertyType },
+      actingUserId?: string,
+    ): Promise<{ property: PropertyRow; typeChanged: boolean }> {
+      return withTransaction(pool, async (client) => {
+        let property = await propertiesStore.getProperty(client, id);
+        if (!property) throw new NotFoundError(`Property ${id} not found`);
+
+        // Issue #219: checked here, inside the same transaction as the existence check above,
+        // so an unknown id is always 404 regardless of patch shape — a caller-side pre-check for
+        // this would itself be an out-of-transaction read the existence check above already makes
+        // redundant.
+        if (input.name === undefined && input.config === undefined && input.type === undefined) {
+          throw new ValidationError("Patch must include at least one field", { reason: "empty_patch" });
+        }
+
+        // Issue #219: re-checked against the row this same transaction just fetched, not a
+        // caller-supplied snapshot — a concurrent type change between an outer read and this
+        // write can't slip a type/config patch past a relation property this way.
+        if (property.type === "relation" && (input.type !== undefined || input.config !== undefined)) {
+          const field = input.type !== undefined ? "type" : "config";
+          throw new ValidationError(
+            `Property ${id} is a relation; ${field} is changed only via its relation definition`,
+            { field, reason: "relation_definition_required" },
+          );
+        }
+
+        if (input.name !== undefined) {
+          property = await propertiesStore.renameProperty(client, id, input.name);
+        }
+        if (input.config !== undefined) {
+          property = await updatePropertyConfigWithClient(client, id, input.config);
+        }
+        let typeChanged = false;
+        if (input.type !== undefined && input.type !== property.type) {
+          property = await changePropertyTypeWithClient(client, id, input.type);
+          typeChanged = true;
+        }
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
+        );
+        return { property, typeChanged };
+      });
+    },
+
+    /**
+     * Returns the row as it stood immediately before deletion (issue #219): fetched by this same
+     * transaction, not a caller-supplied snapshot from a separate `getProperty` call — a rename
+     * landing between a pre-check and this call could otherwise make a REST response describe a
+     * state the deleted row never actually had at the moment it was deleted.
+     */
+    async deleteProperty(id: string, actingUserId?: string): Promise<PropertyRow> {
+      return withTransaction(pool, (client) => propertyDeleteWithClient(client, id, actingUserId));
+    },
+  };
 }
 
 // ==== block: relationPropertyOps.ts ====
@@ -650,6 +1136,26 @@ export async function createRelationPropertyWithClient(
     inverseProperty = { ...inverseProperty, locked: true };
   }
   return { property: finalProperty, inverseProperty };
+}
+
+function createRelationPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedKeyRegistry">) {
+  const { pool, computedKeyRegistry } = deps;
+  return {
+    /** Public facade: never passes a `SystemRelationWriteContext`, so an `owner: 'system'` side is always rejected (`owner_violation`). */
+    async createRelationProperty(
+      input: CreateRelationPropertyInput,
+    ): Promise<{ property: PropertyRow; inverseProperty: PropertyRow | null }> {
+      return withTransaction(pool, async (client) => {
+        const result = await createRelationPropertyWithClient(client, input, undefined, computedKeyRegistry);
+        const invalidatedDatabaseIds = new Set([result.property.databaseId]);
+        if (result.inverseProperty) invalidatedDatabaseIds.add(result.inverseProperty.databaseId);
+        runAfterCommit(client, () => {
+          for (const databaseId of invalidatedDatabaseIds) notifyInvalidation({ scope: "schema", databaseId });
+        });
+        return result;
+      });
+    },
+  };
 }
 
 // ==== block: relationOps.ts ====
@@ -849,6 +1355,23 @@ export async function deleteRelationWithClient(
   const edge = await relationsStore.deleteItemRelation(client, edgeContext.reldef.id, itemA, itemB);
   await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
   return edge;
+}
+
+function createRelationOps(deps: Pick<ChokePointDeps, "pool">) {
+  const { pool } = deps;
+  return {
+    async createRelation(input: CreateRelationInput): Promise<RelationEdge> {
+      return withTransaction(pool, (client) => createRelationWithClient(client, input));
+    },
+
+    async updateRelation(input: UpdateRelationInput): Promise<RelationEdge> {
+      return withTransaction(pool, (client) => updateRelationWithClient(client, input));
+    },
+
+    async deleteRelation(input: DeleteRelationInput): Promise<RelationEdge | null> {
+      return withTransaction(pool, (client) => deleteRelationWithClient(client, input));
+    },
+  };
 }
 
 // ==== block: itemWrites.ts ====
@@ -1142,6 +1665,19 @@ export async function updateItemWithClient(
   return item;
 }
 
+function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAffinity">) {
+  const { pool, queueAffinity } = deps;
+  return {
+    async createItem(input: CreateItemInput, actingUserId?: string): Promise<ItemRow> {
+      return withTransaction(pool, (client) => createItemWithClient(client, input, { queueAffinity, actingUserId }));
+    },
+
+    async updateItem(input: UpdateItemInput, actingUserId?: string): Promise<ItemRow> {
+      return withTransaction(pool, (client) => updateItemWithClient(client, input, { queueAffinity, actingUserId }));
+    },
+  };
+}
+
 // ==== block: itemTrash.ts ====
 /**
  * Transaction-scoped counterpart to `chokePoint.softDeleteItem` (issue #89), factored out for the
@@ -1222,6 +1758,127 @@ async function collectItemSubtree(client: PoolClient, root: ItemRow): Promise<It
     frontier = nextFrontier;
   }
   return subtree;
+}
+
+function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAffinity">) {
+  const { pool, queueAffinity } = deps;
+  return {
+    /**
+     * Soft-deletes `itemId` and, in the same transaction, cascades to its whole subtree — every
+     * inline database it owns and their rows, recursively (issue #156). Every database touched
+     * anywhere in that subtree must be unarchived, or the entire cascade is rejected and nothing
+     * is written; a database midway down the tree being archived is not a partial success.
+     */
+    async softDeleteItem(databaseId: string, itemId: string, actingUserId?: string): Promise<ItemRow | null> {
+      return withTransaction(pool, (client) =>
+        itemDeleteWithClient(client, databaseId, itemId, { queueAffinity, actingUserId }),
+      );
+    },
+
+    /**
+     * The exact cascade `softDeleteItem` runs, in reverse — restores `itemId` and its whole
+     * subtree in one transaction, symmetric to how the delete side of it was trashed. Only
+     * restores subtree rows whose `deletedAt` exactly matches the root's own `deletedAt`: since
+     * Postgres's `now()` is fixed for the lifetime of a transaction, every row the original
+     * cascade delete touched shares one identical timestamp, which lets this tell "trashed
+     * together with the root" apart from a row that happened to already be independently trashed
+     * (earlier or later) before this subtree was ever cascaded — restoring the latter would
+     * silently resurrect data the user deleted on purpose.
+     */
+    async restoreItem(databaseId: string, itemId: string, actingUserId?: string): Promise<ItemRow | null> {
+      return withTransaction(pool, async (client) => {
+        await assertDatabaseNotArchived(client, databaseId);
+        // Locked for the same reason `softDeleteItem` locks its root: without it, two concurrent
+        // restores of the same item can both read `deletedAt` as set, both proceed, and the
+        // second one's SQL-level `itemsStore.restoreItem` then finds nothing left to restore and
+        // returns null — turning an already-successful restore into a spurious 404.
+        const before = await itemsStore.lockItemById(client, databaseId, itemId);
+        if (!before) return null;
+        if (!before.deletedAt) return before; // not trashed: idempotent no-op, same as a repeat restore
+        const cascadeEpoch = before.deletedAt;
+
+        const subtree = await collectItemSubtree(client, before);
+        for (const row of subtree) await assertDatabaseNotArchived(client, row.databaseId);
+
+        let rootResult: ItemRow | null = null;
+        for (const row of subtree) {
+          if (row.deletedAt !== cascadeEpoch) continue; // not trashed together with the root: leave as-is
+          const item = await itemsStore.restoreItem(client, row.databaseId, row.id);
+          if (!item) continue;
+          if (row.id === itemId) rootResult = item;
+          const edges = await relationsStore.listAllRelationsForItem(client, row.id);
+          for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
+          runAfterCommit(client, () =>
+            notifyInvalidation({
+              scope: "item",
+              databaseId: item.databaseId,
+              itemId: item.id,
+              op: "update",
+              updatedAt: item.updatedAt,
+              userId: actingUserId,
+            }),
+          );
+        }
+        return rootResult;
+      });
+    },
+
+    /**
+     * Permanently removes an already-eligible trashed root together with its cascade subtree —
+     * the 30-day purge sweep's (`trash/purgeExpiredTrash.ts`, issue #156) only path to a hard
+     * delete, so it stays a choke-point-guarded write like every other item mutation instead of a
+     * second route into the `items` table. Mirrors `softDeleteItem`/`restoreItem`'s subtree walk,
+     * but only descends into a branch that is itself past `cutoff`: a still-live or
+     * too-recently-trashed row blocks the purge of everything nested under it, since only a
+     * branch that was cascade-deleted together with the root is safe to remove with it. Re-checks
+     * the root's own eligibility inside this transaction (rather than trusting the caller's
+     * earlier candidate snapshot); that snapshot read is a plain, unlocked `SELECT`, so it alone
+     * cannot stop a `restoreItem` from committing on one of these rows between this scan and the
+     * delete loop below — the actual guard against that race is `itemsStore.hardDeleteItem`'s own
+     * `deleted_at IS NOT NULL` condition, which turns a race-restored row's delete into a no-op
+     * instead of destroying it. Rejects — and purges nothing — if any database in the eligible
+     * subtree is archived, same as `softDeleteItem`/`restoreItem`. Returns the ids actually
+     * removed (never one a concurrent restore raced ahead of), empty if the root turned out not
+     * to be eligible.
+     */
+    async purgeExpiredTrashSubtree(rootItemId: string, cutoff: Date): Promise<string[]> {
+      return withTransaction(pool, async (client) => {
+        const [root] = await itemsStore.getItemsByIdsIncludingDeleted(client, [rootItemId]);
+        if (!root || !root.deletedAt || new Date(root.deletedAt) >= cutoff) return [];
+
+        const subtree: ItemRow[] = [root];
+        const visitedDatabaseIds = new Set<string>();
+        let frontier = [root.id];
+        while (frontier.length > 0) {
+          const nextFrontier: string[] = [];
+          for (const parentItemId of frontier) {
+            const childDatabases = await databasesStore.listDatabasesByParentItem(client, parentItemId);
+            for (const database of childDatabases) {
+              if (visitedDatabaseIds.has(database.id)) continue;
+              visitedDatabaseIds.add(database.id);
+              const rows = await itemsStore.getAllItemsInDatabase(client, database.id);
+              for (const row of rows) {
+                if (!row.deletedAt || new Date(row.deletedAt) >= cutoff) continue; // live or too fresh: branch stops here
+                subtree.push(row);
+                nextFrontier.push(row.id);
+              }
+            }
+          }
+          frontier = nextFrontier;
+        }
+
+        const subtreeDatabaseIds = new Set(subtree.map((row) => row.databaseId));
+        for (const id of subtreeDatabaseIds) await assertDatabaseNotArchived(client, id);
+
+        const purgedIds: string[] = [];
+        for (const row of subtree) {
+          const removed = await itemsStore.hardDeleteItem(client, row.databaseId, row.id);
+          if (removed) purgedIds.push(row.id);
+        }
+        return purgedIds;
+      });
+    },
+  };
 }
 
 // ==== block: destructiveProjection.ts ====
@@ -1404,624 +2061,18 @@ export function createChokePoint(
   viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry(),
   queueAffinity: ActionQueueAffinity = createActionQueueAffinity(),
 ) {
-  return {
-    // ---- databases ----
-    async createDatabase(input: databasesStore.CreateDatabaseInput, actingUserId?: string): Promise<DatabaseRow> {
-      return withTransaction(pool, async (client) => {
-        const database = await databasesStore.createDatabase(client, input);
-        runAfterCommit(client, () =>
-          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
-        );
-        return database;
-      });
-    },
-    async archiveDatabase(id: string, actingUserId?: string): Promise<DatabaseRow> {
-      return withTransaction(pool, (client) => databaseArchiveWithClient(client, id, actingUserId));
-    },
-    async restoreDatabase(id: string, actingUserId?: string): Promise<DatabaseRow> {
-      return withTransaction(pool, async (client) => {
-        const database = await databasesStore.restoreDatabase(client, id);
-        runAfterCommit(client, () =>
-          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
-        );
-        return database;
-      });
-    },
-    async renameDatabase(id: string, name: string, actingUserId?: string): Promise<DatabaseRow> {
-      return withTransaction(pool, async (client) => {
-        const database = await databasesStore.renameDatabase(client, id, name);
-        runAfterCommit(client, () =>
-          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
-        );
-        return database;
-      });
-    },
-    async getDatabase(id: string): Promise<DatabaseRow | null> {
-      return withTransaction(pool, (client) => databasesStore.getDatabase(client, id));
-    },
-    /** Every non-archived database system-wide (issue #240's `GET /api/databases`) — see `databasesStore.listAllDatabases` for why this includes the ten system databases. */
-    async listDatabases(): Promise<DatabaseRow[]> {
-      return withTransaction(pool, (client) => databasesStore.listAllDatabases(client));
-    },
-
-    /** Inline database creation (issue #22, point 7): a new, independent database owned by a page. Always `system: false` — mechanically, since the input type carries no `system` field to override it. */
-    async createInlineDatabase(
-      input: {
-        name: string;
-        parentItemId: string;
-        ownerProjectItemId?: string;
-        ownerModuleId?: string;
-      },
-      actingUserId?: string,
-    ): Promise<DatabaseRow> {
-      return withTransaction(pool, async (client) => {
-        const database = await databasesStore.createDatabase(client, { ...input, system: false });
-        runAfterCommit(client, () =>
-          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
-        );
-        return database;
-      });
-    },
-
-    // ---- properties ----
-    async listProperties(databaseId: string): Promise<PropertyRow[]> {
-      return withTransaction(pool, (client) => propertiesStore.listPropertiesByDatabase(client, databaseId));
-    },
-    async getProperty(id: string): Promise<PropertyRow | null> {
-      return withTransaction(pool, (client) => propertiesStore.getProperty(client, id));
-    },
-
-    /** Resolves a relation route's `:propertyKey` path segment (issue #157) — the choke-point's edge calls take a property id, never a key, so a REST caller must go through this first. */
-    async getPropertyByKey(databaseId: string, key: string): Promise<PropertyRow | null> {
-      return withTransaction(pool, (client) => propertiesStore.getPropertyByKey(client, databaseId, key));
-    },
-
-    /** Backs the `property.getByKey` generic operation (issue #432) — see `propertiesStore.findPropertiesByKey`. */
-    async findPropertiesByKey(databaseId: string, key: string, type?: PropertyType): Promise<PropertyRow[]> {
-      return withTransaction(pool, (client) => propertiesStore.findPropertiesByKey(client, databaseId, key, type));
-    },
-
-    async createProperty(input: propertiesStore.CreatePropertyInput, actingUserId?: string): Promise<PropertyRow> {
-      assertNoComputedKeyCollision(computedKeyRegistry, input.key);
-      if (input.type === "rollup") {
-        return withTransaction(pool, async (client) => {
-          const property = await propertiesStore.createProperty(client, input);
-          await applyRollupConfig(client, property);
-          await enqueueRollupBackfill(client, property.id);
-          const finalProperty = (await propertiesStore.getProperty(client, property.id)) as PropertyRow;
-          runAfterCommit(client, () =>
-            notifyInvalidation({ scope: "schema", databaseId: finalProperty.databaseId, userId: actingUserId }),
-          );
-          return finalProperty;
-        });
-      }
-      return withTransaction(pool, async (client) => {
-        const property = await propertiesStore.createProperty(client, input);
-        runAfterCommit(client, () =>
-          notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
-        );
-        return property;
-      });
-    },
-
-    async renameProperty(id: string, name: string, actingUserId?: string): Promise<PropertyRow> {
-      return withTransaction(pool, async (client) => {
-        const property = await propertiesStore.renameProperty(client, id, name);
-        runAfterCommit(client, () =>
-          notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
-        );
-        return property;
-      });
-    },
-
-    async updatePropertyConfig(
-      id: string,
-      config: Record<string, unknown>,
-      actingUserId?: string,
-    ): Promise<PropertyRow> {
-      return withTransaction(pool, async (client) => {
-        const property = await updatePropertyConfigWithClient(client, id, config);
-        runAfterCommit(client, () =>
-          notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
-        );
-        return property;
-      });
-    },
-
-    async changePropertyType(id: string, newType: PropertyType, actingUserId?: string): Promise<PropertyRow> {
-      return withTransaction(pool, async (client) => {
-        const property = await changePropertyTypeWithClient(client, id, newType);
-        runAfterCommit(client, () =>
-          notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
-        );
-        return property;
-      });
-    },
-
-    /**
-     * The single entry point for `PATCH /api/properties/:id` (issue #240): applies whichever of
-     * `name`/`config`/`type` were sent in one transaction, so a 403 from the locked-schema checks
-     * inside `updatePropertyConfigWithClient`/`changePropertyTypeWithClient` rolls back a rename
-     * requested in the same call instead of leaving it silently committed against the caller's
-     * expectation that a 403 response means nothing changed.
-     */
-    async updateProperty(
-      id: string,
-      input: { name?: string; config?: Record<string, unknown>; type?: PropertyType },
-      actingUserId?: string,
-    ): Promise<{ property: PropertyRow; typeChanged: boolean }> {
-      return withTransaction(pool, async (client) => {
-        let property = await propertiesStore.getProperty(client, id);
-        if (!property) throw new NotFoundError(`Property ${id} not found`);
-
-        // Issue #219: checked here, inside the same transaction as the existence check above,
-        // so an unknown id is always 404 regardless of patch shape — a caller-side pre-check for
-        // this would itself be an out-of-transaction read the existence check above already makes
-        // redundant.
-        if (input.name === undefined && input.config === undefined && input.type === undefined) {
-          throw new ValidationError("Patch must include at least one field", { reason: "empty_patch" });
-        }
-
-        // Issue #219: re-checked against the row this same transaction just fetched, not a
-        // caller-supplied snapshot — a concurrent type change between an outer read and this
-        // write can't slip a type/config patch past a relation property this way.
-        if (property.type === "relation" && (input.type !== undefined || input.config !== undefined)) {
-          const field = input.type !== undefined ? "type" : "config";
-          throw new ValidationError(
-            `Property ${id} is a relation; ${field} is changed only via its relation definition`,
-            { field, reason: "relation_definition_required" },
-          );
-        }
-
-        if (input.name !== undefined) {
-          property = await propertiesStore.renameProperty(client, id, input.name);
-        }
-        if (input.config !== undefined) {
-          property = await updatePropertyConfigWithClient(client, id, input.config);
-        }
-        let typeChanged = false;
-        if (input.type !== undefined && input.type !== property.type) {
-          property = await changePropertyTypeWithClient(client, id, input.type);
-          typeChanged = true;
-        }
-        runAfterCommit(client, () =>
-          notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
-        );
-        return { property, typeChanged };
-      });
-    },
-
-    /**
-     * Returns the row as it stood immediately before deletion (issue #219): fetched by this same
-     * transaction, not a caller-supplied snapshot from a separate `getProperty` call — a rename
-     * landing between a pre-check and this call could otherwise make a REST response describe a
-     * state the deleted row never actually had at the moment it was deleted.
-     */
-    async deleteProperty(id: string, actingUserId?: string): Promise<PropertyRow> {
-      return withTransaction(pool, (client) => propertyDeleteWithClient(client, id, actingUserId));
-    },
-
-    // ---- relations (schema side: creating a paired relation property) ----
-    /** Public facade: never passes a `SystemRelationWriteContext`, so an `owner: 'system'` side is always rejected (`owner_violation`). */
-    async createRelationProperty(
-      input: CreateRelationPropertyInput,
-    ): Promise<{ property: PropertyRow; inverseProperty: PropertyRow | null }> {
-      return withTransaction(pool, async (client) => {
-        const result = await createRelationPropertyWithClient(client, input, undefined, computedKeyRegistry);
-        const invalidatedDatabaseIds = new Set([result.property.databaseId]);
-        if (result.inverseProperty) invalidatedDatabaseIds.add(result.inverseProperty.databaseId);
-        runAfterCommit(client, () => {
-          for (const databaseId of invalidatedDatabaseIds) notifyInvalidation({ scope: "schema", databaseId });
-        });
-        return result;
-      });
-    },
-
-    // ---- relations (data side: linking two items) ----
-    async createRelation(input: CreateRelationInput): Promise<RelationEdge> {
-      return withTransaction(pool, (client) => createRelationWithClient(client, input));
-    },
-
-    async updateRelation(input: UpdateRelationInput): Promise<RelationEdge> {
-      return withTransaction(pool, (client) => updateRelationWithClient(client, input));
-    },
-
-    async deleteRelation(input: DeleteRelationInput): Promise<RelationEdge | null> {
-      return withTransaction(pool, (client) => deleteRelationWithClient(client, input));
-    },
-
-    // ---- items ----
-    async createItem(input: CreateItemInput, actingUserId?: string): Promise<ItemRow> {
-      return withTransaction(pool, (client) => createItemWithClient(client, input, { queueAffinity, actingUserId }));
-    },
-
-    async updateItem(input: UpdateItemInput, actingUserId?: string): Promise<ItemRow> {
-      return withTransaction(pool, (client) => updateItemWithClient(client, input, { queueAffinity, actingUserId }));
-    },
-
-    async getItem(databaseId: string, itemId: string): Promise<ItemRow | null> {
-      return withTransaction(pool, (client) => itemsStore.getItemById(client, databaseId, itemId));
-    },
-
-    /**
-     * Cross-partition lookup by id alone (issue #241's `GET /api/items/:id`, whose URL carries no
-     * `databaseId` to route `getItem`'s partitioned lookup through). Backed by the same
-     * `getItemsByIds` scan `assertItemExists` already uses for view membership — acceptable here
-     * for the same reason: a single-row point lookup, not a scan over a large membership list.
-     */
-    async findItem(itemId: string): Promise<ItemRow | null> {
-      return withTransaction(pool, async (client) => {
-        const [item] = await itemsStore.getItemsByIds(client, [itemId]);
-        return item ?? null;
-      });
-    },
-
-    /**
-     * `findItem`'s counterpart that also resolves an already-trashed item — `DELETE
-     * /api/items/:id` and `POST /api/items/:id/restore` (issue #156) both need an item's
-     * `databaseId` before they can call `softDeleteItem`/`restoreItem`, and unlike `GET
-     * /api/items/:id`, a trashed item is the expected target of either route, not a 404.
-     */
-    async findItemIncludingDeleted(itemId: string): Promise<ItemRow | null> {
-      const [item] = await itemsStore.getItemsByIdsIncludingDeleted(pool, [itemId]);
-      return item ?? null;
-    },
-
-    /**
-     * The breadcrumb chain `GET /api/items/:id?include=path` needs (issue #241): starting at
-     * `itemId`, walks `databases.parent_item_id` outward — from the item's own database to
-     * whichever item (in whichever other database) that database is nested under, and that
-     * item's own database's parent, and so on — so a caller never has to assemble hierarchy
-     * itself. Ordered root-first, ending with `itemId`. Stops (rather than throwing) if an
-     * ancestor's item or database has since gone missing partway up the chain; the caller
-     * already has everything found below that point.
-     *
-     * Guards against a `parent_item_id` cycle (database A's parent item lives in a database
-     * whose own parent item is, transitively, back in database A) by tracking every database
-     * id already walked and stopping the moment one repeats — otherwise a cycle would hang this
-     * loop, and the request, forever.
-     *
-     * Iterative per-level walk rather than a single recursive CTE — the trade-off is recorded in
-     * `docs/adr/2026-09-11-iterative-parent-chain-traversal-in-choke-point.md`.
-     */
-    async getItemPath(itemId: string): Promise<ItemRow[]> {
-      return withTransaction(pool, async (client) => {
-        const chain: ItemRow[] = [];
-        const visitedDatabaseIds = new Set<string>();
-        let currentId: string | undefined = itemId;
-        while (currentId) {
-          const [item] = await itemsStore.getItemsByIds(client, [currentId]);
-          if (!item) break;
-          chain.unshift(item);
-          if (visitedDatabaseIds.has(item.databaseId)) break;
-          visitedDatabaseIds.add(item.databaseId);
-          const database = await databasesStore.getDatabase(client, item.databaseId);
-          currentId = database?.parentItemId ?? undefined;
-        }
-        return chain;
-      });
-    },
-
-    /** Filter with either `filter` (a filter tree, views/filterTree.ts) or `buildFilterSql`, never both. */
-    async listItems(databaseId: string, options?: ListItemsInput) {
-      return withTransaction(pool, async (client) => {
-        // `filter` is consumed by resolveFilterSql; `rest` is what the store itself takes.
-        const { filter, ...rest } = options ?? {};
-        const buildFilterSql = await resolveFilterSql(client, databaseId, {
-          filter,
-          buildFilterSql: rest.buildFilterSql,
-        });
-        return itemsStore.listItems(client, databaseId, { ...rest, buildFilterSql });
-      });
-    },
-
-    /** The matching count for the same `filter` `listItems` takes — a count without paging the rows in. */
-    async countItems(databaseId: string, options?: CountItemsInput): Promise<number> {
-      return withTransaction(pool, async (client) => {
-        const { filter, ...rest } = options ?? {};
-        const buildFilterSql = await resolveFilterSql(client, databaseId, {
-          filter,
-          buildFilterSql: rest.buildFilterSql,
-        });
-        return itemsStore.countItems(client, databaseId, { ...rest, buildFilterSql });
-      });
-    },
-
-    /**
-     * Soft-deletes `itemId` and, in the same transaction, cascades to its whole subtree — every
-     * inline database it owns and their rows, recursively (issue #156). Every database touched
-     * anywhere in that subtree must be unarchived, or the entire cascade is rejected and nothing
-     * is written; a database midway down the tree being archived is not a partial success.
-     */
-    async softDeleteItem(databaseId: string, itemId: string, actingUserId?: string): Promise<ItemRow | null> {
-      return withTransaction(pool, (client) =>
-        itemDeleteWithClient(client, databaseId, itemId, { queueAffinity, actingUserId }),
-      );
-    },
-
-    /**
-     * The exact cascade `softDeleteItem` runs, in reverse — restores `itemId` and its whole
-     * subtree in one transaction, symmetric to how the delete side of it was trashed. Only
-     * restores subtree rows whose `deletedAt` exactly matches the root's own `deletedAt`: since
-     * Postgres's `now()` is fixed for the lifetime of a transaction, every row the original
-     * cascade delete touched shares one identical timestamp, which lets this tell "trashed
-     * together with the root" apart from a row that happened to already be independently trashed
-     * (earlier or later) before this subtree was ever cascaded — restoring the latter would
-     * silently resurrect data the user deleted on purpose.
-     */
-    async restoreItem(databaseId: string, itemId: string, actingUserId?: string): Promise<ItemRow | null> {
-      return withTransaction(pool, async (client) => {
-        await assertDatabaseNotArchived(client, databaseId);
-        // Locked for the same reason `softDeleteItem` locks its root: without it, two concurrent
-        // restores of the same item can both read `deletedAt` as set, both proceed, and the
-        // second one's SQL-level `itemsStore.restoreItem` then finds nothing left to restore and
-        // returns null — turning an already-successful restore into a spurious 404.
-        const before = await itemsStore.lockItemById(client, databaseId, itemId);
-        if (!before) return null;
-        if (!before.deletedAt) return before; // not trashed: idempotent no-op, same as a repeat restore
-        const cascadeEpoch = before.deletedAt;
-
-        const subtree = await collectItemSubtree(client, before);
-        for (const row of subtree) await assertDatabaseNotArchived(client, row.databaseId);
-
-        let rootResult: ItemRow | null = null;
-        for (const row of subtree) {
-          if (row.deletedAt !== cascadeEpoch) continue; // not trashed together with the root: leave as-is
-          const item = await itemsStore.restoreItem(client, row.databaseId, row.id);
-          if (!item) continue;
-          if (row.id === itemId) rootResult = item;
-          const edges = await relationsStore.listAllRelationsForItem(client, row.id);
-          for (const edge of edges) await enqueueRollupRecomputeForEdge(client, edge);
-          runAfterCommit(client, () =>
-            notifyInvalidation({
-              scope: "item",
-              databaseId: item.databaseId,
-              itemId: item.id,
-              op: "update",
-              updatedAt: item.updatedAt,
-              userId: actingUserId,
-            }),
-          );
-        }
-        return rootResult;
-      });
-    },
-
-    /**
-     * Permanently removes an already-eligible trashed root together with its cascade subtree —
-     * the 30-day purge sweep's (`trash/purgeExpiredTrash.ts`, issue #156) only path to a hard
-     * delete, so it stays a choke-point-guarded write like every other item mutation instead of a
-     * second route into the `items` table. Mirrors `softDeleteItem`/`restoreItem`'s subtree walk,
-     * but only descends into a branch that is itself past `cutoff`: a still-live or
-     * too-recently-trashed row blocks the purge of everything nested under it, since only a
-     * branch that was cascade-deleted together with the root is safe to remove with it. Re-checks
-     * the root's own eligibility inside this transaction (rather than trusting the caller's
-     * earlier candidate snapshot); that snapshot read is a plain, unlocked `SELECT`, so it alone
-     * cannot stop a `restoreItem` from committing on one of these rows between this scan and the
-     * delete loop below — the actual guard against that race is `itemsStore.hardDeleteItem`'s own
-     * `deleted_at IS NOT NULL` condition, which turns a race-restored row's delete into a no-op
-     * instead of destroying it. Rejects — and purges nothing — if any database in the eligible
-     * subtree is archived, same as `softDeleteItem`/`restoreItem`. Returns the ids actually
-     * removed (never one a concurrent restore raced ahead of), empty if the root turned out not
-     * to be eligible.
-     */
-    async purgeExpiredTrashSubtree(rootItemId: string, cutoff: Date): Promise<string[]> {
-      return withTransaction(pool, async (client) => {
-        const [root] = await itemsStore.getItemsByIdsIncludingDeleted(client, [rootItemId]);
-        if (!root || !root.deletedAt || new Date(root.deletedAt) >= cutoff) return [];
-
-        const subtree: ItemRow[] = [root];
-        const visitedDatabaseIds = new Set<string>();
-        let frontier = [root.id];
-        while (frontier.length > 0) {
-          const nextFrontier: string[] = [];
-          for (const parentItemId of frontier) {
-            const childDatabases = await databasesStore.listDatabasesByParentItem(client, parentItemId);
-            for (const database of childDatabases) {
-              if (visitedDatabaseIds.has(database.id)) continue;
-              visitedDatabaseIds.add(database.id);
-              const rows = await itemsStore.getAllItemsInDatabase(client, database.id);
-              for (const row of rows) {
-                if (!row.deletedAt || new Date(row.deletedAt) >= cutoff) continue; // live or too fresh: branch stops here
-                subtree.push(row);
-                nextFrontier.push(row.id);
-              }
-            }
-          }
-          frontier = nextFrontier;
-        }
-
-        const subtreeDatabaseIds = new Set(subtree.map((row) => row.databaseId));
-        for (const id of subtreeDatabaseIds) await assertDatabaseNotArchived(client, id);
-
-        const purgedIds: string[] = [];
-        for (const row of subtree) {
-          const removed = await itemsStore.hardDeleteItem(client, row.databaseId, row.id);
-          if (removed) purgedIds.push(row.id);
-        }
-        return purgedIds;
-      });
-    },
-
-    // ---- views ----
-    // An agent write here is a direct write, not a proposal through the `confirm` flow — see
-    // [[2026-09-10-views-are-excluded-from-the-agent-proposal-flow]]. Issue #87 only tightens
-    // *which* agent may write to *which* view, it does not introduce agent direct-writes.
-    /**
-     * `actor` (default `{ type: 'user' }`) governs `createdBy`/`creatorProjectItemId` — a
-     * caller never sets either directly. Creating as `type: 'ai_agent'` requires and stores
-     * `actor.agentProjectItemId` (issue #87); a 'user'/'system' actor stores no creator.
-     */
-    async createView(
-      input: Omit<viewsStore.CreateViewInput, "createdBy" | "creatorProjectItemId">,
-      actor: Actor = { type: "user" },
-      actingUserId?: string,
-    ): Promise<ViewRow> {
-      return withTransaction(pool, async (client) => {
-        await assertAuthenticatedAgentIdentity(client, actor);
-        const view = await viewsStore.createView(
-          client,
-          {
-            ...input,
-            createdBy: actor.type,
-            creatorProjectItemId: actor.type === "ai_agent" ? actor.agentProjectItemId! : null,
-          },
-          viewTypeRegistry,
-        );
-        // Curated views (databaseId === null) have no schema to invalidate — nothing else's REST
-        // fetch is keyed by one, so there is no client-visible "database changed" to signal here.
-        if (view.databaseId !== null) {
-          const databaseId = view.databaseId;
-          runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId, userId: actingUserId }));
-        }
-        return view;
-      });
-    },
-
-    async getView(id: string): Promise<ViewRow | null> {
-      return withTransaction(pool, (client) => viewsStore.getView(client, id));
-    },
-
-    async listViewsByDatabase(databaseId: string): Promise<ViewRow[]> {
-      return withTransaction(pool, (client) => viewsStore.listViewsByDatabase(client, databaseId));
-    },
-
-    /** Curated views have no `databaseId` of their own, so they're listed separately rather than scoped to one database. */
-    async listCuratedViews(): Promise<ViewRow[]> {
-      return withTransaction(pool, (client) => viewsStore.listCuratedViews(client));
-    },
-
-    async patchView(input: {
-      id: string;
-      actor: Actor;
-      name?: string;
-      config?: Record<string, unknown>;
-      isDefault?: boolean;
-      actingUserId?: string;
-    }): Promise<ViewRow> {
-      return withTransaction(pool, async (client) => {
-        await assertAuthenticatedAgentIdentity(client, input.actor);
-        const view = await viewsStore.getView(client, input.id);
-        if (!view) throw new NotFoundError(`View ${input.id} not found`);
-        assertViewWritable(view, input.actor);
-        if (input.actor.type === "ai_agent" && input.isDefault !== undefined) {
-          throw new ForbiddenError(
-            "is_default cannot be set by an agent, not even on its own view",
-            { field: "isDefault" },
-            "owner_violation",
-          );
-        }
-        // One-way adoption: a user's write to an agent's view flips it to 'user' and clears the
-        // creator identity; a system view is never flipped by a user write.
-        const adopt = input.actor.type === "user" && view.createdBy === "ai_agent";
-        const patched = await viewsStore.patchView(
-          client,
-          input.id,
-          {
-            name: input.name,
-            config: input.config,
-            isDefault: input.isDefault,
-            createdBy: adopt ? "user" : undefined,
-            creatorProjectItemId: adopt ? null : undefined,
-          },
-          viewTypeRegistry,
-        );
-        if (patched.databaseId !== null) {
-          const databaseId = patched.databaseId;
-          runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId, userId: input.actingUserId }));
-        }
-        return patched;
-      });
-    },
-
-    /**
-     * Returns the row as it stood immediately before deletion (issue #219): fetched by this same
-     * transaction, not a caller-supplied snapshot from a separate `getView` call — a config change
-     * landing between a pre-check and this call could otherwise make a REST response describe a
-     * state the deleted row never actually had at the moment it was deleted.
-     */
-    async deleteView(input: { id: string; actor: Actor; actingUserId?: string }): Promise<ViewRow> {
-      return withTransaction(pool, (client) => viewDeleteWithClient(client, input.id, input.actor, input.actingUserId));
-    },
-
-    // ---- view_items (curated view membership) ----
-    async addViewItem(input: {
-      viewId: string;
-      itemId: string;
-      position?: number;
-      actor: Actor;
-    }): Promise<ViewItemRow> {
-      return withTransaction(pool, async (client) => {
-        await assertAuthenticatedAgentIdentity(client, input.actor);
-        const view = await viewsStore.getView(client, input.viewId);
-        if (!view) throw new NotFoundError(`View ${input.viewId} not found`);
-        if (view.databaseId !== null) {
-          throw new ValidationError("Only a curated view (databaseId = null) accepts view_items membership", {
-            field: "viewId",
-          });
-        }
-        assertViewWritable(view, input.actor);
-        await assertItemExists(client, input.itemId);
-        await adoptIfUserWrite(client, view, input.actor, viewTypeRegistry);
-        return viewItemsStore.addViewItem(client, input.viewId, input.itemId, input.position);
-      });
-    },
-
-    async removeViewItem(input: { viewId: string; itemId: string; actor: Actor }): Promise<void> {
-      return withTransaction(pool, async (client) => {
-        await assertAuthenticatedAgentIdentity(client, input.actor);
-        const view = await viewsStore.getView(client, input.viewId);
-        if (!view) throw new NotFoundError(`View ${input.viewId} not found`);
-        if (view.databaseId !== null) {
-          throw new ValidationError("Only a curated view (databaseId = null) accepts view_items membership", {
-            field: "viewId",
-          });
-        }
-        assertViewWritable(view, input.actor);
-        await adoptIfUserWrite(client, view, input.actor, viewTypeRegistry);
-        const removed = await viewItemsStore.removeViewItem(client, input.viewId, input.itemId);
-        if (!removed) throw new NotFoundError(`Item ${input.itemId} is not a member of view ${input.viewId}`);
-      });
-    },
-
-    async reorderViewItem(input: {
-      viewId: string;
-      itemId: string;
-      position: number;
-      actor: Actor;
-    }): Promise<ViewItemRow> {
-      return withTransaction(pool, async (client) => {
-        await assertAuthenticatedAgentIdentity(client, input.actor);
-        const view = await viewsStore.getView(client, input.viewId);
-        if (!view) throw new NotFoundError(`View ${input.viewId} not found`);
-        assertViewWritable(view, input.actor);
-        await adoptIfUserWrite(client, view, input.actor, viewTypeRegistry);
-        return viewItemsStore.reorderViewItem(client, input.viewId, input.itemId, input.position);
-      });
-    },
-
-    async listViewItems(viewId: string): Promise<ViewItemRow[]> {
-      return withTransaction(pool, (client) => viewItemsStore.listViewItems(client, viewId));
-    },
-
-    // ---- reading through a view: filter/sort/visibility push-down ----
-    async queryView(viewId: string, options?: viewQuery.QueryViewOptions): Promise<viewQuery.QueryViewResult> {
-      return withTransaction(pool, (client) => viewQuery.queryView(client, viewId, options));
-    },
-
-    /** `POST /api/databases/:id/query` (issue #157): raw, request-boundary-validated filter/sort/cursor/limit/inTrash. */
-    async queryDatabaseItems(
-      databaseId: string,
-      input: viewQuery.DatabaseQueryInput,
-    ): Promise<viewQuery.QueryViewResult> {
-      return withTransaction(pool, (client) => viewQuery.queryDatabaseItems(client, databaseId, input));
-    },
-
-    /** `POST /api/views/:id/query` (issue #157): same raw request shape as `queryDatabaseItems`, resolved against a stored view. */
-    async queryViewItems(viewId: string, input: viewQuery.ViewQueryInput): Promise<viewQuery.QueryViewResult> {
-      return withTransaction(pool, (client) => viewQuery.queryViewItems(client, viewId, input));
-    },
-  };
+  const deps: ChokePointDeps = { pool, computedKeyRegistry, viewTypeRegistry, queueAffinity };
+  return mergeOps(
+    createDatabaseOps(deps),
+    createPropertyOps(deps),
+    createRelationPropertyOps(deps),
+    createRelationOps(deps),
+    createItemWriteOps(deps),
+    createItemReadOps(deps),
+    createItemTrashOps(deps),
+    createViewOps(deps),
+    createViewQueryOps(deps),
+  );
 }
 
 export type ChokePoint = ReturnType<typeof createChokePoint>;
