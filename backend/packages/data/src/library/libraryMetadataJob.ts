@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { withTransaction } from "../db/pool.js";
-import { updateItemWithClient } from "../chokePoint/chokePoint.js";
+import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createBlob, type CreateBlobInput } from "../blobs/blobsStore.js";
 import { getEarliestUserId } from "../auth/usersStore.js";

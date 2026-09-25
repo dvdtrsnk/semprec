@@ -4,7 +4,7 @@ import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { safeStorageFilename } from "../mail/attachments.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
-import { createItemWithClient } from "../chokePoint/chokePoint.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { findFileItemByBlobId } from "../chokePoint/itemsStore.js";
 import { findOrCreateBlob } from "./blobsStore.js";
 import type { BlobRow, ItemRow } from "../types.js";

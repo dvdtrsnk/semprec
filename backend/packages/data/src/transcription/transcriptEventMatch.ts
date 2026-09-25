@@ -3,11 +3,9 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
-import {
-  createItemWithClient,
-  createRelationWithClient,
-  type SystemRelationWriteContext,
-} from "../chokePoint/chokePoint.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { createRelationWithClient } from "../chokePoint/relationOps.js";
+import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import { appendHistoryEntry, assertValidProposalEnvelope, type ProposalEnvelope } from "../inbox/inboxTickAction.js";
 import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { EVENTS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
