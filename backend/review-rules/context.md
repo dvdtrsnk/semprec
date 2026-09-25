@@ -32,7 +32,7 @@ missing per-user authorization (a second human user reading or writing another
 human user's data) as a finding — there is no second human user for one to read or
 write. The authorization boundary that *is* real and load-bearing here is actor
 type, not per-user ownership: `Actor.type` is `'user' | 'ai_agent' | 'system'`
-(e.g. `createdBy` on a view, `packages/data/src/chokePoint/chokePoint.ts`'s
+(e.g. `createdBy` on a view, `packages/data/src/chokePoint/authorization.ts`'s
 `assertViewWritable`), and it gates what an AI agent may read, write, or adopt, per
 `docs/adr/2026-09-10-single-writer-ownership-model.md` and
 `docs/adr/2026-09-10-agent-writes-are-proposals-not-direct-writes.md`. A missing or
