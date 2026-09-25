@@ -3,12 +3,9 @@ import type { Queryable } from "../db/pool.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
-import {
-  createItemWithClient,
-  deleteRelationWithClient,
-  enqueueRollupRecomputeForEdge,
-  updateItemWithClient,
-} from "../chokePoint/chokePoint.js";
+import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { deleteRelationWithClient } from "../chokePoint/relationOps.js";
+import { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
 import { triggerOnItemEventHeartbeats } from "../scheduler/schedulerStore.js";
 import { TEN_DATABASE_MODULE_IDS, type TenDatabaseModuleId } from "../seed/tenDatabaseKeys.js";
 import { NotFoundError, ValidationError } from "../errors.js";
