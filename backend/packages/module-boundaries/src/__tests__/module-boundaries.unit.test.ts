@@ -220,6 +220,7 @@ describe("checkModuleBoundaries", () => {
       (v: BoundaryViolation) => v.importer === "packages/data/src/chokePoint/cycleWithRollup.ts",
     );
 
+    expect(violation).toBeDefined();
     expect(violation?.imported).toBe("packages/data/src/rollup/cycleWithChokePoint.ts");
     expect(violation?.rules).toContain("no-choke-point-rollup-cycle");
   });
