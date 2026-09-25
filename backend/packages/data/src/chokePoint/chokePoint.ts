@@ -115,23 +115,7 @@ function assertViewWritable(view: ViewRow, actor: Actor): void {
 }
 
 // ==== block: databaseGuards.ts ====
-/**
- * The one reusable archived-database guard: blocks every item/relation mutation against an
- * archived database with a canonical 403 `database_archived`, while reads (and restoring the
- * database itself) remain unaffected. Used directly by every mutation below except item
- * creation, which needs the idempotent-replay carve-out in `assertDatabaseWritableForCreate`.
- */
-async function assertDatabaseNotArchived(client: PoolClient, databaseId: string): Promise<void> {
-  const database = await databasesStore.getDatabase(client, databaseId);
-  if (!database) throw new NotFoundError(`Database ${databaseId} not found`);
-  if (database.archivedAt) {
-    throw new ForbiddenError(
-      `Database ${databaseId} is archived and cannot be written to`,
-      { field: "databaseId" },
-      "database_archived",
-    );
-  }
-}
+import { assertDatabaseNotArchived } from "./databaseGuards.js";
 
 // ==== block: computedKeyRegistry.ts ====
 /** `items.computed` is a shared namespace between rollup values and declared module cache keys — see computedKeyRegistry.ts. */
