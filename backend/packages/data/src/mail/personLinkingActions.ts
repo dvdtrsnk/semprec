@@ -3,7 +3,7 @@ import { withTransaction } from "../db/pool.js";
 import type { ActionContext, ActionHandler } from "../scheduler/actions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
-import { createRelationWithClient } from "../chokePoint/chokePoint.js";
+import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { getMailMessageMetaByItemId } from "./mailMessageMetaStore.js";
 import { lookupPersonIdByEmail, normalizeEmailAddress, reindexPersonEmails } from "./personEmailIndexStore.js";

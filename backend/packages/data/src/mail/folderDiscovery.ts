@@ -1,9 +1,7 @@
 import type { PoolClient } from "pg";
-import {
-  createItemWithClient,
-  createRelationWithClient,
-  type SystemRelationWriteContext,
-} from "../chokePoint/chokePoint.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { createRelationWithClient } from "../chokePoint/relationOps.js";
+import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 
 const FOLDERS_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: FOLDERS_MODULE_ID };
