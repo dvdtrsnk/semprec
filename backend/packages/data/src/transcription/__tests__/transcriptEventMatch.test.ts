@@ -4,7 +4,7 @@ import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
-import { createItemWithClient } from "../../chokePoint/chokePoint.js";
+import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { NotFoundError } from "../../errors.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcriptionJob.js";
 import { matchTranscriptToEvent } from "../transcriptEventMatch.js";
