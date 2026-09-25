@@ -1,8 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
-import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
-import * as itemsStore from "./itemsStore.js";
 import * as relationsStore from "./relationsStore.js";
 import { assertRelationDeletable } from "../rollup/mirror.js";
 import { createActionQueueAffinity, type ActionQueueAffinity } from "../scheduler/actions.js";
