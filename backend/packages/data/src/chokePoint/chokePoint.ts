@@ -1,10 +1,7 @@
 import type { Pool, PoolClient } from "pg";
-import { createHash } from "node:crypto";
-import { canonicalizeJson } from "@semprec/shared";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
-import { assertValidTimezone } from "../timezone.js";
 import type {
   CreatedBy,
   DatabaseRow,
@@ -24,10 +21,6 @@ import * as relationsStore from "./relationsStore.js";
 import * as viewsStore from "./viewsStore.js";
 import * as viewItemsStore from "./viewItemsStore.js";
 import * as viewQuery from "../views/viewQuery.js";
-import { compileFilterNode } from "../views/filterCompiler.js";
-import { buildFilterProperties } from "../views/filterProperties.js";
-import { parseFilterNode } from "../views/filterTree.js";
-import { validateRollupConfig } from "../rollup/config.js";
 import {
   findDependenciesByRelationDefinition,
   findDependenciesBySource,
@@ -35,192 +28,16 @@ import {
 } from "../rollup/dependencies.js";
 import { enqueueRollupBackfill, enqueueRollupRecompute } from "../rollup/recompute.js";
 import { assertRelationDeletable, assertSourceRetypeAllowed } from "../rollup/mirror.js";
-import { enqueuePropertyTypeMigration, isConversionSupported } from "../migrationJob/propertyTypeMigration.js";
 import { triggerOnItemEventHeartbeats, recomputeAllForTimezoneChange } from "../scheduler/schedulerStore.js";
 import { createActionQueueAffinity, type ActionQueueAffinity } from "../scheduler/actions.js";
-import { getSystemSettingsItemId } from "../systemSettings.js";
 import { createComputedKeyRegistry, type ComputedKeyRegistry } from "./computedKeyRegistry.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "./viewTypeRegistry.js";
 import { PROJECTS_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
-import { deriveTaskTime } from "../tasks/deriveTaskTime.js";
-import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
-import { recordDesiredMailMessageFlags } from "../mail/mailMessageFlagSyncStore.js";
-import { assertSpeakerEdgeWritable, isTranscriptSpeakersProperty } from "../transcription/transcriptionSpeakerEdges.js";
 
-interface AssertWritablePropertiesOptions {
-  /**
-   * Relaxes the owner:'system' rejection below, but only for the exact keys listed — the one
-   * narrow escape hatch for a trusted, code-defined system writer that is itself the module
-   * contract's declared owning process for those specific fields (e.g. Journal's lazy item
-   * creation is the owning process for exactly `name`/`type`/`period`, see
-   * journal/journalStore.ts). Scoped per-key, not a blanket bypass, so a caller can't
-   * accidentally (or a future caller couldn't deliberately) use it to write a *different*
-   * database's system-owned field it was never granted. Never set from a request-handling path.
-   */
-  allowedSystemKeys?: readonly string[];
-  /** The identity of a trusted in-process system writer, required to match each system field it writes. */
-  systemOwnerProcess?: string;
-}
+// Temporary scaffolding for the choke-point split: the `// ==== block: <file> ====` markers group each
+// future module's declarations into one contiguous block. The blocks and markers are removed by #528.
 
-/** Keys the generic write path never accepts: relation values live only in item_relations, and computed is internal-only. */
-function assertWritableProperties(
-  properties: PropertyRow[],
-  patchKeys: string[],
-  options: AssertWritablePropertiesOptions = {},
-): void {
-  const byKey = new Map(properties.map((p) => [p.key, p]));
-  for (const key of patchKeys) {
-    const property = byKey.get(key);
-    if (!property) {
-      throw new ValidationError(`Unknown property key '${key}'`, { field: key });
-    }
-    if (property.type === "rollup") {
-      // Rollup values live in items.computed, written only by the recompute worker —
-      // matches the issue's "the generic update path refuses this field — computed_readonly, 403".
-      throw new ForbiddenError(
-        `Property '${key}' is a rollup; its value lives in computed and is read-only here`,
-        { field: key },
-        "computed_readonly",
-      );
-    }
-    if (property.type === "relation") {
-      throw new ValidationError(
-        `Property '${key}' is a relation; write it via createRelation/deleteRelation, not item properties`,
-        {
-          field: key,
-        },
-      );
-    }
-    if (property.owner === "system") {
-      if (!options.allowedSystemKeys?.includes(key)) {
-        throw new ForbiddenError(`Property '${key}' is owned by 'system' and cannot be written by this caller`, {
-          field: key,
-        });
-      }
-      if (options.systemOwnerProcess && property.ownerProcess !== options.systemOwnerProcess) {
-        throw new ForbiddenError(
-          `Property '${key}' is not owned by this system process`,
-          { field: key },
-          "owner_violation",
-        );
-      }
-    }
-  }
-}
-
-async function resolveRollupRecomputeTargets(
-  client: PoolClient,
-  relationDefinitionId: string,
-  itemA: string,
-  itemB: string,
-): Promise<Array<{ rollupPropertyId: string; itemId: string }>> {
-  const dependencies = await findDependenciesByRelationDefinition(client, relationDefinitionId);
-  if (dependencies.length === 0) return [];
-
-  const reldef = await relationsStore.getRelationDefinition(client, relationDefinitionId);
-  if (!reldef) return [];
-  const propertyA = await propertiesStore.getProperty(client, reldef.propertyIdA);
-  if (!propertyA) return [];
-
-  const targets: Array<{ rollupPropertyId: string; itemId: string }> = [];
-  for (const dependency of dependencies) {
-    const rollupProperty = await propertiesStore.getProperty(client, dependency.rollupPropertyId);
-    if (!rollupProperty) continue;
-    const parentItemId = rollupProperty.databaseId === propertyA.databaseId ? itemA : itemB;
-    targets.push({ rollupPropertyId: dependency.rollupPropertyId, itemId: parentItemId });
-  }
-  return targets;
-}
-
-/** Exported so a module-specific delete that unlinks relations outside `softDeleteItem` (e.g. inbox/inboxTypesStore.ts's `deleteInboxTypeWithClient`) can enqueue the same rollup recompute per edge it removes. */
-export async function enqueueRollupRecomputeForEdge(
-  client: PoolClient,
-  edge: { relationDefinitionId: string; itemA: string; itemB: string },
-): Promise<void> {
-  const targets = await resolveRollupRecomputeTargets(client, edge.relationDefinitionId, edge.itemA, edge.itemB);
-  for (const target of targets) {
-    await enqueueRollupRecompute(client, target.rollupPropertyId, target.itemId);
-  }
-}
-
-/**
- * Turns a caller-supplied filter tree into the `buildFilterSql` push-down hook the item
- * store expects. This is the one entry point through which a transport adapter (or any
- * other generic caller) filters items ad hoc — a stored view's filter goes the same way,
- * via views/viewQuery.ts — so no caller ever needs its own read path into `items`.
- */
-async function buildFilterSqlForDatabase(
-  client: PoolClient,
-  databaseId: string,
-  filter: unknown,
-): Promise<(params: unknown[]) => string> {
-  const properties = await propertiesStore.listPropertiesByDatabase(client, databaseId);
-  const filterProperties = await buildFilterProperties(client, properties);
-  const node = parseFilterNode(filter);
-  return (params) => compileFilterNode(node, filterProperties, params);
-}
-
-/** `items.computed` is a shared namespace between rollup values and declared module cache keys — see computedKeyRegistry.ts. */
-function assertNoComputedKeyCollision(registry: ComputedKeyRegistry, key: string): void {
-  if (registry.has(key)) {
-    throw new ValidationError(`Property key '${key}' collides with a declared module cache key`, { field: key });
-  }
-}
-
-/**
- * The one reusable archived-database guard: blocks every item/relation mutation against an
- * archived database with a canonical 403 `database_archived`, while reads (and restoring the
- * database itself) remain unaffected. Used directly by every mutation below except item
- * creation, which needs the idempotent-replay carve-out in `assertDatabaseWritableForCreate`.
- */
-async function assertDatabaseNotArchived(client: PoolClient, databaseId: string): Promise<void> {
-  const database = await databasesStore.getDatabase(client, databaseId);
-  if (!database) throw new NotFoundError(`Database ${databaseId} not found`);
-  if (database.archivedAt) {
-    throw new ForbiddenError(
-      `Database ${databaseId} is archived and cannot be written to`,
-      { field: "databaseId" },
-      "database_archived",
-    );
-  }
-}
-
-/**
- * Item creation's own archived-database guard: unlike every other mutation, a create must let
- * through the one no-write exception the issue carves out — a replay of an idempotency key
- * that already committed a row before the database was archived returns that existing row
- * instead of failing, so a retried request doesn't turn a transient error into a permanent
- * failure. A new key, or a key reserved for this database whose row is somehow missing (see
- * the same defensive branch in `itemsStore.insertItem`), still gets `database_archived` — only
- * an exact, already-satisfied replay is spared. Returns the replay row to return verbatim (no
- * further writes or event emission), or `null` when the database isn't archived at all.
- */
-async function assertDatabaseWritableForCreate(
-  client: PoolClient,
-  databaseId: string,
-  idempotencyKey: string | undefined,
-): Promise<ItemRow | null> {
-  const database = await databasesStore.getDatabase(client, databaseId);
-  if (!database) throw new NotFoundError(`Database ${databaseId} not found`);
-  if (!database.archivedAt) return null;
-
-  if (idempotencyKey) {
-    const replay = await itemsStore.findIdempotentReplay(client, databaseId, idempotencyKey);
-    if (replay) return replay;
-  }
-  throw new ForbiddenError(
-    `Database ${databaseId} is archived and cannot be written to`,
-    { field: "databaseId" },
-    "database_archived",
-  );
-}
-
-/** Shared by every relation-edge mutation: both the caller's own database and the edge's target database must be unarchived, since an edge write touches an item on each side. */
-async function assertRelationDatabasesNotArchived(client: PoolClient, context: RelationEdgeContext): Promise<void> {
-  await assertDatabaseNotArchived(client, context.property.databaseId);
-  await assertDatabaseNotArchived(client, context.targetDatabaseId);
-}
-
+// ==== block: authorization.ts ====
 /**
  * The caller identity every view/view_items write is checked against (issue #87). `type`
  * mirrors `CreatedBy` (the write's intended kind); `agentProjectItemId` is the server-derived
@@ -231,12 +48,6 @@ async function assertRelationDatabasesNotArchived(client: PoolClient, context: R
 export interface Actor {
   type: CreatedBy;
   agentProjectItemId?: string;
-}
-
-/** `view_items` carries no FK to `items` (partitioned, no single partition key) — this is the live existence check `addViewItem` runs in its place. */
-async function assertItemExists(client: PoolClient, itemId: string): Promise<void> {
-  const [item] = await itemsStore.getItemsByIds(client, [itemId]);
-  if (!item) throw new NotFoundError(`Item ${itemId} not found`);
 }
 
 function ownerViolation(view: { id: string }, reason: string): ForbiddenError {
@@ -282,23 +93,6 @@ async function assertAuthenticatedAgentIdentity(client: PoolClient, actor: Actor
   }
 }
 
-/**
- * One-way adoption (issue #87): a user's write — patch or curated-membership mutation — to an
- * agent-owned view flips it to 'user' and clears the creator identity, in the same transaction
- * as (and before) the mutation itself. A system view is never adopted: it never has
- * `createdBy === 'ai_agent'`, so the condition below is false for it by construction.
- */
-async function adoptIfUserWrite(
-  client: PoolClient,
-  view: ViewRow,
-  actor: Actor,
-  viewTypeRegistry: ViewTypeRegistry,
-): Promise<void> {
-  if (actor.type === "user" && view.createdBy === "ai_agent") {
-    await viewsStore.patchView(client, view.id, { createdBy: "user", creatorProjectItemId: null }, viewTypeRegistry);
-  }
-}
-
 /** Shared by patch/delete on a view and every write to its `view_items` membership. A no-op for a 'user'/'system' actor — only an agent write is ownership-checked here. */
 function assertViewWritable(view: ViewRow, actor: Actor): void {
   if (actor.type !== "ai_agent") return;
@@ -318,11 +112,389 @@ function assertViewWritable(view: ViewRow, actor: Actor): void {
   }
 }
 
+// ==== block: databaseGuards.ts ====
+/**
+ * The one reusable archived-database guard: blocks every item/relation mutation against an
+ * archived database with a canonical 403 `database_archived`, while reads (and restoring the
+ * database itself) remain unaffected. Used directly by every mutation below except item
+ * creation, which needs the idempotent-replay carve-out in `assertDatabaseWritableForCreate`.
+ */
+async function assertDatabaseNotArchived(client: PoolClient, databaseId: string): Promise<void> {
+  const database = await databasesStore.getDatabase(client, databaseId);
+  if (!database) throw new NotFoundError(`Database ${databaseId} not found`);
+  if (database.archivedAt) {
+    throw new ForbiddenError(
+      `Database ${databaseId} is archived and cannot be written to`,
+      { field: "databaseId" },
+      "database_archived",
+    );
+  }
+}
+
+// ==== block: computedKeyRegistry.ts ====
+/** `items.computed` is a shared namespace between rollup values and declared module cache keys — see computedKeyRegistry.ts. */
+function assertNoComputedKeyCollision(registry: ComputedKeyRegistry, key: string): void {
+  if (registry.has(key)) {
+    throw new ValidationError(`Property key '${key}' collides with a declared module cache key`, { field: key });
+  }
+}
+
+// ==== block: rollup/recompute.ts ====
+async function resolveRollupRecomputeTargets(
+  client: PoolClient,
+  relationDefinitionId: string,
+  itemA: string,
+  itemB: string,
+): Promise<Array<{ rollupPropertyId: string; itemId: string }>> {
+  const dependencies = await findDependenciesByRelationDefinition(client, relationDefinitionId);
+  if (dependencies.length === 0) return [];
+
+  const reldef = await relationsStore.getRelationDefinition(client, relationDefinitionId);
+  if (!reldef) return [];
+  const propertyA = await propertiesStore.getProperty(client, reldef.propertyIdA);
+  if (!propertyA) return [];
+
+  const targets: Array<{ rollupPropertyId: string; itemId: string }> = [];
+  for (const dependency of dependencies) {
+    const rollupProperty = await propertiesStore.getProperty(client, dependency.rollupPropertyId);
+    if (!rollupProperty) continue;
+    const parentItemId = rollupProperty.databaseId === propertyA.databaseId ? itemA : itemB;
+    targets.push({ rollupPropertyId: dependency.rollupPropertyId, itemId: parentItemId });
+  }
+  return targets;
+}
+
+/** Exported so a module-specific delete that unlinks relations outside `softDeleteItem` (e.g. inbox/inboxTypesStore.ts's `deleteInboxTypeWithClient`) can enqueue the same rollup recompute per edge it removes. */
+export async function enqueueRollupRecomputeForEdge(
+  client: PoolClient,
+  edge: { relationDefinitionId: string; itemA: string; itemB: string },
+): Promise<void> {
+  const targets = await resolveRollupRecomputeTargets(client, edge.relationDefinitionId, edge.itemA, edge.itemB);
+  for (const target of targets) {
+    await enqueueRollupRecompute(client, target.rollupPropertyId, target.itemId);
+  }
+}
+
+// ==== block: rollup/config.ts ====
+import { validateRollupConfig } from "../rollup/config.js";
+
+async function applyRollupConfig(client: PoolClient, property: PropertyRow): Promise<void> {
+  const sameDatabaseProperties = await propertiesStore.listPropertiesByDatabase(client, property.databaseId);
+  const relationProperty = sameDatabaseProperties.find(
+    (p) => p.key === (property.config as { relationPropertyKey?: string }).relationPropertyKey,
+  );
+  const targetDatabaseId = relationProperty
+    ? (relationProperty.config as { targetDatabaseId?: string }).targetDatabaseId
+    : undefined;
+  const targetDatabaseProperties = targetDatabaseId
+    ? await propertiesStore.listPropertiesByDatabase(client, targetDatabaseId)
+    : [];
+
+  const validated = validateRollupConfig(property.config, sameDatabaseProperties, targetDatabaseProperties);
+  const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, validated.relationProperty.id);
+  if (!reldef) {
+    throw new ValidationError(`Relation property '${validated.relationProperty.key}' has no relation definition`, {
+      field: "relationPropertyKey",
+    });
+  }
+  if (!targetDatabaseId) {
+    // Should be unreachable once validateRollupConfig has passed (a relation property
+    // always carries a target database) — guarded explicitly so a data inconsistency
+    // surfaces as this message instead of a NOT NULL constraint violation on
+    // rollup_dependencies.source_database_id.
+    throw new ValidationError("Relation property has no targetDatabaseId in config", { field: "relationPropertyKey" });
+  }
+
+  await upsertRollupDependency(client, {
+    rollupPropertyId: property.id,
+    relationDefinitionId: reldef.id,
+    sourceDatabaseId: targetDatabaseId,
+    sourcePropertyKey: validated.targetProperty?.key ?? null,
+  });
+}
+
+// ==== block: relationEdgeContext.ts ====
+/** Shared by every relation-edge mutation: both the caller's own database and the edge's target database must be unarchived, since an edge write touches an item on each side. */
+async function assertRelationDatabasesNotArchived(client: PoolClient, context: RelationEdgeContext): Promise<void> {
+  await assertDatabaseNotArchived(client, context.property.databaseId);
+  await assertDatabaseNotArchived(client, context.targetDatabaseId);
+}
+
 /** Proves the caller's process identity for a protected system relation write — see `assertRelationSideCreatable`/`assertRelationPropertyWritable` below. Never accepted on the public facade. */
 export interface SystemRelationWriteContext {
   ownerProcess: string;
 }
 
+interface RelationEdgeContext {
+  reldef: RelationDefinitionRow;
+  property: PropertyRow;
+  targetDatabaseId: string;
+}
+
+/**
+ * Loads the relation property named by an edge input and normalizes it against its relation
+ * definition. `relationPropertyId` always identifies the caller's own side of the definition;
+ * its `config.relationDefinitionId`/`config.targetDatabaseId` are the only source of truth for
+ * which definition and target database an edge call resolves against — a property whose config
+ * lacks either is a data inconsistency (a relation property is never usable before
+ * `createRelationPropertyWithClient` fills in both), not a case to infer around.
+ */
+async function loadRelationEdgeContext(client: PoolClient, relationPropertyId: string): Promise<RelationEdgeContext> {
+  const property = await propertiesStore.getProperty(client, relationPropertyId);
+  if (!property || property.type !== "relation") {
+    throw new ValidationError(`${relationPropertyId} is not a relation property`, { field: "relationPropertyId" });
+  }
+  const config = property.config as { relationDefinitionId?: unknown; targetDatabaseId?: unknown };
+  if (typeof config.relationDefinitionId !== "string" || typeof config.targetDatabaseId !== "string") {
+    throw new ValidationError(
+      `Relation property ${relationPropertyId} is missing a valid relationDefinitionId/targetDatabaseId`,
+      {
+        field: "relationPropertyId",
+      },
+    );
+  }
+  const reldef = await relationsStore.getRelationDefinition(client, config.relationDefinitionId);
+  if (!reldef || (reldef.propertyIdA !== relationPropertyId && reldef.propertyIdB !== relationPropertyId)) {
+    throw new ValidationError(`Relation property ${relationPropertyId} has no matching relation definition`, {
+      field: "relationPropertyId",
+    });
+  }
+  return { reldef, property, targetDatabaseId: config.targetDatabaseId };
+}
+
+/** Normalizes a caller/target pair to the stored item A / item B tuple for the definition's own side. */
+function normalizeRelationSides(
+  reldef: RelationDefinitionRow,
+  relationPropertyId: string,
+  callerItemId: string,
+  targetItemId: string,
+): { itemA: string; itemB: string } {
+  const isSideA = reldef.propertyIdA === relationPropertyId;
+  return isSideA ? { itemA: callerItemId, itemB: targetItemId } : { itemA: targetItemId, itemB: callerItemId };
+}
+
+/**
+ * Authorizes an edge write against the exact property named by `relationPropertyId` — a
+ * paired definition's two sides may have different owners, and only the side the caller
+ * named governs this particular call. A public caller (no context) is rejected outright when
+ * that side is `owner: 'system'`; a protected system caller is rejected unless its
+ * `context.ownerProcess` matches the property's declared `owner_process` exactly.
+ */
+function assertRelationPropertyWritable(property: PropertyRow, context: SystemRelationWriteContext | undefined): void {
+  if (property.owner !== "system") return;
+  if (!context || context.ownerProcess !== property.ownerProcess) {
+    throw new ForbiddenError(
+      `Relation property ${property.id} is owned by 'system' and cannot be written by this caller`,
+      { field: "relationPropertyId" },
+      "owner_violation",
+    );
+  }
+}
+
+// ==== block: databaseOps.ts ====
+/**
+ * Transaction-scoped counterpart to `chokePoint.archiveDatabase` (issue #89): `databasesStore.archiveDatabase`
+ * already takes a `client` rather than opening its own transaction, so this is a thin named alias —
+ * kept alongside the other four `*WithClient` exports so `ApprovedOperationExecutor` has one uniform
+ * naming convention to call the destructive half of each of the five approval-gated operations.
+ */
+export async function databaseArchiveWithClient(
+  client: PoolClient,
+  id: string,
+  actingUserId?: string,
+): Promise<DatabaseRow> {
+  const database = await databasesStore.archiveDatabase(client, id);
+  runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }));
+  return database;
+}
+
+// ==== block: itemReads.ts ====
+import { compileFilterNode } from "../views/filterCompiler.js";
+import { buildFilterProperties } from "../views/filterProperties.js";
+import { parseFilterNode } from "../views/filterTree.js";
+
+/**
+ * Turns a caller-supplied filter tree into the `buildFilterSql` push-down hook the item
+ * store expects. This is the one entry point through which a transport adapter (or any
+ * other generic caller) filters items ad hoc — a stored view's filter goes the same way,
+ * via views/viewQuery.ts — so no caller ever needs its own read path into `items`.
+ */
+async function buildFilterSqlForDatabase(
+  client: PoolClient,
+  databaseId: string,
+  filter: unknown,
+): Promise<(params: unknown[]) => string> {
+  const properties = await propertiesStore.listPropertiesByDatabase(client, databaseId);
+  const filterProperties = await buildFilterProperties(client, properties);
+  const node = parseFilterNode(filter);
+  return (params) => compileFilterNode(node, filterProperties, params);
+}
+
+export interface ListItemsInput extends itemsStore.ListItemsOptions {
+  /** A filter tree (views/filterTree.ts), as a transport adapter receives it — validated here, never trusted. */
+  filter?: unknown;
+}
+
+export interface CountItemsInput extends Pick<itemsStore.ListItemsOptions, "includeDeleted" | "buildFilterSql"> {
+  filter?: unknown;
+}
+
+/**
+ * Resolves the one filter a read runs under. `filter` (a tree) and `buildFilterSql` (a raw
+ * push-down hook) are two ways of saying the same thing, so a caller passing both is
+ * rejected rather than having one of them silently dropped — combining them would also be a
+ * guess about whether they were meant to be ANDed.
+ */
+async function resolveFilterSql(
+  client: PoolClient,
+  databaseId: string,
+  options: { filter?: unknown; buildFilterSql?: (params: unknown[]) => string | undefined },
+): Promise<((params: unknown[]) => string | undefined) | undefined> {
+  if (options.filter === undefined) return options.buildFilterSql;
+  if (options.buildFilterSql) {
+    throw new ValidationError("Pass either 'filter' or 'buildFilterSql', not both", { field: "filter" });
+  }
+  return buildFilterSqlForDatabase(client, databaseId, options.filter);
+}
+
+// ==== block: viewQueryOps.ts ====
+
+// ==== block: viewOps.ts ====
+/** `view_items` carries no FK to `items` (partitioned, no single partition key) — this is the live existence check `addViewItem` runs in its place. */
+async function assertItemExists(client: PoolClient, itemId: string): Promise<void> {
+  const [item] = await itemsStore.getItemsByIds(client, [itemId]);
+  if (!item) throw new NotFoundError(`Item ${itemId} not found`);
+}
+
+/**
+ * One-way adoption (issue #87): a user's write — patch or curated-membership mutation — to an
+ * agent-owned view flips it to 'user' and clears the creator identity, in the same transaction
+ * as (and before) the mutation itself. A system view is never adopted: it never has
+ * `createdBy === 'ai_agent'`, so the condition below is false for it by construction.
+ */
+async function adoptIfUserWrite(
+  client: PoolClient,
+  view: ViewRow,
+  actor: Actor,
+  viewTypeRegistry: ViewTypeRegistry,
+): Promise<void> {
+  if (actor.type === "user" && view.createdBy === "ai_agent") {
+    await viewsStore.patchView(client, view.id, { createdBy: "user", creatorProjectItemId: null }, viewTypeRegistry);
+  }
+}
+
+/**
+ * Transaction-scoped counterpart to `chokePoint.deleteView` (issue #89), factored out for the
+ * same reason as `propertyDeleteWithClient` above.
+ */
+export async function viewDeleteWithClient(
+  client: PoolClient,
+  id: string,
+  actor: Actor,
+  actingUserId?: string,
+): Promise<ViewRow> {
+  await assertAuthenticatedAgentIdentity(client, actor);
+  const view = await viewsStore.getView(client, id);
+  if (!view) throw new NotFoundError(`View ${id} not found`);
+  assertViewWritable(view, actor);
+  await viewsStore.deleteView(client, id);
+  if (view.databaseId !== null) {
+    const databaseId = view.databaseId;
+    runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId, userId: actingUserId }));
+  }
+  return view;
+}
+
+// ==== block: propertyOps.ts ====
+import { enqueuePropertyTypeMigration, isConversionSupported } from "../migrationJob/propertyTypeMigration.js";
+
+/**
+ * Transaction-scoped counterpart to `chokePoint.deleteProperty` (issue #89), factored out so
+ * `ApprovedOperationExecutor` can run it against the same locked transaction as its own
+ * revalidation instead of `chokePoint.deleteProperty` opening a second, independent one.
+ */
+export async function propertyDeleteWithClient(
+  client: PoolClient,
+  id: string,
+  actingUserId?: string,
+): Promise<PropertyRow> {
+  const property = await propertiesStore.getProperty(client, id);
+  if (!property) throw new NotFoundError(`Property ${id} not found`);
+
+  const invalidatedDatabaseIds = new Set([property.databaseId]);
+  if (property.type === "relation") {
+    const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, id);
+    if (reldef) {
+      await assertRelationDeletable(client, reldef.id);
+      const otherPropertyId = reldef.propertyIdA === id ? reldef.propertyIdB : reldef.propertyIdA;
+      if (otherPropertyId) {
+        const otherProperty = await propertiesStore.getProperty(client, otherPropertyId);
+        if (otherProperty?.locked) {
+          throw new ForbiddenError(`Cannot delete: the paired relation property ${otherPropertyId} is locked`);
+        }
+        if (otherProperty) invalidatedDatabaseIds.add(otherProperty.databaseId);
+        await propertiesStore.deleteProperty(client, otherPropertyId);
+      }
+    }
+  }
+  await propertiesStore.deleteProperty(client, id);
+  runAfterCommit(client, () => {
+    for (const databaseId of invalidatedDatabaseIds)
+      notifyInvalidation({ scope: "schema", databaseId, userId: actingUserId });
+  });
+  return property;
+}
+
+/**
+ * The config-update logic shared by `chokePoint.updatePropertyConfig` and `chokePoint.updateProperty`
+ * (issue #240), factored out so `updateProperty` can run it against the same client/transaction as
+ * a sibling rename/type-change instead of opening its own.
+ */
+async function updatePropertyConfigWithClient(
+  client: PoolClient,
+  id: string,
+  config: Record<string, unknown>,
+): Promise<PropertyRow> {
+  const property = await propertiesStore.updatePropertyConfig(client, id, config);
+  if (property.type === "rollup") {
+    await applyRollupConfig(client, property);
+    await enqueueRollupBackfill(client, property.id);
+  }
+  return property;
+}
+
+/**
+ * The type-change logic shared by `chokePoint.changePropertyType` and `chokePoint.updateProperty`
+ * (issue #240), factored out for the same reason as `updatePropertyConfigWithClient` above.
+ */
+async function changePropertyTypeWithClient(
+  client: PoolClient,
+  id: string,
+  newType: PropertyType,
+): Promise<PropertyRow> {
+  const property = await propertiesStore.getProperty(client, id);
+  if (!property) throw new ValidationError(`Property ${id} not found`);
+  const oldType = property.type;
+  if (oldType === newType) return property;
+
+  if ([oldType, newType].includes("relation") || [oldType, newType].includes("rollup")) {
+    throw new ValidationError("Retyping into or out of 'relation'/'rollup' is not supported via changePropertyType", {
+      field: "type",
+    });
+  }
+  await assertSourceRetypeAllowed(client, property.databaseId, property.key, newType);
+  if (!isConversionSupported(oldType, newType)) {
+    throw new ValidationError(`No conversion path from '${oldType}' to '${newType}'; create a new property instead`, {
+      field: "type",
+    });
+  }
+
+  const updated = await propertiesStore.changePropertyType(client, id, newType, "pending");
+  await enqueuePropertyTypeMigration(client, id, oldType);
+  return updated;
+}
+
+// ==== block: relationPropertyOps.ts ====
 export interface RelationPropertySideInput {
   key: string;
   /** Nullable for a built-in relation property of a system database (issue #235). */
@@ -480,31 +652,301 @@ export async function createRelationPropertyWithClient(
   return { property: finalProperty, inverseProperty };
 }
 
-export interface ListItemsInput extends itemsStore.ListItemsOptions {
-  /** A filter tree (views/filterTree.ts), as a transport adapter receives it — validated here, never trusted. */
-  filter?: unknown;
+// ==== block: relationOps.ts ====
+import { assertSpeakerEdgeWritable, isTranscriptSpeakersProperty } from "../transcription/transcriptionSpeakerEdges.js";
+
+/** The normalized public shape of a stored edge — same fields as `relationsStore.ItemRelationRow`, named here to match the choke-point's own edge contract. */
+export type RelationEdge = ItemRelationRow;
+
+export interface CreateRelationInput {
+  relationPropertyId: string;
+  callerItemId: string;
+  targetItemId: string;
+  metadata?: Record<string, unknown>;
 }
 
-export interface CountItemsInput extends Pick<itemsStore.ListItemsOptions, "includeDeleted" | "buildFilterSql"> {
-  filter?: unknown;
+export interface UpdateRelationInput {
+  relationPropertyId: string;
+  callerItemId: string;
+  targetItemId: string;
+  metadata: Record<string, unknown>;
+}
+
+/** Rejects a dangling, soft-deleted, or wrong-database endpoint with `validation_failed` — PostgreSQL foreign keys cannot enforce this because `items` has a partitioned composite primary key. */
+async function assertRelationEndpointValid(
+  client: PoolClient,
+  databaseId: string,
+  itemId: string,
+  field: "callerItemId" | "targetItemId",
+): Promise<void> {
+  const item = await itemsStore.getItemById(client, databaseId, itemId);
+  if (!item || item.deletedAt) {
+    throw new ValidationError(
+      `Relation endpoint ${itemId} does not exist, is deleted, or is not in database ${databaseId}`,
+      { field },
+    );
+  }
+}
+
+async function assertRelationEndpointsValid(
+  client: PoolClient,
+  context: RelationEdgeContext,
+  callerItemId: string,
+  targetItemId: string,
+): Promise<void> {
+  await assertRelationEndpointValid(client, context.property.databaseId, callerItemId, "callerItemId");
+  await assertRelationEndpointValid(client, context.targetDatabaseId, targetItemId, "targetItemId");
+}
+
+/** Every check `createRelationWithClient` runs before its write, in the same order, so both raise the same canonical error for the same input. */
+async function loadCreatableRelationEdgeContext(
+  client: PoolClient,
+  input: DeleteRelationInput,
+  context: SystemRelationWriteContext | undefined,
+): Promise<RelationEdgeContext> {
+  const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
+  await assertRelationDatabasesNotArchived(client, edgeContext);
+  assertRelationPropertyWritable(edgeContext.property, context);
+  await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
+  return edgeContext;
 }
 
 /**
- * Resolves the one filter a read runs under. `filter` (a tree) and `buildFilterSql` (a raw
- * push-down hook) are two ways of saying the same thing, so a caller passing both is
- * rejected rather than having one of them silently dropped — combining them would also be a
- * guess about whether they were meant to be ANDed.
+ * Rejects edge metadata its relation gives a required shape to — today only the Transcripts
+ * `speakers` relation (issue #185), whose edges each map one speaker key of the transcript to one
+ * person. Runs on both add and metadata replace, so neither can leave a mapping the render path
+ * cannot read; removing an edge needs no metadata and is not checked here.
  */
-async function resolveFilterSql(
+async function assertRelationEdgeMetadataValid(
+  client: PoolClient,
+  edgeContext: RelationEdgeContext,
+  input: CreateRelationInput,
+): Promise<void> {
+  if (!(await isTranscriptSpeakersProperty(client, edgeContext.property))) return;
+  await assertSpeakerEdgeWritable(client, {
+    relationDefinitionId: edgeContext.reldef.id,
+    transcriptsDatabaseId: edgeContext.property.databaseId,
+    transcriptId: input.callerItemId,
+    personId: input.targetItemId,
+    metadata: input.metadata,
+  });
+}
+
+/**
+ * Rejects an edge `createRelationWithClient` would reject for authorization or integrity —
+ * `database_archived`, `owner_violation`, `validation_failed` (including its edge-metadata rules,
+ * issue #185) — without writing it (issue #184: a revised link-existing proposal is refused when
+ * it is made, not only when it is confirmed). Cardinality is not checked here: that is enforced by
+ * the write itself, at confirm time.
+ */
+export async function assertRelationCreatableWithClient(
+  client: PoolClient,
+  input: CreateRelationInput,
+  context?: SystemRelationWriteContext,
+): Promise<void> {
+  const edgeContext = await loadCreatableRelationEdgeContext(client, input, context);
+  await assertRelationEdgeMetadataValid(client, edgeContext, input);
+}
+
+/**
+ * The relation-linking logic, factored out for the same reason as `createItemWithClient` above.
+ * Idempotent on the normalized `(relationDefinitionId, itemA, itemB)` tuple: a repeat create
+ * replaces the entire metadata object (never merges), including back to `{}` when the caller
+ * omits it — `relationsStore.createItemRelation`'s `ON CONFLICT ... DO UPDATE` is what makes
+ * this atomic against a concurrent create of the same edge. `context` is never supplied by the
+ * public facade (see `createChokePoint`'s `createRelation` below) — only a protected internal
+ * caller passes one.
+ */
+export async function createRelationWithClient(
+  client: PoolClient,
+  input: CreateRelationInput,
+  context?: SystemRelationWriteContext,
+): Promise<RelationEdge> {
+  const edgeContext = await loadCreatableRelationEdgeContext(client, input, context);
+  await assertRelationEdgeMetadataValid(client, edgeContext, input);
+
+  const { itemA, itemB } = normalizeRelationSides(
+    edgeContext.reldef,
+    input.relationPropertyId,
+    input.callerItemId,
+    input.targetItemId,
+  );
+  const edge = await relationsStore.createItemRelation(client, {
+    relationDefinitionId: edgeContext.reldef.id,
+    itemA,
+    itemB,
+    metadata: input.metadata,
+  });
+  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
+  return edge;
+}
+
+/** The metadata-replacement counterpart to `createRelationWithClient`: requires an existing normalized edge (endpoints are immutable — moving one is delete plus create), and rejects a missing edge with a `404 not_found`. Same `context` contract as `createRelationWithClient`. */
+export async function updateRelationWithClient(
+  client: PoolClient,
+  input: UpdateRelationInput,
+  context?: SystemRelationWriteContext,
+): Promise<RelationEdge> {
+  const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
+  await assertRelationDatabasesNotArchived(client, edgeContext);
+  assertRelationPropertyWritable(edgeContext.property, context);
+  await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
+  await assertRelationEdgeMetadataValid(client, edgeContext, input);
+
+  const { itemA, itemB } = normalizeRelationSides(
+    edgeContext.reldef,
+    input.relationPropertyId,
+    input.callerItemId,
+    input.targetItemId,
+  );
+  const edge = await relationsStore.updateItemRelationMetadata(
+    client,
+    edgeContext.reldef.id,
+    itemA,
+    itemB,
+    input.metadata,
+  );
+  if (!edge) {
+    throw new NotFoundError(`Relation edge not found`, {
+      resource: "relationEdge",
+      relationPropertyId: input.relationPropertyId,
+      callerItemId: input.callerItemId,
+      targetItemId: input.targetItemId,
+    });
+  }
+  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
+  return edge;
+}
+
+export type DeleteRelationInput = Omit<CreateRelationInput, "metadata">;
+
+/**
+ * The relation-unlinking counterpart to `createRelationWithClient` above, factored out for the
+ * same reason (issue #26: the IMAP adapter's VANISHED/UID-diff handling removes a
+ * folder-membership edge inside its own larger sync transaction). Idempotent: returns
+ * regardless of whether the edge existed — deliberately skips `assertRelationEndpointsValid`
+ * (unlike create/update), because a real cleanup caller routinely deletes an edge *after* one
+ * of its endpoints was soft-deleted (`inboxTypesStore`'s `deleteInboxTypeWithClient`, and the
+ * Gmail/Graph/IMAP reconcilers dropping folder edges for an already-removed message) — endpoint
+ * validity only matters for creating or moving an edge, never for tearing one down. The
+ * normalized `(relationDefinitionId, itemA, itemB)` lookup in `deleteItemRelation` is safe
+ * regardless of endpoint state. Same `context` contract as `createRelationWithClient`.
+ */
+export async function deleteRelationWithClient(
+  client: PoolClient,
+  input: DeleteRelationInput,
+  context?: SystemRelationWriteContext,
+): Promise<RelationEdge | null> {
+  const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
+  await assertRelationDatabasesNotArchived(client, edgeContext);
+  assertRelationPropertyWritable(edgeContext.property, context);
+  const { itemA, itemB } = normalizeRelationSides(
+    edgeContext.reldef,
+    input.relationPropertyId,
+    input.callerItemId,
+    input.targetItemId,
+  );
+  const edge = await relationsStore.deleteItemRelation(client, edgeContext.reldef.id, itemA, itemB);
+  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
+  return edge;
+}
+
+// ==== block: itemWrites.ts ====
+import { assertValidTimezone } from "../timezone.js";
+import { getSystemSettingsItemId } from "../systemSettings.js";
+import { deriveTaskTime } from "../tasks/deriveTaskTime.js";
+import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
+import { recordDesiredMailMessageFlags } from "../mail/mailMessageFlagSyncStore.js";
+
+interface AssertWritablePropertiesOptions {
+  /**
+   * Relaxes the owner:'system' rejection below, but only for the exact keys listed — the one
+   * narrow escape hatch for a trusted, code-defined system writer that is itself the module
+   * contract's declared owning process for those specific fields (e.g. Journal's lazy item
+   * creation is the owning process for exactly `name`/`type`/`period`, see
+   * journal/journalStore.ts). Scoped per-key, not a blanket bypass, so a caller can't
+   * accidentally (or a future caller couldn't deliberately) use it to write a *different*
+   * database's system-owned field it was never granted. Never set from a request-handling path.
+   */
+  allowedSystemKeys?: readonly string[];
+  /** The identity of a trusted in-process system writer, required to match each system field it writes. */
+  systemOwnerProcess?: string;
+}
+
+/** Keys the generic write path never accepts: relation values live only in item_relations, and computed is internal-only. */
+function assertWritableProperties(
+  properties: PropertyRow[],
+  patchKeys: string[],
+  options: AssertWritablePropertiesOptions = {},
+): void {
+  const byKey = new Map(properties.map((p) => [p.key, p]));
+  for (const key of patchKeys) {
+    const property = byKey.get(key);
+    if (!property) {
+      throw new ValidationError(`Unknown property key '${key}'`, { field: key });
+    }
+    if (property.type === "rollup") {
+      // Rollup values live in items.computed, written only by the recompute worker —
+      // matches the issue's "the generic update path refuses this field — computed_readonly, 403".
+      throw new ForbiddenError(
+        `Property '${key}' is a rollup; its value lives in computed and is read-only here`,
+        { field: key },
+        "computed_readonly",
+      );
+    }
+    if (property.type === "relation") {
+      throw new ValidationError(
+        `Property '${key}' is a relation; write it via createRelation/deleteRelation, not item properties`,
+        {
+          field: key,
+        },
+      );
+    }
+    if (property.owner === "system") {
+      if (!options.allowedSystemKeys?.includes(key)) {
+        throw new ForbiddenError(`Property '${key}' is owned by 'system' and cannot be written by this caller`, {
+          field: key,
+        });
+      }
+      if (options.systemOwnerProcess && property.ownerProcess !== options.systemOwnerProcess) {
+        throw new ForbiddenError(
+          `Property '${key}' is not owned by this system process`,
+          { field: key },
+          "owner_violation",
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Item creation's own archived-database guard: unlike every other mutation, a create must let
+ * through the one no-write exception the issue carves out — a replay of an idempotency key
+ * that already committed a row before the database was archived returns that existing row
+ * instead of failing, so a retried request doesn't turn a transient error into a permanent
+ * failure. A new key, or a key reserved for this database whose row is somehow missing (see
+ * the same defensive branch in `itemsStore.insertItem`), still gets `database_archived` — only
+ * an exact, already-satisfied replay is spared. Returns the replay row to return verbatim (no
+ * further writes or event emission), or `null` when the database isn't archived at all.
+ */
+async function assertDatabaseWritableForCreate(
   client: PoolClient,
   databaseId: string,
-  options: { filter?: unknown; buildFilterSql?: (params: unknown[]) => string | undefined },
-): Promise<((params: unknown[]) => string | undefined) | undefined> {
-  if (options.filter === undefined) return options.buildFilterSql;
-  if (options.buildFilterSql) {
-    throw new ValidationError("Pass either 'filter' or 'buildFilterSql', not both", { field: "filter" });
+  idempotencyKey: string | undefined,
+): Promise<ItemRow | null> {
+  const database = await databasesStore.getDatabase(client, databaseId);
+  if (!database) throw new NotFoundError(`Database ${databaseId} not found`);
+  if (!database.archivedAt) return null;
+
+  if (idempotencyKey) {
+    const replay = await itemsStore.findIdempotentReplay(client, databaseId, idempotencyKey);
+    if (replay) return replay;
   }
-  return buildFilterSqlForDatabase(client, databaseId, options.filter);
+  throw new ForbiddenError(
+    `Database ${databaseId} is archived and cannot be written to`,
+    { field: "databaseId" },
+    "database_archived",
+  );
 }
 
 export interface CreateItemWithClientOptions extends AssertWritablePropertiesOptions {
@@ -700,343 +1142,7 @@ export async function updateItemWithClient(
   return item;
 }
 
-/** The normalized public shape of a stored edge — same fields as `relationsStore.ItemRelationRow`, named here to match the choke-point's own edge contract. */
-export type RelationEdge = ItemRelationRow;
-
-export interface CreateRelationInput {
-  relationPropertyId: string;
-  callerItemId: string;
-  targetItemId: string;
-  metadata?: Record<string, unknown>;
-}
-
-export interface UpdateRelationInput {
-  relationPropertyId: string;
-  callerItemId: string;
-  targetItemId: string;
-  metadata: Record<string, unknown>;
-}
-
-interface RelationEdgeContext {
-  reldef: RelationDefinitionRow;
-  property: PropertyRow;
-  targetDatabaseId: string;
-}
-
-/**
- * Loads the relation property named by an edge input and normalizes it against its relation
- * definition. `relationPropertyId` always identifies the caller's own side of the definition;
- * its `config.relationDefinitionId`/`config.targetDatabaseId` are the only source of truth for
- * which definition and target database an edge call resolves against — a property whose config
- * lacks either is a data inconsistency (a relation property is never usable before
- * `createRelationPropertyWithClient` fills in both), not a case to infer around.
- */
-async function loadRelationEdgeContext(client: PoolClient, relationPropertyId: string): Promise<RelationEdgeContext> {
-  const property = await propertiesStore.getProperty(client, relationPropertyId);
-  if (!property || property.type !== "relation") {
-    throw new ValidationError(`${relationPropertyId} is not a relation property`, { field: "relationPropertyId" });
-  }
-  const config = property.config as { relationDefinitionId?: unknown; targetDatabaseId?: unknown };
-  if (typeof config.relationDefinitionId !== "string" || typeof config.targetDatabaseId !== "string") {
-    throw new ValidationError(
-      `Relation property ${relationPropertyId} is missing a valid relationDefinitionId/targetDatabaseId`,
-      {
-        field: "relationPropertyId",
-      },
-    );
-  }
-  const reldef = await relationsStore.getRelationDefinition(client, config.relationDefinitionId);
-  if (!reldef || (reldef.propertyIdA !== relationPropertyId && reldef.propertyIdB !== relationPropertyId)) {
-    throw new ValidationError(`Relation property ${relationPropertyId} has no matching relation definition`, {
-      field: "relationPropertyId",
-    });
-  }
-  return { reldef, property, targetDatabaseId: config.targetDatabaseId };
-}
-
-/** Normalizes a caller/target pair to the stored item A / item B tuple for the definition's own side. */
-function normalizeRelationSides(
-  reldef: RelationDefinitionRow,
-  relationPropertyId: string,
-  callerItemId: string,
-  targetItemId: string,
-): { itemA: string; itemB: string } {
-  const isSideA = reldef.propertyIdA === relationPropertyId;
-  return isSideA ? { itemA: callerItemId, itemB: targetItemId } : { itemA: targetItemId, itemB: callerItemId };
-}
-
-/** Rejects a dangling, soft-deleted, or wrong-database endpoint with `validation_failed` — PostgreSQL foreign keys cannot enforce this because `items` has a partitioned composite primary key. */
-async function assertRelationEndpointValid(
-  client: PoolClient,
-  databaseId: string,
-  itemId: string,
-  field: "callerItemId" | "targetItemId",
-): Promise<void> {
-  const item = await itemsStore.getItemById(client, databaseId, itemId);
-  if (!item || item.deletedAt) {
-    throw new ValidationError(
-      `Relation endpoint ${itemId} does not exist, is deleted, or is not in database ${databaseId}`,
-      { field },
-    );
-  }
-}
-
-async function assertRelationEndpointsValid(
-  client: PoolClient,
-  context: RelationEdgeContext,
-  callerItemId: string,
-  targetItemId: string,
-): Promise<void> {
-  await assertRelationEndpointValid(client, context.property.databaseId, callerItemId, "callerItemId");
-  await assertRelationEndpointValid(client, context.targetDatabaseId, targetItemId, "targetItemId");
-}
-
-/**
- * Authorizes an edge write against the exact property named by `relationPropertyId` — a
- * paired definition's two sides may have different owners, and only the side the caller
- * named governs this particular call. A public caller (no context) is rejected outright when
- * that side is `owner: 'system'`; a protected system caller is rejected unless its
- * `context.ownerProcess` matches the property's declared `owner_process` exactly.
- */
-function assertRelationPropertyWritable(property: PropertyRow, context: SystemRelationWriteContext | undefined): void {
-  if (property.owner !== "system") return;
-  if (!context || context.ownerProcess !== property.ownerProcess) {
-    throw new ForbiddenError(
-      `Relation property ${property.id} is owned by 'system' and cannot be written by this caller`,
-      { field: "relationPropertyId" },
-      "owner_violation",
-    );
-  }
-}
-
-/** Every check `createRelationWithClient` runs before its write, in the same order, so both raise the same canonical error for the same input. */
-async function loadCreatableRelationEdgeContext(
-  client: PoolClient,
-  input: DeleteRelationInput,
-  context: SystemRelationWriteContext | undefined,
-): Promise<RelationEdgeContext> {
-  const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
-  await assertRelationDatabasesNotArchived(client, edgeContext);
-  assertRelationPropertyWritable(edgeContext.property, context);
-  await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
-  return edgeContext;
-}
-
-/**
- * Rejects edge metadata its relation gives a required shape to — today only the Transcripts
- * `speakers` relation (issue #185), whose edges each map one speaker key of the transcript to one
- * person. Runs on both add and metadata replace, so neither can leave a mapping the render path
- * cannot read; removing an edge needs no metadata and is not checked here.
- */
-async function assertRelationEdgeMetadataValid(
-  client: PoolClient,
-  edgeContext: RelationEdgeContext,
-  input: CreateRelationInput,
-): Promise<void> {
-  if (!(await isTranscriptSpeakersProperty(client, edgeContext.property))) return;
-  await assertSpeakerEdgeWritable(client, {
-    relationDefinitionId: edgeContext.reldef.id,
-    transcriptsDatabaseId: edgeContext.property.databaseId,
-    transcriptId: input.callerItemId,
-    personId: input.targetItemId,
-    metadata: input.metadata,
-  });
-}
-
-/**
- * Rejects an edge `createRelationWithClient` would reject for authorization or integrity —
- * `database_archived`, `owner_violation`, `validation_failed` (including its edge-metadata rules,
- * issue #185) — without writing it (issue #184: a revised link-existing proposal is refused when
- * it is made, not only when it is confirmed). Cardinality is not checked here: that is enforced by
- * the write itself, at confirm time.
- */
-export async function assertRelationCreatableWithClient(
-  client: PoolClient,
-  input: CreateRelationInput,
-  context?: SystemRelationWriteContext,
-): Promise<void> {
-  const edgeContext = await loadCreatableRelationEdgeContext(client, input, context);
-  await assertRelationEdgeMetadataValid(client, edgeContext, input);
-}
-
-/**
- * The relation-linking logic, factored out for the same reason as `createItemWithClient` above.
- * Idempotent on the normalized `(relationDefinitionId, itemA, itemB)` tuple: a repeat create
- * replaces the entire metadata object (never merges), including back to `{}` when the caller
- * omits it — `relationsStore.createItemRelation`'s `ON CONFLICT ... DO UPDATE` is what makes
- * this atomic against a concurrent create of the same edge. `context` is never supplied by the
- * public facade (see `createChokePoint`'s `createRelation` below) — only a protected internal
- * caller passes one.
- */
-export async function createRelationWithClient(
-  client: PoolClient,
-  input: CreateRelationInput,
-  context?: SystemRelationWriteContext,
-): Promise<RelationEdge> {
-  const edgeContext = await loadCreatableRelationEdgeContext(client, input, context);
-  await assertRelationEdgeMetadataValid(client, edgeContext, input);
-
-  const { itemA, itemB } = normalizeRelationSides(
-    edgeContext.reldef,
-    input.relationPropertyId,
-    input.callerItemId,
-    input.targetItemId,
-  );
-  const edge = await relationsStore.createItemRelation(client, {
-    relationDefinitionId: edgeContext.reldef.id,
-    itemA,
-    itemB,
-    metadata: input.metadata,
-  });
-  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
-  return edge;
-}
-
-/** The metadata-replacement counterpart to `createRelationWithClient`: requires an existing normalized edge (endpoints are immutable — moving one is delete plus create), and rejects a missing edge with a `404 not_found`. Same `context` contract as `createRelationWithClient`. */
-export async function updateRelationWithClient(
-  client: PoolClient,
-  input: UpdateRelationInput,
-  context?: SystemRelationWriteContext,
-): Promise<RelationEdge> {
-  const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
-  await assertRelationDatabasesNotArchived(client, edgeContext);
-  assertRelationPropertyWritable(edgeContext.property, context);
-  await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
-  await assertRelationEdgeMetadataValid(client, edgeContext, input);
-
-  const { itemA, itemB } = normalizeRelationSides(
-    edgeContext.reldef,
-    input.relationPropertyId,
-    input.callerItemId,
-    input.targetItemId,
-  );
-  const edge = await relationsStore.updateItemRelationMetadata(
-    client,
-    edgeContext.reldef.id,
-    itemA,
-    itemB,
-    input.metadata,
-  );
-  if (!edge) {
-    throw new NotFoundError(`Relation edge not found`, {
-      resource: "relationEdge",
-      relationPropertyId: input.relationPropertyId,
-      callerItemId: input.callerItemId,
-      targetItemId: input.targetItemId,
-    });
-  }
-  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
-  return edge;
-}
-
-export type DeleteRelationInput = Omit<CreateRelationInput, "metadata">;
-
-/**
- * The relation-unlinking counterpart to `createRelationWithClient` above, factored out for the
- * same reason (issue #26: the IMAP adapter's VANISHED/UID-diff handling removes a
- * folder-membership edge inside its own larger sync transaction). Idempotent: returns
- * regardless of whether the edge existed — deliberately skips `assertRelationEndpointsValid`
- * (unlike create/update), because a real cleanup caller routinely deletes an edge *after* one
- * of its endpoints was soft-deleted (`inboxTypesStore`'s `deleteInboxTypeWithClient`, and the
- * Gmail/Graph/IMAP reconcilers dropping folder edges for an already-removed message) — endpoint
- * validity only matters for creating or moving an edge, never for tearing one down. The
- * normalized `(relationDefinitionId, itemA, itemB)` lookup in `deleteItemRelation` is safe
- * regardless of endpoint state. Same `context` contract as `createRelationWithClient`.
- */
-export async function deleteRelationWithClient(
-  client: PoolClient,
-  input: DeleteRelationInput,
-  context?: SystemRelationWriteContext,
-): Promise<RelationEdge | null> {
-  const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
-  await assertRelationDatabasesNotArchived(client, edgeContext);
-  assertRelationPropertyWritable(edgeContext.property, context);
-  const { itemA, itemB } = normalizeRelationSides(
-    edgeContext.reldef,
-    input.relationPropertyId,
-    input.callerItemId,
-    input.targetItemId,
-  );
-  const edge = await relationsStore.deleteItemRelation(client, edgeContext.reldef.id, itemA, itemB);
-  await enqueueRollupRecomputeForEdge(client, { relationDefinitionId: edgeContext.reldef.id, itemA, itemB });
-  return edge;
-}
-
-/**
- * Transaction-scoped counterpart to `chokePoint.archiveDatabase` (issue #89): `databasesStore.archiveDatabase`
- * already takes a `client` rather than opening its own transaction, so this is a thin named alias —
- * kept alongside the other four `*WithClient` exports so `ApprovedOperationExecutor` has one uniform
- * naming convention to call the destructive half of each of the five approval-gated operations.
- */
-export async function databaseArchiveWithClient(
-  client: PoolClient,
-  id: string,
-  actingUserId?: string,
-): Promise<DatabaseRow> {
-  const database = await databasesStore.archiveDatabase(client, id);
-  runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }));
-  return database;
-}
-
-/**
- * Transaction-scoped counterpart to `chokePoint.deleteProperty` (issue #89), factored out so
- * `ApprovedOperationExecutor` can run it against the same locked transaction as its own
- * revalidation instead of `chokePoint.deleteProperty` opening a second, independent one.
- */
-export async function propertyDeleteWithClient(
-  client: PoolClient,
-  id: string,
-  actingUserId?: string,
-): Promise<PropertyRow> {
-  const property = await propertiesStore.getProperty(client, id);
-  if (!property) throw new NotFoundError(`Property ${id} not found`);
-
-  const invalidatedDatabaseIds = new Set([property.databaseId]);
-  if (property.type === "relation") {
-    const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, id);
-    if (reldef) {
-      await assertRelationDeletable(client, reldef.id);
-      const otherPropertyId = reldef.propertyIdA === id ? reldef.propertyIdB : reldef.propertyIdA;
-      if (otherPropertyId) {
-        const otherProperty = await propertiesStore.getProperty(client, otherPropertyId);
-        if (otherProperty?.locked) {
-          throw new ForbiddenError(`Cannot delete: the paired relation property ${otherPropertyId} is locked`);
-        }
-        if (otherProperty) invalidatedDatabaseIds.add(otherProperty.databaseId);
-        await propertiesStore.deleteProperty(client, otherPropertyId);
-      }
-    }
-  }
-  await propertiesStore.deleteProperty(client, id);
-  runAfterCommit(client, () => {
-    for (const databaseId of invalidatedDatabaseIds)
-      notifyInvalidation({ scope: "schema", databaseId, userId: actingUserId });
-  });
-  return property;
-}
-
-/**
- * Transaction-scoped counterpart to `chokePoint.deleteView` (issue #89), factored out for the
- * same reason as `propertyDeleteWithClient` above.
- */
-export async function viewDeleteWithClient(
-  client: PoolClient,
-  id: string,
-  actor: Actor,
-  actingUserId?: string,
-): Promise<ViewRow> {
-  await assertAuthenticatedAgentIdentity(client, actor);
-  const view = await viewsStore.getView(client, id);
-  if (!view) throw new NotFoundError(`View ${id} not found`);
-  assertViewWritable(view, actor);
-  await viewsStore.deleteView(client, id);
-  if (view.databaseId !== null) {
-    const databaseId = view.databaseId;
-    runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId, userId: actingUserId }));
-  }
-  return view;
-}
-
+// ==== block: itemTrash.ts ====
 /**
  * Transaction-scoped counterpart to `chokePoint.softDeleteItem` (issue #89), factored out for the
  * same reason as `propertyDeleteWithClient` above. Runs the identical subtree cascade, including
@@ -1082,6 +1188,45 @@ export async function itemDeleteWithClient(
   }
   return rootResult;
 }
+
+/**
+ * Walks down from an already-fetched page item to every row nested underneath it — the inline
+ * databases it owns directly (`databases.parent_item_id = itemId`), every item in each of those,
+ * and recursively whatever inline databases *those* items own in turn — so delete/restore (issue
+ * #156) can act on the whole subtree in one transaction instead of just the one row named by the
+ * caller. Root-first order, BFS by level, root included as given (its `deletedAt` reflects the
+ * state the caller read it in, before this transaction's own writes). Guards against a
+ * `parent_item_id` cycle the same way `getItemPath` guards against one in the opposite direction:
+ * tracking every database id already walked and refusing to walk it twice, so a corrupted loop
+ * stops the traversal instead of hanging it.
+ */
+async function collectItemSubtree(client: PoolClient, root: ItemRow): Promise<ItemRow[]> {
+  const subtree: ItemRow[] = [root];
+  const visitedDatabaseIds = new Set<string>();
+  let frontier = [root.id];
+
+  while (frontier.length > 0) {
+    const nextFrontier: string[] = [];
+    for (const parentItemId of frontier) {
+      const childDatabases = await databasesStore.listDatabasesByParentItem(client, parentItemId);
+      for (const database of childDatabases) {
+        if (visitedDatabaseIds.has(database.id)) continue;
+        visitedDatabaseIds.add(database.id);
+        const rows = await itemsStore.getAllItemsInDatabase(client, database.id);
+        for (const row of rows) {
+          subtree.push(row);
+          nextFrontier.push(row.id);
+        }
+      }
+    }
+    frontier = nextFrontier;
+  }
+  return subtree;
+}
+
+// ==== block: destructiveProjection.ts ====
+import { createHash } from "node:crypto";
+import { canonicalizeJson } from "@semprec/shared";
 
 /** The five approval-gated destructive kinds a `resource_snapshot` can carry (issue #89). */
 export type ResourceSnapshotKind =
@@ -1252,90 +1397,7 @@ export async function computeDestructiveResourceProjection(
   }
 }
 
-/**
- * The config-update logic shared by `chokePoint.updatePropertyConfig` and `chokePoint.updateProperty`
- * (issue #240), factored out so `updateProperty` can run it against the same client/transaction as
- * a sibling rename/type-change instead of opening its own.
- */
-async function updatePropertyConfigWithClient(
-  client: PoolClient,
-  id: string,
-  config: Record<string, unknown>,
-): Promise<PropertyRow> {
-  const property = await propertiesStore.updatePropertyConfig(client, id, config);
-  if (property.type === "rollup") {
-    await applyRollupConfig(client, property);
-    await enqueueRollupBackfill(client, property.id);
-  }
-  return property;
-}
-
-/**
- * The type-change logic shared by `chokePoint.changePropertyType` and `chokePoint.updateProperty`
- * (issue #240), factored out for the same reason as `updatePropertyConfigWithClient` above.
- */
-async function changePropertyTypeWithClient(
-  client: PoolClient,
-  id: string,
-  newType: PropertyType,
-): Promise<PropertyRow> {
-  const property = await propertiesStore.getProperty(client, id);
-  if (!property) throw new ValidationError(`Property ${id} not found`);
-  const oldType = property.type;
-  if (oldType === newType) return property;
-
-  if ([oldType, newType].includes("relation") || [oldType, newType].includes("rollup")) {
-    throw new ValidationError("Retyping into or out of 'relation'/'rollup' is not supported via changePropertyType", {
-      field: "type",
-    });
-  }
-  await assertSourceRetypeAllowed(client, property.databaseId, property.key, newType);
-  if (!isConversionSupported(oldType, newType)) {
-    throw new ValidationError(`No conversion path from '${oldType}' to '${newType}'; create a new property instead`, {
-      field: "type",
-    });
-  }
-
-  const updated = await propertiesStore.changePropertyType(client, id, newType, "pending");
-  await enqueuePropertyTypeMigration(client, id, oldType);
-  return updated;
-}
-
-/**
- * Walks down from an already-fetched page item to every row nested underneath it — the inline
- * databases it owns directly (`databases.parent_item_id = itemId`), every item in each of those,
- * and recursively whatever inline databases *those* items own in turn — so delete/restore (issue
- * #156) can act on the whole subtree in one transaction instead of just the one row named by the
- * caller. Root-first order, BFS by level, root included as given (its `deletedAt` reflects the
- * state the caller read it in, before this transaction's own writes). Guards against a
- * `parent_item_id` cycle the same way `getItemPath` guards against one in the opposite direction:
- * tracking every database id already walked and refusing to walk it twice, so a corrupted loop
- * stops the traversal instead of hanging it.
- */
-async function collectItemSubtree(client: PoolClient, root: ItemRow): Promise<ItemRow[]> {
-  const subtree: ItemRow[] = [root];
-  const visitedDatabaseIds = new Set<string>();
-  let frontier = [root.id];
-
-  while (frontier.length > 0) {
-    const nextFrontier: string[] = [];
-    for (const parentItemId of frontier) {
-      const childDatabases = await databasesStore.listDatabasesByParentItem(client, parentItemId);
-      for (const database of childDatabases) {
-        if (visitedDatabaseIds.has(database.id)) continue;
-        visitedDatabaseIds.add(database.id);
-        const rows = await itemsStore.getAllItemsInDatabase(client, database.id);
-        for (const row of rows) {
-          subtree.push(row);
-          nextFrontier.push(row.id);
-        }
-      }
-    }
-    frontier = nextFrontier;
-  }
-  return subtree;
-}
-
+// ==== block: chokePoint.ts ====
 export function createChokePoint(
   pool: Pool,
   computedKeyRegistry: ComputedKeyRegistry = createComputedKeyRegistry(),
@@ -1960,41 +2022,6 @@ export function createChokePoint(
       return withTransaction(pool, (client) => viewQuery.queryViewItems(client, viewId, input));
     },
   };
-}
-
-async function applyRollupConfig(client: PoolClient, property: PropertyRow): Promise<void> {
-  const sameDatabaseProperties = await propertiesStore.listPropertiesByDatabase(client, property.databaseId);
-  const relationProperty = sameDatabaseProperties.find(
-    (p) => p.key === (property.config as { relationPropertyKey?: string }).relationPropertyKey,
-  );
-  const targetDatabaseId = relationProperty
-    ? (relationProperty.config as { targetDatabaseId?: string }).targetDatabaseId
-    : undefined;
-  const targetDatabaseProperties = targetDatabaseId
-    ? await propertiesStore.listPropertiesByDatabase(client, targetDatabaseId)
-    : [];
-
-  const validated = validateRollupConfig(property.config, sameDatabaseProperties, targetDatabaseProperties);
-  const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, validated.relationProperty.id);
-  if (!reldef) {
-    throw new ValidationError(`Relation property '${validated.relationProperty.key}' has no relation definition`, {
-      field: "relationPropertyKey",
-    });
-  }
-  if (!targetDatabaseId) {
-    // Should be unreachable once validateRollupConfig has passed (a relation property
-    // always carries a target database) — guarded explicitly so a data inconsistency
-    // surfaces as this message instead of a NOT NULL constraint violation on
-    // rollup_dependencies.source_database_id.
-    throw new ValidationError("Relation property has no targetDatabaseId in config", { field: "relationPropertyKey" });
-  }
-
-  await upsertRollupDependency(client, {
-    rollupPropertyId: property.id,
-    relationDefinitionId: reldef.id,
-    sourceDatabaseId: targetDatabaseId,
-    sourcePropertyKey: validated.targetProperty?.key ?? null,
-  });
 }
 
 export type ChokePoint = ReturnType<typeof createChokePoint>;
