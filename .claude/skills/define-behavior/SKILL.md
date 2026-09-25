@@ -126,9 +126,11 @@ in the spec, go back to the user — do not fill it silently.
    "Behavior, not technology" above), name it explicitly in the Task of the
    issue that introduces it: that issue must add an ADR under `docs/adr/`
    (format in `docs/adr/README.md`) alongside the implementation.
-6. Write the epic per the same document: approved spec, a `## Decisions` section
-   preserving the grilling Q&A (question → adopted answer → reason — the
-   decision log would otherwise die with this conversation), and the checklist.
+6. Write the epic per the same document: approved spec and a `## Decisions`
+   section preserving the grilling Q&A (question → adopted answer → reason — the
+   decision log would otherwise die with this conversation). Do not list the
+   batch's issues in the epic body — they are tracked only as its GitHub
+   sub-issues (step 9).
 7. **Decomposition size gate — mechanical self-check, before anything is
    created.** For every drafted implementation issue (not the epic), group its
    acceptance criteria by which Task bullet each one verifies — the same
@@ -172,13 +174,13 @@ in the spec, go back to the user — do not fill it silently.
    where `<child-id>` is the child's numeric `id` (`gh api
    repos/dvdtrsnk/semprec/issues/<n> --jq .id`), not its issue number. This is
    what lets `.github/workflows/close-completed-epics.yml` close the epic once
-   the batch is done — a batch created without it never self-closes. Then do
-   one substitution pass: edit the epic checklist and any issue that used a
-   forward reference, replacing placeholders with real numbers. No `#TBD` may
-   survive — Relay only parses `#N`.
+   the batch is done — a batch created without it never self-closes — and it
+   is the epic's only list of its issues. Then do one substitution pass: edit
+   any issue that used a forward reference, replacing placeholders with real
+   numbers. No `#TBD` may survive — Relay only parses `#N`.
    **dry-run:** write epic + issues as separate files into the scratchpad
    directory, using `#TBD-NN` for in-batch references (real cross-batch
-   blockers keep their real `#N`). No gh calls, no labels.
+   blockers keep their real `#N`). No gh calls, no sub-issue links, no labels.
 
 ## Phase 5 — Bounded audit, then arm the pipeline
 
