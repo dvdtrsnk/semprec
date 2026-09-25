@@ -218,6 +218,11 @@ export function createViewOps(deps: Pick<ChokePointDeps, "pool" | "viewTypeRegis
         await assertAuthenticatedAgentIdentity(client, input.actor);
         const view = await viewsStore.getView(client, input.viewId);
         if (!view) throw new NotFoundError(`View ${input.viewId} not found`);
+        if (view.databaseId !== null) {
+          throw new ValidationError("Only a curated view (databaseId = null) accepts view_items membership", {
+            field: "viewId",
+          });
+        }
         assertViewWritable(view, input.actor);
         await adoptIfUserWrite(client, view, input.actor, viewTypeRegistry);
         return viewItemsStore.reorderViewItem(client, input.viewId, input.itemId, input.position);
