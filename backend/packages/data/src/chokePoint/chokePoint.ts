@@ -118,12 +118,7 @@ function assertViewWritable(view: ViewRow, actor: Actor): void {
 import { assertDatabaseNotArchived } from "./databaseGuards.js";
 
 // ==== block: computedKeyRegistry.ts ====
-/** `items.computed` is a shared namespace between rollup values and declared module cache keys — see computedKeyRegistry.ts. */
-function assertNoComputedKeyCollision(registry: ComputedKeyRegistry, key: string): void {
-  if (registry.has(key)) {
-    throw new ValidationError(`Property key '${key}' collides with a declared module cache key`, { field: key });
-  }
-}
+import { assertNoComputedKeyCollision } from "./computedKeyRegistry.js";
 
 // ==== block: rollup/recompute.ts ====
 async function resolveRollupRecomputeTargets(
