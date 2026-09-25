@@ -115,6 +115,73 @@ describe("purgeExpiredTrash (issue #156)", () => {
     expect(leafRows).toHaveLength(1);
   });
 
+  describe("chokePoint.purgeExpiredTrashSubtree", () => {
+    const retentionCutoff = () => new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    it("purges a subtree whose rows were all trashed before the cutoff entirely", async () => {
+      const rootDb = await makeMoviesDb();
+      const rootItem = await chokePoint.createItem({ databaseId: rootDb.id, properties: {} });
+      const midDb = await chokePoint.createInlineDatabase({ name: "Mid", parentItemId: rootItem.id });
+      const midItem = await chokePoint.createItem({ databaseId: midDb.id, properties: {} });
+      const leafDb = await chokePoint.createInlineDatabase({ name: "Leaf", parentItemId: midItem.id });
+      const leafItem = await chokePoint.createItem({ databaseId: leafDb.id, properties: {} });
+      await chokePoint.softDeleteItem(rootDb.id, rootItem.id);
+      for (const id of [rootItem.id, midItem.id, leafItem.id]) await ageDeletion(id, 31);
+
+      const purgedIds = await chokePoint.purgeExpiredTrashSubtree(rootItem.id, retentionCutoff());
+
+      expect([...purgedIds].sort()).toEqual([rootItem.id, midItem.id, leafItem.id].sort());
+      const { rows } = await pool.query("SELECT id FROM items WHERE id = ANY($1)", [
+        [rootItem.id, midItem.id, leafItem.id],
+      ]);
+      expect(rows).toHaveLength(0);
+    });
+
+    it("keeps a nested live row and a nested too-fresh row with everything under them, purging their eligible sibling", async () => {
+      const rootDb = await makeMoviesDb();
+      const rootItem = await chokePoint.createItem({ databaseId: rootDb.id, properties: {} });
+      const midDb = await chokePoint.createInlineDatabase({ name: "Mid", parentItemId: rootItem.id });
+      const eligibleItem = await chokePoint.createItem({ databaseId: midDb.id, properties: {} });
+      const freshItem = await chokePoint.createItem({ databaseId: midDb.id, properties: {} });
+      const liveItem = await chokePoint.createItem({ databaseId: midDb.id, properties: {} });
+      const freshLeafDb = await chokePoint.createInlineDatabase({ name: "FreshLeaf", parentItemId: freshItem.id });
+      const freshLeaf = await chokePoint.createItem({ databaseId: freshLeafDb.id, properties: {} });
+      const liveLeafDb = await chokePoint.createInlineDatabase({ name: "LiveLeaf", parentItemId: liveItem.id });
+      const liveLeaf = await chokePoint.createItem({ databaseId: liveLeafDb.id, properties: {} });
+
+      await chokePoint.softDeleteItem(rootDb.id, rootItem.id);
+      for (const id of [rootItem.id, eligibleItem.id, freshLeaf.id]) await ageDeletion(id, 31);
+      await ageDeletion(freshItem.id, 5);
+      // Restoring liveItem cascades to its leaf, leaving both live under an expired root.
+      const restored = await chokePoint.restoreItem(midDb.id, liveItem.id);
+      expect(restored?.deletedAt).toBeNull();
+
+      const purgedIds = await chokePoint.purgeExpiredTrashSubtree(rootItem.id, retentionCutoff());
+
+      expect([...purgedIds].sort()).toEqual([rootItem.id, eligibleItem.id].sort());
+      const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE id = ANY($1)", [
+        [freshItem.id, freshLeaf.id, liveItem.id, liveLeaf.id],
+      ]);
+      expect(rows.map((row) => row.id).sort()).toEqual([freshItem.id, freshLeaf.id, liveItem.id, liveLeaf.id].sort());
+    });
+
+    it("terminates on a parent_item_id cycle", async () => {
+      const rootDb = await makeMoviesDb();
+      const rootItem = await chokePoint.createItem({ databaseId: rootDb.id, properties: {} });
+      const midDb = await chokePoint.createInlineDatabase({ name: "Mid", parentItemId: rootItem.id });
+      const midItem = await chokePoint.createItem({ databaseId: midDb.id, properties: {} });
+      await chokePoint.softDeleteItem(rootDb.id, rootItem.id);
+      await ageDeletion(rootItem.id, 31);
+      await ageDeletion(midItem.id, 31);
+      // Corrupt the tree into a loop: the root's own database now hangs under its descendant.
+      await pool.query("UPDATE databases SET parent_item_id = $1 WHERE id = $2", [midItem.id, rootDb.id]);
+
+      const purgedIds = await chokePoint.purgeExpiredTrashSubtree(rootItem.id, retentionCutoff());
+
+      expect([...purgedIds].sort()).toEqual([rootItem.id, midItem.id].sort());
+    });
+  });
+
   it("never hard-deletes an eligible item whose database has since been archived, leaving it for a future run", async () => {
     const db = await makeMoviesDb();
     const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
