@@ -2,7 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
-import type { ItemRow, PropertyRow, PropertyType } from "../types.js";
+import type { PropertyRow, PropertyType } from "../types.js";
 import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as itemsStore from "./itemsStore.js";
@@ -10,7 +10,6 @@ import * as relationsStore from "./relationsStore.js";
 import * as viewsStore from "./viewsStore.js";
 import { enqueueRollupBackfill } from "../rollup/recompute.js";
 import { assertRelationDeletable, assertSourceRetypeAllowed } from "../rollup/mirror.js";
-import { triggerOnItemEventHeartbeats } from "../scheduler/schedulerStore.js";
 import { createActionQueueAffinity, type ActionQueueAffinity } from "../scheduler/actions.js";
 import { createComputedKeyRegistry, type ComputedKeyRegistry } from "./computedKeyRegistry.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "./viewTypeRegistry.js";
@@ -25,13 +24,11 @@ import { assertViewWritable, type Actor } from "./authorization.js";
 export type { Actor } from "./authorization.js";
 
 // ==== block: databaseGuards.ts ====
-import { assertDatabaseNotArchived } from "./databaseGuards.js";
 
 // ==== block: computedKeyRegistry.ts ====
 import { assertNoComputedKeyCollision } from "./computedKeyRegistry.js";
 
 // ==== block: rollup/recompute.ts ====
-import { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
 export { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
 
 // ==== block: rollup/config.ts ====
