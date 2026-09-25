@@ -4,7 +4,6 @@ import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as itemsStore from "./itemsStore.js";
 import * as relationsStore from "./relationsStore.js";
-import * as viewsStore from "./viewsStore.js";
 import { assertRelationDeletable } from "../rollup/mirror.js";
 import { createActionQueueAffinity, type ActionQueueAffinity } from "../scheduler/actions.js";
 import { createComputedKeyRegistry, type ComputedKeyRegistry } from "./computedKeyRegistry.js";
@@ -16,7 +15,6 @@ import { mergeOps } from "./mergeOps.js";
 // future module's declarations into one contiguous block. The blocks and markers are removed by #528.
 
 // ==== block: authorization.ts ====
-import { assertViewWritable, type Actor } from "./authorization.js";
 export type { Actor } from "./authorization.js";
 
 // ==== block: databaseGuards.ts ====
