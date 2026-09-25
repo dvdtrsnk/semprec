@@ -18,11 +18,7 @@ import * as relationsStore from "./relationsStore.js";
 import * as viewsStore from "./viewsStore.js";
 import * as viewItemsStore from "./viewItemsStore.js";
 import * as viewQuery from "../views/viewQuery.js";
-import {
-  findDependenciesByRelationDefinition,
-  findDependenciesBySource,
-  upsertRollupDependency,
-} from "../rollup/dependencies.js";
+import { findDependenciesBySource, upsertRollupDependency } from "../rollup/dependencies.js";
 import { enqueueRollupBackfill, enqueueRollupRecompute } from "../rollup/recompute.js";
 import { assertRelationDeletable, assertSourceRetypeAllowed } from "../rollup/mirror.js";
 import { triggerOnItemEventHeartbeats, recomputeAllForTimezoneChange } from "../scheduler/schedulerStore.js";
@@ -47,40 +43,8 @@ import { assertDatabaseNotArchived } from "./databaseGuards.js";
 import { assertNoComputedKeyCollision } from "./computedKeyRegistry.js";
 
 // ==== block: rollup/recompute.ts ====
-async function resolveRollupRecomputeTargets(
-  client: PoolClient,
-  relationDefinitionId: string,
-  itemA: string,
-  itemB: string,
-): Promise<Array<{ rollupPropertyId: string; itemId: string }>> {
-  const dependencies = await findDependenciesByRelationDefinition(client, relationDefinitionId);
-  if (dependencies.length === 0) return [];
-
-  const reldef = await relationsStore.getRelationDefinition(client, relationDefinitionId);
-  if (!reldef) return [];
-  const propertyA = await propertiesStore.getProperty(client, reldef.propertyIdA);
-  if (!propertyA) return [];
-
-  const targets: Array<{ rollupPropertyId: string; itemId: string }> = [];
-  for (const dependency of dependencies) {
-    const rollupProperty = await propertiesStore.getProperty(client, dependency.rollupPropertyId);
-    if (!rollupProperty) continue;
-    const parentItemId = rollupProperty.databaseId === propertyA.databaseId ? itemA : itemB;
-    targets.push({ rollupPropertyId: dependency.rollupPropertyId, itemId: parentItemId });
-  }
-  return targets;
-}
-
-/** Exported so a module-specific delete that unlinks relations outside `softDeleteItem` (e.g. inbox/inboxTypesStore.ts's `deleteInboxTypeWithClient`) can enqueue the same rollup recompute per edge it removes. */
-export async function enqueueRollupRecomputeForEdge(
-  client: PoolClient,
-  edge: { relationDefinitionId: string; itemA: string; itemB: string },
-): Promise<void> {
-  const targets = await resolveRollupRecomputeTargets(client, edge.relationDefinitionId, edge.itemA, edge.itemB);
-  for (const target of targets) {
-    await enqueueRollupRecompute(client, target.rollupPropertyId, target.itemId);
-  }
-}
+import { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
+export { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
 
 // ==== block: rollup/config.ts ====
 import { validateRollupConfig } from "../rollup/config.js";
