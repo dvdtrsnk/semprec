@@ -1,9 +1,16 @@
-import type { Pool } from "pg";
+// Owns rollup recompute scheduling and execution: the job keys, enqueuing per-cell and backfill
+// recomputes (including the per-relation-edge fan-out), and the task handlers that recompute a cell.
+// Rollup config parsing, dependency bookkeeping, and the state writes that trigger a recompute do not
+// belong here.
+// Constrained by: docs/adr/2026-09-10-choke-point-api-for-state-writes.md
+import type { Pool, PoolClient } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import type { Queryable } from "../db/pool.js";
 import { getProperty } from "../chokePoint/propertiesStore.js";
+import * as propertiesStore from "../chokePoint/propertiesStore.js";
+import * as relationsStore from "../chokePoint/relationsStore.js";
 import { getItemById, writeComputed } from "../chokePoint/itemsStore.js";
-import { getRollupDependency } from "./dependencies.js";
+import { findDependenciesByRelationDefinition, getRollupDependency } from "./dependencies.js";
 import { parseRollupConfig, type RollupAggregation } from "./config.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 
@@ -173,4 +180,39 @@ export async function handleRollupRecomputeTask(
 
 export async function handleRollupRecomputeFullTask(pool: Pool, payload: { rollupPropertyId: string }): Promise<void> {
   await backfillRollup(pool, payload.rollupPropertyId);
+}
+
+async function resolveRollupRecomputeTargets(
+  client: PoolClient,
+  relationDefinitionId: string,
+  itemA: string,
+  itemB: string,
+): Promise<Array<{ rollupPropertyId: string; itemId: string }>> {
+  const dependencies = await findDependenciesByRelationDefinition(client, relationDefinitionId);
+  if (dependencies.length === 0) return [];
+
+  const reldef = await relationsStore.getRelationDefinition(client, relationDefinitionId);
+  if (!reldef) return [];
+  const propertyA = await propertiesStore.getProperty(client, reldef.propertyIdA);
+  if (!propertyA) return [];
+
+  const targets: Array<{ rollupPropertyId: string; itemId: string }> = [];
+  for (const dependency of dependencies) {
+    const rollupProperty = await propertiesStore.getProperty(client, dependency.rollupPropertyId);
+    if (!rollupProperty) continue;
+    const parentItemId = rollupProperty.databaseId === propertyA.databaseId ? itemA : itemB;
+    targets.push({ rollupPropertyId: dependency.rollupPropertyId, itemId: parentItemId });
+  }
+  return targets;
+}
+
+/** Exported so a module-specific delete that unlinks relations outside `softDeleteItem` (e.g. inbox/inboxTypesStore.ts's `deleteInboxTypeWithClient`) can enqueue the same rollup recompute per edge it removes. */
+export async function enqueueRollupRecomputeForEdge(
+  client: PoolClient,
+  edge: { relationDefinitionId: string; itemA: string; itemB: string },
+): Promise<void> {
+  const targets = await resolveRollupRecomputeTargets(client, edge.relationDefinitionId, edge.itemA, edge.itemB);
+  for (const target of targets) {
+    await enqueueRollupRecompute(client, target.rollupPropertyId, target.itemId);
+  }
 }
