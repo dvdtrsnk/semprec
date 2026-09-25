@@ -1,5 +1,14 @@
+// Owns rollup property configuration: parsing and validating a rollup's config against its relation
+// and target properties, and recording the rollup's dependency row when the config is applied.
+// Recompute scheduling (rollup/recompute.ts), dependency lookups (rollup/dependencies.ts) and
+// mirror-lifecycle guards (rollup/mirror.ts) do not belong here.
+// Constrained by: docs/adr/2026-09-10-choke-point-api-for-state-writes.md
+import type { PoolClient } from "pg";
 import { ValidationError } from "../errors.js";
 import type { PropertyRow, PropertyType } from "../types.js";
+import * as propertiesStore from "../chokePoint/propertiesStore.js";
+import * as relationsStore from "../chokePoint/relationsStore.js";
+import { upsertRollupDependency } from "./dependencies.js";
 
 export const ROLLUP_AGGREGATIONS = [
   "count",
@@ -128,4 +137,39 @@ export function assertAggregationCompatibleWithType(aggregation: RollupAggregati
     });
   }
   assertTargetTypeCompatible(aggregation, newType);
+}
+
+export async function applyRollupConfig(client: PoolClient, property: PropertyRow): Promise<void> {
+  const sameDatabaseProperties = await propertiesStore.listPropertiesByDatabase(client, property.databaseId);
+  const relationProperty = sameDatabaseProperties.find(
+    (p) => p.key === (property.config as { relationPropertyKey?: string }).relationPropertyKey,
+  );
+  const targetDatabaseId = relationProperty
+    ? (relationProperty.config as { targetDatabaseId?: string }).targetDatabaseId
+    : undefined;
+  const targetDatabaseProperties = targetDatabaseId
+    ? await propertiesStore.listPropertiesByDatabase(client, targetDatabaseId)
+    : [];
+
+  const validated = validateRollupConfig(property.config, sameDatabaseProperties, targetDatabaseProperties);
+  const reldef = await relationsStore.getRelationDefinitionByPropertyId(client, validated.relationProperty.id);
+  if (!reldef) {
+    throw new ValidationError(`Relation property '${validated.relationProperty.key}' has no relation definition`, {
+      field: "relationPropertyKey",
+    });
+  }
+  if (!targetDatabaseId) {
+    // Should be unreachable once validateRollupConfig has passed (a relation property
+    // always carries a target database) — guarded explicitly so a data inconsistency
+    // surfaces as this message instead of a NOT NULL constraint violation on
+    // rollup_dependencies.source_database_id.
+    throw new ValidationError("Relation property has no targetDatabaseId in config", { field: "relationPropertyKey" });
+  }
+
+  await upsertRollupDependency(client, {
+    rollupPropertyId: property.id,
+    relationDefinitionId: reldef.id,
+    sourceDatabaseId: targetDatabaseId,
+    sourcePropertyKey: validated.targetProperty?.key ?? null,
+  });
 }
