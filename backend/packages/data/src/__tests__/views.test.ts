@@ -488,6 +488,21 @@ describe("views", () => {
       ).rejects.toBeInstanceOf(ValidationError);
     });
 
+    it("reorderViewItem rejects a non-curated (linked) view on viewId, before the membership lookup", async () => {
+      const db = await makeTasksDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "One" } });
+      const filtered = await chokePoint.createView({ databaseId: db.id, type: "table", name: "Filtered" });
+
+      const rejection = chokePoint.reorderViewItem({
+        viewId: filtered.id,
+        itemId: item.id,
+        position: 0,
+        actor: userActor,
+      });
+      await expect(rejection).rejects.toBeInstanceOf(ValidationError);
+      await expect(rejection).rejects.toMatchObject({ details: { field: "viewId" } });
+    });
+
     it("inserting at an explicit position shifts existing members instead of tying with them", async () => {
       const db = await makeTasksDb();
       const item1 = await chokePoint.createItem({ databaseId: db.id, properties: { title: "One" } });
