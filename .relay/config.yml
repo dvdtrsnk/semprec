@@ -17,7 +17,13 @@ review:
   # never firing for a PR whose review found zero issues (the common case) —
   # a clean PR's recorded verdict was silently dropped instead of persisted,
   # so a rebase always fell through to a full review.
-  bot: { repo: dvdtrsnk/code-review-bot, ref: 9e732e791c6bcdbfa4683d6ad93ed1f7441a3d61 }
+  # dvdtrsnk/code-review-bot#28 merged to main as
+  # aa7d7e07f3bc3552887708a49dc319a3f4a2f640: verdict reuse keys on a
+  # line-number-free diff identity, so a rebase onto a develop that changed the
+  # same file elsewhere no longer forces a full review. The checkout ref in
+  # .github/workflows/code-review.yml intentionally still pins 9e732e7 until the
+  # choke-point-split batch (#494) completes — see #548.
+  bot: { repo: dvdtrsnk/code-review-bot, ref: aa7d7e07f3bc3552887708a49dc319a3f4a2f640 }
   check-name: code-review
   env: { REVIEW_BLOCK_SEVERITY: medium, PROMOTION_SOURCE: develop, PROMOTION_TARGET: main }
 merge:
