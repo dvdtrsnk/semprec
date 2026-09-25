@@ -17,7 +17,6 @@ import * as itemsStore from "./itemsStore.js";
 import * as relationsStore from "./relationsStore.js";
 import * as viewsStore from "./viewsStore.js";
 import * as viewItemsStore from "./viewItemsStore.js";
-import * as viewQuery from "../views/viewQuery.js";
 import { findDependenciesBySource, upsertRollupDependency } from "../rollup/dependencies.js";
 import { enqueueRollupBackfill, enqueueRollupRecompute } from "../rollup/recompute.js";
 import { assertRelationDeletable, assertSourceRetypeAllowed } from "../rollup/mirror.js";
@@ -104,28 +103,7 @@ import { createItemReadOps } from "./itemReads.js";
 export type { ListItemsInput, CountItemsInput } from "./itemReads.js";
 
 // ==== block: viewQueryOps.ts ====
-
-function createViewQueryOps(deps: Pick<ChokePointDeps, "pool">) {
-  const { pool } = deps;
-  return {
-    async queryView(viewId: string, options?: viewQuery.QueryViewOptions): Promise<viewQuery.QueryViewResult> {
-      return withTransaction(pool, (client) => viewQuery.queryView(client, viewId, options));
-    },
-
-    /** `POST /api/databases/:id/query` (issue #157): raw, request-boundary-validated filter/sort/cursor/limit/inTrash. */
-    async queryDatabaseItems(
-      databaseId: string,
-      input: viewQuery.DatabaseQueryInput,
-    ): Promise<viewQuery.QueryViewResult> {
-      return withTransaction(pool, (client) => viewQuery.queryDatabaseItems(client, databaseId, input));
-    },
-
-    /** `POST /api/views/:id/query` (issue #157): same raw request shape as `queryDatabaseItems`, resolved against a stored view. */
-    async queryViewItems(viewId: string, input: viewQuery.ViewQueryInput): Promise<viewQuery.QueryViewResult> {
-      return withTransaction(pool, (client) => viewQuery.queryViewItems(client, viewId, input));
-    },
-  };
-}
+import { createViewQueryOps } from "./viewQueryOps.js";
 
 // ==== block: viewOps.ts ====
 /** `view_items` carries no FK to `items` (partitioned, no single partition key) — this is the live existence check `addViewItem` runs in its place. */
