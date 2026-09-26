@@ -170,6 +170,26 @@ test("a trusted root in the bot's format is split into fullText and suggestedFix
   assert.equal(second.suggestedFix, null);
 });
 
+test("a trusted root whose Suggested fix marker is not followed by a fenced block gets a null suggestedFix", async () => {
+  const findings = [finding({ key: KEY_A, discussionId: "101" }), finding({ key: KEY_B, discussionId: "102" })];
+  const markerAtEnd = "**correctness | MEDIUM**\n\nText before the marker.\n\n**Suggested fix:**";
+  const unclosedFence = "**io | HIGH**\n\nAnother description.\n\n**Suggested fix:**\n```\nconst a = 1;";
+  const api = fakeApi({
+    harvest: harvestIssue(findings),
+    threads: {
+      10: [
+        thread([{ databaseId: 101, author: "github-actions[bot]", body: markerAtEnd }]),
+        thread([{ databaseId: 102, author: "bb-agent-relay[bot]", body: unclosedFence }]),
+      ],
+    },
+  });
+  const [first, second] = (await prepareInput(api, HARVEST)).findings;
+  assert.equal(first.fullText, "Text before the marker.");
+  assert.equal(first.suggestedFix, null);
+  assert.equal(second.fullText, "Another description.");
+  assert.equal(second.suggestedFix, null);
+});
+
 test("a root by a human, or without the header line, is kept whole; replies keep their order", async () => {
   const findings = [finding({ key: KEY_A, discussionId: "101" }), finding({ key: KEY_B, discussionId: "102" })];
   const human = "**correctness | MEDIUM**\n\nWritten by a person.";
