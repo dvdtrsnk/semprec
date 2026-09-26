@@ -90,6 +90,14 @@ jobs:
         working-directory: backend
         run: pnpm run check:write-safety
 
+      # Runs the `node:test` suites under `.github/scripts/` through
+      # run-repo-script-tests.mjs, which fails when it finds no test file (a bare
+      # `node --test` glob matching nothing exits 0). No dependency on `node_modules`,
+      # so it runs before install alongside the other dependency-free scripts above.
+      - name: Repo scripts — tests
+        working-directory: backend
+        run: pnpm run test:repo-scripts
+
       # Backend static checks and the build. Every test tier and the boundary check
       # run as their own jobs below.
       - name: Backend — install
