@@ -21,8 +21,7 @@ review:
   # aa7d7e07f3bc3552887708a49dc319a3f4a2f640: verdict reuse keys on a
   # line-number-free diff identity, so a rebase onto a develop that changed the
   # same file elsewhere no longer forces a full review. The checkout ref in
-  # .github/workflows/code-review.yml intentionally still pins 9e732e7 until the
-  # choke-point-split batch (#494) completes — see #548.
+  # .github/workflows/code-review.yml pins the same commit (#548).
   bot: { repo: dvdtrsnk/code-review-bot, ref: aa7d7e07f3bc3552887708a49dc319a3f4a2f640 }
   check-name: code-review
   env: { REVIEW_BLOCK_SEVERITY: medium, PROMOTION_SOURCE: develop, PROMOTION_TARGET: main }
