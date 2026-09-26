@@ -16,7 +16,7 @@
  *   { "version": 1, "prs": [...], "findings": [...] }
  *   ```
  *
- * Every `<` in the JSON is written as `<` (a JSON unicode escape), so text
+ * Every `<` in the JSON is written as `\u003c` (a JSON unicode escape), so text
  * quoted in a finding — such as another marker — can never form an HTML comment
  * inside the block.
  *
