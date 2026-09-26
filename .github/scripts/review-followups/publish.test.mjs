@@ -549,6 +549,8 @@ test("main exits 1 without calling the api on a missing argument or an unparsabl
     ["--input", files["input.json"]],
     ["--input", files["input.json"], "--proposal"],
     ["--input", files["input.json"], "--proposal", files["proposal.json"], "--extra", "x"],
+    ["--input", files["input.json"], "--input", files["input.json"], "--proposal", files["proposal.json"]],
+    ["--input", "", "--proposal", files["proposal.json"]],
     ["--input", files["broken.json"], "--proposal", files["proposal.json"]],
     ["--input", files["input.json"], "--proposal", files["broken.json"]],
     ["--input", files["input.json"], "--proposal", path.join(path.dirname(files["input.json"]), "missing.json")],
@@ -558,6 +560,27 @@ test("main exits 1 without calling the api on a missing argument or an unparsabl
   }
   assert.equal(errors.length, cases.length);
   assert.deepEqual(calls, []);
+});
+
+test("main rejects a malformed proposal file before building the GitHub client", async (t) => {
+  const errors = [];
+  t.mock.method(console, "error", (error) => errors.push(error));
+  const token = process.env.GITHUB_TOKEN;
+  delete process.env.GITHUB_TOKEN;
+  t.after(() => {
+    if (token !== undefined) process.env.GITHUB_TOKEN = token;
+  });
+  const { input, proposal } = singleDraftCase();
+  const withoutIssues = { ...proposal };
+  delete withoutIssues.issues;
+  const proposals = [null, [], withoutIssues, { ...proposal, harvestIssue: String(proposal.harvestIssue) }];
+
+  for (const [index, broken] of proposals.entries()) {
+    const files = tempFiles(t, { "input.json": renderInputFile(input), "proposal.json": JSON.stringify(broken) });
+    assert.equal(await main(["--input", files["input.json"], "--proposal", files["proposal.json"]]), 1);
+    assert.match(errors[index].message, /^the proposal is invalid:/);
+  }
+  assert.equal(errors.length, proposals.length);
 });
 
 test("main exits 1 after printing what it already created when the api fails", async (t) => {
