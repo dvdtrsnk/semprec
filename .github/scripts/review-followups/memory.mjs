@@ -45,13 +45,16 @@ const STATUSES = new Set(["open", "resolved", "wontfix", "fixed"]);
  * Returns the newest comment (by `createdAt`, ties broken by the higher `id`) that a
  * trusted bot wrote and that contains the memory prefix, or `null` when there is none.
  *
- * @param {{ id: number, author: string, createdAt: string, body: string }[]} comments
+ * A comment whose `body` is not a string (GitHub returns `null` for a deleted or minimized
+ * comment) is skipped like one without the prefix.
+ *
+ * @param {{ id: number, author: string, createdAt: string, body: string | null }[]} comments
  */
 export function selectMemoryComment(comments) {
   let newest = null;
   for (const comment of comments) {
     if (!TRUSTED_REVIEW_BOT_LOGINS.includes(comment.author)) continue;
-    if (!comment.body.includes(MEMORY_MARKER_PREFIX)) continue;
+    if (typeof comment.body !== "string" || !comment.body.includes(MEMORY_MARKER_PREFIX)) continue;
     if (newest === null || isNewer(comment, newest)) newest = comment;
   }
   return newest;

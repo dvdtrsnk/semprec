@@ -96,6 +96,13 @@ test("selectMemoryComment returns null for an empty list or when nothing qualifi
   );
 });
 
+test("selectMemoryComment skips a trusted comment whose body is null", () => {
+  const withMemory = comment(1, "github-actions[bot]", "2026-09-01T10:00:00Z");
+  const deleted = comment(2, "github-actions[bot]", "2026-09-03T10:00:00Z", null);
+  assert.equal(selectMemoryComment([withMemory, deleted]), withMemory);
+  assert.equal(selectMemoryComment([deleted]), null);
+});
+
 test("selectMemoryComment resolves equal createdAt to the higher id", () => {
   const low = comment(5, "github-actions[bot]", "2026-09-01T10:00:00Z");
   const high = comment(9, "bb-agent-relay[bot]", "2026-09-01T10:00:00Z");
@@ -111,6 +118,21 @@ test("decodeMemory decodes the real #551 memory", () => {
 
 test("decodeMemory throws naming the extract stage when the prefix is missing", () => {
   assert.throws(() => decodeMemory("just a comment"), /review memory extract:/);
+});
+
+test("decodeMemory throws naming the extract stage when the marker is not closed", () => {
+  assert.throws(
+    () => decodeMemory(`${MEMORY_MARKER_PREFIX}AAAA`),
+    /review memory extract: the marker is not closed/,
+  );
+});
+
+test("decodeMemory throws naming the base64 stage for an empty payload", () => {
+  assert.throws(() => decodeMemory(memoryBody("")), /review memory base64:/);
+});
+
+test("decodeMemory throws naming the base64 stage for a length that is not a multiple of four", () => {
+  assert.throws(() => decodeMemory(memoryBody("AAA")), /review memory base64:/);
 });
 
 test("decodeMemory throws naming the base64 stage for a character outside the alphabet", () => {
