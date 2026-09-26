@@ -146,6 +146,8 @@ describe("line matching", () => {
       "<!-- crb-followup-harvest:v1 prs=1,1 -->",
       "<!-- crb-followup-harvest:v1 prs=01,2 -->",
       "<!-- crb-followup-harvest:v1 prs=1,,2 -->",
+      "<!-- crb-followup-harvest:v1 prs=99999999999999999999 -->",
+      "<!-- crb-followup-harvest:v1 prs=1,99999999999999999999 -->",
     ];
     assert.equal(parseHarvestMarker(malformedHarvests.join("\n")), null);
 
@@ -224,6 +226,17 @@ describe("computeLedger", () => {
     ]);
     assert.equal(ledger.harvested.size, 0);
     assert.equal(ledger.terminal.size, 0);
+  });
+
+  it("treats an issue with both pipeline labels as a harvest and a follow-up issue at once", () => {
+    const body = [renderFindingMarker(findingA), renderHarvestMarker([300, 310]), renderEpicMarker(7)].join("\n");
+    const ledger = computeLedger([
+      issue(8, [LABELS.harvest, LABELS.issue], body, [resultComment(PUBLISHER_LOGIN, [findingB])]),
+    ]);
+    assert.deepEqual([...ledger.harvested].sort(), [idA, idB].sort());
+    assert.deepEqual([...ledger.terminal], [idB]);
+    assert.deepEqual([...ledger.harvestedPrs], [300, 310]);
+    assert.deepEqual([...ledger.epics], [[7, 8]]);
   });
 
   it("ignores comments on a follow-up issue", () => {
