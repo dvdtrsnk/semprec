@@ -10,7 +10,7 @@ import { createInboxTypeWithClient, deleteInboxTypeWithClient } from "../inbox/i
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
-import { createRelationWithClient } from "../chokePoint/chokePoint.js";
+import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inbox/inboxTickAction.js";
 
 let pool: Pool;

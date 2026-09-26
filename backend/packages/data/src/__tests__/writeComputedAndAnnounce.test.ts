@@ -4,7 +4,7 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
-import { createItemWithClient, writeComputedAndAnnounce } from "../chokePoint/chokePoint.js";
+import { createItemWithClient, writeComputedAndAnnounce } from "../chokePoint/itemWrites.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 

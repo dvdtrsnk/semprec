@@ -11,7 +11,7 @@ import {
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
-import { createItemWithClient } from "../chokePoint/chokePoint.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
 import { setProjectMcpGrantForAgentPage } from "../mcp/mcpAgentPageGrants.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";

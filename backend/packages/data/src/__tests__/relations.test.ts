@@ -1,14 +1,13 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import {
-  createChokePoint,
-  createRelationPropertyWithClient,
   createRelationWithClient,
   deleteRelationWithClient,
   updateRelationWithClient,
-  type ChokePoint,
-} from "../chokePoint/chokePoint.js";
+} from "../chokePoint/relationOps.js";
+import { createRelationPropertyWithClient } from "../chokePoint/relationPropertyOps.js";
 import { withTransaction } from "../db/pool.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 

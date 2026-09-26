@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createChokePoint, createRelationWithClient, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { CardinalityViolationError, ValidationError } from "../errors.js";
 
 let pool: Pool;
