@@ -3,35 +3,34 @@ export { runMigrations } from "./db/migrate.js";
 export * from "./errors.js";
 export * from "./types.js";
 
+export { createChokePoint, type ChokePoint } from "./chokePoint/chokePoint.js";
+export type { Actor } from "./chokePoint/authorization.js";
 export {
-  createChokePoint,
   createItemWithClient,
   updateItemWithClient,
   writeComputedAndAnnounce,
-  type ChokePoint,
-  type Actor,
-} from "./chokePoint/chokePoint.js";
-export type {
-  CreateItemInput,
-  UpdateItemInput,
-  UpdateItemWithClientOptions,
-  CreateRelationInput,
-  UpdateRelationInput,
-  DeleteRelationInput,
-  RelationEdge,
-  ResourceSnapshot,
-  ResourceSnapshotKind,
-  DestructiveResourceProjection,
-  DestructiveOperationCheck,
-} from "./chokePoint/chokePoint.js";
+  type CreateItemInput,
+  type UpdateItemInput,
+  type UpdateItemWithClientOptions,
+} from "./chokePoint/itemWrites.js";
 export {
-  databaseArchiveWithClient,
-  propertyDeleteWithClient,
-  viewDeleteWithClient,
-  itemDeleteWithClient,
   deleteRelationWithClient,
+  type CreateRelationInput,
+  type UpdateRelationInput,
+  type DeleteRelationInput,
+  type RelationEdge,
+} from "./chokePoint/relationOps.js";
+export {
   computeDestructiveResourceProjection,
-} from "./chokePoint/chokePoint.js";
+  type ResourceSnapshot,
+  type ResourceSnapshotKind,
+  type DestructiveResourceProjection,
+  type DestructiveOperationCheck,
+} from "./chokePoint/destructiveProjection.js";
+export { databaseArchiveWithClient } from "./chokePoint/databaseOps.js";
+export { propertyDeleteWithClient } from "./chokePoint/propertyOps.js";
+export { viewDeleteWithClient } from "./chokePoint/viewOps.js";
+export { itemDeleteWithClient } from "./chokePoint/itemTrash.js";
 export type { CreateDatabaseInput } from "./chokePoint/databasesStore.js";
 export { getDatabaseByModuleId } from "./chokePoint/databasesStore.js";
 export type { CreatePropertyInput } from "./chokePoint/propertiesStore.js";
