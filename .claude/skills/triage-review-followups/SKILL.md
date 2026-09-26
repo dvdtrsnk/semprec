@@ -90,13 +90,18 @@ what is specific to this pipeline.
 - A draft whose Touches names a protected path (`.relay/`, `.github/workflows/`,
   `.github/scripts/check-protected-paths.mjs`) says `maintainer-implemented` in its
   `## Task`.
-- No pipeline marker in any body: nothing containing `<!-- crb-followup`.
+- No pipeline marker in any body: nothing containing `<!-- crb-followup`. `publish`
+  appends the ledger markers itself, and a body that already contains one fails the
+  validator (see the header of `.github/scripts/review-followups/validate.mjs`).
 - Each draft's `## Context` names every finding it covers: the pull request, the
   current `path:line`, and what is wrong there.
 - Each draft's `## Task` prescribes exactly one fix per finding and fixes only what was
   flagged — nothing adjacent, nothing "while in the file". Each finding gets its own
   acceptance criterion.
-- With two or more drafts, write an epic. Its body holds a summary specification of
+- With two or more drafts, write an epic. What follows replaces Phase 4 step 6's epic
+  content for this pipeline — there is no approved spec to copy — except that the epic
+  body still does not list the batch's issues, since `publish` links them as sub-issues.
+  Its body holds a summary specification of
   what the batch fixes, a `## Decisions` section (the clustering and verdict calls a
   reader would question, each with its reason), a link to the harvest issue `#<H>`, a
   summary of the rejected and already-fixed findings, and a note that closing the epic
@@ -119,9 +124,9 @@ One round of `/define-behavior` Phase 5, in dry-run mode.
    as the whole contract, with the draft file paths as the target, mode dry-run, and
    round 1. Add nothing else.
 3. Apply Phase 5's consensus gate and growth check
-   (`.claude/skills/define-behavior/SKILL.md`) to the two reports and to
-   `proposal.json`. When applying a fix, map every `#TBD-NN` in it back to its
-   `{{draft:<id>}}`.
+   (`.claude/skills/define-behavior/SKILL.md`) to the two reports. Write every
+   resulting fix to both the affected draft file and `proposal.json`; in
+   `proposal.json`, map every `#TBD-NN` in the fix back to its `{{draft:<id>}}`.
 4. Put every finding outside the consensus into `advisories`, one string each, naming
    the draft, the class and the defect.
 
