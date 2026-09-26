@@ -51,6 +51,16 @@ export default tseslint.config(
     },
   },
   {
+    // Size cap from docs/adr/2026-09-24-choke-point-composed-from-domain-modules.md: without
+    // it a production module drifts back into a monolith. Test files are exempt because they
+    // are not part of the runtime surface, and splitting the largest ones is a separate decision.
+    files: ["**/*.ts"],
+    ignores: ["**/*.test.ts", "**/__tests__/**"],
+    rules: {
+      "max-lines": ["error", { max: 900, skipBlankLines: true, skipComments: true }],
+    },
+  },
+  {
     // Config and tooling files live outside every package's tsconfig `include`, so the
     // type-aware rules have no program to consult and error out on them.
     files: ["**/*.cjs", "**/*.mjs", "*.config.ts", "**/scripts/**"],
