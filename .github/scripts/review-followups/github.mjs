@@ -272,6 +272,7 @@ query ($owner: String!, $name: String!, $number: Int!, $cursor: String) {
 function graphqlAuthor(author, what) {
   if (author === null) return "ghost";
   const { __typename: type, login } = object(author, what);
+  string(type, `${what}.__typename`);
   string(login, `${what}.login`);
   return type === "Bot" ? `${login}[bot]` : login;
 }
