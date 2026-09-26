@@ -2,9 +2,10 @@
 /**
  * The review follow-ups harvest (decision:
  * docs/adr/2026-09-26-merged-review-findings-become-proposed-follow-up-issues.md): the
- * script the daily `harvest-review-followups` workflow runs. It collects the code-review
- * bot's open findings from merged pull requests into one harvest issue labelled
- * `followups:ready`, which Relay's `triage-review-followups` workflow then picks up.
+ * script the daily `harvest-review-followups` workflow (added by #583) runs. It collects
+ * the code-review bot's open findings from merged pull requests into one harvest issue
+ * labelled `followups:ready`, which Relay's `triage-review-followups` workflow then
+ * picks up.
  *
  * It is deterministic and uses no AI. Every decision lives in the modules it calls
  * (markers, records, memory, select, hints); this script fetches, calls them, renders
@@ -28,8 +29,9 @@
  *      `followups:ready`; or, when every finding was skipped as fixed, `followups:harvest`
  *      only and closed at once; or no issue when there is no finding at all), and only
  *      then labels every planned pull request `followups:harvested`. A crash between the
- *      two is recovered by a later run: the pull requests are in the issue's harvest
- *      marker, so that run only labels them. A crash between creating a record-only
+ *      two leaves the harvest issue open, so it holds back every harvest until triage
+ *      closes it; the next run then finds the pull requests in its harvest marker and
+ *      only labels them. A crash between creating a record-only
  *      issue and closing it leaves an open `followups:harvest` issue that no triage
  *      picks up; it holds back every later harvest until someone closes it.
  *

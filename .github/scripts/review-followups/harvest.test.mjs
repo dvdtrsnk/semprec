@@ -447,3 +447,15 @@ test("main passes minPr and dryRun through and reports the issue it would create
     /- Issue: would create "Review follow-ups: 2 findings to triage from PR #20" \(\d+ characters\)\n/,
   );
 });
+
+test("main in live mode writes and reports the issue it created", async () => {
+  const summary = join(await mkdtemp(join(tmpdir(), "harvest-")), "summary.md");
+  const api = fakeApi({ pulls: [{ number: 20 }], memories: { 20: findings(1, 2) } });
+  const report = await main({ HARVEST_MIN_PR: "10", DRY_RUN: "false", GITHUB_STEP_SUMMARY: summary }, api);
+
+  assert.deepEqual(report.issue, { number: 900 });
+  assert.ok(api.called("createIssue"));
+  const text = await readFile(summary, "utf8");
+  assert.match(text, /- Mode: live\n/);
+  assert.match(text, /- Issue: created #900\n/);
+});
