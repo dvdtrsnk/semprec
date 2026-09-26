@@ -348,6 +348,14 @@ describe("validateProposal", () => {
       assert.deepEqual(validateProposal(input(), p), []);
     });
 
+    it("reports a non-object epic without throwing", () => {
+      for (const value of [5, [], "epic"]) {
+        const p = proposal();
+        p.epic = value;
+        assertOne(validateProposal(input(), p), "epic must be an object");
+      }
+    });
+
     it("reports a non-string epic body", () => {
       const p = proposal();
       p.epic.body = null;
