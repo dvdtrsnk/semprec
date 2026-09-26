@@ -27,7 +27,8 @@ the failure mode that rule exists to prevent.
 - **`review-rules/`** of every platform you touch (`backend/`, `web/`, `apple/`,
   and the repository root) — these are the rules the review bot enforces on your
   pull request, so reading them first is strictly cheaper than being told.
-  Changes to `.github/workflows/` are reviewed by the repository-root platform,
+  Changes to `.github/workflows/` and `.github/scripts/` are reviewed by the
+  repository-root platform,
   and changes to a `review-rules/` directory by the platform that owns it.
 - **The skills below** — the same conventions in the form you need while writing.
 

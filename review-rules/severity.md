@@ -13,10 +13,17 @@
   inlined into a `run:` script, a pinned dependency unpinned, or a timeout/concurrency
   setting that can strand a required check; a `review-rules/` rule or task weakened or
   dropped without the Task asking for it, a scope pattern that drops or cannot match
-  the files it intends, or a platform left with no task.
+  the files it intends, or a platform left with no task; in a repository script under
+  `.github/scripts/`, a failed API call treated as an empty or successful result, a
+  write performed in dry-run mode, or a token or other secret written to output (see
+  `tasks/repo-scripts.md`).
 - **medium** — an ADR missing required frontmatter fields (`status`, `date`, `area`),
   a sequential-looking filename instead of `YYYY-MM-DD-slug`, or a hand-maintained index
   file reintroduced under `docs/adr/`; a workflow comment that no longer describes the
-  YAML beside it; contradicting or factually wrong `review-rules/` content.
+  YAML beside it; contradicting or factually wrong `review-rules/` content; in a
+  repository script under `.github/scripts/`, external input used without being
+  validated where it is read, a re-run-safety claim the order of its writes breaks, new
+  decision logic without a `node:test` test covering each branch, or a comment that
+  contradicts the code.
 - **low** — wording, an ADR that could be more concise, a skill file that restates an
   ADR's rationale instead of linking to it.
