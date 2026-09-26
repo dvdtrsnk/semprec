@@ -16,8 +16,9 @@
  *   { "version": 1, "prs": [...], "findings": [...] }
  *   ```
  *
- * Every `<` in the JSON is written as `<`, so text quoted in a finding — such as
- * another marker — can never form an HTML comment inside the block.
+ * Every `<` in the JSON is written as `<` (a JSON unicode escape), so text
+ * quoted in a finding — such as another marker — can never form an HTML comment
+ * inside the block.
  *
  * Zero dependencies; this module only exports functions and performs no I/O.
  */
