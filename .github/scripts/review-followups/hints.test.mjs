@@ -152,6 +152,21 @@ for (const fail of ["listPullRequestCommits", "getCommitFiles", "listCommitsTouc
   });
 }
 
+for (const field of ["key", "path", "lastSeenSha"]) {
+  test(`a finding with a non-string ${field} rejects computeHints before any GitHub read`, async () => {
+    const api = fakeApi({ prCommits: ["a", "b"], pathCommits: { [PATH]: ["x"] } });
+    const findings = [
+      { key: "k1", path: PATH, lastSeenSha: "a" },
+      { key: "k2", path: PATH, lastSeenSha: "a", [field]: undefined },
+    ];
+    await assert.rejects(computeHints(api, { pr: 10, mergedAt: "2026-09-01T00:00:00Z", base: "develop", findings }), {
+      name: "TypeError",
+      message: new RegExp(`non-string ${field}$`),
+    });
+    assert.equal(api.calls.length, 0);
+  });
+}
+
 test("hintsApi binds the GitHub endpoints to the client", async () => {
   const paths = [];
   const client = {

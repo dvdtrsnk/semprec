@@ -48,7 +48,8 @@ function memoize(load) {
 /**
  * Hints for `findings` (`{ key, path, lastSeenSha }`) of pull request `pr`, merged into
  * `base` at `mergedAt`, as a Map from `"<pr>:<key>"` to
- * `{ touchedAfterLastSeen, laterPrsTouchingPath }`.
+ * `{ touchedAfterLastSeen, laterPrsTouchingPath }`. A finding whose `key`, `path` or
+ * `lastSeenSha` is not a string rejects the call before any GitHub read.
  */
 export async function computeHints(api, { pr, mergedAt, base, findings }) {
   let prCommits = null;
@@ -77,6 +78,14 @@ export async function computeHints(api, { pr, mergedAt, base, findings }) {
       }
     }
     return numbers.size;
+  }
+
+  for (const finding of findings) {
+    for (const field of ["key", "path", "lastSeenSha"]) {
+      if (typeof finding?.[field] !== "string") {
+        throw new TypeError(`computeHints: finding ${JSON.stringify(finding?.key)} has a non-string ${field}`);
+      }
+    }
   }
 
   const hints = new Map();
