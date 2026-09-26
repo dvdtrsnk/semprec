@@ -17,7 +17,8 @@
  *     marker but does not match its grammar exactly.
  *   - An issue body counts only on an issue carrying a pipeline label, which only a
  *     collaborator can set.
- *   - A comment counts only when PUBLISHER_LOGIN wrote it.
+ *   - A comment counts only when PUBLISHER_LOGIN wrote it and it carries a result
+ *     marker, and only on a `followups:harvest` issue.
  *
  * Grammar: `<n>` is a positive integer without leading zeros; `<key>` is exactly ten
  * lowercase hex characters.
@@ -186,7 +187,8 @@ function validateIssue(issue, index) {
  *   - `harvested`: finding ids from `followups:harvest` and `followups:issue` bodies,
  *     and from PUBLISHER_LOGIN comments carrying a result marker on
  *     `followups:harvest` issues.
- *   - `terminal`: the same, without the `followups:harvest` bodies.
+ *   - `terminal`: the same, without the `followups:harvest` bodies — including the
+ *     body of an issue that carries `followups:issue` as well.
  *   - `harvestedPrs`: pull requests of harvest markers in `followups:harvest` bodies.
  *   - `epics`: harvest issue number → epic issue number, from epic markers in
  *     `followups:issue` bodies; the lower epic number wins.
@@ -209,7 +211,7 @@ export function computeLedger(issues) {
 
     for (const finding of parseFindingMarkers(issue.body)) {
       harvested.add(findingId(finding));
-      if (isFollowup) terminal.add(findingId(finding));
+      if (!isHarvest) terminal.add(findingId(finding));
     }
 
     if (isHarvest) {
