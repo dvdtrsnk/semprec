@@ -235,8 +235,8 @@ time; several are park labels that a human must clear before Relay resumes.
 
 | Label | Set by | Meaning |
 |---|---|---|
-| `spec:approved` | `/define-behavior` Phase 5 | Issue's spec passed the batch audit — no blocking finding survived it |
-| `agent:ready` | `/define-behavior` Phase 5, alongside `spec:approved` | Queued for Relay's `implement-issue` workflow — this is the label Relay actually dispatches on; `spec:approved` alone dispatches nothing |
+| `spec:approved` | `/define-behavior` Phase 5, or a human approving a `spec:proposed` follow-up issue | Issue's spec passed the batch audit — no blocking finding survived it |
+| `agent:ready` | `/define-behavior` Phase 5, alongside `spec:approved`, or a human approving a `spec:proposed` follow-up issue | Queued for Relay's `implement-issue` workflow — this is the label Relay actually dispatches on; `spec:approved` alone dispatches nothing |
 | `agent:blocked` | a Relay workflow's `on-blocked` chain (`implement-issue`, `merge-pull-request`, `fix-review-findings`), or a human | Park label: the run stopped deliberately on something only a human can decide. Excluded from every workflow's trigger; on a pull request, `recover-blocked-issue` may pick it up automatically on the same branch. A human resolves the issue and removes the label to let Relay pick it up again |
 | `agent:needs-human-action` | Relay (`recover-blocked-issue`'s `on-blocked` chain) | Park label: automatic recovery could not proceed without an action no worker credential can perform. A human takes that action, then removes the label |
 | `relay:needs-human-action` | Relay (`merge-pull-request`'s and `fix-review-findings`'s `on-failure` chains) | Park label: a run failed outright (not a deliberate block). A human reads the failure comment, fixes the cause, and removes the label — or pushes a new head, which also clears it |
@@ -245,11 +245,26 @@ time; several are park labels that a human must clear before Relay resumes.
 | `review:passed` | Relay (`review-pull-request`) | No blocking finding; `merge-pull-request` picks the pull request up next |
 | `review:changes-requested` | Relay (`review-pull-request`'s `on-failure` chain) | A blocking finding; `fix-review-findings` picks the pull request up next |
 | `epic:wip` | a human | Opts an epic out of `close-completed-epics`, even once every sub-issue is closed |
+| `followups:harvested` | the harvest | On a merged pull request whose open findings were harvested, or that had none |
+| `followups:harvest` | the harvest | On every harvest issue; kept forever |
+| `followups:ready` | the harvest | On a harvest issue awaiting triage; Relay's trigger; removed by triage when it publishes |
+| `followups:issue` | triage | On every issue and epic it creates; kept forever |
+| `spec:proposed` | triage | On every issue it creates; awaiting human approval; never dispatched |
 
 `agent:ready` is not a label an issue keeps once it's done: `merge-pull-request`'s
 `dequeue` step removes `agent:ready` (and `agent:blocked`) from the linked issue
 once its pull request merges, so a lagging issue listing can't dispatch it a
 second time.
+
+A follow-up issue created by triage waits under `spec:proposed` for a human
+decision. Approving it means swapping `spec:proposed` for `spec:approved` +
+`agent:ready`; an issue touching a protected path gets `spec:approved` only and
+is maintainer-implemented. To reshape it, a human edits the issue, then approves
+it. Closing a proposed issue rejects it and retires its findings permanently,
+because their markers stay in the ledger whatever the issue's state; reopening it
+is the undo. Closing an epic decides nothing: each child issue carries its own
+findings and its own decision. See
+[`docs/adr/2026-09-26-merged-review-findings-become-proposed-follow-up-issues.md`](../docs/adr/2026-09-26-merged-review-findings-become-proposed-follow-up-issues.md).
 
 ## Hand-over context
 
