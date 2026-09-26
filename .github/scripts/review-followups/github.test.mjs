@@ -326,6 +326,11 @@ test("listReviewThreads throws when a thread has more than 100 comments", async 
   await assert.rejects(listReviewThreads(client(fetchImpl), 42), /more than 100 comments/);
 });
 
+test("listReviewThreads throws when a comment author has no __typename", async () => {
+  const fetchImpl = fakeFetch(threadsPage([thread(false, [{ databaseId: 11, body: "bot", author: { login: "github-actions" } }])]));
+  await assert.rejects(listReviewThreads(client(fetchImpl), 42), /author\.__typename is not a string/);
+});
+
 test("listReviewThreads throws when the pull request does not exist", async () => {
   const fetchImpl = fakeFetch(reply({ data: { repository: { pullRequest: null } } }));
   await assert.rejects(listReviewThreads(client(fetchImpl), 42), /pullRequest #42 is not an object/);
