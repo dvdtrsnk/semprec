@@ -7,7 +7,8 @@ In scope here: Architecture Decision Records (`docs/adr/`), the
 autonomous-workflow skills (`.claude/skills/`), the agent instructions and
 convention skills BB injects into every thread (`.bb/AGENTS.md`,
 `.bb/skills/`), the root `README.md`, the GitHub Actions workflows
-(`.github/workflows/`), and this platform's own `review-rules/`.
+(`.github/workflows/`), the repository scripts (`.github/scripts/`), and this
+platform's own `review-rules/`.
 The `review-rules/` of `backend/`, `apple/` and `web/` are reviewed by those
 platforms, not here: the review bot assigns each file to the platform whose
 directory is the longest prefix of its path.
