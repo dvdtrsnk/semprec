@@ -65,9 +65,11 @@ issues by a two-stage pipeline:
    to GitHub as the Relay App through Relay's loopback token proxy, opted into
    per command step, so the real token never enters a job. Agent steps get no
    GitHub access.
-7. **Zero-dependency scripts, one code path.** The deterministic parts are
+7. **Zero-dependency scripts, one code path.** The deterministic parts will be
    zero-dependency ES modules under `.github/scripts/review-followups/`,
-   tested with `node:test`. They call the REST and GraphQL APIs with `fetch`
+   tested with `node:test`. That directory does not exist yet: this ADR
+   records the decision ahead of the implementation, which lands in later
+   pull requests. The scripts call the REST and GraphQL APIs with `fetch`
    through `GITHUB_API_URL`, `GITHUB_GRAPHQL_URL` and `GITHUB_TOKEN`, so the
    same code runs in GitHub Actions and behind the Relay proxy.
 
