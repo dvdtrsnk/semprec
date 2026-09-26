@@ -28,12 +28,12 @@ function fixture(files) {
   return dir;
 }
 
-function runRunner(args) {
+function runRunner(args, nodeOptions = []) {
   // Under `node --test` this process carries NODE_TEST_CONTEXT, which would make the nested
   // `node --test` report to this runner instead of exiting with its own status.
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
-  const result = spawnSync(process.execPath, [RUNNER, ...args], { encoding: "utf8", env });
+  const result = spawnSync(process.execPath, [...nodeOptions, RUNNER, ...args], { encoding: "utf8", env });
   return { status: result.status, output: result.stdout + result.stderr };
 }
 
@@ -99,5 +99,17 @@ describe("run-repo-script-tests", () => {
     const { status, output } = runRunner([dir, dir]);
     assert.equal(status, 1);
     assert.match(output, /at most one directory argument, got 2/);
+  });
+
+  it("exits 1 and says so when the nested node --test cannot be started", () => {
+    const dir = fixture({ "ok.test.mjs": PASSING });
+    const missingNode = path.join(dir, "missing-node");
+    // The runner spawns `process.execPath`; a preloaded module points it at a file that does
+    // not exist, so `spawnSync` fails to start the child and reports it through `result.error`.
+    const source = `process.execPath = ${JSON.stringify(missingNode)};`;
+    const preload = `--import=data:text/javascript,${encodeURIComponent(source)}`;
+    const { status, output } = runRunner([dir], [preload]);
+    assert.equal(status, 1);
+    assert.ok(output.includes(`could not start node --test: spawnSync ${missingNode} ENOENT`), output);
   });
 });
