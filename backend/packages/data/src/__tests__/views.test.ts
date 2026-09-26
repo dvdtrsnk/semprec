@@ -1,7 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createChokePoint, type Actor, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { type Actor } from "../chokePoint/authorization.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { createViewTypeRegistry, registerViewType, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";

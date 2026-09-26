@@ -1,12 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import {
-  createChokePoint,
-  createRelationWithClient,
-  deleteRelationWithClient,
-  type ChokePoint,
-} from "../chokePoint/chokePoint.js";
+import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { insertItem } from "../chokePoint/itemsStore.js";
 import { withTransaction } from "../db/pool.js";
