@@ -348,6 +348,18 @@ describe("validateProposal", () => {
       assert.deepEqual(validateProposal(input(), p), []);
     });
 
+    it("reports a non-string epic body", () => {
+      const p = proposal();
+      p.epic.body = null;
+      assertOne(validateProposal(input(), p), "epic", '"body"');
+    });
+
+    it("reports an empty epic body", () => {
+      const p = proposal();
+      p.epic.body = "";
+      assertOne(validateProposal(input(), p), "epic", '"body"');
+    });
+
     it("reports an epic title without the epic suffix", () => {
       const p = proposal();
       p.epic.title = `[followups-${H}] Review follow-ups`;
