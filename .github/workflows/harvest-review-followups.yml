@@ -1,0 +1,72 @@
+name: Harvest review follow-ups
+
+# Collects the code-review bot's still-open findings from merged pull requests into one
+# harvest issue labelled `followups:ready`, and labels each harvested pull request
+# `followups:harvested` (decision:
+# docs/adr/2026-09-26-merged-review-findings-become-proposed-follow-up-issues.md). The
+# work lives in .github/scripts/review-followups/harvest.mjs; see its header comment for
+# the order of a run and its writes.
+#
+# It is a GitHub Action rather than a Relay workflow because Relay cannot host it: Relay
+# workflows trigger only on a label of an open issue or pull request, and only while the
+# project is enabled. The harvest has neither — it starts from merged (closed) pull
+# requests on a clock, and must keep running while the project is paused.
+#
+# Daily is deliberate. Backpressure makes a no-op run free: while a harvest issue or a
+# proposed follow-up issue is still open, the script reports it and writes nothing. The
+# throughput is bounded by triage and approval, not by the calendar, so a tighter
+# schedule would harvest nothing more.
+#
+# `workflow_dispatch` takes `dry_run` (default true) so a manual run reports what it
+# would write and writes nothing. A scheduled run always writes.
+
+on:
+  schedule:
+    # 05:37 UTC — off the hour, so it does not join the stampede of jobs that every
+    # cron scheduler fires at :00, and apart from close-completed-epics' 04:15.
+    - cron: "37 5 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report what would be harvested without writing anything
+        type: boolean
+        default: true
+
+permissions:
+  # Reads the `develop` git tree, pull-request commits, commit files and commits by path.
+  contents: read
+  # Lists issues by label and their comments, creates and closes the harvest issue, and
+  # adds `followups:harvested` to merged pull requests through the issues API.
+  issues: write
+  # Lists closed pull requests into `develop`, their review threads (GraphQL) and the
+  # pull requests of a commit.
+  pull-requests: read
+
+concurrency:
+  group: harvest-review-followups
+  cancel-in-progress: false
+
+jobs:
+  harvest-review-followups:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Harvest open findings from merged pull requests
+        run: node .github/scripts/review-followups/harvest.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A scheduled run always writes; a manual one defaults to reporting only.
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          # #265 audited every pull request up to #264 and found their review memory
+          # tables stale, so nothing below #266 is harvested. It is a fixed floor, never a
+          # watermark: the `followups:harvested` label, not this number, records progress.
+          HARVEST_MIN_PR: "266"
