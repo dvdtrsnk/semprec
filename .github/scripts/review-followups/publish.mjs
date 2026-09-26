@@ -151,6 +151,15 @@ async function readLedger(api, harvestIssue) {
   ]);
 }
 
+/** Throws, listing every violation, unless `proposal` is a publishable proposal for `input`. */
+function checkProposal(input, proposal) {
+  const violations = validateProposal(input, proposal);
+  if (violations.length === 0) violations.push(...forwardReferences(proposal.issues));
+  if (violations.length > 0) {
+    throw new Error(`the proposal is invalid:\n${violations.map((violation) => `- ${violation}`).join("\n")}`);
+  }
+}
+
 /**
  * Publishes `proposal` for the parsed triage input file `input`, in the order described
  * in this module's header. `api` holds `listIssuesWithLabel(label, state)`,
@@ -165,11 +174,7 @@ async function readLedger(api, harvestIssue) {
  * null, the draft ids with their issue numbers, and the number of rejections.
  */
 export async function publishProposal(api, { input, proposal }) {
-  const violations = validateProposal(input, proposal);
-  if (violations.length === 0) violations.push(...forwardReferences(proposal.issues));
-  if (violations.length > 0) {
-    throw new Error(`the proposal is invalid:\n${violations.map((violation) => `- ${violation}`).join("\n")}`);
-  }
+  checkProposal(input, proposal);
   const harvestIssue = proposal.harvestIssue;
 
   const ledger = await readLedger(api, harvestIssue);
@@ -269,6 +274,8 @@ export async function main(argv, api) {
     const files = parseArgs(argv);
     const input = parseInputFile(await readFile(files.input, "utf8"));
     const proposal = JSON.parse(await readFile(files.proposal, "utf8"));
+    // Checked at the read site, so an invalid proposal is reported before the GitHub client is built.
+    checkProposal(input, proposal);
     const summary = await publishProposal(api ?? apiFromClient(clientFromEnv()), { input, proposal });
     console.log(JSON.stringify(summary));
     return 0;
