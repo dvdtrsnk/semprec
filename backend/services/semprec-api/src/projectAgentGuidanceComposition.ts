@@ -35,10 +35,11 @@ function requireEnv(name: string): string {
 
 /**
  * Composes `core.agentGuidanceDrift` (issue #85) from this process's concrete stores and the HTTP
- * `AiGatewayClientPort` implementation (issue #215's `/internal/complete` route). Not yet wired to
- * a route or the scheduler's `ActionRegistry` — no other heartbeat action is either (that
- * registration wiring is issue #29's scope); this is the ready-to-invoke composition a caller or
- * #29's dispatcher plugs in.
+ * `AiGatewayClientPort` implementation (issue #215's `/internal/complete` route). Registered as the
+ * `core.agentGuidanceDrift` heartbeat handler by `createApiActionRegistry`
+ * (actionRegistryComposition.ts), which builds it once when `createApiQueueRuntime` composes the
+ * api runtime. Throws eagerly when `AI_GATEWAY_INTERNAL_TOKEN` is unset, so `semprec-api`
+ * refuses to start without it.
  */
 export function createAgentGuidanceDriftActionForApi(
   pool: Pool,

@@ -2,12 +2,18 @@ import type { Pool } from "pg";
 import { ensureQueueSchema, grantQueueSchemaPrivileges, runWorker } from "@semprec/queue";
 import {
   assertTaskListMatchesAffinity,
-  createActionRegistry,
   createAgentTaskList,
   mergeModuleTaskListForAffinity,
   resolveTaskAffinitySets,
+  type RunAgentFn,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
+import { createAgentsActionRegistry, unwiredRunAgent } from "./actionRegistryComposition.js";
+
+export interface AgentsQueueRuntimeOptions {
+  /** Runs one `core.agentRun` agent session. Defaults to `unwiredRunAgent`, which fails every run until #647 supplies the real one. */
+  runAgent?: RunAgentFn;
+}
 
 export interface AgentsQueueRuntime {
   /** Idempotent: awaits `runner.stop()` exactly once. Never closes `pool` — the caller (`serve.ts`) owns that. */
@@ -24,13 +30,14 @@ export interface AgentsQueueRuntime {
 export async function createAgentsQueueRuntime(
   pool: Pool,
   moduleRegistry: ModuleRegistry,
+  options: AgentsQueueRuntimeOptions = {},
 ): Promise<AgentsQueueRuntime> {
   // Idempotent (graphile-worker's own migration runner and this GRANT block are both re-runnable)
   // — this runtime starts independently of, and possibly before, the API runtime's own install.
   await ensureQueueSchema(pool);
   await grantQueueSchemaPrivileges(pool);
 
-  const actionRegistry = createActionRegistry();
+  const actionRegistry = createAgentsActionRegistry(pool, options.runAgent ?? unwiredRunAgent);
   const coreTaskList = createAgentTaskList(pool, actionRegistry, moduleRegistry);
   const taskList = await mergeModuleTaskListForAffinity(coreTaskList, moduleRegistry, "agents");
 

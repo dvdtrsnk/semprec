@@ -140,7 +140,15 @@ export {
   TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
   TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY,
 } from "./transcription/transcriptionComputedKeys.js";
-export { createTranscriptionRequeueSweepAction, readBlobId } from "./transcription/transcriptionActions.js";
+export {
+  FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
+  TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
+  createFilesTranscriptionTriggerAction,
+  createTranscriptionRequeueSweepAction,
+  readBlobId,
+} from "./transcription/transcriptionActions.js";
+export * from "./library/libraryMetadataActions.js";
+export * from "./mail/personLinkingActions.js";
 export { createRerunTranscriptionRouteHandler } from "./transcription/transcriptionRouteHandlers.js";
 export { matchTranscriptToEvent } from "./transcription/transcriptEventMatch.js";
 export {
