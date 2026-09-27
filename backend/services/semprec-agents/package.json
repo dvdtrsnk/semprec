@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@semprec/agent-runtime": "workspace:*",
     "@semprec/data": "workspace:*",
     "@semprec/module-registry": "workspace:*",
     "@semprec/queue": "workspace:*",

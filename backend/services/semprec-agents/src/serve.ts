@@ -1,3 +1,4 @@
+import { repairInterruptedRuns } from "@semprec/agent-runtime";
 import { createPool, loadFullModuleRegistry, startProcessHeartbeat } from "@semprec/data";
 import { installFatalHandlers } from "@semprec/shared";
 import { createAgentsQueueRuntime } from "./queueRuntime.js";
@@ -28,6 +29,13 @@ startProcessHeartbeat(
 );
 
 const moduleRegistry = await loadFullModuleRegistry();
+
+// Startup orphan repair (issue #642): every run still `running` was abandoned by the previous
+// process, so it is closed before the queue runner below can claim any job that would touch it.
+// A failure here is fatal — it propagates to `installFatalHandlers`, which exits non-zero before
+// the queue runner is ever installed.
+const { repairedRunIds } = await repairInterruptedRuns(pool);
+logger.info({ repairedRunCount: repairedRunIds.length }, "Repaired interrupted agent runs");
 
 // Issue #91: this process is the queue's second composition root — it hosts every
 // `queueAffinity: 'agents'` task handler over this same pool, and installs no crontab of its own.

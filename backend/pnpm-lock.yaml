@@ -371,6 +371,9 @@ importers:
 
   services/semprec-agents:
     dependencies:
+      '@semprec/agent-runtime':
+        specifier: workspace:*
+        version: link:../../packages/agent-runtime
       '@semprec/data':
         specifier: workspace:*
         version: link:../../packages/data
