@@ -222,7 +222,8 @@ export class SempConversation {
    * reschedules another attempt on the same cadence instead of losing track of the entry (which
    * would otherwise leave its `agent_runs` row stuck at `running` forever with nothing left in
    * memory to close it). A run another writer already finished is logged and still cleared: its
-   * row is terminal either way.
+   * row is terminal either way, and no `done` run_status is recorded for it, since the other
+   * writer's close may have been `error`.
    *
    * Claims the entry as `busy` synchronously, before its first `await` — the same invariant
    * `send()`'s own busy check relies on — so a `send()` arriving mid-pause never reuses a
@@ -235,13 +236,14 @@ export class SempConversation {
     entry.busy = true;
     try {
       const closed = await finishAgentRun(this.pool, entry.agentRunId, "done", null);
-      if (!closed) {
+      if (closed) {
+        await pushRunStatus(this.pool, entry.agentRunId, "done");
+      } else {
         logger.warn(
           { agentRunId: entry.agentRunId },
           "SempConversation: paused run was already finished by another writer",
         );
       }
-      await pushRunStatus(this.pool, entry.agentRunId, "done");
       this.entry = null;
     } catch (err) {
       logger.error({ err, agentRunId: entry.agentRunId }, "SempConversation: failed to close paused run, will retry");

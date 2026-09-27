@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { createUser, hashPassword } from "@semprec/data";
+import { createUser, finishAgentRun, hashPassword } from "@semprec/data";
 import { getTraceContext } from "@semprec/shared";
 import { SEMP_BUSY_ERROR_MESSAGE, SempConversation } from "../sempConversation.js";
 import type {
@@ -269,6 +269,42 @@ describe("SempConversation", () => {
       SEMPREC_PROJECT_ITEM_ID,
     ]);
     expect(allRuns[0].n).toBe(2);
+
+    conversation.clear();
+  });
+
+  it("does not record a done run_status when its TTL fires on a run another writer already closed as error", async () => {
+    const ttlMs = 60;
+    const { createAgentSession } = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "first wake" },
+      { kind: "turn_end" },
+    ]);
+    const conversation = new SempConversation(
+      pool,
+      { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID },
+      ttlMs,
+    );
+
+    await conversation.send("one");
+    const { rows: runs } = await pool.query<{ id: string }>(`SELECT id FROM agent_runs WHERE project_item_id = $1`, [
+      SEMPREC_PROJECT_ITEM_ID,
+    ]);
+    const runId = runs[0]!.id;
+    expect(await finishAgentRun(pool, runId, "error", "closed elsewhere")).toBe(true);
+
+    await new Promise((resolve) => setTimeout(resolve, ttlMs + 150));
+
+    const { rows: afterTtl } = await pool.query<{ status: string }>(`SELECT status FROM agent_runs WHERE id = $1`, [
+      runId,
+    ]);
+    expect(afterTtl[0]!.status).toBe("error");
+    const { rows: statuses } = await pool.query<{ status: string }>(
+      `SELECT payload->>'status' AS status FROM agent_run_events
+        WHERE agent_run_id = $1 AND kind = 'run_status' ORDER BY id`,
+      [runId],
+    );
+    expect(statuses.map((r) => r.status)).toEqual(["running"]);
 
     conversation.clear();
   });
