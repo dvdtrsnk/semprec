@@ -192,12 +192,12 @@ export function createCoreTaskList(
       );
     },
     [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: async () => {
-      await handleItemTrashPurgeSweepTask(pool);
+      await handleItemTrashPurgeSweepTask(pool, mailBlobStorage);
     },
     // Issue #221 declared `trashPurge` as a second daily crontab entry alongside
     // `itemTrashPurgeSweep`, distinct in name but not in effect — it runs the same purge sweep.
     [CORE_TASK_NAMES.TRASH_PURGE]: async () => {
-      await handleItemTrashPurgeSweepTask(pool);
+      await handleItemTrashPurgeSweepTask(pool, mailBlobStorage);
     },
     [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: async (_payload, taskHelpers) => {
       await handleObservabilityCheckSystemTask(pool, { job: { id: taskHelpers.job.id } });

@@ -210,16 +210,27 @@ export async function findFileItemByBlobId(
 }
 
 /**
- * Every item, across every database's partition, trashed longer ago than `olderThan` — the
+ * One page of items, across every database's partition, trashed longer ago than `olderThan` — the
  * 30-day purge sweep's entry point into the subtree roots it must consider. Queried against the
  * partitioned parent table directly (same pattern as `getItemsByIds`), so it isn't scoped to one
- * database the way most of this module's reads are.
+ * database the way most of this module's reads are. Keyset-paged on the composite primary key
+ * (issue #675): `after` is the last row of the previous page, and at most `limit` rows come back,
+ * so the sweep never holds more than one page of candidates in memory.
  */
-export async function findItemsDeletedBefore(client: Queryable, olderThan: Date): Promise<ItemRow[]> {
+export async function findItemsDeletedBefore(
+  client: Queryable,
+  olderThan: Date,
+  after?: { databaseId: string; id: string },
+  limit = 500,
+): Promise<ItemRow[]> {
   const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, updated_at, deleted_at
-     FROM items WHERE deleted_at IS NOT NULL AND deleted_at < $1`,
-    [olderThan],
+     FROM items
+     WHERE deleted_at IS NOT NULL AND deleted_at < $1
+       AND ($2::uuid IS NULL OR (database_id, id) > ($2::uuid, $3::uuid))
+     ORDER BY database_id, id
+     LIMIT $4`,
+    [olderThan, after?.databaseId ?? null, after?.id ?? null, limit],
   );
   return rows.map(mapItemRow);
 }

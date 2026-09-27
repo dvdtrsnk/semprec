@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { requireSingleRow } from "../db/pool.js";
+import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import type { DatabaseRow } from "../types.js";
 
@@ -185,4 +185,19 @@ export async function restoreDatabase(client: PoolClient, id: string): Promise<D
     [id],
   );
   return mapDatabaseRow(requireSingleRow(rows, "databases row"));
+}
+
+/**
+ * Permanently removes an inline database whose last item the trash purge (issue #675) has just
+ * hard-deleted: its `rollup_dependencies` and `item_search_index` rows (FKs to `databases` without
+ * a cascade), its `items_p_<hex>` partition through migration 0049's SECURITY DEFINER function,
+ * then the `databases` row itself (`properties` and `views` cascade by FK). The caller must have
+ * confirmed the partition is empty in the same transaction.
+ */
+export async function dropDatabaseWithPartition(client: PoolClient, id: string): Promise<void> {
+  await client.query("DELETE FROM rollup_dependencies WHERE source_database_id = $1", [id]);
+  await client.query("DELETE FROM item_search_index WHERE database_id = $1", [id]);
+  await client.query("SELECT drop_items_partition($1::uuid)", [id]);
+  const result = await client.query("DELETE FROM databases WHERE id = $1", [id]);
+  requireAffectedRows(result, `delete of databases row ${id}`);
 }
