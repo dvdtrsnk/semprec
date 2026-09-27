@@ -27,11 +27,15 @@ async function createUser(): Promise<string> {
   return rows[0]!.id;
 }
 
-async function authHeader(): Promise<{ Authorization: string }> {
+async function authSession(): Promise<{ headers: { Authorization: string }; userId: string }> {
   const email = `${randomUUID()}@example.com`;
   await pool.query(`INSERT INTO users (email, password_hash) VALUES ($1, $2)`, [email, await hashPassword(PASSWORD)]);
-  const { token } = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
-  return { Authorization: `Bearer ${token}` };
+  const { token, user } = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+  return { headers: { Authorization: `Bearer ${token}` }, userId: user.id };
+}
+
+async function authHeader(): Promise<{ Authorization: string }> {
+  return (await authSession()).headers;
 }
 
 async function createPendingRequest(): Promise<string> {
@@ -96,16 +100,17 @@ describe("createApprovalRequestsRequestListener", () => {
   it("approves a pending request", async () => {
     const id = await createPendingRequest();
     const userId = await createUser();
+    const session = await authSession();
 
     const res = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
-      headers: { ...(await authHeader()), "Content-Type": "application/json" },
+      headers: { ...session.headers, "Content-Type": "application/json" },
       body: JSON.stringify({ decision: "approved", decidedByUserId: userId }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { status: string; decidedBy: string };
     expect(body.status).toBe("approved");
-    expect(body.decidedBy).toBe(userId);
+    expect(body.decidedBy).toBe(session.userId);
   });
 
   it("rejects a pending request", async () => {
@@ -134,7 +139,42 @@ describe("createApprovalRequestsRequestListener", () => {
     expect(res.status).toBe(400);
   });
 
-  it("returns 400 for a missing decidedByUserId", async () => {
+  it("records the session user as the decider when the body carries only the decision", async () => {
+    const id = await createPendingRequest();
+    const session = await authSession();
+
+    const res = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
+      method: "PATCH",
+      headers: { ...session.headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ decision: "approved" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { decidedBy: string };
+    expect(body.decidedBy).toBe(session.userId);
+    const { rows } = await pool.query<{ decided_by: string }>(
+      `SELECT decided_by FROM approval_requests WHERE id = $1`,
+      [id],
+    );
+    expect(rows[0]!.decided_by).toBe(session.userId);
+  });
+
+  it("ignores a body decidedByUserId and records the session user as the decider", async () => {
+    const id = await createPendingRequest();
+    const session = await authSession();
+    const claimedDecider = randomUUID();
+
+    const res = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
+      method: "PATCH",
+      headers: { ...session.headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ decision: "approved", decidedByUserId: claimedDecider }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { decidedBy: string };
+    expect(body.decidedBy).toBe(session.userId);
+    expect(body.decidedBy).not.toBe(claimedDecider);
+  });
+
+  it("returns the decision without the payload's argument values", async () => {
     const id = await createPendingRequest();
 
     const res = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
@@ -142,28 +182,22 @@ describe("createApprovalRequestsRequestListener", () => {
       headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: JSON.stringify({ decision: "approved" }),
     });
-    expect(res.status).toBe(400);
-  });
-
-  it("returns 400 for a decidedByUserId that references no user", async () => {
-    const id = await createPendingRequest();
-
-    const res = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
-      method: "PATCH",
-      headers: { ...(await authHeader()), "Content-Type": "application/json" },
-      body: JSON.stringify({ decision: "approved", decidedByUserId: randomUUID() }),
-    });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown> & { safeSummary: { argKeys: string[] } };
+    expect(body).not.toHaveProperty("payload");
+    expect(JSON.stringify(body)).not.toContain('"hi"');
+    expect(body.safeSummary.argKeys).toEqual(["query"]);
   });
 
   it("treats a repeated decision as a deterministic no-op, returning the current state with 200", async () => {
     const id = await createPendingRequest();
     const userId = await createUser();
     const otherUser = await createUser();
+    const firstSession = await authSession();
 
     const first = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
-      headers: { ...(await authHeader()), "Content-Type": "application/json" },
+      headers: { ...firstSession.headers, "Content-Type": "application/json" },
       body: JSON.stringify({ decision: "approved", decidedByUserId: userId }),
     });
     expect(first.status).toBe(200);
@@ -176,7 +210,7 @@ describe("createApprovalRequestsRequestListener", () => {
     expect(second.status).toBe(200);
     const body = (await second.json()) as { status: string; decidedBy: string };
     expect(body.status).toBe("approved");
-    expect(body.decidedBy).toBe(userId);
+    expect(body.decidedBy).toBe(firstSession.userId);
   });
 
   it("returns 404 for an unknown approval request id", async () => {
