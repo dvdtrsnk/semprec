@@ -106,7 +106,7 @@ const queueRuntime = await createApiQueueRuntime(pool, moduleRegistry);
 
 const server = createServer(dispatch);
 
-const shutdown = createGracefulShutdown({ server, queueRuntime, pool, logger });
+const shutdown = createGracefulShutdown({ server, syncServer, queueRuntime, pool, logger });
 registerShutdownSignals(shutdown);
 
 // `WS /api/sync` (issue #160) is the one WS upgrade route this service serves; anything else

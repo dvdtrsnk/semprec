@@ -12,6 +12,7 @@ export interface QueueRuntimeHandle {
 
 export interface CreateGracefulShutdownOptions {
   server: Server;
+  syncServer: { close(): Promise<void> };
   queueRuntime: QueueRuntimeHandle;
   pool: Pool;
   logger: Logger;
@@ -81,21 +82,29 @@ function endPool(pool: Pool, logger: Logger, signal: string): Promise<void> {
 }
 
 /**
- * Builds `semprec-api`'s shutdown sequence: stop accepting new HTTP connections and drain
- * in-flight requests (intake), stop the queue runtime issue #91 hosts in this same process
- * (`queueRuntime.stop()` awaits its `Runner.stop()`), then end the pool. Per
+ * Builds `semprec-api`'s shutdown sequence: close the sync server (every `/api/sync` client gets
+ * close code 1012 and its `LISTEN` client is released — otherwise each upgraded socket keeps
+ * `server.close()` from settling until the drain bound), then stop accepting new HTTP connections
+ * and drain in-flight requests (intake), stop the queue runtime issue #91 hosts in this same
+ * process (`queueRuntime.stop()` awaits its `Runner.stop()`), then end the pool. Per
  * `docs/adr/2026-09-17-shutdown-ordering-with-late-heartbeat-stop.md`'s rejected-alternative
  * note, this ordering is specific to this service — it names no heartbeat step, unlike
  * `semprec-ai-gateway`'s.
  */
 export function createGracefulShutdown(options: CreateGracefulShutdownOptions): (signal: string) => Promise<void> {
-  const { server, queueRuntime, pool, logger } = options;
+  const { server, syncServer, queueRuntime, pool, logger } = options;
   const drainTimeoutMs = options.drainTimeoutMs ?? SHUTDOWN_DRAIN_TIMEOUT_MS;
 
   let shutdownPromise: Promise<void> | null = null;
 
   async function runShutdown(signal: string): Promise<void> {
     logger.info({ signal }, "semprec-api shutting down");
+
+    try {
+      await syncServer.close();
+    } catch (err) {
+      logger.error({ err, signal }, "syncServer.close() failed");
+    }
 
     const timedOut = await drainServer(server, drainTimeoutMs, logger, signal);
 
