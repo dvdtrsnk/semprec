@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { ProviderCallError, type StructuredCompletionProvider, type StructuredCompletionRequest } from "./types.js";
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
@@ -16,19 +17,22 @@ const MAX_RESPONSE_BODY_BYTES = 10 * 1024 * 1024;
  */
 const STRUCTURED_OUTPUT_TOOL_NAME = "emit_structured_output";
 
-interface AnthropicContentBlock {
-  type: string;
-  input?: unknown;
-}
+const anthropicContentBlockSchema = z.looseObject({
+  type: z.string(),
+  input: z.unknown().optional(),
+});
 
-interface AnthropicMessagesResponse {
-  content: AnthropicContentBlock[];
-  usage?: { input_tokens?: number; output_tokens?: number };
-}
-
-function isAnthropicMessagesResponse(value: unknown): value is AnthropicMessagesResponse {
-  return typeof value === "object" && value !== null && Array.isArray((value as { content?: unknown }).content);
-}
+/**
+ * `usage` and both token counts are required: a response without them would otherwise be recorded
+ * as a call that cost nothing, silently under-counting spend against the budget.
+ */
+const anthropicMessagesResponseSchema = z.looseObject({
+  content: z.array(anthropicContentBlockSchema),
+  usage: z.object({
+    input_tokens: z.number().int().nonnegative(),
+    output_tokens: z.number().int().nonnegative(),
+  }),
+});
 
 /**
  * Reads the response body with a hard byte cap, independent of any (absent, wrong, or
@@ -93,6 +97,9 @@ export function createAnthropicStructuredProvider(apiKey: string): StructuredCom
       }
 
       if (!res.ok) {
+        // Cancelling only hands the connection back to the pool; whether it succeeds changes nothing
+        // about the failure reported below, so a cancel error must not replace it.
+        await res.body?.cancel().catch(() => {});
         throw new ProviderCallError(`Anthropic responded with HTTP ${res.status}`);
       }
 
@@ -104,20 +111,29 @@ export function createAnthropicStructuredProvider(apiKey: string): StructuredCom
         throw new ProviderCallError("Anthropic response body was not valid JSON");
       }
 
-      if (!isAnthropicMessagesResponse(rawBody)) {
-        throw new ProviderCallError("Anthropic response did not match the expected shape");
+      const parsed = anthropicMessagesResponseSchema.safeParse(rawBody);
+      if (!parsed.success) {
+        // Names the schema path only — never any response content.
+        const issue = parsed.error.issues[0];
+        const path = issue ? issue.path.map(String).join(".") : "";
+        throw new ProviderCallError(
+          `Anthropic response did not match the expected shape: ${path} ${issue?.message ?? "unknown issue"}`,
+        );
       }
-      const body = rawBody;
+      const body = parsed.data;
 
       const toolUse = body.content.find((block) => block.type === "tool_use");
       if (!toolUse) {
         throw new ProviderCallError("Anthropic response did not include the forced tool_use block");
       }
+      if (toolUse.input === undefined) {
+        throw new ProviderCallError("Anthropic tool_use block carried no input");
+      }
 
       return {
         content: toolUse.input,
-        inputTokens: body.usage?.input_tokens ?? 0,
-        outputTokens: body.usage?.output_tokens ?? 0,
+        inputTokens: body.usage.input_tokens,
+        outputTokens: body.usage.output_tokens,
       };
     },
   };
