@@ -153,13 +153,14 @@ export async function settleTokenGatewayCall(
   id: string,
   input: { inputTokens: number; outputTokens: number; costUsd: number },
 ): Promise<AiGatewayCallRow> {
-  const { rows } = await client.query<AiGatewayCallDbRow>(
+  const result = await client.query<AiGatewayCallDbRow>(
     `UPDATE ai_gateway_calls SET status = 'settled', input_tokens = $2, output_tokens = $3, cost_usd = $4
      WHERE id = $1 AND status = 'reserved'
      RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status`,
     [id, input.inputTokens, input.outputTokens, input.costUsd],
   );
-  return mapRow(requireSingleRow(rows, `reserved ai_gateway_calls row ${id}`));
+  requireAffectedRows(result, `settling reserved ai_gateway_calls row ${id}`);
+  return mapRow(requireSingleRow(result.rows, `reserved ai_gateway_calls row ${id}`));
 }
 
 /** Replaces a `reserved` row's estimate with the real audio usage; the token columns stay NULL. */
@@ -168,13 +169,14 @@ export async function settleAudioGatewayCall(
   id: string,
   input: { audioSeconds: number; costUsd: number },
 ): Promise<AiGatewayCallRow> {
-  const { rows } = await client.query<AiGatewayCallDbRow>(
+  const result = await client.query<AiGatewayCallDbRow>(
     `UPDATE ai_gateway_calls SET status = 'settled', audio_seconds = $2, cost_usd = $3
      WHERE id = $1 AND status = 'reserved'
      RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status`,
     [id, input.audioSeconds, input.costUsd],
   );
-  return mapRow(requireSingleRow(rows, `reserved ai_gateway_calls row ${id}`));
+  requireAffectedRows(result, `settling reserved ai_gateway_calls row ${id}`);
+  return mapRow(requireSingleRow(result.rows, `reserved ai_gateway_calls row ${id}`));
 }
 
 /**
