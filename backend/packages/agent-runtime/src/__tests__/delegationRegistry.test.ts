@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { createAgentRun } from "@semprec/data";
+import { createAgentRun, finishAgentRun } from "@semprec/data";
 import { BUSY_ERROR_MESSAGE, DelegationRegistry, type ReconstructDelegatedHistory } from "../delegationRegistry.js";
 import type { AgentMessage, AgentSession, ConversationEntry, CreateAgentSession } from "../types.js";
 
@@ -264,6 +264,40 @@ describe("DelegationRegistry", () => {
       targetProjectItemId,
     ]);
     expect(allRuns[0].n).toBe(2);
+
+    registry.clear();
+  });
+
+  it("does not record a done run_status when its TTL fires on a run another writer already closed as error", async () => {
+    const ttlMs = 60;
+    const registry = new DelegationRegistry(pool, ttlMs);
+    const supervisorRunId = await newSupervisorRunId();
+    const targetProjectItemId = "67676767-6767-6767-6767-676767676767";
+    const { createAgentSession } = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "first session" },
+      { kind: "turn_end" },
+    ]);
+
+    await registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: "one" });
+    const { rows: runs } = await pool.query<{ id: string }>(`SELECT id FROM agent_runs WHERE project_item_id = $1`, [
+      targetProjectItemId,
+    ]);
+    const runId = runs[0]!.id;
+    expect(await finishAgentRun(pool, runId, "error", "closed elsewhere")).toBe(true);
+
+    await new Promise((resolve) => setTimeout(resolve, ttlMs + 150));
+
+    const { rows: afterTtl } = await pool.query<{ status: string }>(`SELECT status FROM agent_runs WHERE id = $1`, [
+      runId,
+    ]);
+    expect(afterTtl[0]!.status).toBe("error");
+    const { rows: statuses } = await pool.query<{ status: string }>(
+      `SELECT payload->>'status' AS status FROM agent_run_events
+        WHERE agent_run_id = $1 AND kind = 'run_status' ORDER BY id`,
+      [runId],
+    );
+    expect(statuses.map((r) => r.status)).toEqual(["running"]);
 
     registry.clear();
   });
