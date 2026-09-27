@@ -52,7 +52,9 @@ describe("createAuthRequestListener", () => {
     await resetDatabase(pool);
     mailer = createFakeMailer();
 
-    server = createServer(createAuthRequestListener(pool, { passwordResetMailer: mailer, appBaseUrl: APP_BASE_URL }));
+    server = createServer(
+      createAuthRequestListener(pool, { passwordResetMailer: mailer, appBaseUrl: APP_BASE_URL, trustProxy: true }),
+    );
     await new Promise<void>((resolve) => server.listen(0, resolve));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
@@ -173,6 +175,26 @@ describe("createAuthRequestListener", () => {
       ]);
       const sessions = await pool.query<{ user_id: string }>("SELECT user_id FROM sessions");
       expect(sessions.rows).toEqual([{ user_id: user.id }]);
+    });
+
+    it("scopes the lockout to the forwarded client address, so another address can still log in", async () => {
+      const user = await makeUser();
+      const postLoginFrom = (forwardedFor: string, password: string): Promise<Response> =>
+        fetch(`${baseUrl}/api/auth/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Forwarded-For": forwardedFor },
+          body: JSON.stringify({ email: user.email, password, platform: "web" }),
+        });
+
+      for (let i = 0; i < LOCKOUT_THRESHOLD; i++) {
+        const res = await postLoginFrom("203.0.113.9", "wrong");
+        expect(res.status).toBe(401);
+      }
+      const otherAddress = await postLoginFrom("198.51.100.4", PASSWORD);
+      const attackerAddress = await postLoginFrom("203.0.113.9", PASSWORD);
+
+      expect(otherAddress.status).toBe(200);
+      expect(attackerAddress.status).toBe(401);
     });
 
     it("rejects an invalid platform", async () => {

@@ -32,6 +32,8 @@ export interface AppOptions {
   blobStorage: BlobStorageWriter;
   /** Issue #158's `maxFileSizeMb`, already resolved to bytes. */
   maxFileSizeBytes: number;
+  /** Issue #635: forwarded to `createAuthRequestListener` — login throttling keys on the last `X-Forwarded-For` hop. */
+  trustProxy?: boolean;
 }
 
 /**
@@ -82,6 +84,7 @@ export async function createDispatcher(
   const authListener = createAuthRequestListener(pool, {
     passwordResetMailer: options.passwordResetMailer,
     appBaseUrl: options.appBaseUrl,
+    trustProxy: options.trustProxy,
   });
   const notificationsListener = createNotificationsRequestListener(pool);
   const setupListener = createSetupRequestListener(pool, { setupToken: options.setupToken });
