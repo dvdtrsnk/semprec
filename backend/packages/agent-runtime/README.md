@@ -12,8 +12,8 @@ boundary between them.
 
 This is a compatibility boundary, not an implementation detail: code outside
 this package must depend only on what `src/index.ts` exports and on the
-`CreateAgentSession`/`AgentSession`/`PiProviderRegistry` ports in `src/types.ts`
-and `src/piProviders.ts`, never on a specific lifecycle file or on
+`CreateAgentSession`/`AgentSession` ports in `src/types.ts`, never on a
+specific lifecycle file or on
 `pi-agent-core`/a provider SDK directly. Both are enforced by
 `dependency-cruiser.rules.json` (`no-agent-runtime-internal-cross-import`,
 `no-agent-runtime-provider-internals`) — see
@@ -28,8 +28,8 @@ owns each. Only the second is this package.
 | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Single-run lifecycle & compaction                                         | `pi-agent-core` (external, pinned as `@earendil-works/pi-agent-core`/`pi-ai`/`pi-coding-agent`) | Runs one agent turn to completion, streams its messages, decides when/how to compact context. Opaque to this package — reached only through the `CreateAgentSession` port and the `CompactionAdapter` seam (`compaction.ts`); the one sanctioned direct import is `src/__tests__/piRuntimeContract.unit.test.ts`, which pins the exact version and shape this package is written against.                                                                                                          |
 | Session audit (`agent_runs` / `agent_run_events`, `unit`)                 | **this package** (`agent-runtime`)                                                              | `lifecycleAdapter.ts` opens/closes `agent_runs` rows and appends `agent_run_events`; `startupRepair.ts` closes orphans left `running` by a crash; `delegationRegistry.ts`/`sempConversation.ts` add TTL-bounded, key-scoped reuse of an already-open session, with `conversationReconstruction.ts` rebuilding a dormant session's prior context on wake; `mcpInvokeTool.ts` is the outbound MCP tool-call adapter agent turns use to actually call a granted tool.                                 |
-| Semprec orchestration (trigger acceptance, startup ordering, tool wiring) | `services/semprec-agents` (not yet built — issue #91)                                           | Decides _when_ a run starts (heartbeat/delegation/user message), which `CreateAgentSession` factory and `systemPromptOverride` a given caller gets, calls `registerPiProviders` once at startup, and calls `repairInterruptedRuns` before accepting new triggers. `services/semprec-api` exists today but only reads persisted state (`agent_runs`, approval requests, AI usage) over HTTP — it does not construct or drive a session, so it is not this composition root.                         |
-| Gateway egress & budget                                                   | `packages/ai-gateway`                                                                           | The only package allowed to hold provider credentials or call a model API; `gateway.ts`'s `complete`/`embed`/`transcribe` check the daily/monthly budget caps before every call and log `ai_gateway_calls`. See `.bb/skills/ai-gateway/SKILL.md`. `piProviders.ts`'s `registerPiProviders` is how a `pi-agent-core` session is routed through it instead of a provider directly.                                                                                                                   |
+| Semprec orchestration (trigger acceptance, startup ordering, tool wiring) | `services/semprec-agents` (not yet built — issue #91)                                           | Decides _when_ a run starts (heartbeat/delegation/user message), which `CreateAgentSession` factory and `systemPromptOverride` a given caller gets, composes the pi-backed `CreateAgentSession` against the gateway's `pi-messages` model (issue #647), and calls `repairInterruptedRuns` before accepting new triggers. `services/semprec-api` exists today but only reads persisted state (`agent_runs`, approval requests, AI usage) over HTTP — it does not construct or drive a session, so it is not this composition root.                         |
+| Gateway egress & budget                                                   | `packages/ai-gateway`                                                                           | The only package allowed to hold provider credentials or call a model API; `gateway.ts`'s `complete`/`embed`/`transcribe` check the daily/monthly budget caps before every call and log `ai_gateway_calls`. See `.bb/skills/ai-gateway/SKILL.md`. `services/semprec-agents`'s `modelComposition.ts` is how a `pi-agent-core` session is routed through it instead of a provider directly.                                                                                                                   |
 | Registry allowlist (which tools a module contributes)                     | `packages/module-registry`                                                                      | `ModuleAgentToolDescriptor`/`ModuleAgentToolProjection` — a module declares its agent tools once, in its manifest; nothing here decides that list. MCP tools follow the same "declared, not decided here" shape one level down: `packages/data`'s `mcpSync.ts` (human-triggered "Synchronize tools") and `mcpProjectGrantsStore.ts`/`mcpAgentTools.ts` (per-project grants) decide what's grantable and granted — `mcpInvokeTool.ts` here only resolves and executes against whatever it's handed. |
 
 A maintainer looking for "who owns X":
@@ -57,8 +57,7 @@ A maintainer looking for "who owns X":
 _on_ `runAgentTurn` rather than duplicating it), `conversationReconstruction.ts`
 (rebuilding a dormant session's prior context, nothing else), `compaction.ts`
 (the four narrow `estimateContextTokens`/`shouldCompact`/`prepareCompaction`/
-`compact` seams, opaque otherwise), `piProviders.ts` (routing pi's providers
-through the gateway at startup, nothing about a specific session), and
+`compact` seams, opaque otherwise), and
 `mcpInvokeTool.ts` (resolving + executing one MCP tool call, optionally
 approval-gated). None of them decide tool availability, and only
 `mcpInvokeTool.ts` writes anywhere outside `agent_runs`/`agent_run_events` —
@@ -103,8 +102,7 @@ the gate is `mcpInvokeTool.ts`'s, not the turn loop's.
 
 **DIP** — every runtime file in this package depends on the
 `CreateAgentSession`/`AgentSession` port (`types.ts`), the `CompactionAdapter`
-port (`compaction.ts`), or the `PiProviderRegistry` port (`piProviders.ts`),
-never on `pi-agent-core`'s or a provider's own package. `AgentSession.send` is
+port (`compaction.ts`), never on `pi-agent-core`'s or a provider's own package. `AgentSession.send` is
 optional specifically so the port doesn't assume every implementation
 supports multi-turn continuation. `types.ts`'s own comment says why the ports
 exist rather than the real SDK: `pi-agent-core` has not published TypeScript

@@ -5,6 +5,8 @@ import {
   createAgentTaskList,
   mergeModuleTaskListForAffinity,
   resolveTaskAffinitySets,
+  type AgentQueueTaskHandler,
+  type RunAgentFn,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentsActionRegistry, unwiredRunAgent } from "./actionRegistryComposition.js";
@@ -12,6 +14,17 @@ import { createAgentsActionRegistry, unwiredRunAgent } from "./actionRegistryCom
 export interface AgentsQueueRuntime {
   /** Idempotent: awaits `runner.stop()` exactly once. Never closes `pool` — the caller (`serve.ts`) owns that. */
   stop(): Promise<void>;
+}
+
+/**
+ * The agent session wiring `serve.ts` composes (issue #647). Each one left out keeps its
+ * placeholder: `core.agentRun` closes its run as `error`, and `agentRun`/`delegatedAgentRun` jobs
+ * complete without doing anything.
+ */
+export interface AgentsQueueRuntimeOptions {
+  runAgent?: RunAgentFn;
+  agentRunTask?: AgentQueueTaskHandler;
+  delegatedAgentRunTask?: AgentQueueTaskHandler;
 }
 
 /**
@@ -24,14 +37,21 @@ export interface AgentsQueueRuntime {
 export async function createAgentsQueueRuntime(
   pool: Pool,
   moduleRegistry: ModuleRegistry,
+  options: AgentsQueueRuntimeOptions = {},
 ): Promise<AgentsQueueRuntime> {
   // Idempotent (graphile-worker's own migration runner and this GRANT block are both re-runnable)
   // — this runtime starts independently of, and possibly before, the API runtime's own install.
   await ensureQueueSchema(pool);
   await grantQueueSchemaPrivileges(pool);
 
-  const actionRegistry = createAgentsActionRegistry(pool, unwiredRunAgent);
-  const coreTaskList = createAgentTaskList(pool, actionRegistry, moduleRegistry);
+  const actionRegistry = createAgentsActionRegistry(pool, options.runAgent ?? unwiredRunAgent);
+  const coreTaskList = createAgentTaskList(
+    pool,
+    actionRegistry,
+    moduleRegistry,
+    options.agentRunTask,
+    options.delegatedAgentRunTask,
+  );
   const taskList = await mergeModuleTaskListForAffinity(coreTaskList, moduleRegistry, "agents");
 
   // Before this runner reports readiness (returns from `run()` below), prove its registered

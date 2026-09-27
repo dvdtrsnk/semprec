@@ -58,9 +58,9 @@
     {
       "name": "pi-only-in-agent-runtime",
       "severity": "error",
-      "comment": "Issue #173: pi-agent-core (the pinned @earendil-works/pi-agent-core package) is opaque outside the runtime that wraps it — only packages/agent-runtime may import it directly.",
+      "comment": "Issue #173: pi-agent-core (the pinned @earendil-works/pi-agent-core package) is opaque outside the runtime that wraps it — only packages/agent-runtime and services/semprec-agents may import it directly. Issue #647: services/semprec-agents is the composition root that owns process startup, so it is the second sanctioned importer — it constructs the pi Agent that packages/agent-runtime only declares ports for (see no-agent-runtime-provider-internals).",
       "from": {
-        "path": "^(?!packages/agent-runtime/)"
+        "path": "^(?!packages/agent-runtime/|services/semprec-agents/)"
       },
       "to": {
         "path": "node_modules/@earendil-works/pi-agent-core"

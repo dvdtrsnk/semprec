@@ -1,6 +1,8 @@
 import { repairInterruptedRuns } from "@semprec/agent-runtime";
 import { createPool, loadFullModuleRegistry, startProcessHeartbeat } from "@semprec/data";
 import { installFatalHandlers } from "@semprec/shared";
+import { createAgentRunTask, createRunAgentForHeartbeats } from "./agentRunTasks.js";
+import { createGatewayModel } from "./modelComposition.js";
 import { createAgentsQueueRuntime } from "./queueRuntime.js";
 import { createGracefulShutdown, registerShutdownSignals } from "./shutdown.js";
 import { logger } from "./logger.js";
@@ -39,7 +41,15 @@ logger.info({ repairedRunCount: repairedRunIds.length }, "Repaired interrupted a
 
 // Issue #91: this process is the queue's second composition root — it hosts every
 // `queueAffinity: 'agents'` task handler over this same pool, and installs no crontab of its own.
-const queueRuntime = await createAgentsQueueRuntime(pool, moduleRegistry);
+// Issue #647: every agent session runs against the gateway-addressed model; `createGatewayModel`
+// throws naming a missing AI_GATEWAY_BASE_URL/AI_GATEWAY_INTERNAL_TOKEN/AGENT_MODEL, so the process
+// refuses to start without them.
+const gateway = createGatewayModel(process.env);
+const queueRuntime = await createAgentsQueueRuntime(pool, moduleRegistry, {
+  runAgent: createRunAgentForHeartbeats(pool, moduleRegistry, gateway),
+  agentRunTask: createAgentRunTask(pool, moduleRegistry, gateway),
+  delegatedAgentRunTask: createAgentRunTask(pool, moduleRegistry, gateway),
+});
 
 const shutdown = createGracefulShutdown({ queueRuntime, pool, logger });
 registerShutdownSignals(shutdown);
