@@ -103,6 +103,54 @@ describe("repairInterruptedRuns", () => {
     expect(rows).toEqual([]);
   });
 
+  it("leaves a running mcp-credential run untouched while repairing a heartbeat run in the same sweep", async () => {
+    const mcpRun = await createAgentRun(pool, { triggeredBy: "mcp", task: "mcp credential" });
+    await insertAgentRunEvent(pool, mcpRun.id, "tool_use", { kind: "tool_use", tool: "search", toolCallId: "mcp-1" });
+    const heartbeatRun = await createAgentRun(pool, { triggeredBy: "heartbeat", task: "search something" });
+    await insertAgentRunEvent(pool, heartbeatRun.id, "tool_use", {
+      kind: "tool_use",
+      tool: "search",
+      toolCallId: "hb-1",
+    });
+
+    const { repairedRunIds } = await repairInterruptedRuns(pool);
+
+    expect(repairedRunIds).toEqual([heartbeatRun.id]);
+
+    const { rows: runs } = await pool.query<{ id: string; status: string; result: string | null }>(
+      `SELECT id, status, result FROM agent_runs WHERE id = ANY($1)`,
+      [[mcpRun.id, heartbeatRun.id]],
+    );
+    const byId = new Map(runs.map((r) => [r.id, r]));
+    expect(byId.get(mcpRun.id)).toEqual({ id: mcpRun.id, status: "running", result: null });
+    expect(byId.get(heartbeatRun.id)).toEqual({
+      id: heartbeatRun.id,
+      status: "error",
+      result: "interrupted_by_restart",
+    });
+
+    const { rows: mcpEvents } = await pool.query<{ kind: string }>(
+      `SELECT kind FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id ASC`,
+      [mcpRun.id],
+    );
+    expect(mcpEvents.map((r) => r.kind)).toEqual(["tool_use"]);
+
+    const { rows: heartbeatEvents } = await pool.query<{
+      kind: string;
+      payload: { toolCallId?: string; error?: boolean };
+    }>(`SELECT kind, payload FROM agent_run_events WHERE agent_run_id = $1 AND kind <> 'run_status' ORDER BY id ASC`, [
+      heartbeatRun.id,
+    ]);
+    expect(heartbeatEvents.map((r) => r.kind)).toEqual(["tool_use", "tool_result"]);
+    expect(heartbeatEvents[1]!.payload.toolCallId).toBe("hb-1");
+    expect(heartbeatEvents[1]!.payload.error).toBe(true);
+
+    const { rows: notifications } = await pool.query<{ kind: string; source_id: string }>(
+      `SELECT kind, source_id FROM notifications ORDER BY source_id`,
+    );
+    expect(notifications).toEqual([{ kind: "agent_run_error", source_id: heartbeatRun.id }]);
+  });
+
   it("is a no-op when there are no running runs", async () => {
     const { repairedRunIds } = await repairInterruptedRuns(pool);
     expect(repairedRunIds).toEqual([]);

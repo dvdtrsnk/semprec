@@ -15,10 +15,14 @@ const INTERRUPTED_REASON = "interrupted_by_restart";
  * trigger (heartbeat, delegation, user message) — recovery from here is left to those
  * existing continuation paths, not to this sweep.
  *
- * No caller exists yet: the `services/semprec-agents` composition root that owns startup
- * ordering and trigger acceptance is issue #91's deliverable, out of scope here (#117 is
- * only the adapter's push hook and this sweep). #91 must call this function first, before
- * installing its graphile-worker runner.
+ * `services/semprec-agents/src/serve.ts` calls this before installing its graphile-worker
+ * runner, so no queued trigger can be claimed while the sweep is in flight.
+ *
+ * Runs with `triggeredBy === "mcp"` are skipped: they are not orphans. Such a run only backs a
+ * minted MCP run credential that authenticates `POST /mcp` calls until it expires — no
+ * in-process session drives it, so a restart interrupts nothing. It is closed by its
+ * credential's expiry sweep, not here; repairing it would revoke every live MCP credential and
+ * emit a spurious `agent_run_error` notification on each restart.
  *
  * Two repairs, per orphaned run:
  *  1. If its last logged event is an unpaired `tool_use`, append a synthetic
@@ -38,7 +42,7 @@ export async function repairInterruptedRuns(pool: Pool): Promise<{ repairedRunId
   try {
     await client.query("BEGIN");
 
-    const orphaned = await listRunningAgentRuns(client);
+    const orphaned = (await listRunningAgentRuns(client)).filter((run) => run.triggeredBy !== "mcp");
     for (const run of orphaned) {
       const events = await listAgentRunEvents(client, run.id);
       const last = events[events.length - 1];
