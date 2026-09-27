@@ -77,6 +77,10 @@ if (!Number.isFinite(maxFileSizeMb) || maxFileSizeMb <= 0) {
 }
 const blobStorage = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR"));
 
+// Issue #635: this process sits behind Caddy on loopback, so the socket peer is always 127.0.0.1.
+// Only the exact string "1" trusts the proxy's `X-Forwarded-For`; any other value, or unset, is false.
+const trustProxy = process.env.TRUST_PROXY === "1";
+
 const pool = createPool(connectionString);
 wireRealtimeHooks(pool);
 
@@ -97,6 +101,7 @@ const dispatch = await createDispatcher(pool, {
   moduleRegistry,
   blobStorage,
   maxFileSizeBytes: maxFileSizeMb * 1024 * 1024,
+  trustProxy,
 });
 const syncServer = await createSyncUpgradeHandler(pool);
 

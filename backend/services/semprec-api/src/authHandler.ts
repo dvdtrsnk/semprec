@@ -19,6 +19,7 @@ import {
   type PasswordResetMailer,
 } from "@semprec/data";
 import type { Pool } from "pg";
+import { clientIpFromRequest } from "./clientIp.js";
 import { logger } from "./logger.js";
 
 /** Name of the cookie a web client's login response carries the session token in. */
@@ -120,6 +121,11 @@ export interface AuthRequestListenerOptions {
   passwordResetMailer: PasswordResetMailer;
   /** Origin the emailed password-reset link is built against, e.g. `https://app.semprec.example`. */
   appBaseUrl: string;
+  /**
+   * Read the login throttle key from the last `X-Forwarded-For` hop instead of the socket peer
+   * (see `clientIpFromRequest`). Only safe behind a proxy that appends that hop; defaults to `false`.
+   */
+  trustProxy?: boolean;
 }
 
 /**
@@ -159,7 +165,11 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
           email: body.email,
           password: body.password,
           platform: body.platform,
-          ip: req.socket.remoteAddress ?? "0.0.0.0",
+          // Throttle key (#635): the failure streak is scoped per (email, ip) and there is
+          // deliberately no per-email aggregate lock — that would let an attacker from any address
+          // lock the owner out everywhere. Per-address scoping only ever locks the attacker's own
+          // address, and Argon2id verification keeps distributed guessing expensive.
+          ip: clientIpFromRequest(req, { trustProxy: options.trustProxy ?? false }),
           userAgent: typeof userAgentHeader === "string" ? userAgentHeader : null,
         });
 
