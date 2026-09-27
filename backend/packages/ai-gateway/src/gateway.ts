@@ -46,7 +46,8 @@ async function assertWithinBudget(client: Pool | PoolClient): Promise<void> {
  * caller's estimate. The lock is released at COMMIT, before the provider is called, so concurrent
  * calls serialize only on the check-and-insert, never on the provider round trip — and the next
  * caller's budget check already sees this call's reservation. A `BudgetExceededError` rolls the
- * transaction back (no row) and propagates unchanged.
+ * transaction back (no row) and propagates unchanged. The lock key and the reserve/settle/fail
+ * lifecycle are docs/adr/2026-09-27-ai-budget-reservations-under-a-global-advisory-lock.md.
  */
 function reserve(pool: Pool, ctx: GatewayCallContext): Promise<AiGatewayCallRow> {
   return withTransaction(pool, async (tx) => {
@@ -89,6 +90,11 @@ async function invokeReserved<T>(
   }
 }
 
+/*
+ * A settle failure propagates and deliberately leaves the reservation `reserved` at its estimate:
+ * the provider has already been paid, so failing the row at cost 0 would under-report real spend
+ * and let later calls exceed the cap (see the ADR above).
+ */
 async function withTokenAccounting<T extends TokenCallResult>(
   pool: Pool,
   ctx: GatewayCallContext,

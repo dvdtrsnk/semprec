@@ -181,10 +181,13 @@ export async function settleAudioGatewayCall(
 
 /**
  * Marks a `reserved` row `failed` at cost 0, so every `SUM(cost_usd)` (budget, usage report)
- * excludes it without a status filter. Throws when the row is not `reserved`.
+ * excludes it without a status filter. Throws when the row is not `reserved`. Auto-committed on
+ * the `Pool` (docs/adr/2026-09-27-auto-committed-writes-for-records-that-must-survive-a-failure.md):
+ * the failure record must survive whatever the failed call's caller rolls back, or the row would
+ * keep its estimate against the budget.
  */
-export async function failGatewayCall(client: Pool | PoolClient, id: string): Promise<void> {
-  const result = await client.query(
+export async function failGatewayCall(pool: Pool, id: string): Promise<void> {
+  const result = await pool.query(
     `UPDATE ai_gateway_calls SET status = 'failed', cost_usd = 0 WHERE id = $1 AND status = 'reserved'`,
     [id],
   );
