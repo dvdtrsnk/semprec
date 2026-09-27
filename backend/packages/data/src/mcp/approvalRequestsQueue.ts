@@ -55,6 +55,40 @@ function safeSummaryOf(payload: ApprovalRequest["payload"]): ApprovalRequestSafe
 }
 
 /**
+ * What `PATCH /api/approval-requests/:id` returns for a decided (or already-decided) request: the
+ * decision's outcome plus the same triage fields the queue shows, with the payload reduced to
+ * `safeSummary` for the same reason as there. `payload`, `resourceSnapshot` and the execution
+ * outcome fields (`executionResult`, `executionError`, `executedAt`) are deliberately absent.
+ */
+export interface ApprovalRequestDecisionView {
+  id: string;
+  status: ApprovalRequest["status"];
+  decidedAt: string | null;
+  decidedBy: string | null;
+  executionStatus: ApprovalRequest["executionStatus"];
+  toolName: string;
+  riskClass: string;
+  requestedAt: string;
+  agentRunId: string;
+  safeSummary: ApprovalRequestSafeSummary;
+}
+
+export function toApprovalRequestDecisionView(request: ApprovalRequest): ApprovalRequestDecisionView {
+  return {
+    id: request.id,
+    status: request.status,
+    decidedAt: request.decidedAt,
+    decidedBy: request.decidedBy,
+    executionStatus: request.executionStatus,
+    toolName: request.toolName,
+    riskClass: request.riskClass,
+    requestedAt: request.requestedAt,
+    agentRunId: request.agentRunId,
+    safeSummary: safeSummaryOf(request.payload),
+  };
+}
+
+/**
  * The global approval queue's read model (issue #132): every pending request across every
  * project, each joined with its source project's display name and agent-run id so the UI can
  * show "where this came from" without a per-project detour. `agent_runs.project_item_id` and

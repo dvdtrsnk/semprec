@@ -323,8 +323,12 @@ export {
   terminalizeApprovalRequestAsConflict,
   markApprovalRequestExecutionSucceeded,
 } from "./mcp/approvalRequestsStore.js";
-export type { ApprovalRequestQueueEntry, ApprovalRequestSafeSummary } from "./mcp/approvalRequestsQueue.js";
-export { listApprovalRequestsQueue } from "./mcp/approvalRequestsQueue.js";
+export type {
+  ApprovalRequestQueueEntry,
+  ApprovalRequestSafeSummary,
+  ApprovalRequestDecisionView,
+} from "./mcp/approvalRequestsQueue.js";
+export { listApprovalRequestsQueue, toApprovalRequestDecisionView } from "./mcp/approvalRequestsQueue.js";
 export type { McpInvokeResult, McpInvokeArgs, McpInvokeOptions } from "./mcp/mcpToolExecution.js";
 export { executeMcpInvocation } from "./mcp/mcpToolExecution.js";
 export type { GenericOperationApprovalReplay } from "./mcp/approvalRequestExecution.js";
