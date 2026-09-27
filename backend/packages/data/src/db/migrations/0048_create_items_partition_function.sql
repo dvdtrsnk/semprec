@@ -15,9 +15,8 @@
 -- another schema's objects; because pg_catalog comes first in it, both the new partition and
 -- `items` are schema-qualified with public.
 --
--- Rule: any further DDL the API role ever needs goes through a SECURITY DEFINER function of this
--- shape — owned by the migrating role, EXECUTE revoked from PUBLIC and granted to the one role
--- that needs it — never through a schema-level CREATE grant or a change of table ownership.
+-- Why DDL is delegated this way rather than by a schema CREATE grant or an ownership change:
+-- docs/adr/2026-09-27-runtime-ddl-through-security-definer-functions.md.
 --
 -- Additive only: a new function and its grants; no existing object, partition or grant changes,
 -- so the previous release behaves exactly as before against this schema after a rollback.

@@ -66,4 +66,5 @@ created by migration `0048_create_items_partition_function.sql`:
 
 **Rule:** any further DDL the API role ever needs goes through a `SECURITY DEFINER` function of
 this shape — owned by the migrating role, `EXECUTE` revoked from `PUBLIC` and granted only to the
-role that needs it — never through a schema-level `CREATE` grant or a change of table ownership.
+role that needs it — never through a schema-level `CREATE` grant or a change of table ownership
+(decision record: `docs/adr/2026-09-27-runtime-ddl-through-security-definer-functions.md`).
