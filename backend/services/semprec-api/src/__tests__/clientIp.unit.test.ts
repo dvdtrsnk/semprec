@@ -33,6 +33,16 @@ describe("clientIpFromRequest", () => {
     expect(clientIpFromRequest(req, { trustProxy: true })).toBe("127.0.0.1");
   });
 
+  it("falls back to the socket address when the last forwarded hop is not an IP address", () => {
+    const req = fakeRequest("203.0.113.9, not-an-ip", "127.0.0.1");
+    expect(clientIpFromRequest(req, { trustProxy: true })).toBe("127.0.0.1");
+  });
+
+  it("returns a forwarded IPv6 hop", () => {
+    const req = fakeRequest("203.0.113.9, 2001:db8::1", "127.0.0.1");
+    expect(clientIpFromRequest(req, { trustProxy: true })).toBe("2001:db8::1");
+  });
+
   it("returns 0.0.0.0 when the socket has no address", () => {
     const req = fakeRequest(undefined, undefined);
     expect(clientIpFromRequest(req, { trustProxy: true })).toBe("0.0.0.0");
