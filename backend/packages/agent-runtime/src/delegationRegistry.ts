@@ -237,13 +237,20 @@ export class DelegationRegistry {
    * The entry is only removed from `entries` once both DB writes succeed — a transient DB
    * failure here reschedules another attempt on the same cadence instead of losing track of
    * the entry (which would otherwise leave its `agent_runs` row stuck at `running` forever
-   * with nothing left in memory to close it).
+   * with nothing left in memory to close it). A run another writer already finished is logged
+   * and still dropped from memory: its row is terminal either way.
    */
   private async expire(entryKey: string): Promise<void> {
     const entry = this.entries.get(entryKey);
     if (!entry || entry.busy) return;
     try {
-      await finishAgentRun(this.pool, entry.agentRunId, "done", null);
+      const closed = await finishAgentRun(this.pool, entry.agentRunId, "done", null);
+      if (!closed) {
+        logger.warn(
+          { agentRunId: entry.agentRunId },
+          "DelegationRegistry: expired session's run was already finished by another writer",
+        );
+      }
       await pushRunStatus(this.pool, entry.agentRunId, "done");
       this.entries.delete(entryKey);
     } catch (err) {

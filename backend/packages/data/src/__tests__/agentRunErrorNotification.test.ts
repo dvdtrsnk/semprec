@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
-import { createAgentRun, finishAgentRunWithErrorNotification, getAgentRun } from "../agentRuns/agentRunsStore.js";
+import { createAgentRun, finishAgentRun, finishAgentRunWithErrorNotification, getAgentRun } from "../agentRuns/agentRunsStore.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 
@@ -27,7 +27,9 @@ describe("finishAgentRunWithErrorNotification (issue #149)", () => {
     const user = await createTestUser();
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "do the thing" });
 
-    await withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, run.id, "boom"));
+    await expect(
+      withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, run.id, "boom")),
+    ).resolves.toBe(true);
 
     const { rows: afterFirst } = await pool.query(
       `SELECT user_id, kind, title, link_href, source_table, source_id, transition_instance FROM notifications WHERE source_id = $1`,
@@ -45,7 +47,9 @@ describe("finishAgentRunWithErrorNotification (issue #149)", () => {
     ]);
 
     // Replaying the same close (e.g. a retried caller after a crash) must not duplicate it.
-    await withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, run.id, "boom"));
+    await expect(
+      withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, run.id, "boom")),
+    ).resolves.toBe(false);
     const { rows: afterReplay } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [run.id]);
     expect(afterReplay).toHaveLength(1);
   });
@@ -77,6 +81,20 @@ describe("finishAgentRunWithErrorNotification (issue #149)", () => {
     expect(finished!.status).toBe("error");
     const { rows } = await pool.query(`SELECT user_id, kind FROM notifications WHERE source_id = $1`, [run.id]);
     expect(rows).toMatchObject([{ user_id: user.id, kind: "agent_run_error" }]);
+  });
+
+  it("returns false and writes no notification when the run was already finished as done", async () => {
+    await createTestUser();
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "do the thing" });
+    await finishAgentRun(pool, run.id, "done", "all good");
+
+    await expect(finishAgentRunWithErrorNotification(pool, run.id, "boom")).resolves.toBe(false);
+
+    const finished = await getAgentRun(pool, run.id);
+    expect(finished!.status).toBe("done");
+    expect(finished!.result).toBe("all good");
+    const { rows } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [run.id]);
+    expect(rows).toHaveLength(0);
   });
 
   it("rejects creating an agent run before any user account exists", async () => {
