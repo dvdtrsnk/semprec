@@ -148,10 +148,9 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
       const item = await dataChokePoint.createItem({ databaseId: db.id, properties: {} });
 
       expect(item.databaseId).toBe(db.id);
-      const { rows } = await adminPool.query<{ relname: string }>(
-        `SELECT relname FROM pg_class WHERE relname = $1`,
-        [`items_p_${db.id.replaceAll("-", "")}`],
-      );
+      const { rows } = await adminPool.query<{ relname: string }>(`SELECT relname FROM pg_class WHERE relname = $1`, [
+        `items_p_${db.id.replaceAll("-", "")}`,
+      ]);
       expect(rows).toEqual([{ relname: `items_p_${db.id.replaceAll("-", "")}` }]);
     });
 
