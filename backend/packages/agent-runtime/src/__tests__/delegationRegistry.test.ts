@@ -268,7 +268,7 @@ describe("DelegationRegistry", () => {
     registry.clear();
   });
 
-  it("does not record a done run_status when its TTL fires on a run another writer already closed as error", async () => {
+  it("records the stored error run_status, not done, when its TTL fires on a run another writer already closed as error", async () => {
     const ttlMs = 60;
     const registry = new DelegationRegistry(pool, ttlMs);
     const supervisorRunId = await newSupervisorRunId();
@@ -297,7 +297,7 @@ describe("DelegationRegistry", () => {
         WHERE agent_run_id = $1 AND kind = 'run_status' ORDER BY id`,
       [runId],
     );
-    expect(statuses.map((r) => r.status)).toEqual(["running"]);
+    expect(statuses.map((r) => r.status)).toEqual(["running", "error"]);
 
     registry.clear();
   });

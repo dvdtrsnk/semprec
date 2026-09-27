@@ -1,5 +1,11 @@
 import type { Pool } from "pg";
-import { createAgentRun, finishAgentRun, finishAgentRunWithErrorNotification, withTransaction } from "@semprec/data";
+import {
+  createAgentRun,
+  finishAgentRun,
+  finishAgentRunWithErrorNotification,
+  getAgentRun,
+  withTransaction,
+} from "@semprec/data";
 import { withTraceContext } from "@semprec/shared";
 import type { CompactionAdapter } from "./compaction.js";
 import {
@@ -222,8 +228,8 @@ export class SempConversation {
    * reschedules another attempt on the same cadence instead of losing track of the entry (which
    * would otherwise leave its `agent_runs` row stuck at `running` forever with nothing left in
    * memory to close it). A run another writer already finished is logged and still cleared: its
-   * row is terminal either way, and no `done` run_status is recorded for it, since the other
-   * writer's close may have been `error`.
+   * row is terminal either way, and its run_status event records the status that writer stored
+   * (read back after the lost close, since it may have been `error`) rather than `done`.
    *
    * Claims the entry as `busy` synchronously, before its first `await` — the same invariant
    * `send()`'s own busy check relies on — so a `send()` arriving mid-pause never reuses a
@@ -243,6 +249,9 @@ export class SempConversation {
           { agentRunId: entry.agentRunId },
           "SempConversation: paused run was already finished by another writer",
         );
+        const finished = await getAgentRun(this.pool, entry.agentRunId);
+        if (!finished) throw new Error(`agent run ${entry.agentRunId} vanished after finishing`);
+        await pushRunStatus(this.pool, entry.agentRunId, finished.status);
       }
       this.entry = null;
     } catch (err) {
