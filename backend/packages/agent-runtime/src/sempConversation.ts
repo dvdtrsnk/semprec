@@ -221,7 +221,8 @@ export class SempConversation {
    * The entry is only cleared once both DB writes succeed — a transient DB failure here
    * reschedules another attempt on the same cadence instead of losing track of the entry (which
    * would otherwise leave its `agent_runs` row stuck at `running` forever with nothing left in
-   * memory to close it).
+   * memory to close it). A run another writer already finished is logged and still cleared: its
+   * row is terminal either way.
    *
    * Claims the entry as `busy` synchronously, before its first `await` — the same invariant
    * `send()`'s own busy check relies on — so a `send()` arriving mid-pause never reuses a
@@ -233,7 +234,13 @@ export class SempConversation {
     if (!entry || entry.busy) return;
     entry.busy = true;
     try {
-      await finishAgentRun(this.pool, entry.agentRunId, "done", null);
+      const closed = await finishAgentRun(this.pool, entry.agentRunId, "done", null);
+      if (!closed) {
+        logger.warn(
+          { agentRunId: entry.agentRunId },
+          "SempConversation: paused run was already finished by another writer",
+        );
+      }
       await pushRunStatus(this.pool, entry.agentRunId, "done");
       this.entry = null;
     } catch (err) {

@@ -3,7 +3,8 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
-import { createAgentRun } from "../agentRuns/agentRunsStore.js";
+import { createAgentRun, finishAgentRun } from "../agentRuns/agentRunsStore.js";
+import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import {
   insertAgentRunEvent,
   insertAndNotifyAgentRunEvent,
@@ -123,5 +124,77 @@ describe("agentRunEventsStore", () => {
     ).rejects.toThrow("rollback");
 
     expect(announced).toEqual([]);
+  });
+
+  async function countEvents(agentRunId: string): Promise<number> {
+    const { rows } = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM agent_run_events WHERE agent_run_id = $1",
+      [agentRunId],
+    );
+    return Number(rows[0]!.count);
+  }
+
+  /** A JSON string payload whose serialization is exactly `bytes` UTF-8 bytes (the two quotes included). */
+  function payloadOfSerializedBytes(bytes: number): string {
+    return "x".repeat(bytes - 2);
+  }
+
+  it("refuses a non-run_status event on a finished run and inserts nothing", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "finished" });
+    await finishAgentRun(pool, run.id, "done", null);
+
+    const attempt = insertAgentRunEvent(pool, run.id, "message", { kind: "message", text: "late" });
+    await expect(attempt).rejects.toBeInstanceOf(ConflictError);
+    await expect(attempt).rejects.toThrow(
+      `agent run ${run.id} is done; only run_status events may be appended to a finished run`,
+    );
+    expect(await countEvents(run.id)).toBe(0);
+  });
+
+  it("refuses a non-run_status event on a run finished as error", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "errored" });
+    await finishAgentRun(pool, run.id, "error", "boom");
+
+    await expect(insertAgentRunEvent(pool, run.id, "tool_result", { kind: "tool_result" })).rejects.toThrow(
+      `agent run ${run.id} is error; only run_status events may be appended to a finished run`,
+    );
+    expect(await countEvents(run.id)).toBe(0);
+  });
+
+  it("stores a run_status event on a finished run", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "finished" });
+    await finishAgentRun(pool, run.id, "done", null);
+
+    const event = await insertAgentRunEvent(pool, run.id, "run_status", { status: "done" });
+
+    expect(event).toMatchObject({ agentRunId: run.id, kind: "run_status", payload: { status: "done" } });
+    expect((await listAgentRunEvents(pool, run.id)).map((e) => e.id)).toEqual([event.id]);
+  });
+
+  it("throws NotFoundError for an unknown run id", async () => {
+    await expect(insertAgentRunEvent(pool, randomUUID(), "turn_start", { kind: "turn_start" })).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+  });
+
+  it("rejects a payload one byte over 1 MiB serialized and inserts nothing", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "oversized" });
+
+    const attempt = insertAgentRunEvent(pool, run.id, "tool_result", payloadOfSerializedBytes(1024 * 1024 + 1));
+    await expect(attempt).rejects.toBeInstanceOf(ValidationError);
+    await expect(attempt).rejects.toThrow(
+      "agent run event 'tool_result' payload is 1048577 bytes, over the 1048576-byte cap",
+    );
+    expect(await countEvents(run.id)).toBe(0);
+  });
+
+  it("stores a payload exactly at the 1 MiB cap", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "at cap" });
+    const payload = payloadOfSerializedBytes(1024 * 1024);
+
+    const event = await insertAgentRunEvent(pool, run.id, "tool_result", payload);
+
+    expect(event.payload).toBe(payload);
+    expect(await countEvents(run.id)).toBe(1);
   });
 });

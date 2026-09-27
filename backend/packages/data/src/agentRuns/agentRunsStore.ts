@@ -2,7 +2,8 @@ import { Pool, type PoolClient } from "pg";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { getEarliestUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
-import { withTransaction, requireAffectedRows, requireSingleRow } from "../db/pool.js";
+import { withTransaction, requireSingleRow } from "../db/pool.js";
+import { NotFoundError } from "../errors.js";
 
 export type TriggeredBy = "user" | "heartbeat" | "supervisor" | "mcp";
 export type AgentRunUnit = "invocation" | "session";
@@ -132,17 +133,27 @@ export async function createAgentRun(client: Pool | PoolClient, input: CreateAge
   return mapRow(requireSingleRow(rows, "agent_runs row"));
 }
 
+/**
+ * Closes a run that is still `running` and reports whether this call did it. The `status =
+ * 'running'` guard lives in the `UPDATE` itself, so of two concurrent closers exactly one wins
+ * and the row keeps the first status, result and `finished_at`. Losing that race (the run was
+ * already `done`/`error`) is a normal outcome the caller logs, not an error: it returns `false`.
+ * Throws `NotFoundError` only when no run with that id exists at all.
+ */
 export async function finishAgentRun(
   client: Pool | PoolClient,
   agentRunId: string,
   status: "done" | "error",
   result: string | null,
-): Promise<void> {
-  const resultRow = await client.query(
-    `UPDATE agent_runs SET status = $2, result = $3, finished_at = now() WHERE id = $1`,
+): Promise<boolean> {
+  const updated = await client.query(
+    `UPDATE agent_runs SET status = $2, result = $3, finished_at = now() WHERE id = $1 AND status = 'running'`,
     [agentRunId, status, result],
   );
-  requireAffectedRows(resultRow, "agent run finish");
+  if (updated.rowCount === 1) return true;
+  const { rows } = await client.query<{ status: string }>(`SELECT status FROM agent_runs WHERE id = $1`, [agentRunId]);
+  if (rows.length === 0) throw new NotFoundError(`agent run ${agentRunId} not found`);
+  return false;
 }
 
 /**
@@ -157,6 +168,9 @@ export async function finishAgentRun(
  * caller after a crash before it observed success — is necessarily the same transition, while a
  * different run failing always has a different id.
  *
+ * Returns `finishAgentRun`'s result: when the close lost to another writer (`false`), the run's
+ * outcome was already decided elsewhere and no notification is written.
+ *
  * Silently skips the notification before any account exists (setup not run yet), matching
  * `notifyHeartbeatError`.
  */
@@ -164,17 +178,17 @@ export async function finishAgentRunWithErrorNotification(
   client: Pool | PoolClient,
   agentRunId: string,
   result: string | null,
-): Promise<void> {
+): Promise<boolean> {
   // `writeNotification` requires an actual transaction client (it's meant to run alongside the
   // source write it dedupes against) — a caller that only has a bare `pool` gets one opened here
   // so the close and the notification still land atomically together.
   if (client instanceof Pool) {
-    await withTransaction(client, (c) => finishAgentRunWithErrorNotification(c, agentRunId, result));
-    return;
+    return withTransaction(client, (c) => finishAgentRunWithErrorNotification(c, agentRunId, result));
   }
-  await finishAgentRun(client, agentRunId, "error", result);
+  const closed = await finishAgentRun(client, agentRunId, "error", result);
+  if (!closed) return false;
   const userId = await getEarliestUserId(client);
-  if (!userId) return;
+  if (!userId) return true;
   await writeNotification(client, {
     userId,
     kind: "agent_run_error",
@@ -183,6 +197,7 @@ export async function finishAgentRunWithErrorNotification(
     sourceId: agentRunId,
     transitionInstance: agentRunId,
   });
+  return true;
 }
 
 /**

@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { requireSingleRow, runAfterCommit } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
+import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import { notifyAgentRunEvent } from "../realtimeHook.js";
 
 export type AgentRunEventKind =
@@ -38,10 +39,25 @@ function mapRow(row: AgentRunEventDbRow): AgentRunEventRow {
 }
 
 /**
+ * The bound on one `agent_run_events.payload`, measured as UTF-8 bytes of its JSON
+ * serialization. Every reconstruction reads a run's payloads back in full, so an unbounded one
+ * (an arbitrarily large MCP `tool_result`) is rejected at the write. 1 MiB is sized so a
+ * `compaction` checkpoint — the largest legitimate payload — fits.
+ */
+const MAX_AGENT_RUN_EVENT_PAYLOAD_BYTES = 1024 * 1024;
+
+/**
  * One row per turn_start/message/tool_use/tool_result/turn_end/run_status — never for
  * message_update deltas. 'compaction' is the one kind never written by the turn loop itself:
  * `@semprec/agent-runtime`'s reconstruction path (#119) inserts it directly, as a checkpoint
  * of a compacted `Entry[]` continuation.
+ *
+ * A finished (`done`/`error`) run's transcript is complete, so only its terminal `run_status`
+ * event — written after the close by design — may still be appended; any other kind throws
+ * `ConflictError`. The status check is part of the `INSERT` itself, so a close committed
+ * concurrently cannot slip in between a check and the write. An unknown run id throws
+ * `NotFoundError`, and a payload over `MAX_AGENT_RUN_EVENT_PAYLOAD_BYTES` throws
+ * `ValidationError` before any query runs.
  */
 export async function insertAgentRunEvent(
   client: Pool | PoolClient,
@@ -49,13 +65,28 @@ export async function insertAgentRunEvent(
   kind: AgentRunEventKind,
   payload: unknown,
 ): Promise<AgentRunEventRow> {
+  const serialized = JSON.stringify(payload);
+  const payloadBytes = Buffer.byteLength(serialized, "utf8");
+  if (payloadBytes > MAX_AGENT_RUN_EVENT_PAYLOAD_BYTES) {
+    throw new ValidationError(
+      `agent run event '${kind}' payload is ${payloadBytes} bytes, over the ${MAX_AGENT_RUN_EVENT_PAYLOAD_BYTES}-byte cap`,
+    );
+  }
   const { rows } = await client.query<AgentRunEventDbRow>(
     `INSERT INTO agent_run_events (agent_run_id, kind, payload)
-     VALUES ($1, $2, $3)
+     SELECT $1::uuid, $2::text, $3::jsonb FROM agent_runs WHERE id = $1::uuid AND (status = 'running' OR $2::text = 'run_status')
      RETURNING id, agent_run_id, kind, payload, at`,
-    [agentRunId, kind, JSON.stringify(payload)],
+    [agentRunId, kind, serialized],
   );
-  return mapRow(requireSingleRow(rows, "agent_run_events row"));
+  if (rows.length > 0) return mapRow(requireSingleRow(rows, "agent_run_events row"));
+  const { rows: runRows } = await client.query<{ status: string }>(`SELECT status FROM agent_runs WHERE id = $1`, [
+    agentRunId,
+  ]);
+  const run = runRows[0];
+  if (!run) throw new NotFoundError(`agent run ${agentRunId} not found`);
+  throw new ConflictError(
+    `agent run ${agentRunId} is ${run.status}; only run_status events may be appended to a finished run`,
+  );
 }
 
 /**
