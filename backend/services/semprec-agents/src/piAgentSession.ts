@@ -162,20 +162,18 @@ export function createPiAgentSessionFactory(options: PiAgentSessionFactoryOption
     }
 
     const toolFailure: { error: unknown } = { error: undefined };
-    const tools = options.tools.map(
-      (tool): AgentTool => ({
-        ...tool,
-        async execute(toolCallId, params, signal, onUpdate) {
-          try {
-            return await tool.execute(toolCallId, params, signal, onUpdate);
-          } catch (err) {
-            toolFailure.error ??= err;
-            piAgent.abort();
-            throw err;
-          }
-        },
-      }),
-    );
+    const tools = options.tools.map((tool): AgentTool => ({
+      ...tool,
+      async execute(toolCallId, params, signal, onUpdate) {
+        try {
+          return await tool.execute(toolCallId, params, signal, onUpdate);
+        } catch (err) {
+          toolFailure.error ??= err;
+          piAgent.abort();
+          throw err;
+        }
+      },
+    }));
 
     const piAgent = new Agent({
       streamFn: options.streamFn,
