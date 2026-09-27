@@ -9,8 +9,9 @@ Issue #644. `backend/packages/data/dist/db/runSeedCli.js` (source `src/db/runSee
   heartbeats;
 - then the data migrations declared by every active module.
 
-It prints one line: `seed: created system databases` on a database that had no system settings
-database before the run, `seed: already seeded` otherwise. It never prints the connection string.
+It prints one line: `seed: created system databases` when this run wrote the system databases,
+`seed: already seeded` when it found them present. The outcome is decided under the seed's advisory
+lock (below), so of two concurrent runs exactly one prints `created`. It never prints the connection string.
 
 ## Idempotent and lock-protected
 

@@ -60,12 +60,16 @@ const SEED_ADVISORY_LOCK_KEY = 2331n;
  * standalone/test use; a real server composition root should pass its own shared instances
  * so the "temporal-switcher" view type and any declared computed cache keys registered here
  * are also known to the chokePoint instance(s) it later serves requests through.
+ *
+ * Resolves to `"created"` when this call wrote the structural seed and `"already-seeded"` when
+ * it found the system databases already present — decided under the advisory lock, so of two
+ * concurrent calls on an empty database exactly one reports `"created"`.
  */
 export async function seedSystem(
   pool: Pool,
   viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry(),
   computedKeyRegistry: ComputedKeyRegistry = createComputedKeyRegistry(),
-): Promise<void> {
+): Promise<"created" | "already-seeded"> {
   // Registered unconditionally, ahead of the idempotency-guarded block below: the DB seed
   // itself only ever runs once (first startup), but `viewTypeRegistry` is an in-memory,
   // per-process registry — every subsequent process start still needs "temporal-switcher"
@@ -106,14 +110,14 @@ export async function seedSystem(
   const moduleRegistry = new ModuleRegistry(() => new Set(["systemDatabases"]));
   await moduleRegistry.loadModule(new URL("./systemDatabasesModuleManifest.js", import.meta.url).href);
 
-  await withTransaction(pool, async (client) => {
+  const outcome = await withTransaction(pool, async (client): Promise<"created" | "already-seeded"> => {
     // Taken before the guard below so a concurrent seed waits here, then sees this one's rows
     // and returns early instead of seeding a second copy.
     await client.query("SELECT pg_advisory_xact_lock($1)", [SEED_ADVISORY_LOCK_KEY]);
     const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1`, [
       SYSTEM_SETTINGS_MODULE_ID,
     ]);
-    if ((existingSettings.rowCount ?? 0) > 0) return;
+    if ((existingSettings.rowCount ?? 0) > 0) return "already-seeded";
 
     const tenDatabases = await seedTenDatabasesInTransaction(
       client,
@@ -288,9 +292,11 @@ export async function seedSystem(
     // connection metadata only. Order relative to the other module seeds doesn't matter —
     // only depends on the Projects database above.
     await seedMcpModuleInTransaction(client, projectsDb.id);
+    return "created";
   });
 
   // Active module data migrations are resumable and independently idempotent. Run them
   // after the structural seed transaction so item batches never prolong its lock scope.
   await runModuleDataMigrations(pool, moduleRegistry);
+  return outcome;
 }
