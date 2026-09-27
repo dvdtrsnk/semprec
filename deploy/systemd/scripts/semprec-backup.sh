@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Daily off-site backup: a PostgreSQL custom dump plus the two blob storage directories the
+# `blobs` rows point into (FILES_STORAGE_DIR and MAIL_ATTACHMENTS_DIR), snapshotted together by
+# restic so the rows and their bytes always come from the same run.
 set -euo pipefail
 
 readonly COMPOSE_FILE=/opt/semprec/current/deploy/docker-compose.yml
@@ -8,7 +11,8 @@ readonly DUMP_TEMPORARY_FILE="$DUMP_FILE.tmp"
 
 require_environment() {
   local name
-  for name in POSTGRES_USER POSTGRES_DB RESTIC_REPOSITORY RESTIC_PASSWORD AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+  for name in POSTGRES_USER POSTGRES_DB RESTIC_REPOSITORY RESTIC_PASSWORD AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY \
+    FILES_STORAGE_DIR MAIL_ATTACHMENTS_DIR; do
     if [[ -z "${!name:-}" ]]; then
       echo "$name must be configured for the backup" >&2
       exit 1
@@ -20,26 +24,21 @@ remove_partial_dump() {
   rm -f -- "$DUMP_TEMPORARY_FILE"
 }
 
-minio_data_directory() {
-  local container_id
-  container_id="$(docker compose -f "$COMPOSE_FILE" ps -q minio)"
-  if [[ -z "$container_id" ]]; then
-    echo "MinIO container is not running" >&2
-    exit 1
-  fi
-
-  local data_directory
-  data_directory="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$container_id")"
-  if [[ -z "$data_directory" ]]; then
-    echo "Cannot determine the MinIO data volume" >&2
-    exit 1
-  fi
-
-  printf '%s\n' "$data_directory"
+# Both blob directories are created at provisioning; a missing one means the configuration points
+# somewhere wrong, and backing up without it would silently drop every blob it should hold.
+require_storage_directories() {
+  local name
+  for name in FILES_STORAGE_DIR MAIL_ATTACHMENTS_DIR; do
+    if [[ ! -d "${!name}" ]]; then
+      echo "$name directory ${!name} does not exist" >&2
+      exit 1
+    fi
+  done
 }
 
 main() {
   require_environment
+  require_storage_directories
   install -d -o root -g root -m 0700 "$BACKUP_DIRECTORY"
   trap remove_partial_dump EXIT
 
@@ -48,9 +47,7 @@ main() {
     pg_dump --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --format=custom > "$DUMP_TEMPORARY_FILE"
   mv -- "$DUMP_TEMPORARY_FILE" "$DUMP_FILE"
 
-  local minio_data
-  minio_data="$(minio_data_directory)"
-  restic backup "$DUMP_FILE" "$minio_data"
+  restic backup "$DUMP_FILE" "$FILES_STORAGE_DIR" "$MAIL_ATTACHMENTS_DIR"
   restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 12 --prune
 }
 
