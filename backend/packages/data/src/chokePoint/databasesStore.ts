@@ -98,20 +98,15 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
 
   if (!UUID_RE.test(database.id)) {
     // Sanity invariant only: database.id always comes straight from gen_random_uuid()
-    // above, never from external input. The DDL below no longer depends on this check
-    // for safety (both the identifier and the literal are escaped server-side by
-    // format() below) — this just fails loudly if that invariant were ever violated.
+    // above, never from external input. The partition step below does not depend on this
+    // check for safety (the id is bound as a uuid parameter and the function escapes the
+    // partition name and bound itself) — this just fails loudly if that invariant were
+    // ever violated.
     throw new Error(`Generated database id is not a UUID: ${database.id}`);
   }
-  const partitionName = `items_p_${database.id.replace(/-/g, "")}`;
-  // DDL statements cannot bind $-placeholders directly, so the identifier and the
-  // partition-bound literal are both escaped server-side via format() (%I / %L)
-  // instead of interpolated into the query string by the application.
-  const { rows: ddlRows } = await client.query<{ ddl: string }>(
-    `SELECT format('CREATE TABLE %I PARTITION OF items FOR VALUES IN (%L)', $1::text, $2::text) AS ddl`,
-    [partitionName, database.id],
-  );
-  await client.query(requireSingleRow(ddlRows, "partition DDL format()").ddl);
+  // The runtime role does not own `items`, so the `items_p_<hex>` partition is created by the
+  // SECURITY DEFINER function from migration 0048 rather than by inline DDL.
+  await client.query("SELECT create_items_partition($1::uuid)", [database.id]);
 
   return database;
 }

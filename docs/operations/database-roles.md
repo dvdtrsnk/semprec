@@ -47,3 +47,23 @@ automatically, so adding a new choke-point or side table always requires a visib
 grant change in the same migration. A new table the choke-point writes goes in both the
 `semprec_data` (full) and `semprec_side` (`SELECT`-only) grant lists; every other new table
 goes only in the `semprec_side` (full) grant list.
+
+## DDL the API role needs
+
+`semprec_data` owns no table and has no `CREATE` on schema `public`, so it cannot run DDL itself.
+The one DDL statement the choke-point needs at runtime — creating a new database's `items`
+partition inside `createDatabase`'s transaction — goes through `create_items_partition(uuid)`,
+created by migration `0048_create_items_partition_function.sql`:
+
+- It is `SECURITY DEFINER` with `search_path = pg_catalog, public`, owned by the migrating role
+  (the owner of `items`), and runs
+  `CREATE TABLE public.items_p_<hex> PARTITION OF public.items FOR VALUES IN ('<id>')` — the same
+  partition name the application built before the function existed.
+- `EXECUTE` is revoked from `PUBLIC` and granted to `semprec_data` only; `semprec_side` cannot
+  call it, because a side-table-only process must never create a partition.
+- Like the inline DDL it replaces, it takes an `ACCESS EXCLUSIVE` lock on `items` for the rest of
+  the caller's transaction.
+
+**Rule:** any further DDL the API role ever needs goes through a `SECURITY DEFINER` function of
+this shape — owned by the migrating role, `EXECUTE` revoked from `PUBLIC` and granted only to the
+role that needs it — never through a schema-level `CREATE` grant or a change of table ownership.
