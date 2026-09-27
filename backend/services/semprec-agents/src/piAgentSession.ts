@@ -90,7 +90,7 @@ function assertModelSucceeded(agent: Agent): void {
 async function* promptMessages(
   agent: Agent,
   task: string,
-  toolFailure: { error: unknown },
+  toolFailure: { error: Error | undefined },
 ): AsyncGenerator<AgentMessage> {
   const queue: AgentMessage[] = [];
   let wake: (() => void) | null = null;
@@ -100,7 +100,6 @@ async function* promptMessages(
     wake = null;
   };
 
-  toolFailure.error = undefined;
   const unsubscribe = agent.subscribe((event) => {
     const message = toAgentMessage(event);
     if (!message) return;
@@ -139,7 +138,7 @@ async function* promptMessages(
     }
   }
 
-  if (toolFailure.error !== undefined) throw toolFailure.error;
+  if (toolFailure.error) throw toolFailure.error;
   assertModelSucceeded(agent);
 }
 
@@ -161,14 +160,14 @@ export function createPiAgentSessionFactory(options: PiAgentSessionFactoryOption
       throw new Error("createPiAgentSessionFactory cannot resume a session from reconstructed history");
     }
 
-    const toolFailure: { error: unknown } = { error: undefined };
+    const toolFailure: { error: Error | undefined } = { error: undefined };
     const tools = options.tools.map((tool): AgentTool => ({
       ...tool,
       async execute(toolCallId, params, signal, onUpdate) {
         try {
           return await tool.execute(toolCallId, params, signal, onUpdate);
         } catch (err) {
-          toolFailure.error ??= err;
+          toolFailure.error ??= err instanceof Error ? err : new Error(String(err));
           piAgent.abort();
           throw err;
         }
@@ -185,9 +184,15 @@ export function createPiAgentSessionFactory(options: PiAgentSessionFactoryOption
       },
     });
 
+    // Each prompt starts with no recorded tool failure; only one runs at a time (pi refuses a
+    // second `prompt()` while one is active).
+    const prompt = (task: string): AsyncIterable<AgentMessage> => {
+      toolFailure.error = undefined;
+      return promptMessages(piAgent, task, toolFailure);
+    };
     const session: AgentSession = {
-      messages: () => promptMessages(piAgent, sessionOptions.task, toolFailure),
-      send: (task) => promptMessages(piAgent, task, toolFailure),
+      messages: () => prompt(sessionOptions.task),
+      send: prompt,
     };
     return session;
   };
