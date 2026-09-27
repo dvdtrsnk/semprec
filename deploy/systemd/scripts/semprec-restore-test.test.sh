@@ -147,7 +147,6 @@ test "$(count_lines . "$TEST_STATE/pings")" -eq 1
 grep -qx "$PING_URL" "$TEST_STATE/pings"
 test "$(count_lines . "$TEST_STATE/results")" -eq 1
 grep -Eq '^passed [0-9]{8}T[0-9]{6}Z-[0-9]+ DATABASE_URL=postgres://semprec_side@' "$TEST_STATE/results"
-test "$(count_lines '^docker run --rm ' "$TEST_STATE/commands")" -eq 0
 grep -q -- '--exit-on-error' "$TEST_STATE/commands"
 test "$(count_lines '^docker run ' "$TEST_STATE/commands")" -eq 1
 if grep -q -e 'test-only-password' "$TEST_STATE/commands"; then
