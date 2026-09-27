@@ -12,6 +12,7 @@ import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inbox/inboxTickAction.js";
+import { confirmProposalWithClient } from "../inbox/proposalActions.js";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
@@ -798,6 +799,128 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     const proposal = await findProposalForItem(item.id);
     expect(proposal!.properties.status).toBe("needsClarification");
     expect(proposal!.properties.history).toHaveLength(1);
+  });
+});
+
+describe("semprec.tick re-checks the proposal under lock before writing it (issue #662)", () => {
+  let inboxId: string;
+  let typesId: string;
+  let proposalsId: string;
+  let journalId: string;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    viewTypeRegistry = createViewTypeRegistry();
+    await resetDatabase(pool);
+    await seedSystem(pool, viewTypeRegistry);
+    inboxId = await databaseIdFor("inbox");
+    typesId = await databaseIdFor("inboxItemTypes");
+    proposalsId = await databaseIdFor("processingProposals");
+    journalId = await databaseIdFor("journal");
+  });
+
+  async function runTick(itemId: string, computeProposal: ComputeSemprecProposalFn): Promise<void> {
+    const handler = createSemprecTickAction(pool, computeProposal);
+    await handler(
+      { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
+      { heartbeatId: "hb", projectItemId: "proj", itemId },
+    );
+  }
+
+  /** A typed Inbox item with one `proposed` card, then a text edit so the next tick recomputes it. */
+  async function seedProposedCardWithChangedSource() {
+    const type = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
+    );
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        text: "Buy milk",
+        type: type.id,
+      }),
+    );
+    await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+    const { rows } = await pool.query<{ id: string }>(
+      "SELECT id FROM items WHERE database_id = $1 AND deleted_at IS NULL",
+      [proposalsId],
+    );
+    const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, rows[0]!.id));
+    expect(card!.properties.status).toBe("proposed");
+
+    await withTransaction(pool, (client) =>
+      itemsStore.updateItemProperties(client, {
+        databaseId: inboxId,
+        itemId: item.id,
+        propertiesPatch: { text: "Buy milk and eggs" },
+      }),
+    );
+    return { item, card: card! };
+  }
+
+  async function readCard(cardId: string) {
+    return withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, cardId));
+  }
+
+  it("a confirm committed while the tick computes its proposal wins — the card stays confirmed and untouched", async () => {
+    const { item, card } = await seedProposedCardWithChangedSource();
+    // The tick and the confirm both enqueue the source's Journal-day recompute under the same job
+    // key, so a confirm issued from inside the tick would wait on the tick's own transaction. Taking
+    // the source off its Journal day leaves the proposal row as the only thing the two contend on.
+    await withTransaction(pool, async (client) => {
+      const journalDayProperty = await propertiesStore.getPropertyByKey(client, inboxId, "journalDay");
+      const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, journalDayProperty!.id);
+      const edges = await relationsStore.listRelationsForItem(client, relationDefinition!.id, item.id);
+      for (const edge of edges) {
+        await relationsStore.deleteItemRelation(client, edge.relationDefinitionId, edge.itemA, edge.itemB);
+      }
+    });
+
+    let calls = 0;
+    await runTick(item.id, async () => {
+      calls++;
+      await withTransaction(pool, (client) =>
+        confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card.id),
+      );
+      return { properties: { name: "Buy milk and eggs" } };
+    });
+    expect(calls).toBe(1);
+
+    const after = await readCard(card.id);
+    expect(after!.properties.status).toBe("confirmed");
+    expect(after!.properties.proposal).toEqual(card.properties.proposal);
+    expect(after!.properties.fingerprint).toBe(card.properties.fingerprint);
+    const messages = (after!.properties.history as Array<{ message: string }>).map((entry) => entry.message);
+    expect(messages).not.toContain("Revised the proposal after the source item changed.");
+  });
+
+  it("a card soft-deleted while the tick computes its proposal is skipped without writing or throwing", async () => {
+    const { item, card } = await seedProposedCardWithChangedSource();
+
+    let deletedVersion: string | undefined;
+    await runTick(item.id, async () => {
+      const deleted = await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, proposalsId, card.id));
+      deletedVersion = deleted!.updatedAt;
+      return { properties: { name: "Buy milk and eggs" } };
+    });
+
+    const after = await readCard(card.id);
+    expect(after!.deletedAt).not.toBeNull();
+    expect(after!.updatedAt).toBe(deletedVersion);
+    expect(after!.properties).toEqual(card.properties);
+    const { rows } = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+      proposalsId,
+    ]);
+    expect(rows[0]!.n).toBe(1);
   });
 });
 
