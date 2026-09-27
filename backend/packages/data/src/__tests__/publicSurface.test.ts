@@ -420,6 +420,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "syncMcpServerTools",
   "systemDatabasesModuleManifest",
   "terminalizeApprovalRequestAsConflict",
+  "toApprovalRequestDecisionView",
   "toManifestLocale",
   "touchSessionLastSeen",
   "transcriptionJobPayloadSchema",
