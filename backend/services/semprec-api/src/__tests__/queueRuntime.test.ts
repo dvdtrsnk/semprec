@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, ensureQueueSchema, enqueueJob } from "@semprec/queue";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { seedSystem, createHeartbeat, withTransaction } from "@semprec/data";
+import { DRIFT_CHECK_ACTION_ID, seedSystem, createHeartbeat, withTransaction } from "@semprec/data";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { createApiQueueRuntime, type ApiQueueRuntime } from "../queueRuntime.js";
 import * as apiFixtureModule from "./fixtures/apiFixtureModule.js";
@@ -69,6 +69,8 @@ describe("createApiQueueRuntime (issue #91)", () => {
     await pool.query("TRUNCATE graphile_worker._private_known_crontabs");
     apiFixtureModule.calls.length = 0;
     runtime = undefined;
+    // `createApiActionRegistry` composes `core.agentGuidanceDrift` eagerly, which requires it.
+    process.env.AI_GATEWAY_INTERNAL_TOKEN = "test-internal-token";
   });
 
   afterEach(async () => {
@@ -211,6 +213,31 @@ describe("createApiQueueRuntime (issue #91)", () => {
       );
       return (rows[0]?.attempts ?? 0) >= 1;
     });
+  });
+
+  it("runs a seeded core.driftCheck heartbeat through the registered handler on its first attempt", async () => {
+    await seedSystem(pool);
+    const { rows: heartbeats } = await pool.query<{ id: string }>(
+      `SELECT id FROM project_heartbeats WHERE action_id = $1 LIMIT 1`,
+      [DRIFT_CHECK_ACTION_ID],
+    );
+    const heartbeatId = heartbeats[0]?.id;
+    expect(heartbeatId).toBeDefined();
+
+    const registry = await buildRegistryWith("apiFixtureModule.js", "fixture-api-queue-runtime");
+    runtime = await createApiQueueRuntime(pool, registry);
+    // A manual fire: `core.driftCheck` ignores `triggeredByRunId`, which only discriminates the payload.
+    await enqueueJob(pool, CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE, { heartbeatId, triggeredByRunId: randomUUID() });
+
+    // A failed attempt keeps the job row (with `last_error`) for a retry; only success removes it.
+    await waitFor(async () => (await jobCountFor(pool, CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE)) === 0);
+    const { rows } = await pool.query<{ last_error: string | null; error_notifications: string }>(
+      `SELECT h.last_error,
+              (SELECT count(*)::text FROM notifications WHERE kind = 'heartbeat_error') AS error_notifications
+       FROM project_heartbeats h WHERE h.id = $1`,
+      [heartbeatId],
+    );
+    expect(rows).toEqual([{ last_error: null, error_notifications: "0" }]);
   });
 
   it("rejects two active modules declaring the same task name before either composition root starts", async () => {
