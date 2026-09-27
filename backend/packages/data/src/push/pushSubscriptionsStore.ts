@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { requireSingleRow } from "../db/pool.js";
+import { ConflictError } from "../errors.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { SESSION_PLATFORMS } from "../auth/types.js";
 import { APNS_ENVIRONMENTS, PUSH_CHANNELS, type PushSubscriptionRow } from "./types.js";
@@ -54,12 +55,16 @@ export interface UpsertWebPushSubscriptionInput {
 }
 
 /**
- * Registers (or reactivates) a `web_push` subscription. `ON CONFLICT` targets exactly the
- * partial unique index from migration 0031: it only fires when an *active* row already shares
- * this `endpoint`, in which case that row is refreshed in place (new owning user/session,
- * refreshed keys). If the only existing row for this endpoint is revoked, the partial index has
- * no entry for it, so this is a plain insert of a fresh active row — the reactivation the issue's
- * Task describes, without ever violating active uniqueness.
+ * Registers (or reactivates) a `web_push` subscription. A registration is owned by the user who
+ * created it. `ON CONFLICT` targets exactly the partial unique index from migration 0031: it only
+ * fires when an *active* row already shares this `endpoint`. If that row belongs to the same user,
+ * it is refreshed in place (same `id`; new session, refreshed keys). If it belongs to another user,
+ * the update's owner predicate matches nothing, the row is left untouched, and this throws
+ * `ConflictError` naming `endpoint`. An endpoint legitimately moving to another account (a shared
+ * device, a new login on the same browser profile) requires the old account to revoke it first —
+ * `POST /api/push-subscriptions/:id/revoke`, logout, or session revocation. A revoked row has no
+ * entry in the partial index, so the new account's registration is then a plain insert of a fresh
+ * active row, without ever violating active uniqueness.
  */
 export async function upsertWebPushSubscription(
   client: Pool | PoolClient,
@@ -69,11 +74,17 @@ export async function upsertWebPushSubscription(
     `INSERT INTO push_subscriptions (user_id, session_id, channel, platform, endpoint, p256dh, auth_secret)
      VALUES ($1, $2, 'web_push', 'web', $3, $4, $5)
      ON CONFLICT (endpoint) WHERE revoked_at IS NULL AND endpoint IS NOT NULL
-     DO UPDATE SET user_id = EXCLUDED.user_id, session_id = EXCLUDED.session_id,
+     DO UPDATE SET session_id = EXCLUDED.session_id,
                    p256dh = EXCLUDED.p256dh, auth_secret = EXCLUDED.auth_secret, updated_at = now()
+     WHERE push_subscriptions.user_id = EXCLUDED.user_id
      RETURNING ${SELECT_COLUMNS}`,
     [input.userId, input.sessionId, input.endpoint, input.p256dh, input.authSecret],
   );
+  // The insert always returns its row and a same-owner conflict returns the refreshed one, so an
+  // empty result means only one thing: the active row for this endpoint belongs to another user.
+  if (rows.length === 0) {
+    throw new ConflictError("'endpoint' is already registered to another account", { field: "endpoint" });
+  }
   return mapRow(requireSingleRow(rows, "push_subscriptions row"));
 }
 
@@ -85,7 +96,14 @@ export interface UpsertApnsSubscriptionInput {
   apnsEnvironment: "sandbox" | "production";
 }
 
-/** Same reactivation contract as `upsertWebPushSubscription`, keyed on `device_token` instead of `endpoint`. */
+/**
+ * Same ownership and reactivation contract as `upsertWebPushSubscription`, keyed on
+ * `device_token` instead of `endpoint`: a same-owner conflict refreshes the active row in place, an
+ * active row owned by another user is left untouched and this throws `ConflictError` naming
+ * `deviceToken`. A token moving to another account requires the old account to revoke it first
+ * (`POST /api/push-subscriptions/:id/revoke`, logout, or session revocation), after which the new
+ * account's registration is a fresh insert.
+ */
 export async function upsertApnsSubscription(
   client: Pool | PoolClient,
   input: UpsertApnsSubscriptionInput,
@@ -94,11 +112,16 @@ export async function upsertApnsSubscription(
     `INSERT INTO push_subscriptions (user_id, session_id, channel, platform, device_token, apns_environment)
      VALUES ($1, $2, 'apns', $3, $4, $5)
      ON CONFLICT (device_token) WHERE revoked_at IS NULL AND device_token IS NOT NULL
-     DO UPDATE SET user_id = EXCLUDED.user_id, session_id = EXCLUDED.session_id,
+     DO UPDATE SET session_id = EXCLUDED.session_id,
                    platform = EXCLUDED.platform, apns_environment = EXCLUDED.apns_environment, updated_at = now()
+     WHERE push_subscriptions.user_id = EXCLUDED.user_id
      RETURNING ${SELECT_COLUMNS}`,
     [input.userId, input.sessionId, input.platform, input.deviceToken, input.apnsEnvironment],
   );
+  // As in `upsertWebPushSubscription`: an empty result means the active row belongs to another user.
+  if (rows.length === 0) {
+    throw new ConflictError("'deviceToken' is already registered to another account", { field: "deviceToken" });
+  }
   return mapRow(requireSingleRow(rows, "push_subscriptions row"));
 }
 

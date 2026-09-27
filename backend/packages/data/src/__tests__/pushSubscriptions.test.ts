@@ -4,7 +4,7 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { createUser } from "../auth/usersStore.js";
 import { login, logout, revokeUserSession } from "../auth/authActions.js";
-import { ValidationError } from "../errors.js";
+import { ConflictError, ValidationError } from "../errors.js";
 import { registerPushSubscription, revokePushSubscription } from "../push/pushSubscriptionActions.js";
 import {
   revokePushSubscriptionByProviderInvalidation,
@@ -229,6 +229,142 @@ describe("push subscriptions (issue #150)", () => {
       const rows = await listPushSubscriptionsForUser(pool, user.id);
       expect(rows).toHaveLength(2);
       expect(rows.filter((r) => r.revokedAt === null)).toHaveLength(1);
+    });
+
+    it("rejects another user's registration of an active web_push endpoint and leaves the owner's row unchanged", async () => {
+      const a = await makeUser("a@example.com");
+      const b = await makeUser("b@example.com");
+      const { session: sessionA } = await makeSession(a.email);
+      const { session: sessionB } = await makeSession(b.email);
+      const original = await registerPushSubscription(pool, {
+        userId: a.id,
+        sessionId: sessionA.id,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/shared",
+        p256dh: "key-a",
+        authSecret: "secret-a",
+      });
+
+      const attempt = registerPushSubscription(pool, {
+        userId: b.id,
+        sessionId: sessionB.id,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/shared",
+        p256dh: "key-b",
+        authSecret: "secret-b",
+      });
+      await expect(attempt).rejects.toThrow(ConflictError);
+      await expect(attempt).rejects.toMatchObject({ status: 409, details: { field: "endpoint" } });
+
+      const rowsA = await listPushSubscriptionsForUser(pool, a.id);
+      expect(rowsA).toEqual([original]);
+      expect(rowsA[0]!.userId).toBe(a.id);
+      expect(rowsA[0]!.p256dh).toBe("key-a");
+      expect(rowsA[0]!.sessionId).toBe(sessionA.id);
+      expect(await listPushSubscriptionsForUser(pool, b.id)).toEqual([]);
+    });
+
+    it("lets another user register a web_push endpoint once its owner has revoked it", async () => {
+      const a = await makeUser("a@example.com");
+      const b = await makeUser("b@example.com");
+      const { session: sessionA } = await makeSession(a.email);
+      const { session: sessionB } = await makeSession(b.email);
+      const original = await registerPushSubscription(pool, {
+        userId: a.id,
+        sessionId: sessionA.id,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/shared",
+        p256dh: "key-a",
+        authSecret: "secret-a",
+      });
+      expect(await revokePushSubscription(pool, a.id, original.id)).toBe(true);
+
+      const registered = await registerPushSubscription(pool, {
+        userId: b.id,
+        sessionId: sessionB.id,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/shared",
+        p256dh: "key-b",
+        authSecret: "secret-b",
+      });
+
+      expect(registered.id).not.toBe(original.id);
+      expect(registered.userId).toBe(b.id);
+      expect(registered.revokedAt).toBeNull();
+      const rowsA = await listPushSubscriptionsForUser(pool, a.id);
+      expect(rowsA).toHaveLength(1);
+      expect(rowsA[0]!.id).toBe(original.id);
+      expect(rowsA[0]!.revokedAt).not.toBeNull();
+    });
+
+    it("rejects another user's registration of an active apns device token and leaves the owner's row unchanged", async () => {
+      const a = await makeUser("a@example.com");
+      const b = await makeUser("b@example.com");
+      const { session: sessionA } = await makeSession(a.email, "ios");
+      const { session: sessionB } = await makeSession(b.email, "ios");
+      const original = await registerPushSubscription(pool, {
+        userId: a.id,
+        sessionId: sessionA.id,
+        channel: "apns",
+        platform: "ios",
+        deviceToken: "shared-device-token",
+        apnsEnvironment: "sandbox",
+      });
+
+      const attempt = registerPushSubscription(pool, {
+        userId: b.id,
+        sessionId: sessionB.id,
+        channel: "apns",
+        platform: "ios",
+        deviceToken: "shared-device-token",
+        apnsEnvironment: "production",
+      });
+      await expect(attempt).rejects.toThrow(ConflictError);
+      await expect(attempt).rejects.toMatchObject({ status: 409, details: { field: "deviceToken" } });
+
+      const rowsA = await listPushSubscriptionsForUser(pool, a.id);
+      expect(rowsA).toEqual([original]);
+      expect(rowsA[0]!.userId).toBe(a.id);
+      expect(rowsA[0]!.apnsEnvironment).toBe("sandbox");
+      expect(rowsA[0]!.sessionId).toBe(sessionA.id);
+      expect(await listPushSubscriptionsForUser(pool, b.id)).toEqual([]);
+    });
+
+    it("lets another user register an apns device token once its owner has revoked it", async () => {
+      const a = await makeUser("a@example.com");
+      const b = await makeUser("b@example.com");
+      const { session: sessionA } = await makeSession(a.email, "ios");
+      const { session: sessionB } = await makeSession(b.email, "ios");
+      const original = await registerPushSubscription(pool, {
+        userId: a.id,
+        sessionId: sessionA.id,
+        channel: "apns",
+        platform: "ios",
+        deviceToken: "shared-device-token",
+        apnsEnvironment: "sandbox",
+      });
+      expect(await revokePushSubscription(pool, a.id, original.id)).toBe(true);
+
+      const registered = await registerPushSubscription(pool, {
+        userId: b.id,
+        sessionId: sessionB.id,
+        channel: "apns",
+        platform: "ios",
+        deviceToken: "shared-device-token",
+        apnsEnvironment: "sandbox",
+      });
+
+      expect(registered.id).not.toBe(original.id);
+      expect(registered.userId).toBe(b.id);
+      expect(registered.revokedAt).toBeNull();
+      const rowsA = await listPushSubscriptionsForUser(pool, a.id);
+      expect(rowsA).toHaveLength(1);
+      expect(rowsA[0]!.id).toBe(original.id);
+      expect(rowsA[0]!.revokedAt).not.toBeNull();
     });
   });
 
