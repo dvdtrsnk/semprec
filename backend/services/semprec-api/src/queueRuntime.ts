@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { replayApprovedGenericOperation } from "@semprec/application";
 import { ensureQueueSchema, grantQueueSchemaPrivileges, runWorker } from "@semprec/queue";
 import {
   CORE_CRONTAB,
@@ -29,10 +30,11 @@ export interface ApiQueueRuntime {
  * consumers share this queue with exactly one scheduler between them.
  *
  * The heartbeat action registry is populated by `createApiActionRegistry` with every seeded
- * api-affinity action (issue #641). Real adapters (an external library-metadata fetcher, a mail
- * sync transport, push senders, a generic-operation approval replay) still stay on
- * `createApiCoreTaskList`'s own no-op defaults here — wiring one in is each adapter's own
- * composition-root concern once it exists.
+ * api-affinity action (issue #641), and every `approvalExecute` job for an approved
+ * generic-operation request replays through `replayApprovedGenericOperation` (issue #646). The
+ * remaining adapters (an external library-metadata fetcher, mail sync transports, push senders)
+ * still stay on `createApiCoreTaskList`'s own no-op defaults here — wiring one in is each
+ * adapter's own composition-root concern once it exists.
  */
 export async function createApiQueueRuntime(
   pool: Pool,
@@ -55,6 +57,8 @@ export async function createApiQueueRuntime(
     undefined, // mailBlobStorage
     undefined, // legacyRawMimeFetcher
     moduleRegistry,
+    undefined, // pushSenders
+    replayApprovedGenericOperation,
   );
   const taskList = await mergeModuleTaskListForAffinity(coreTaskList, moduleRegistry, "api");
 
