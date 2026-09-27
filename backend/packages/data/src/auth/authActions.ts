@@ -32,7 +32,7 @@ function toPublicUser(user: UserRow): PublicUser {
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** NIST SP 800-63B floors length-based password strength at 8 characters and leaves further complexity rules to the caller; we impose none. */
-const MIN_PASSWORD_LENGTH = 8;
+export const MIN_PASSWORD_LENGTH = 8;
 
 interface CreateAccountInput {
   email: string;

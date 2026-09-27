@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
-import { PasswordResetTokenError } from "../errors.js";
+import { PasswordResetTokenError, ValidationError } from "../errors.js";
+import { MIN_PASSWORD_LENGTH } from "./authActions.js";
 import { hashPassword } from "./passwordHash.js";
 import { generateOpaqueToken, hashToken } from "./token.js";
 import { getUserByEmail, updateUserPasswordHash } from "./usersStore.js";
@@ -114,8 +115,18 @@ export interface ResetPasswordInput {
  * changed" can't happen — inside one caller-managed transaction. A bare `Pool` would auto-commit
  * each statement independently, so the signature forces every caller (the HTTP handler already
  * wraps this in `withTransaction`) to supply one.
+ *
+ * Rejects a `newPassword` shorter than `MIN_PASSWORD_LENGTH` with a `ValidationError` before
+ * `consumePasswordResetToken` runs, so a rejected password never consumes the single-use token
+ * and the user can retry with the same link.
  */
 export async function resetPassword(client: PoolClient, input: ResetPasswordInput): Promise<void> {
+  if (input.newPassword.length < MIN_PASSWORD_LENGTH) {
+    throw new ValidationError(`'newPassword' must be at least ${MIN_PASSWORD_LENGTH} characters`, {
+      field: "newPassword",
+    });
+  }
+
   const tokenHash = hashToken(input.token);
 
   const consumed = await consumePasswordResetToken(client, tokenHash);
