@@ -2,7 +2,12 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
-import { createAgentRun, finishAgentRun, finishAgentRunWithErrorNotification, getAgentRun } from "../agentRuns/agentRunsStore.js";
+import {
+  createAgentRun,
+  finishAgentRun,
+  finishAgentRunWithErrorNotification,
+  getAgentRun,
+} from "../agentRuns/agentRunsStore.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 
