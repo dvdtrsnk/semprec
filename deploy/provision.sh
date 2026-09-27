@@ -175,13 +175,14 @@ ensure_service_user() {
 ensure_directory() {
   local path="$1"
   local mode="$2"
+  local owner="${3:-root}"
 
   if [[ -e "$path" && ! -d "$path" ]]; then
     echo "Expected directory at $path, found another file type" >&2
     exit 1
   fi
   if [[ ! -e "$path" ]]; then
-    install -d -o root -g root -m "$mode" "$path"
+    install -d -o "$owner" -g "$owner" -m "$mode" "$path"
   fi
 }
 
@@ -190,6 +191,11 @@ ensure_release_tree() {
   ensure_directory "$SEMPREC_ROOT/releases" 0755
   ensure_directory "$SEMPREC_ROOT/shared" 0700
   ensure_directory "$SEMPREC_ROOT/shared/bin" 0750
+  # Blob bytes live beside `shared` (0700 root:root, not traversable by the `semprec` services),
+  # never under /tmp, which is cleaned on reboot while the `blobs` rows referencing them survive.
+  ensure_directory "$SEMPREC_ROOT/data" 0755
+  ensure_directory "$SEMPREC_ROOT/data/files" 0750 semprec
+  ensure_directory "$SEMPREC_ROOT/data/mail-attachments" 0750 semprec
 
   local shared_env="$SEMPREC_ROOT/shared/.env"
   if [[ ! -e "$shared_env" && ! -L "$shared_env" ]]; then
