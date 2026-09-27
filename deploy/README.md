@@ -115,15 +115,17 @@ name to the monitor's `/fail` endpoint. A crash recovered by a restart does not 
 
 `semprec-backup.timer` runs daily at 03:30. Its root-owned service first writes a PostgreSQL
 custom-format dump to `/var/backups/semprec/postgres.dump`; only a completed dump is included in
-the following restic snapshot. The same snapshot includes the Docker volume mounted at MinIO's
-`/data`, discovered from the running MinIO container rather than assuming a Compose volume name.
-The restic repository is S3-compatible and encrypted by restic. Only after `restic backup`
-succeeds does the job run `restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 12 --prune`.
+the following restic snapshot. The same snapshot includes the two blob storage directories the
+`blobs` rows point into, `FILES_STORAGE_DIR` (`/opt/semprec/data/files`) and
+`MAIL_ATTACHMENTS_DIR` (`/opt/semprec/data/mail-attachments`); a missing directory fails the
+backup before restic runs. MinIO is not used by the application and is not backed up. The
+restic repository is S3-compatible and encrypted by restic. Only after `restic backup` succeeds
+does the job run `restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 12 --prune`.
 
-The backup input inventory is intentionally narrow: the custom PostgreSQL dump and MinIO data
-only. It excludes `/opt/semprec/shared/.env`, `apns-key.p8`, all credentials including
-`CREDENTIALS_MASTER_KEY` (the deployment's secrets master key), `/var/log/journal`, certificates,
-and reproducible release or deployment configuration. No restic invocation traverses a parent
+The backup input inventory is intentionally narrow: the custom PostgreSQL dump and the two blob
+storage directories only. It excludes `/opt/semprec/shared/.env`, `apns-key.p8`, all credentials
+including `CREDENTIALS_MASTER_KEY` (the deployment's secrets master key), `/var/log/journal`,
+certificates, and reproducible release or deployment configuration. No restic invocation traverses a parent
 directory that could include those paths. The daily schedule gives a maximum data-loss window
 (RPO) of 24 hours, plus changes since the last completed daily backup.
 
@@ -133,17 +135,18 @@ application (`services/semprec-api`), by design.
 ## Monthly restore test (issue #178)
 
 `semprec-restore-test.timer` runs monthly. Its root-owned service restores the newest restic
-snapshot into a temporary directory under `/var/tmp`, then starts a disposable PostgreSQL and a
-disposable MinIO container on a new `--internal` Docker network. It never addresses the
-production Compose containers or volumes. The run passes only if all of these hold:
+snapshot into a temporary directory under `/var/tmp`, then starts a disposable PostgreSQL
+container on a new `--internal` Docker network. It never addresses the production Compose
+containers or volumes. The run passes only if all of these hold:
 
 - `pg_restore --exit-on-error` of the restored custom dump succeeds;
 - `items` is non-empty and its newest `updated_at` is at most 48 hours old;
 - `doc_snapshots` is non-empty and no row has an empty `state`;
-- 20 random hashed `blobs` rows (all of them, when fewer exist) each read back from the
-  disposable MinIO's `$MINIO_BLOB_BUCKET` with exactly the recorded size and SHA-256 hash.
+- 20 random hashed `blobs` rows (all of them, when fewer exist) each have a restored file with
+  exactly the recorded size and SHA-256 hash — looked up by `storage_key` under the restored
+  `FILES_STORAGE_DIR` first, then under the restored `MAIL_ATTACHMENTS_DIR`.
 
-Every container, the network, and the restored files are removed on every exit path; a cleanup
+The container, the network, and the restored files are removed on every exit path; a cleanup
 that cannot finish fails the run. Only then does a passing run mark the `backup:restoreTest`
 observability check `ok` and ping `HEALTHCHECKS_RESTORE_PING_URL`. A failed run marks that check
 `alerting`, writes one `backup_restore_failed` notification through the data layer's
