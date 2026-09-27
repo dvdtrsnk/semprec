@@ -112,7 +112,7 @@ describe("gateway", () => {
     expect(Number(rows[0].audio_seconds)).toBe(240);
   });
 
-  it("diarize() always stores a null agent_run_id, even when the caller supplies one", async () => {
+  it("diarize() carries the agent run id when the caller supplies one", async () => {
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "diarize something" });
 
     await diarize(
@@ -126,7 +126,7 @@ describe("gateway", () => {
 
     const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
     expect(rows).toHaveLength(1);
-    expect(rows[0].agent_run_id).toBeNull();
+    expect(rows[0].agent_run_id).toBe(run.id);
   });
 
   it("leaves one failed row at cost 0 and rethrows the provider error when the call fails", async () => {
