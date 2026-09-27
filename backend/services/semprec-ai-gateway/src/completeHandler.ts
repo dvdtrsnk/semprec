@@ -28,6 +28,12 @@ const OPERATION_REQUIRES_PROJECT_ITEM = new Map<string, boolean>([
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * Output tokens reserved against the budget for every structured completion — the most the
+ * provider can bill for. Mirrors `MAX_OUTPUT_TOKENS` in `structuredProviders/anthropicProvider.ts`.
+ */
+const RESERVED_OUTPUT_TOKENS = 4096;
+
 /** Overall request body cap: generously above the 64 KiB `responseSchema` bound alone allows for prompt/messages content. */
 const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -203,6 +209,18 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
         throw err;
       }
 
+      // #620: a rough upper bound (about 4 characters per token for the input, the full output
+      // cap) reserved against the budget before the call and replaced by the real cost on settle.
+      const estimatedInputTokens = Math.ceil(
+        (body.system.length +
+          body.messages.reduce((sum, message) => sum + message.content.length, 0) +
+          JSON.stringify(body.responseSchema).length) /
+          4,
+      );
+      const estimatedCostUsd =
+        (estimatedInputTokens / 1_000_000) * options.pricePerMillionInputTokens +
+        (RESERVED_OUTPUT_TOKENS / 1_000_000) * options.pricePerMillionOutputTokens;
+
       let result;
       try {
         result = await complete(
@@ -213,11 +231,12 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
             agentRunId: null,
             projectItemId: body.projectItemId,
             operation: body.operation,
+            estimatedCostUsd,
           },
           async () => {
-            // A transport failure throws here, so `complete()` never reaches its own
-            // `recordTokenGatewayCall` call below — #215's "no fabricated token/cost row" for a
-            // call that never produced a response.
+            // A transport failure throws here, so `complete()` marks its reservation `failed` at
+            // cost 0 instead of settling it — #215's "no fabricated token/cost" for a call that
+            // never produced a response.
             const providerResult = await options.provider.complete({
               model: options.model,
               temperature: body.temperature,
@@ -247,8 +266,8 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
           return;
         }
         if (err instanceof ProviderCallError) {
-          // Standard failed-call observability event: no ai_gateway_calls row exists for a
-          // transport failure (see the comment above), so this log is the only trace it happened.
+          // Standard failed-call observability event: a transport failure leaves only a `failed`
+          // ai_gateway_calls row with no usage (see the comment above), so this log carries the cause.
           logger.error({ err, provider: options.provider.id, model: options.model }, "Provider call failed");
           sendJson(res, 502, { error: "Provider call failed", code: "provider_failed" });
           return;

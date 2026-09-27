@@ -9,6 +9,11 @@ export interface GatewayCallContext {
    */
   projectItemId?: string | null;
   operation?: string | null;
+  /**
+   * #620: the caller's upper-bound estimate of this call's cost in USD, reserved against the
+   * budget cap before the provider is called and replaced by the real cost on settle.
+   */
+  estimatedCostUsd: number;
 }
 
 /** Native unit for complete()/embed(): tokens. */
