@@ -12,6 +12,7 @@ import {
   type PushChannel,
   type PushSubscriptionRow,
 } from "./types.js";
+import { validateWebPushEndpoint } from "./webPushEndpointValidation.js";
 
 function nonEmptyString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length === 0) {
@@ -64,7 +65,7 @@ export async function registerPushSubscription(
     return upsertWebPushSubscription(client, {
       userId: input.userId,
       sessionId: input.sessionId,
-      endpoint: nonEmptyString(input.endpoint, "endpoint"),
+      endpoint: validateWebPushEndpoint(nonEmptyString(input.endpoint, "endpoint")),
       p256dh: nonEmptyString(input.p256dh, "p256dh"),
       authSecret: nonEmptyString(input.authSecret, "authSecret"),
     });

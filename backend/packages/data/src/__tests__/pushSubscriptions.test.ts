@@ -116,6 +116,23 @@ describe("push subscriptions (issue #150)", () => {
         }),
       ).rejects.toThrow(ValidationError);
     });
+
+    it("rejects a web_push endpoint pointing at a loopback IP and port, writing no row", async () => {
+      const user = await makeUser();
+      const registration = registerPushSubscription(pool, {
+        userId: user.id,
+        sessionId: null,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://127.0.0.1:9000/minio",
+        p256dh: "key",
+        authSecret: "secret",
+      });
+      await expect(registration).rejects.toBeInstanceOf(ValidationError);
+      await expect(registration).rejects.toMatchObject({ details: { field: "endpoint" } });
+      const { rows } = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM push_subscriptions");
+      expect(rows[0]?.count).toBe(0);
+    });
   });
 
   describe("registration and reactivation", () => {
