@@ -188,10 +188,7 @@ export async function deleteItemDependents(
 ): Promise<{ blobStorageKey: string | null }> {
   await client.query("DELETE FROM item_relations WHERE item_a = $1 OR item_b = $1", [row.id]);
   await client.query("DELETE FROM view_items WHERE item_id = $1", [row.id]);
-  await client.query("DELETE FROM idempotency_keys WHERE item_id = $1 AND database_id = $2", [
-    row.id,
-    row.databaseId,
-  ]);
+  await client.query("DELETE FROM idempotency_keys WHERE item_id = $1 AND database_id = $2", [row.id, row.databaseId]);
   await client.query("DELETE FROM docs WHERE item_id = $1", [row.id]);
   await client.query("DELETE FROM task_recurrence WHERE item_id = $1", [row.id]);
   await client.query("DELETE FROM item_automation WHERE item_id = $1", [row.id]);

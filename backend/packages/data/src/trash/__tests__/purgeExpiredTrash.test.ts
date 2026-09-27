@@ -258,10 +258,10 @@ describe("purgeExpiredTrash (issue #156)", () => {
 
     async function makeFilesItem(databaseId: string, blobId: string) {
       const item = await chokePoint.createItem({ databaseId, properties: {} });
-      await pool.query(`UPDATE items SET properties = jsonb_build_object('file', jsonb_build_object('blobId', $2::text)) WHERE id = $1`, [
-        item.id,
-        blobId,
-      ]);
+      await pool.query(
+        `UPDATE items SET properties = jsonb_build_object('file', jsonb_build_object('blobId', $2::text)) WHERE id = $1`,
+        [item.id, blobId],
+      );
       return item;
     }
 
@@ -280,12 +280,10 @@ describe("purgeExpiredTrash (issue #156)", () => {
         "INSERT INTO relation_definitions (property_id_a) VALUES ($1) RETURNING id",
         [propRows[0]?.id],
       );
-      await pool.query("INSERT INTO item_relations (relation_definition_id, item_a, item_b) VALUES ($1, $2, $3), ($1, $3, $4)", [
-        relDefRows[0]?.id,
-        page.id,
-        other.id,
-        inlineRow.id,
-      ]);
+      await pool.query(
+        "INSERT INTO item_relations (relation_definition_id, item_a, item_b) VALUES ($1, $2, $3), ($1, $3, $4)",
+        [relDefRows[0]?.id, page.id, other.id, inlineRow.id],
+      );
       const { rows: viewRows } = await pool.query<{ id: string }>(
         `INSERT INTO views (database_id, type, name, config) VALUES (NULL, 'list', 'Curated', '{"membership":"manual"}') RETURNING id`,
       );
@@ -299,7 +297,9 @@ describe("purgeExpiredTrash (issue #156)", () => {
         [page.id],
       );
       const docId = docRows[0]?.id;
-      await pool.query("INSERT INTO doc_snapshots (doc_id, state, state_vector) VALUES ($1, '\\x00', '\\x00')", [docId]);
+      await pool.query("INSERT INTO doc_snapshots (doc_id, state, state_vector) VALUES ($1, '\\x00', '\\x00')", [
+        docId,
+      ]);
       await pool.query("INSERT INTO doc_updates (doc_id, update) VALUES ($1, '\\x00')", [docId]);
       await pool.query(
         `INSERT INTO doc_history_updates (update_id, doc_id, update, created_by, created_at, expires_at)
