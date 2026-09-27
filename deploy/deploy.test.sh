@@ -85,7 +85,8 @@ assert-not-current "$(dirname "$working_directory")"
 test -f "$working_directory/built"
 grep -qx "APP_VERSION=v[0-9.]*" "$(dirname "$working_directory")/release.env"
 echo "systemd-run $*" >> "$TEST_STATE/commands"
-if [[ -f "$TEST_STATE/fail-migrate" ]]; then exit 1; fi'
+if [[ -f "$TEST_STATE/fail-migrate" ]]; then exit 1; fi
+if [[ -f "$TEST_STATE/fail-seed" && "$*" == *runSeedCli.js* ]]; then exit 1; fi'
 # `restart` simulates systemd: the new process gets the shared .env plus current/release.env.
 write_mock systemctl '
 case "$1" in
@@ -153,7 +154,14 @@ for unit in semprec-ai-gateway semprec-api semprec-agents semprec-transcribe sem
 done
 grep -q 'pnpm install --frozen-lockfile' "$TEST_STATE/commands"
 grep -q "EnvironmentFile=$TEST_SEMPREC_ROOT/shared/.env" "$TEST_STATE/commands"
-grep -q 'runMigrationsCli.js' "$TEST_STATE/commands"
+# The seed runs after the migrations, under the same migrate URL.
+grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runMigrationsCli.js' "$TEST_STATE/commands" \
+  | cut -d: -f1 > "$TEST_STATE/migrate.line"
+grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runSeedCli.js' "$TEST_STATE/commands" \
+  | cut -d: -f1 > "$TEST_STATE/seed.line"
+test "$(wc -l < "$TEST_STATE/migrate.line")" -eq 1
+test "$(wc -l < "$TEST_STATE/seed.line")" -eq 1
+test "$(cat "$TEST_STATE/migrate.line")" -lt "$(cat "$TEST_STATE/seed.line")"
 if grep -q 'shared-secret-value' "$TEST_STATE/deploy.out"; then
   echo 'deploy output exposed a shared secret' >&2
   exit 1
@@ -170,6 +178,10 @@ rm "$TEST_STATE/fail-build"
 touch "$TEST_STATE/fail-migrate"
 expect_refused 'migrations failed' v1.1.0
 rm "$TEST_STATE/fail-migrate"
+touch "$TEST_STATE/fail-seed"
+expect_refused 'seed failed' v1.1.0
+grep -q 'runSeedCli.js' "$TEST_STATE/commands"
+rm "$TEST_STATE/fail-seed"
 assert_current v1.0.0
 test ! -e "$TEST_SEMPREC_ROOT/releases/v1.1.0"
 assert_no_partial_releases

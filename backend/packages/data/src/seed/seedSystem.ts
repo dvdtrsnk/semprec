@@ -39,6 +39,9 @@ import { runModuleDataMigrations } from "../migrationJob/moduleDataMigration.js"
 
 export { PROJECTS_MODULE_ID } from "./tenDatabaseKeys.js";
 
+// Serializes concurrent seeds (issue #644): distinct from auth's SETUP_ADVISORY_LOCK_KEY (2330n).
+const SEED_ADVISORY_LOCK_KEY = 2331n;
+
 /**
  * Seeds the system records this issue's spec names directly, plus the ten hardcoded
  * databases from issue #24 (seedTenDatabasesInTransaction): the "System settings"
@@ -50,7 +53,8 @@ export { PROJECTS_MODULE_ID } from "./tenDatabaseKeys.js";
  * A code-level migration with direct DB access is the one sanctioned way to write a
  * system DB's schema (see the issue's choke-point section) — this seed uses the raw
  * stores directly rather than the choke-point, which would otherwise reject writes to
- * a `schema_locked`/`system` database. Idempotent: safe to call on every startup.
+ * a `schema_locked`/`system` database. Idempotent: safe to call on every startup, and
+ * concurrently — an advisory lock serializes the structural seed transaction.
  *
  * `viewTypeRegistry`/`computedKeyRegistry` default to fresh, private instances for
  * standalone/test use; a real server composition root should pass its own shared instances
@@ -103,6 +107,9 @@ export async function seedSystem(
   await moduleRegistry.loadModule(new URL("./systemDatabasesModuleManifest.js", import.meta.url).href);
 
   await withTransaction(pool, async (client) => {
+    // Taken before the guard below so a concurrent seed waits here, then sees this one's rows
+    // and returns early instead of seeding a second copy.
+    await client.query("SELECT pg_advisory_xact_lock($1)", [SEED_ADVISORY_LOCK_KEY]);
     const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1`, [
       SYSTEM_SETTINGS_MODULE_ID,
     ]);

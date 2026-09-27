@@ -56,7 +56,10 @@ In order, it:
    `pnpm install --frozen-lockfile` and `pnpm -r run build` in its `backend/`, and writes
    `release.env` (`APP_VERSION=<tag>`, not a secret);
 3. runs the release's migrations CLI in a transient `systemd-run` unit that loads
-   `/opt/semprec/shared/.env` and connects with its `SEMPREC_MIGRATE_DATABASE_URL`;
+   `/opt/semprec/shared/.env` and connects with its `SEMPREC_MIGRATE_DATABASE_URL`, then runs the
+   seed CLI (`runSeedCli.js`) right after it the same way, under the same URL — it creates the
+   system databases on a fresh install and is a no-op once they exist (see
+   [`docs/operations/seeding.md`](../docs/operations/seeding.md));
 4. renames the staging directory to `releases/<tag>`, then replaces `current` with one
    `rename(2)`;
 5. restarts `semprec-ai-gateway`, `semprec-api`, `semprec-agents`, `semprec-transcribe` and every
