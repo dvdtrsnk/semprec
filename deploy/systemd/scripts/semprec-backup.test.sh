@@ -59,10 +59,9 @@ run_backup env
 test -f "$TEST_BACKUP_DIRECTORY/postgres.dump"
 grep -qx 'custom PostgreSQL dump' "$TEST_BACKUP_DIRECTORY/postgres.dump"
 grep -qx "restic backup $TEST_BACKUP_DIRECTORY/postgres.dump $TEST_FILES_DIRECTORY $TEST_MAIL_ATTACHMENTS_DIRECTORY" "$TEST_STATE/commands"
-if grep -q -i -e '^docker inspect ' -e 'minio' "$TEST_STATE/commands"; then
-  echo 'the backup still addressed MinIO' >&2
-  exit 1
-fi
+# The dump is the only container the backup touches; the blob directories are read from the host.
+test "$(grep -c '^docker ' "$TEST_STATE/commands")" -eq 1
+grep -q '^docker compose .* exec -T postgres ' "$TEST_STATE/commands"
 grep -qx 'restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 12 --prune' "$TEST_STATE/commands"
 test "$(grep -n '^restic backup ' "$TEST_STATE/commands" | cut -d: -f1)" -lt "$(grep -n '^restic forget ' "$TEST_STATE/commands" | cut -d: -f1)"
 ! rg -q '/opt/semprec/shared|/var/log/journal|/etc/caddy|/opt/semprec/releases|CREDENTIALS_MASTER_KEY|SECRETS_MASTER_KEY' "$TEST_STATE/commands"
