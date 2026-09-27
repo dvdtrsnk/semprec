@@ -3,6 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { countJobsByIdentifier } from "@semprec/queue/testSupport";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   ApprovalRequiredError,
@@ -34,16 +35,6 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promi
     await sleep(50);
   }
   expect(await check()).toBe(true);
-}
-
-async function jobCountFor(pool: Pool, identifier: string): Promise<number> {
-  const { rows } = await pool.query<{ count: string }>(
-    `SELECT count(*)::text AS count FROM graphile_worker._private_jobs jobs
-     JOIN graphile_worker._private_tasks tasks ON tasks.id = jobs.task_id
-     WHERE tasks.identifier = $1`,
-    [identifier],
-  );
-  return Number(rows[0]?.count ?? 0);
 }
 
 async function createUser(pool: Pool): Promise<string> {
@@ -84,6 +75,7 @@ async function createPendingDeleteAndApprove(pool: Pool): Promise<{ requestId: s
 
 let pool: Pool;
 let runtime: ApiQueueRuntime | undefined;
+let previousInternalToken: string | undefined;
 
 describe("createApiQueueRuntime generic-operation approval replay (issue #646)", () => {
   beforeEach(async () => {
@@ -94,11 +86,14 @@ describe("createApiQueueRuntime generic-operation approval replay (issue #646)",
     await createUser(pool);
     runtime = undefined;
     // `createApiActionRegistry` composes `core.agentGuidanceDrift` eagerly, which requires it.
-    process.env.AI_GATEWAY_INTERNAL_TOKEN = "test-internal-token";
+    previousInternalToken = process.env.AI_GATEWAY_INTERNAL_TOKEN;
+    process.env.AI_GATEWAY_INTERNAL_TOKEN = randomUUID();
   });
 
   afterEach(async () => {
     await runtime?.stop();
+    if (previousInternalToken === undefined) delete process.env.AI_GATEWAY_INTERNAL_TOKEN;
+    else process.env.AI_GATEWAY_INTERNAL_TOKEN = previousInternalToken;
   });
 
   afterAll(async () => {
@@ -125,7 +120,7 @@ describe("createApiQueueRuntime generic-operation approval replay (issue #646)",
 
     // Redelivery: a second `approvalExecute` for the same request completes without touching the row.
     await enqueueJob(pool, CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE, { approvalRequestId: requestId });
-    await waitFor(async () => (await jobCountFor(pool, CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE)) === 0);
+    await waitFor(async () => (await countJobsByIdentifier(pool, CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE)) === 0);
     expect(await getApprovalRequest(pool, requestId)).toEqual(finished);
   });
 });
