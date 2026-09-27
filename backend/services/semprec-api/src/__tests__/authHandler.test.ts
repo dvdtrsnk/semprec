@@ -434,6 +434,27 @@ describe("createAuthRequestListener", () => {
       expect(body.code).toBe("password_reset_token_invalid");
     });
 
+    it("rejects a newPassword below the minimum length without consuming the token", async () => {
+      const user = await makeUser();
+      const token = await requestReset(user.email);
+
+      const rejected = await fetch(`${baseUrl}/api/auth/password-reset/consume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, newPassword: "short" }),
+      });
+      expect(rejected.status).toBe(400);
+      const body = (await rejected.json()) as { code: string };
+      expect(body.code).toBe("validation_failed");
+
+      const retried = await fetch(`${baseUrl}/api/auth/password-reset/consume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, newPassword: "a-brand-new-password" }),
+      });
+      expect(retried.status).toBe(200);
+    });
+
     it("rejects a missing newPassword", async () => {
       const user = await makeUser();
       const token = await requestReset(user.email);

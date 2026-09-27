@@ -13,7 +13,7 @@ import {
   resetPassword,
 } from "../auth/passwordResetActions.js";
 import type { PasswordResetMailer, SendPasswordResetEmailInput } from "../auth/passwordResetMail.js";
-import { PasswordResetTokenError } from "../errors.js";
+import { PasswordResetTokenError, ValidationError } from "../errors.js";
 
 let pool: Pool;
 
@@ -161,6 +161,27 @@ describe("password reset actions (issue #142)", () => {
       // The second, rejected attempt must not have overwritten the password the first attempt set.
       const updated = await getUserByEmail(pool, user.email);
       expect(await verifyPassword(updated!.passwordHash, "first-new-password")).toBe(true);
+    });
+
+    it("rejects a newPassword shorter than 8 characters without consuming the token", async () => {
+      const user = await makeUser();
+      const token = await requestAndGetToken(user.email);
+
+      const err = await resetPasswordInTransaction(pool, { token, newPassword: "1234567" }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ValidationError);
+      expect((err as ValidationError).details).toEqual({ field: "newPassword" });
+
+      const { rows } = await pool.query<{ consumed_at: Date | null }>(
+        `SELECT consumed_at FROM password_reset_tokens WHERE token_hash = $1`,
+        [hashToken(token)],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.consumed_at).toBeNull();
+
+      // The same token still works with a password that meets the minimum.
+      await resetPasswordInTransaction(pool, { token, newPassword: "12345678" });
+      const updated = await getUserByEmail(pool, user.email);
+      expect(await verifyPassword(updated!.passwordHash, "12345678")).toBe(true);
     });
 
     it("rejects a token that was never issued with an 'invalid' reason", async () => {
