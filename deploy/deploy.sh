@@ -132,6 +132,17 @@ run_migrations() {
     || fail "migrations failed"
 }
 
+# Creates the system databases on a fresh install; a no-op once they exist. Runs before
+# activation, so a failure leaves `current` and the services untouched, like a migration failure.
+run_seed() {
+  systemd-run --quiet --wait --pipe --collect \
+    --uid=semprec --gid=semprec \
+    --property=EnvironmentFile="$SHARED_ENV" \
+    --working-directory="$staging_dir/backend" \
+    /bin/sh -c 'DATABASE_URL="$SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runSeedCli.js' \
+    || fail "seed failed"
+}
+
 promote_release() {
   local tag="$1"
   mv -T -- "$staging_dir" "$RELEASES_DIR/$tag"
@@ -270,6 +281,7 @@ deploy() {
   build_release
   write_release_env "$tag"
   run_migrations
+  run_seed
   promote_release "$tag"
   activate_release "$tag"
   echo "Deployed $tag ($commit)"
