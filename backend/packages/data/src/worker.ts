@@ -100,9 +100,7 @@ export function createCoreTaskList(
   libraryMetadataFetcher: LibraryMetadataFetcher = noopLibraryMetadataFetcher,
   mailSyncAdapters: MailSyncAdapterFactory = noopMailSyncAdapterFactory,
   mailModuleIds?: MailModuleIds,
-  mailBlobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(
-    resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR"),
-  ),
+  mailBlobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR")),
   legacyRawMimeFetcher: LegacyRawMimeFetcher = noopLegacyRawMimeFetcher,
   moduleRegistry?: ModuleRegistry,
   pushSenders?: PushSenders,
