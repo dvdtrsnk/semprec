@@ -57,8 +57,10 @@ describe("runSeed (issue #644)", () => {
     expect(await itemCount()).toBe(itemsBefore);
   });
 
-  it("leaves exactly one systemSettings database when two runs race", async () => {
-    await Promise.all([runSeed(pool), runSeed(pool)]);
+  it("leaves exactly one systemSettings database when two runs race, and only one reports created", async () => {
+    const outcomes = await Promise.all([runSeed(pool), runSeed(pool)]);
+
+    expect([...outcomes].sort()).toEqual(["already-seeded", "created"]);
 
     expect(await databaseIdsByModule(SYSTEM_SETTINGS_MODULE_ID)).toHaveLength(1);
     expect(await databaseIdsByModule(PROJECTS_MODULE_ID)).toHaveLength(1);
