@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -819,8 +819,12 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
     journalId = await databaseIdFor("journal");
   });
 
-  async function runTick(itemId: string, computeProposal: ComputeSemprecProposalFn): Promise<void> {
-    const handler = createSemprecTickAction(pool, computeProposal);
+  async function runTick(
+    itemId: string,
+    computeProposal: ComputeSemprecProposalFn,
+    tickPool: Pool = pool,
+  ): Promise<void> {
+    const handler = createSemprecTickAction(tickPool, computeProposal);
     await handler(
       { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
       { heartbeatId: "hb", projectItemId: "proj", itemId },
@@ -870,6 +874,131 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
   async function readCard(cardId: string) {
     return withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, cardId));
   }
+
+  /**
+   * Wraps `pool` so that `beforeLock` runs, and commits on its own connection, right before the
+   * tick's first `SELECT ... FOR UPDATE` on `cardId` — the gap between the tick's unlocked
+   * snapshot of the card and its locked re-check, on paths that call no `computeProposal`.
+   */
+  function poolRunningBeforeCardLock(cardId: string, beforeLock: () => Promise<void>): Pool {
+    let fired = false;
+    return new Proxy(pool, {
+      get(t, prop, receiver) {
+        if (prop === "connect") {
+          return async (...args: unknown[]) => {
+            const client = await (t.connect as (...a: unknown[]) => Promise<PoolClient>)(...args);
+            return new Proxy(client, {
+              get(clientTarget, clientProp, clientReceiver) {
+                if (clientProp === "query") {
+                  return async (...queryArgs: unknown[]) => {
+                    const [text, params] = queryArgs as [unknown, unknown];
+                    if (
+                      !fired &&
+                      typeof text === "string" &&
+                      text.includes("FOR UPDATE") &&
+                      Array.isArray(params) &&
+                      params.includes(cardId)
+                    ) {
+                      fired = true;
+                      await beforeLock();
+                    }
+                    return (clientTarget.query as (...a: unknown[]) => unknown)(...queryArgs);
+                  };
+                }
+                return Reflect.get(clientTarget, clientProp, clientReceiver);
+              },
+            });
+          };
+        }
+        return Reflect.get(t, prop, receiver);
+      },
+    });
+  }
+
+  async function rejectCard(cardId: string): Promise<string> {
+    const rejected = await withTransaction(pool, (client) =>
+      itemsStore.updateItemProperties(client, {
+        databaseId: proposalsId,
+        itemId: cardId,
+        propertiesPatch: { status: "rejected" },
+      }),
+    );
+    return rejected.updatedAt;
+  }
+
+  async function softDeleteCard(cardId: string): Promise<string> {
+    const deleted = await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, proposalsId, cardId));
+    return deleted!.updatedAt;
+  }
+
+  async function softDeleteSource(itemId: string): Promise<void> {
+    await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, itemId));
+  }
+
+  /** A computed envelope naming a property the `tasks` database lacks, so the tick lands in `needsClarification`. */
+  const invalidEnvelope = { properties: { noSuchProperty: "x" } };
+
+  it("needsClarification path: a reject committed while the tick computes its proposal wins — the card stays rejected and untouched", async () => {
+    const { item, card } = await seedProposedCardWithChangedSource();
+
+    let rejectedVersion: string | undefined;
+    await runTick(item.id, async () => {
+      rejectedVersion = await rejectCard(card.id);
+      return invalidEnvelope;
+    });
+
+    const after = await readCard(card.id);
+    expect(after!.updatedAt).toBe(rejectedVersion);
+    expect(after!.properties).toEqual({ ...card.properties, status: "rejected" });
+  });
+
+  it("needsClarification path: a card soft-deleted while the tick computes its proposal is skipped without writing or throwing", async () => {
+    const { item, card } = await seedProposedCardWithChangedSource();
+
+    let deletedVersion: string | undefined;
+    await runTick(item.id, async () => {
+      deletedVersion = await softDeleteCard(card.id);
+      return invalidEnvelope;
+    });
+
+    const after = await readCard(card.id);
+    expect(after!.deletedAt).not.toBeNull();
+    expect(after!.updatedAt).toBe(deletedVersion);
+    expect(after!.properties).toEqual(card.properties);
+  });
+
+  it("deleted-source path: a reject committed before the tick locks the card wins — the card is not invalidated", async () => {
+    const { item, card } = await seedProposedCardWithChangedSource();
+    await softDeleteSource(item.id);
+
+    let rejectedVersion: string | undefined;
+    const tickPool = poolRunningBeforeCardLock(card.id, async () => {
+      rejectedVersion = await rejectCard(card.id);
+    });
+    await runTick(item.id, async () => expect.unreachable("a deleted source is never recomputed"), tickPool);
+
+    expect(rejectedVersion).toBeDefined();
+    const after = await readCard(card.id);
+    expect(after!.updatedAt).toBe(rejectedVersion);
+    expect(after!.properties).toEqual({ ...card.properties, status: "rejected" });
+  });
+
+  it("deleted-source path: a card soft-deleted before the tick locks it is skipped without writing or throwing", async () => {
+    const { item, card } = await seedProposedCardWithChangedSource();
+    await softDeleteSource(item.id);
+
+    let deletedVersion: string | undefined;
+    const tickPool = poolRunningBeforeCardLock(card.id, async () => {
+      deletedVersion = await softDeleteCard(card.id);
+    });
+    await runTick(item.id, async () => expect.unreachable("a deleted source is never recomputed"), tickPool);
+
+    expect(deletedVersion).toBeDefined();
+    const after = await readCard(card.id);
+    expect(after!.deletedAt).not.toBeNull();
+    expect(after!.updatedAt).toBe(deletedVersion);
+    expect(after!.properties).toEqual(card.properties);
+  });
 
   it("a confirm committed while the tick computes its proposal wins — the card stays confirmed and untouched", async () => {
     const { item, card } = await seedProposedCardWithChangedSource();
