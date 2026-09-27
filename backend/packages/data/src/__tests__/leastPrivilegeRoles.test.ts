@@ -117,6 +117,12 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
       ).resolves.toBeDefined();
       await expect(sidePool.query(`SELECT * FROM graphile_worker.jobs LIMIT 1`)).resolves.toBeDefined();
     });
+
+    it("cannot create an items partition", async () => {
+      await expect(sidePool.query(`SELECT create_items_partition($1::uuid)`, [randomUUID()])).rejects.toThrow(
+        /permission denied/,
+      );
+    });
   });
 
   describe("semprec_data", () => {
@@ -133,6 +139,20 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
         dataPool.query(`UPDATE items SET properties = '{"a": 1}' WHERE id = $1`, [item.id]),
       ).resolves.toBeDefined();
       await expect(dataPool.query(`DELETE FROM items WHERE id = $1`, [secondItemId])).resolves.toBeDefined();
+    });
+
+    it("creates a database, its items partition and an item through its own choke point", async () => {
+      const dataChokePoint = createChokePoint(dataPool);
+
+      const db = await dataChokePoint.createDatabase({ name: `Least-privilege data-role ${randomUUID()}` });
+      const item = await dataChokePoint.createItem({ databaseId: db.id, properties: {} });
+
+      expect(item.databaseId).toBe(db.id);
+      const { rows } = await adminPool.query<{ relname: string }>(
+        `SELECT relname FROM pg_class WHERE relname = $1`,
+        [`items_p_${db.id.replaceAll("-", "")}`],
+      );
+      expect(rows).toEqual([{ relname: `items_p_${db.id.replaceAll("-", "")}` }]);
     });
 
     it("also operates module side tables, via its membership in semprec_side", async () => {
