@@ -11,6 +11,7 @@ import {
   assertTaskListMatchesAffinity,
   resolveTaskAffinitySets,
   LocalFsBlobStorageWriter,
+  resolveBlobStorageDir,
   type BlobStorageWriter,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
@@ -24,7 +25,7 @@ export interface TranscribeQueueRuntime {
 export async function createTranscribeQueueRuntime(
   pool: Pool,
   moduleRegistry: ModuleRegistry,
-  blobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(process.env.FILES_STORAGE_DIR ?? "/tmp/semprec-files"),
+  blobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR")),
 ): Promise<TranscribeQueueRuntime> {
   await ensureQueueSchema(pool);
   await grantQueueSchemaPrivileges(pool);

@@ -372,6 +372,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "requestPasswordReset",
   "requireAffectedRows",
   "resetPassword",
+  "resolveBlobStorageDir",
   "resolveDatabaseName",
   "resolveDocHistoryRetentionDays",
   "resolveFindingsNotIn",

@@ -38,6 +38,7 @@ import {
   writeComputedAndAnnounce,
   writeNotification,
   LocalFsBlobStorageWriter,
+  resolveBlobStorageDir,
 } from "@semprec/data";
 import type { BlobStorageWriter } from "@semprec/data";
 import { NotFoundError, ValidationError } from "@semprec/data";
@@ -795,7 +796,7 @@ function requireGatewayInternalToken(): string {
  */
 export function createTranscriptionTask(
   pool: Pool,
-  blobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(process.env.FILES_STORAGE_DIR ?? "/tmp/semprec-files"),
+  blobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR")),
   gatewayClient?: AudioGatewayClient,
   summaryClient?: AiGatewayClientPort,
   summaryInstruction: SummaryInstruction = DEFAULT_SUMMARY_INSTRUCTION,

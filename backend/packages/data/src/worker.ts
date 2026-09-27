@@ -30,7 +30,7 @@ import {
   type MailModuleIds,
   type MailSyncAdapterFactory,
 } from "./mail/mailSyncJob.js";
-import { LocalFsBlobStorageWriter, type BlobStorageWriter } from "./mail/blobStorage.js";
+import { LocalFsBlobStorageWriter, resolveBlobStorageDir, type BlobStorageWriter } from "./mail/blobStorage.js";
 import {
   handleMailLegacyEmailMigrationTask,
   noopLegacyRawMimeFetcher,
@@ -101,7 +101,7 @@ export function createCoreTaskList(
   mailSyncAdapters: MailSyncAdapterFactory = noopMailSyncAdapterFactory,
   mailModuleIds?: MailModuleIds,
   mailBlobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(
-    process.env.MAIL_ATTACHMENTS_DIR ?? "/tmp/semprec-mail-attachments",
+    resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR"),
   ),
   legacyRawMimeFetcher: LegacyRawMimeFetcher = noopLegacyRawMimeFetcher,
   moduleRegistry?: ModuleRegistry,

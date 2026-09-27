@@ -243,7 +243,7 @@ export type { IngestUploadedFileInput, IngestUploadedFileResult } from "./blobs/
 export { ingestUploadedFile } from "./blobs/fileUploadStore.js";
 export { findFileItemByBlobId } from "./chokePoint/itemsStore.js";
 export type { BlobStorageWriter, WriteStreamOptions } from "./mail/blobStorage.js";
-export { LocalFsBlobStorageWriter, MaxBytesExceededError } from "./mail/blobStorage.js";
+export { LocalFsBlobStorageWriter, MaxBytesExceededError, resolveBlobStorageDir } from "./mail/blobStorage.js";
 
 export * from "./tasks/taskRecurrenceRule.js";
 export { computeNextDueDate } from "./tasks/nextDueDate.js";

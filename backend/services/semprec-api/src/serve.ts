@@ -3,6 +3,7 @@ import {
   createPool,
   LocalFsBlobStorageWriter,
   loadFullModuleRegistry,
+  resolveBlobStorageDir,
   NodemailerPasswordResetMailer,
   noopPasswordResetMailer,
   resolveDocHistoryRetentionDays,
@@ -69,12 +70,12 @@ function buildPasswordResetMailer(): PasswordResetMailer {
 }
 
 // Issue #158: `POST /api/files`'s hard streamed-upload cap, and where `LocalFsBlobStorageWriter`
-// keeps uploaded bytes on disk — same env-var shape as `MAIL_ATTACHMENTS_DIR` (worker.ts).
+// keeps uploaded bytes on disk — resolved like `MAIL_ATTACHMENTS_DIR` (worker.ts): required outside tests.
 const maxFileSizeMb = Number(process.env.MAX_FILE_SIZE_MB ?? "100");
 if (!Number.isFinite(maxFileSizeMb) || maxFileSizeMb <= 0) {
   throw new Error(`MAX_FILE_SIZE_MB is not a valid positive number: ${process.env.MAX_FILE_SIZE_MB}`);
 }
-const blobStorage = new LocalFsBlobStorageWriter(process.env.FILES_STORAGE_DIR ?? "/tmp/semprec-files");
+const blobStorage = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR"));
 
 const pool = createPool(connectionString);
 wireRealtimeHooks(pool);

@@ -53,7 +53,7 @@ write_mock dpkg 'echo amd64'
 write_mock corepack 'echo "corepack $*" >> "$TEST_STATE/commands"'
 write_mock systemctl 'echo "systemctl $*" >> "$TEST_STATE/commands"'
 write_mock systemd-analyze 'echo "systemd-analyze $*" >> "$TEST_STATE/commands"'
-write_mock install 'args=(); while [[ "$#" -gt 0 ]]; do case "$1" in -o|-g) shift 2;; *) args+=("$1"); shift;; esac; done; /usr/bin/install "${args[@]}"'
+write_mock install 'echo "install $*" >> "$TEST_STATE/commands"; args=(); while [[ "$#" -gt 0 ]]; do case "$1" in -o|-g) shift 2;; *) args+=("$1"); shift;; esac; done; /usr/bin/install "${args[@]}"'
 write_mock docker '
 if [[ "$1" == "compose" ]]; then
   printf "postgres-container\\n"
@@ -87,6 +87,11 @@ run_provision() {
 run_provision
 test -d "$TEST_ROOT/opt/semprec/releases"
 test -d "$TEST_ROOT/opt/semprec/shared"
+for blob_dir in files mail-attachments; do
+  test -d "$TEST_ROOT/opt/semprec/data/$blob_dir"
+  test "$(stat -c %a "$TEST_ROOT/opt/semprec/data/$blob_dir")" -eq 750
+  grep -Eq "^install -d -o semprec -g semprec -m 0750 .*/opt/semprec/data/$blob_dir\$" "$TEST_STATE/commands"
+done
 test -d "$TEST_ROOT/var/backups/semprec"
 test "$(stat -c %a "$TEST_ROOT/var/backups/semprec")" -eq 700
 test -f "$TEST_ROOT/opt/semprec/shared/.env"
@@ -122,11 +127,21 @@ done
 printf 'OPERATOR_CONFIGURED_SECRET=preserved\n' > "$TEST_ROOT/opt/semprec/shared/.env"
 mkdir "$TEST_ROOT/opt/semprec/releases/release-one"
 printf 'release payload\n' > "$TEST_ROOT/opt/semprec/releases/release-one/payload"
+printf 'stored blob\n' > "$TEST_ROOT/opt/semprec/data/files/blob-one"
+printf 'stored attachment\n' > "$TEST_ROOT/opt/semprec/data/mail-attachments/attachment-one"
+first_run_commands="$(wc -l < "$TEST_STATE/commands")"
 run_provision
+tail -n +"$((first_run_commands + 1))" "$TEST_STATE/commands" > "$TEST_STATE/second-run-commands"
 
 test "$(grep -c '^useradd$' "$TEST_STATE/commands")" -eq 1
 grep -qx 'OPERATOR_CONFIGURED_SECRET=preserved' "$TEST_ROOT/opt/semprec/shared/.env"
 grep -qx 'release payload' "$TEST_ROOT/opt/semprec/releases/release-one/payload"
+grep -qx 'stored blob' "$TEST_ROOT/opt/semprec/data/files/blob-one"
+grep -qx 'stored attachment' "$TEST_ROOT/opt/semprec/data/mail-attachments/attachment-one"
+if grep -q '/opt/semprec/data' "$TEST_STATE/second-run-commands"; then
+  echo "second provision run re-created an existing data directory" >&2
+  exit 1
+fi
 grep -q 'nodejs' "$TEST_STATE/commands"
 grep -q 'docker-compose-plugin' "$TEST_STATE/commands"
 grep -q 'caddy' "$TEST_STATE/commands"

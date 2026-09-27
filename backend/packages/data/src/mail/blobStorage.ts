@@ -46,6 +46,30 @@ export interface BlobStorageWriter {
   readStream(storageKey: string, range?: { start: number; end: number }): Readable;
 }
 
+const TEST_BLOB_STORAGE_DIRS = {
+  FILES_STORAGE_DIR: "/tmp/semprec-files",
+  MAIL_ATTACHMENTS_DIR: "/tmp/semprec-mail-attachments",
+} as const;
+
+/**
+ * Issue #645: the base directory a `LocalFsBlobStorageWriter` default writes under. The variable's
+ * value when set and non-empty; under `NODE_ENV=test` (vitest) the old `/tmp` path, so the test
+ * suites need no configuration; anywhere else it throws naming the variable — `/tmp` is cleaned on
+ * reboot while the `blobs` rows referencing the bytes survive, so a deployment must not fall back
+ * to it silently. `deploy/provision.sh` creates the `/opt/semprec/data/...` directories the
+ * `.env.example` values point at.
+ */
+export function resolveBlobStorageDir(envVarName: "FILES_STORAGE_DIR" | "MAIL_ATTACHMENTS_DIR"): string {
+  const configured = process.env[envVarName];
+  if (configured !== undefined && configured !== "") {
+    return configured;
+  }
+  if (process.env.NODE_ENV === "test") {
+    return TEST_BLOB_STORAGE_DIRS[envVarName];
+  }
+  throw new Error(`${envVarName} is not set`);
+}
+
 /**
  * Local-filesystem default, adequate for a single self-hosted server before object storage
  * (issue #40) is provisioned — the same "adequate for one deployment, not over-engineered"
