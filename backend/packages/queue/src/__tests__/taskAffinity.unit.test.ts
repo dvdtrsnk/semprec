@@ -25,6 +25,11 @@ describe("CORE_TASK_AFFINITY", () => {
     expect(CORE_TASK_NAMES.DOC_HISTORY_SQUASH).toBe("docHistorySquash");
     expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.DOC_HISTORY_SQUASH]).toBe("api");
   });
+
+  it("declares mcpRunCredentialExpirySweep in the exhaustive API set", () => {
+    expect(CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP).toBe("mcpRunCredentialExpirySweep");
+    expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]).toBe("api");
+  });
 });
 
 describe("AGENT_TASK_NAMES", () => {

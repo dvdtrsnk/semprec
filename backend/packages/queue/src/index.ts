@@ -73,6 +73,8 @@ export const CORE_TASK_NAMES = {
   // trigger) or an explicit `POST /api/transcriptions` request. Its actual processing (the
   // paid transcription pipeline) is out of this issue's scope — see transcriptionJob.ts.
   TRANSCRIPTION_JOB: "transcriptionJob",
+  // Issue #643: the hourly sweep that closes every MCP-triggered run whose run-credential expired.
+  MCP_RUN_CREDENTIAL_EXPIRY_SWEEP: "mcpRunCredentialExpirySweep",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
@@ -106,6 +108,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: "api",
   [CORE_TASK_NAMES.TRASH_PURGE]: "api",
   [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: "transcribe",
+  [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "api",
 };
 
 /**
