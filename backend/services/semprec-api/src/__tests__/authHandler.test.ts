@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { createUser, hashPassword, type PasswordResetMailer, type UserRow } from "@semprec/data";
+import { createUser, hashPassword, LOCKOUT_THRESHOLD, type PasswordResetMailer, type UserRow } from "@semprec/data";
 import { createAuthRequestListener, SESSION_COOKIE_NAME } from "../authHandler.js";
 
 let pool: Pool;
@@ -126,6 +126,53 @@ describe("createAuthRequestListener", () => {
 
       expect(wrongPassword.status).toBe(unknownEmail.status);
       expect(await wrongPassword.json()).toEqual(await unknownEmail.json());
+    });
+
+    function postLogin(email: string, password: string): Promise<Response> {
+      return fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password, platform: "web" }),
+      });
+    }
+
+    it("locks out the correct password after LOCKOUT_THRESHOLD failures, recording every failed attempt", async () => {
+      const user = await makeUser();
+
+      for (let i = 0; i < LOCKOUT_THRESHOLD; i++) {
+        const res = await postLogin(user.email, "wrong");
+        expect(res.status).toBe(401);
+      }
+      const locked = await postLogin(user.email, PASSWORD);
+
+      expect(locked.status).toBe(401);
+      const failures = await pool.query<{ count: string }>(
+        "SELECT count(*) FROM login_attempts WHERE succeeded = false",
+      );
+      expect(Number(failures.rows[0]!.count)).toBe(LOCKOUT_THRESHOLD + 1);
+      const sessions = await pool.query<{ count: string }>("SELECT count(*) FROM sessions");
+      expect(Number(sessions.rows[0]!.count)).toBe(0);
+    });
+
+    it("accepts the correct password below LOCKOUT_THRESHOLD and records the success with its session", async () => {
+      const user = await makeUser();
+
+      for (let i = 0; i < LOCKOUT_THRESHOLD - 1; i++) {
+        const res = await postLogin(user.email, "wrong");
+        expect(res.status).toBe(401);
+      }
+      const ok = await postLogin(user.email, PASSWORD);
+
+      expect(ok.status).toBe(200);
+      const attempts = await pool.query<{ succeeded: boolean; count: string }>(
+        "SELECT succeeded, count(*) FROM login_attempts GROUP BY succeeded ORDER BY succeeded",
+      );
+      expect(attempts.rows.map((row) => ({ succeeded: row.succeeded, count: Number(row.count) }))).toEqual([
+        { succeeded: false, count: LOCKOUT_THRESHOLD - 1 },
+        { succeeded: true, count: 1 },
+      ]);
+      const sessions = await pool.query<{ user_id: string }>("SELECT user_id FROM sessions");
+      expect(sessions.rows).toEqual([{ user_id: user.id }]);
     });
 
     it("rejects an invalid platform", async () => {
