@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
+import { createLogger, type Logger } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import type { ActionContext, ActionHandler } from "../scheduler/actions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
@@ -21,6 +22,8 @@ import type { ItemRow } from "../types.js";
 const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = {
   ownerProcess: PROCESSING_PROPOSALS_MODULE_ID,
 };
+
+const logger: Logger = createLogger("inbox-tick");
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -149,6 +152,33 @@ async function findExistingProposal(
     if (proposal && !proposal.deletedAt) return proposal;
   }
   return null;
+}
+
+/**
+ * Re-reads `snapshot` (a proposal this tick read earlier, unlocked) under `FOR UPDATE`, in the
+ * transaction that is about to write it, and returns the locked row only if it is still the
+ * row the tick decided on: present, not soft-deleted, not `confirmed`/`rejected`, and with the
+ * same `updatedAt`. Anything else — a confirm/reject or any other write that committed since
+ * the snapshot — is logged with its reason and returns `null`, and the caller skips its write.
+ */
+async function lockUnlockedProposal(
+  client: PoolClient,
+  config: SemprecTickActionConfig,
+  snapshot: ItemRow,
+): Promise<ItemRow | null> {
+  const locked = await itemsStore.lockItemById(client, config.processingProposalsDatabaseId, snapshot.id);
+  let reason: "gone" | "deleted" | "locked" | "changed" | null = null;
+  if (!locked) reason = "gone";
+  else if (locked.deletedAt !== null) reason = "deleted";
+  else if (typeof locked.properties.status === "string" && LOCKED_PROPOSAL_STATUSES.has(locked.properties.status))
+    reason = "locked";
+  else if (locked.updatedAt !== snapshot.updatedAt) reason = "changed";
+
+  if (reason !== null) {
+    logger.info({ proposalId: snapshot.id, reason }, "Skipping proposal write");
+    return null;
+  }
+  return locked;
 }
 
 async function computeProposalEnvelope(
@@ -369,16 +399,19 @@ async function writeNeedsClarification(
     if (typeof status === "string" && LOCKED_PROPOSAL_STATUSES.has(status)) return;
     if (status === "needsClarification" && existingProposal.properties.fingerprint === fingerprint) return;
 
+    const locked = await lockUnlockedProposal(client, config, existingProposal);
+    if (!locked) return;
     await updateItemWithClient(
       client,
       {
         databaseId: config.processingProposalsDatabaseId,
-        itemId: existingProposal.id,
+        itemId: locked.id,
+        ifVersion: locked.updatedAt,
         propertiesPatch: {
           fingerprint,
           proposal: null,
           status: "needsClarification",
-          history: appendHistoryEntry(existingProposal.properties.history, message),
+          history: appendHistoryEntry(locked.properties.history, message),
         },
       },
       { allowedSystemKeys: ["fingerprint", "proposal", "status", "history"] },
@@ -420,14 +453,17 @@ async function invalidateProposalForDeletedSource(
   if (typeof status === "string" && LOCKED_PROPOSAL_STATUSES.has(status)) return;
   if (status === "invalid") return;
 
+  const locked = await lockUnlockedProposal(client, config, existingProposal);
+  if (!locked) return;
   await updateItemWithClient(
     client,
     {
       databaseId: config.processingProposalsDatabaseId,
-      itemId: existingProposal.id,
+      itemId: locked.id,
+      ifVersion: locked.updatedAt,
       propertiesPatch: {
         status: "invalid",
-        history: appendHistoryEntry(existingProposal.properties.history, "Source Inbox item was deleted."),
+        history: appendHistoryEntry(locked.properties.history, "Source Inbox item was deleted."),
       },
     },
     { allowedSystemKeys: ["status", "history"] },
@@ -517,17 +553,22 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
           return;
         }
 
+        // The snapshot above was read unlocked and before the AI call — a confirm/reject that
+        // committed since then must win, so the write goes through the locked re-check.
+        const locked = await lockUnlockedProposal(client, config, existingProposal);
+        if (!locked) return;
         await updateItemWithClient(
           client,
           {
             databaseId: config.processingProposalsDatabaseId,
-            itemId: existingProposal.id,
+            itemId: locked.id,
+            ifVersion: locked.updatedAt,
             propertiesPatch: {
               fingerprint,
               proposal: envelope,
               status: "proposed",
               history: appendHistoryEntry(
-                existingProposal.properties.history,
+                locked.properties.history,
                 "Revised the proposal after the source item changed.",
               ),
             },
