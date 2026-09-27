@@ -13,7 +13,8 @@
     "@semprec/data": "workspace:*",
     "@semprec/shared": "workspace:*",
     "ajv": "^8.20.0",
-    "pg": "^8.23.0"
+    "pg": "^8.23.0",
+    "zod": "^4.1.11"
   },
   "devDependencies": {
     "@types/pg": "^8.23.1",
