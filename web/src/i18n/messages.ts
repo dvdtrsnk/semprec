@@ -164,6 +164,16 @@ export const en = {
   "setup.success": "Your account has been created.",
   "setup.success.login": "Continue to login",
   "setup.notFound": "This setup link is no longer valid.",
+  "login.title": "Sign in",
+  "login.email": "Email",
+  "login.password": "Password",
+  "login.submit": "Sign in",
+  "login.submitting": "Signing in…",
+  "login.error.invalid": "The email or password is not correct",
+  "login.error.failed": "Signing in failed: {message}",
+  "login.logout": "Sign out",
+  "login.logoutFailed": "Signing out failed: {message}",
+  "login.signedInAs": "Signed in as {email}",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -330,6 +340,16 @@ export const cs: Messages = {
   "setup.success": "Účet byl vytvořen.",
   "setup.success.login": "Pokračovat na přihlášení",
   "setup.notFound": "Tento odkaz na nastavení už není platný.",
+  "login.title": "Přihlášení",
+  "login.email": "E-mail",
+  "login.password": "Heslo",
+  "login.submit": "Přihlásit se",
+  "login.submitting": "Přihlašování…",
+  "login.error.invalid": "E-mail nebo heslo není správné",
+  "login.error.failed": "Přihlášení se nezdařilo: {message}",
+  "login.logout": "Odhlásit se",
+  "login.logoutFailed": "Odhlášení se nezdařilo: {message}",
+  "login.signedInAs": "Přihlášen(a) jako {email}",
 };
 
 export const CATALOGS = { cs, en } as const;
