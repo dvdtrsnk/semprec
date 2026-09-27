@@ -116,17 +116,22 @@ function validateBody(raw: unknown): AudioRequestBody {
 export function createAudioRequestListener(pool: Pool, options: AudioHandlerOptions) {
   async function handleDiarize(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const body = validateBody(await readJsonBody(req));
+    // The audio length is known up front, so the reserved estimate is the exact price.
+    const costUsd = (body.audioSeconds / 3600) * options.pyannotePricePerAudioHour;
     try {
       const result = await diarize(
         pool,
-        { provider: options.diarizationProvider.id, model: options.diarizationProvider.model },
+        {
+          provider: options.diarizationProvider.id,
+          model: options.diarizationProvider.model,
+          estimatedCostUsd: costUsd,
+        },
         async () => {
           const turns = await options.diarizationProvider.diarize({
             audio: body.audio,
             filename: body.filename,
             mimeType: body.mimeType,
           });
-          const costUsd = (body.audioSeconds / 3600) * options.pyannotePricePerAudioHour;
           return { turns, audioSeconds: body.audioSeconds, costUsd };
         },
       );
@@ -138,10 +143,16 @@ export function createAudioRequestListener(pool: Pool, options: AudioHandlerOpti
 
   async function handleTranscribe(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const body = validateBody(await readJsonBody(req));
+    // The audio length is known up front, so the reserved estimate is the exact price.
+    const costUsd = (body.audioSeconds / 3600) * options.deepInfraPricePerAudioHour;
     try {
       const result = await transcribe(
         pool,
-        { provider: options.transcriptionProvider.id, model: options.transcriptionProvider.model },
+        {
+          provider: options.transcriptionProvider.id,
+          model: options.transcriptionProvider.model,
+          estimatedCostUsd: costUsd,
+        },
         async () => {
           const transcription = await options.transcriptionProvider.transcribe({
             audio: body.audio,
@@ -149,7 +160,6 @@ export function createAudioRequestListener(pool: Pool, options: AudioHandlerOpti
             mimeType: body.mimeType,
             language: body.language,
           });
-          const costUsd = (body.audioSeconds / 3600) * options.deepInfraPricePerAudioHour;
           return { ...transcription, audioSeconds: body.audioSeconds, costUsd };
         },
       );

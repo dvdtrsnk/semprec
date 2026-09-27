@@ -3,7 +3,14 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
-import { recordAudioGatewayCall, recordTokenGatewayCall } from "../aiGateway/aiGatewayCallsStore.js";
+import {
+  failGatewayCall,
+  recordAudioGatewayCall,
+  recordTokenGatewayCall,
+  reserveGatewayCall,
+  settleAudioGatewayCall,
+  settleTokenGatewayCall,
+} from "../aiGateway/aiGatewayCallsStore.js";
 
 let pool: Pool;
 
@@ -42,6 +49,7 @@ describe("aiGatewayCallsStore", () => {
     expect(row.audioSeconds).toBeNull();
     expect(row.costUsd).toBeCloseTo(0.0123);
     expect(row.agentRunId).toBeNull();
+    expect(row.status).toBe("settled");
   });
 
   it("records an audio call with null token counts, not zero", async () => {
@@ -70,5 +78,119 @@ describe("aiGatewayCallsStore", () => {
     });
 
     expect(row.agentRunId).toBe(run.id);
+  });
+
+  it("reserves a row at the estimate with every usage column null", async () => {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "reserve" });
+
+    const row = await reserveGatewayCall(pool, {
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      estimatedCostUsd: 0.25,
+      agentRunId: run.id,
+      operation: "transcript_summary",
+    });
+
+    expect(row.status).toBe("reserved");
+    expect(row.costUsd).toBeCloseTo(0.25);
+    expect(row.inputTokens).toBeNull();
+    expect(row.outputTokens).toBeNull();
+    expect(row.audioSeconds).toBeNull();
+    expect(row.agentRunId).toBe(run.id);
+    expect(row.projectItemId).toBeNull();
+    expect(row.operation).toBe("transcript_summary");
+  });
+
+  it("settles a token reservation with the real usage", async () => {
+    const reserved = await reserveGatewayCall(pool, {
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      estimatedCostUsd: 0.25,
+    });
+
+    const row = await settleTokenGatewayCall(pool, reserved.id, { inputTokens: 100, outputTokens: 40, costUsd: 0.003 });
+
+    expect(row.id).toBe(reserved.id);
+    expect(row.status).toBe("settled");
+    expect(row.inputTokens).toBe(100);
+    expect(row.outputTokens).toBe(40);
+    expect(row.audioSeconds).toBeNull();
+    expect(row.costUsd).toBeCloseTo(0.003);
+  });
+
+  it("refuses to settle a row that is already settled", async () => {
+    const reserved = await reserveGatewayCall(pool, {
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      estimatedCostUsd: 0.25,
+    });
+    await settleTokenGatewayCall(pool, reserved.id, { inputTokens: 100, outputTokens: 40, costUsd: 0.003 });
+
+    await expect(
+      settleTokenGatewayCall(pool, reserved.id, { inputTokens: 1, outputTokens: 1, costUsd: 1 }),
+    ).rejects.toThrow();
+
+    const { rows } = await pool.query<{ cost_usd: string; input_tokens: number }>(
+      "SELECT cost_usd, input_tokens FROM ai_gateway_calls WHERE id = $1",
+      [reserved.id],
+    );
+    expect(Number(rows[0]!.cost_usd)).toBeCloseTo(0.003);
+    expect(rows[0]!.input_tokens).toBe(100);
+  });
+
+  it("settles an audio reservation and leaves the token columns null", async () => {
+    const reserved = await reserveGatewayCall(pool, {
+      provider: "deepinfra",
+      model: "whisper-large-v3",
+      estimatedCostUsd: 0.05,
+    });
+
+    const row = await settleAudioGatewayCall(pool, reserved.id, { audioSeconds: 60, costUsd: 0.01 });
+
+    expect(row.status).toBe("settled");
+    expect(row.audioSeconds).toBeCloseTo(60);
+    expect(row.costUsd).toBeCloseTo(0.01);
+    expect(row.inputTokens).toBeNull();
+    expect(row.outputTokens).toBeNull();
+  });
+
+  it("fails a reservation at cost 0", async () => {
+    const reserved = await reserveGatewayCall(pool, {
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      estimatedCostUsd: 0.25,
+    });
+
+    await failGatewayCall(pool, reserved.id);
+
+    const { rows } = await pool.query<{ status: string; cost_usd: string }>(
+      "SELECT status, cost_usd FROM ai_gateway_calls WHERE id = $1",
+      [reserved.id],
+    );
+    expect(rows[0]!.status).toBe("failed");
+    expect(Number(rows[0]!.cost_usd)).toBe(0);
+  });
+
+  it("refuses to fail a row that is already settled", async () => {
+    const reserved = await reserveGatewayCall(pool, {
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      estimatedCostUsd: 0.25,
+    });
+    await settleTokenGatewayCall(pool, reserved.id, { inputTokens: 100, outputTokens: 40, costUsd: 0.003 });
+
+    await expect(failGatewayCall(pool, reserved.id)).rejects.toThrow();
+
+    const { rows } = await pool.query<{ status: string }>("SELECT status FROM ai_gateway_calls WHERE id = $1", [
+      reserved.id,
+    ]);
+    expect(rows[0]!.status).toBe("settled");
+  });
+
+  it("indexes ai_gateway_calls on at for the spend query", async () => {
+    const { rows } = await pool.query<{ indexname: string }>(
+      "SELECT indexname FROM pg_indexes WHERE tablename = 'ai_gateway_calls'",
+    );
+    expect(rows.map((row) => row.indexname)).toContain("ai_gateway_calls_at_idx");
   });
 });

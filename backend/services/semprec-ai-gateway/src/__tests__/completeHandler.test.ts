@@ -323,7 +323,7 @@ describe("POST /internal/complete", () => {
     expect(rows[0].input_tokens).toBe(100);
   });
 
-  it("returns 502 provider_failed and records no row when the provider call itself fails", async () => {
+  it("returns 502 provider_failed and leaves one failed row at cost 0 when the provider call itself fails", async () => {
     const provider = new FakeProvider();
     provider.failure = new ProviderCallError("boom");
     startServer(provider);
@@ -335,7 +335,9 @@ describe("POST /internal/complete", () => {
     expect(((await res.json()) as { code: string }).code).toBe("provider_failed");
 
     const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
-    expect(rows).toHaveLength(0);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("failed");
+    expect(Number(rows[0].cost_usd)).toBe(0);
   });
 
   describe("trace propagation (#167)", () => {

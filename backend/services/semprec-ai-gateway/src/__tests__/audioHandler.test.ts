@@ -277,7 +277,7 @@ describe("POST /internal/diarize and /internal/transcribe", () => {
     expect(rows[0].agent_run_id).toBeNull();
   });
 
-  it("returns 502 provider_failed and records no row when the diarization provider call fails", async () => {
+  it("returns 502 provider_failed and leaves one failed row when the diarization provider call fails", async () => {
     diarizationProvider.failure = new AudioProviderCallError("boom");
     startServer(diarizationProvider, transcriptionProvider);
     await listen();
@@ -288,10 +288,12 @@ describe("POST /internal/diarize and /internal/transcribe", () => {
     expect(((await res.json()) as { code: string }).code).toBe("provider_failed");
 
     const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
-    expect(rows).toHaveLength(0);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("failed");
+    expect(Number(rows[0].cost_usd)).toBe(0);
   });
 
-  it("returns 502 provider_failed and records no row when the transcription provider call fails", async () => {
+  it("returns 502 provider_failed and leaves one failed row when the transcription provider call fails", async () => {
     transcriptionProvider.failure = new AudioProviderCallError("boom");
     startServer(diarizationProvider, transcriptionProvider);
     await listen();
@@ -302,7 +304,9 @@ describe("POST /internal/diarize and /internal/transcribe", () => {
     expect(((await res.json()) as { code: string }).code).toBe("provider_failed");
 
     const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
-    expect(rows).toHaveLength(0);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("failed");
+    expect(Number(rows[0].cost_usd)).toBe(0);
   });
 
   it("returns 404 for a method the audio routes do not serve", async () => {
@@ -327,7 +331,7 @@ describe("POST /internal/diarize and /internal/transcribe", () => {
     expect(diarizationProvider.calls).toHaveLength(0);
   });
 
-  it("returns 500 and records no row when the provider throws an unexpected error", async () => {
+  it("returns 500 and leaves one failed row when the provider throws an unexpected error", async () => {
     transcriptionProvider.failure = new Error("unexpected");
     startServer(diarizationProvider, transcriptionProvider);
     await listen();
@@ -338,7 +342,9 @@ describe("POST /internal/diarize and /internal/transcribe", () => {
     expect(await res.json()).toEqual({ error: "Internal server error" });
 
     const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
-    expect(rows).toHaveLength(0);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("failed");
+    expect(Number(rows[0].cost_usd)).toBe(0);
   });
 
   describe("budget enforcement", () => {
@@ -359,6 +365,24 @@ describe("POST /internal/diarize and /internal/transcribe", () => {
       expect(res.status).toBe(403);
       expect(((await res.json()) as { code: string }).code).toBe("budget_exceeded");
       expect(diarizationProvider.calls).toHaveLength(0);
+
+      const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
+      expect(rows).toHaveLength(1); // only the seeded row
+    });
+
+    it("returns 403 budget_exceeded on the transcription route and writes no row once the daily cap is reached", async () => {
+      await setBudgets(pool, { dailyBudgetUsd: 1, monthlyBudgetUsd: null });
+      await pool.query(
+        `INSERT INTO ai_gateway_calls (provider, model, audio_seconds, cost_usd) VALUES ('deepinfra', 'v1', 100, 1)`,
+      );
+      startServer(diarizationProvider, transcriptionProvider);
+      await listen();
+
+      const res = await post("/internal/transcribe", VALID_TRANSCRIBE_BODY);
+
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { code: string }).code).toBe("budget_exceeded");
+      expect(transcriptionProvider.calls).toHaveLength(0);
 
       const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
       expect(rows).toHaveLength(1); // only the seeded row

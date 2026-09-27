@@ -435,6 +435,7 @@ describe("createGracefulShutdown against the ai-gateway dispatcher with a real p
     try {
       const { rows } = await readPool.query("SELECT * FROM ai_gateway_calls");
       expect(rows).toHaveLength(1);
+      expect(rows[0].status).toBe("settled");
     } finally {
       await readPool.end();
     }
