@@ -157,6 +157,61 @@ async function collectItemSubtree(
   return subtree;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** `properties.file.blobId` of a Files item when it is a UUID string, otherwise null — read off JSONB, so every level is checked. */
+function fileBlobId(row: ItemRow): string | null {
+  const file: unknown = row.properties.file;
+  if (typeof file !== "object" || file === null || !("blobId" in file)) return null;
+  const { blobId } = file;
+  return typeof blobId === "string" && UUID_RE.test(blobId) ? blobId : null;
+}
+
+/**
+ * Deletes every row that points at a just-purged item (issue #675). `items` is partitioned with a
+ * composite key, so none of these tables carries a Postgres FK to it and nothing else removes
+ * them: its relation edges, curated-view memberships, idempotency reservation, doc (whose
+ * snapshots, updates, history updates and snapshot history cascade by FK), recurrence rule,
+ * automation state and search-index row. Must run in the purge's own transaction, after
+ * `itemsStore.hardDeleteItem` has removed `row` — the blob check below relies on the row already
+ * being gone.
+ *
+ * For a Files item it also deletes the `blobs` row its `properties.file.blobId` names, but only
+ * when no other item in any partition (live or trashed) and no mail attachment references that
+ * blob — `findOrCreateBlob`'s content-hash dedup shares one blob between identical uploads. Returns
+ * the deleted blob's `storage_key` so the caller can remove the bytes after the commit, or null
+ * when no blob row was deleted.
+ */
+export async function deleteItemDependents(
+  client: PoolClient,
+  row: ItemRow,
+): Promise<{ blobStorageKey: string | null }> {
+  await client.query("DELETE FROM item_relations WHERE item_a = $1 OR item_b = $1", [row.id]);
+  await client.query("DELETE FROM view_items WHERE item_id = $1", [row.id]);
+  await client.query("DELETE FROM idempotency_keys WHERE item_id = $1 AND database_id = $2", [
+    row.id,
+    row.databaseId,
+  ]);
+  await client.query("DELETE FROM docs WHERE item_id = $1", [row.id]);
+  await client.query("DELETE FROM task_recurrence WHERE item_id = $1", [row.id]);
+  await client.query("DELETE FROM item_automation WHERE item_id = $1", [row.id]);
+  await client.query("DELETE FROM item_search_index WHERE item_id = $1", [row.id]);
+
+  const blobId = fileBlobId(row);
+  if (!blobId) return { blobStorageKey: null };
+  // `@>` rather than `->> =` so the lookup can use `items_props_gin` (jsonb_path_ops).
+  const { rows } = await client.query<{ storage_key: string }>(
+    `DELETE FROM blobs WHERE id = $1
+       AND NOT EXISTS (
+         SELECT 1 FROM items WHERE properties @> jsonb_build_object('file', jsonb_build_object('blobId', $2::text))
+       )
+       AND NOT EXISTS (SELECT 1 FROM mail_attachments WHERE blob_id = $1)
+     RETURNING storage_key`,
+    [blobId, blobId],
+  );
+  return { blobStorageKey: rows[0]?.storage_key ?? null };
+}
+
 export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAffinity">) {
   const { pool, queueAffinity } = deps;
   return {
@@ -191,14 +246,25 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
      * delete loop below — the actual guard against that race is `itemsStore.hardDeleteItem`'s own
      * `deleted_at IS NOT NULL` condition, which turns a race-restored row's delete into a no-op
      * instead of destroying it. Rejects — and purges nothing — if any database in the eligible
-     * subtree is archived, same as `softDeleteItem`/`restoreItem`. Returns the ids actually
-     * removed (never one a concurrent restore raced ahead of), empty if the root turned out not
-     * to be eligible.
+     * subtree is archived, same as `softDeleteItem`/`restoreItem`.
+     *
+     * Every removed row's dependents go with it in the same transaction (`deleteItemDependents`,
+     * issue #675); a race-restored row keeps all of them. Once the delete loop is done, each
+     * inline database owned by a removed item (never the root's own database) whose partition is
+     * now empty is dropped together with its partition; one that still holds a live or too-fresh
+     * row is left in place. Returns the ids actually removed (never one a concurrent restore raced ahead
+     * of), empty if the root turned out not to be eligible, and the storage keys of the blob rows
+     * deleted with them — their bytes are the caller's to remove once this has committed.
      */
-    async purgeExpiredTrashSubtree(rootItemId: string, cutoff: Date): Promise<string[]> {
+    async purgeExpiredTrashSubtree(
+      rootItemId: string,
+      cutoff: Date,
+    ): Promise<{ purgedItemIds: string[]; blobStorageKeys: string[] }> {
       return withTransaction(pool, async (client) => {
         const [root] = await itemsStore.getItemsByIdsIncludingDeleted(client, [rootItemId]);
-        if (!root || !root.deletedAt || new Date(root.deletedAt) >= cutoff) return [];
+        if (!root || !root.deletedAt || new Date(root.deletedAt) >= cutoff) {
+          return { purgedItemIds: [], blobStorageKeys: [] };
+        }
 
         // A live or too-recently-trashed row stops its branch: only rows past `cutoff` are walked.
         const subtree = await collectItemSubtree(
@@ -210,12 +276,35 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
         const subtreeDatabaseIds = new Set(subtree.map((row) => row.databaseId));
         for (const id of subtreeDatabaseIds) await assertDatabaseNotArchived(client, id);
 
-        const purgedIds: string[] = [];
+        const purgedItemIds: string[] = [];
+        const blobStorageKeys: string[] = [];
         for (const row of subtree) {
           const removed = await itemsStore.hardDeleteItem(client, row.databaseId, row.id);
-          if (removed) purgedIds.push(row.id);
+          if (!removed) continue;
+          purgedItemIds.push(row.id);
+          const { blobStorageKey } = await deleteItemDependents(client, row);
+          if (blobStorageKey !== null) blobStorageKeys.push(blobStorageKey);
         }
-        return purgedIds;
+
+        // Keyed off the purged owners rather than `subtreeDatabaseIds`: a nested row is usually an
+        // expired candidate of its own and may already have been purged as a root by an earlier
+        // call, leaving its inline database empty and absent from this subtree's rows. An inline
+        // database whose owning item survived (race-restored) is never dropped here.
+        const ownedDatabaseIds = new Set<string>();
+        for (const itemId of purgedItemIds) {
+          for (const database of await databasesStore.listDatabasesByParentItem(client, itemId)) {
+            ownedDatabaseIds.add(database.id);
+          }
+        }
+        for (const id of ownedDatabaseIds) {
+          if (id === root.databaseId) continue;
+          const { rows } = await client.query<{ empty: boolean }>(
+            "SELECT NOT EXISTS (SELECT 1 FROM items WHERE database_id = $1) AS empty",
+            [id],
+          );
+          if (rows[0]?.empty === true) await databasesStore.dropDatabaseWithPartition(client, id);
+        }
+        return { purgedItemIds, blobStorageKeys };
       });
     },
   };
