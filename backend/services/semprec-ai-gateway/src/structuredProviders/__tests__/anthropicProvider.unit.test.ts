@@ -147,7 +147,9 @@ describe("createAnthropicStructuredProvider", () => {
     let bodyCancelled = false;
     const errorBody = new ReadableStream<Uint8Array>({
       start(controller) {
-        controller.enqueue(new TextEncoder().encode(JSON.stringify({ type: "error", error: { type: "overloaded_error" } })));
+        controller.enqueue(
+          new TextEncoder().encode(JSON.stringify({ type: "error", error: { type: "overloaded_error" } })),
+        );
       },
       cancel() {
         bodyCancelled = true;
