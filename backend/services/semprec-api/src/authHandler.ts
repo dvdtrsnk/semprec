@@ -155,15 +155,13 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
         }
 
         const userAgentHeader = req.headers["user-agent"];
-        const result = await withTransaction(pool, (client) =>
-          login(client, {
-            email: body.email as string,
-            password: body.password as string,
-            platform: body.platform as SessionPlatform,
-            ip: req.socket.remoteAddress ?? "0.0.0.0",
-            userAgent: typeof userAgentHeader === "string" ? userAgentHeader : null,
-          }),
-        );
+        const result = await login(pool, {
+          email: body.email,
+          password: body.password,
+          platform: body.platform,
+          ip: req.socket.remoteAddress ?? "0.0.0.0",
+          userAgent: typeof userAgentHeader === "string" ? userAgentHeader : null,
+        });
 
         // Per #141: a browser must never see its token in a readable response body — only the
         // `httpOnly` cookie carries it. iOS/macOS get it back in the body for Keychain storage

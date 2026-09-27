@@ -94,37 +94,47 @@ export interface LoginResult {
  *
  * Throws `UnauthorizedError` for every failure reason (unknown email, wrong password, active
  * lockout) with the same message, per #140's "don't reveal which condition applied" requirement.
+ *
+ * Takes a `Pool`, not a caller's transaction, on purpose (#628): a failed attempt is recorded
+ * with an auto-committed statement directly on `pool`, so the row survives the
+ * `UnauthorizedError` thrown right after it. Inside a caller-managed transaction that throw
+ * would roll the row back, `getFailureStreak` would always read zero, and the lockout would
+ * never engage. Only the success path — the new session row and the streak-resetting success
+ * row — runs in one `withTransaction`, so those two still commit or roll back together.
  */
-export async function login(client: Pool | PoolClient, input: LoginInput): Promise<LoginResult> {
+export async function login(pool: Pool, input: LoginInput): Promise<LoginResult> {
   const email = normalizeEmail(input.email);
 
-  const streak = await getFailureStreak(client, email, input.ip);
+  const streak = await getFailureStreak(pool, email, input.ip);
   if (streak.lastFailedAt) {
     const lockedUntil = new Date(streak.lastFailedAt).getTime() + lockoutDurationSeconds(streak.count) * 1000;
     if (Date.now() < lockedUntil) {
-      await recordLoginAttempt(client, { email, ip: input.ip, succeeded: false });
+      await recordLoginAttempt(pool, { email, ip: input.ip, succeeded: false });
       throw new UnauthorizedError();
     }
   }
 
-  const user = await getUserByEmail(client, email);
+  const user = await getUserByEmail(pool, email);
   const passwordOk = await verifyPassword(user ? user.passwordHash : await dummyPasswordHash, input.password);
 
   if (!user || !passwordOk) {
-    await recordLoginAttempt(client, { email, ip: input.ip, succeeded: false });
+    await recordLoginAttempt(pool, { email, ip: input.ip, succeeded: false });
     throw new UnauthorizedError();
   }
 
   const { token, tokenHash } = generateOpaqueToken();
   const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000);
-  const session = await createSession(client, {
-    userId: user.id,
-    tokenHash,
-    platform: input.platform,
-    expiresAt,
-    userAgent: input.userAgent,
+  const session = await withTransaction(pool, async (client) => {
+    const created = await createSession(client, {
+      userId: user.id,
+      tokenHash,
+      platform: input.platform,
+      expiresAt,
+      userAgent: input.userAgent,
+    });
+    await recordLoginAttempt(client, { email, ip: input.ip, succeeded: true });
+    return created;
   });
-  await recordLoginAttempt(client, { email, ip: input.ip, succeeded: true });
 
   return { token, session, user: toPublicUser(user) };
 }
