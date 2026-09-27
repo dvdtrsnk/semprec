@@ -187,6 +187,22 @@ describe("gateway", () => {
     expect(Number(rows[0].audio_seconds)).toBe(90);
   });
 
+  it("propagates a settle failure and leaves the reservation reserved at its estimate", async () => {
+    await expect(
+      // A fractional token count is rejected by the integer column, so the settle UPDATE throws.
+      complete(pool, { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5 }, async () => ({
+        inputTokens: 1.5,
+        outputTokens: 30,
+        costUsd: 0.002,
+      })),
+    ).rejects.toThrow();
+
+    const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("reserved");
+    expect(Number(rows[0].cost_usd)).toBe(0.5);
+  });
+
   describe("budget enforcement", () => {
     beforeEach(async () => {
       await seedSystem(pool);
