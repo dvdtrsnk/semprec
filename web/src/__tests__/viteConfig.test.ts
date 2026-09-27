@@ -42,4 +42,11 @@ describe("vite dev-server proxy", () => {
     expect(proxy["/api"]).toEqual({ target: "http://localhost:3001", ws: true });
     expect(proxy["/mcp"]).toEqual({ target: "http://localhost:3001" });
   });
+
+  it("targets SEMPREC_API_URL for both prefixes when it is set", async () => {
+    process.env.SEMPREC_API_URL = "http://custom-host:4000";
+    const proxy = await loadProxy();
+    expect(proxy["/api"]).toEqual({ target: "http://custom-host:4000", ws: true });
+    expect(proxy["/mcp"]).toEqual({ target: "http://custom-host:4000" });
+  });
 });
