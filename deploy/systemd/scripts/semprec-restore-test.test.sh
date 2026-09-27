@@ -12,6 +12,8 @@ readonly TEST_RESTORE_ROOT="$TEST_ROOT/var/tmp"
 readonly TEST_BLOBS="$TEST_ROOT/blobs"
 readonly TEST_SCRIPT="$TEST_ROOT/semprec-restore-test.sh"
 readonly PING_URL=https://hc.example.invalid/ping/restore-check
+readonly FILES_DIRECTORY=/opt/semprec/data/files
+readonly MAIL_ATTACHMENTS_DIRECTORY=/opt/semprec/data/mail-attachments
 export TEST_STATE TEST_BLOBS
 
 cleanup() {
@@ -23,11 +25,15 @@ mkdir -p "$TEST_BIN" "$TEST_STATE" "$TEST_RESTORE_ROOT" "$TEST_BLOBS"
 cp "$REPOSITORY_ROOT/deploy/systemd/scripts/semprec-restore-test.sh" "$TEST_SCRIPT"
 sed -i "s|readonly RESTORE_ROOT=/var/tmp|readonly RESTORE_ROOT=$TEST_RESTORE_ROOT|" "$TEST_SCRIPT"
 
-# Three blob objects in the "restored" MinIO; the restored blobs table records their hashes.
-for key in files/a files/b mail/c; do
-  mkdir -p "$TEST_BLOBS/$(dirname "$key")"
-  printf 'object %s' "$key" > "$TEST_BLOBS/$key"
-  printf '%s\t%s\t%s\n' "$key" "$(sha256sum "$TEST_BLOBS/$key" | cut -d' ' -f1)" "$(stat --format '%s' "$TEST_BLOBS/$key")"
+# The backed-up blob storage laid out by absolute path, as restic snapshots it: two files under
+# the files directory and one under the mail-attachments directory, keyed by mailbox item id.
+# The restored blobs table records each key with its size and hash.
+for path in "$FILES_DIRECTORY/ab/file-a" "$FILES_DIRECTORY/cd/file-b" "$MAIL_ATTACHMENTS_DIRECTORY/mailbox-1/attachment-c"; do
+  mkdir -p "$TEST_BLOBS$(dirname "$path")"
+  printf 'object %s' "$path" > "$TEST_BLOBS$path"
+  key="${path#"$FILES_DIRECTORY"/}"
+  key="${key#"$MAIL_ATTACHMENTS_DIRECTORY"/}"
+  printf '%s\t%s\t%s\n' "$key" "$(sha256sum "$TEST_BLOBS$path" | cut -d' ' -f1)" "$(stat --format '%s' "$TEST_BLOBS$path")"
 done > "$TEST_STATE/blob-rows"
 
 write_mock() {
@@ -51,15 +57,10 @@ case "$1" in
     rm "$TEST_STATE/resources/container-${!#}" ;;
   run)
     if [[ "$2" == --detach ]]; then touch "$TEST_STATE/resources/container-$4"; exit 0; fi
-    object="${!#}"
-    object="${object#restore/restore-bucket/}"
-    if fail blob-read; then exit 32; fi
-    cat "$TEST_BLOBS/$object"
-    if fail blob-mismatch; then printf "corrupted"; fi ;;
+    exit 32 ;;
   exec)
     arguments=" $* "
     if [[ "$arguments" == *" pg_isready "* ]]; then ! fail postgres-ready
-    elif [[ "$arguments" == *" mc ready local "* ]]; then ! fail minio-ready
     elif [[ "$arguments" == *" pg_restore "* ]]; then cat > /dev/null; ! fail pg-restore
     elif [[ "$arguments" == *"FROM blobs"* ]]; then cat "$TEST_STATE/blob-rows"
     elif [[ "$arguments" == *"octet_length(state) = 0"* ]]; then if fail empty-doc-state; then echo 1; else echo 0; fi
@@ -74,8 +75,13 @@ write_mock restic '
 printf "restic %s\\n" "$*" >> "$TEST_STATE/commands"
 if [[ -e "$TEST_STATE/fail-restic-restore" ]]; then exit 35; fi
 target="${!#}"
-mkdir -p "$target/var/backups/semprec" "$target/var/lib/docker/volumes/deploy_minio_data/_data/.minio.sys"
-printf "custom PostgreSQL dump" > "$target/var/backups/semprec/postgres.dump"'
+mkdir -p "$target/var/backups/semprec"
+printf "custom PostgreSQL dump" > "$target/var/backups/semprec/postgres.dump"
+cp -R "$TEST_BLOBS/." "$target/"
+if [[ -e "$TEST_STATE/fail-blob-missing-files" ]]; then rm "$target/opt/semprec/data/files/cd/file-b"; fi
+if [[ -e "$TEST_STATE/fail-blob-missing-mail" ]]; then rm "$target/opt/semprec/data/mail-attachments/mailbox-1/attachment-c"; fi
+if [[ -e "$TEST_STATE/fail-blob-size-mismatch" ]]; then printf "corrupted" >> "$target/opt/semprec/data/mail-attachments/mailbox-1/attachment-c"; fi
+if [[ -e "$TEST_STATE/fail-blob-hash-mismatch" ]]; then tr "a-z" "A-Z" < "$TEST_BLOBS/opt/semprec/data/files/ab/file-a" > "$target/opt/semprec/data/files/ab/file-a"; fi'
 write_mock curl 'printf "%s\\n" "${!#}" >> "$TEST_STATE/pings"'
 write_mock node '
 shift
@@ -89,9 +95,8 @@ run_restore_test() {
     RESTIC_PASSWORD=test-only-password \
     AWS_ACCESS_KEY_ID=test-access-key \
     AWS_SECRET_ACCESS_KEY=test-secret-key \
-    MINIO_ROOT_USER=minio-user \
-    MINIO_ROOT_PASSWORD='p@ss word/ü' \
-    MINIO_BLOB_BUCKET=restore-bucket \
+    FILES_STORAGE_DIR="$FILES_DIRECTORY" \
+    MAIL_ATTACHMENTS_DIR="$MAIL_ATTACHMENTS_DIRECTORY" \
     SEMPREC_SIDE_DATABASE_URL=postgres://semprec_side@127.0.0.1:5432/semprec \
     HEALTHCHECKS_RESTORE_PING_URL="$PING_URL" \
     "$@" bash "$TEST_SCRIPT"
@@ -133,16 +138,19 @@ assert_never_touches_production() {
   fi
 }
 
-# A valid fixture passes, records the pass, and pings the success URL exactly once.
+# A valid fixture passes, records the pass, and pings the success URL exactly once; its sampled
+# blobs are found under both the files and the mail-attachments directory.
 reset_state
-run_restore_test env
+run_restore_test env > "$TEST_STATE/stdout"
+grep -qx 'compared 3 restored blob files' "$TEST_STATE/stdout"
 test "$(count_lines . "$TEST_STATE/pings")" -eq 1
 grep -qx "$PING_URL" "$TEST_STATE/pings"
 test "$(count_lines . "$TEST_STATE/results")" -eq 1
 grep -Eq '^passed [0-9]{8}T[0-9]{6}Z-[0-9]+ DATABASE_URL=postgres://semprec_side@' "$TEST_STATE/results"
-test "$(count_lines '^docker run --rm ' "$TEST_STATE/commands")" -eq 3
+test "$(count_lines '^docker run --rm ' "$TEST_STATE/commands")" -eq 0
 grep -q -- '--exit-on-error' "$TEST_STATE/commands"
-if grep -q -e 'p@ss' -e 'minio-user' -e 'test-only-password' "$TEST_STATE/commands"; then
+test "$(count_lines '^docker run ' "$TEST_STATE/commands")" -eq 1
+if grep -q -e 'test-only-password' "$TEST_STATE/commands"; then
   echo "a secret appeared on a command line" >&2
   exit 1
 fi
@@ -177,15 +185,16 @@ assert_failure itemsCount no-items
 assert_failure itemsFreshness stale-items
 assert_failure docSnapshotsCount no-doc-snapshots
 assert_failure docSnapshotsState empty-doc-state
-assert_failure minioStart minio-ready
-assert_failure blobObjects blob-read
-assert_failure blobObjects blob-mismatch
+assert_failure blobObjects blob-missing-files
+assert_failure blobObjects blob-missing-mail
+assert_failure blobObjects blob-size-mismatch
+assert_failure blobObjects blob-hash-mismatch
 # The first container removal fails; the exit path retries it, so nothing is left behind.
 assert_failure cleanup docker-rm-once
 
 # Missing configuration is itself a failed run.
 reset_state
-if run_restore_test env -u MINIO_BLOB_BUCKET; then
+if run_restore_test env -u FILES_STORAGE_DIR; then
   echo "missing configuration unexpectedly succeeded" >&2
   exit 1
 fi

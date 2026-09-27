@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# Monthly restore test (issue #178): restores the newest restic snapshot into disposable
-# PostgreSQL and MinIO containers on an internal Docker network, checks the restored state, and
-# destroys everything it created. It never connects to the production containers or volumes.
+# Monthly restore test (issue #178): restores the newest restic snapshot into a work directory and
+# a disposable PostgreSQL container on an internal Docker network, checks the restored database
+# against the restored blob storage directories, and destroys everything it created. It never
+# connects to the production containers or volumes.
 set -euo pipefail
 
 readonly RESTORE_ROOT=/var/tmp
 readonly RESULT_CLI=/opt/semprec/current/backend/packages/data/dist/observability/restoreTestResultCli.js
 readonly POSTGRES_IMAGE=postgres:16-alpine
-readonly MINIO_IMAGE=minio/minio:latest
-readonly MC_IMAGE=minio/mc:latest
 readonly RESTORED_DUMP_PATH=var/backups/semprec/postgres.dump
 readonly RESTORE_DATABASE=semprec_restore
 readonly ITEMS_MAX_AGE_HOURS=48
@@ -20,20 +19,18 @@ readonly RUN_ID
 readonly RESOURCE_NAME="semprec-restore-test-$RUN_ID"
 readonly NETWORK_NAME="$RESOURCE_NAME"
 readonly POSTGRES_CONTAINER="$RESOURCE_NAME-postgres"
-readonly MINIO_CONTAINER="$RESOURCE_NAME-minio"
 
 # The check that is running (or last ran); a failure is reported under this name.
 CURRENT_CHECK=configuration
 WORK_DIRECTORY=
 NETWORK_CREATED=false
 POSTGRES_CREATED=false
-MINIO_CREATED=false
 VERIFIED=false
 
 require_environment() {
   local name
   for name in RESTIC_REPOSITORY RESTIC_PASSWORD AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY \
-    MINIO_ROOT_USER MINIO_ROOT_PASSWORD MINIO_BLOB_BUCKET SEMPREC_SIDE_DATABASE_URL \
+    FILES_STORAGE_DIR MAIL_ATTACHMENTS_DIR SEMPREC_SIDE_DATABASE_URL \
     HEALTHCHECKS_RESTORE_PING_URL; do
     if [[ -z "${!name:-}" ]]; then
       echo "$name must be configured for the restore test" >&2
@@ -47,9 +44,6 @@ require_environment() {
 # whether everything is gone.
 destroy_disposable_state() {
   local status=0
-  if [[ "$MINIO_CREATED" == true ]]; then
-    if docker rm --force --volumes "$MINIO_CONTAINER" >/dev/null; then MINIO_CREATED=false; else status=1; fi
-  fi
   if [[ "$POSTGRES_CREATED" == true ]]; then
     if docker rm --force --volumes "$POSTGRES_CONTAINER" >/dev/null; then POSTGRES_CREATED=false; else status=1; fi
   fi
@@ -134,16 +128,6 @@ restore_snapshot() {
   [[ -s "$WORK_DIRECTORY/$RESTORED_DUMP_PATH" ]] || fail_check "restored snapshot has no PostgreSQL dump"
 }
 
-# The backup snapshots MinIO's /data volume at whatever host path Docker gave it; the restored
-# copy is the one directory holding MinIO's own .minio.sys metadata.
-restored_minio_data_directory() {
-  local -a metadata_directories=()
-  mapfile -t metadata_directories < <(find "$WORK_DIRECTORY" -type d -name .minio.sys -prune -print)
-  [[ "${#metadata_directories[@]}" -eq 1 ]] ||
-    fail_check "expected one restored MinIO data directory, found ${#metadata_directories[@]}"
-  dirname -- "${metadata_directories[0]}"
-}
-
 start_postgres() {
   CURRENT_CHECK=postgresStart
   docker network create --internal "$NETWORK_NAME" >/dev/null
@@ -188,46 +172,22 @@ check_postgres_contents() {
   [[ "$empty_snapshots" == 0 ]] || fail_check "restored doc_snapshots has empty state"
 }
 
-start_minio() {
-  CURRENT_CHECK=minioStart
-  local minio_data
-  minio_data="$(restored_minio_data_directory)"
-  MINIO_CREATED=true
-  # Root credentials come from this process's environment by name, never from the command line.
-  docker run --detach --name "$MINIO_CONTAINER" --network "$NETWORK_NAME" --network-alias minio \
-    --env MINIO_ROOT_USER --env MINIO_ROOT_PASSWORD \
-    --volume "$minio_data:/data" "$MINIO_IMAGE" server /data >/dev/null
-  wait_until_ready docker exec "$MINIO_CONTAINER" mc ready local ||
-    fail_check "disposable MinIO did not become ready"
-}
-
-url_encode() {
-  # Byte-wise, so a multi-byte character is percent-encoded as its UTF-8 bytes.
-  local LC_ALL=C
-  local value="$1"
-  local encoded=
-  local character
-  local index
-  for ((index = 0; index < ${#value}; index++)); do
-    character="${value:index:1}"
-    case "$character" in
-      [A-Za-z0-9._~-]) encoded+="$character" ;;
-      *) encoded+="$(printf '%%%02X' "'$character")" ;;
-    esac
+# restic restores absolute paths under the work directory. A `blobs.storage_key` is relative to
+# whichever of the two storage directories its writer was given, so each sampled key is looked up
+# in the files directory first and in the mail-attachments directory second.
+restored_blob_file() {
+  local directory
+  for directory in "$FILES_STORAGE_DIR" "$MAIL_ATTACHMENTS_DIR"; do
+    if [[ -f "$WORK_DIRECTORY$directory/$1" ]]; then
+      printf '%s\n' "$WORK_DIRECTORY$directory/$1"
+      return 0
+    fi
   done
-  printf '%s' "$encoded"
+  return 1
 }
 
-# Reads one object from the disposable MinIO; the alias carries the credentials in the
-# environment, not on the command line.
-read_restored_object() {
-  MC_HOST_restore="http://$(url_encode "$MINIO_ROOT_USER"):$(url_encode "$MINIO_ROOT_PASSWORD")@minio:9000" \
-    docker run --rm --network "$NETWORK_NAME" --env MC_HOST_restore "$MC_IMAGE" \
-    cat "restore/$MINIO_BLOB_BUCKET/$1"
-}
-
-# Each sampled object must have exactly the size and SHA-256 content hash the restored `blobs`
-# row records for it — the two halves of the snapshot have to agree with each other.
+# Each sampled file must have exactly the size and SHA-256 content hash the restored `blobs` row
+# records for it — the two halves of the snapshot have to agree with each other.
 check_blob_objects() {
   CURRENT_CHECK=blobObjects
   local samples
@@ -238,19 +198,17 @@ check_blob_objects() {
     return 0
   fi
 
-  local storage_key content_hash byte_size actual_hash actual_size object_file checked=0
-  object_file="$WORK_DIRECTORY/object"
+  local storage_key content_hash byte_size actual_hash actual_size blob_file checked=0
   while IFS=$'\t' read -r storage_key content_hash byte_size; do
-    read_restored_object "$storage_key" > "$object_file" ||
-      fail_check "restored MinIO cannot read a sampled blob object"
-    actual_size="$(stat --format '%s' "$object_file")"
-    actual_hash="$(sha256sum "$object_file" | cut -d' ' -f1)"
+    blob_file="$(restored_blob_file "$storage_key")" ||
+      fail_check "restored snapshot has no file for a sampled blob"
+    actual_size="$(stat --format '%s' "$blob_file")"
+    actual_hash="$(sha256sum "$blob_file" | cut -d' ' -f1)"
     [[ "$actual_size" == "$byte_size" && "$actual_hash" == "$content_hash" ]] ||
-      fail_check "restored blob object does not match its blobs row"
+      fail_check "restored blob file does not match its blobs row"
     checked=$((checked + 1))
   done <<< "$samples"
-  rm -f -- "$object_file"
-  echo "compared $checked restored blob objects"
+  echo "compared $checked restored blob files"
 }
 
 main() {
@@ -263,7 +221,6 @@ main() {
   start_postgres
   restore_postgres
   check_postgres_contents
-  start_minio
   check_blob_objects
 
   CURRENT_CHECK=cleanup
