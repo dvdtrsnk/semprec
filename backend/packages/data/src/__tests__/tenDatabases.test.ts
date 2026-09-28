@@ -10,6 +10,7 @@ import { createBlob, getBlob } from "../blobs/blobsStore.js";
 import { createTaskRecurrence } from "../tasks/taskRecurrenceStore.js";
 import { advanceTaskRecurrence } from "../tasks/advanceTaskRecurrence.js";
 import { computeNextDueDate } from "../tasks/nextDueDate.js";
+import { ConflictError } from "../errors.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
 
@@ -301,6 +302,107 @@ describe("ten hardcoded databases (issue #24)", () => {
     const linkedItemIds = edges.flatMap((e) => [e.itemA, e.itemB]);
     expect(linkedItemIds).toContain(task.id);
     expect(linkedItemIds).toContain(next!.id);
+  });
+
+  describe("task recurrence through the choke point's `status: 'done'` write", () => {
+    async function listTaskIds(tasksId: string): Promise<string[]> {
+      const { rows } = await pool.query<{ id: string }>(
+        "SELECT id FROM items WHERE database_id = $1 AND deleted_at IS NULL ORDER BY id",
+        [tasksId],
+      );
+      return rows.map((row) => row.id);
+    }
+
+    async function recurrenceOf(itemId: string): Promise<{ active: boolean; mode: string; rule: unknown } | null> {
+      const { rows } = await pool.query<{ active: boolean; mode: string; rule: unknown }>(
+        "SELECT active, mode, rule FROM task_recurrence WHERE item_id = $1",
+        [itemId],
+      );
+      return rows[0] ?? null;
+    }
+
+    async function createRecurringTask(tasksId: string) {
+      const task = await chokePoint.createItem({
+        databaseId: tasksId,
+        properties: { name: "Water plants", status: "notDone", date: "2026-08-24" },
+      });
+      await withTransaction(pool, (client) =>
+        createTaskRecurrence(client, { itemId: task.id, mode: "floating", rule: { unit: "days", n: 3 } }),
+      );
+      return task;
+    }
+
+    it("creates exactly one next notDone instance carrying the recurrence, and deactivates the old one", async () => {
+      const tasksId = await databaseIdFor("tasks");
+      const task = await createRecurringTask(tasksId);
+
+      const updated = await chokePoint.updateItem({
+        databaseId: tasksId,
+        itemId: task.id,
+        propertiesPatch: { status: "done" },
+      });
+      expect(updated.properties.status).toBe("done");
+
+      const ids = await listTaskIds(tasksId);
+      expect(ids).toHaveLength(2);
+      const nextId = ids.find((id) => id !== task.id)!;
+      const next = await chokePoint.getItem(tasksId, nextId);
+      expect(next?.properties.name).toBe("Water plants");
+      expect(next?.properties.status).toBe("notDone");
+      expect(await recurrenceOf(nextId)).toEqual({ active: true, mode: "floating", rule: { unit: "days", n: 3 } });
+      expect((await recurrenceOf(task.id))?.active).toBe(false);
+    });
+
+    it("a second `done` write on the old task creates nothing", async () => {
+      const tasksId = await databaseIdFor("tasks");
+      const task = await createRecurringTask(tasksId);
+      await chokePoint.updateItem({ databaseId: tasksId, itemId: task.id, propertiesPatch: { status: "done" } });
+      const afterFirst = await listTaskIds(tasksId);
+      expect(afterFirst).toHaveLength(2);
+
+      await chokePoint.updateItem({ databaseId: tasksId, itemId: task.id, propertiesPatch: { status: "done" } });
+      expect(await listTaskIds(tasksId)).toEqual(afterFirst);
+    });
+
+    it("a `done` write on a task without recurrence creates nothing", async () => {
+      const tasksId = await databaseIdFor("tasks");
+      const plain = await chokePoint.createItem({
+        databaseId: tasksId,
+        properties: { name: "One-off", status: "notDone" },
+      });
+
+      const updated = await chokePoint.updateItem({
+        databaseId: tasksId,
+        itemId: plain.id,
+        propertiesPatch: { status: "done" },
+      });
+      expect(updated.properties.status).toBe("done");
+      expect(await listTaskIds(tasksId)).toEqual([plain.id]);
+    });
+
+    it("a failed `done` write (stale ifVersion) creates no instance and leaves the recurrence active", async () => {
+      const tasksId = await databaseIdFor("tasks");
+      const task = await createRecurringTask(tasksId);
+      const staleVersion = task.updatedAt;
+      await chokePoint.updateItem({
+        databaseId: tasksId,
+        itemId: task.id,
+        propertiesPatch: { name: "Water all plants" },
+      });
+
+      await expect(
+        chokePoint.updateItem({
+          databaseId: tasksId,
+          itemId: task.id,
+          propertiesPatch: { status: "done" },
+          ifVersion: staleVersion,
+        }),
+      ).rejects.toThrow(ConflictError);
+
+      expect(await listTaskIds(tasksId)).toEqual([task.id]);
+      expect((await chokePoint.getItem(tasksId, task.id))?.properties.status).toBe("notDone");
+      expect((await recurrenceOf(task.id))?.active).toBe(true);
+    });
   });
 
   it("computeNextDueDate: fixed nthWeekday and floating interval rules", () => {

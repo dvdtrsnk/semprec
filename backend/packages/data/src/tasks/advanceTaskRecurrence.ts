@@ -29,58 +29,68 @@ export interface AdvanceTaskRecurrenceInput {
  * in (e.g. its Projects link) — not just the recurrence rule itself. Returns `null` (no-op)
  * when the completed item has no active recurrence, which is the common case.
  *
- * Every item/relation write goes through the choke-point's own logic — `createItemWithClient`
- * / `updateItemWithClient` / `createRelationWithClient` (chokePoint.ts), the same functions
- * `createChokePoint(...)`'s public `createItem`/`updateItem`/`createRelation` are thin
- * wrappers over — so idempotency handling, ownership checks, onItemEvent heartbeat
- * triggering, and rollup-recompute enqueueing all still happen exactly as they would through
- * the public API. The one difference is transactional scope: `createChokePoint`'s wrappers
- * each open and commit their own transaction, which here would let a crash or error partway
- * through this multi-step advance (new instance created, but the old one never marked done)
- * leave two open instances of the same recurring task — breaking the rolling model's
- * invariant. Composing the client-scoped versions inside one `withTransaction` instead makes
- * the whole advance atomic.
+ * Opens its own transaction around `advanceTaskRecurrenceWithClient` plus the `done` write.
+ * That `done` write re-enters the choke point's Tasks hook (`updateItemWithClient`), which
+ * finds the recurrence already deactivated in this same transaction and no-ops.
  */
 export async function advanceTaskRecurrence(pool: Pool, input: AdvanceTaskRecurrenceInput): Promise<ItemRow | null> {
   return withTransaction(pool, async (client) => {
-    // Row-locked: two concurrent advances of the same task must not both observe
-    // `active: true` and both create a next instance — the second blocks here until the
-    // first commits (active now false, so it correctly no-ops) or rolls back.
-    const recurrence = await getTaskRecurrence(client, input.itemId, true);
-    if (!recurrence || !recurrence.active) return null;
-
-    const current = await itemsStore.getItemById(client, input.databaseId, input.itemId);
-    if (!current) throw new NotFoundError(`Task ${input.itemId} not found`);
-
-    assertValidTimezone(input.timezone);
-    const nextDate = computeNextDueDate(recurrence.mode, recurrence.rule, input.timezone, new Date());
-
-    const newItem = await createItemWithClient(client, {
-      databaseId: input.databaseId,
-      properties: {
-        name: current.properties.name,
-        status: "notDone",
-        date: nextDate,
-        timeFrom: current.properties.timeFrom ?? null,
-        timeTo: current.properties.timeTo ?? null,
-        notifications: current.properties.notifications ?? false,
-        persistent: current.properties.persistent ?? false,
-      },
-    });
-
-    await createTaskRecurrence(client, { itemId: newItem.id, mode: recurrence.mode, rule: recurrence.rule });
-    await setTaskRecurrenceActive(client, input.itemId, false);
-
-    await copyRelationEdges(client, input.itemId, newItem.id);
-
+    const next = await advanceTaskRecurrenceWithClient(client, input);
     await updateItemWithClient(client, {
       databaseId: input.databaseId,
       itemId: input.itemId,
       propertiesPatch: { status: "done" },
     });
-
-    return newItem;
+    return next;
   });
+}
+
+/**
+ * The advance itself, run inside the caller's transaction — the choke point's `status: 'done'`
+ * write calls it so the `done` write and the next instance commit or roll back together. It
+ * does not mark the old task `done`; the caller's own write does that.
+ *
+ * Every item/relation write goes through the choke-point's own logic — `createItemWithClient`
+ * / `createRelationWithClient` — so idempotency handling, ownership checks, onItemEvent
+ * heartbeat triggering, and rollup-recompute enqueueing all still happen exactly as they would
+ * through the public API, while sharing the caller's transaction keeps a crash partway through
+ * from leaving two open instances of the same recurring task.
+ */
+export async function advanceTaskRecurrenceWithClient(
+  client: PoolClient,
+  input: AdvanceTaskRecurrenceInput,
+): Promise<ItemRow | null> {
+  // Row-locked: two concurrent advances of the same task must not both observe
+  // `active: true` and both create a next instance — the second blocks here until the
+  // first commits (active now false, so it correctly no-ops) or rolls back.
+  const recurrence = await getTaskRecurrence(client, input.itemId, true);
+  if (!recurrence || !recurrence.active) return null;
+
+  const current = await itemsStore.getItemById(client, input.databaseId, input.itemId);
+  if (!current) throw new NotFoundError(`Task ${input.itemId} not found`);
+
+  assertValidTimezone(input.timezone);
+  const nextDate = computeNextDueDate(recurrence.mode, recurrence.rule, input.timezone, new Date());
+
+  const newItem = await createItemWithClient(client, {
+    databaseId: input.databaseId,
+    properties: {
+      name: current.properties.name,
+      status: "notDone",
+      date: nextDate,
+      timeFrom: current.properties.timeFrom ?? null,
+      timeTo: current.properties.timeTo ?? null,
+      notifications: current.properties.notifications ?? false,
+      persistent: current.properties.persistent ?? false,
+    },
+  });
+
+  await createTaskRecurrence(client, { itemId: newItem.id, mode: recurrence.mode, rule: recurrence.rule });
+  await setTaskRecurrenceActive(client, input.itemId, false);
+
+  await copyRelationEdges(client, input.itemId, newItem.id);
+
+  return newItem;
 }
 
 /**
