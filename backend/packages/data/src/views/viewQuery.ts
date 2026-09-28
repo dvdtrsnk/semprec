@@ -49,7 +49,14 @@ function encodeSortCursor(sortSpecs: SortSpec[], item: ItemRow): string {
 
 const NUMERIC_TEXT_RE = /^\s*[-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?\s*$/;
 
-/** Whether a decoded cursor value survives the sort key's `::numeric`/`::timestamptz` cast, so a foreign value is a 400 here rather than a cast failure inside the query. */
+/**
+ * Whether a decoded cursor value survives the sort key's `::numeric`/`::timestamptz` cast, so a
+ * foreign value is a 400 here rather than a cast failure inside the query. Every other type sorts
+ * by the uncast `properties ->> key` text, and item property values are not type-checked on write
+ * (a `select` row can hold `42`, a `checkbox` row holds `true`, a `json` row an object), so any
+ * JSON value is a cursor `encodeSortCursor` can legitimately produce — narrowing it would reject
+ * real pages, and whatever text it binds is compared exactly as a stored value would be.
+ */
 function castableTo(type: PropertyType | undefined, value: unknown): boolean {
   if (value === null) return true;
   if (type === "number") {
