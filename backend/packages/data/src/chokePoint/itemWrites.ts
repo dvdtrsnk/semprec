@@ -6,6 +6,7 @@
 // (itemReads.ts), trash and restore (itemTrash.ts), or relation writes (relationOps.ts).
 // Constrained by:
 // - docs/adr/2026-09-19-derived-system-properties-computed-inline-at-choke-point.md
+// - docs/adr/2026-09-28-module-transactional-side-effects-inline-at-choke-point.md
 // - docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
 // - docs/adr/2026-09-10-choke-point-api-for-state-writes.md
 import type { PoolClient } from "pg";
@@ -275,6 +276,7 @@ export async function updateItemWithClient(
   // Completing a recurring task advances it to its next instance in this same transaction, so
   // the `done` write and the new instance commit or roll back together. A no-op when the task
   // has no active recurrence, including a repeated `done` write (the first one deactivated it).
+  // See docs/adr/2026-09-28-module-transactional-side-effects-inline-at-choke-point.md.
   if (database.ownerModuleId === TASKS_MODULE_ID && input.propertiesPatch.status === "done") {
     await advanceTaskRecurrenceWithClient(
       client,
