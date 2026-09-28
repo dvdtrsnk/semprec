@@ -11,6 +11,7 @@ import {
   getAgentRunEventById,
   listAgentRunEvents,
   listAgentRunEventsAfter,
+  listSessionAgentRunEventsFromLastCompaction,
 } from "../agentRuns/agentRunEventsStore.js";
 import { setAgentRunEventHook } from "../realtimeHook.js";
 
@@ -124,6 +125,129 @@ describe("agentRunEventsStore", () => {
     ).rejects.toThrow("rollback");
 
     expect(announced).toEqual([]);
+  });
+
+  describe("listSessionAgentRunEventsFromLastCompaction", () => {
+    const PROJECT_ITEM_ID = "99999999-9999-9999-9999-999999999999";
+    const filter = { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user" as const, parentRunId: null };
+
+    it("returns the compaction row and everything after it, in (wake_seq, id) order, excluding earlier runs", async () => {
+      const runA = await createAgentRun(pool, {
+        projectItemId: PROJECT_ITEM_ID,
+        triggeredBy: "user",
+        unit: "session",
+        task: "one",
+      });
+      await insertAgentRunEvent(pool, runA.id, "message", { kind: "message", text: "a1" });
+      await insertAgentRunEvent(pool, runA.id, "message", { kind: "message", text: "a2" });
+
+      const runB = await createAgentRun(pool, {
+        projectItemId: PROJECT_ITEM_ID,
+        triggeredBy: "user",
+        unit: "session",
+        task: "two",
+      });
+      await insertAgentRunEvent(pool, runB.id, "message", { kind: "message", text: "b1 (before checkpoint)" });
+      const checkpoint = await insertAgentRunEvent(pool, runB.id, "compaction", [
+        { id: "checkpoint", parentId: null, seq: 0, timestamp: 0, message: { kind: "message", text: "summary" } },
+      ]);
+      const b2 = await insertAgentRunEvent(pool, runB.id, "message", {
+        kind: "message",
+        text: "b2 (after checkpoint)",
+      });
+
+      const runC = await createAgentRun(pool, {
+        projectItemId: PROJECT_ITEM_ID,
+        triggeredBy: "user",
+        unit: "session",
+        task: "three",
+      });
+      const c1 = await insertAgentRunEvent(pool, runC.id, "message", { kind: "message", text: "c1" });
+      const c2 = await insertAgentRunEvent(pool, runC.id, "message", { kind: "message", text: "c2" });
+
+      const result = await listSessionAgentRunEventsFromLastCompaction(pool, filter);
+
+      expect(result.map((e) => e.id)).toEqual([checkpoint.id, b2.id, c1.id, c2.id]);
+      expect(result[0]!.kind).toBe("compaction");
+    });
+
+    it("returns every event of every session run in order when there is no compaction anywhere", async () => {
+      const runA = await createAgentRun(pool, {
+        projectItemId: PROJECT_ITEM_ID,
+        triggeredBy: "user",
+        unit: "session",
+        task: "one",
+      });
+      const a1 = await insertAgentRunEvent(pool, runA.id, "message", { kind: "message", text: "a1" });
+
+      const runB = await createAgentRun(pool, {
+        projectItemId: PROJECT_ITEM_ID,
+        triggeredBy: "user",
+        unit: "session",
+        task: "two",
+      });
+      const b1 = await insertAgentRunEvent(pool, runB.id, "message", { kind: "message", text: "b1" });
+
+      const result = await listSessionAgentRunEventsFromLastCompaction(pool, filter);
+
+      expect(result.map((e) => e.id)).toEqual([a1.id, b1.id]);
+    });
+
+    it("never includes a run of a different triggeredBy, parentRunId, or projectItemId", async () => {
+      const matching = await createAgentRun(pool, {
+        projectItemId: PROJECT_ITEM_ID,
+        triggeredBy: "user",
+        unit: "session",
+        task: "matching",
+      });
+      const matchingEvent = await insertAgentRunEvent(pool, matching.id, "message", {
+        kind: "message",
+        text: "matching",
+      });
+
+      const supervisorRun = await createAgentRun(pool, { triggeredBy: "user", unit: "invocation", task: "sup" });
+      const otherTriggeredBy = await createAgentRun(pool, {
+        projectItemId: PROJECT_ITEM_ID,
+        parentRunId: supervisorRun.id,
+        triggeredBy: "supervisor",
+        unit: "session",
+        task: "other triggeredBy",
+      });
+      await insertAgentRunEvent(pool, otherTriggeredBy.id, "message", { kind: "message", text: "should not appear" });
+
+      const otherParentRun = await createAgentRun(pool, {
+        projectItemId: PROJECT_ITEM_ID,
+        parentRunId: supervisorRun.id,
+        triggeredBy: "supervisor",
+        unit: "session",
+        task: "other parent",
+      });
+      const otherSupervisorRun = await createAgentRun(pool, { triggeredBy: "user", unit: "invocation", task: "sup2" });
+      const otherParentRunMatchingTrigger = await createAgentRun(pool, {
+        projectItemId: PROJECT_ITEM_ID,
+        parentRunId: otherSupervisorRun.id,
+        triggeredBy: "supervisor",
+        unit: "session",
+        task: "other parent 2",
+      });
+      await insertAgentRunEvent(pool, otherParentRun.id, "message", { kind: "message", text: "should not appear" });
+      await insertAgentRunEvent(pool, otherParentRunMatchingTrigger.id, "message", {
+        kind: "message",
+        text: "should not appear",
+      });
+
+      const otherProjectItem = await createAgentRun(pool, {
+        projectItemId: "77777777-7777-7777-7777-777777777777",
+        triggeredBy: "user",
+        unit: "session",
+        task: "other project item",
+      });
+      await insertAgentRunEvent(pool, otherProjectItem.id, "message", { kind: "message", text: "should not appear" });
+
+      const result = await listSessionAgentRunEventsFromLastCompaction(pool, filter);
+
+      expect(result.map((e) => e.id)).toEqual([matchingEvent.id]);
+    });
   });
 
   async function countEvents(agentRunId: string): Promise<number> {

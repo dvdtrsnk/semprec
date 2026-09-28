@@ -3,6 +3,7 @@ import { requireSingleRow, runAfterCommit } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import { notifyAgentRunEvent } from "../realtimeHook.js";
+import type { SessionAgentRunsFilter } from "./agentRunsStore.js";
 
 export type AgentRunEventKind =
   "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status" | "compaction";
@@ -151,19 +152,33 @@ export async function getAgentRunEventById(
 }
 
 /**
- * Batch form of `listAgentRunEvents` for `@semprec/agent-runtime`'s reconstruction path (#119),
- * which otherwise issues one round trip per prior session run it walks. Ordered by
- * `(agent_run_id, id)` so a caller grouping by run still sees each run's own events in
- * monotonic order.
+ * Reconstruction source for `@semprec/agent-runtime`'s `walkStoredEntries` (#119): every event of
+ * one dormant conversation's `unit='session'` runs, bounded to the tail after the latest
+ * `compaction` checkpoint. Event ids are a global monotonic `bigserial` and one conversation is
+ * woken strictly sequentially, so every event after the latest checkpoint has a larger id than
+ * the checkpoint and every event before it a smaller one — the `id >=` bound is therefore exact,
+ * not an approximation. The result starts with the `compaction` row itself (when any exists) so
+ * the caller's walk still resets on it; with no checkpoint, `COALESCE(..., 0)` returns every
+ * event of every session run. Uses `agent_runs_session_wake_idx` (migration 0017) and
+ * `agent_run_events_run_idx` (migration 0015).
  */
-export async function listAgentRunEventsByRunIds(
+export async function listSessionAgentRunEventsFromLastCompaction(
   client: Pool | PoolClient,
-  agentRunIds: string[],
+  filter: SessionAgentRunsFilter,
 ): Promise<AgentRunEventRow[]> {
-  if (agentRunIds.length === 0) return [];
   const { rows } = await client.query<AgentRunEventDbRow>(
-    `SELECT id, agent_run_id, kind, payload, at FROM agent_run_events WHERE agent_run_id = ANY($1) ORDER BY agent_run_id, id ASC`,
-    [agentRunIds],
+    `WITH session_runs AS (
+       SELECT id, wake_seq FROM agent_runs
+       WHERE project_item_id = $1 AND unit = 'session' AND triggered_by = $2 AND parent_run_id IS NOT DISTINCT FROM $3
+     ),
+     latest_compaction AS (
+       SELECT max(e.id) AS id FROM agent_run_events e JOIN session_runs r ON r.id = e.agent_run_id WHERE e.kind = 'compaction'
+     )
+     SELECT e.id, e.agent_run_id, e.kind, e.payload, e.at
+     FROM agent_run_events e JOIN session_runs r ON r.id = e.agent_run_id
+     WHERE e.id >= COALESCE((SELECT id FROM latest_compaction), 0)
+     ORDER BY r.wake_seq ASC, e.id ASC`,
+    [filter.projectItemId, filter.triggeredBy, filter.parentRunId],
   );
   return rows.map(mapRow);
 }

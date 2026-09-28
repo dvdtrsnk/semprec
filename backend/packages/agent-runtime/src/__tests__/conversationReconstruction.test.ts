@@ -236,6 +236,47 @@ describe("reconstructConversationHistory", () => {
     expect(result?.entries[1]!.parentId).toBe("checkpoint");
   });
 
+  it("reconstructs the identical Entry[] after the rows preceding the latest checkpoint are deleted", async () => {
+    const runA = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "session",
+      task: "one",
+    });
+    await insertAgentRunEvent(pool, runA.id, "message", { kind: "message", text: "first" });
+    await insertAgentRunEvent(pool, runA.id, "message", { kind: "message", text: "second" });
+
+    const runB = await createAgentRun(pool, {
+      projectItemId: PROJECT_ITEM_ID,
+      triggeredBy: "user",
+      unit: "session",
+      task: "two",
+    });
+    const checkpoint: ConversationEntry = {
+      id: "checkpoint",
+      parentId: null,
+      seq: 0,
+      timestamp: 123,
+      message: { kind: "message", text: "compacted summary" },
+    };
+    await persistCompaction(pool, runB.id, [checkpoint]);
+    const { rows: checkpointRows } = await pool.query<{ id: string }>(
+      `SELECT id FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'compaction'`,
+      [runB.id],
+    );
+    const checkpointEventId = checkpointRows[0]!.id;
+    await insertAgentRunEvent(pool, runB.id, "message", { kind: "message", text: "third" });
+
+    const filter = { projectItemId: PROJECT_ITEM_ID, triggeredBy: "user" as const, parentRunId: null };
+    const before = await reconstructConversationHistory(pool, filter, noopCompaction);
+
+    await pool.query(`DELETE FROM agent_run_events WHERE id < $1`, [checkpointEventId]);
+
+    const after = await reconstructConversationHistory(pool, filter, noopCompaction);
+
+    expect(after).toEqual(before);
+  });
+
   it("restarting the same walk twice over unchanged agent_run_events produces an identical Entry[] tree", async () => {
     const run = await createAgentRun(pool, {
       projectItemId: PROJECT_ITEM_ID,
