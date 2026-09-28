@@ -24,9 +24,11 @@ import { withTransaction } from "../db/pool.js";
  */
 export async function runDocHistoryCutoverMigration(pool: Pool): Promise<void> {
   await withTransaction(pool, async (client) => {
-    // Excludes any concurrent doc creation/write for the duration of the cutover, so no doc
-    // can be left with its old checkpoints deleted and no baseline yet, or a baseline
-    // installed from a state that a concurrent write then invalidates.
+    // Serialises concurrent cutover runs and blocks concurrent `docs` row inserts/updates for
+    // the duration of the cutover. It does not exclude appends to existing docs (those write
+    // doc_updates/doc_history_updates and lock doc_snapshots rows, never touching `docs`);
+    // the cutover tolerates that because it runs only once, before any release that appends
+    // doc_history_updates is live.
     await client.query(`LOCK TABLE docs IN EXCLUSIVE MODE`);
 
     // The idempotency check must run inside this transaction, after the lock is held: two
