@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import type { ModuleRegistry } from "@semprec/module-registry";
-import { requireSingleRow, withTransaction } from "../db/pool.js";
+import { requireAffectedRows, requireSingleRow, withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { lockItemBatch } from "./itemBatch.js";
 
@@ -91,11 +91,13 @@ export async function runModuleDataMigration(pool: Pool, params: RunModuleDataMi
            ON CONFLICT (module_id, database_key, from_version, to_version) DO NOTHING`,
           [moduleId, databaseKey, fromVersion, toVersion],
         );
-        await txClient.query(
+        // convertInBatches always leaves the transition's progress row behind.
+        const deleted = await txClient.query(
           `DELETE FROM module_migration_progress
            WHERE module_id = $1 AND database_key = $2 AND from_version = $3 AND to_version = $4`,
           [moduleId, databaseKey, fromVersion, toVersion],
         );
+        requireAffectedRows(deleted, "module_migration_progress delete");
       });
     } finally {
       await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [key]);
