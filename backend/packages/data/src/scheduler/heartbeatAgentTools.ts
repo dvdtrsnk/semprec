@@ -186,7 +186,12 @@ export function createHeartbeatTriggerTool(
     }
 
     const outcome = await withTransaction(pool, async (client) => {
-      const heartbeat = await getHeartbeatForProject(client, projectItemId, parsedArgs.data.heartbeatId, moduleRuleKinds);
+      const heartbeat = await getHeartbeatForProject(
+        client,
+        projectItemId,
+        parsedArgs.data.heartbeatId,
+        moduleRuleKinds,
+      );
       if (!heartbeat) {
         return { error: true, result: `Heartbeat ${parsedArgs.data.heartbeatId} not found` } as const;
       }
