@@ -2,7 +2,12 @@ import type { Pool } from "pg";
 import { createChokePoint, NotFoundError } from "@semprec/data";
 import type { GenericApplicationPort, Property } from "@semprec/shared";
 import type { RouteDefinition } from "./adapter/routeTable.js";
-import { optionalHeader, requireJsonObjectBody, requireStringParam, requireUuidParam } from "./adapter/requestValidation.js";
+import {
+  optionalHeader,
+  requireJsonObjectBody,
+  requireStringParam,
+  requireUuidParam,
+} from "./adapter/requestValidation.js";
 import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js";
 import { toItemDetailEnvelope, toItemEnvelope } from "./adapter/itemEnvelope.js";
 import { toItemQueryEnvelope } from "./adapter/itemQueryEnvelope.js";
