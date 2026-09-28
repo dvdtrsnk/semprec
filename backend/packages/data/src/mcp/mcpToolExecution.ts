@@ -17,6 +17,12 @@ export interface McpInvokeOptions {
 }
 
 /**
+ * Bounds one `tools/call`. The SDK already defaults to 60 s; stating it here keeps the bound
+ * visible at the call site instead of depending on a library default.
+ */
+const MCP_TOOL_CALL_TIMEOUT_MS = 60_000;
+
+/**
  * Maps a transport/invoke failure to a fixed, secret-free message. `McpConnectionError`'s own
  * `message` is already built from fixed wording plus non-secret identifiers (see
  * `mcpConnectionFactory.ts`), so it's safe to surface verbatim; anything else (an SDK-level
@@ -74,12 +80,15 @@ function formatCallToolResult(result: CallToolResultLike): McpInvokeResult {
  * issue #131's execution job); it does not re-check authorization itself. Only `serverItem` and
  * `toolName` are read, so a caller that has just those two (the approval-execution job doesn't
  * have a full, freshly-resolved `McpToolInvocationTarget`) can pass a matching partial object.
+ * `signal` cancels an in-flight `tools/call` (an aborted agent run passes its own), which then
+ * resolves as an error result like any other failed call.
  */
 export async function executeMcpInvocation(
   pool: Pool,
   target: Pick<McpToolInvocationTarget, "serverItem" | "toolName">,
   args: McpInvokeArgs,
   options: McpInvokeOptions = {},
+  signal?: AbortSignal,
 ): Promise<McpInvokeResult> {
   let handle: McpClientHandle | undefined;
   try {
@@ -87,9 +96,13 @@ export async function executeMcpInvocation(
       actorId: options.actorId,
       purpose: "mcp_tool_invoke",
     });
-    const callResult = await handle.client.callTool({ name: target.toolName, arguments: args });
+    const callResult = await handle.client.callTool({ name: target.toolName, arguments: args }, undefined, {
+      signal,
+      timeout: MCP_TOOL_CALL_TIMEOUT_MS,
+    });
     return formatCallToolResult(callResult as CallToolResultLike);
   } catch (err) {
+    if (signal?.aborted) return { error: true, result: "MCP tool call was cancelled before it completed" };
     return { error: true, result: safeInvokeErrorMessage(err) };
   } finally {
     await handle?.close();
