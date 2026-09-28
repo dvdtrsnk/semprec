@@ -19,6 +19,19 @@ import { resolveDocHistoryRetentionDays, retentionHours } from "./docHistoryConf
  * baseline) the new baseline makes redundant — every later update/checkpoint required to
  * reconstruct anything at or after `cutoff` is left untouched.
  *
+ * The folded boundary is chosen by `update_id` contiguity, not by timestamp order: every row
+ * after the checkpoint up to (excluding) the first row, in id order, whose `created_at` is
+ * past `cutoff`. Timestamp order cannot be used because `created_at` is the appending
+ * transaction's start time while `update_id` is assigned at insert — a transaction that
+ * started earlier but inserted later carries a lower `created_at` and a higher `update_id`
+ * than a concurrent one. Taking the last row in `(created_at, update_id)` order as the
+ * boundary would then delete an unfolded lower-id row past `cutoff`, which `openDocVersionAt`
+ * could never replay again (it only reads `update_id > through_update_id`). With the
+ * contiguous boundary, every row with `update_id <= through_update_id` has been applied.
+ * Rows past the gap with `created_at <= cutoff` are retained and replayed by
+ * `openDocVersionAt`; Yjs updates are commutative, so the baseline still represents
+ * `cutoff`.
+ *
  * Runs in one transaction under the same `doc_snapshots` row lock `loadDocWithClient`
  * (docPersistence.ts) takes for append/compaction, so this can never observe, or race
  * with, a concurrent append or compaction on the same doc.
@@ -72,14 +85,18 @@ export async function rebaselineDocHistory(
 
     const { rows: historyRows } = await client.query<{ update_id: string; update: Buffer }>(
       `SELECT update_id, update FROM doc_history_updates
-       WHERE doc_id = $1 AND update_id > $2 AND created_at <= $3
-       ORDER BY created_at ASC, update_id ASC`,
+       WHERE doc_id = $1 AND update_id > $2
+         AND update_id < COALESCE(
+           (SELECT min(update_id) FROM doc_history_updates
+            WHERE doc_id = $1 AND update_id > $2 AND created_at > $3),
+           9223372036854775807)
+       ORDER BY update_id ASC`,
       [docId, checkpoint.through_update_id, cutoff],
     );
     for (const row of historyRows) Y.applyUpdate(doc, row.update);
 
-    // The greatest update_id whose created_at <= cutoff, or the preceding baseline's own
-    // boundary when nothing new was replayed forward from it.
+    // The last update_id of the contiguous run replayed above, or the preceding baseline's
+    // own boundary when nothing new was replayed forward from it.
     const throughUpdateId =
       historyRows.length > 0 ? historyRows[historyRows.length - 1]!.update_id : checkpoint.through_update_id;
     const state = Buffer.from(Y.encodeStateAsUpdate(doc));
@@ -148,8 +165,9 @@ export async function handleDocHistoryCleanupTask(pool: Pool): Promise<void> {
 /**
  * Reconstructs the doc as of `at` (issue #216's selection contract): the latest checkpoint
  * whose `represented_at <= at`, replayed forward through `doc_history_updates` rows with
- * `update_id > through_update_id` and `created_at <= at`, in `(created_at, update_id)`
- * order (equal timestamps break ties by id).
+ * `update_id > through_update_id` and `created_at <= at`, in `update_id` order. Order is
+ * irrelevant to the CRDT merge; `created_at` is the appending transaction's start time, so
+ * it does not order updates relative to their ids anyway.
  *
  * Unlike the pre-#216 reader, this never has to refuse a reconstruction because a later
  * compaction deleted something it needed: `doc_history_updates` is mirrored on every append
@@ -228,7 +246,7 @@ export async function openDocVersionAt(
     const { rows: historyRows } = await client.query<{ update: Buffer }>(
       `SELECT update FROM doc_history_updates
        WHERE doc_id = $1 AND update_id > $2 AND created_at <= $3
-       ORDER BY created_at ASC, update_id ASC`,
+       ORDER BY update_id ASC`,
       [docId, checkpoint.through_update_id, at],
     );
     for (const row of historyRows) Y.applyUpdate(doc, row.update);
