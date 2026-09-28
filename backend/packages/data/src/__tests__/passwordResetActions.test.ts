@@ -172,9 +172,7 @@ describe("password reset actions (issue #142)", () => {
             sendError,
           );
         });
-        expect(
-          await countRecentPasswordResetTokens(pool, user.id, PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS),
-        ).toBe(1);
+        expect(await countRecentPasswordResetTokens(pool, user.id, PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS)).toBe(1);
       } finally {
         consoleError.mockRestore();
       }
