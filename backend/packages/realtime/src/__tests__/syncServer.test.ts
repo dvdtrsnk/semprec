@@ -930,16 +930,18 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
   it("cancels a watch when agent:unwatch arrives while its authorization query is pending", async () => {
     const owner = await createTestUser();
     identityByToken.set("owner", { userId: owner, sessionId: "owner-session" });
-    const run = await createAgentRun(pool, { triggeredBy: "user", task: "cancel pending watch" });
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "cancel pending watch", userId: owner });
     await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
     const client = await connect("owner");
     const received: Record<string, unknown>[] = [];
     client.on("message", (data) => received.push(JSON.parse(messageText(data)) as Record<string, unknown>));
 
     await withTransaction(pool, async (locker) => {
-      // `watch()` authorizes through `users`; keep that SELECT waiting while the second frame
-      // arrives, then commit to let the older watch prove it cannot overtake the unwatch.
-      await locker.query("LOCK TABLE users IN ACCESS EXCLUSIVE MODE");
+      // `watch()` now authorizes with a plain (non-locking) SELECT against `agent_runs`, which a
+      // row-level `FOR UPDATE` from this transaction would not block. An `ACCESS EXCLUSIVE` table
+      // lock does conflict with it, so it holds that SELECT pending while the second frame
+      // arrives, then commits to let the older watch prove it cannot overtake the unwatch.
+      await locker.query("LOCK TABLE agent_runs IN ACCESS EXCLUSIVE MODE");
       client.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
       await new Promise((resolve) => setTimeout(resolve, 25));
       client.send(JSON.stringify({ type: "agent:unwatch", runId: run.id }));
@@ -949,6 +951,50 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(received).toEqual([]);
     client.close();
+  });
+
+  it("authorizes agent:watch against the run's actor_user_id rather than the earliest account", async () => {
+    const earliestUser = await createTestUser();
+    const actorUser = await createTestUser();
+    identityByToken.set("earliest", { userId: earliestUser, sessionId: "earliest-session" });
+    identityByToken.set("actor", { userId: actorUser, sessionId: "actor-session" });
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "actor-owned run", userId: actorUser });
+    await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
+
+    const actorClient = await connect("actor");
+    actorClient.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    expect((await nextFrame(actorClient)).type).toBe("agent:event");
+    actorClient.close();
+
+    const earliestClient = await connect("earliest");
+    let earliestReceived = false;
+    earliestClient.once("message", () => (earliestReceived = true));
+    earliestClient.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(earliestReceived).toBe(false);
+    earliestClient.close();
+  });
+
+  it("authorizes agent:watch on a heartbeat-triggered run against the earliest account it falls back to", async () => {
+    const earliestUser = await createTestUser();
+    const otherUser = await createTestUser();
+    identityByToken.set("earliest", { userId: earliestUser, sessionId: "earliest-session" });
+    identityByToken.set("other", { userId: otherUser, sessionId: "other-session" });
+    const run = await createAgentRun(pool, { triggeredBy: "heartbeat", task: "heartbeat run" });
+    await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
+
+    const otherClient = await connect("other");
+    let otherReceived = false;
+    otherClient.once("message", () => (otherReceived = true));
+    otherClient.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(otherReceived).toBe(false);
+    otherClient.close();
+
+    const earliestClient = await connect("earliest");
+    earliestClient.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    expect((await nextFrame(earliestClient)).type).toBe("agent:event");
+    earliestClient.close();
   });
 
   it("keeps the existing watcher live when a replacement watch cannot be authorized", async () => {
@@ -984,12 +1030,11 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
     expect((await nextFrame(client)).type).toBe("agent:event");
 
     const originalQuery = pool.query.bind(pool);
-    // The first two calls are the replacement's authorization reads. The test only needs to
-    // reject the subsequent replay query, while preserving those real query results at runtime.
+    // The first call is the replacement's authorization read. The test only needs to reject the
+    // subsequent replay query, while preserving that real query result at runtime.
     const passThroughQuery = originalQuery as unknown as () => void;
     const query = vi
       .spyOn(pool, "query")
-      .mockImplementationOnce(passThroughQuery)
       .mockImplementationOnce(passThroughQuery)
       .mockRejectedValueOnce(new Error("transient replay failure"));
     try {

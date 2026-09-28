@@ -1,12 +1,6 @@
 import type { Pool } from "pg";
 import type { WebSocket } from "ws";
-import {
-  getAgentRun,
-  getAgentRunEventById,
-  getEarliestUserId,
-  listAgentRunEventsAfter,
-  type AgentRunEventRow,
-} from "@semprec/data";
+import { getAgentRun, getAgentRunEventById, listAgentRunEventsAfter, type AgentRunEventRow } from "@semprec/data";
 import type { AgentStreamMessage } from "./pgNotifyPublisher.js";
 import type { AgentDeltaChunk, OutboundFrame } from "./protocolV1.js";
 import { sendWithBackpressure } from "./backpressure.js";
@@ -135,19 +129,19 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
     async watch(ws, userId, runId, afterEventId) {
       const pendingToken = beginWatch(ws, runId);
 
-      // Semprec's data model is explicitly single-tenant: agent_runs has no per-row user
-      // column, so the setup account is the one authorized human owner (the same rule
-      // background agent-run notifications use). A different authenticated user gets neither a
-      // replay nor a live subscription, and an unknown run is indistinguishable from it.
-      let ownerUserId: string | null;
+      // agent_runs.actor_user_id is NOT NULL after migration 0042's cutover: every row carries the
+      // user its writes are attributed to (the session user for a user-triggered root run, the
+      // setup owner for heartbeat/system runs, the parent's actor for a delegated run). That
+      // column is the authorized watcher, with no fallback. A different authenticated user gets
+      // neither a replay nor a live subscription, and an unknown run is indistinguishable from it.
       let run: Awaited<ReturnType<typeof getAgentRun>>;
       try {
-        [ownerUserId, run] = await Promise.all([getEarliestUserId(pool), getAgentRun(pool, runId)]);
+        run = await getAgentRun(pool, runId);
       } catch (err) {
         finishPendingWatch(ws, runId, pendingToken);
         throw err;
       }
-      if (!isPendingWatch(ws, runId, pendingToken) || ownerUserId !== userId || !run || ws.readyState !== ws.OPEN) {
+      if (!isPendingWatch(ws, runId, pendingToken) || !run || run.actorUserId !== userId || ws.readyState !== ws.OPEN) {
         finishPendingWatch(ws, runId, pendingToken);
         return;
       }
