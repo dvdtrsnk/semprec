@@ -258,4 +258,72 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     );
     expect(heartbeats[0]?.last_error).toBeNull();
   });
+
+  /**
+   * Fires the seeded heartbeat as a single-attempt job, so its one failure is the final attempt that
+   * records `last_error`, then returns the one run it opened and that `last_error`.
+   */
+  async function fireFailingHeartbeat(): Promise<{
+    run: { id: string; status: string; result: string | null };
+    lastError: string | null;
+  }> {
+    const heartbeat = await seededAgentHeartbeat();
+    const parentRun = await createAgentRun(pool, {
+      projectItemId: heartbeat.projectItemId,
+      triggeredBy: "user",
+      task: "trigger the newEmail heartbeat",
+    });
+
+    await startRuntime();
+    await enqueueJob(
+      pool,
+      AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT,
+      { heartbeatId: heartbeat.id, triggeredByRunId: parentRun.id },
+      { maxAttempts: 1 },
+    );
+
+    const lastError = async (): Promise<string | null> => {
+      const { rows } = await pool.query<{ last_error: string | null }>(
+        `SELECT last_error FROM project_heartbeats WHERE id = $1`,
+        [heartbeat.id],
+      );
+      return rows[0]?.last_error ?? null;
+    };
+    await waitFor(async () => (await lastError()) !== null);
+    const { rows: runs } = await pool.query<{ id: string; status: string; result: string | null }>(
+      `SELECT id, status, result FROM agent_runs WHERE heartbeat_id = $1`,
+      [heartbeat.id],
+    );
+    expect(runs).toHaveLength(1);
+    return { run: runs[0]!, lastError: await lastError() };
+  }
+
+  it("closes a heartbeat run as error with the composition error when its session cannot be composed", async () => {
+    composition.during = async () => {
+      throw new Error("mcp grants unavailable");
+    };
+
+    const { run, lastError } = await fireFailingHeartbeat();
+
+    expect(run).toMatchObject({ status: "error", result: "mcp grants unavailable" });
+    expect(lastError).toBe("mcp grants unavailable");
+    expect(await errorNotificationCount(run.id)).toBe(1);
+    expect(await runEvents(run.id)).toEqual([{ kind: "run_status", payload: { kind: "run_status", status: "error" } }]);
+    expect(requestHeaders).toEqual([]);
+  });
+
+  it("closes a heartbeat run as error with the model's error when the model call fails", async () => {
+    faux.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "gateway refused: budget" })]);
+
+    const { run, lastError } = await fireFailingHeartbeat();
+
+    expect(run).toMatchObject({ status: "error", result: "gateway refused: budget" });
+    expect(lastError).toBe("gateway refused: budget");
+    expect(await errorNotificationCount(run.id)).toBe(1);
+    const events = await runEvents(run.id);
+    expect(events[0]).toMatchObject({ kind: "run_status", payload: { status: "running" } });
+    expect(events.at(-1)).toMatchObject({ kind: "run_status", payload: { status: "error" } });
+    expect(events.filter((event) => event.kind === "run_status")).toHaveLength(2);
+    expect(requestHeaders).toEqual([expect.objectContaining({ "x-semprec-agent-run-id": run.id })]);
+  });
 });
