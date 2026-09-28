@@ -25,8 +25,7 @@ export const noopLegacyRawMimeFetcher: LegacyRawMimeFetcher = async () => null;
 
 function legacyMessageId(itemId: string): string {
   // The original Message-ID is unrecoverable without raw MIME — a synthetic id, unique per
-  // item, keeps `mail_message_meta.message_id`'s UNIQUE constraint satisfied without ever
-  // colliding with a real one (no real Message-ID uses this domain).
+  // item, never collides with a real one (no real Message-ID uses this domain).
   return `<legacy-migration-${itemId}@semprec-migration>`;
 }
 
@@ -91,14 +90,12 @@ async function migrateLegacyItem(client: PoolClient, item: LegacyItemRow, rawMim
         ? [parsed.references]
         : [];
     const recoveredMessageId = parsed.messageId ?? null;
-    // `upsertMailMessageMeta`'s `ON CONFLICT (message_id)` never changes `item_id` — if the
-    // recovered Message-ID already belongs to a *different* item (a live-synced duplicate of
-    // this same physical email, entirely possible for pre-#26 legacy rows with no dedup), a
-    // blind upsert would silently update that other item's row and leave this legacy item with
-    // no `mail_message_meta` of its own, which would then re-select (and re-fail) forever under
-    // this job's `LEFT JOIN ... WHERE item_id IS NULL` idempotency check. Falling back to this
-    // item's own synthetic id keeps every row's meta 1:1 with its item, at the cost of full
-    // (`'done'`) fidelity for this one collision case.
+    // If the recovered Message-ID already belongs to a *different* item (a live-synced
+    // duplicate of this same physical email, entirely possible for pre-#26 legacy rows with no
+    // dedup), this item falls back to its own synthetic id and is marked `'partial'`, so the
+    // legacy row never claims a live message's identity. These rows carry no mailbox
+    // (`mailboxItemId: null`), so the upsert's `ON CONFLICT (mailbox_item_id, message_id)`
+    // never fires for them either way.
     const existing = recoveredMessageId ? await getMailMessageMetaByMessageId(client, recoveredMessageId) : null;
     const collided = existing !== null && existing.itemId !== item.id;
     const messageId = recoveredMessageId && !collided ? recoveredMessageId : legacyMessageId(item.id);
