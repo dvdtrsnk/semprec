@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
@@ -89,6 +89,7 @@ describe("itemRelationFilter partition pruning (issue #262)", () => {
         folderRelationPropertyId: folderProperty.id,
         attachmentsRelationPropertyId: attachmentsProperty.id,
         folderItemId: inbox.id,
+        mailboxItemId: randomUUID(),
         messageId: "<pruning1@example.com>",
         subject: "Hello",
         envelope: { from: { address: "alice@example.com", name: "Alice" }, to: [{ address: "bob@example.com" }] },
