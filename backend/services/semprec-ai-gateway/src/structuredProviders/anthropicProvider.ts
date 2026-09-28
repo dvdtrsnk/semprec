@@ -90,7 +90,9 @@ export function createAnthropicStructuredProvider(apiKey: string): StructuredCom
             tool_choice: { type: "tool", name: STRUCTURED_OUTPUT_TOOL_NAME },
           }),
           // 55s: comfortably inside the client's 60s budget after this process's own overhead.
-          signal: AbortSignal.timeout(55_000),
+          signal: request.signal
+            ? AbortSignal.any([AbortSignal.timeout(55_000), request.signal])
+            : AbortSignal.timeout(55_000),
         });
       } catch (err) {
         throw new ProviderCallError(`Anthropic request failed: ${err instanceof Error ? err.name : "unknown error"}`);

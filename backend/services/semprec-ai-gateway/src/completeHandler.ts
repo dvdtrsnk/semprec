@@ -221,6 +221,15 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
         (estimatedInputTokens / 1_000_000) * options.pricePerMillionInputTokens +
         (RESERVED_OUTPUT_TOKENS / 1_000_000) * options.pricePerMillionOutputTokens;
 
+      // A `ServerResponse` emits `close` both after a normal `end()` and on a premature connection
+      // loss; `writableFinished` is only true for the former, so only a disconnect aborts.
+      const abort = new AbortController();
+      res.on("close", () => {
+        if (!res.writableFinished) abort.abort();
+      });
+      // The connection may already have dropped while the body was being validated.
+      if (res.destroyed) abort.abort();
+
       let result;
       try {
         result = await complete(
@@ -243,6 +252,7 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
               system: body.system,
               messages: body.messages,
               responseSchema: body.responseSchema,
+              signal: abort.signal,
             });
 
             // A schema-invalid response, unlike a transport failure, is still "a provider
@@ -261,6 +271,15 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
           },
         );
       } catch (err) {
+        if (abort.signal.aborted) {
+          // The socket is gone, so there is no one to answer; `complete()` has already marked the
+          // reservation `failed`.
+          logger.info(
+            { provider: options.provider.id, model: options.model, path: url.pathname },
+            "Client disconnected before the provider call finished",
+          );
+          return;
+        }
         if (err instanceof BudgetExceededError) {
           sendJson(res, 403, { error: err.message, code: "budget_exceeded" });
           return;

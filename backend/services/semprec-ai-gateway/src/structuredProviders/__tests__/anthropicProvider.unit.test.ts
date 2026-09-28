@@ -167,4 +167,21 @@ describe("createAnthropicStructuredProvider", () => {
     await expect(rejection).rejects.toThrow("HTTP 529");
     expect(bodyCancelled).toBe(true);
   });
+
+  it("passes an already-aborted signal to fetch when the caller's signal was aborted, and rejects with ProviderCallError", async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      if (init.signal?.aborted) throw new DOMException("The operation was aborted.", "AbortError");
+      return new Response(null, { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const caller = new AbortController();
+    caller.abort();
+
+    const rejection = createAnthropicStructuredProvider("test-api-key").complete({ ...REQUEST, signal: caller.signal });
+
+    await expect(rejection).rejects.toBeInstanceOf(ProviderCallError);
+    await expect(rejection).rejects.toThrow("AbortError");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1].signal?.aborted).toBe(true);
+  });
 });

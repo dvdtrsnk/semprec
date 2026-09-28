@@ -107,6 +107,20 @@ function validateBody(raw: unknown): AudioRequestBody {
 }
 
 /**
+ * A `ServerResponse` emits `close` both after a normal `end()` and on a premature connection loss;
+ * `writableFinished` is only true for the former, so only a disconnect aborts the returned signal.
+ */
+function abortOnDisconnect(res: ServerResponse): AbortSignal {
+  const abort = new AbortController();
+  res.on("close", () => {
+    if (!res.writableFinished) abort.abort();
+  });
+  // The connection may already have dropped while the body was being validated.
+  if (res.destroyed) abort.abort();
+  return abort.signal;
+}
+
+/**
  * Handles `POST /internal/diarize` and `POST /internal/transcribe` for issue #182 — the gateway's
  * audio routes, mirroring `completeHandler.ts`'s auth/validation/error-mapping shape. Each
  * dispatches to `@semprec/ai-gateway`'s `diarize()`/`transcribe()` so budget-checking and
@@ -118,6 +132,7 @@ export function createAudioRequestListener(pool: Pool, options: AudioHandlerOpti
     const body = validateBody(await readJsonBody(req));
     // The audio length is known up front, so the reserved estimate is the exact price.
     const costUsd = (body.audioSeconds / 3600) * options.pyannotePricePerAudioHour;
+    const signal = abortOnDisconnect(res);
     try {
       const result = await diarize(
         pool,
@@ -131,13 +146,14 @@ export function createAudioRequestListener(pool: Pool, options: AudioHandlerOpti
             audio: body.audio,
             filename: body.filename,
             mimeType: body.mimeType,
+            signal,
           });
           return { turns, audioSeconds: body.audioSeconds, costUsd };
         },
       );
       sendJson(res, 200, { turns: result.turns });
     } catch (err) {
-      handleProviderError(res, err, options.diarizationProvider.id, options.diarizationProvider.model);
+      handleProviderError(res, err, signal, options.diarizationProvider, "/internal/diarize");
     }
   }
 
@@ -145,6 +161,7 @@ export function createAudioRequestListener(pool: Pool, options: AudioHandlerOpti
     const body = validateBody(await readJsonBody(req));
     // The audio length is known up front, so the reserved estimate is the exact price.
     const costUsd = (body.audioSeconds / 3600) * options.deepInfraPricePerAudioHour;
+    const signal = abortOnDisconnect(res);
     try {
       const result = await transcribe(
         pool,
@@ -159,17 +176,30 @@ export function createAudioRequestListener(pool: Pool, options: AudioHandlerOpti
             filename: body.filename,
             mimeType: body.mimeType,
             language: body.language,
+            signal,
           });
           return { ...transcription, audioSeconds: body.audioSeconds, costUsd };
         },
       );
       sendJson(res, 200, { text: result.text, language: result.language, segments: result.segments });
     } catch (err) {
-      handleProviderError(res, err, options.transcriptionProvider.id, options.transcriptionProvider.model);
+      handleProviderError(res, err, signal, options.transcriptionProvider, "/internal/transcribe");
     }
   }
 
-  function handleProviderError(res: ServerResponse, err: unknown, provider: string, model: string): void {
+  function handleProviderError(
+    res: ServerResponse,
+    err: unknown,
+    signal: AbortSignal,
+    { id: provider, model }: { id: string; model: string },
+    path: string,
+  ): void {
+    if (signal.aborted) {
+      // The socket is gone, so there is no one to answer; `diarize()`/`transcribe()` has already
+      // marked the reservation `failed`.
+      logger.info({ provider, model, path }, "Client disconnected before the provider call finished");
+      return;
+    }
     if (err instanceof BudgetExceededError) {
       sendJson(res, 403, { error: err.message, code: "budget_exceeded" });
       return;

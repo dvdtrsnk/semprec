@@ -1,9 +1,10 @@
 import { createServer, request, type Server } from "node:http";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { createChokePoint, getSystemSettingsDatabaseId, getSystemSettingsItemId, seedSystem } from "@semprec/data";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createDispatcher } from "../app.js";
+import { logger } from "../logger.js";
 import type { CompleteHandlerOptions } from "../completeHandler.js";
 import type { AudioHandlerOptions } from "../audioHandler.js";
 import type {
@@ -36,10 +37,23 @@ class FakeDiarizationProvider implements DiarizationProvider {
   calls: DiarizationRequest[] = [];
   turns: Array<{ speaker: string; start: number; end: number }> = [{ speaker: "SPEAKER_00", start: 0, end: 1 }];
   failure: Error | null = null;
+  /** When set, the call never resolves and rejects only once `request.signal` aborts, as a real adapter's `fetch` would. */
+  gatedUntilAbort = false;
 
   async diarize(request: DiarizationRequest) {
     this.calls.push(request);
     if (this.failure) throw this.failure;
+    if (this.gatedUntilAbort) {
+      await new Promise<never>((_resolve, reject) => {
+        request.signal?.addEventListener(
+          "abort",
+          () => reject(new AudioProviderCallError("request failed: AbortError")),
+          {
+            once: true,
+          },
+        );
+      });
+    }
     return this.turns;
   }
 }
@@ -54,10 +68,23 @@ class FakeTranscriptionProvider implements TranscriptionProvider {
     segments: [{ start: 0, end: 1, text: "hello" }],
   };
   failure: Error | null = null;
+  /** When set, the call never resolves and rejects only once `request.signal` aborts, as a real adapter's `fetch` would. */
+  gatedUntilAbort = false;
 
   async transcribe(request: TranscriptionRequest) {
     this.calls.push(request);
     if (this.failure) throw this.failure;
+    if (this.gatedUntilAbort) {
+      await new Promise<never>((_resolve, reject) => {
+        request.signal?.addEventListener(
+          "abort",
+          () => reject(new AudioProviderCallError("request failed: AbortError")),
+          {
+            once: true,
+          },
+        );
+      });
+    }
     return this.result;
   }
 }
@@ -153,6 +180,16 @@ const VALID_TRANSCRIBE_BODY = {
   mimeType: "audio/ogg",
   audioSeconds: 1200,
 };
+
+async function waitFor(condition: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("condition was not met in time");
+}
+
+const DISCONNECT_MESSAGE = "Client disconnected before the provider call finished";
 
 describe("POST /internal/diarize and /internal/transcribe", () => {
   let diarizationProvider: FakeDiarizationProvider;
@@ -345,6 +382,83 @@ describe("POST /internal/diarize and /internal/transcribe", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].status).toBe("failed");
     expect(Number(rows[0].cost_usd)).toBe(0);
+  });
+
+  describe("client disconnect", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    const cases = [
+      {
+        path: "/internal/diarize",
+        body: () => VALID_DIARIZE_BODY,
+        provider: () => diarizationProvider,
+        expectedLog: { provider: "fake-diarizer", model: "fake-diarize-model", path: "/internal/diarize" },
+      },
+      {
+        path: "/internal/transcribe",
+        body: () => VALID_TRANSCRIBE_BODY,
+        provider: () => transcriptionProvider,
+        expectedLog: { provider: "fake-transcriber", model: "fake-transcribe-model", path: "/internal/transcribe" },
+      },
+    ];
+
+    for (const testCase of cases) {
+      it(`aborts the ${testCase.path} provider call, logs the disconnect once, and leaves the reservation failed`, async () => {
+        const provider = testCase.provider();
+        provider.gatedUntilAbort = true;
+        startServer(diarizationProvider, transcriptionProvider);
+        await listen();
+        const infoSpy = vi.spyOn(logger, "info");
+        const errorSpy = vi.spyOn(logger, "error");
+        const unhandled: unknown[] = [];
+        const onUnhandled = (reason: unknown): void => {
+          unhandled.push(reason);
+        };
+        process.on("unhandledRejection", onUnhandled);
+
+        try {
+          const client = new AbortController();
+          const pending = fetch(`${baseUrl}${testCase.path}`, {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: "Bearer test-internal-token" },
+            body: JSON.stringify(testCase.body()),
+            signal: client.signal,
+          });
+          await waitFor(() => provider.calls.length === 1);
+          client.abort();
+          await expect(pending).rejects.toThrow();
+
+          const disconnectLogs = (): unknown[][] => infoSpy.mock.calls.filter((call) => call[1] === DISCONNECT_MESSAGE);
+          await waitFor(() => disconnectLogs().length > 0);
+
+          expect(provider.calls[0]?.signal?.aborted).toBe(true);
+          expect(disconnectLogs()).toEqual([[testCase.expectedLog, DISCONNECT_MESSAGE]]);
+          const { rows } = await pool.query("SELECT status FROM ai_gateway_calls");
+          expect(rows).toEqual([{ status: "failed" }]);
+          expect(errorSpy).not.toHaveBeenCalled();
+          expect(unhandled).toEqual([]);
+        } finally {
+          process.off("unhandledRejection", onUnhandled);
+        }
+      });
+
+      it(`never aborts the ${testCase.path} provider signal when the request completes normally`, async () => {
+        startServer(diarizationProvider, transcriptionProvider);
+        await listen();
+
+        const res = await post(testCase.path, testCase.body());
+        expect(res.status).toBe(200);
+        await res.json();
+        // Closing the server waits for the response's `close` event, which is when a disconnect would abort.
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+
+        const provider = testCase.provider();
+        expect(provider.calls[0]?.signal).toBeInstanceOf(AbortSignal);
+        expect(provider.calls[0]?.signal?.aborted).toBe(false);
+      });
+    }
   });
 
   describe("budget enforcement", () => {

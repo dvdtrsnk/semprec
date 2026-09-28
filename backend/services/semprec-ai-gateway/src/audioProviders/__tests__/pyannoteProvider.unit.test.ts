@@ -156,4 +156,49 @@ describe("createPyannoteDiarizationProvider", () => {
 
     await assertion;
   });
+
+  it("stops polling within one poll interval once the caller's signal is aborted", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ url: "https://upload.example/presigned" })))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ jobId: "job-1" })))
+      .mockImplementation(async () => new Response(JSON.stringify({ status: "running" })));
+    vi.stubGlobal("fetch", fetchMock);
+    const caller = new AbortController();
+
+    const pending = createPyannoteDiarizationProvider("test-key").diarize({ ...REQUEST, signal: caller.signal });
+    const assertion = expect(pending).rejects.toThrow(
+      new AudioProviderCallError("pyannoteAI diarization aborted by the caller"),
+    );
+    // Two polls go out while the caller is still connected.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+
+    // Aborted midway through the next sleep.
+    await vi.advanceTimersByTimeAsync(500);
+    caller.abort();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await assertion;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("passes the caller's aborted signal to every provider fetch", async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      if (init.signal?.aborted) throw new DOMException("The operation was aborted.", "AbortError");
+      return new Response(null, { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const caller = new AbortController();
+    caller.abort();
+
+    await expect(
+      createPyannoteDiarizationProvider("test-key").diarize({ ...REQUEST, signal: caller.signal }),
+    ).rejects.toBeInstanceOf(AudioProviderCallError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1].signal?.aborted).toBe(true);
+  });
 });

@@ -3,14 +3,20 @@ import type { Pool } from "pg";
 import type { ProcessHeartbeatHandle } from "@semprec/data";
 import type { Logger } from "@semprec/shared";
 
+/** Mirrors `REQUEST_TIMEOUT_MS` in `backend/packages/ai-gateway-client/src/httpAiGatewayClient.ts`, the caller of `POST /internal/complete`. */
+export const COMPLETE_ROUTE_TIMEOUT_MS = 60_000;
+
+/** Mirrors `REQUEST_TIMEOUT_MS` in `backend/services/semprec-transcribe/src/audioGatewayClient.ts`, the caller of `POST /internal/diarize` and `POST /internal/transcribe`. */
+export const AUDIO_ROUTE_TIMEOUT_MS = 600_000;
+
 /**
- * Derived, not chosen: the only caller of this service,
- * `backend/packages/ai-gateway-client/src/httpAiGatewayClient.ts`, sets `REQUEST_TIMEOUT_MS` to
- * this same value. A shorter drain would cut off exactly the paid-for provider call this issue
- * exists to protect, while the caller is still waiting for it. systemd's `DefaultTimeoutStopSec`
- * of 90 s already exceeds this, so no unit-file change is needed for this to work.
+ * Derived, not chosen: the longest time any caller of this service still waits for a response.
+ * A shorter drain would cut off a paid-for provider call while its caller is still waiting for it
+ * (a pyannoteAI diarization routinely runs for minutes). This exceeds systemd's 90 s
+ * `DefaultTimeoutStopSec`, so `deploy/systemd/semprec-ai-gateway.service` sets its own
+ * `TimeoutStopSec` above this drain plus `POOL_END_TIMEOUT_MS`.
  */
-export const SHUTDOWN_DRAIN_TIMEOUT_MS = 60_000;
+export const SHUTDOWN_DRAIN_TIMEOUT_MS = Math.max(COMPLETE_ROUTE_TIMEOUT_MS, AUDIO_ROUTE_TIMEOUT_MS);
 
 export const DRAIN_POLL_INTERVAL_MS = 50;
 

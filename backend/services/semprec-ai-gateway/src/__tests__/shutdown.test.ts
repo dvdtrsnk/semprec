@@ -246,7 +246,7 @@ describe("createGracefulShutdown, driven directly with a stub server/pool/heartb
 
   it("uses SHUTDOWN_DRAIN_TIMEOUT_MS when drainTimeoutMs is omitted", async () => {
     const { createGracefulShutdown: create, SHUTDOWN_DRAIN_TIMEOUT_MS } = await import("../shutdown.js");
-    expect(SHUTDOWN_DRAIN_TIMEOUT_MS).toBe(60_000);
+    expect(SHUTDOWN_DRAIN_TIMEOUT_MS).toBe(600_000);
     expect(POOL_END_TIMEOUT_MS).toBe(5_000);
     expect(typeof create).toBe("function");
   });

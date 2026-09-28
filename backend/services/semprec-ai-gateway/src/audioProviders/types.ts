@@ -9,6 +9,8 @@ export interface DiarizationRequest {
   audio: Uint8Array;
   filename: string;
   mimeType: string;
+  /** Aborted when the gateway's own caller disconnects before the response is written. */
+  signal?: AbortSignal;
 }
 
 export interface DiarizationProvider {
@@ -29,6 +31,8 @@ export interface TranscriptionRequest {
   mimeType: string;
   /** Omit on the first chunk to let Whisper detect the recording language. */
   language?: string;
+  /** Aborted when the gateway's own caller disconnects before the response is written. */
+  signal?: AbortSignal;
 }
 
 export interface TranscriptionResult {
