@@ -4,6 +4,7 @@ import {
   createAgentRun,
   createChokePoint,
   createUser,
+  failGatewayCall,
   getSystemSettingsDatabaseId,
   getSystemSettingsItemId,
   hashPassword,
@@ -187,20 +188,128 @@ describe("gateway", () => {
     expect(Number(rows[0].audio_seconds)).toBe(90);
   });
 
-  it("propagates a settle failure and leaves the reservation reserved at its estimate", async () => {
-    await expect(
-      // A fractional token count is rejected by the integer column, so the settle UPDATE throws.
-      complete(pool, { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5 }, async () => ({
-        inputTokens: 1.5,
-        outputTokens: 30,
-        costUsd: 0.002,
-      })),
-    ).rejects.toThrow();
+  describe("settle retry", () => {
+    const settleSql = /UPDATE ai_gateway_calls SET status = 'settled'/;
 
-    const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
-    expect(rows).toHaveLength(1);
-    expect(rows[0].status).toBe("reserved");
-    expect(Number(rows[0].cost_usd)).toBe(0.5);
+    /**
+     * Intercepts the settle UPDATE on `pool.query`: each call hands the settle's attempt number to
+     * `onSettle`, which either rejects (a simulated transient failure) or resolves to let the
+     * original UPDATE run. Every other query runs unchanged.
+     */
+    function interceptSettle(onSettle: (attempt: number) => Promise<void>): { attempts: () => number } {
+      const original = pool.query.bind(pool) as (...args: unknown[]) => Promise<unknown>;
+      let attempts = 0;
+      vi.spyOn(pool, "query").mockImplementation((async (...args: unknown[]) => {
+        if (typeof args[0] === "string" && settleSql.test(args[0])) {
+          attempts += 1;
+          await onSettle(attempts);
+        }
+        return original(...args);
+      }) as unknown as typeof pool.query);
+      return { attempts: () => attempts };
+    }
+
+    it("retries a transiently failing settle and settles the row with the real usage", async () => {
+      const logWarn = vi.spyOn(logger, "warn");
+      const logError = vi.spyOn(logger, "error");
+      const settle = interceptSettle(async (attempt) => {
+        if (attempt <= 2) throw new Error("connection reset");
+      });
+
+      const result = await complete(
+        pool,
+        { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5 },
+        async () => ({ inputTokens: 120, outputTokens: 30, costUsd: 0.002 }),
+      );
+
+      expect(result).toEqual({ inputTokens: 120, outputTokens: 30, costUsd: 0.002 });
+      expect(settle.attempts()).toBe(3);
+      expect(logWarn).toHaveBeenCalledTimes(2);
+      expect(logWarn.mock.calls.map((call) => (call[0] as { attempt: number }).attempt)).toEqual([1, 2]);
+      expect(logError).not.toHaveBeenCalled();
+
+      const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
+      expect(rows).toHaveLength(1);
+      expect(rows[0].status).toBe("settled");
+      expect(Number(rows[0].cost_usd)).toBe(0.002);
+      expect(rows[0].input_tokens).toBe(120);
+      expect(rows[0].output_tokens).toBe(30);
+    });
+
+    it("returns the provider result and leaves the row reserved at its estimate when every settle fails", async () => {
+      const logWarn = vi.spyOn(logger, "warn");
+      const logError = vi.spyOn(logger, "error");
+      const settle = interceptSettle(async () => {
+        throw new Error("connection reset");
+      });
+
+      const result = await complete(
+        pool,
+        { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5 },
+        async () => ({ inputTokens: 120, outputTokens: 30, costUsd: 0.002 }),
+      );
+
+      expect(result).toEqual({ inputTokens: 120, outputTokens: 30, costUsd: 0.002 });
+      expect(settle.attempts()).toBe(3);
+      expect(logWarn).toHaveBeenCalledTimes(2);
+
+      const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
+      expect(rows).toHaveLength(1);
+      expect(rows[0].status).toBe("reserved");
+      expect(Number(rows[0].cost_usd)).toBe(0.5);
+      expect(rows[0].input_tokens).toBeNull();
+
+      expect(logError).toHaveBeenCalledTimes(1);
+      expect(logError.mock.calls[0]?.[0]).toMatchObject({ callId: rows[0].id, attempts: 3, estimatedCostUsd: 0.5 });
+    });
+
+    it("returns the audio provider result and leaves the row reserved when every settle fails", async () => {
+      const logError = vi.spyOn(logger, "error");
+      interceptSettle(async () => {
+        throw new Error("connection reset");
+      });
+
+      const result = await transcribe(
+        pool,
+        { provider: "deepinfra", model: "whisper-large-v3", estimatedCostUsd: 0.5 },
+        async () => ({ audioSeconds: 90, costUsd: 0.015 }),
+      );
+
+      expect(result).toEqual({ audioSeconds: 90, costUsd: 0.015 });
+      const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
+      expect(rows).toHaveLength(1);
+      expect(rows[0].status).toBe("reserved");
+      expect(Number(rows[0].cost_usd)).toBe(0.5);
+      expect(rows[0].audio_seconds).toBeNull();
+      expect(logError).toHaveBeenCalledTimes(1);
+      expect(logError.mock.calls[0]?.[0]).toMatchObject({ callId: rows[0].id });
+    });
+
+    it("does not retry when a concurrent writer already moved the row out of reserved", async () => {
+      const logWarn = vi.spyOn(logger, "warn");
+      const logError = vi.spyOn(logger, "error");
+      const settle = interceptSettle(async (attempt) => {
+        if (attempt !== 1) return;
+        const { rows } = await pool.query<{ id: string }>("SELECT id FROM ai_gateway_calls");
+        await failGatewayCall(pool, rows[0]!.id);
+      });
+
+      const result = await complete(
+        pool,
+        { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5 },
+        async () => ({ inputTokens: 120, outputTokens: 30, costUsd: 0.002 }),
+      );
+
+      expect(result).toEqual({ inputTokens: 120, outputTokens: 30, costUsd: 0.002 });
+      expect(settle.attempts()).toBe(1);
+      expect(logWarn).not.toHaveBeenCalled();
+
+      const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
+      expect(rows).toHaveLength(1);
+      expect(rows[0].status).toBe("failed");
+      expect(logError).toHaveBeenCalledTimes(1);
+      expect(logError.mock.calls[0]?.[0]).toMatchObject({ callId: rows[0].id });
+    });
   });
 
   describe("budget enforcement", () => {

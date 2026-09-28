@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import type { Pool, PoolClient } from "pg";
 import {
   failGatewayCall,
@@ -90,11 +91,61 @@ async function invokeReserved<T>(
   }
 }
 
-/*
- * A settle failure propagates and deliberately leaves the reservation `reserved` at its estimate:
- * the provider has already been paid, so failing the row at cost 0 would under-report real spend
- * and let later calls exceed the cap (see the ADR above).
+/** Total settle attempts before the reservation is left `reserved` at its estimate (#623). */
+const SETTLE_MAX_ATTEMPTS = 3;
+/** Delay before the 2nd and 3rd settle attempt. */
+const SETTLE_BACKOFF_MS = [100, 300];
+
+/**
+ * Runs `settle` for a reservation whose provider call already succeeded, retrying a rejection
+ * (a transient database failure) with backoff up to `SETTLE_MAX_ATTEMPTS` times. It never rejects:
+ * the provider has already been paid, so the caller gets its result regardless. When every attempt
+ * fails, the row deliberately stays `reserved` at its estimate — it keeps counting against the cap
+ * rather than under-reporting real spend — and an error-level log line names it for reconciliation.
+ * A `null` settle (no `reserved` row matched — someone else already settled or failed it) is not
+ * transient, so it is logged once at error level and not retried.
  */
+async function settleWithRetry(
+  row: AiGatewayCallRow,
+  settle: () => Promise<AiGatewayCallRow | null>,
+  ctx: GatewayCallContext,
+): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    let settled: AiGatewayCallRow | null;
+    try {
+      settled = await settle();
+    } catch (err) {
+      if (attempt >= SETTLE_MAX_ATTEMPTS) {
+        logger.error(
+          {
+            err,
+            callId: row.id,
+            attempts: SETTLE_MAX_ATTEMPTS,
+            provider: ctx.provider,
+            model: ctx.model,
+            estimatedCostUsd: ctx.estimatedCostUsd,
+          },
+          "ai_gateway_calls settle failed; row left reserved at its estimate",
+        );
+        return;
+      }
+      logger.warn(
+        { err, callId: row.id, attempt, provider: ctx.provider, model: ctx.model },
+        "ai_gateway_calls settle failed, retrying",
+      );
+      await sleep(SETTLE_BACKOFF_MS[attempt - 1] ?? 0);
+      continue;
+    }
+    if (settled === null) {
+      logger.error(
+        { callId: row.id, provider: ctx.provider, model: ctx.model },
+        "ai_gateway_calls settle matched no reserved row; it was already settled or failed",
+      );
+    }
+    return;
+  }
+}
+
 async function withTokenAccounting<T extends TokenCallResult>(
   pool: Pool,
   ctx: GatewayCallContext,
@@ -102,11 +153,16 @@ async function withTokenAccounting<T extends TokenCallResult>(
 ): Promise<T> {
   const reservation = await reserve(pool, ctx);
   const result = await invokeReserved(pool, ctx, reservation, invoke);
-  await settleTokenGatewayCall(pool, reservation.id, {
-    inputTokens: result.inputTokens,
-    outputTokens: result.outputTokens,
-    costUsd: result.costUsd,
-  });
+  await settleWithRetry(
+    reservation,
+    () =>
+      settleTokenGatewayCall(pool, reservation.id, {
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        costUsd: result.costUsd,
+      }),
+    ctx,
+  );
   return result;
 }
 
@@ -117,10 +173,11 @@ async function withAudioAccounting<T extends AudioCallResult>(
 ): Promise<T> {
   const reservation = await reserve(pool, ctx);
   const result = await invokeReserved(pool, ctx, reservation, invoke);
-  await settleAudioGatewayCall(pool, reservation.id, {
-    audioSeconds: result.audioSeconds,
-    costUsd: result.costUsd,
-  });
+  await settleWithRetry(
+    reservation,
+    () => settleAudioGatewayCall(pool, reservation.id, { audioSeconds: result.audioSeconds, costUsd: result.costUsd }),
+    ctx,
+  );
   return result;
 }
 
