@@ -2,7 +2,7 @@ import type { ModuleRegistry } from "@semprec/module-registry";
 import { createCatalogResolver, resolveProperty, toManifestLocale } from "@semprec/data";
 import type { GenericApplicationPort } from "@semprec/shared";
 import type { RouteDefinition } from "./adapter/routeTable.js";
-import { requireJsonObjectBody, requireStringParam, requireStringQueryParam } from "./adapter/requestValidation.js";
+import { requireJsonObjectBody, requireStringQueryParam, requireUuidParam } from "./adapter/requestValidation.js";
 import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js";
 import { toPropertyEnvelope } from "./adapter/propertyEnvelope.js";
 
@@ -48,7 +48,7 @@ export function createPropertyRoutes(
       method: "PATCH",
       path: "/api/properties/:id",
       handler: async (ctx) => {
-        const propertyId = requireStringParam(ctx.params, "id");
+        const propertyId = requireUuidParam(ctx.params, "id");
         const actor = restActor(ctx.identity.user.id);
         const body = requireJsonObjectBody(ctx.body);
 
@@ -73,7 +73,7 @@ export function createPropertyRoutes(
       method: "DELETE",
       path: "/api/properties/:id",
       handler: async (ctx) => {
-        const propertyId = requireStringParam(ctx.params, "id");
+        const propertyId = requireUuidParam(ctx.params, "id");
         const actor = restActor(ctx.identity.user.id);
 
         // The deleted row comes back from `property.delete` itself — the state it reports is
@@ -94,7 +94,7 @@ export function createPropertyRoutes(
       method: "GET",
       path: "/api/properties/:id",
       handler: async (ctx) => {
-        const propertyId = requireStringParam(ctx.params, "id");
+        const propertyId = requireUuidParam(ctx.params, "id");
         const property = await dispatchGenericOperation(service, "property.get", restActor(ctx.identity.user.id), {
           propertyId,
         });

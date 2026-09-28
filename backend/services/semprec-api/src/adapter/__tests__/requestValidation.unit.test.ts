@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ValidationError } from "@semprec/data";
 import {
+  assertUuid,
   optionalIntegerField,
   POSTGRES_INT4_MAX,
   POSTGRES_INT4_MIN,
@@ -90,5 +91,29 @@ describe("optionalIntegerField", () => {
 
   it("rejects a value exceeding the int4 maximum", () => {
     expectFieldValidationError(() => optionalIntegerField({ position: 2147483648 }, "position"), "position");
+  });
+});
+
+describe("assertUuid", () => {
+  it("returns a lowercase UUID unchanged", () => {
+    const id = "0f8fad5b-d9cb-469f-a165-70867728950e";
+    expect(assertUuid(id, "id")).toBe(id);
+  });
+
+  it("returns an uppercase UUID unchanged", () => {
+    const id = "0F8FAD5B-D9CB-469F-A165-70867728950E";
+    expect(assertUuid(id, "id")).toBe(id);
+  });
+
+  it("rejects a non-UUID string, naming the parameter", () => {
+    expectFieldValidationError(() => assertUuid("foo", "itemId"), "itemId");
+  });
+
+  it("rejects a UUID followed by a trailing character", () => {
+    expectFieldValidationError(() => assertUuid("0f8fad5b-d9cb-469f-a165-70867728950ex", "id"), "id");
+  });
+
+  it("rejects an empty string", () => {
+    expectFieldValidationError(() => assertUuid("", "targetItemId"), "targetItemId");
   });
 });

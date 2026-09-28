@@ -9,6 +9,7 @@ import {
   markAllNotificationsRead,
 } from "@semprec/data";
 import { authenticateRequest } from "./authHandler.js";
+import { assertUuid } from "./adapter/requestValidation.js";
 import { logger } from "./logger.js";
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -58,7 +59,7 @@ export function createNotificationsRequestListener(pool: Pool) {
       if (req.method === "POST" && visitMatch) {
         // Group 1 of VISIT_NOTIFICATION_PATH is not optional, so a successful match always
         // captured it; a runtime check here would be unreachable code.
-        const notificationId = visitMatch[1]!;
+        const notificationId = assertUuid(visitMatch[1]!, "id");
         const notification = await withTransaction(pool, (client) =>
           visitNotification(client, identity.user.id, notificationId),
         );

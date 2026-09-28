@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { withTransaction, ChokePointError, ValidationError, getAgentRun, mintMcpRunCredential } from "@semprec/data";
 import type { Pool } from "pg";
+import { assertUuid } from "./adapter/requestValidation.js";
 import { authenticateRequest } from "./authHandler.js";
 import { logger } from "./logger.js";
 
@@ -123,7 +124,7 @@ export function createAgentRunRequestListener(pool: Pool) {
 
       // Group 1 of the route pattern above is not optional, so a successful match always
       // captured it; a runtime check here would be unreachable code.
-      const agentRunId = match[1]!;
+      const agentRunId = assertUuid(match[1]!, "id");
       const run = await withTransaction(pool, (client) => getAgentRun(client, agentRunId));
       if (!run) {
         sendJson(res, 404, { error: "Not found" });

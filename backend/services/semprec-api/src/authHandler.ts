@@ -19,6 +19,7 @@ import {
   type PasswordResetMailer,
 } from "@semprec/data";
 import type { Pool } from "pg";
+import { assertUuid } from "./adapter/requestValidation.js";
 import { clientIpFromRequest } from "./clientIp.js";
 import { logger } from "./logger.js";
 
@@ -233,7 +234,7 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
         const identity = await authenticateRequest(pool, req);
         // Group 1 of REVOKE_SESSION_PATH is not optional, so a successful match always
         // captured it; a runtime check here would be unreachable code.
-        const sessionId = revokeMatch[1]!;
+        const sessionId = assertUuid(revokeMatch[1]!, "id");
         const revoked = await withTransaction(pool, (client) => revokeUserSession(client, identity.user.id, sessionId));
         sendJson(res, 200, { revoked });
         return;

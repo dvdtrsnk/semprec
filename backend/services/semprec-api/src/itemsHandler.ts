@@ -2,7 +2,7 @@ import type { Pool } from "pg";
 import { createChokePoint, NotFoundError } from "@semprec/data";
 import type { GenericApplicationPort, Property } from "@semprec/shared";
 import type { RouteDefinition } from "./adapter/routeTable.js";
-import { optionalHeader, requireJsonObjectBody, requireStringParam } from "./adapter/requestValidation.js";
+import { optionalHeader, requireJsonObjectBody, requireStringParam, requireUuidParam } from "./adapter/requestValidation.js";
 import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js";
 import { toItemDetailEnvelope, toItemEnvelope } from "./adapter/itemEnvelope.js";
 import { toItemQueryEnvelope } from "./adapter/itemQueryEnvelope.js";
@@ -79,7 +79,7 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
       method: "POST",
       path: "/api/databases/:id/items",
       handler: async (ctx) => {
-        const databaseId = requireStringParam(ctx.params, "id");
+        const databaseId = requireUuidParam(ctx.params, "id");
         const idempotencyKey = optionalHeader(ctx.req, "Idempotency-Key");
         const body = requireJsonObjectBody(ctx.body);
         const item = await dispatchGenericOperation(service, "item.create", restActor(ctx.identity.user.id), {
@@ -94,7 +94,7 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
       method: "GET",
       path: "/api/items/:id",
       handler: async (ctx) => {
-        const id = requireStringParam(ctx.params, "id");
+        const id = requireUuidParam(ctx.params, "id");
         const includePath = requestUrl(ctx.req.url).searchParams.get("include") === "path";
 
         if (!includePath) {
@@ -118,7 +118,7 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
       method: "PATCH",
       path: "/api/items/:id",
       handler: async (ctx) => {
-        const id = requireStringParam(ctx.params, "id");
+        const id = requireUuidParam(ctx.params, "id");
         const body = requireJsonObjectBody(ctx.body);
         const item = await dispatchGenericOperation(service, "item.patch", restActor(ctx.identity.user.id), {
           itemId: id,
@@ -132,7 +132,7 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
       method: "DELETE",
       path: "/api/items/:id",
       handler: async (ctx) => {
-        const id = requireStringParam(ctx.params, "id");
+        const id = requireUuidParam(ctx.params, "id");
         const item = await dispatchGenericOperation(service, "item.delete", restActor(ctx.identity.user.id), {
           itemId: id,
         });
@@ -143,7 +143,7 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
       method: "POST",
       path: "/api/items/:id/restore",
       handler: async (ctx) => {
-        const id = requireStringParam(ctx.params, "id");
+        const id = requireUuidParam(ctx.params, "id");
         const item = await dispatchGenericOperation(service, "item.restore", restActor(ctx.identity.user.id), {
           itemId: id,
         });
@@ -154,7 +154,7 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
       method: "POST",
       path: "/api/databases/:id/query",
       handler: async (ctx) => {
-        const databaseId = requireStringParam(ctx.params, "id");
+        const databaseId = requireUuidParam(ctx.params, "id");
         const body = ctx.body === undefined ? {} : requireJsonObjectBody(ctx.body);
         const result = await dispatchGenericOperation(service, "database.query", restActor(ctx.identity.user.id), {
           databaseId,
@@ -171,9 +171,9 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
       method: "PUT",
       path: "/api/items/:id/relations/:propertyKey/:targetItemId",
       handler: async (ctx) => {
-        const id = requireStringParam(ctx.params, "id");
+        const id = requireUuidParam(ctx.params, "id");
         const propertyKey = requireStringParam(ctx.params, "propertyKey");
-        const targetItemId = requireStringParam(ctx.params, "targetItemId");
+        const targetItemId = requireUuidParam(ctx.params, "targetItemId");
         const actor = restActor(ctx.identity.user.id);
         const resolution = await resolveRelationProperty(service, actor, id, propertyKey);
         if ("conflict" in resolution) return resolution.conflict;
@@ -191,9 +191,9 @@ export function createItemRoutes(service: GenericApplicationPort, pool: Pool): R
       method: "DELETE",
       path: "/api/items/:id/relations/:propertyKey/:targetItemId",
       handler: async (ctx) => {
-        const id = requireStringParam(ctx.params, "id");
+        const id = requireUuidParam(ctx.params, "id");
         const propertyKey = requireStringParam(ctx.params, "propertyKey");
-        const targetItemId = requireStringParam(ctx.params, "targetItemId");
+        const targetItemId = requireUuidParam(ctx.params, "targetItemId");
         const actor = restActor(ctx.identity.user.id);
         const resolution = await resolveRelationProperty(service, actor, id, propertyKey);
         if ("conflict" in resolution) return resolution.conflict;

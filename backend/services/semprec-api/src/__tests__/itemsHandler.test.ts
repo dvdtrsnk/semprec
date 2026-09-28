@@ -194,6 +194,15 @@ describe("item routes (issue #241)", () => {
       expect(res.status).toBe(404);
     });
 
+    it("returns 400 validation_failed naming 'id' for a non-UUID item id", async () => {
+      const headers = await authHeader();
+      const res = await fetch(`${baseUrl}/api/items/foo`, { headers });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as ErrorBody;
+      expect(body.error.code).toBe("validation_failed");
+      expect(body.error.details).toEqual({ field: "id" });
+    });
+
     it("returns 404 for an unknown item even with ?include=path", async () => {
       const headers = await authHeader();
       const res = await fetch(`${baseUrl}/api/items/${randomUUID()}?include=path`, { headers });
@@ -706,6 +715,18 @@ describe("item routes (issue #241)", () => {
           headers,
         });
         expect(res.status).toBe(404);
+      });
+
+      it("returns 400 validation_failed naming 'targetItemId' for a non-UUID target item id", async () => {
+        const headers = await authHeader();
+        const res = await fetch(`${baseUrl}/api/items/${randomUUID()}/relations/exampleKey/foo`, {
+          method: "PUT",
+          headers,
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as ErrorBody;
+        expect(body.error.code).toBe("validation_failed");
+        expect(body.error.details).toEqual({ field: "targetItemId" });
       });
 
       it("returns 404 for a propertyKey that doesn't exist on the caller's database", async () => {

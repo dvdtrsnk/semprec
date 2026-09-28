@@ -194,4 +194,36 @@ describe("createMcpAgentPageRequestListener", () => {
     });
     expect(res.status).toBe(404);
   });
+
+  describe("non-UUID path ids", () => {
+    async function expectFieldError(res: Response, field: string): Promise<void> {
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { code: string; details?: unknown };
+      expect(body.code).toBe("validation_failed");
+      expect(body.details).toEqual({ field });
+    }
+
+    it("answers 400 validation_failed naming 'id' for a non-UUID project id", async () => {
+      const res = await fetch(`${baseUrl}/api/projects/foo/mcp-grants`, { headers: await authHeader() });
+      await expectFieldError(res, "id");
+    });
+
+    it("answers 400 validation_failed naming 'mcpToolRegistrationId' for a non-UUID grant registration id", async () => {
+      const res = await fetch(`${baseUrl}/api/projects/${randomUUID()}/mcp-grants/foo`, {
+        method: "PATCH",
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
+        body: JSON.stringify({ granted: true }),
+      });
+      await expectFieldError(res, "mcpToolRegistrationId");
+    });
+
+    it("answers 400 validation_failed naming 'mcpToolRegistrationId' for a non-UUID registration id", async () => {
+      const res = await fetch(`${baseUrl}/api/mcp-tool-registrations/foo`, {
+        method: "PATCH",
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
+        body: JSON.stringify({ riskClass: "high" }),
+      });
+      await expectFieldError(res, "mcpToolRegistrationId");
+    });
+  });
 });

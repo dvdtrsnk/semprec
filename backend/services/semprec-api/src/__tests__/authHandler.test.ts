@@ -386,6 +386,25 @@ describe("createAuthRequestListener", () => {
       });
       expect(stillActive.status).toBe(200);
     });
+
+    it("returns 400 validation_failed naming 'id' for a non-UUID session id", async () => {
+      const user = await makeUser();
+      const login = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "ios" }),
+      });
+      const { token } = (await login.json()) as { token: string };
+
+      const revokeRes = await fetch(`${baseUrl}/api/auth/sessions/foo/revoke`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(revokeRes.status).toBe(400);
+      const body = (await revokeRes.json()) as { code: string; details?: unknown };
+      expect(body.code).toBe("validation_failed");
+      expect(body.details).toEqual({ field: "id" });
+    });
   });
 
   describe("POST /api/auth/password-reset/request", () => {

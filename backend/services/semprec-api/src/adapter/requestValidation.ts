@@ -16,6 +16,23 @@ export function requireStringParam(params: Readonly<Record<string, string | unde
   return value;
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Rejects an id that is not UUID-shaped as `validation_failed` naming `name`, so a malformed id
+ * never reaches a `uuid` column, where Postgres would raise `22P02` and the handler would answer 500.
+ */
+export function assertUuid(value: string, name: string): string {
+  if (!UUID_PATTERN.test(value)) {
+    throw new ValidationError(`'${name}' must be a UUID string`, { field: name });
+  }
+  return value;
+}
+
+export function requireUuidParam(params: Readonly<Record<string, string | undefined>>, name: string): string {
+  return assertUuid(requireStringParam(params, name), name);
+}
+
 export function requireStringQueryParam(query: URLSearchParams, name: string): string {
   const value = query.get(name);
   if (value === null || value.length === 0) {

@@ -1,6 +1,6 @@
 import type { GenericApplicationPort } from "@semprec/shared";
 import type { RouteDefinition } from "./adapter/routeTable.js";
-import { optionalIntegerQueryParam, requireJsonObjectBody, requireStringParam } from "./adapter/requestValidation.js";
+import { optionalIntegerQueryParam, requireJsonObjectBody, requireUuidParam } from "./adapter/requestValidation.js";
 import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js";
 import { toViewEnvelope } from "./adapter/viewEnvelope.js";
 import { toViewItemEnvelope } from "./adapter/viewItemEnvelope.js";
@@ -43,7 +43,7 @@ export function createViewRoutes(service: GenericApplicationPort): RouteDefiniti
       method: "GET",
       path: "/api/views/:id",
       handler: async (ctx) => {
-        const viewId = requireStringParam(ctx.params, "id");
+        const viewId = requireUuidParam(ctx.params, "id");
         const view = await dispatchGenericOperation(service, "view.get", restActor(ctx.identity.user.id), { viewId });
         return { status: 200, body: toViewEnvelope(view) };
       },
@@ -52,7 +52,7 @@ export function createViewRoutes(service: GenericApplicationPort): RouteDefiniti
       method: "POST",
       path: "/api/databases/:id/views",
       handler: async (ctx) => {
-        const databaseId = requireStringParam(ctx.params, "id");
+        const databaseId = requireUuidParam(ctx.params, "id");
         const body = requireJsonObjectBody(ctx.body);
         const view = await dispatchGenericOperation(service, "view.create", restActor(ctx.identity.user.id), {
           databaseId,
@@ -68,7 +68,7 @@ export function createViewRoutes(service: GenericApplicationPort): RouteDefiniti
       method: "PATCH",
       path: "/api/views/:id",
       handler: async (ctx) => {
-        const viewId = requireStringParam(ctx.params, "id");
+        const viewId = requireUuidParam(ctx.params, "id");
         const body = requireJsonObjectBody(ctx.body);
         const patch: Record<string, unknown> = {};
         if (body.name !== undefined) patch.name = body.name;
@@ -85,7 +85,7 @@ export function createViewRoutes(service: GenericApplicationPort): RouteDefiniti
       method: "DELETE",
       path: "/api/views/:id",
       handler: async (ctx) => {
-        const viewId = requireStringParam(ctx.params, "id");
+        const viewId = requireUuidParam(ctx.params, "id");
         const actor = restActor(ctx.identity.user.id);
         // The deleted row comes back from `view.delete` itself — the state it reports is exactly
         // the state the deletion transaction saw, not a separately-fetched snapshot that could go
@@ -98,8 +98,8 @@ export function createViewRoutes(service: GenericApplicationPort): RouteDefiniti
       method: "PUT",
       path: "/api/views/:id/items/:itemId",
       handler: async (ctx) => {
-        const viewId = requireStringParam(ctx.params, "id");
-        const itemId = requireStringParam(ctx.params, "itemId");
+        const viewId = requireUuidParam(ctx.params, "id");
+        const itemId = requireUuidParam(ctx.params, "itemId");
         const body = requireJsonObjectBody(ctx.body);
         const viewItem = await dispatchGenericOperation(service, "viewItem.add", restActor(ctx.identity.user.id), {
           viewId,
@@ -113,8 +113,8 @@ export function createViewRoutes(service: GenericApplicationPort): RouteDefiniti
       method: "PATCH",
       path: "/api/views/:id/items/:itemId",
       handler: async (ctx) => {
-        const viewId = requireStringParam(ctx.params, "id");
-        const itemId = requireStringParam(ctx.params, "itemId");
+        const viewId = requireUuidParam(ctx.params, "id");
+        const itemId = requireUuidParam(ctx.params, "itemId");
         const body = requireJsonObjectBody(ctx.body);
         const viewItem = await dispatchGenericOperation(service, "viewItem.reorder", restActor(ctx.identity.user.id), {
           viewId,
@@ -128,8 +128,8 @@ export function createViewRoutes(service: GenericApplicationPort): RouteDefiniti
       method: "DELETE",
       path: "/api/views/:id/items/:itemId",
       handler: async (ctx) => {
-        const viewId = requireStringParam(ctx.params, "id");
-        const itemId = requireStringParam(ctx.params, "itemId");
+        const viewId = requireUuidParam(ctx.params, "id");
+        const itemId = requireUuidParam(ctx.params, "itemId");
         const result = await dispatchGenericOperation(service, "viewItem.remove", restActor(ctx.identity.user.id), {
           viewId,
           itemId,
@@ -141,7 +141,7 @@ export function createViewRoutes(service: GenericApplicationPort): RouteDefiniti
       method: "POST",
       path: "/api/views/:id/query",
       handler: async (ctx) => {
-        const viewId = requireStringParam(ctx.params, "id");
+        const viewId = requireUuidParam(ctx.params, "id");
         const body = ctx.body === undefined ? {} : requireJsonObjectBody(ctx.body);
         const result = await dispatchGenericOperation(service, "view.query", restActor(ctx.identity.user.id), {
           viewId,
