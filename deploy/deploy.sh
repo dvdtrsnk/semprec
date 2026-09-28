@@ -25,7 +25,7 @@ readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SOURCE_REPOSITORY="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 readonly TAG_PATTERN='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 
-# Restarted in this order; every active `semprec-mailsync@` instance follows them.
+# Restarted in this order.
 readonly -a LONG_RUNNING_SERVICES=(
   semprec-ai-gateway.service
   semprec-api.service
@@ -157,11 +157,6 @@ swap_current() {
   mv -T -- "$next_link" "$CURRENT_LINK"
 }
 
-active_mailsync_instances() {
-  systemctl list-units --plain --no-legend --state=active,activating 'semprec-mailsync@*.service' |
-    awk '{print $1}'
-}
-
 restart_services() {
   local unit
   for unit in "$@"; do
@@ -169,8 +164,7 @@ restart_services() {
   done
 }
 
-# Reads only APP_VERSION from each restarted process's own environment. A oneshot mailsync
-# instance that already finished has no process left to report.
+# Reads only APP_VERSION from each restarted process's own environment.
 report_versions() {
   local tag="$1"
   shift
@@ -182,9 +176,6 @@ report_versions() {
   for unit in "$@"; do
     pid="$(systemctl show --property=MainPID --value "$unit")"
     if [[ "$pid" == "0" ]]; then
-      if [[ "$unit" == semprec-mailsync@* ]]; then
-        continue
-      fi
       echo "$unit: not running" >&2
       mismatched=1
       continue
@@ -253,14 +244,7 @@ validate_rollback_target() {
 # Moves `current` to an already complete release and restarts every process onto it.
 activate_release() {
   local tag="$1"
-  local mailsync_instances
   local -a units=("${LONG_RUNNING_SERVICES[@]}")
-  mailsync_instances="$(active_mailsync_instances)"
-  if [[ -n "$mailsync_instances" ]]; then
-    local -a instances
-    mapfile -t instances <<< "$mailsync_instances"
-    units+=("${instances[@]}")
-  fi
 
   swap_current "$tag"
   restart_services "${units[@]}"

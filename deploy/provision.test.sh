@@ -98,7 +98,6 @@ test -f "$TEST_ROOT/opt/semprec/shared/.env"
 test -f "$TEST_STATE/semprec-user"
 test -f "$TEST_ROOT/systemd/system/semprec-api.service"
 test -f "$TEST_ROOT/systemd/system/semprec-ai-gateway.service"
-test -f "$TEST_ROOT/systemd/system/semprec-mailsync@.service"
 test -f "$TEST_ROOT/systemd/system/semprec-transcribe.service"
 test -f "$TEST_ROOT/systemd/system/semprec-agents.service"
 test -f "$TEST_ROOT/systemd/system/semprec-dead-man.timer"
@@ -114,14 +113,13 @@ grep -qx 'MaxRetentionSec=90day' "$TEST_ROOT/systemd/journald.conf.d/semprec.con
 grep -qx 'SyslogIdentifier=semprec-api' "$TEST_ROOT/systemd/system/semprec-api.service"
 grep -qx 'OnFailure=semprec-failping@%n.service' "$TEST_ROOT/systemd/system/semprec-api.service"
 grep -qx 'SyslogIdentifier=semprec-agents' "$TEST_ROOT/systemd/system/semprec-agents.service"
-grep -qx 'SyslogIdentifier=semprec-mailsync-%i' "$TEST_ROOT/systemd/system/semprec-mailsync@.service"
 grep -qx 'SyslogIdentifier=semprec-transcribe' "$TEST_ROOT/systemd/system/semprec-transcribe.service"
 grep -qx 'SyslogIdentifier=semprec-ai-gateway' "$TEST_ROOT/systemd/system/semprec-ai-gateway.service"
 grep -qx 'OnFailure=semprec-failping@%n.service' "$TEST_ROOT/systemd/system/semprec-agents.service"
 grep -qx 'OnFailure=semprec-failping@%n.service' "$TEST_ROOT/systemd/system/semprec-transcribe.service"
 grep -qx 'OnFailure=semprec-failping@%n.service' "$TEST_ROOT/systemd/system/semprec-ai-gateway.service"
 grep -qx 'TimeoutStopSec=660' "$TEST_ROOT/systemd/system/semprec-ai-gateway.service"
-for unit in semprec-api semprec-agents semprec-mailsync@ semprec-transcribe semprec-ai-gateway; do
+for unit in semprec-api semprec-agents semprec-transcribe semprec-ai-gateway; do
   grep -qx 'EnvironmentFile=/opt/semprec/current/release.env' "$TEST_ROOT/systemd/system/$unit.service"
 done
 

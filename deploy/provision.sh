@@ -18,7 +18,6 @@ readonly HUNSPELL_AFFIX_SOURCE=/usr/share/hunspell/cs_CZ.aff
 readonly -a SERVICE_UNITS=(
   semprec-api.service
   semprec-agents.service
-  semprec-mailsync@.service
   semprec-transcribe.service
   semprec-ai-gateway.service
 )

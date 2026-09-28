@@ -44,8 +44,9 @@ may be worked in parallel.
 - `backend/modules/` — vertical slices (Emails, Semprec, later Books/Films) —
   created incrementally as the issue queue progresses.
 - `backend/services/` — standalone processes (`semprec-api`,
-  `semprec-agents`, `semprec-mailsync`, `semprec-transcribe`,
-  `semprec-ai-gateway`) — created incrementally as the issue queue progresses.
+  `semprec-agents`, `semprec-transcribe`, `semprec-ai-gateway`) — created
+  incrementally as the issue queue progresses; mail live-sync runs inside
+  `semprec-api`.
 - `apple/` — empty until the issue queue reaches it; `web/` is a React +
   TypeScript (Vite) app, currently holding the view registry, the generic
   operations client, and the mailbox view renderer.
