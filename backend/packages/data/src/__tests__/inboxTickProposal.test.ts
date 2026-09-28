@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool, PoolClient } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -1050,6 +1050,136 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
       proposalsId,
     ]);
     expect(rows[0]!.n).toBe(1);
+  });
+});
+
+describe("semprec.tick brackets computeProposal outside any transaction (issue #676)", () => {
+  let inboxId: string;
+  let typesId: string;
+  let proposalsId: string;
+  let journalId: string;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    viewTypeRegistry = createViewTypeRegistry();
+    await resetDatabase(pool);
+    await seedSystem(pool, viewTypeRegistry);
+    inboxId = await databaseIdFor("inbox");
+    typesId = await databaseIdFor("inboxItemTypes");
+    proposalsId = await databaseIdFor("processingProposals");
+    journalId = await databaseIdFor("journal");
+  });
+
+  async function findProposalForItem(itemId: string) {
+    return withTransaction(pool, async (client) => {
+      const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
+      const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(
+        client,
+        sourceInboxProperty!.id,
+      );
+      const edges = await relationsStore.listRelationsForItem(client, relationDefinition!.id, itemId);
+      for (const edge of edges) {
+        const proposal = await itemsStore.getItemById(client, proposalsId, relationsStore.otherSide(edge, itemId));
+        if (proposal && !proposal.deletedAt) return proposal;
+      }
+      return null;
+    });
+  }
+
+  async function createTypedItem(text: string) {
+    const type = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
+    );
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        text,
+        type: type.id,
+      }),
+    );
+    return { type, item };
+  }
+
+  it("holds no transaction and no pooled connection during the computeProposal call", async () => {
+    const { item } = await createTypedItem("Buy milk");
+
+    // A dedicated single-connection pool: if the tick still held its transaction's one
+    // connection open across `computeProposal`, this query — issued from inside the fake
+    // while it runs — would have no connection to acquire and would never resolve.
+    const tickPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 1 });
+    try {
+      const handler = createSemprecTickAction(tickPool, async (input) => {
+        await Promise.race([
+          tickPool.query("SELECT 1"),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("computeProposal: no free pooled connection")), 2000),
+          ),
+        ]);
+        expect(input.entityKind).toBe("database");
+        return { properties: { name: "Buy milk" } };
+      });
+      await handler(
+        { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
+        { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
+      );
+    } finally {
+      await tickPool.end();
+    }
+
+    const proposal = await findProposalForItem(item.id);
+    expect(proposal).toBeTruthy();
+    expect(proposal!.properties.status).toBe("proposed");
+  }, 10000);
+
+  it("writes nothing for a stale envelope when the source changes during computeProposal, and the next tick produces the card for the new fingerprint", async () => {
+    const { item } = await createTypedItem("Buy milk");
+
+    const handler = createSemprecTickAction(pool, async () => {
+      await withTransaction(pool, (client) =>
+        itemsStore.updateItemProperties(client, {
+          databaseId: inboxId,
+          itemId: item.id,
+          propertiesPatch: { text: "Buy milk and eggs" },
+        }),
+      );
+      return { properties: { name: "Buy milk" } };
+    });
+    await handler(
+      { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
+      { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
+    );
+
+    expect(await findProposalForItem(item.id)).toBeNull();
+
+    let calls = 0;
+    const handlerAgain = createSemprecTickAction(pool, async () => {
+      calls++;
+      return { properties: { name: "Buy milk and eggs" } };
+    });
+    await handlerAgain(
+      { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
+      { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
+    );
+    expect(calls).toBe(1);
+
+    const proposal = await findProposalForItem(item.id);
+    expect(proposal).toBeTruthy();
+    expect(proposal!.properties.fingerprint).toBe(sha256Of("☑️", "Buy milk and eggs"));
+    expect(proposal!.properties.proposal).toEqual({
+      entityKind: "database",
+      target: await databaseIdFor("tasks"),
+      properties: { name: "Buy milk and eggs" },
+    });
   });
 });
 
