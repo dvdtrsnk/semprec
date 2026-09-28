@@ -68,10 +68,7 @@ FROM message_mailbox mm
 WHERE meta.item_id = mm.message_item_id
   AND meta.mailbox_item_id IS NULL;
 
--- `message_id` leads the index so threading.ts's `message_id = ANY(...)` lookups and the
--- legacy migration's collision check stay indexed once the single-column UNIQUE is gone;
--- `ON CONFLICT (mailbox_item_id, message_id)` infers it by column set, not order.
 CREATE UNIQUE INDEX IF NOT EXISTS mail_message_meta_mailbox_message_uq
-  ON mail_message_meta (message_id, mailbox_item_id);
+  ON mail_message_meta (mailbox_item_id, message_id);
 
 ALTER TABLE mail_message_meta DROP CONSTRAINT IF EXISTS mail_message_meta_message_id_key;
