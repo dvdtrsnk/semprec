@@ -202,6 +202,23 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     expect(requestHeaders).toEqual([]);
   });
 
+  it("writes no error event for a run closed elsewhere before its failed composition closes it", async () => {
+    const { projectItemId } = await seededAgentHeartbeat();
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "say hello" });
+    composition.during = async (agentRunId) => {
+      await finishAgentRun(pool, agentRunId, "done", "closed elsewhere");
+      throw new Error("mcp grants unavailable");
+    };
+    const task = createAgentRunTask(pool, registry, fauxGateway);
+
+    await expect(task({ agentRunId: run.id }, { job: { id: "1" } })).rejects.toThrow("mcp grants unavailable");
+
+    expect(await runRow(run.id)).toEqual({ status: "done", result: "closed elsewhere" });
+    expect(await errorNotificationCount(run.id)).toBe(0);
+    expect(await runEvents(run.id)).toEqual([]);
+    expect(requestHeaders).toEqual([]);
+  });
+
   it("writes nothing for a run closed while its session was being composed", async () => {
     const { projectItemId } = await seededAgentHeartbeat();
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "say hello" });

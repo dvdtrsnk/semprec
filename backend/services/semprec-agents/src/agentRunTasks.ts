@@ -32,13 +32,16 @@ function errorMessage(err: unknown): string {
 
 /**
  * Closes a run whose session could not even be composed, so it is not left `running` until the
- * next startup repair. Best-effort: a failure here is logged, and the composition error is what
- * the caller rethrows.
+ * next startup repair. The close, its notification and the `error` event commit together, and the
+ * event is written only when this call actually closed the row. Best-effort: a failure here is
+ * logged, and the composition error is what the caller rethrows.
  */
 async function closeUncomposedRun(pool: Pool, run: AgentRunRow, cause: unknown): Promise<void> {
   try {
-    await finishAgentRunWithErrorNotification(pool, run.id, errorMessage(cause));
-    await pushRunStatus(pool, run.id, "error");
+    await withTransaction(pool, async (client) => {
+      if (!(await finishAgentRunWithErrorNotification(client, run.id, errorMessage(cause)))) return;
+      await pushRunStatus(client, run.id, "error");
+    });
   } catch (err) {
     logger.error({ err, agentRunId: run.id }, "Failed to close an agent run whose session could not be composed");
   }
