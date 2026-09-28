@@ -16,15 +16,23 @@ async function waitFor(predicate: () => Promise<boolean>, message: string): Prom
   );
 }
 
-/** Wraps the real pool so its first `query` whose text starts with `sqlPrefix` rejects with `error`; every other call, and every later one, delegates to the real pool. */
-function poolWithFailingQuery(sqlPrefix: string, error: Error): Pool {
+/**
+ * Wraps the real pool so its first `query` whose text starts with `sqlPrefix` rejects with
+ * `error`; every other call, and every later one, delegates to the real pool. When `matchParams`
+ * is given, a call is only failed if it also satisfies that predicate over the query's bind
+ * params — needed to target one specific call among several that share the same SQL text (e.g.
+ * `insertAgentRunEvent`'s INSERT, issued for every event kind including the `running` status
+ * every `delegate()` call writes on creation).
+ */
+function poolWithFailingQuery(sqlPrefix: string, error: Error, matchParams?: (params: unknown[]) => boolean): Pool {
   let failed = false;
   return new Proxy(pool, {
     get(target, prop, receiver) {
       if (prop === "query") {
         return (...args: unknown[]) => {
           const text = typeof args[0] === "string" ? args[0] : (args[0] as { text?: string } | undefined)?.text;
-          if (!failed && text?.startsWith(sqlPrefix)) {
+          const params = (args[1] as unknown[] | undefined) ?? [];
+          if (!failed && text?.startsWith(sqlPrefix) && (!matchParams || matchParams(params))) {
             failed = true;
             return Promise.reject(error);
           }
@@ -467,6 +475,62 @@ describe("DelegationRegistry", () => {
       targetProjectItemId,
     ]);
     expect(allRuns[0].n).toBe(1);
+
+    registry.clear();
+  });
+
+  it("drops the entry instead of leaving it busy=false when the run is already closed but the expiry's run_status write fails", async () => {
+    // `finishAgentRun`'s own "UPDATE agent_runs" succeeds here — the run really is closed as
+    // "done" in the DB — but the subsequent run_status event write throws. That's the race the
+    // fix addresses: the entry must still be dropped from `entries` (not left busy=false
+    // pointing at a terminal run), otherwise a delegate() landing in this window would reuse a
+    // session for a run that is already closed.
+    const ttlMs = 60;
+    // Only fails the `run_status: "done"` event insert expire() issues after closing the run —
+    // not the `run_status: "running"` insert delegate() itself issues on creation, which shares
+    // the same SQL text.
+    const failingPool = poolWithFailingQuery(
+      "INSERT INTO agent_run_events",
+      new Error("simulated outage"),
+      (params) => typeof params[2] === "string" && params[2].includes('"status":"done"'),
+    );
+    const registry = new DelegationRegistry(failingPool, ttlMs);
+    const supervisorRunId = await newSupervisorRunId();
+    const targetProjectItemId = "aaaaaaaa-1111-1111-1111-111111111111";
+    const { createAgentSession: firstSession } = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "first session" },
+      { kind: "turn_end" },
+    ]);
+
+    await registry.delegate({ createAgentSession: firstSession, supervisorRunId, targetProjectItemId, task: "one" });
+
+    await new Promise((resolve) => setTimeout(resolve, ttlMs + 150));
+
+    const { rows: afterTtl } = await pool.query<{ status: string }>(
+      `SELECT status FROM agent_runs WHERE project_item_id = $1`,
+      [targetProjectItemId],
+    );
+    expect(afterTtl).toHaveLength(1);
+    expect(afterTtl[0]!.status).toBe("done");
+
+    const { createAgentSession: secondSession } = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "second session" },
+      { kind: "turn_end" },
+    ]);
+    const second = await registry.delegate({
+      createAgentSession: secondSession,
+      supervisorRunId,
+      targetProjectItemId,
+      task: "two",
+    });
+    expect(second).toEqual({ ok: true, message: "second session" });
+
+    const { rows: allRuns } = await pool.query(`SELECT count(*)::int AS n FROM agent_runs WHERE project_item_id = $1`, [
+      targetProjectItemId,
+    ]);
+    expect(allRuns[0].n).toBe(2);
 
     registry.clear();
   });
