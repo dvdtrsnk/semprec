@@ -5,7 +5,7 @@ import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { resolveThreadId } from "./threading.js";
 import {
-  getMailMessageMetaByMessageId,
+  getMailMessageMetaByMailboxAndMessageId,
   getMailMessageMetaByProviderMessageId,
   isProviderMessageIdConflict,
   upsertMailMessageMeta,
@@ -42,6 +42,8 @@ export interface IngestEmailMessageInput {
   folderRelationPropertyId: string;
   attachmentsRelationPropertyId: string;
   folderItemId: string;
+  /** The Mailbox item being synced — the dedup scope: the same `Message-ID` in two mailboxes is two items. */
+  mailboxItemId: string;
   /** IMAP adapter only — the UID this message has *in this folder*; lives on the relation edge, not the item (see the migration's header note). */
   folderUid?: number;
   messageId: string;
@@ -78,9 +80,10 @@ export interface IngestEmailMessageResult {
 /**
  * The single writer shared by all three sync adapters (imap/gmail/graph) — see the
  * migration's and mail/threading.ts's header notes for why this is the one place messages
- * become Emails items. Dedups by `Message-ID` (an optimistic outgoing insert from issue #27
- * or a re-observed message on a second sync pass both converge onto the same item instead of
- * duplicating), resolves/updates the conversation thread, links the message into the given
+ * become Emails items. Dedups by `Message-ID` per mailbox (an optimistic outgoing insert from
+ * issue #27 or a re-observed message on a second sync pass of the same mailbox both converge
+ * onto the same item instead of duplicating; the same message delivered to another mailbox
+ * becomes that mailbox's own item, so read/flag state never leaks across mailboxes), resolves/updates the conversation thread, links the message into the given
  * folder (always — even for an already-known message, since the same message can appear in
  * a newly-observed folder), ingests attachments, and reindexes full-text search. Must be
  * called inside a transaction: the Emails item write and the `mail_message_meta` write need
@@ -91,7 +94,7 @@ export async function ingestEmailMessage(
   client: PoolClient,
   input: IngestEmailMessageInput,
 ): Promise<IngestEmailMessageResult> {
-  const existing = await getMailMessageMetaByMessageId(client, input.messageId);
+  const existing = await getMailMessageMetaByMailboxAndMessageId(client, input.mailboxItemId, input.messageId);
   let itemId: string;
   let created = false;
 
@@ -157,6 +160,7 @@ export async function ingestEmailMessage(
 
       await upsertMailMessageMeta(client, {
         itemId,
+        mailboxItemId: input.mailboxItemId,
         messageId: input.messageId,
         inReplyTo: input.inReplyTo,
         references: input.references,

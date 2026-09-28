@@ -155,6 +155,7 @@ export async function reconcileGmailAccount(
         folderRelationPropertyId: params.folderRelationPropertyId,
         attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
         folderItemId,
+        mailboxItemId: params.mailboxItemId,
         providerMessageId: fetched.id,
         providerThreadId: fetched.threadId,
         storage: params.storage,

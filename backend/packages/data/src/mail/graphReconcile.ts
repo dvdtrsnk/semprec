@@ -151,6 +151,7 @@ export async function reconcileGraphAccount(
       folderRelationPropertyId: params.folderRelationPropertyId,
       attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
       folderItemId,
+      mailboxItemId: params.mailboxItemId,
       providerMessageId: change.id,
       storage: params.storage,
       storageKeyPrefix: params.storageKeyPrefix,
