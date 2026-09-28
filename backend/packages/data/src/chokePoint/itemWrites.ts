@@ -144,6 +144,9 @@ export interface CreateItemInput {
  * and `journal/journalStore.ts`, whose lazy item creation writes
  * owner:'system' properties (`allowedSystemKeys`) as Journal's declared owning process for
  * exactly those keys. `createChokePoint(...)`'s `createItem` below is a thin wrapper over this.
+ * An idempotency-key replay (`insertItemWithReplay`'s `created: false`) returns the
+ * already-committed item as-is: no heartbeat trigger, no invalidation, since both already
+ * fired for the call that actually created it.
  */
 export async function createItemWithClient(
   client: PoolClient,
@@ -172,11 +175,13 @@ export async function createItemWithClient(
         }
       : inputProperties;
 
-  const item = await itemsStore.insertItem(client, {
+  const { item, created } = await itemsStore.insertItemWithReplay(client, {
     databaseId: input.databaseId,
     properties: itemProperties,
     idempotencyKey: input.idempotencyKey,
   });
+  if (!created) return item;
+
   await triggerOnItemEventHeartbeats(client, input.databaseId, "create", item.id, options.queueAffinity);
   runAfterCommit(client, () =>
     notifyInvalidation({

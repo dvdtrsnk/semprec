@@ -1,8 +1,13 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { CORE_TASK_NAMES } from "@semprec/queue";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
+import { withTransaction } from "../db/pool.js";
+import { createHeartbeat } from "../scheduler/schedulerStore.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -206,5 +211,69 @@ describe("choke-point itemWrites", () => {
 
     const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [db.id]);
     expect(rows[0].n).toBe(1);
+  });
+
+  describe("idempotent create replay skips create-only side effects", () => {
+    let events: InvalidationEvent[];
+
+    beforeEach(async () => {
+      await seedSystem(pool);
+      events = [];
+      setInvalidationHook((event) => events.push(event));
+    });
+
+    afterEach(() => {
+      setInvalidationHook(() => {});
+    });
+
+    async function countHeartbeatFireJobs(heartbeatId: string): Promise<number> {
+      const { rows } = await pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n
+         FROM graphile_worker._private_jobs j
+         JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+         WHERE t.identifier = $1 AND j.payload -> 'payload' ->> 'heartbeatId' = $2`,
+        [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE, heartbeatId],
+      );
+      return Number(rows[0]!.n);
+    }
+
+    it("first create fires the onItemEvent heartbeat and a create invalidation once; a same-key replay fires neither", async () => {
+      const db = await makeMoviesDb();
+      const { rows: projectRows } = await pool.query<{ id: string }>(
+        "SELECT id FROM databases WHERE owner_module_id = 'projects'",
+      );
+      const { rows: projectItemRows } = await pool.query<{ id: string }>(
+        "SELECT id FROM items WHERE database_id = $1 LIMIT 1",
+        [projectRows[0]!.id],
+      );
+      const heartbeat = await withTransaction(pool, (client) =>
+        createHeartbeat(client, {
+          projectItemId: projectItemRows[0]!.id,
+          name: "On create",
+          rule: { kind: "onItemEvent", databaseId: db.id, event: "create" },
+          actionId: "noop",
+        }),
+      );
+
+      events = [];
+      const first = await chokePoint.createItem({
+        databaseId: db.id,
+        properties: { title: "Dune" },
+        idempotencyKey: "replay-key",
+      });
+      expect(await countHeartbeatFireJobs(heartbeat.id)).toBe(1);
+      expect(events).toEqual([
+        { scope: "item", databaseId: db.id, itemId: first.id, op: "create", updatedAt: first.updatedAt },
+      ]);
+
+      const replay = await chokePoint.createItem({
+        databaseId: db.id,
+        properties: { title: "Dune 2" },
+        idempotencyKey: "replay-key",
+      });
+      expect(replay.id).toBe(first.id);
+      expect(await countHeartbeatFireJobs(heartbeat.id)).toBe(1);
+      expect(events).toHaveLength(1);
+    });
   });
 });

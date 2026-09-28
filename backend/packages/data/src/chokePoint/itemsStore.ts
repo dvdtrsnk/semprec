@@ -49,13 +49,21 @@ export interface InsertItemInput {
   idempotencyKey?: string;
 }
 
+export interface InsertItemResult {
+  item: ItemRow;
+  /** `false` when this call returned an existing row via idempotency-key replay and wrote nothing. */
+  created: boolean;
+}
+
 /**
  * Inserts a new item, honoring an optional Idempotency-Key: a repeat call with the
  * same key returns the row created by the first call instead of inserting a second
  * one. Must run inside a transaction (the reservation race is only safe because the
- * idempotency_keys row and the items row commit atomically together).
+ * idempotency_keys row and the items row commit atomically together). `created` tells
+ * the caller which of those two outcomes happened, so a replay can skip create-only
+ * side effects (heartbeats, invalidations) that must fire at most once per item.
  */
-export async function insertItem(client: Queryable, input: InsertItemInput): Promise<ItemRow> {
+export async function insertItemWithReplay(client: Queryable, input: InsertItemInput): Promise<InsertItemResult> {
   const generatedId = randomUUID();
   let itemId: string = generatedId;
 
@@ -90,7 +98,7 @@ export async function insertItem(client: Queryable, input: InsertItemInput): Pro
       }
       itemId = reserved.item_id;
       const existing = await getItemById(client, input.databaseId, itemId);
-      if (existing) return existing;
+      if (existing) return { item: existing, created: false };
       // The winning transaction committed the idempotency_keys row but, being the
       // same transaction as its items insert, must also have committed that row —
       // this branch is unreachable in practice and exists only as a defensive guard.
@@ -103,7 +111,12 @@ export async function insertItem(client: Queryable, input: InsertItemInput): Pro
      RETURNING id, database_id, properties, computed, updated_at, deleted_at`,
     [itemId, input.databaseId, JSON.stringify(input.properties)],
   );
-  return mapItemRow(requireSingleRow(rows, "items row"));
+  return { item: mapItemRow(requireSingleRow(rows, "items row")), created: true };
+}
+
+/** `insertItemWithReplay` for the many callers (seeds, tests) that don't need to distinguish a replay from a fresh insert. */
+export async function insertItem(client: Queryable, input: InsertItemInput): Promise<ItemRow> {
+  return (await insertItemWithReplay(client, input)).item;
 }
 
 /**
