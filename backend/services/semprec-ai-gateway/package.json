@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "0.85.1",
     "@semprec/ai-gateway": "workspace:*",
     "@semprec/data": "workspace:*",
     "@semprec/shared": "workspace:*",

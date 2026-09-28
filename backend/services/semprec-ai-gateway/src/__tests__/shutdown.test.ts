@@ -10,6 +10,18 @@ import type { CompleteHandlerOptions } from "../completeHandler.js";
 import type { AudioHandlerOptions } from "../audioHandler.js";
 import type { StructuredCompletionProvider, StructuredCompletionRequest } from "../structuredProviders/types.js";
 import { createGracefulShutdown, POOL_END_TIMEOUT_MS } from "../shutdown.js";
+import { createModels } from "@earendil-works/pi-ai";
+import type { PiMessagesHandlerOptions } from "../piMessagesHandler.js";
+/** This suite never reaches `/internal/pi/messages`; the dispatcher only needs the options to exist. */
+const FAKE_PI_OPTIONS: PiMessagesHandlerOptions = {
+  internalToken: "test-internal-token",
+  models: createModels(),
+  apiKey: "unused",
+  streamFn: () => {
+    throw new Error("the pi-messages route is not exercised by this suite");
+  },
+};
+
 
 const FAKE_AUDIO_OPTIONS: AudioHandlerOptions = {
   internalToken: "test-internal-token",
@@ -392,7 +404,7 @@ describe("createGracefulShutdown against the ai-gateway dispatcher with a real p
       pricePerMillionInputTokens: 3,
       pricePerMillionOutputTokens: 15,
     };
-    server = createServer(createDispatcher(pool, options, FAKE_AUDIO_OPTIONS));
+    server = createServer(createDispatcher(pool, options, FAKE_AUDIO_OPTIONS, FAKE_PI_OPTIONS));
     return listenOn(server);
   }
 

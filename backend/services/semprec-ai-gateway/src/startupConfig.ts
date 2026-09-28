@@ -1,9 +1,12 @@
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { createAnthropicStructuredProvider } from "./structuredProviders/anthropicProvider.js";
 import { createStructuredProviderRegistry, type StructuredCompletionProvider } from "./structuredProviders/types.js";
 import type { CompleteHandlerOptions } from "./completeHandler.js";
 import type { AudioHandlerOptions } from "./audioHandler.js";
 import { createPyannoteDiarizationProvider } from "./audioProviders/pyannoteProvider.js";
 import { createDeepInfraWhisperProvider } from "./audioProviders/deepInfraWhisperProvider.js";
+import type { PiMessagesHandlerOptions } from "./piMessagesHandler.js";
 
 /** Every provider this deployment of `semprec-ai-gateway` knows how to construct, keyed by id. */
 function buildRegisteredProviders(env: NodeJS.ProcessEnv): StructuredCompletionProvider[] {
@@ -36,6 +39,7 @@ export interface StartupConfig {
   databaseUrl: string;
   handlerOptions: CompleteHandlerOptions;
   audioHandlerOptions: AudioHandlerOptions;
+  piHandlerOptions: PiMessagesHandlerOptions;
 }
 
 export function resolveStartupConfig(
@@ -94,6 +98,14 @@ export function resolveStartupConfig(
       transcriptionProvider,
       pyannotePricePerAudioHour,
       deepInfraPricePerAudioHour,
+    },
+    piHandlerOptions: {
+      internalToken,
+      models: builtinModels(),
+      apiKey: requireEnv(env, "ANTHROPIC_API_KEY"),
+      // `streamSimple`, not `stream`: the pi-messages `reasoning` level is a provider-neutral
+      // option that only the simple entry point maps onto Anthropic's thinking parameters.
+      streamFn: streamSimple,
     },
   };
 }

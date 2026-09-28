@@ -12,6 +12,18 @@ import type {
   TranscriptionRequest,
 } from "../audioProviders/types.js";
 import type { StructuredCompletionProvider, StructuredCompletionRequest } from "../structuredProviders/types.js";
+import { createModels } from "@earendil-works/pi-ai";
+import type { PiMessagesHandlerOptions } from "../piMessagesHandler.js";
+/** This suite never reaches `/internal/pi/messages`; the dispatcher only needs the options to exist. */
+const FAKE_PI_OPTIONS: PiMessagesHandlerOptions = {
+  internalToken: "test-internal-token",
+  models: createModels(),
+  apiKey: "unused",
+  streamFn: () => {
+    throw new Error("the pi-messages route is not exercised by this suite");
+  },
+};
+
 
 let pool: Pool;
 let server: Server;
@@ -79,7 +91,7 @@ function startServer(
     pyannotePricePerAudioHour: 6,
     deepInfraPricePerAudioHour: 3,
   };
-  server = createServer(createDispatcher(pool, completeOptions, audioOptions));
+  server = createServer(createDispatcher(pool, completeOptions, audioOptions, FAKE_PI_OPTIONS));
 }
 
 async function listen(): Promise<void> {
