@@ -26,9 +26,16 @@ export function runAfterCommit(client: PoolClient, callback: () => void): void {
   }
 }
 
-/** Runs `fn` inside a single transaction on a dedicated client, committing on success and rolling back on error. */
+/**
+ * Runs `fn` inside a single transaction on a dedicated client, committing on success and rolling back on error.
+ *
+ * On failure (from `fn` or from `COMMIT`) the original error is what propagates, even when the
+ * `ROLLBACK` itself fails. A connection whose `ROLLBACK` failed is in an unknown state, so it is
+ * released with that error — which makes `pg` destroy it — and never goes back into the pool.
+ */
 export async function withTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await pool.connect();
+  let releaseError: Error | undefined;
   try {
     await client.query("BEGIN");
     try {
@@ -52,11 +59,16 @@ export async function withTransaction<T>(pool: Pool, fn: (client: PoolClient) =>
       return result;
     } catch (err) {
       afterCommitCallbacks.delete(client);
-      await client.query("ROLLBACK");
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackErr) {
+        releaseError = rollbackErr instanceof Error ? rollbackErr : new Error(String(rollbackErr));
+        console.error("withTransaction: ROLLBACK failed; discarding the connection", rollbackErr);
+      }
       throw err;
     }
   } finally {
-    client.release();
+    client.release(releaseError);
   }
 }
 
