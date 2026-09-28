@@ -90,9 +90,6 @@ if [[ -f "$TEST_STATE/fail-seed" && "$*" == *runSeedCli.js* ]]; then exit 1; fi'
 # `restart` simulates systemd: the new process gets the shared .env plus current/release.env.
 write_mock systemctl '
 case "$1" in
-  list-units)
-    if [[ -f "$TEST_STATE/mailsync-units" ]]; then cat "$TEST_STATE/mailsync-units"; fi
-    ;;
   restart)
     echo "systemctl restart $2" >> "$TEST_STATE/commands"
     pid=$(( $(cat "$TEST_STATE/next-pid" 2>/dev/null || echo 100) + 1 ))
@@ -142,16 +139,15 @@ test ! -e "$TEST_STATE/commands"
 
 # ---- First deploy: every process type restarts and reports the one version. ----
 
-printf 'semprec-mailsync@alice.service loaded active running Semprec mail sync worker for alice\n' \
-  > "$TEST_STATE/mailsync-units"
 run_deploy v1.0.0 > "$TEST_STATE/deploy.out"
 assert_current v1.0.0
 grep -qx one "$TEST_SEMPREC_ROOT/releases/v1.0.0/backend/marker"
 grep -qx 'APP_VERSION=v1.0.0' "$TEST_SEMPREC_ROOT/releases/v1.0.0/release.env"
-for unit in semprec-ai-gateway semprec-api semprec-agents semprec-transcribe semprec-mailsync@alice; do
+for unit in semprec-ai-gateway semprec-api semprec-agents semprec-transcribe; do
   grep -qx "systemctl restart $unit.service" "$TEST_STATE/commands"
   grep -qx "$unit.service: v1.0.0" "$TEST_STATE/deploy.out"
 done
+test "$(grep -c '^systemctl restart ' "$TEST_STATE/commands")" -eq 4
 grep -q 'pnpm install --frozen-lockfile' "$TEST_STATE/commands"
 grep -q "EnvironmentFile=$TEST_SEMPREC_ROOT/shared/.env" "$TEST_STATE/commands"
 # The seed runs after the migrations, under the same migrate URL.
@@ -201,7 +197,6 @@ assert_no_partial_releases
 
 # ---- A second deploy swaps current and leaves the previous release intact. ----
 
-rm "$TEST_STATE/mailsync-units"
 run_deploy v1.1.0 > "$TEST_STATE/deploy.out"
 assert_current v1.1.0
 grep -qx two "$TEST_SEMPREC_ROOT/releases/v1.1.0/backend/marker"
@@ -215,8 +210,6 @@ assert_no_partial_releases
 
 run_deploy v1.3.0 > "$TEST_STATE/deploy.out"
 assert_current v1.3.0
-printf 'semprec-mailsync@alice.service loaded active running Semprec mail sync worker for alice\n' \
-  > "$TEST_STATE/mailsync-units"
 rm "$TEST_STATE/commands"
 # A staging directory left by an interrupted deploy is not a release and must not count as the newest.
 mkdir "$TEST_SEMPREC_ROOT/releases/.v1.4.0.partial.test"
@@ -240,7 +233,7 @@ readonly ROLLBACK_OUTPUT="$TEST_STATE/rollback.out"
 run_deploy --rollback v1.1.0 > "$ROLLBACK_OUTPUT"
 assert_current v1.1.0
 grep -qx 'Rolled back to v1.1.0; the database schema was not changed' "$ROLLBACK_OUTPUT"
-for unit in semprec-ai-gateway semprec-api semprec-agents semprec-transcribe semprec-mailsync@alice; do
+for unit in semprec-ai-gateway semprec-api semprec-agents semprec-transcribe; do
   grep -qx "systemctl restart $unit.service" "$TEST_STATE/commands"
   grep -qx "$unit.service: v1.1.0" "$ROLLBACK_OUTPUT"
 done

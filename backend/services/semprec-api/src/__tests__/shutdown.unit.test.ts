@@ -85,7 +85,11 @@ describe("semprec-api graceful shutdown stops the mail live-sync root (issue #65
 
     await createGracefulShutdown(deps)("SIGTERM");
 
-    expect(calls.slice(calls.indexOf("mailLiveSync.stop"))).toEqual(["mailLiveSync.stop", "queueRuntime.stop", "pool.end"]);
+    expect(calls.slice(calls.indexOf("mailLiveSync.stop"))).toEqual([
+      "mailLiveSync.stop",
+      "queueRuntime.stop",
+      "pool.end",
+    ]);
     expect(lines.filter((line) => line.level === "error")).toEqual([
       { level: "error", obj: { err: stopError, signal: "SIGTERM" }, msg: "mailLiveSync.stop() failed" },
     ]);

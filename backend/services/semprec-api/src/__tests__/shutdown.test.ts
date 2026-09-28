@@ -93,9 +93,14 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
     const { logger, lines } = createCapturingLogger();
 
     const started = performance.now();
-    await createGracefulShutdown({ server, syncServer, queueRuntime: { stop }, mailLiveSync: { stop: async () => {} }, pool: dedicatedPool, logger })(
-      "SIGTERM",
-    );
+    await createGracefulShutdown({
+      server,
+      syncServer,
+      queueRuntime: { stop },
+      mailLiveSync: { stop: async () => {} },
+      pool: dedicatedPool,
+      logger,
+    })("SIGTERM");
     const elapsedMs = performance.now() - started;
 
     expect(elapsedMs).toBeLessThan(5_000);
@@ -119,9 +124,14 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
     const stop = vi.fn(async () => {});
     const { logger, lines } = createCapturingLogger();
 
-    await createGracefulShutdown({ server, syncServer, queueRuntime: { stop }, mailLiveSync: { stop: async () => {} }, pool: dedicatedPool, logger })(
-      "SIGTERM",
-    );
+    await createGracefulShutdown({
+      server,
+      syncServer,
+      queueRuntime: { stop },
+      mailLiveSync: { stop: async () => {} },
+      pool: dedicatedPool,
+      logger,
+    })("SIGTERM");
 
     expect(syncServer.close).toHaveBeenCalledTimes(1);
     expect(stop).toHaveBeenCalledTimes(1);
@@ -139,9 +149,14 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
     const stop = vi.fn(async () => {});
     const { logger, lines } = createCapturingLogger();
 
-    await createGracefulShutdown({ server, syncServer, queueRuntime: { stop }, mailLiveSync: { stop: async () => {} }, pool: dedicatedPool, logger })(
-      "SIGTERM",
-    );
+    await createGracefulShutdown({
+      server,
+      syncServer,
+      queueRuntime: { stop },
+      mailLiveSync: { stop: async () => {} },
+      pool: dedicatedPool,
+      logger,
+    })("SIGTERM");
 
     expect(server.listening).toBe(false);
     expect(stop).toHaveBeenCalledTimes(1);

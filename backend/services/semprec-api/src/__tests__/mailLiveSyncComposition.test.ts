@@ -27,7 +27,9 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promi
 }
 
 async function syncStateItemIds(pool: Pool): Promise<string[]> {
-  const { rows } = await pool.query<{ item_id: string }>("SELECT item_id FROM mail_account_sync_state ORDER BY item_id");
+  const { rows } = await pool.query<{ item_id: string }>(
+    "SELECT item_id FROM mail_account_sync_state ORDER BY item_id",
+  );
   return rows.map((row) => row.item_id);
 }
 
@@ -84,14 +86,15 @@ describe("semprec-api mail live-sync composition (issue #650)", () => {
     await root.start();
 
     expect(await syncStateItemIds(pool)).toEqual([mailboxId]);
-    expect(await mailAccountSyncPayloads(pool)).toEqual([expect.objectContaining({ payload: { mailboxItemId: mailboxId } })]);
+    expect(await mailAccountSyncPayloads(pool)).toEqual([
+      expect.objectContaining({ payload: { mailboxItemId: mailboxId } }),
+    ]);
 
     await expect(root.stop()).resolves.toBeUndefined();
-    const lateMailboxId = await insertMailbox(pool, composed.mailboxesDatabaseId, "Late");
+    await insertMailbox(pool, composed.mailboxesDatabaseId, "Late");
     await sleep(DISCOVERY_INTERVAL_MS * 3);
 
     expect(await syncStateItemIds(pool)).toEqual([mailboxId]);
-    expect(await syncStateItemIds(pool)).not.toContain(lateMailboxId);
   });
 
   it("gives a soft-deleted mailbox no sync-state row and enqueues nothing for it", async () => {
@@ -115,6 +118,8 @@ describe("semprec-api mail live-sync composition (issue #650)", () => {
 
     await waitFor(async () => (await syncStateItemIds(pool)).includes(mailboxId));
     await waitFor(async () => (await mailAccountSyncPayloads(pool)).length === 1);
-    expect(await mailAccountSyncPayloads(pool)).toEqual([expect.objectContaining({ payload: { mailboxItemId: mailboxId } })]);
+    expect(await mailAccountSyncPayloads(pool)).toEqual([
+      expect.objectContaining({ payload: { mailboxItemId: mailboxId } }),
+    ]);
   });
 });

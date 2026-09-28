@@ -24,8 +24,8 @@ and host provisioning (#244, #176):
   `/opt/semprec/shared/bin`. The timer bodies belong to #171, #177, and #178; their schedules are
   installed now so later provisioning updates replace only non-secret operational templates.
 
-`semprec-api`, `semprec-agents`, `semprec-mailsync@`, `semprec-transcribe`, and
-`semprec-ai-gateway` run as systemd units. The internal HTTP listeners bind to loopback in their
+`semprec-api`, `semprec-agents`, `semprec-transcribe`, and `semprec-ai-gateway` run as systemd
+units; mail live-sync runs inside `semprec-api`, not as a unit of its own. The internal HTTP listeners bind to loopback in their
 own `server.listen(port, "127.0.0.1", ...)` call, so that binding lives in
 `backend/services/*/src/serve.ts`, not in a unit file. Each unit loads the same
 `/opt/semprec/shared/.env` via `EnvironmentFile=` — the systemd half of the same distribution
@@ -62,8 +62,8 @@ In order, it:
    [`docs/operations/seeding.md`](../docs/operations/seeding.md));
 4. renames the staging directory to `releases/<tag>`, then replaces `current` with one
    `rename(2)`;
-5. restarts `semprec-ai-gateway`, `semprec-api`, `semprec-agents`, `semprec-transcribe` and every
-   active `semprec-mailsync@` instance, and prints the `APP_VERSION` each running process has.
+5. restarts `semprec-ai-gateway`, `semprec-api` (which also hosts mail live-sync),
+   `semprec-agents` and `semprec-transcribe`, and prints the `APP_VERSION` each running process has.
 
 A failure in steps 1–3 removes the staging directory and exits non-zero with `current` and every
 service untouched. A failure in step 5 exits non-zero too, but `current` already names the new
