@@ -1181,6 +1181,39 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       properties: { name: "Buy milk and eggs" },
     });
   });
+
+  it("a proposal created by a second tick while the first is still in computeProposal is revised, not duplicated (issue #792 review fix)", async () => {
+    const { item } = await createTypedItem("Buy milk");
+
+    // Neither tick sees the other's proposal in its read snapshot: A's snapshot read happens
+    // before B runs to completion inside A's computeProposal, and B's own snapshot read happens
+    // while A hasn't written anything yet. So both reach `writeTickResult` believing
+    // `snapshot.existingProposal` is null — the exact race `raceProposal` exists to catch.
+    const handlerA = createSemprecTickAction(pool, async () => {
+      const handlerB = createSemprecTickAction(pool, async () => ({ properties: { name: "Buy milk (from B)" } }));
+      await handlerB(
+        { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
+        { heartbeatId: "hb-b", projectItemId: "proj", itemId: item.id },
+      );
+      return { properties: { name: "Buy milk (from A)" } };
+    });
+    await handlerA(
+      { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
+      { heartbeatId: "hb-a", projectItemId: "proj", itemId: item.id },
+    );
+
+    const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [proposalsId]);
+    expect(rows[0].n).toBe(1);
+
+    const proposal = await findProposalForItem(item.id);
+    expect(proposal!.properties.status).toBe("proposed");
+    expect(proposal!.properties.proposal).toEqual({
+      entityKind: "database",
+      target: await databaseIdFor("tasks"),
+      properties: { name: "Buy milk (from A)" },
+    });
+    expect(proposal!.properties.history).toHaveLength(2);
+  });
 });
 
 afterAll(async () => {
