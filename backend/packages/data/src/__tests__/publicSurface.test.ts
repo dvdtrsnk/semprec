@@ -379,6 +379,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "recomputeRollupCell",
   "recordAudioGatewayCall",
   "recordHeartbeatFailure",
+  "recordHeartbeatFireSetupFailure",
   "recordHeartbeatSuccess",
   "recordItemAutomationFailure",
   "recordLoginAttempt",

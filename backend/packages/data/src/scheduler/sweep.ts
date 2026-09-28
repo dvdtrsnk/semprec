@@ -10,12 +10,14 @@ import {
   getHeartbeat,
   prepareHeartbeatOccurrenceFire,
   recordHeartbeatFailure,
+  recordHeartbeatFireSetupFailure,
   recordHeartbeatSuccess,
   succeedHeartbeatOccurrence,
   sweepDueHeartbeats,
+  type HeartbeatRow,
 } from "./schedulerStore.js";
 import type { HeartbeatRuleKindRegistry } from "./rule.js";
-import { resolveHeartbeatFireTaskName, type ActionRegistry } from "./actions.js";
+import { resolveHeartbeatFireTaskName, type ActionHandler, type ActionRegistry } from "./actions.js";
 
 /**
  * Writes the reference `heartbeat_error` notification (issue #237) for a heartbeat that just
@@ -84,8 +86,9 @@ function assertActionAffinity(actionId: string, expectedAffinity: TaskAffinity):
 /**
  * Runs the heartbeat's action handler. On the final retry attempt (max_attempts: 3
  * total), a failure is recorded to `last_error` and a `heartbeat_error` notification
- * is written in the same transaction. `payload` carries exactly one of three discriminators
- * (issue #213): `occurrenceId` for a sweep-driven scheduled fire, `itemId` for an `onItemEvent`
+ * is written in the same transaction — whether it came from the handler itself or from the
+ * preparation (scheduled path only), the affinity check, or the handler lookup that precede it.
+ * `payload` carries exactly one of three discriminators (issue #213): `occurrenceId` for a sweep-driven scheduled fire, `itemId` for an `onItemEvent`
  * fire, or `triggeredByRunId` for a `heartbeat.trigger` manual fire — zero or more than one is
  * rejected with `validation_failed` rather than guessed at.
  *
@@ -174,11 +177,10 @@ function createHeartbeatFireTaskForAffinity(
     }
     if (!heartbeat) return; // heartbeat was deleted after this job was enqueued
 
-    assertActionAffinity(heartbeat.actionId, expectedAffinity);
-    const handler = registry.get(heartbeat.actionId);
-    if (!handler) throw new Error(`No handler registered for heartbeat action '${heartbeat.actionId}'`);
-
     try {
+      assertActionAffinity(heartbeat.actionId, expectedAffinity);
+      const handler = registry.get(heartbeat.actionId);
+      if (!handler) throw new Error(`No handler registered for heartbeat action '${heartbeat.actionId}'`);
       await handler(heartbeat.actionConfig, {
         heartbeatId: heartbeat.id,
         projectItemId: heartbeat.projectItemId,
@@ -224,6 +226,12 @@ export function createHeartbeatFireAgentTask(
  * `prepareHeartbeatOccurrenceFire` does the locking, generation check, snapshot comparison, and
  * (on a genuine first attempt) the scheduling-state update, all before this ever calls the action
  * handler.
+ *
+ * On the final attempt, a failure of preparation, the affinity check or the handler lookup is
+ * closed out by `recordHeartbeatFireSetupFailure` (restoring a floating rule's `next_fire_at` the
+ * sweep cleared, recording `last_error`, failing the occurrence) plus the `heartbeat_error`
+ * notification; a handler failure is closed out by `recordHeartbeatFailure`/`failHeartbeatOccurrence`.
+ * Either way the original error is rethrown so the queue records the job as failed.
  */
 async function runScheduledOccurrenceFire(
   pool: Pool,
@@ -235,16 +243,46 @@ async function runScheduledOccurrenceFire(
   generation: number,
   helpers: { job: { id: string; attempts: number; max_attempts: number } },
 ): Promise<void> {
-  const prep = await prepareHeartbeatOccurrenceFire(pool, heartbeatId, occurrenceId, generation, moduleRuleKinds);
-  // "missing": deleted since enqueue; "stale": superseded by a reactivation; "cancelled": disabled
-  // or stale snapshot; "degraded": rule kind's module went inactive (failure already recorded) —
-  // none of these execute the handler.
-  if (prep.outcome !== "proceed") return;
+  const isFinalAttempt = helpers.job.attempts >= helpers.job.max_attempts;
 
-  const heartbeat = prep.heartbeat;
-  assertActionAffinity(heartbeat.actionId, expectedAffinity);
-  const handler = registry.get(heartbeat.actionId);
-  if (!handler) throw new Error(`No handler registered for heartbeat action '${heartbeat.actionId}'`);
+  let heartbeat: HeartbeatRow;
+  let handler: ActionHandler;
+  try {
+    const prep = await prepareHeartbeatOccurrenceFire(pool, heartbeatId, occurrenceId, generation, moduleRuleKinds);
+    // "missing": deleted since enqueue; "stale": superseded by a reactivation; "cancelled": disabled
+    // or stale snapshot; "degraded": rule kind's module went inactive (failure already recorded) —
+    // none of these execute the handler.
+    if (prep.outcome !== "proceed") return;
+
+    heartbeat = prep.heartbeat;
+    assertActionAffinity(heartbeat.actionId, expectedAffinity);
+    const registered = registry.get(heartbeat.actionId);
+    if (!registered) throw new Error(`No handler registered for heartbeat action '${heartbeat.actionId}'`);
+    handler = registered;
+  } catch (err) {
+    if (isFinalAttempt) {
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        await withTransaction(pool, async (client) => {
+          const failed = await recordHeartbeatFireSetupFailure(
+            client,
+            heartbeatId,
+            occurrenceId,
+            message,
+            moduleRuleKinds,
+          );
+          if (failed) await notifyHeartbeatError(client, failed, helpers.job.id);
+        });
+      } catch (closeOutErr) {
+        // The setup failure is what failed this job; the close-out failing too must not replace it.
+        console.error(
+          `Failed to record the setup failure of heartbeat ${heartbeatId}'s occurrence ${occurrenceId}`,
+          closeOutErr,
+        );
+      }
+    }
+    throw err;
+  }
 
   try {
     await handler(heartbeat.actionConfig, { heartbeatId: heartbeat.id, projectItemId: heartbeat.projectItemId });
@@ -254,7 +292,6 @@ async function runScheduledOccurrenceFire(
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const isFinalAttempt = helpers.job.attempts >= helpers.job.max_attempts;
     if (isFinalAttempt) {
       await withTransaction(pool, async (client) => {
         await recordHeartbeatFailure(client, heartbeat.id, message);
