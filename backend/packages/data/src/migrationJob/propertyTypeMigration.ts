@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import type { Queryable } from "../db/pool.js";
-import { withClient, withTransaction } from "../db/pool.js";
+import { withTransaction } from "../db/pool.js";
 import {
   getProperty,
   markPropertyMigrationDroppedValues,
@@ -16,11 +16,13 @@ import type { PropertyType } from "../types.js";
 type Converter = (value: unknown) => { ok: true; value: unknown } | { ok: false };
 
 /**
- * `YYYY-MM-DD`, or that date followed by `THH:mm`, optionally `:ss[.sss]`, optionally a `Z` or
- * `±HH:mm` offset — the ISO 8601 shapes the `text -> date` converter accepts. Anything else
- * (`"March 5"`, a Unix timestamp string) is rejected even though `Date.parse` would accept it.
+ * `YYYY-MM-DD`, or that date followed by `THH:mm`, optionally `:ss[.sss]`, and — whenever a time
+ * component is present — a required `Z` or `±HH:mm` offset. A time without an explicit offset is
+ * parsed as local time by `Date.parse`, which would silently produce a wrong UTC timestamp on a
+ * non-UTC server, so it is rejected here rather than accepted. Anything else (`"March 5"`, a Unix
+ * timestamp string) is also rejected even though `Date.parse` would accept it.
  */
-const ISO_8601_DATE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+const ISO_8601_DATE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2}))?$/;
 
 /** The exact `toISOString()` shape the `text -> date` converter produces. */
 const CONVERTED_DATE_SHAPE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -225,7 +227,7 @@ export async function handlePropertyTypeMigrationTask(
   } catch (err) {
     if (options.isFinalAttempt) {
       try {
-        await withClient(pool, async (client) => {
+        await withTransaction(pool, async (client) => {
           await markPropertyMigrationDroppedValues(client, payload.propertyId);
           await settlePropertyMigrationStatus(client, payload.propertyId);
         });

@@ -51,6 +51,12 @@ describe("convertPropertyValue", () => {
     expect(convertPropertyValue("text", "date", 123)).toEqual({ ok: false });
   });
 
+  it("text -> date: rejects a date-time string with no timezone offset", () => {
+    expect(convertPropertyValue("text", "date", "2026-09-27T10:00")).toEqual({ ok: false });
+    expect(convertPropertyValue("text", "date", "2026-09-27T10:00:00")).toEqual({ ok: false });
+    expect(convertPropertyValue("text", "date", "2026-09-27T10:00:00.000")).toEqual({ ok: false });
+  });
+
   it("number -> text: stringifies a number, rejects a non-number", () => {
     expect(convertPropertyValue("number", "text", 42)).toEqual({ ok: true, value: "42" });
     expect(convertPropertyValue("number", "text", "42")).toEqual({ ok: false });
