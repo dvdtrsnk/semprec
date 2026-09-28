@@ -12,7 +12,7 @@ import {
 /**
  * Not `types.ts`'s `TaskRecurrenceRow` (which keeps `rule` as a loosely-typed jsonb bag,
  * matching how other Row types like `PropertyRow.config` stay untyped at that layer) — this
- * store's callers (advanceTaskRecurrence.ts) need the already-validated, discriminated
+ * store's callers (advanceTaskRecurrenceWithClient.ts) need the already-validated, discriminated
  * `TaskRecurrenceRule`, not a round-trip cast back through `unknown`.
  */
 export interface TaskRecurrence {
@@ -63,7 +63,7 @@ export async function createTaskRecurrence(
  * transaction commits (at which point `active` has flipped to `false`, so it correctly
  * no-ops) or rolls back (at which point it re-reads the original, still-active row). Pass
  * `true` from any caller that's about to act on `active` within its own transaction, e.g.
- * `advanceTaskRecurrence`; a plain read (no intent to mutate) should omit it.
+ * `advanceTaskRecurrenceWithClient`; a plain read (no intent to mutate) should omit it.
  *
  * `forUpdate: true` requires a `PoolClient`, not the broader `Queryable` (`Pool | PoolClient`):
  * `FOR UPDATE` against a bare `Pool` acquires and immediately auto-commit-releases the lock on
