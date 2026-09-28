@@ -28,7 +28,7 @@ export function runAfterCommit(client: PoolClient, callback: () => void): void {
 
 export interface WithTransactionOptions {
   /** Defaults to READ COMMITTED (a plain `BEGIN`) when omitted. */
-  isolation?: "repeatable_read" | "serializable";
+  isolation?: "repeatable_read";
 }
 
 /**
@@ -46,9 +46,7 @@ export async function withTransaction<T>(
   const client = await pool.connect();
   let releaseError: Error | undefined;
   try {
-    if (options.isolation === "serializable") {
-      await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
-    } else if (options.isolation === "repeatable_read") {
+    if (options.isolation === "repeatable_read") {
       await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
     } else {
       await client.query("BEGIN");
