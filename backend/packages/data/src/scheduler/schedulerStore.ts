@@ -295,6 +295,13 @@ export function manualHeartbeatFireJobKey(heartbeatId: string): string {
   return `heartbeat-fire:manual:${heartbeatId}`;
 }
 
+// Served by project_heartbeats_on_item_event_idx (0052), whose partial predicate must match this WHERE verbatim.
+export const ON_ITEM_EVENT_HEARTBEATS_QUERY = `SELECT id, action_id FROM project_heartbeats
+     WHERE enabled
+       AND rule ->> 'kind' = 'onItemEvent'
+       AND rule ->> 'databaseId' = $1
+       AND rule ->> 'event' = $2`;
+
 /**
  * The onItemEvent write path: called from the choke-point, in the same transaction as
  * the item write that just happened, for every enabled onItemEvent heartbeat watching
@@ -307,14 +314,10 @@ export async function triggerOnItemEventHeartbeats(
   itemId: string,
   queueAffinity: ActionQueueAffinity = new Map(),
 ): Promise<void> {
-  const { rows } = await client.query<{ id: string; action_id: string }>(
-    `SELECT id, action_id FROM project_heartbeats
-     WHERE enabled
-       AND rule ->> 'kind' = 'onItemEvent'
-       AND rule ->> 'databaseId' = $1
-       AND rule ->> 'event' = $2`,
-    [databaseId, event],
-  );
+  const { rows } = await client.query<{ id: string; action_id: string }>(ON_ITEM_EVENT_HEARTBEATS_QUERY, [
+    databaseId,
+    event,
+  ]);
   for (const row of rows) {
     await enqueueJob(
       client,

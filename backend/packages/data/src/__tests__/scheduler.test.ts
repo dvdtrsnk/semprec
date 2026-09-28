@@ -10,6 +10,7 @@ import {
   createHeartbeat,
   getHeartbeat,
   occurrenceFireJobKey,
+  ON_ITEM_EVENT_HEARTBEATS_QUERY,
   recomputeAllForTimezoneChange,
   recordHeartbeatFireSetupFailure,
   setHeartbeatEnabled,
@@ -1385,6 +1386,41 @@ describe("scheduler", () => {
       // The core heartbeat after it in the same batch still gets recomputed.
       const coreAfter = (await withTransaction(pool, (client) => getHeartbeat(client, coreHeartbeat.id)))!.nextFireAt;
       expect(coreAfter).not.toBe(coreBefore);
+    });
+  });
+
+  describe("project_heartbeats_on_item_event_idx (issue #673)", () => {
+    function collectIndexScanNames(plan: Record<string, unknown>, acc: Set<string>): void {
+      const nodeType = plan["Node Type"];
+      const indexName = plan["Index Name"];
+      if ((nodeType === "Index Scan" || nodeType === "Bitmap Index Scan") && typeof indexName === "string") {
+        acc.add(indexName);
+      }
+      const subPlans = plan.Plans;
+      if (Array.isArray(subPlans)) {
+        for (const sub of subPlans) collectIndexScanNames(sub as Record<string, unknown>, acc);
+      }
+    }
+
+    it("exists on project_heartbeats after migrations", async () => {
+      const { rows } = await pool.query<{ tablename: string }>(
+        "SELECT tablename FROM pg_indexes WHERE indexname = 'project_heartbeats_on_item_event_idx'",
+      );
+      expect(rows).toEqual([{ tablename: "project_heartbeats" }]);
+    });
+
+    it("is used to plan the triggerOnItemEventHeartbeats query when sequential scans are off", async () => {
+      const indexNames = await withTransaction(pool, async (client) => {
+        await client.query("SET LOCAL enable_seqscan = off");
+        const { rows } = await client.query<{ "QUERY PLAN": Array<{ Plan: Record<string, unknown> }> }>(
+          `EXPLAIN (FORMAT JSON) ${ON_ITEM_EVENT_HEARTBEATS_QUERY}`,
+          ["00000000-0000-0000-0000-000000000000", "create"],
+        );
+        const acc = new Set<string>();
+        collectIndexScanNames(rows[0]!["QUERY PLAN"][0]!.Plan, acc);
+        return acc;
+      });
+      expect([...indexNames]).toEqual(["project_heartbeats_on_item_event_idx"]);
     });
   });
 });
