@@ -71,15 +71,16 @@ export interface ReconcileImapFolderParams {
   attachmentsRelationPropertyId: string;
   storage: BlobStorageWriter;
   storageKeyPrefix: string;
+  /** The Mailbox item this folder belongs to — `ingestEmailMessage`'s per-mailbox dedup scope, and also used by the Gmail label sync below. */
+  mailboxItemId: string;
   /**
    * Only needed for Gmail-in-IMAP-fallback-mode's label-derived Folder membership (below) —
    * every other IMAP target (iCloud, generic, Outlook) leaves a fetched message's
-   * `gmailLabels` undefined, so `syncGmailLabelFolders` is never invoked and these three
+   * `gmailLabels` undefined, so `syncGmailLabelFolders` is never invoked and these two
    * fields go unused. `reconcileImapAccount` always passes them through since it already has
    * them for the account-level Folder discovery it does itself.
    */
   foldersDatabaseId: string;
-  mailboxItemId: string;
   mailboxFolderRelationPropertyId: string;
   /** This mailbox's registered addresses (`Mailboxes.addresses`) — deliveredToAddress's alias-fallback precedence (mail/deliveredTo.ts, issue #93). Defaults to `[]`. */
   mailboxAliases?: string[];
@@ -179,6 +180,7 @@ export async function reconcileImapFolder(
       folderRelationPropertyId: params.folderRelationPropertyId,
       attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
       folderItemId: params.folderItemId,
+      mailboxItemId: params.mailboxItemId,
       folderUid: item.uid,
       storage: params.storage,
       storageKeyPrefix: params.storageKeyPrefix,

@@ -140,13 +140,13 @@ async function unlinkFromFoldersWithSpecialPurpose(
  * after — `mail_message_meta.item_id` is this table's primary key (one row per Email item), so
  * two concurrent calls for the same draft can't both win it: the loser's INSERT fails with a
  * primary-key violation (each call's `message_id` is a fresh random UUID, so `ON CONFLICT
- * (message_id)` never itself fires here — it's the `item_id` PK that arbitrates), which this
+ * (mailbox_item_id, message_id)` never itself fires here — it's the `item_id` PK that arbitrates), which this
  * function turns into a `ConflictError` before ever reaching SMTP. This also closes the
  * sequential-retry version of the same race: a retry after a transient failure downstream of a
  * successful send (the finalize transaction failing, a network partition) still finds the claim
  * from the original call and is rejected, instead of re-sending with a brand-new Message-ID.
- * `ingestEmailMessage` (mail/ingest.ts) checks this same table/dedup key, so the next
- * IMAP/Gmail/Graph reconcile pass that later observes this Message-ID in the real Sent folder
+ * `ingestEmailMessage` (mail/ingest.ts) checks this same table/dedup key (per mailbox — hence
+ * the claim carries `mailboxItemId`), so the next IMAP/Gmail/Graph reconcile pass of this mailbox that later observes this Message-ID in the real Sent folder
  * converges onto this item instead of duplicating it.
  */
 export async function sendDraftEmail(
@@ -215,6 +215,7 @@ export async function sendDraftEmail(
     await withTransaction(pool, (client) =>
       upsertMailMessageMeta(client, {
         itemId: input.draftItemId,
+        mailboxItemId: input.mailboxItemId,
         messageId,
         envelope,
         inReplyTo: input.inReplyTo,

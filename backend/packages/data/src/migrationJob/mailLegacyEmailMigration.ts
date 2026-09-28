@@ -127,6 +127,7 @@ async function migrateLegacyItem(client: PoolClient, item: LegacyItemRow, rawMim
     });
     await upsertMailMessageMeta(client, {
       itemId: item.id,
+      mailboxItemId: null,
       messageId,
       inReplyTo: parsed.inReplyTo ?? null,
       references,
@@ -152,6 +153,7 @@ async function migrateLegacyItem(client: PoolClient, item: LegacyItemRow, rawMim
   const threadId = await resolveThreadId(client, { messageId, subjectHint: subject });
   await upsertMailMessageMeta(client, {
     itemId: item.id,
+    mailboxItemId: null,
     messageId,
     threadId,
     envelope,
