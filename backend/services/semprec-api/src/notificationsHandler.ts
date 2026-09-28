@@ -9,6 +9,7 @@ import {
   markAllNotificationsRead,
 } from "@semprec/data";
 import { authenticateRequest } from "./authHandler.js";
+import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { assertUuid } from "./adapter/requestValidation.js";
 import { logger } from "./logger.js";
 
@@ -73,7 +74,7 @@ export function createNotificationsRequestListener(pool: Pool) {
       sendJson(res, 404, { error: "Not found" });
     } catch (err) {
       if (err instanceof ChokePointError) {
-        sendJson(res, err.status, { error: err.message, code: err.code, details: err.details });
+        sendJson(res, err.status, toPublicErrorBody(err));
         return;
       }
       logger.error({ err, method: req.method, path: url.pathname }, "Unexpected error handling request");

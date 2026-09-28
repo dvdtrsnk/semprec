@@ -11,7 +11,13 @@ import {
   type ChokePointError,
   type ItemRow,
 } from "@semprec/data";
-import { statusForError, toErrorResponseBody, type ItemErrorCode } from "../errorContract.js";
+import {
+  publicErrorDetails,
+  statusForError,
+  toErrorResponseBody,
+  toPublicErrorBody,
+  type ItemErrorCode,
+} from "../errorContract.js";
 import { toItemEnvelope } from "../itemEnvelope.js";
 
 const SAMPLE_ITEM: ItemRow = {
@@ -106,5 +112,37 @@ describe("error contract (issue #238)", () => {
     const error = new PropertyLockedError("Property is locked", { field: "title", locked: true });
     const body = toErrorResponseBody(error);
     expect(body.error.details).toEqual({ field: "title", locked: true });
+  });
+});
+
+describe("bespoke handler error body (issue #638)", () => {
+  it("keeps the message as error and the code, and passes flat details through", () => {
+    const error = new ValidationError("Bad field", { field: "x" });
+    expect(toPublicErrorBody(error)).toEqual({ error: "Bad field", code: error.code, details: { field: "x" } });
+  });
+
+  it("drops nested-object details but keeps error and code", () => {
+    const error = new ConflictError("Version conflict", { current: { id: SAMPLE_ITEM.id } });
+    const body = toPublicErrorBody(error);
+    expect(body).toEqual({ error: "Version conflict", code: error.code, details: undefined });
+  });
+
+  it("drops array details", () => {
+    const body = toPublicErrorBody(new ValidationError("Bad", ["a", "b"]));
+    expect(body.details).toBeUndefined();
+    expect(body.error).toBe("Bad");
+  });
+
+  it("drops string details", () => {
+    const body = toPublicErrorBody(new ValidationError("Bad", "/var/lib/secret"));
+    expect(body.details).toBeUndefined();
+    expect(body.error).toBe("Bad");
+  });
+
+  it("exports publicErrorDetails with the same flat-primitives filter toErrorResponseBody applies", () => {
+    const nested = { field: "databaseId", offendingRow: SAMPLE_ITEM };
+    expect(publicErrorDetails(nested)).toBeUndefined();
+    expect(toErrorResponseBody(new SchemaLockedError("Schema is locked", nested)).error.details).toBeUndefined();
+    expect(publicErrorDetails({ field: "title", locked: true })).toEqual({ field: "title", locked: true });
   });
 });
