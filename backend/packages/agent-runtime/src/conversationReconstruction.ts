@@ -1,9 +1,7 @@
 import type { Pool } from "pg";
 import {
   insertAgentRunEvent,
-  listAgentRunEventsByRunIds,
-  listSessionAgentRuns,
-  type AgentRunEventRow,
+  listSessionAgentRunEventsFromLastCompaction,
   type SessionAgentRunsFilter,
 } from "@semprec/data";
 import type { CompactionAdapter } from "./compaction.js";
@@ -105,57 +103,43 @@ function validateProtocolInvariants(entries: ConversationEntry[]): void {
 }
 
 /**
- * Walks every prior `unit='session'` `agent_runs` row for one dormant conversation, in order,
- * folding their `agent_run_events` into one linear `Entry[]` chain. A stored `'compaction'`
- * event's payload *is* the continuation state as of that point — encountering one resets the
- * walk to it (rather than appending to it) so a restart replays the same checkpoint instead of
- * re-deriving, and potentially re-compacting, the full raw history all over again.
+ * Reconstructs one dormant conversation's `Entry[]` chain by walking only the tail of
+ * `agent_run_events` after its latest `compaction` checkpoint — everything before that
+ * checkpoint was already folded into its payload, so it never needs to be read again.
+ * `listSessionAgentRunEventsFromLastCompaction` returns that tail (starting with the checkpoint
+ * row itself, when one exists) in `(wake_seq, id)` order across the conversation's session runs.
+ * A stored `'compaction'` event's payload *is* the continuation state as of that point —
+ * encountering one resets the walk to it (rather than appending to it) so a restart replays the
+ * same checkpoint instead of re-deriving, and potentially re-compacting, the full raw history all
+ * over again.
  */
 async function walkStoredEntries(pool: Pool, filter: SessionAgentRunsFilter): Promise<ConversationEntry[]> {
-  const runs = await listSessionAgentRuns(pool, filter);
-  if (runs.length === 0) return [];
-
-  // One batched round trip for every prior run's events instead of one round trip per run --
-  // `runs` is already in wake order, and `listAgentRunEventsByRunIds` sorts by
-  // (agent_run_id, id), so grouping by run id below and walking `runs` in order reconstructs
-  // the exact same sequence a per-run query loop would have.
-  const allEvents = await listAgentRunEventsByRunIds(
-    pool,
-    runs.map((run) => run.id),
-  );
-  const eventsByRunId = new Map<string, AgentRunEventRow[]>();
-  for (const event of allEvents) {
-    const bucket = eventsByRunId.get(event.agentRunId);
-    if (bucket) bucket.push(event);
-    else eventsByRunId.set(event.agentRunId, [event]);
-  }
+  const events = await listSessionAgentRunEventsFromLastCompaction(pool, filter);
+  if (events.length === 0) return [];
 
   let entries: ConversationEntry[] = [];
   let seq = 0;
   let parentId: string | null = null;
 
-  for (const run of runs) {
-    const events = eventsByRunId.get(run.id) ?? [];
-    for (const event of events) {
-      if (event.kind === "compaction") {
-        entries = parseCompactionPayload(event.payload, run.id);
-        const last = entries[entries.length - 1];
-        seq = last ? last.seq + 1 : 0;
-        parentId = last ? last.id : null;
-        continue;
-      }
-      if (NON_CONVERSATIONAL_KINDS.has(event.kind)) continue;
-
-      const entry: ConversationEntry = {
-        id: event.id,
-        parentId,
-        seq: seq++,
-        timestamp: new Date(event.at).getTime(),
-        message: parseStoredAgentMessage(event.payload, event.id),
-      };
-      entries.push(entry);
-      parentId = entry.id;
+  for (const event of events) {
+    if (event.kind === "compaction") {
+      entries = parseCompactionPayload(event.payload, event.agentRunId);
+      const last = entries[entries.length - 1];
+      seq = last ? last.seq + 1 : 0;
+      parentId = last ? last.id : null;
+      continue;
     }
+    if (NON_CONVERSATIONAL_KINDS.has(event.kind)) continue;
+
+    const entry: ConversationEntry = {
+      id: event.id,
+      parentId,
+      seq: seq++,
+      timestamp: new Date(event.at).getTime(),
+      message: parseStoredAgentMessage(event.payload, event.id),
+    };
+    entries.push(entry);
+    parentId = entry.id;
   }
 
   return entries;

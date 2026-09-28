@@ -254,32 +254,18 @@ export async function listAgentRunsByHeartbeat(
   return rows.map(mapRow);
 }
 
+/**
+ * Identifies one dormant conversation's `unit='session'` runs — the filter both Semp's own
+ * conversation (#118, `triggered_by='user'`, `parent_run_id` null) and a delegated one (#229,
+ * `triggered_by='supervisor'`, `parent_run_id` the supervisor run that key's `DelegationRegistry`
+ * entry belongs to) pass to `@semprec/data`'s `listSessionAgentRunEventsFromLastCompaction`
+ * (`agentRunEventsStore.ts`) to rebuild an `Entry[]` tree for a freshly woken session (#119).
+ */
 export interface SessionAgentRunsFilter {
   projectItemId: string;
   triggeredBy: TriggeredBy;
   /** `null` for Semp's own conversation (never delegated); a supervisor run id for a delegated one. */
   parentRunId: string | null;
-}
-
-/**
- * Every `unit='session'` run belonging to one dormant conversation, in the order they were
- * woken — the reconstruction source both Semp's own conversation (#118, `triggered_by='user'`,
- * `parent_run_id` null) and a delegated one (#229, `triggered_by='supervisor'`, `parent_run_id`
- * the supervisor run that key's `DelegationRegistry` entry belongs to) walk to rebuild an
- * `Entry[]` tree for a freshly woken session (#119).
- */
-export async function listSessionAgentRuns(
-  client: Pool | PoolClient,
-  filter: SessionAgentRunsFilter,
-): Promise<AgentRunRow[]> {
-  const { rows } = await client.query<AgentRunDbRow>(
-    `SELECT ${AGENT_RUN_ROW_COLUMNS}
-     FROM agent_runs
-     WHERE project_item_id = $1 AND unit = 'session' AND triggered_by = $2 AND parent_run_id IS NOT DISTINCT FROM $3
-     ORDER BY wake_seq ASC`,
-    [filter.projectItemId, filter.triggeredBy, filter.parentRunId],
-  );
-  return rows.map(mapRow);
 }
 
 /**
