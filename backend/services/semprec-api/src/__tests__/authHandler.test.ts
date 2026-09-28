@@ -432,6 +432,48 @@ describe("createAuthRequestListener", () => {
       });
       expect(res.status).toBe(400);
     });
+
+    it("answers a known email before the mail send has resolved", async () => {
+      const user = await makeUser();
+      const sent: Array<{ to: string; resetUrl: string }> = [];
+      let release!: () => void;
+      const pendingSend = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const deferredMailer: PasswordResetMailer = {
+        sendPasswordResetEmail(input) {
+          sent.push(input);
+          return pendingSend;
+        },
+      };
+      const deferredServer = createServer(
+        createAuthRequestListener(pool, {
+          passwordResetMailer: deferredMailer,
+          appBaseUrl: APP_BASE_URL,
+          trustProxy: true,
+        }),
+      );
+      await new Promise<void>((resolve) => deferredServer.listen(0, resolve));
+
+      try {
+        const address = deferredServer.address();
+        if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+
+        const res = await fetch(`http://127.0.0.1:${address.port}/api/auth/password-reset/request`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: user.email }),
+        });
+
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ok: true });
+        expect(sent).toHaveLength(1);
+        expect(sent[0]!.to).toBe(user.email);
+      } finally {
+        release();
+        await new Promise<void>((resolve) => deferredServer.close(() => resolve()));
+      }
+    });
   });
 
   describe("POST /api/auth/password-reset/consume", () => {
