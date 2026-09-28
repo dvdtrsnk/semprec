@@ -1,10 +1,41 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createAgentRun, finishAgentRun } from "@semprec/data";
 import { BUSY_ERROR_MESSAGE, DelegationRegistry, type ReconstructDelegatedHistory } from "../delegationRegistry.js";
 import type { AgentMessage, AgentSession, ConversationEntry, CreateAgentSession } from "../types.js";
+
+/** `vi.waitFor` guards against `expire()`'s pending DB writes finishing asynchronously relative to when we check. */
+async function waitFor(predicate: () => Promise<boolean>, message: string): Promise<void> {
+  await vi.waitFor(
+    async () => {
+      if (!(await predicate())) throw new Error(message);
+    },
+    { timeout: 5_000, interval: 20 },
+  );
+}
+
+/** Wraps the real pool so its first `query` whose text starts with `sqlPrefix` rejects with `error`; every other call, and every later one, delegates to the real pool. */
+function poolWithFailingQuery(sqlPrefix: string, error: Error): Pool {
+  let failed = false;
+  return new Proxy(pool, {
+    get(target, prop, receiver) {
+      if (prop === "query") {
+        return (...args: unknown[]) => {
+          const text = typeof args[0] === "string" ? args[0] : (args[0] as { text?: string } | undefined)?.text;
+          if (!failed && text?.startsWith(sqlPrefix)) {
+            failed = true;
+            return Promise.reject(error);
+          }
+          return (target.query as (...a: unknown[]) => unknown)(...args);
+        };
+      }
+      const value: unknown = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
 
 let pool: Pool;
 
@@ -298,6 +329,144 @@ describe("DelegationRegistry", () => {
       [runId],
     );
     expect(statuses.map((r) => r.status)).toEqual(["running", "error"]);
+
+    registry.clear();
+  });
+
+  it("rejects a delegate() that arrives while expire() is blocked closing the run, then starts a fresh run once expiry completes", async () => {
+    // Generous relative to the setup below (fetch the run id, open a second connection, BEGIN,
+    // take the row lock) so that setup reliably finishes before the TTL timer fires.
+    const ttlMs = 150;
+    const registry = new DelegationRegistry(pool, ttlMs);
+    const supervisorRunId = await newSupervisorRunId();
+    const targetProjectItemId = "88888888-8888-8888-8888-888888888888";
+    let sendCalls = 0;
+    const createAgentSession: CreateAgentSession = (): AgentSession => ({
+      async *messages() {
+        yield { kind: "turn_start" };
+        yield { kind: "message", text: "first" };
+        yield { kind: "turn_end" };
+      },
+      async *send() {
+        sendCalls++;
+        yield { kind: "turn_start" };
+        yield { kind: "message", text: "reused" };
+        yield { kind: "turn_end" };
+      },
+    });
+
+    await registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: "one" });
+    const { rows: runs } = await pool.query<{ id: string }>(`SELECT id FROM agent_runs WHERE project_item_id = $1`, [
+      targetProjectItemId,
+    ]);
+    const runId = runs[0]!.id;
+
+    // Holds a row lock on the run so expire()'s finishAgentRun UPDATE blocks mid-flight once the TTL fires.
+    const blocker = await pool.connect();
+    await blocker.query("BEGIN");
+    await blocker.query(`SELECT id FROM agent_runs WHERE id = $1 FOR UPDATE`, [runId]);
+
+    await new Promise((resolve) => setTimeout(resolve, ttlMs + 20));
+
+    const duringExpiry = await registry.delegate({
+      createAgentSession,
+      supervisorRunId,
+      targetProjectItemId,
+      task: "during expiry",
+    });
+    expect(duringExpiry).toEqual({ ok: false, error: BUSY_ERROR_MESSAGE });
+    expect(sendCalls).toBe(0);
+
+    await blocker.query("COMMIT");
+    blocker.release();
+
+    // Poll for the exact fact asserted next (the "done" run_status event), not just the
+    // agent_runs.status column, since finishAgentRun's UPDATE and expire()'s pushRunStatus are
+    // two separate auto-committed statements — the column can already read "done" a moment
+    // before the event insert commits.
+    await waitFor(async () => {
+      const { rows } = await pool.query<{ status: string }>(
+        `SELECT payload->>'status' AS status FROM agent_run_events
+          WHERE agent_run_id = $1 AND kind = 'run_status' AND payload->>'status' = 'done'`,
+        [runId],
+      );
+      return rows.length === 1;
+    }, "expired run's done run_status event never landed");
+
+    const { rows: statuses } = await pool.query<{ status: string }>(
+      `SELECT payload->>'status' AS status FROM agent_run_events
+        WHERE agent_run_id = $1 AND kind = 'run_status' ORDER BY id`,
+      [runId],
+    );
+    expect(statuses.map((r) => r.status)).toEqual(["running", "done"]);
+
+    const afterExpiry = await registry.delegate({
+      createAgentSession,
+      supervisorRunId,
+      targetProjectItemId,
+      task: "after expiry",
+    });
+    expect(afterExpiry).toEqual({ ok: true, message: "first" });
+    expect(sendCalls).toBe(0);
+
+    const { rows: allRuns } = await pool.query(`SELECT count(*)::int AS n FROM agent_runs WHERE project_item_id = $1`, [
+      targetProjectItemId,
+    ]);
+    expect(allRuns[0].n).toBe(2);
+
+    registry.clear();
+  });
+
+  it("keeps the entry busy=false and reschedules a retry when the expiry close's own UPDATE fails, so a later delegate() reuses the session", async () => {
+    // `expire()`'s catch path reschedules another attempt after another full `ttlMs`, and the
+    // failing pool below only fails the very first "UPDATE agent_runs" once — the assertions
+    // must run in the window after the first (failed) attempt but before the second (successful)
+    // one fires, so ttlMs needs enough slack for that window to be reliably wide.
+    const ttlMs = 300;
+    const failingPool = poolWithFailingQuery("UPDATE agent_runs", new Error("simulated outage"));
+    const registry = new DelegationRegistry(failingPool, ttlMs);
+    const supervisorRunId = await newSupervisorRunId();
+    const targetProjectItemId = "99999999-9999-9999-9999-999999999999";
+    let sendCalls = 0;
+    const createAgentSession: CreateAgentSession = (): AgentSession => ({
+      async *messages() {
+        yield { kind: "turn_start" };
+        yield { kind: "message", text: "first" };
+        yield { kind: "turn_end" };
+      },
+      async *send() {
+        sendCalls++;
+        yield { kind: "turn_start" };
+        yield { kind: "message", text: "reused" };
+        yield { kind: "turn_end" };
+      },
+    });
+
+    await registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: "one" });
+
+    // Just past the first (failing) attempt, comfortably before the rescheduled second one at
+    // 2 * ttlMs.
+    await new Promise((resolve) => setTimeout(resolve, ttlMs + 50));
+
+    const { rows } = await pool.query<{ status: string }>(`SELECT status FROM agent_runs WHERE project_item_id = $1`, [
+      targetProjectItemId,
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe("running");
+
+    const reused = await registry.delegate({
+      createAgentSession,
+      supervisorRunId,
+      targetProjectItemId,
+      task: "two",
+    });
+    expect(reused).toEqual({ ok: true, message: "reused" });
+    expect(sendCalls).toBe(1);
+
+    const { rows: allRuns } = await pool.query(`SELECT count(*)::int AS n FROM agent_runs WHERE project_item_id = $1`, [
+      targetProjectItemId,
+    ]);
+    expect(allRuns[0].n).toBe(1);
 
     registry.clear();
   });
