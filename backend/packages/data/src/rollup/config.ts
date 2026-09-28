@@ -141,12 +141,13 @@ export function assertAggregationCompatibleWithType(aggregation: RollupAggregati
 
 export async function applyRollupConfig(client: PoolClient, property: PropertyRow): Promise<void> {
   const sameDatabaseProperties = await propertiesStore.listPropertiesByDatabase(client, property.databaseId);
-  const relationProperty = sameDatabaseProperties.find(
-    (p) => p.key === (property.config as { relationPropertyKey?: string }).relationPropertyKey,
-  );
-  const targetDatabaseId = relationProperty
-    ? (relationProperty.config as { targetDatabaseId?: string }).targetDatabaseId
-    : undefined;
+  const relationPropertyKey = property.config.relationPropertyKey;
+  const relationProperty =
+    typeof relationPropertyKey === "string"
+      ? sameDatabaseProperties.find((p) => p.key === relationPropertyKey)
+      : undefined;
+  const rawTargetDatabaseId = relationProperty?.config.targetDatabaseId;
+  const targetDatabaseId = typeof rawTargetDatabaseId === "string" ? rawTargetDatabaseId : undefined;
   const targetDatabaseProperties = targetDatabaseId
     ? await propertiesStore.listPropertiesByDatabase(client, targetDatabaseId)
     : [];

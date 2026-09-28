@@ -225,6 +225,36 @@ describe("person <-> email address linking (issue #26)", () => {
     expect(await withTransaction(pool, (client) => lookupPersonIdByEmail(client, "alice@example.com"))).toBe(alice.id);
   });
 
+  it("the reindex action rejects an action config without peopleDatabaseId and writes no index row", async () => {
+    const peopleId = await databaseIdFor("people");
+    const alice = await chokePoint.createItem({
+      databaseId: peopleId,
+      properties: { name: "Alice", emails: "alice@example.com" },
+    });
+
+    const error = await createPersonEmailReindexAction(pool)(
+      {},
+      { heartbeatId: "hb", projectItemId: "proj", itemId: alice.id },
+    ).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/^Malformed action config for mail\.reindexPersonEmails: /);
+    const { rows } = await pool.query(`SELECT count(*)::int AS n FROM person_email_index`);
+    expect(rows[0].n).toBe(0);
+  });
+
+  it("the link action rejects an action config without its database id and property keys and writes no index row", async () => {
+    const error = await createLinkEmailToPeopleAction(pool)(
+      {},
+      { heartbeatId: "hb", projectItemId: "proj", itemId: randomUUID() },
+    ).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/^Malformed action config for mail\.linkPeopleByEmail: /);
+    const { rows } = await pool.query(`SELECT count(*)::int AS n FROM person_email_index`);
+    expect(rows[0].n).toBe(0);
+  });
+
   it("releases an address a person no longer claims", async () => {
     const peopleId = await databaseIdFor("people");
     const alice = await chokePoint.createItem({ databaseId: peopleId, properties: { name: "Alice" } });

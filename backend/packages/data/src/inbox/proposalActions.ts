@@ -10,6 +10,7 @@ import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
 import {
   appendHistoryEntry,
   assertValidProposalEnvelope,
+  parseStoredProposalEnvelope,
   type ProposalEntityKind,
   type ProposalEnvelope,
 } from "./inboxTickAction.js";
@@ -145,7 +146,7 @@ async function assertValidEnvelopeForCard(
   }
 
   const role = transcriptCardRole(envelope);
-  const current = proposal.properties.proposal as ProposalEnvelope | null;
+  const current = parseStoredProposalEnvelope(proposal.properties.proposal, proposal.id);
   if (current && transcriptCardRole(current) !== role) {
     throw new ValidationError("A transcript proposal cannot switch between an Event and a speaker mapping", {
       field: "entityKind",
@@ -246,7 +247,7 @@ export async function confirmProposalWithClient(
     throw new ValidationError(`Cannot confirm a proposal in status '${String(status)}'`, { field: "status" });
   }
 
-  const envelope = proposal.properties.proposal as ProposalEnvelope | null;
+  const envelope = parseStoredProposalEnvelope(proposal.properties.proposal, proposal.id);
   if (!envelope) throw new ValidationError("Proposal has no computed envelope to confirm", { field: "proposal" });
   const transcriptCardEdge = await assertValidEnvelopeForCard(client, config, proposal, envelope);
 

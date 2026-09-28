@@ -6,7 +6,11 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
-import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inbox/inboxTickAction.js";
+import {
+  appendHistoryEntry,
+  createSemprecTickAction,
+  type ComputeSemprecProposalFn,
+} from "../inbox/inboxTickAction.js";
 import {
   confirmProposalWithClient,
   rejectProposalWithClient,
@@ -208,6 +212,53 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
       ),
     ).rejects.toThrow(/Cannot confirm a proposal in status 'rejected'/);
+  });
+
+  async function setStoredProperty(proposalId: string, key: string, value: unknown): Promise<void> {
+    await pool.query(`UPDATE items SET properties = jsonb_set(properties, $2::text[], $3::jsonb) WHERE id = $1`, [
+      proposalId,
+      `{${key}}`,
+      JSON.stringify(value),
+    ]);
+  }
+
+  it("confirm rejects a stored envelope that is not { entityKind, target, properties }", async () => {
+    const proposal = await createDatabaseProposal("Buy milk");
+    await setStoredProperty(proposal.id, "proposal", { entityKind: "database" });
+
+    await expect(
+      withTransaction(pool, (client) =>
+        confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+      ),
+    ).rejects.toThrow(`Malformed proposal envelope on proposal ${proposal.id}`);
+
+    const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [tasksId]);
+    expect(rows[0].n).toBe(0);
+  });
+
+  it("confirm still reports a null stored envelope as having no computed envelope", async () => {
+    const proposal = await createDatabaseProposal("Buy milk");
+    await setStoredProperty(proposal.id, "proposal", null);
+
+    await expect(
+      withTransaction(pool, (client) =>
+        confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
+      ),
+    ).rejects.toThrow("Proposal has no computed envelope to confirm");
+  });
+
+  it("appendHistoryEntry treats a history holding a malformed entry as empty", async () => {
+    const proposal = await createDatabaseProposal("Buy milk");
+    await setStoredProperty(proposal.id, "history", [
+      { author: "ai", message: "Created a proposal for the source item.", at: "2026-08-28T09:00:00.000Z" },
+      { author: "robot", message: 42 },
+    ]);
+    const stored = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, proposal.id));
+
+    const history = appendHistoryEntry(stored!.properties.history, "Not needed", "user");
+
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ author: "user", message: "Not needed" });
   });
 
   it("reject locks rejected and writes no target", async () => {
