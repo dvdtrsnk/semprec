@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { withTransaction, ChokePointError, generateSchemaProjection, toManifestLocale } from "@semprec/data";
 import type { Pool } from "pg";
+import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { authenticateRequest } from "./authHandler.js";
 import { logger } from "./logger.js";
 
@@ -51,7 +52,7 @@ export function createSchemaRequestListener(
       sendJson(res, 200, projection);
     } catch (err) {
       if (err instanceof ChokePointError) {
-        sendJson(res, err.status, { error: err.message, code: err.code, details: err.details });
+        sendJson(res, err.status, toPublicErrorBody(err));
         return;
       }
       logger.error({ err, method: req.method, path: url.pathname }, "Unexpected error handling request");

@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ChokePointError, ValidationError, bootstrapFirstAccount } from "@semprec/data";
 import type { Pool } from "pg";
+import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { logger } from "./logger.js";
 
 /** Same `Authorization: Bearer <token>` extraction as `approvalRequestsHandler.ts`'s `isAuthorized`. */
@@ -84,7 +85,7 @@ export function createSetupRequestListener(pool: Pool, options: SetupHandlerOpti
         return;
       }
       if (err instanceof ChokePointError) {
-        sendJson(res, err.status, { error: err.message, code: err.code, details: err.details });
+        sendJson(res, err.status, toPublicErrorBody(err));
         return;
       }
       logger.error({ err, method: req.method, path: url.pathname }, "Unexpected error handling request");

@@ -17,6 +17,7 @@ import {
   type GenericOperationName,
 } from "@semprec/shared";
 import type { GenericOperationGateway } from "@semprec/application";
+import { toPublicErrorBody } from "../adapter/errorContract.js";
 import { authenticateRequest } from "../authHandler.js";
 import { logger } from "../logger.js";
 
@@ -196,15 +197,19 @@ export function createMcpRequestListener(
             return;
           }
           if (err instanceof ApprovalRequiredError) {
-            sendJson(res, 200, rpcError(rpcId, -32001, err.message, err.details));
+            sendJson(res, 200, rpcError(rpcId, -32001, err.message, toPublicErrorBody(err).details));
             return;
           }
           if (err instanceof ValidationError) {
-            sendJson(res, 200, rpcError(rpcId, -32602, err.message, err.details));
+            sendJson(res, 200, rpcError(rpcId, -32602, err.message, toPublicErrorBody(err).details));
             return;
           }
           if (err instanceof ChokePointError) {
-            sendJson(res, 200, rpcError(rpcId, -32000, err.message, { code: err.code, details: err.details }));
+            sendJson(
+              res,
+              200,
+              rpcError(rpcId, -32000, err.message, { code: err.code, details: toPublicErrorBody(err).details }),
+            );
             return;
           }
           throw err;
@@ -215,7 +220,7 @@ export function createMcpRequestListener(
       sendJson(res, 200, rpcError(rpcId, -32601, `Unknown method '${rpc.method}'`));
     } catch (err) {
       if (err instanceof ChokePointError) {
-        sendJson(res, err.status, { error: err.message, code: err.code, details: err.details });
+        sendJson(res, err.status, toPublicErrorBody(err));
         return;
       }
       logger.error({ err }, "Unexpected error handling MCP request");

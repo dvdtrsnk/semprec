@@ -95,7 +95,7 @@ export interface VersionConflictDetails {
  * `details` payload in this contract actually has — `{ field }`, `{ approvalRequestId, link }`)
  * is safe to serve as-is; anything else is dropped rather than risk leaking internal state.
  */
-function safeDetails(details: unknown): Record<string, string | number | boolean | null> | undefined {
+export function publicErrorDetails(details: unknown): Record<string, string | number | boolean | null> | undefined {
   if (typeof details !== "object" || details === null || Array.isArray(details)) return undefined;
   const entries = Object.entries(details as Record<string, unknown>);
   const isPrimitive = (value: unknown): value is string | number | boolean | null =>
@@ -111,12 +111,25 @@ function safeDetails(details: unknown): Record<string, string | number | boolean
  * `version_conflict`'s `details.currentItem` is the one code whose wire shape isn't just the
  * choke-point error's own `details` verbatim: the choke-point raises it with `{ current }` (an
  * `ItemRow`), and this is where that gets projected onto the public item envelope. Every other
- * code's `details` passes through `safeDetails` rather than verbatim.
+ * code's `details` passes through `publicErrorDetails` rather than verbatim.
  */
 export function toErrorResponseBody(err: ChokePointError): ErrorResponseBody {
   if (err.code === "version_conflict" && isVersionConflictDetails(err.details)) {
     const details: VersionConflictDetails = { currentItem: toItemEnvelope(err.details.current) };
     return { error: { code: err.code, details } };
   }
-  return { error: { code: err.code, details: safeDetails(err.details) } };
+  return { error: { code: err.code, details: publicErrorDetails(err.details) } };
+}
+
+/**
+ * The bespoke handlers' `{ error: message, code, details }` body — a different top-level shape
+ * from `toErrorResponseBody`'s envelope, kept as is (additive-only REST contract) — with `details`
+ * passed through `publicErrorDetails` instead of forwarded verbatim.
+ */
+export function toPublicErrorBody(err: ChokePointError): {
+  error: string;
+  code: string;
+  details?: Record<string, string | number | boolean | null>;
+} {
+  return { error: err.message, code: err.code, details: publicErrorDetails(err.details) };
 }

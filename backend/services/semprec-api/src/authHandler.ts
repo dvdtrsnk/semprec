@@ -19,6 +19,7 @@ import {
   type PasswordResetMailer,
 } from "@semprec/data";
 import type { Pool } from "pg";
+import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { assertUuid } from "./adapter/requestValidation.js";
 import { clientIpFromRequest } from "./clientIp.js";
 import { logger } from "./logger.js";
@@ -256,7 +257,7 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
         return;
       }
       if (err instanceof ChokePointError) {
-        sendJson(res, err.status, { error: err.message, code: err.code, details: err.details });
+        sendJson(res, err.status, toPublicErrorBody(err));
         return;
       }
       logger.error({ err, method: req.method, path: url.pathname }, "Unexpected error handling request");
