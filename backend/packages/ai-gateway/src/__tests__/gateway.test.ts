@@ -199,13 +199,17 @@ describe("gateway", () => {
     function interceptSettle(onSettle: (attempt: number) => Promise<void>): { attempts: () => number } {
       const original = pool.query.bind(pool) as (...args: unknown[]) => Promise<unknown>;
       let attempts = 0;
-      vi.spyOn(pool, "query").mockImplementation((async (...args: unknown[]) => {
+      const passThrough = async (args: unknown[]): Promise<unknown> => {
         if (typeof args[0] === "string" && settleSql.test(args[0])) {
           attempts += 1;
           await onSettle(attempts);
         }
         return original(...args);
-      }) as unknown as typeof pool.query);
+      };
+      // pg's overloaded `query` includes void-returning callback forms; typing the pass-through's
+      // return as `unknown` lets it stand in for all of them while still returning the promise
+      // the data layer awaits.
+      vi.spyOn(pool, "query").mockImplementation((...args: unknown[]): unknown => passThrough(args));
       return { attempts: () => attempts };
     }
 
