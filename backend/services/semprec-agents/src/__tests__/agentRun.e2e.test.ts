@@ -86,7 +86,17 @@ async function errorNotificationCount(runId: string): Promise<number> {
   return Number(rows[0]?.count ?? 0);
 }
 
-/** The seeded `core.agentRun` heartbeat (the `newEmail` rule) and the Semprec project it belongs to. */
+/** The Semprec project item `seedSystem` creates — the project the directly created runs belong to. */
+async function seededSemprecProjectItemId(): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>(`SELECT id FROM items WHERE properties ->> 'name' = 'Semprec'`);
+  expect(rows).toHaveLength(1);
+  return rows[0]!.id;
+}
+
+/**
+ * The seeded `core.agentRun` heartbeat (the `newEmail` rule) and the project that owns it — the
+ * Email project, not Semprec, since a heartbeat fire opens its run for the heartbeat's own project.
+ */
 async function seededAgentHeartbeat(): Promise<{ id: string; projectItemId: string }> {
   const { rows } = await pool.query<{ id: string; project_item_id: string }>(
     `SELECT id, project_item_id FROM project_heartbeats WHERE action_id = $1`,
@@ -132,7 +142,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
   }
 
   it("runs a queued agentRun job's session and closes the row as done with the model's text", async () => {
-    const { projectItemId } = await seededAgentHeartbeat();
+    const projectItemId = await seededSemprecProjectItemId();
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "say hello" });
     faux.setResponses([fauxAssistantMessage("Hello from the agent.")]);
 
@@ -156,7 +166,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
   });
 
   it("closes the row as error with one agent_run_error notification when the model call fails", async () => {
-    const { projectItemId } = await seededAgentHeartbeat();
+    const projectItemId = await seededSemprecProjectItemId();
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "say hello" });
     faux.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "gateway refused: budget" })]);
 
@@ -171,7 +181,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
   });
 
   it("writes nothing for a job naming a run that is no longer running", async () => {
-    const { projectItemId } = await seededAgentHeartbeat();
+    const projectItemId = await seededSemprecProjectItemId();
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "say hello" });
     await finishAgentRun(pool, run.id, "done", "earlier result");
     faux.setResponses([fauxAssistantMessage("must not run")]);
@@ -186,7 +196,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
   });
 
   it("closes the row as error with the composition error when the session cannot be composed", async () => {
-    const { projectItemId } = await seededAgentHeartbeat();
+    const projectItemId = await seededSemprecProjectItemId();
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "say hello" });
     composition.during = async () => {
       throw new Error("mcp grants unavailable");
@@ -203,7 +213,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
   });
 
   it("writes no error event for a run closed elsewhere before its failed composition closes it", async () => {
-    const { projectItemId } = await seededAgentHeartbeat();
+    const projectItemId = await seededSemprecProjectItemId();
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "say hello" });
     composition.during = async (agentRunId) => {
       await finishAgentRun(pool, agentRunId, "done", "closed elsewhere");
@@ -220,7 +230,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
   });
 
   it("writes nothing for a run closed while its session was being composed", async () => {
-    const { projectItemId } = await seededAgentHeartbeat();
+    const projectItemId = await seededSemprecProjectItemId();
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "say hello" });
     composition.during = async (agentRunId) => {
       await finishAgentRun(pool, agentRunId, "done", "closed elsewhere");
