@@ -699,7 +699,9 @@ describe("provider_message_id uniqueness convergence (issue #204)", () => {
     const messageId = "<fill@x>";
     const sharedProviderId = "provider-fill-1";
 
-    await withTransaction(pool, (client) => upsertMailMessageMeta(client, { itemId, mailboxItemId: TEST_MAILBOX_ITEM_ID, messageId, envelope: {} }));
+    await withTransaction(pool, (client) =>
+      upsertMailMessageMeta(client, { itemId, mailboxItemId: TEST_MAILBOX_ITEM_ID, messageId, envelope: {} }),
+    );
     await withTransaction(pool, (client) =>
       upsertMailMessageMeta(client, {
         itemId,
