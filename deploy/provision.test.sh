@@ -163,4 +163,9 @@ if run_provision >"$TEST_STATE/missing-asset.out" 2>&1; then
 fi
 grep -q 'Czech Hunspell asset is missing, empty, or unreadable' "$TEST_STATE/missing-asset.out"
 
+for unit in semprec-api semprec-agents semprec-transcribe semprec-ai-gateway; do
+  grep -qx 'StartLimitIntervalSec=15min' "$TEST_ROOT/systemd/system/$unit.service"
+  grep -qx 'StartLimitBurst=180' "$TEST_ROOT/systemd/system/$unit.service"
+done
+
 echo 'provision.sh idempotence test passed'
