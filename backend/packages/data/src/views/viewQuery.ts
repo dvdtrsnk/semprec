@@ -1,13 +1,13 @@
 import type { PoolClient } from "pg";
 import { NotFoundError, ValidationError } from "../errors.js";
-import type { ItemRow, PropertyType, ViewRow } from "../types.js";
+import type { ItemRow, ViewRow } from "../types.js";
 import { getItemsByIds, getItemsByIdsIncludingDeleted, listItems } from "../chokePoint/itemsStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import * as viewItemsStore from "../chokePoint/viewItemsStore.js";
 import { compileFilterNode } from "./filterCompiler.js";
 import { buildFilterProperties } from "./filterProperties.js";
-import { compileSort, compileSortKeyset } from "./sortCompiler.js";
+import { compileSort, compileSortKeyset, sortKeyCast, type SortProperties } from "./sortCompiler.js";
 import { parseFilterNode, type FilterNode } from "./filterTree.js";
 import { parseSortConfig, sortConfigSchema, type SortSpec } from "./sortSpec.js";
 import { parseViewConfig, projectProperties, type ViewConfig } from "./viewConfig.js";
@@ -40,10 +40,17 @@ function buildSortSpecs(config: ViewConfig): SortSpec[] {
 /**
  * A sorted page's `nextCursor` (issue #664): `base64url(JSON.stringify({ v, id }))`, where `v`
  * holds the last row's value for each sort key, in sort order, and `id` its item id — the full
- * tuple `compileSortKeyset` resumes after.
+ * tuple `compileSortKeyset` resumes after. A rollup key's value is read from `computed`, the
+ * column its sort expression reads.
  */
-function encodeSortCursor(sortSpecs: SortSpec[], item: ItemRow): string {
-  const payload = { v: sortSpecs.map((sort) => item.properties[sort.property] ?? null), id: item.id };
+function encodeSortCursor(sortSpecs: SortSpec[], properties: SortProperties, item: ItemRow): string {
+  const payload = {
+    v: sortSpecs.map((sort) => {
+      const source = properties.get(sort.property)?.type === "rollup" ? item.computed : item.properties;
+      return source[sort.property] ?? null;
+    }),
+    id: item.id,
+  };
   return Buffer.from(JSON.stringify(payload)).toString("base64url");
 }
 
@@ -51,21 +58,21 @@ const NUMERIC_TEXT_RE = /^\s*[-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?\s*$/;
 
 /**
  * Whether a decoded cursor value survives the sort key's `::numeric`/`::timestamptz` cast, so a
- * foreign value is a 400 here rather than a cast failure inside the query. Every other type sorts
+ * foreign value is a 400 here rather than a cast failure inside the query. Every other key sorts
  * by the uncast `properties ->> key` text, and item property values are not type-checked on write
  * (a `select` row can hold `42`, a `checkbox` row holds `true`, a `json` row an object), so any
  * JSON value is a cursor `encodeSortCursor` can legitimately produce — narrowing it would reject
  * real pages, and whatever text it binds is compared exactly as a stored value would be.
  */
-function castableTo(type: PropertyType | undefined, value: unknown): boolean {
+function castableTo(cast: ReturnType<typeof sortKeyCast>, value: unknown): boolean {
   if (value === null) return true;
-  if (type === "number") {
+  if (cast === "::numeric") {
     return (
       (typeof value === "number" && Number.isFinite(value)) ||
       (typeof value === "string" && NUMERIC_TEXT_RE.test(value))
     );
   }
-  if (type === "date") return typeof value === "string" && !Number.isNaN(Date.parse(value));
+  if (cast === "::timestamptz") return typeof value === "string" && !Number.isNaN(Date.parse(value));
   return true;
 }
 
@@ -73,7 +80,7 @@ function castableTo(type: PropertyType | undefined, value: unknown): boolean {
 function decodeSortCursor(
   raw: string,
   sortSpecs: SortSpec[],
-  propertyTypes: Map<string, PropertyType>,
+  properties: SortProperties,
 ): { values: unknown[]; id: string } {
   const invalid = new ValidationError("Invalid cursor", { field: "cursor" });
   let payload: unknown;
@@ -87,7 +94,11 @@ function decodeSortCursor(
   const { v, id } = payload as { v?: unknown; id?: unknown };
   if (!Array.isArray(v) || v.length !== sortSpecs.length) throw invalid;
   if (typeof id !== "string" || !UUID_RE.test(id)) throw invalid;
-  if (!sortSpecs.every((sort, index) => castableTo(propertyTypes.get(sort.property), v[index]))) throw invalid;
+  const castable = sortSpecs.every((sort, index) => {
+    const property = properties.get(sort.property);
+    return property === undefined || castableTo(sortKeyCast(property), v[index]);
+  });
+  if (!castable) throw invalid;
   return { values: v, id };
 }
 
@@ -109,24 +120,24 @@ async function queryItemsCore(
 ): Promise<QueryViewResult> {
   const { filterNode } = options;
   const properties = await listPropertiesByDatabase(client, databaseId);
-  const propertyTypes = new Map(properties.map((p) => [p.key, p.type]));
+  const sortProperties: SortProperties = new Map(properties.map((p) => [p.key, p]));
   const filterProperties = filterNode ? await buildFilterProperties(client, properties) : undefined;
   const sortSpecs = options.sortSpecs ?? [];
   const sorted = sortSpecs.length > 0;
   const sortCursor =
-    sorted && options.cursor !== undefined ? decodeSortCursor(options.cursor, sortSpecs, propertyTypes) : undefined;
+    sorted && options.cursor !== undefined ? decodeSortCursor(options.cursor, sortSpecs, sortProperties) : undefined;
 
   return listItems(client, databaseId, {
     limit: options.limit,
     cursor: sorted ? undefined : options.cursor,
     includeDeleted: options.includeDeleted,
     buildFilterSql: filterNode ? (params) => compileFilterNode(filterNode, filterProperties!, params) : undefined,
-    buildOrderBySql: sorted ? (params) => compileSort(sortSpecs, propertyTypes, params) : undefined,
+    buildOrderBySql: sorted ? (params) => compileSort(sortSpecs, sortProperties, params) : undefined,
     keyset: sorted
       ? {
           buildAfterSql: (params) =>
-            sortCursor ? compileSortKeyset(sortSpecs, propertyTypes, sortCursor, params) : undefined,
-          encodeCursor: (last) => encodeSortCursor(sortSpecs, last),
+            sortCursor ? compileSortKeyset(sortSpecs, sortProperties, sortCursor, params) : undefined,
+          encodeCursor: (last) => encodeSortCursor(sortSpecs, sortProperties, last),
         }
       : undefined,
   });

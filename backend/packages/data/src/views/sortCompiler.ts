@@ -1,23 +1,42 @@
 import { ValidationError } from "../errors.js";
-import type { PropertyType } from "../types.js";
+import type { PropertyRow } from "../types.js";
+import { parseRollupConfig } from "../rollup/config.js";
 import type { SortSpec } from "./sortSpec.js";
 
-function castFor(type: PropertyType | undefined): string {
-  return type === "number" ? "::numeric" : type === "date" ? "::timestamptz" : "";
+/** What the sort compiler needs to know about one sortable property, keyed by property key. */
+export type SortProperties = Map<string, Pick<PropertyRow, "type" | "config">>;
+
+/**
+ * The cast a sort key's text is compared under. A rollup's value is typed by its aggregation, not
+ * its property type: `earliest`/`latest` produce a timestamp, every other aggregation a number.
+ */
+export function sortKeyCast(property: Pick<PropertyRow, "type" | "config">): "::numeric" | "::timestamptz" | "" {
+  if (property.type === "rollup") {
+    const { aggregation } = parseRollupConfig(property.config);
+    return aggregation === "earliest" || aggregation === "latest" ? "::timestamptz" : "::numeric";
+  }
+  return property.type === "number" ? "::numeric" : property.type === "date" ? "::timestamptz" : "";
+}
+
+function lookupSortProperty(sort: SortSpec, properties: SortProperties): Pick<PropertyRow, "type" | "config"> {
+  const property = properties.get(sort.property);
+  if (!property) {
+    throw new ValidationError(`Sort references unknown property '${sort.property}'`, { field: sort.property });
+  }
+  return property;
 }
 
 /**
- * The one place a sort key's SQL expression is built — `(properties ->> $key)::cast` —
+ * The one place a sort key's SQL expression is built — `(column ->> $key)::cast` —
  * shared by `compileSort` and `compileSortKeyset` so the `ORDER BY` and the keyset
- * predicate that resumes it can never compare different expressions. Pushes the
- * property key onto `params`.
+ * predicate that resumes it can never compare different expressions. A rollup's value
+ * lives in `items.computed` (the recompute worker's column), every other property's in
+ * `items.properties`. Pushes the property key onto `params`.
  */
-function sortKeyExpression(sort: SortSpec, propertyTypes: Map<string, PropertyType>, params: unknown[]): string {
-  if (!propertyTypes.has(sort.property)) {
-    throw new ValidationError(`Sort references unknown property '${sort.property}'`, { field: sort.property });
-  }
+function sortKeyExpression(sort: SortSpec, property: Pick<PropertyRow, "type" | "config">, params: unknown[]): string {
   params.push(sort.property);
-  return `(properties ->> $${params.length})${castFor(propertyTypes.get(sort.property))}`;
+  const column = property.type === "rollup" ? "computed" : "properties";
+  return `(${column} ->> $${params.length})${sortKeyCast(property)}`;
 }
 
 /**
@@ -25,10 +44,10 @@ function sortKeyExpression(sort: SortSpec, propertyTypes: Map<string, PropertyTy
  * (never the direction, which is only ever the literal 'ASC'/'DESC' chosen below from
  * the already-validated 'asc'|'desc' enum) onto `params`.
  */
-export function compileSort(sorts: SortSpec[], propertyTypes: Map<string, PropertyType>, params: unknown[]): string {
+export function compileSort(sorts: SortSpec[], properties: SortProperties, params: unknown[]): string {
   const clauses = sorts.map((sort) => {
     const dir = sort.direction === "asc" ? "ASC" : "DESC";
-    return `${sortKeyExpression(sort, propertyTypes, params)} ${dir} NULLS LAST`;
+    return `${sortKeyExpression(sort, lookupSortProperty(sort, properties), params)} ${dir} NULLS LAST`;
   });
   return clauses.join(", ");
 }
@@ -41,21 +60,22 @@ export function compileSort(sorts: SortSpec[], propertyTypes: Map<string, Proper
  * values and all nulls, while after a null `v` no row of that key is strictly later.
  *
  * Each cursor value is bound as JSON and read back with `#>> '{}'` before the key's cast,
- * so it is the exact text `properties ->> key` would have produced for the stored value.
+ * so it is the exact text `column ->> key` would have produced for the stored value.
  * Nothing from the cursor is interpolated into the SQL.
  */
 export function compileSortKeyset(
   sorts: SortSpec[],
-  propertyTypes: Map<string, PropertyType>,
+  properties: SortProperties,
   cursor: { values: unknown[]; id: string },
   params: unknown[],
 ): string {
   const keys = sorts.map((sort, index) => {
-    const expression = sortKeyExpression(sort, propertyTypes, params);
+    const property = lookupSortProperty(sort, properties);
+    const expression = sortKeyExpression(sort, property, params);
     const value = cursor.values[index] ?? null;
     if (value === null) return { after: "FALSE", same: `${expression} IS NULL` };
     params.push(JSON.stringify(value));
-    const bound = `($${params.length}::jsonb #>> '{}')${castFor(propertyTypes.get(sort.property))}`;
+    const bound = `($${params.length}::jsonb #>> '{}')${sortKeyCast(property)}`;
     const op = sort.direction === "asc" ? ">" : "<";
     return {
       after: `(${expression} ${op} ${bound} OR ${expression} IS NULL)`,
