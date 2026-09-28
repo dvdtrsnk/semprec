@@ -104,12 +104,17 @@ async function gatewayCalls(): Promise<AiGatewayCallRow[]> {
 function withCalculatedCost(model: Model<Api>, source: AssistantMessageEventStream): AssistantMessageEventStream {
   const out = createAssistantMessageEventStream();
   void (async () => {
-    for await (const event of source) {
-      if (event.type === "done") event.message.usage.cost = calculateCost(model, event.message.usage);
-      if (event.type === "error") event.error.usage.cost = calculateCost(model, event.error.usage);
-      out.push(event);
+    // A source that throws ends the relay without a terminal event, which the handler reports as
+    // a failed turn, instead of leaving the handler waiting on a stream that never ends.
+    try {
+      for await (const event of source) {
+        if (event.type === "done") event.message.usage.cost = calculateCost(model, event.message.usage);
+        if (event.type === "error") event.error.usage.cost = calculateCost(model, event.error.usage);
+        out.push(event);
+      }
+    } finally {
+      out.end();
     }
-    out.end();
   })();
   return out;
 }
@@ -121,8 +126,17 @@ function fauxStreamFn(): StreamFunction<Api, SimpleStreamOptions> {
   };
 }
 
-function startServer(streamFn: StreamFunction<Api, SimpleStreamOptions> = fauxStreamFn()): void {
-  const piOptions: PiMessagesHandlerOptions = { internalToken: TOKEN, models, apiKey: "anthropic-key", streamFn };
+function startServer(
+  streamFn: StreamFunction<Api, SimpleStreamOptions> = fauxStreamFn(),
+  overrides: Partial<PiMessagesHandlerOptions> = {},
+): void {
+  const piOptions: PiMessagesHandlerOptions = {
+    internalToken: TOKEN,
+    models,
+    apiKey: "anthropic-key",
+    streamFn,
+    ...overrides,
+  };
   server = createServer(createDispatcher(pool, FAKE_COMPLETE_OPTIONS, FAKE_AUDIO_OPTIONS, piOptions));
 }
 
@@ -489,6 +503,24 @@ describe("POST /internal/pi/messages", () => {
     expect(streamCalls[0]?.signal?.aborted).toBe(true);
   });
 
+  it("aborts the provider stream and marks the row failed when the turn outlives the stream timeout", async () => {
+    setUpFaux({ tokensPerSecond: 50 });
+    faux.setResponses([fauxAssistantMessage("word ".repeat(400))]);
+    startServer(fauxStreamFn(), { streamTimeoutMs: 200 });
+    await listen();
+
+    const res = await post({ model: MODEL_ID, context: CONTEXT });
+    const events = parseEvents(await res.text());
+
+    const last = terminal(events);
+    if (last.type !== "error") throw new Error("expected an error event");
+    expect(last.reason).toBe("aborted");
+    const rows = await waitForStatus("failed");
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0]?.cost_usd)).toBe(0);
+    expect(streamCalls[0]?.signal?.aborted).toBe(true);
+  });
+
   it("rejects a missing bearer token with 401 before contacting the provider", async () => {
     startServer();
     await listen();
@@ -656,11 +688,14 @@ describe("POST /internal/pi/messages", () => {
       startServer((model, context, options) => {
         const out = createAssistantMessageEventStream();
         void (async () => {
-          ({ rows: observed } = await pool.query<{ cost_usd: string; status: string }>(
-            "SELECT cost_usd, status FROM ai_gateway_calls",
-          ));
-          for await (const event of streamFn(model, context, options)) out.push(event);
-          out.end();
+          try {
+            ({ rows: observed } = await pool.query<{ cost_usd: string; status: string }>(
+              "SELECT cost_usd, status FROM ai_gateway_calls",
+            ));
+            for await (const event of streamFn(model, context, options)) out.push(event);
+          } finally {
+            out.end();
+          }
         })();
         return out;
       });

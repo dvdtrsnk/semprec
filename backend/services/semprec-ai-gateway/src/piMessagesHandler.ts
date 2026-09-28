@@ -29,6 +29,12 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024;
 /** Output tokens reserved against the budget when the caller sets no `maxTokens`, capped by the model's own maximum. */
 const DEFAULT_RESERVED_OUTPUT_TOKENS = 8192;
 
+/**
+ * Upper bound on one streamed turn, so a provider that opens the stream and then stalls cannot
+ * hold the connection and keep its `ai_gateway_calls` row `reserved` for as long as the SDK allows.
+ */
+export const STREAM_TIMEOUT_MS = 10 * 60 * 1000;
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const AGENT_RUN_ID_HEADER = "x-semprec-agent-run-id";
@@ -41,6 +47,8 @@ export interface PiMessagesHandlerOptions {
   apiKey: string;
   /** pi-ai's provider-dispatching stream (`streamSimple` from `@earendil-works/pi-ai/compat` in production). */
   streamFn: StreamFunction<Api, SimpleStreamOptions>;
+  /** Defaults to `STREAM_TIMEOUT_MS`; exists only so a test can shrink the bound to milliseconds. */
+  streamTimeoutMs?: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -256,8 +264,8 @@ function writeEvent(res: ServerResponse, event: PiMessagesEvent): Promise<void> 
  * `done` or `error`. An `error` event (the provider refused, or the turn was aborted) is still
  * delivered to the client before the row is marked `failed`, so nothing else is sent after it.
  * When the client disconnects mid-turn, an abort signal stops the provider stream, which ends in
- * an `aborted` error event and therefore a `failed` row. The provider timeout is the Anthropic
- * SDK's own (10 minutes by default).
+ * an `aborted` error event and therefore a `failed` row. A turn still running after
+ * `STREAM_TIMEOUT_MS` is aborted the same way, whatever the provider SDK's own timeout is.
  *
  * Shutdown needs nothing of its own: an in-flight SSE response is not an idle connection, so the
  * graceful drain in `shutdown.ts` waits for it up to `SHUTDOWN_DRAIN_TIMEOUT_MS` and then
@@ -265,6 +273,8 @@ function writeEvent(res: ServerResponse, event: PiMessagesEvent): Promise<void> 
  * and ends as a `failed` row through the same path as a client disconnect.
  */
 export function createPiMessagesRequestListener(pool: Pool, options: PiMessagesHandlerOptions) {
+  const streamTimeoutMs = options.streamTimeoutMs ?? STREAM_TIMEOUT_MS;
+
   async function streamTurn(
     res: ServerResponse,
     model: Model<Api>,
@@ -286,7 +296,7 @@ export function createPiMessagesRequestListener(pool: Pool, options: PiMessagesH
       const events = options.streamFn(model, body.context, {
         ...body.options,
         apiKey: options.apiKey,
-        signal: abort.signal,
+        signal: AbortSignal.any([abort.signal, AbortSignal.timeout(streamTimeoutMs)]),
       });
       for await (const event of events) {
         await writeEvent(res, serializeEvent(event));
