@@ -8,6 +8,7 @@ import {
   createRegisterPushSubscriptionRouteHandler,
   createRevokePushSubscriptionRouteHandler,
 } from "../pushRouteHandlers.js";
+import { ValidationError } from "../../errors.js";
 
 let pool: Pool;
 
@@ -98,5 +99,15 @@ describe("push subscription custom route handlers (issue #239)", () => {
     const result = await revokeHandler({ params: { id: subscriptionId }, identity: attacker, body: {} });
 
     expect((result.body as { revoked: boolean }).revoked).toBe(false);
+  });
+
+  it("rejects a malformed (non-UUID) subscription id with a ValidationError naming 'id', not a raw Postgres error", async () => {
+    const identity = await makeIdentity();
+    const revokeHandler = createRevokePushSubscriptionRouteHandler(pool);
+
+    const result = revokeHandler({ params: { id: "foo" }, identity, body: {} });
+
+    await expect(result).rejects.toThrow(ValidationError);
+    await expect(result).rejects.toMatchObject({ code: "validation_failed", details: { field: "id" } });
   });
 });

@@ -78,6 +78,16 @@ describe("createAgentRunRequestListener", () => {
     expect(res.status).toBe(404);
   });
 
+  it("returns 400 validation_failed naming 'id' for a non-UUID agent run id", async () => {
+    const res = await fetch(`${baseUrl}/api/agent-runs/foo`, {
+      headers: await authHeader(),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string; details?: unknown };
+    expect(body.code).toBe("validation_failed");
+    expect(body.details).toEqual({ field: "id" });
+  });
+
   it("returns 404 for a non-GET method", async () => {
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
     const res = await fetch(`${baseUrl}/api/agent-runs/${run.id}`, {

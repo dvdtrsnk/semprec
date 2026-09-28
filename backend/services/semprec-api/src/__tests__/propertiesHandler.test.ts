@@ -108,6 +108,15 @@ describe("property routes (issue #240)", () => {
     expect(res.status).toBe(404);
   });
 
+  it("returns 400 validation_failed naming 'id' for a non-UUID property id", async () => {
+    const headers = await authHeader();
+    const res = await fetch(`${baseUrl}/api/properties/foo`, { headers });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string; details?: unknown } };
+    expect(body.error.code).toBe("validation_failed");
+    expect(body.error.details).toEqual({ field: "id" });
+  });
+
   it("renames a property (200, not 204)", async () => {
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };
     const database = await chokePoint.createDatabase({ name: "D" });

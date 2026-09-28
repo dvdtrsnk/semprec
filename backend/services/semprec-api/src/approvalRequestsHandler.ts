@@ -9,6 +9,7 @@ import {
   toApprovalRequestDecisionView,
 } from "@semprec/data";
 import type { Pool } from "pg";
+import { assertUuid } from "./adapter/requestValidation.js";
 import { authenticateRequest } from "./authHandler.js";
 import { logger } from "./logger.js";
 
@@ -85,7 +86,7 @@ export function createApprovalRequestsRequestListener(pool: Pool) {
 
       // Group 1 of the route pattern above is not optional, so a successful match always
       // captured it; a runtime check here would be unreachable code.
-      const approvalRequestId = match[1]!;
+      const approvalRequestId = assertUuid(match[1]!, "id");
       const body = (await readJsonBody(req)) as { decision?: unknown };
       if (body.decision !== "approved" && body.decision !== "rejected") {
         sendJson(res, 400, { error: "'decision' must be 'approved' or 'rejected'" });

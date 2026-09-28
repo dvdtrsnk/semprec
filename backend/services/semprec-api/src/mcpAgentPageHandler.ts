@@ -8,6 +8,7 @@ import {
   setProjectMcpGrantForAgentPage,
 } from "@semprec/data";
 import type { Pool } from "pg";
+import { assertUuid } from "./adapter/requestValidation.js";
 import { authenticateRequest } from "./authHandler.js";
 import { logger } from "./logger.js";
 
@@ -67,8 +68,9 @@ export function createMcpAgentPageRequestListener(pool: Pool) {
       if (grantsMatch) {
         // Group 1 of MCP_GRANTS_PATH is mandatory; group 2 is genuinely optional and the
         // branches below distinguish on it, so it keeps its `string | undefined` type.
-        const projectItemId = grantsMatch[1]!;
-        const mcpToolRegistrationId = grantsMatch[2];
+        const projectItemId = assertUuid(grantsMatch[1]!, "id");
+        const mcpToolRegistrationId =
+          grantsMatch[2] === undefined ? undefined : assertUuid(grantsMatch[2], "mcpToolRegistrationId");
 
         if (req.method === "GET" && !mcpToolRegistrationId) {
           const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, projectItemId));
@@ -100,7 +102,7 @@ export function createMcpAgentPageRequestListener(pool: Pool) {
       const registrationMatch = url.pathname.match(MCP_TOOL_REGISTRATION_PATH);
       if (registrationMatch && req.method === "PATCH") {
         // Group 1 of MCP_TOOL_REGISTRATION_PATH is not optional — see above.
-        const mcpToolRegistrationId = registrationMatch[1]!;
+        const mcpToolRegistrationId = assertUuid(registrationMatch[1]!, "mcpToolRegistrationId");
         const body = (await readJsonBody(req)) as { riskClass?: unknown; requiresApproval?: unknown };
         if (body.riskClass !== undefined && typeof body.riskClass !== "string") {
           sendJson(res, 400, { error: "'riskClass' must be a string" });

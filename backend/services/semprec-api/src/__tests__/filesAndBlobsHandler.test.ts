@@ -207,6 +207,15 @@ describe("files and blobs routes (issue #158)", () => {
       expect(res.status).toBe(404);
     });
 
+    it("returns 400 validation_failed naming 'id' for a non-UUID blob id", async () => {
+      const headers = await authHeader();
+      const res = await fetch(`${baseUrl}/api/blobs/foo`, { headers });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: { code: string; details?: unknown } };
+      expect(body.error.code).toBe("validation_failed");
+      expect(body.error.details).toEqual({ field: "id" });
+    });
+
     it("does not dispatch DELETE or PATCH to the download handler", async () => {
       const headers = await authHeader();
       const blobId = await uploadAndGetBlobId("do not delete me");

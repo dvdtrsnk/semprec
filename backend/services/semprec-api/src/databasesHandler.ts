@@ -9,7 +9,7 @@ import {
 } from "@semprec/data";
 import type { Database, GenericApplicationPort, Property } from "@semprec/shared";
 import type { RouteDefinition } from "./adapter/routeTable.js";
-import { optionalIntegerQueryParam, requireJsonObjectBody, requireStringParam } from "./adapter/requestValidation.js";
+import { optionalIntegerQueryParam, requireJsonObjectBody, requireUuidParam } from "./adapter/requestValidation.js";
 import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js";
 import { toDatabaseEnvelope } from "./adapter/databaseEnvelope.js";
 import { toPropertyEnvelope } from "./adapter/propertyEnvelope.js";
@@ -113,7 +113,7 @@ export function createDatabaseRoutes(
       method: "GET",
       path: "/api/databases/:id",
       handler: async (ctx) => {
-        const databaseId = requireStringParam(ctx.params, "id");
+        const databaseId = requireUuidParam(ctx.params, "id");
         const database = await dispatchGenericOperation(service, "database.get", restActor(ctx.identity.user.id), {
           databaseId,
         });
@@ -126,7 +126,7 @@ export function createDatabaseRoutes(
       method: "PATCH",
       path: "/api/databases/:id",
       handler: async (ctx) => {
-        const databaseId = requireStringParam(ctx.params, "id");
+        const databaseId = requireUuidParam(ctx.params, "id");
         const body = requireJsonObjectBody(ctx.body);
         const patch: Record<string, unknown> = {};
         if (body.name !== undefined) patch.name = body.name;
@@ -143,7 +143,7 @@ export function createDatabaseRoutes(
       method: "DELETE",
       path: "/api/databases/:id",
       handler: async (ctx) => {
-        const databaseId = requireStringParam(ctx.params, "id");
+        const databaseId = requireUuidParam(ctx.params, "id");
         const database = await dispatchGenericOperation(service, "database.archive", restActor(ctx.identity.user.id), {
           databaseId,
         });
@@ -156,7 +156,7 @@ export function createDatabaseRoutes(
       method: "POST",
       path: "/api/databases/:id/restore",
       handler: async (ctx) => {
-        const databaseId = requireStringParam(ctx.params, "id");
+        const databaseId = requireUuidParam(ctx.params, "id");
         const database = await dispatchGenericOperation(service, "database.restore", restActor(ctx.identity.user.id), {
           databaseId,
         });
@@ -169,7 +169,7 @@ export function createDatabaseRoutes(
       method: "GET",
       path: "/api/databases/:id/properties",
       handler: async (ctx) => {
-        const databaseId = requireStringParam(ctx.params, "id");
+        const databaseId = requireUuidParam(ctx.params, "id");
         const actor = restActor(ctx.identity.user.id);
         const database = await dispatchGenericOperation(service, "database.get", actor, { databaseId });
         const properties = await dispatchGenericOperation(service, "property.list", actor, { databaseId });
@@ -187,7 +187,7 @@ export function createDatabaseRoutes(
       method: "POST",
       path: "/api/databases/:id/properties",
       handler: async (ctx) => {
-        const databaseId = requireStringParam(ctx.params, "id");
+        const databaseId = requireUuidParam(ctx.params, "id");
         const actor = restActor(ctx.identity.user.id);
         const database = await dispatchGenericOperation(service, "database.get", actor, { databaseId });
         const body = requireJsonObjectBody(ctx.body);

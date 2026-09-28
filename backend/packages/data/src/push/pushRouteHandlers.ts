@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { z } from "zod";
 import { withTransaction } from "../db/pool.js";
 import { registerPushSubscription, revokePushSubscription } from "./pushSubscriptionActions.js";
 import { ValidationError } from "../errors.js";
@@ -16,13 +17,12 @@ interface CustomRouteRequestContext {
 
 type CustomRouteResult = { status: number; body: unknown };
 
-function requireParam(params: Record<string, string>, name: string): string {
-  const value = params[name];
-  if (typeof value !== "string" || value.length === 0) {
-    throw new ValidationError(`Missing required path parameter '${name}'`, { field: name });
-  }
-  return value;
-}
+/**
+ * `push_subscriptions.id` is a `uuid` column — a malformed path id must fail as a 400 here rather
+ * than reach Postgres, which would throw `22P02 invalid input syntax for type uuid` and surface
+ * as a 500. Same check as `transcriptionRouteHandlers.ts`.
+ */
+const subscriptionIdSchema = z.string().uuid();
 
 function requireBodyObject(body: unknown): Record<string, unknown> {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -64,7 +64,9 @@ export function createRegisterPushSubscriptionRouteHandler(pool: Pool) {
  */
 export function createRevokePushSubscriptionRouteHandler(pool: Pool) {
   return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
-    const subscriptionId = requireParam(ctx.params, "id");
+    const parsedId = subscriptionIdSchema.safeParse(ctx.params.id);
+    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+    const subscriptionId = parsedId.data;
     const revoked = await withTransaction(pool, (client) =>
       revokePushSubscription(client, ctx.identity.user.id, subscriptionId),
     );

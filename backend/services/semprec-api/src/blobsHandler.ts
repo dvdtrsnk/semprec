@@ -13,6 +13,7 @@ import {
 } from "@semprec/data";
 import { authenticateRequest } from "./authHandler.js";
 import { statusForError, toErrorResponseBody } from "./adapter/errorContract.js";
+import { assertUuid } from "./adapter/requestValidation.js";
 import { logger } from "./logger.js";
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -127,7 +128,7 @@ export function createBlobsRequestListener(pool: Pool, options: BlobsRequestList
         return;
       }
       // Group 1 of BLOB_PATH is not optional, so a successful match always captured it.
-      const blobId = match[1]!;
+      const blobId = assertUuid(match[1]!, "id");
 
       const blob = await withTransaction(pool, (client) => getBlob(client, blobId));
       if (!blob) throw new NotFoundError(`Blob ${blobId} not found`);

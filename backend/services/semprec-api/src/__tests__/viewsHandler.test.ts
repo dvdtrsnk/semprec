@@ -200,6 +200,22 @@ describe("view routes (issue #155)", () => {
       expect(await chokePoint.listViewItems(view.id)).toEqual([{ viewId: view.id, itemId: item.id, position: 0 }]);
     });
 
+    it("returns 400 validation_failed naming 'itemId' for a non-UUID item id", async () => {
+      const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+      const view = await makeCuratedView();
+
+      const res = await fetch(`${baseUrl}/api/views/${view.id}/items/foo`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ position: 0 }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as ErrorBody;
+      expect(body.error.code).toBe("validation_failed");
+      expect(body.error.details).toEqual({ field: "itemId" });
+      expect(await chokePoint.listViewItems(view.id)).toEqual([]);
+    });
+
     it("adds an item to a curated view with no position, appending to the end (200, not 400)", async () => {
       const headers = { ...(await authHeader()), "Content-Type": "application/json" };
       const view = await makeCuratedView();

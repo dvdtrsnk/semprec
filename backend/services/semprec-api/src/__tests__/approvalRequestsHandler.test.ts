@@ -224,6 +224,18 @@ describe("createApprovalRequestsRequestListener", () => {
     expect(res.status).toBe(404);
   });
 
+  it("returns 400 validation_failed naming 'id' for a non-UUID approval request id", async () => {
+    const res = await fetch(`${baseUrl}/api/approval-requests/foo`, {
+      method: "PATCH",
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
+      body: JSON.stringify({ decision: "approved" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string; details?: unknown };
+    expect(body.code).toBe("validation_failed");
+    expect(body.details).toEqual({ field: "id" });
+  });
+
   it("rejects a PATCH with a malformed JSON body", async () => {
     const res = await fetch(`${baseUrl}/api/approval-requests/${randomUUID()}`, {
       method: "PATCH",

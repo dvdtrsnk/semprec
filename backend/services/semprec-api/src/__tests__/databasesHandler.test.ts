@@ -111,6 +111,15 @@ describe("database routes (issue #240)", () => {
     expect(res.status).toBe(401);
   });
 
+  it("returns 400 validation_failed naming 'id' for a non-UUID database id", async () => {
+    const headers = await authHeader();
+    const res = await fetch(`${baseUrl}/api/databases/foo`, { headers });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string; details?: unknown } };
+    expect(body.error.code).toBe("validation_failed");
+    expect(body.error.details).toEqual({ field: "id" });
+  });
+
   it("creates, lists, fetches, renames, and archives a database", async () => {
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };
 
