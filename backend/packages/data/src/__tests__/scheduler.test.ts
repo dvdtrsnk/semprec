@@ -23,10 +23,11 @@ import {
   createHeartbeatFireAgentTask,
   handleHeartbeatSweepTask,
 } from "../scheduler/sweep.js";
-import { getSystemSettingsItemId } from "../systemSettings.js";
+import { getSystemSettingsItemId, getSystemTimezone } from "../systemSettings.js";
 import { createAgentRun, listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
 import { createHeartbeatTriggerTool } from "../scheduler/heartbeatAgentTools.js";
-import type { HeartbeatRuleKindRegistry } from "../scheduler/rule.js";
+import type { HeartbeatRule, HeartbeatRuleKindRegistry } from "../scheduler/rule.js";
+import { computeNextFireAt } from "../scheduler/nextFireAt.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 
@@ -1508,11 +1509,12 @@ describe("scheduler", () => {
 
       it("computes the next fire from the database clock, not a lagging application clock", async () => {
         const projectItemId = await getSemprecProjectId();
+        const rule: HeartbeatRule = { kind: "dailyTime", at: "09:00" };
         const heartbeat = await withTransaction(pool, (client) =>
           createHeartbeat(client, {
             projectItemId,
             name: "Daily",
-            rule: { kind: "dailyTime", at: "09:00" },
+            rule,
             actionId: "noop",
           }),
         );
@@ -1520,19 +1522,40 @@ describe("scheduler", () => {
           heartbeat.id,
         ]);
 
-        // The application clock lags the (real) database clock by two hours.
+        // Capture the DB clock immediately before sweeping, and the timezone sweepDueHeartbeats
+        // itself resolves the rule against, so the expectation below is derived the same way
+        // production code derives `calendarNextFireAt` — no assumption about what time of day
+        // the suite happens to run at.
+        const { rows: dbNowRows } = await pool.query<{ db_now: Date }>("SELECT now() AS db_now");
+        const dbNowBeforeSweep = dbNowRows[0]!.db_now;
+        const timezone = await withTransaction(pool, (client) => getSystemTimezone(client));
+
+        // The application clock lags the (real) database clock by 26 hours. A buggy sweep that
+        // computes the next occurrence from `new Date()` instead of the row's own `db_now` would
+        // resolve the rule against this lagging clock instead. 26h (more than a full day plus the
+        // rule's own 24h period) guarantees `expectedFromDbClock` and `expectedFromLaggingAppClock`
+        // below land on different calendar days no matter what time of day the suite runs at — a
+        // shorter, more "realistic" lag (e.g. 2h) only diverges from the correct result for a ~2h
+        // window each day, which is exactly why this test previously gave almost no regression
+        // coverage.
         vi.useFakeTimers({ toFake: ["Date"] });
-        vi.setSystemTime(new Date(Date.now() - 2 * 60 * 60 * 1000));
+        const appClockDuringSweep = new Date(dbNowBeforeSweep.getTime() - 26 * 60 * 60 * 1000);
+        vi.setSystemTime(appClockDuringSweep);
 
         await withTransaction(pool, (client) => sweepDueHeartbeats(client));
 
         vi.useRealTimers();
 
-        const { rows } = await pool.query<{ in_future: boolean }>(
-          "SELECT next_fire_at > now() AS in_future FROM project_heartbeats WHERE id = $1",
+        const expectedFromDbClock = computeNextFireAt(rule, timezone, dbNowBeforeSweep);
+        const expectedFromLaggingAppClock = computeNextFireAt(rule, timezone, appClockDuringSweep);
+        // Sanity check the scenario itself is discriminating, independent of wall-clock time.
+        expect(expectedFromDbClock).not.toEqual(expectedFromLaggingAppClock);
+
+        const { rows } = await pool.query<{ next_fire_at: Date }>(
+          "SELECT next_fire_at FROM project_heartbeats WHERE id = $1",
           [heartbeat.id],
         );
-        expect(rows[0]!.in_future).toBe(true);
+        expect(rows[0]!.next_fire_at).toEqual(expectedFromDbClock);
 
         const { fired } = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
         expect(fired.map((f) => f.id)).not.toContain(heartbeat.id);
