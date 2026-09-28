@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
@@ -9,9 +9,11 @@ import { setSessionRevokedHook, type SessionRevokedEvent } from "../realtimeHook
 import { generateOpaqueToken, hashToken } from "../auth/token.js";
 import {
   PASSWORD_RESET_MAX_REQUESTS_PER_WINDOW,
+  PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS,
   requestPasswordReset,
   resetPassword,
 } from "../auth/passwordResetActions.js";
+import { countRecentPasswordResetTokens } from "../auth/passwordResetStore.js";
 import type { PasswordResetMailer, SendPasswordResetEmailInput } from "../auth/passwordResetMail.js";
 import { PasswordResetTokenError, ValidationError } from "../errors.js";
 
@@ -124,6 +126,58 @@ describe("password reset actions (issue #142)", () => {
         [user.id],
       );
       expect(Number(rows[0]!.count)).toBe(PASSWORD_RESET_MAX_REQUESTS_PER_WINDOW);
+    });
+
+    it("resolves once the token commits, without waiting for the mail send to finish", async () => {
+      const user = await makeUser();
+      const sent: SendPasswordResetEmailInput[] = [];
+      let release!: () => void;
+      const pendingSend = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const mailer: PasswordResetMailer = {
+        sendPasswordResetEmail(input) {
+          sent.push(input);
+          return pendingSend;
+        },
+      };
+
+      await expect(
+        requestPasswordReset(pool, mailer, { email: user.email, appBaseUrl: APP_BASE_URL }),
+      ).resolves.toBeUndefined();
+
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.to).toBe(user.email);
+      release();
+    });
+
+    it("still resolves and keeps the token row when the mail send rejects, logging the failure", async () => {
+      const user = await makeUser();
+      const sendError = new Error("smtp down");
+      const mailer: PasswordResetMailer = {
+        sendPasswordResetEmail() {
+          return Promise.reject(sendError);
+        },
+      };
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+      try {
+        await expect(
+          requestPasswordReset(pool, mailer, { email: user.email, appBaseUrl: APP_BASE_URL }),
+        ).resolves.toBeUndefined();
+
+        await vi.waitFor(() => {
+          expect(consoleError).toHaveBeenCalledWith(
+            "requestPasswordReset: failed to send the password-reset email",
+            sendError,
+          );
+        });
+        expect(
+          await countRecentPasswordResetTokens(pool, user.id, PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS),
+        ).toBe(1);
+      } finally {
+        consoleError.mockRestore();
+      }
     });
   });
 

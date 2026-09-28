@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { withTransaction } from "../db/pool.js";
+import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { PasswordResetTokenError, ValidationError } from "../errors.js";
 import { MIN_PASSWORD_LENGTH } from "./authActions.js";
 import { hashPassword } from "./passwordHash.js";
@@ -44,21 +44,21 @@ export interface RequestPasswordResetInput {
 }
 
 /**
- * Issue #142's request half. Always resolves the same way — void, no thrown error, no
- * distinguishable timing-free signal — for a known and an unknown email alike, per the issue's
- * "request responses do not disclose whether an email exists". A token (high-entropy, only its
- * hash ever persisted — see `token.ts`'s `generateOpaqueToken`) is generated and stored only
- * when `email` resolves to a real user; for an unknown email this is a no-op past the lookup.
- * The same no-op path is taken when that user has already hit
- * `PASSWORD_RESET_MAX_REQUESTS_PER_WINDOW` reset tokens within the rate-limit window, so a
- * caller flooding a known victim's inbox gets an identical response to one probing an unknown
+ * Issue #142's request half. Always resolves the same way — void, no thrown error — for a known
+ * and an unknown email alike, per the issue's "request responses do not disclose whether an email
+ * exists". A token (high-entropy, only its hash ever persisted — see `token.ts`'s
+ * `generateOpaqueToken`) is generated and stored only when `email` resolves to a real user; for an
+ * unknown email this is a no-op past the lookup. The same no-op path is taken when that user has
+ * already hit `PASSWORD_RESET_MAX_REQUESTS_PER_WINDOW` reset tokens within the rate-limit window,
+ * so a caller flooding a known victim's inbox gets an identical response to one probing an unknown
  * address — no separate "too many requests" signal to key off of.
  *
- * The DB write (token row) commits in its own transaction before the SMTP call runs, mirroring
- * `sendDraftEmail`'s (mail/send.ts) "claim before I/O" shape but for the opposite reason here:
- * there's nothing to compensate if the email fails to send, since the token is already usable
- * from the DB's perspective and a caller can always request a fresh one. A mailer failure is
- * logged, not thrown — this endpoint's response must stay identical to the unknown-email case.
+ * The token row commits first; the reset mail is dispatched from a `runAfterCommit` callback, so a
+ * rolled-back transaction sends nothing, and the send is started after `COMMIT` without being
+ * awaited. This function therefore resolves as soon as the token commits, and its response time
+ * carries no signal from the SMTP server. Per `docs/adr/2026-09-10-side-effects-follow-the-commit.md`,
+ * a callback's failure is invisible to its caller: a send failure is logged and never surfaces, and
+ * a user who never receives the mail requests again — the committed token needs no compensation.
  */
 export async function requestPasswordReset(
   pool: Pool,
@@ -67,29 +67,24 @@ export async function requestPasswordReset(
 ): Promise<void> {
   const email = normalizeEmail(input.email);
 
-  const created = await withTransaction(pool, async (client) => {
+  await withTransaction(pool, async (client) => {
     const user = await getUserByEmail(client, email);
-    if (!user) return null;
+    if (!user) return;
 
     const recentCount = await countRecentPasswordResetTokens(client, user.id, PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS);
-    if (recentCount >= PASSWORD_RESET_MAX_REQUESTS_PER_WINDOW) return null;
+    if (recentCount >= PASSWORD_RESET_MAX_REQUESTS_PER_WINDOW) return;
 
     const { token, tokenHash } = generateOpaqueToken();
     const expiresAt = new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_SECONDS * 1000);
     await createPasswordResetToken(client, { userId: user.id, tokenHash, expiresAt });
-    return { token, email: user.email };
-  });
-
-  if (!created) return;
-
-  try {
-    await mailer.sendPasswordResetEmail({
-      to: created.email,
-      resetUrl: buildPasswordResetUrl(input.appBaseUrl, created.token),
+    runAfterCommit(client, () => {
+      void mailer
+        .sendPasswordResetEmail({ to: user.email, resetUrl: buildPasswordResetUrl(input.appBaseUrl, token) })
+        .catch((err: unknown) => {
+          console.error("requestPasswordReset: failed to send the password-reset email", err);
+        });
     });
-  } catch (err) {
-    console.error("requestPasswordReset: failed to send the password-reset email", err);
-  }
+  });
 }
 
 export interface ResetPasswordInput {
