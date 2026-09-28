@@ -58,12 +58,26 @@ async function resolveModuleRuleKinds(moduleRegistry?: ModuleRegistry): Promise<
   return new Map(definitions.map((def) => [def.kind, { schema: def.schema, nextFireAt: def.nextFireAt }]));
 }
 
+/**
+ * One transaction per `sweepDueHeartbeats` chunk, looping until a short chunk reports the sweep
+ * exhausted. A chunk that throws propagates as-is — the task fails, the remaining due rows are
+ * picked up by next minute's tick — but the chunks already committed stay committed, unlike the
+ * old single whole-sweep transaction where one bad row rolled back every row's advance.
+ *
+ * `MAX_SWEEP_CHUNKS` bounds a single tick to `MAX_SWEEP_CHUNKS * SWEEP_CHUNK_SIZE` (5 000) rows;
+ * anything beyond that waits for the next minute's tick rather than one tick running unbounded.
+ */
+const MAX_SWEEP_CHUNKS = 50;
+
 /** Registered against the queue's cron table at a static "every minute" entry — no in-process setInterval. */
 export async function handleHeartbeatSweepTask(pool: Pool, moduleRegistry?: ModuleRegistry): Promise<void> {
   const moduleRuleKinds = await resolveModuleRuleKinds(moduleRegistry);
-  await withTransaction(pool, async (client) => {
-    await sweepDueHeartbeats(client, moduleRuleKinds);
-  });
+  let afterId: string | null = null;
+  for (let chunk = 0; chunk < MAX_SWEEP_CHUNKS; chunk++) {
+    const result = await withTransaction(pool, (client) => sweepDueHeartbeats(client, moduleRuleKinds, afterId));
+    if (result.exhausted) return;
+    afterId = result.lastId;
+  }
 }
 
 /**
