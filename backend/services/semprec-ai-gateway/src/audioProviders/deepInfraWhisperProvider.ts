@@ -54,7 +54,9 @@ export function createDeepInfraWhisperProvider(apiKey: string): TranscriptionPro
           method: "POST",
           headers: { Authorization: `Bearer ${apiKey}` },
           body: form,
-          signal: AbortSignal.timeout(55_000),
+          signal: request.signal
+            ? AbortSignal.any([AbortSignal.timeout(55_000), request.signal])
+            : AbortSignal.timeout(55_000),
         });
       } catch (err) {
         throw new AudioProviderCallError(

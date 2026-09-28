@@ -119,6 +119,11 @@ function parseUploadUrl(value: unknown): string {
   return value.url;
 }
 
+/** The per-request timeout, combined with the caller's disconnect signal when there is one. */
+function requestSignal(callerSignal: AbortSignal | undefined): AbortSignal {
+  return callerSignal ? AbortSignal.any([AbortSignal.timeout(55_000), callerSignal]) : AbortSignal.timeout(55_000);
+}
+
 /**
  * pyannoteAI's `/diarize` endpoint fetches its input from a URL it controls, not from bytes
  * posted directly to it — this uploads `request.audio` to pyannoteAI's own presigned storage
@@ -137,7 +142,7 @@ async function uploadMedia(headers: Record<string, string>, request: Diarization
       method: "POST",
       headers: { ...headers, "content-type": "application/json" },
       body: JSON.stringify({ url: mediaKey }),
-      signal: AbortSignal.timeout(55_000),
+      signal: requestSignal(request.signal),
     });
   } catch (err) {
     throw new AudioProviderCallError(
@@ -153,7 +158,7 @@ async function uploadMedia(headers: Record<string, string>, request: Diarization
       method: "PUT",
       headers: { "content-type": request.mimeType },
       body: request.audio,
-      signal: AbortSignal.timeout(55_000),
+      signal: requestSignal(request.signal),
     });
   } catch (err) {
     throw new AudioProviderCallError(
@@ -180,7 +185,7 @@ export function createPyannoteDiarizationProvider(apiKey: string): DiarizationPr
           method: "POST",
           headers: { ...headers, "content-type": "application/json" },
           body: JSON.stringify({ url: mediaKey }),
-          signal: AbortSignal.timeout(55_000),
+          signal: requestSignal(request.signal),
         });
       } catch (err) {
         throw new AudioProviderCallError(
@@ -192,12 +197,16 @@ export function createPyannoteDiarizationProvider(apiKey: string): DiarizationPr
       if (typeof jobId !== "string") throw new AudioProviderCallError("pyannoteAI did not return a job id");
 
       for (let poll = 0; poll < MAX_POLL_ATTEMPTS; poll += 1) {
+        // Checked on both sides of the sleep so a disconnect stops the loop within one poll
+        // interval instead of after up to MAX_POLL_ATTEMPTS attempts.
+        if (request.signal?.aborted) throw new AudioProviderCallError("pyannoteAI diarization aborted by the caller");
         await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        if (request.signal?.aborted) throw new AudioProviderCallError("pyannoteAI diarization aborted by the caller");
         let response: Response;
         try {
           response = await fetch(`${PYANNOTE_API_URL}/jobs/${encodeURIComponent(jobId)}`, {
             headers,
-            signal: AbortSignal.timeout(55_000),
+            signal: requestSignal(request.signal),
           });
         } catch (err) {
           throw new AudioProviderCallError(

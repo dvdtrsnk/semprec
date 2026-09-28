@@ -53,4 +53,26 @@ describe("createDeepInfraWhisperProvider", () => {
       }),
     ).rejects.toBeInstanceOf(AudioProviderCallError);
   });
+
+  it("passes an already-aborted signal to fetch when the caller's signal was aborted, and rejects with AudioProviderCallError", async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      if (init.signal?.aborted) throw new DOMException("The operation was aborted.", "AbortError");
+      return new Response(null, { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const caller = new AbortController();
+    caller.abort();
+
+    const rejection = createDeepInfraWhisperProvider("test-key").transcribe({
+      audio: new Uint8Array(),
+      filename: "chunk.opus",
+      mimeType: "audio/ogg",
+      signal: caller.signal,
+    });
+
+    await expect(rejection).rejects.toBeInstanceOf(AudioProviderCallError);
+    await expect(rejection).rejects.toThrow("AbortError");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1].signal?.aborted).toBe(true);
+  });
 });

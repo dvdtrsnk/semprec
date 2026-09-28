@@ -17,6 +17,8 @@ SyslogIdentifier=semprec-ai-gateway
 ExecStart=/usr/bin/env node /opt/semprec/current/backend/services/semprec-ai-gateway/dist/serve.js
 Restart=on-failure
 RestartSec=5s
+# 600 s drain (SHUTDOWN_DRAIN_TIMEOUT_MS) + 5 s pool end (POOL_END_TIMEOUT_MS) + margin.
+TimeoutStopSec=660
 
 [Install]
 WantedBy=multi-user.target

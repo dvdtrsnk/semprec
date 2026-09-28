@@ -16,6 +16,8 @@ export interface StructuredCompletionRequest {
   messages: StructuredCompletionMessage[];
   /** Already validated (Draft 2020-12, no remote `$ref`, <= 64 KiB) by the route handler. */
   responseSchema: object;
+  /** Aborted when the gateway's own caller disconnects before the response is written. */
+  signal?: AbortSignal;
 }
 
 export interface StructuredCompletionResponse {
