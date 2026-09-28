@@ -14,6 +14,7 @@ export interface CreateGracefulShutdownOptions {
   server: Server;
   syncServer: { close(): Promise<void> };
   queueRuntime: QueueRuntimeHandle;
+  mailLiveSync: { stop(): Promise<void> };
   pool: Pool;
   logger: Logger;
   /** Defaults to `SHUTDOWN_DRAIN_TIMEOUT_MS`; exists only so a test can shrink the drain bound below `vitest.integration.config.ts`'s 30 s `testTimeout`. */
@@ -85,14 +86,16 @@ function endPool(pool: Pool, logger: Logger, signal: string): Promise<void> {
  * Builds `semprec-api`'s shutdown sequence: close the sync server (every `/api/sync` client gets
  * close code 1012 and its `LISTEN` client is released — otherwise each upgraded socket keeps
  * `server.close()` from settling until the drain bound), then stop accepting new HTTP connections
- * and drain in-flight requests (intake), stop the queue runtime issue #91 hosts in this same
+ * and drain in-flight requests (intake), stop the mail live-sync root (issue #650 — before the
+ * queue runtime, because a hosted lifecycle's `start()` enqueues a `mailAccountSync` job, so no new
+ * enqueue can race the runner's stop), stop the queue runtime issue #91 hosts in this same
  * process (`queueRuntime.stop()` awaits its `Runner.stop()`), then end the pool. Per
  * `docs/adr/2026-09-17-shutdown-ordering-with-late-heartbeat-stop.md`'s rejected-alternative
  * note, this ordering is specific to this service — it names no heartbeat step, unlike
  * `semprec-ai-gateway`'s.
  */
 export function createGracefulShutdown(options: CreateGracefulShutdownOptions): (signal: string) => Promise<void> {
-  const { server, syncServer, queueRuntime, pool, logger } = options;
+  const { server, syncServer, queueRuntime, mailLiveSync, pool, logger } = options;
   const drainTimeoutMs = options.drainTimeoutMs ?? SHUTDOWN_DRAIN_TIMEOUT_MS;
 
   let shutdownPromise: Promise<void> | null = null;
@@ -107,6 +110,12 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
     }
 
     const timedOut = await drainServer(server, drainTimeoutMs, logger, signal);
+
+    try {
+      await mailLiveSync.stop();
+    } catch (err) {
+      logger.error({ err, signal }, "mailLiveSync.stop() failed");
+    }
 
     try {
       await queueRuntime.stop();

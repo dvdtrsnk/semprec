@@ -1,5 +1,7 @@
 import { createServer } from "node:http";
 import {
+  createMailLiveSyncRoot,
+  createNoopMailLiveSyncLifecycleFactory,
   createPool,
   LocalFsBlobStorageWriter,
   loadFullModuleRegistry,
@@ -7,7 +9,9 @@ import {
   NodemailerPasswordResetMailer,
   noopPasswordResetMailer,
   resolveDocHistoryRetentionDays,
+  resolveMailModuleIds,
   startProcessHeartbeat,
+  withTransaction,
   type PasswordResetMailer,
 } from "@semprec/data";
 import { createTransport } from "nodemailer";
@@ -109,9 +113,20 @@ const syncServer = await createSyncUpgradeHandler(pool);
 // `CORE_CRONTAB` and hosts every `queueAffinity: 'api'` task handler, over this same pool.
 const queueRuntime = await createApiQueueRuntime(pool, moduleRegistry);
 
+// Issue #650: this long-lived process hosts the one mail live-sync root per database that
+// `createMailLiveSyncRoot`'s contract requires. Until real transports exist, every account gets
+// the noop lifecycle, whose `start()` enqueues one immediate `mailAccountSync`.
+const { mailboxesDatabaseId } = await withTransaction(pool, (client) => resolveMailModuleIds(client));
+const mailLiveSync = createMailLiveSyncRoot(pool, mailboxesDatabaseId, createNoopMailLiveSyncLifecycleFactory(pool), {
+  onLifecycleError: (mailboxItemId, phase, err) => {
+    logger.error({ err, mailboxItemId, phase }, "Mail live-sync lifecycle failed");
+  },
+});
+await mailLiveSync.start();
+
 const server = createServer(dispatch);
 
-const shutdown = createGracefulShutdown({ server, syncServer, queueRuntime, pool, logger });
+const shutdown = createGracefulShutdown({ server, syncServer, queueRuntime, mailLiveSync, pool, logger });
 registerShutdownSignals(shutdown);
 
 // `WS /api/sync` (issue #160) is the one WS upgrade route this service serves; anything else

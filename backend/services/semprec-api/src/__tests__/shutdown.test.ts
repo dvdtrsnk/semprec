@@ -93,7 +93,7 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
     const { logger, lines } = createCapturingLogger();
 
     const started = performance.now();
-    await createGracefulShutdown({ server, syncServer, queueRuntime: { stop }, pool: dedicatedPool, logger })(
+    await createGracefulShutdown({ server, syncServer, queueRuntime: { stop }, mailLiveSync: { stop: async () => {} }, pool: dedicatedPool, logger })(
       "SIGTERM",
     );
     const elapsedMs = performance.now() - started;
@@ -119,7 +119,7 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
     const stop = vi.fn(async () => {});
     const { logger, lines } = createCapturingLogger();
 
-    await createGracefulShutdown({ server, syncServer, queueRuntime: { stop }, pool: dedicatedPool, logger })(
+    await createGracefulShutdown({ server, syncServer, queueRuntime: { stop }, mailLiveSync: { stop: async () => {} }, pool: dedicatedPool, logger })(
       "SIGTERM",
     );
 
@@ -139,7 +139,7 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
     const stop = vi.fn(async () => {});
     const { logger, lines } = createCapturingLogger();
 
-    await createGracefulShutdown({ server, syncServer, queueRuntime: { stop }, pool: dedicatedPool, logger })(
+    await createGracefulShutdown({ server, syncServer, queueRuntime: { stop }, mailLiveSync: { stop: async () => {} }, pool: dedicatedPool, logger })(
       "SIGTERM",
     );
 
