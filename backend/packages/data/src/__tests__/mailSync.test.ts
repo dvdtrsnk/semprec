@@ -624,7 +624,7 @@ describe("per-mailbox message identity (issue #674)", () => {
       [inA.itemId, inB.itemId],
     ]);
 
-    const sql = await readFile(path.join(MIGRATIONS_DIR, "0052_mail_message_meta_per_mailbox.sql"), "utf8");
+    const sql = await readFile(path.join(MIGRATIONS_DIR, "0053_mail_message_meta_per_mailbox.sql"), "utf8");
     await pool.query(sql);
     // Idempotent: a second run changes nothing and does not fail on the already-applied DDL.
     await pool.query(sql);
