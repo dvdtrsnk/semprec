@@ -249,9 +249,10 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
      * issue #675); a race-restored row keeps all of them. Once the delete loop is done, each
      * inline database owned by a removed item (never the root's own database) whose partition is
      * now empty is dropped together with its partition; one that still holds a live or too-fresh
-     * row is left in place. Returns the ids actually removed (never one a concurrent restore raced ahead
-     * of), empty if the root turned out not to be eligible, and the storage keys of the blob rows
-     * deleted with them — their bytes are the caller's to remove once this has committed.
+     * row is left in place. Returns the ids actually removed (never one a concurrent restore
+     * raced ahead of), empty if the root turned out not to be eligible, and the storage keys of
+     * the blob rows deleted with them — their bytes are the caller's to remove once this has
+     * committed.
      */
     async purgeExpiredTrashSubtree(
       rootItemId: string,
