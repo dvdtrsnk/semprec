@@ -95,3 +95,12 @@ export async function getOrCreateDoc(client: Queryable, itemId: string, kind: Do
   }
   return created;
 }
+
+/**
+ * Removes the doc of a hard-deleted item (trash purge, issue #675) — its snapshots, updates, history
+ * updates and snapshot history cascade by FK. Zero rows is valid: an item that was never edited has
+ * no doc.
+ */
+export async function deleteDocByItemId(client: Queryable, itemId: string): Promise<void> {
+  await client.query(`DELETE FROM docs WHERE item_id = $1`, [itemId]);
+}
