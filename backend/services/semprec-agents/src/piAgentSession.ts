@@ -2,6 +2,7 @@ import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@earendil
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type { AgentMessage, AgentSession, CreateAgentSession } from "@semprec/agent-runtime";
 import { logger } from "./logger.js";
+import { toPiMessages } from "./piConversationHistory.js";
 
 export interface PiAgentSessionFactoryOptions {
   model: Model<Api>;
@@ -151,15 +152,13 @@ async function* promptMessages(
  * A tool whose `execute` throws aborts the prompt and fails the session with that error — a
  * thrown tool is an infrastructure failure, not an answer for the model. A tool that returns an
  * error result (the generic-operation tools' `details.error`) is ordinary model input.
+ *
+ * A session given `initialState.messages` resumes from that reconstructed history, converted by
+ * {@link toPiMessages}; history that does not convert fails the factory call.
  */
 export function createPiAgentSessionFactory(options: PiAgentSessionFactoryOptions): CreateAgentSession {
   return (sessionOptions) => {
-    // Reconstructed history is persisted in this runtime's own `AgentMessage` vocabulary, not as
-    // pi `Message`s; resuming from it needs a conversion no caller of this factory requires yet.
-    if (sessionOptions.initialState && sessionOptions.initialState.messages.length > 0) {
-      throw new Error("createPiAgentSessionFactory cannot resume a session from reconstructed history");
-    }
-
+    const initialMessages = toPiMessages(sessionOptions.initialState?.messages ?? [], options.model);
     const toolFailure: { error: Error | undefined } = { error: undefined };
     const tools = options.tools.map((tool): AgentTool => ({
       ...tool,
@@ -180,7 +179,7 @@ export function createPiAgentSessionFactory(options: PiAgentSessionFactoryOption
         systemPrompt: sessionOptions.systemPromptOverride?.(options.systemPrompt) ?? options.systemPrompt,
         model: options.model,
         tools,
-        messages: [],
+        messages: initialMessages,
       },
     });
 

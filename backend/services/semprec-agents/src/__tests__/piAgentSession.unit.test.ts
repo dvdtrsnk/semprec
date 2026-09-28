@@ -131,7 +131,51 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
     expect(calls).toHaveLength(1);
   });
 
-  it("refuses to resume from reconstructed history", () => {
+  it("resumes from reconstructed history passed as initialState.messages", async () => {
+    const { faux, model, streamFn } = fauxModel();
+    const seen: Context["messages"][] = [];
+    faux.setResponses([
+      (context: Context) => {
+        seen.push(context.messages);
+        return fauxAssistantMessage("resumed");
+      },
+    ]);
+    const createSession = createPiAgentSessionFactory({ model, streamFn, tools: [], systemPrompt: "base" });
+
+    const messages = await collect(
+      createSession({
+        task: "next",
+        initialState: {
+          messages: [
+            { id: "e1", parentId: null, seq: 0, timestamp: 1, message: { kind: "turn_start" } },
+            {
+              id: "e2",
+              parentId: "e1",
+              seq: 1,
+              timestamp: 2,
+              message: {
+                kind: "message",
+                role: "assistant",
+                text: "earlier",
+                content: [{ type: "text", text: "earlier" }],
+                stopReason: "stop",
+              },
+            },
+            { id: "e3", parentId: "e2", seq: 2, timestamp: 3, message: { kind: "turn_end" } },
+          ],
+        },
+      }).messages(),
+    );
+
+    expect(messages.filter((message) => message.kind === "message")).toMatchObject([{ text: "resumed" }]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject([
+      { role: "assistant", content: [{ type: "text", text: "earlier" }], stopReason: "stop" },
+      { role: "user", content: [{ type: "text", text: "next" }] },
+    ]);
+  });
+
+  it("refuses reconstructed history that does not convert to pi messages", () => {
     const { model, streamFn } = fauxModel();
     const createSession = createPiAgentSessionFactory({ model, streamFn, tools: [], systemPrompt: "base" });
 
@@ -142,6 +186,6 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
           messages: [{ id: "e1", parentId: null, seq: 0, timestamp: 0, message: { kind: "message", text: "x" } }],
         },
       }),
-    ).toThrow("cannot resume");
+    ).toThrow("conversation entry e1 (kind 'message') is not an assistant message");
   });
 });
