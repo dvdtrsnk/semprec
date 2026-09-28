@@ -12,6 +12,7 @@ import {
   type AgentQueueTaskHandler,
   type AgentRunRow,
   type RunAgentFn,
+  withTransaction,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentSessionFactoryForRun } from "./agentSessionComposition.js";
@@ -44,10 +45,26 @@ async function closeUncomposedRun(pool: Pool, run: AgentRunRow, cause: unknown):
 }
 
 /**
+ * Records the run's `running` status only if the row is still `running`, re-read under a row lock
+ * in the same transaction as that write: a concurrent close (startup repair, a duplicate job)
+ * either commits first and is seen here, or blocks until the `running` event is in. Returns
+ * whether the run was claimed.
+ */
+async function claimRunningRun(pool: Pool, agentRunId: string): Promise<boolean> {
+  return withTransaction(pool, async (client) => {
+    const locked = await getAgentRun(client, agentRunId, true);
+    if (!locked || locked.status !== "running") return false;
+    await pushRunStatus(client, agentRunId, "running");
+    return true;
+  });
+}
+
+/**
  * The `agentRun`/`delegatedAgentRun` handler (issue #647; a delegated run is just a row with
  * `parent_run_id` set, so both share one payload contract): runs a pi session for the
  * `{ agentRunId }` row and closes it through `runAgentSessionForRun`. A row that is missing or no
- * longer `running` — a redelivered job for a finished run — is a logged no-op.
+ * longer `running` — a redelivered job for a finished run, or one closed while its session was
+ * being composed — is a logged no-op.
  */
 export function createAgentRunTask(
   pool: Pool,
@@ -68,6 +85,10 @@ export function createAgentRunTask(
     } catch (err) {
       await closeUncomposedRun(pool, run, err);
       throw err;
+    }
+    if (!(await claimRunningRun(pool, run.id))) {
+      logger.info({ agentRunId }, "Skipping agentRun job for a run closed while its session was composed");
+      return;
     }
     await runAgentSessionForRun(pool, run, { createAgentSession });
   };
