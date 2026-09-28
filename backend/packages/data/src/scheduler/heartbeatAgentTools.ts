@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import { z } from "zod";
 import { enqueueJob } from "@semprec/queue";
+import { withTransaction } from "../db/pool.js";
 import { getAgentRun, listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
 import { getHeartbeatForProject, listHeartbeatsByProject, manualHeartbeatFireJobKey } from "./schedulerStore.js";
 import { resolveHeartbeatFireTaskName } from "./actions.js";
@@ -155,6 +156,9 @@ export function createHeartbeatHistoryTool(
  *
  * A heartbeat the user disabled via `setHeartbeatEnabled` is refused with no job enqueued,
  * the same rule the sweep and `prepareHeartbeatOccurrenceFire` already enforce for scheduled fires.
+ * The lookup, the `enabled` check, and the `enqueueJob` call all run inside one
+ * `withTransaction`, so a concurrent `setHeartbeatEnabled(false)` cannot commit between the read
+ * and the enqueue and slip a job past the disabled check.
  *
  * The enqueued job payload carries `triggeredByRunId: currentRunId`, which `coreAgentRunAction`
  * (scheduler/actions.ts) writes onto the new run as `parent_run_id` — the child run's history
@@ -181,26 +185,30 @@ export function createHeartbeatTriggerTool(
       return { error: true, result: `No project context for run ${currentRunId}` };
     }
 
-    const heartbeat = await getHeartbeatForProject(pool, projectItemId, parsedArgs.data.heartbeatId, moduleRuleKinds);
-    if (!heartbeat) {
-      return { error: true, result: `Heartbeat ${parsedArgs.data.heartbeatId} not found` };
-    }
+    const outcome = await withTransaction(pool, async (client) => {
+      const heartbeat = await getHeartbeatForProject(client, projectItemId, parsedArgs.data.heartbeatId, moduleRuleKinds);
+      if (!heartbeat) {
+        return { error: true, result: `Heartbeat ${parsedArgs.data.heartbeatId} not found` } as const;
+      }
 
-    if (isOnItemEventRule(heartbeat.rule)) {
-      return { error: true, result: HEARTBEAT_EVENT_TRIGGERED_ERROR };
-    }
+      if (isOnItemEventRule(heartbeat.rule)) {
+        return { error: true, result: HEARTBEAT_EVENT_TRIGGERED_ERROR } as const;
+      }
 
-    if (!heartbeat.enabled) {
-      return { error: true, result: HEARTBEAT_DISABLED_ERROR };
-    }
+      if (!heartbeat.enabled) {
+        return { error: true, result: HEARTBEAT_DISABLED_ERROR } as const;
+      }
 
-    await enqueueJob(
-      pool,
-      resolveHeartbeatFireTaskName(heartbeat.actionId),
-      { heartbeatId: heartbeat.id, triggeredByRunId: currentRunId },
-      { jobKey: manualHeartbeatFireJobKey(heartbeat.id), maxAttempts: 3 },
-    );
+      await enqueueJob(
+        client,
+        resolveHeartbeatFireTaskName(heartbeat.actionId),
+        { heartbeatId: heartbeat.id, triggeredByRunId: currentRunId },
+        { jobKey: manualHeartbeatFireJobKey(heartbeat.id), maxAttempts: 3 },
+      );
 
-    return { error: false, result: JSON.stringify({ heartbeatId: heartbeat.id }) };
+      return { error: false, result: JSON.stringify({ heartbeatId: heartbeat.id }) } as const;
+    });
+
+    return outcome;
   };
 }
