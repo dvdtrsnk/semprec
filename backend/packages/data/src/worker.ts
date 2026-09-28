@@ -126,11 +126,15 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE]: async (payload) => {
       await handleJournalInboxRecomputeTask(pool, { journalDayItemId: requireString(payload, "journalDayItemId") });
     },
-    [CORE_TASK_NAMES.PROPERTY_TYPE_MIGRATION]: async (payload) => {
-      await handlePropertyTypeMigrationTask(pool, {
-        propertyId: requireString(payload, "propertyId"),
-        fromType: requirePropertyType(payload, "fromType"),
-      });
+    [CORE_TASK_NAMES.PROPERTY_TYPE_MIGRATION]: async (payload, helpers) => {
+      await handlePropertyTypeMigrationTask(
+        pool,
+        {
+          propertyId: requireString(payload, "propertyId"),
+          fromType: requirePropertyType(payload, "fromType"),
+        },
+        { isFinalAttempt: helpers.job.attempts >= helpers.job.max_attempts },
+      );
     },
     [CORE_TASK_NAMES.DOC_COMPACTION_SWEEP]: async () => {
       await handleDocCompactionSweepTask(pool);

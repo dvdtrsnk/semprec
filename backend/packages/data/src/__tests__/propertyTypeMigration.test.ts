@@ -6,7 +6,7 @@ import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 import { ValidationError } from "../errors.js";
-import { runPropertyTypeMigrationJob } from "../migrationJob/propertyTypeMigration.js";
+import { handlePropertyTypeMigrationTask, runPropertyTypeMigrationJob } from "../migrationJob/propertyTypeMigration.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -93,6 +93,75 @@ describe("property type migration", () => {
     // state instead of from its own (empty) bookkeeping.
     await runPropertyTypeMigrationJob(pool, prop.id, "text");
     expect((await chokePoint.getProperty(prop.id))!.migrationStatus).toBe("partial");
+  });
+
+  it("text -> date: converts ISO 8601 values, drops non-ISO text, and ends 'partial'", async () => {
+    const db = await chokePoint.createDatabase({ name: "D8" });
+    const prop = await chokePoint.createProperty({ databaseId: db.id, key: "when", name: "When", type: "text" });
+    const converted = await chokePoint.createItem({ databaseId: db.id, properties: { when: "2026-09-27" } });
+    const dropped = await chokePoint.createItem({ databaseId: db.id, properties: { when: "not a date" } });
+    const alreadyIso = await chokePoint.createItem({
+      databaseId: db.id,
+      properties: { when: "2026-09-27T08:00:00.000Z" },
+    });
+
+    await chokePoint.changePropertyType(prop.id, "date");
+    await drainQueue();
+
+    expect((await chokePoint.getProperty(prop.id))!.migrationStatus).toBe("partial");
+    expect((await chokePoint.getItem(db.id, converted.id))?.properties.when).toBe("2026-09-27T00:00:00.000Z");
+    expect((await chokePoint.getItem(db.id, dropped.id))?.properties).not.toHaveProperty("when");
+    expect((await chokePoint.getItem(db.id, alreadyIso.id))?.properties.when).toBe("2026-09-27T08:00:00.000Z");
+  });
+
+  it("settles 'partial' (never leaves 'running') when the job fails on its final attempt", async () => {
+    const db = await chokePoint.createDatabase({ name: "D9" });
+    const prop = await chokePoint.createProperty({ databaseId: db.id, key: "score", name: "Score", type: "text" });
+    await chokePoint.createItem({ databaseId: db.id, properties: { score: "42" } });
+    await chokePoint.changePropertyType(prop.id, "number");
+
+    let connectCount = 0;
+    const failingPool = {
+      connect: () => {
+        connectCount += 1;
+        // The bootstrap client is the first connect(); the first batch's withTransaction
+        // client is the second — reject exactly that one to simulate a mid-batch failure.
+        if (connectCount === 2) return Promise.reject(new Error("simulated connection failure"));
+        return pool.connect();
+      },
+    } as unknown as Pool;
+
+    await expect(
+      handlePropertyTypeMigrationTask(failingPool, { propertyId: prop.id, fromType: "text" }, { isFinalAttempt: true }),
+    ).rejects.toThrow("simulated connection failure");
+
+    expect((await chokePoint.getProperty(prop.id))!.migrationStatus).toBe("partial");
+  });
+
+  it("leaves 'running' (not 'partial') when a non-final attempt fails — the retry will settle it", async () => {
+    const db = await chokePoint.createDatabase({ name: "D10" });
+    const prop = await chokePoint.createProperty({ databaseId: db.id, key: "score", name: "Score", type: "text" });
+    await chokePoint.createItem({ databaseId: db.id, properties: { score: "42" } });
+    await chokePoint.changePropertyType(prop.id, "number");
+
+    let connectCount = 0;
+    const failingPool = {
+      connect: () => {
+        connectCount += 1;
+        if (connectCount === 2) return Promise.reject(new Error("simulated connection failure"));
+        return pool.connect();
+      },
+    } as unknown as Pool;
+
+    await expect(
+      handlePropertyTypeMigrationTask(
+        failingPool,
+        { propertyId: prop.id, fromType: "text" },
+        { isFinalAttempt: false },
+      ),
+    ).rejects.toThrow("simulated connection failure");
+
+    expect((await chokePoint.getProperty(prop.id))!.migrationStatus).toBe("running");
   });
 
   it("rejects a retype with no defined conversion path", async () => {
