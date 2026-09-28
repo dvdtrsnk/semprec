@@ -392,6 +392,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "resolveFindingsNotIn",
   "resolveGrantedMcpTool",
   "resolveHeartbeatFireTaskName",
+  "resolveMailModuleIds",
   "resolveMcpRunCredential",
   "resolveProperty",
   "resolveTaskAffinitySets",
