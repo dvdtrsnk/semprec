@@ -4,8 +4,9 @@ export interface GatewayCallContext {
   /** Set when the call originates inside an agent run; omit/NULL otherwise. */
   agentRunId?: string | null;
   /**
-   * #215: set together by `POST /internal/complete`, the only current caller that attributes a
-   * call to a project item and an operation; every other caller omits both.
+   * #215: set together with `operation` by `POST /internal/complete`, the only current caller that
+   * attributes a call to a project item; every other caller omits it. The audio routes set only
+   * `operation` (#625).
    */
   projectItemId?: string | null;
   operation?: string | null;

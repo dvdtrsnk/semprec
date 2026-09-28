@@ -15,6 +15,10 @@ import { logger } from "./logger.js";
  */
 const MAX_BODY_BYTES = 150 * 1024 * 1024;
 
+/** The `ai_gateway_calls.operation` each audio route records, naming the route the call came through. */
+const DIARIZE_OPERATION = "transcription_diarize";
+const TRANSCRIBE_OPERATION = "transcription_transcribe";
+
 export interface AudioHandlerOptions {
   internalToken: string;
   diarizationProvider: DiarizationProvider;
@@ -124,8 +128,8 @@ function abortOnDisconnect(res: ServerResponse): AbortSignal {
  * Handles `POST /internal/diarize` and `POST /internal/transcribe` for issue #182 — the gateway's
  * audio routes, mirroring `completeHandler.ts`'s auth/validation/error-mapping shape. Each
  * dispatches to `@semprec/ai-gateway`'s `diarize()`/`transcribe()` so budget-checking and
- * `ai_gateway_calls` accounting (audio_seconds/cost_usd, no token columns, no agent_run_id) are
- * identical to every other gateway call.
+ * `ai_gateway_calls` accounting (audio_seconds/cost_usd, no token columns, no agent_run_id or
+ * project_item_id, and an `operation` naming the route) are identical to every other gateway call.
  */
 export function createAudioRequestListener(pool: Pool, options: AudioHandlerOptions) {
   async function handleDiarize(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -139,6 +143,7 @@ export function createAudioRequestListener(pool: Pool, options: AudioHandlerOpti
         {
           provider: options.diarizationProvider.id,
           model: options.diarizationProvider.model,
+          operation: DIARIZE_OPERATION,
           estimatedCostUsd: costUsd,
         },
         async () => {
@@ -168,6 +173,7 @@ export function createAudioRequestListener(pool: Pool, options: AudioHandlerOpti
         {
           provider: options.transcriptionProvider.id,
           model: options.transcriptionProvider.model,
+          operation: TRANSCRIBE_OPERATION,
           estimatedCostUsd: costUsd,
         },
         async () => {
