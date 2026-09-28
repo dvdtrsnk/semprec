@@ -27,7 +27,7 @@ import { assertDatabaseNotArchived } from "./databaseGuards.js";
 import { assertValidTimezone } from "../timezone.js";
 import { getSystemSettingsItemId, getSystemTimezone } from "../systemSettings.js";
 import { deriveTaskTime } from "../tasks/deriveTaskTime.js";
-import { advanceTaskRecurrenceWithClient } from "../tasks/advanceTaskRecurrence.js";
+import { advanceTaskRecurrenceWithClient } from "../tasks/advanceTaskRecurrenceWithClient.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { recordDesiredMailMessageFlags } from "../mail/mailMessageFlagSyncStore.js";
 
@@ -138,9 +138,9 @@ export interface CreateItemInput {
 /**
  * The item-creation logic, factored out (same reason as `createRelationPropertyWithClient`
  * above) so a caller already holding an open transaction can run it against that same
- * `client` — namely `tasks/advanceTaskRecurrence.ts`, whose rolling-model advance must create
- * the next task instance, mark the old one done, and re-link its relations as a single
- * all-or-nothing transaction, and `journal/journalStore.ts`, whose lazy item creation writes
+ * `client` — namely `tasks/advanceTaskRecurrenceWithClient.ts`, whose rolling-model advance must create
+ * the next task instance and re-link its relations in the same transaction as the `done` write,
+ * and `journal/journalStore.ts`, whose lazy item creation writes
  * owner:'system' properties (`allowedSystemKeys`) as Journal's declared owning process for
  * exactly those keys. `createChokePoint(...)`'s `createItem` below is a thin wrapper over this.
  */
@@ -276,11 +276,11 @@ export async function updateItemWithClient(
   // the `done` write and the new instance commit or roll back together. A no-op when the task
   // has no active recurrence, including a repeated `done` write (the first one deactivated it).
   if (database.ownerModuleId === TASKS_MODULE_ID && input.propertiesPatch.status === "done") {
-    await advanceTaskRecurrenceWithClient(client, {
-      databaseId: input.databaseId,
-      itemId: item.id,
-      timezone: await getSystemTimezone(client),
-    });
+    await advanceTaskRecurrenceWithClient(
+      client,
+      { databaseId: input.databaseId, itemId: item.id, timezone: await getSystemTimezone(client) },
+      createItemWithClient,
+    );
   }
   // The generic item mutation is the sole origin for user/agent triage intent. Persist it
   // in the same transaction as the Email patch so a crash cannot leave UI state committed
