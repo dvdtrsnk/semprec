@@ -33,9 +33,21 @@ describe("convertPropertyValue", () => {
     expect(convertPropertyValue("text", "number", 42)).toEqual({ ok: false });
   });
 
-  it("text -> date: converts parseable date strings to an ISO timestamp, rejects unparseable ones", () => {
+  it("text -> date: converts ISO 8601 date and date-time strings to an ISO timestamp", () => {
     expect(convertPropertyValue("text", "date", "2024-01-15")).toEqual({ ok: true, value: "2024-01-15T00:00:00.000Z" });
+    expect(convertPropertyValue("text", "date", "2026-09-27T10:00:00+02:00")).toEqual({
+      ok: true,
+      value: "2026-09-27T08:00:00.000Z",
+    });
+    expect(convertPropertyValue("text", "date", "2026-09-27T08:00:00.000Z")).toEqual({
+      ok: true,
+      value: "2026-09-27T08:00:00.000Z",
+    });
+  });
+
+  it("text -> date: rejects non-ISO-8601 text even when Date.parse would accept it, and non-strings", () => {
     expect(convertPropertyValue("text", "date", "not a date")).toEqual({ ok: false });
+    expect(convertPropertyValue("text", "date", "March 5")).toEqual({ ok: false });
     expect(convertPropertyValue("text", "date", 123)).toEqual({ ok: false });
   });
 
