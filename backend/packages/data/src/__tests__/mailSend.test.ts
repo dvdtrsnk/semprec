@@ -11,7 +11,7 @@ import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { generatePermissionManifest } from "../manifest/permissionManifest.js";
 import { createEmailDraft } from "../mail/draft.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
-import { getMailMessageMetaByItemId, getMailMessageMetaByMessageId } from "../mail/mailMessageMetaStore.js";
+import { getMailMessageMetaByItemId, getMailMessageMetaByMailboxAndMessageId } from "../mail/mailMessageMetaStore.js";
 import {
   sendDraftEmail,
   assertEmailSendAuthorized,
@@ -653,6 +653,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
         folderRelationPropertyId,
         attachmentsRelationPropertyId: attachmentsProperty.id,
         folderItemId: sentId,
+        mailboxItemId: mailboxId,
         messageId: result.messageId,
         subject: "Hello",
         envelope: { from: { address: "me@example.com" }, to: [{ address: "bob@example.com" }] },
@@ -679,7 +680,8 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     ]);
     expect(itemCount[0].n).toBe(1);
 
-    const meta = await getMailMessageMetaByMessageId(pool, result.messageId);
+    const meta = await getMailMessageMetaByMailboxAndMessageId(pool, mailboxId, result.messageId);
     expect(meta?.itemId).toBe(draft.id);
+    expect(meta?.mailboxItemId).toBe(mailboxId);
   });
 });

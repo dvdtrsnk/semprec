@@ -19,7 +19,11 @@ import {
 import { lookupPersonIdByEmail, reindexPersonEmails } from "../mail/personEmailIndexStore.js";
 import { resolveThreadId } from "../mail/threading.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
-import { getMailMessageMetaByItemId, upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
+import {
+  getMailMessageMetaByItemId,
+  getMailMessageMetaByMailboxAndMessageId,
+  upsertMailMessageMeta,
+} from "../mail/mailMessageMetaStore.js";
 import { resolveDeliveredToAddress } from "../mail/deliveredTo.js";
 import { isDeliveryStatusReport, parseContentTypeHeader } from "../mail/dsn.js";
 import {
@@ -67,9 +71,16 @@ import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
+import { listPendingImapFlagWrites } from "../mail/mailMessageFlagSyncStore.js";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
+
+/** The Mailbox item id for ingest cases that exercise no mailbox-scoped behavior — `ingestEmailMessage` only uses it as its dedup scope. */
+const TEST_MAILBOX_ITEM_ID = randomUUID();
 
 async function databaseIdFor(moduleId: string): Promise<string> {
   const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
@@ -304,6 +315,7 @@ describe("person <-> email address linking (issue #26)", () => {
         folderRelationPropertyId: folderProperty.id,
         attachmentsRelationPropertyId: attachmentsProperty.id,
         folderItemId: inbox.id,
+        mailboxItemId: mailbox.id,
         messageId: "<msg1@example.com>",
         subject: "Hello",
         envelope: { from: { address: "alice@example.com", name: "Alice" }, to: [{ address: "bob@example.com" }] },
@@ -430,6 +442,7 @@ describe("message ingest dedup (issue #26)", () => {
       folderRelationPropertyId: folderProperty.id,
       attachmentsRelationPropertyId: attachmentsProperty.id,
       folderItemId: folder.id,
+      mailboxItemId: TEST_MAILBOX_ITEM_ID,
       messageId: "<dup@x>",
       envelope: {},
       attachments: [],
@@ -445,6 +458,180 @@ describe("message ingest dedup (issue #26)", () => {
 
     const { rows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [emailsId]);
     expect(Number(rows[0].count)).toBe(1);
+  });
+});
+
+describe("per-mailbox message identity (issue #674)", () => {
+  const MIGRATIONS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations");
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  async function relationDefinitionIdFor(propertyId: string): Promise<string> {
+    const { rows } = await pool.query<{ id: string }>(
+      "SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1",
+      [propertyId],
+    );
+    return rows[0]!.id;
+  }
+
+  /** Two Mailbox items, each with its own INBOX Folder linked through Folders.mailbox. */
+  async function setUpTwoMailboxes() {
+    const emailsId = await databaseIdFor("emails");
+    const foldersId = await databaseIdFor("folders");
+    const filesId = await databaseIdFor("files");
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const emailProperties = await chokePoint.listProperties(emailsId);
+    const folderProperty = emailProperties.find((p) => p.key === "folder")!;
+    const attachmentsProperty = emailProperties.find((p) => p.key === "attachments")!;
+    const mailboxFolderProperty = (await chokePoint.listProperties(foldersId)).find((p) => p.key === "mailbox")!;
+
+    async function mailboxWithInbox(name: string) {
+      return withTransaction(pool, async (client) => {
+        const mailbox = await createItemWithClient(client, {
+          databaseId: mailboxesId,
+          properties: { name, provider: "generic" },
+        });
+        const inbox = await createItemWithClient(
+          client,
+          { databaseId: foldersId, properties: { name: "INBOX", behavior: "folder", providerId: "INBOX" } },
+          { allowedSystemKeys: ["name", "behavior", "providerId"] },
+        );
+        await createRelationWithClient(
+          client,
+          { relationPropertyId: mailboxFolderProperty.id, callerItemId: inbox.id, targetItemId: mailbox.id },
+          { ownerProcess: FOLDERS_MODULE_ID },
+        );
+        return { mailboxItemId: mailbox.id, inboxItemId: inbox.id };
+      });
+    }
+
+    const a = await mailboxWithInbox("Work");
+    const b = await mailboxWithInbox("Private");
+
+    function ingestInto(mailbox: { mailboxItemId: string; inboxItemId: string }, messageId: string) {
+      return withTransaction(pool, (client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          folderRelationPropertyId: folderProperty.id,
+          attachmentsRelationPropertyId: attachmentsProperty.id,
+          folderItemId: mailbox.inboxItemId,
+          mailboxItemId: mailbox.mailboxItemId,
+          folderUid: 7,
+          messageId,
+          subject: "Shared",
+          envelope: {},
+          attachments: [],
+          storage: noopStorage,
+          storageKeyPrefix: "test",
+          flags: [],
+        }),
+      );
+    }
+
+    async function folderIdsOf(emailItemId: string): Promise<string[]> {
+      const folderDefinitionId = await relationDefinitionIdFor(folderProperty.id);
+      const { rows } = await pool.query<{ folder_id: string }>(
+        `SELECT CASE WHEN item_a = $2 THEN item_b ELSE item_a END AS folder_id
+         FROM item_relations WHERE relation_definition_id = $1 AND (item_a = $2 OR item_b = $2)`,
+        [folderDefinitionId, emailItemId],
+      );
+      return rows.map((r) => r.folder_id);
+    }
+
+    return {
+      emailsId,
+      a,
+      b,
+      ingestInto,
+      folderIdsOf,
+      folderDefinitionId: await relationDefinitionIdFor(folderProperty.id),
+      mailboxFolderDefinitionId: await relationDefinitionIdFor(mailboxFolderProperty.id),
+    };
+  }
+
+  it("ingests the same Message-ID for two mailboxes as two items, each linked only to its own mailbox's folder", async () => {
+    const { emailsId, a, b, ingestInto, folderIdsOf } = await setUpTwoMailboxes();
+
+    const inA = await ingestInto(a, "<shared@x>");
+    const inB = await ingestInto(b, "<shared@x>");
+
+    expect(inA.created).toBe(true);
+    expect(inB.created).toBe(true);
+    expect(inB.itemId).not.toBe(inA.itemId);
+    expect(await folderIdsOf(inA.itemId)).toEqual([a.inboxItemId]);
+    expect(await folderIdsOf(inB.itemId)).toEqual([b.inboxItemId]);
+
+    const metaA = await getMailMessageMetaByMailboxAndMessageId(pool, a.mailboxItemId, "<shared@x>");
+    const metaB = await getMailMessageMetaByMailboxAndMessageId(pool, b.mailboxItemId, "<shared@x>");
+    expect(metaA).toMatchObject({ itemId: inA.itemId, mailboxItemId: a.mailboxItemId });
+    expect(metaB).toMatchObject({ itemId: inB.itemId, mailboxItemId: b.mailboxItemId });
+
+    await chokePoint.updateItem({ databaseId: emailsId, itemId: inA.itemId, propertiesPatch: { read: true } });
+    expect((await chokePoint.getItem(emailsId, inA.itemId))?.properties).toMatchObject({ read: true });
+    expect((await chokePoint.getItem(emailsId, inB.itemId))?.properties).toMatchObject({ read: false });
+  });
+
+  it("still converges a repeat ingest of the same Message-ID within one mailbox onto one item", async () => {
+    const { emailsId, a, ingestInto, folderIdsOf } = await setUpTwoMailboxes();
+
+    const first = await ingestInto(a, "<again@x>");
+    const second = await ingestInto(a, "<again@x>");
+
+    expect(first.created).toBe(true);
+    expect(second.created).toBe(false);
+    expect(second.itemId).toBe(first.itemId);
+    expect(await folderIdsOf(first.itemId)).toEqual([a.inboxItemId]);
+    const { rows } = await pool.query(`SELECT count(*)::int AS n FROM items WHERE database_id = $1`, [emailsId]);
+    expect(rows[0].n).toBe(1);
+  });
+
+  it("resolves a pending flag write for one mailbox only through that mailbox's folder edge", async () => {
+    const { emailsId, a, b, ingestInto, folderDefinitionId, mailboxFolderDefinitionId } = await setUpTwoMailboxes();
+    const inA = await ingestInto(a, "<flag-shared@x>");
+    await ingestInto(b, "<flag-shared@x>");
+
+    await chokePoint.updateItem({ databaseId: emailsId, itemId: inA.itemId, propertiesPatch: { read: true } });
+
+    const pendingFor = (mailboxItemId: string) =>
+      listPendingImapFlagWrites(pool, {
+        folderRelationDefinitionId: folderDefinitionId,
+        mailboxFolderRelationDefinitionId: mailboxFolderDefinitionId,
+        mailboxItemId,
+      });
+    expect(await pendingFor(a.mailboxItemId)).toEqual([
+      { messageItemId: inA.itemId, propertyKey: "read", desiredState: true, folderPath: "INBOX", uid: 7 },
+    ]);
+    expect(await pendingFor(b.mailboxItemId)).toEqual([]);
+  });
+
+  it("the migration backfills mailbox_item_id through the folder -> mailbox edges and leaves an unlinked row NULL", async () => {
+    const { a, b, ingestInto } = await setUpTwoMailboxes();
+    const inA = await ingestInto(a, "<backfill-a@x>");
+    const inB = await ingestInto(b, "<backfill-b@x>");
+    const orphanItemId = randomUUID();
+    await pool.query(
+      `INSERT INTO mail_message_meta (item_id, message_id, envelope) VALUES ($1, '<backfill-orphan@x>', '{}')`,
+      [orphanItemId],
+    );
+    // The pre-migration shape of the two linked rows: no mailbox recorded yet.
+    await pool.query(`UPDATE mail_message_meta SET mailbox_item_id = NULL WHERE item_id = ANY($1::uuid[])`, [
+      [inA.itemId, inB.itemId],
+    ]);
+
+    const sql = await readFile(path.join(MIGRATIONS_DIR, "0052_mail_message_meta_per_mailbox.sql"), "utf8");
+    await pool.query(sql);
+    // Idempotent: a second run changes nothing and does not fail on the already-applied DDL.
+    await pool.query(sql);
+
+    expect((await getMailMessageMetaByItemId(pool, inA.itemId))?.mailboxItemId).toBe(a.mailboxItemId);
+    expect((await getMailMessageMetaByItemId(pool, inB.itemId))?.mailboxItemId).toBe(b.mailboxItemId);
+    expect((await getMailMessageMetaByItemId(pool, orphanItemId))?.mailboxItemId).toBeNull();
   });
 });
 
@@ -474,6 +661,7 @@ describe("provider_message_id uniqueness convergence (issue #204)", () => {
       folderRelationPropertyId: properties.find((p) => p.key === "folder")!.id,
       attachmentsRelationPropertyId: properties.find((p) => p.key === "attachments")!.id,
       folderItemId: folder.id,
+      mailboxItemId: TEST_MAILBOX_ITEM_ID,
       messageId,
       envelope: {},
       attachments: [],
@@ -511,9 +699,15 @@ describe("provider_message_id uniqueness convergence (issue #204)", () => {
     const messageId = "<fill@x>";
     const sharedProviderId = "provider-fill-1";
 
-    await withTransaction(pool, (client) => upsertMailMessageMeta(client, { itemId, messageId, envelope: {} }));
+    await withTransaction(pool, (client) => upsertMailMessageMeta(client, { itemId, mailboxItemId: TEST_MAILBOX_ITEM_ID, messageId, envelope: {} }));
     await withTransaction(pool, (client) =>
-      upsertMailMessageMeta(client, { itemId, messageId, envelope: {}, providerMessageId: sharedProviderId }),
+      upsertMailMessageMeta(client, {
+        itemId,
+        mailboxItemId: TEST_MAILBOX_ITEM_ID,
+        messageId,
+        envelope: {},
+        providerMessageId: sharedProviderId,
+      }),
     );
 
     const meta = await getMailMessageMetaByItemId(pool, itemId);
@@ -555,6 +749,7 @@ describe("mailbox triage flags (issue #97)", () => {
       folderRelationPropertyId: properties.find((p) => p.key === "folder")!.id,
       attachmentsRelationPropertyId: properties.find((p) => p.key === "attachments")!.id,
       folderItemId: folder.id,
+      mailboxItemId: TEST_MAILBOX_ITEM_ID,
       messageId: "<flags@x>",
       envelope: {},
       attachments: [],
@@ -651,6 +846,7 @@ describe("attachment ingest (issue #26)", () => {
         folderRelationPropertyId: folderProperty.id,
         attachmentsRelationPropertyId: attachmentsProperty.id,
         folderItemId: folder.id,
+        mailboxItemId: TEST_MAILBOX_ITEM_ID,
         messageId: "<with-attachments@x>",
         envelope: {},
         attachments: [attachment("invoice.pdf", sameBytes), attachment("invoice-copy.pdf", sameBytes)],
@@ -707,6 +903,7 @@ describe("attachment ingest (issue #26)", () => {
         folderRelationPropertyId: folderProperty.id,
         attachmentsRelationPropertyId: attachmentsProperty.id,
         folderItemId: folder.id,
+        mailboxItemId: TEST_MAILBOX_ITEM_ID,
         messageId: "<with-pdf@x>",
         subject: "Has a PDF",
         envelope: {},
@@ -764,6 +961,7 @@ describe("attachment ingest (issue #26)", () => {
         folderRelationPropertyId: folderProperty.id,
         attachmentsRelationPropertyId: attachmentsProperty.id,
         folderItemId: folder.id,
+        mailboxItemId: TEST_MAILBOX_ITEM_ID,
         messageId: "<with-oversized-attachment@x>",
         envelope: {},
         attachments: [oversized, attachment("kept.pdf", Buffer.from("kept-bytes"))],
@@ -1009,6 +1207,7 @@ describe("full-text search over Emails (issue #26)", () => {
           folderRelationPropertyId: folderProperty.id,
           attachmentsRelationPropertyId: attachmentsProperty.id,
           folderItemId: folder.id,
+          mailboxItemId: TEST_MAILBOX_ITEM_ID,
           messageId: "<alice@x>",
           subject: "Report",
           envelope: { from: { address: "alice@x.com" } },
@@ -1024,6 +1223,7 @@ describe("full-text search over Emails (issue #26)", () => {
           folderRelationPropertyId: folderProperty.id,
           attachmentsRelationPropertyId: attachmentsProperty.id,
           folderItemId: folder.id,
+          mailboxItemId: TEST_MAILBOX_ITEM_ID,
           messageId: "<bob@x>",
           subject: "Report",
           envelope: { from: { address: "bob@x.com" } },
@@ -1059,6 +1259,7 @@ describe("full-text search over Emails (issue #26)", () => {
             folderRelationPropertyId: folderProperty.id,
             attachmentsRelationPropertyId: attachmentsProperty.id,
             folderItemId: folder.id,
+            mailboxItemId: TEST_MAILBOX_ITEM_ID,
             messageId,
             subject: "Report",
             envelope: { from: { address: "alice@x.com" } },
@@ -2519,6 +2720,7 @@ describe("deliveredToAddress persisted at ingest (issue #93)", () => {
         folderRelationPropertyId: folderProperty.id,
         attachmentsRelationPropertyId: attachmentsProperty.id,
         folderItemId: folder.id,
+        mailboxItemId: TEST_MAILBOX_ITEM_ID,
         messageId: "<dta1@example.com>",
         envelope: { from: { address: "sender@example.com" }, to: [{ address: "me@example.com" }] },
         attachments: [],
@@ -2554,6 +2756,7 @@ describe("deliveredToAddress persisted at ingest (issue #93)", () => {
         folderRelationPropertyId: folderProperty.id,
         attachmentsRelationPropertyId: attachmentsProperty.id,
         folderItemId: folder.id,
+        mailboxItemId: TEST_MAILBOX_ITEM_ID,
         messageId: "<dta2@example.com>",
         envelope: { from: { address: "sender@example.com" }, to: [{ address: "me@example.com" }] },
         attachments: [],
@@ -2613,6 +2816,7 @@ describe("DSN/bounce detection (issue #93)", () => {
         folderRelationPropertyId: folderProperty.id,
         attachmentsRelationPropertyId: attachmentsProperty.id,
         folderItemId: folder.id,
+        mailboxItemId: TEST_MAILBOX_ITEM_ID,
         messageId: "<outgoing@example.com>",
         subject: "Original",
         envelope: { from: { address: "me@example.com" }, to: [{ address: "someone@example.com" }] },
@@ -2630,6 +2834,7 @@ describe("DSN/bounce detection (issue #93)", () => {
         folderRelationPropertyId: folderProperty.id,
         attachmentsRelationPropertyId: attachmentsProperty.id,
         folderItemId: folder.id,
+        mailboxItemId: TEST_MAILBOX_ITEM_ID,
         messageId: "<dsn1@mailer-daemon.example.com>",
         subject: "Undelivered Mail Returned to Sender",
         references: ["<outgoing@example.com>"],
@@ -2648,6 +2853,7 @@ describe("DSN/bounce detection (issue #93)", () => {
         folderRelationPropertyId: folderProperty.id,
         attachmentsRelationPropertyId: attachmentsProperty.id,
         folderItemId: folder.id,
+        mailboxItemId: TEST_MAILBOX_ITEM_ID,
         messageId: "<reply1@example.com>",
         subject: "Re: Original",
         inReplyTo: "<outgoing@example.com>",
@@ -2836,6 +3042,7 @@ describe("legacy Emails migration (issue #93)", () => {
         folderRelationPropertyId: folderProperty.id,
         attachmentsRelationPropertyId: attachmentsProperty.id,
         folderItemId: folder.id,
+        mailboxItemId: TEST_MAILBOX_ITEM_ID,
         messageId: "<dup1@example.com>",
         envelope: { from: { address: "alice@example.com" } },
         attachments: [],

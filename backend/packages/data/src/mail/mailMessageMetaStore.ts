@@ -73,7 +73,7 @@ function mapRow(row: MailMessageMetaDbRow): MailMessageMetaRow {
 }
 
 const COLUMNS =
-  'item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope, ' +
+  'item_id, mailbox_item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope, ' +
   "delivered_to_address, message_kind, dsn_original_message_id, migration_status";
 
 export interface UpsertMailMessageMetaInput {
