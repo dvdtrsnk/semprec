@@ -110,12 +110,12 @@ describe("aiGatewayCallsStore", () => {
 
     const row = await settleTokenGatewayCall(pool, reserved.id, { inputTokens: 100, outputTokens: 40, costUsd: 0.003 });
 
-    expect(row.id).toBe(reserved.id);
-    expect(row.status).toBe("settled");
-    expect(row.inputTokens).toBe(100);
-    expect(row.outputTokens).toBe(40);
-    expect(row.audioSeconds).toBeNull();
-    expect(row.costUsd).toBeCloseTo(0.003);
+    expect(row?.id).toBe(reserved.id);
+    expect(row?.status).toBe("settled");
+    expect(row?.inputTokens).toBe(100);
+    expect(row?.outputTokens).toBe(40);
+    expect(row?.audioSeconds).toBeNull();
+    expect(row?.costUsd).toBeCloseTo(0.003);
   });
 
   it("returns null and leaves the row untouched when settling a row that is already settled", async () => {
@@ -147,11 +147,11 @@ describe("aiGatewayCallsStore", () => {
 
     const row = await settleAudioGatewayCall(pool, reserved.id, { audioSeconds: 60, costUsd: 0.01 });
 
-    expect(row.status).toBe("settled");
-    expect(row.audioSeconds).toBeCloseTo(60);
-    expect(row.costUsd).toBeCloseTo(0.01);
-    expect(row.inputTokens).toBeNull();
-    expect(row.outputTokens).toBeNull();
+    expect(row?.status).toBe("settled");
+    expect(row?.audioSeconds).toBeCloseTo(60);
+    expect(row?.costUsd).toBeCloseTo(0.01);
+    expect(row?.inputTokens).toBeNull();
+    expect(row?.outputTokens).toBeNull();
   });
 
   it("returns null and leaves the row untouched when settling an audio row that is already failed", async () => {
