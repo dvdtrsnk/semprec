@@ -131,4 +131,23 @@ describe("compileFilterNode", () => {
     );
     expect(scalarSql).toBe("properties ->> $1 = ANY($2::text[])");
   });
+
+  it("reads a rollup property from computed and every other property from properties", () => {
+    const props = properties([
+      ["total", { type: "rollup" }],
+      ["title", { type: "text" }],
+    ]);
+
+    const rollupParams: unknown[] = [];
+    const rollupSql = compileFilterNode(
+      parseFilterNode({ type: "equals", property: "total", value: 5 }),
+      props,
+      rollupParams,
+    );
+    expect(rollupSql).toBe("computed ->> $1 = $2");
+    expect(rollupParams).toEqual(["total", "5"]);
+
+    const textSql = compileFilterNode(parseFilterNode({ type: "equals", property: "title", value: "x" }), props, []);
+    expect(textSql).toBe("properties ->> $1 = $2");
+  });
 });

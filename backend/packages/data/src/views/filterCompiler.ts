@@ -71,8 +71,10 @@ function compileCondition(node: FilterCondition, properties: FilterProperties, p
 
   params.push(node.property);
   const keyParam = params.length;
-  const textField = `properties ->> $${keyParam}`;
-  const jsonField = `properties -> $${keyParam}`;
+  // A rollup's value is written by the recompute worker into `items.computed`, never `properties`.
+  const column = property.type === "rollup" ? "computed" : "properties";
+  const textField = `${column} ->> $${keyParam}`;
+  const jsonField = `${column} -> $${keyParam}`;
   const isMultiSelect = property.type === "multi_select";
 
   switch (node.type) {
