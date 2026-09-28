@@ -130,13 +130,18 @@ export async function runAgentSession(client: Pool | PoolClient, input: RunAgent
     unit: input.unit,
     task: input.task,
   });
-  return runAgentSessionForRun(client, run, input);
+  return withTraceContext({ agentRunId: run.id }, async () => {
+    await pushRunStatus(client, run.id, "running");
+    return runAgentSessionForRun(client, run, input);
+  });
 }
 
 /**
  * `runAgentSession` without the `createAgentRun`: drives one session for an `agent_runs` row
  * someone else already opened (issue #647's queued `agentRun`/`delegatedAgentRun` jobs), with the
- * row's own `task`, and closes it exactly as `runAgentSession` does.
+ * row's own `task`, and closes it exactly as `runAgentSession` does. The caller records the run's
+ * `running` status first, so it can do that in the same transaction as its own check that the row
+ * is still `running`.
  */
 export async function runAgentSessionForRun(
   client: Pool | PoolClient,
@@ -144,8 +149,6 @@ export async function runAgentSessionForRun(
   input: Omit<RunAgentSessionInput, "task" | "triggeredBy" | "unit" | "projectItemId" | "parentRunId" | "heartbeatId">,
 ): Promise<AgentRunRow> {
   return withTraceContext({ agentRunId: run.id }, async () => {
-    await pushRunStatus(client, run.id, "running");
-
     const session = input.createAgentSession({
       task: run.task,
       systemPromptOverride: input.systemPromptOverride,

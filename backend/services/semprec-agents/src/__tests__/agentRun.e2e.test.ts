@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxProvider, type FauxProviderHandle } from "@earendil-works/pi-ai";
@@ -17,6 +17,23 @@ import type { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentRunTask, createRunAgentForHeartbeats } from "../agentRunTasks.js";
 import type { GatewayModel } from "../modelComposition.js";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
+
+/**
+ * Lets a test run code while a run's session is being composed — to fail the composition, or to
+ * close the run in the gap before the handler claims it. Unset, the real composition runs as is.
+ */
+const composition = vi.hoisted(() => ({ during: undefined as ((agentRunId: string) => Promise<void>) | undefined }));
+
+vi.mock("../agentSessionComposition.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../agentSessionComposition.js")>();
+  return {
+    ...actual,
+    createAgentSessionFactoryForRun: async (...args: Parameters<typeof actual.createAgentSessionFactoryForRun>) => {
+      await composition.during?.(args[3].id);
+      return actual.createAgentSessionFactoryForRun(...args);
+    },
+  };
+});
 
 /** Polls `check` until it returns `true` or `timeoutMs` elapses, then fails via the final assertion. */
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
@@ -87,6 +104,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     await seedSystem(pool);
     await createUser(pool, { email: "owner@example.com", passwordHash: "unused" });
     runtime = undefined;
+    composition.during = undefined;
 
     faux = fauxProvider();
     requestHeaders = [];
@@ -163,6 +181,39 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
 
     await waitFor(async () => (await jobCount(AGENT_TASK_NAMES.DELEGATED_AGENT_RUN)) === 0);
     expect(await runRow(run.id)).toEqual({ status: "done", result: "earlier result" });
+    expect(await runEvents(run.id)).toEqual([]);
+    expect(requestHeaders).toEqual([]);
+  });
+
+  it("closes the row as error with the composition error when the session cannot be composed", async () => {
+    const { projectItemId } = await seededAgentHeartbeat();
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "say hello" });
+    composition.during = async () => {
+      throw new Error("mcp grants unavailable");
+    };
+    const task = createAgentRunTask(pool, registry, fauxGateway);
+
+    await expect(task({ agentRunId: run.id }, { job: { id: "1" } })).rejects.toThrow("mcp grants unavailable");
+
+    expect(await runRow(run.id)).toEqual({ status: "error", result: "mcp grants unavailable" });
+    expect(await errorNotificationCount(run.id)).toBe(1);
+    const events = await runEvents(run.id);
+    expect(events).toEqual([{ kind: "run_status", payload: { kind: "run_status", status: "error" } }]);
+    expect(requestHeaders).toEqual([]);
+  });
+
+  it("writes nothing for a run closed while its session was being composed", async () => {
+    const { projectItemId } = await seededAgentHeartbeat();
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "say hello" });
+    composition.during = async (agentRunId) => {
+      await finishAgentRun(pool, agentRunId, "done", "closed elsewhere");
+    };
+    faux.setResponses([fauxAssistantMessage("must not run")]);
+    const task = createAgentRunTask(pool, registry, fauxGateway);
+
+    await task({ agentRunId: run.id }, { job: { id: "1" } });
+
+    expect(await runRow(run.id)).toEqual({ status: "done", result: "closed elsewhere" });
     expect(await runEvents(run.id)).toEqual([]);
     expect(requestHeaders).toEqual([]);
   });
