@@ -1,13 +1,13 @@
 import type { PoolClient } from "pg";
 import { NotFoundError, ValidationError } from "../errors.js";
-import type { ItemRow, ViewRow } from "../types.js";
+import type { ItemRow, PropertyType, ViewRow } from "../types.js";
 import { getItemsByIds, getItemsByIdsIncludingDeleted, listItems } from "../chokePoint/itemsStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import * as viewItemsStore from "../chokePoint/viewItemsStore.js";
 import { compileFilterNode } from "./filterCompiler.js";
 import { buildFilterProperties } from "./filterProperties.js";
-import { compileSort } from "./sortCompiler.js";
+import { compileSort, compileSortKeyset } from "./sortCompiler.js";
 import { parseFilterNode, type FilterNode } from "./filterTree.js";
 import { parseSortConfig, sortConfigSchema, type SortSpec } from "./sortSpec.js";
 import { parseViewConfig, projectProperties, type ViewConfig } from "./viewConfig.js";
@@ -15,10 +15,10 @@ import { parseViewConfig, projectProperties, type ViewConfig } from "./viewConfi
 export interface QueryViewOptions {
   limit?: number;
   /**
-   * For a filtered view: only honored when the view has no sort/groupBy — keyset paging
-   * via `id > cursor` only resumes correctly under the default `id ASC` order, so a
-   * custom sort must page with `limit` alone. For a curated view: the last `position`
-   * seen (as a string), resuming with items whose position is strictly greater.
+   * For a filtered view without sort/groupBy: the last item id seen (`id > cursor`). With a
+   * sort/groupBy: the opaque composite keyset token a previous page returned as `nextCursor`
+   * (issue #664). For a curated view: the last `position` seen (as a string), resuming with
+   * items whose position is strictly greater.
    */
   cursor?: string;
   /** Excludes soft-deleted rows unless `true` (issue #157's `inTrash`). */
@@ -35,6 +35,53 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 function buildSortSpecs(config: ViewConfig): SortSpec[] {
   const specs = config.sort ? parseSortConfig(config.sort) : [];
   return config.groupBy ? [{ property: config.groupBy, direction: "asc" as const }, ...specs] : specs;
+}
+
+/**
+ * A sorted page's `nextCursor` (issue #664): `base64url(JSON.stringify({ v, id }))`, where `v`
+ * holds the last row's value for each sort key, in sort order, and `id` its item id — the full
+ * tuple `compileSortKeyset` resumes after.
+ */
+function encodeSortCursor(sortSpecs: SortSpec[], item: ItemRow): string {
+  const payload = { v: sortSpecs.map((sort) => item.properties[sort.property] ?? null), id: item.id };
+  return Buffer.from(JSON.stringify(payload)).toString("base64url");
+}
+
+const NUMERIC_TEXT_RE = /^\s*[-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?\s*$/;
+
+/** Whether a decoded cursor value survives the sort key's `::numeric`/`::timestamptz` cast, so a foreign value is a 400 here rather than a cast failure inside the query. */
+function castableTo(type: PropertyType | undefined, value: unknown): boolean {
+  if (value === null) return true;
+  if (type === "number") {
+    return (
+      (typeof value === "number" && Number.isFinite(value)) ||
+      (typeof value === "string" && NUMERIC_TEXT_RE.test(value))
+    );
+  }
+  if (type === "date") return typeof value === "string" && !Number.isNaN(Date.parse(value));
+  return true;
+}
+
+/** Decodes and validates a sorted query's cursor — the decode is the validation, so anything that is not a token `encodeSortCursor` could have produced for these sort keys is rejected. */
+function decodeSortCursor(
+  raw: string,
+  sortSpecs: SortSpec[],
+  propertyTypes: Map<string, PropertyType>,
+): { values: unknown[]; id: string } {
+  const invalid = new ValidationError("Invalid cursor", { field: "cursor" });
+  let payload: unknown;
+  try {
+    payload = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+  } catch (err) {
+    if (err instanceof SyntaxError) throw invalid;
+    throw err;
+  }
+  if (typeof payload !== "object" || payload === null) throw invalid;
+  const { v, id } = payload as { v?: unknown; id?: unknown };
+  if (!Array.isArray(v) || v.length !== sortSpecs.length) throw invalid;
+  if (typeof id !== "string" || !UUID_RE.test(id)) throw invalid;
+  if (!sortSpecs.every((sort, index) => castableTo(propertyTypes.get(sort.property), v[index]))) throw invalid;
+  return { values: v, id };
 }
 
 interface QueryItemsCoreOptions extends QueryViewOptions {
@@ -58,13 +105,23 @@ async function queryItemsCore(
   const propertyTypes = new Map(properties.map((p) => [p.key, p.type]));
   const filterProperties = filterNode ? await buildFilterProperties(client, properties) : undefined;
   const sortSpecs = options.sortSpecs ?? [];
+  const sorted = sortSpecs.length > 0;
+  const sortCursor =
+    sorted && options.cursor !== undefined ? decodeSortCursor(options.cursor, sortSpecs, propertyTypes) : undefined;
 
   return listItems(client, databaseId, {
     limit: options.limit,
-    cursor: sortSpecs.length === 0 ? options.cursor : undefined,
+    cursor: sorted ? undefined : options.cursor,
     includeDeleted: options.includeDeleted,
     buildFilterSql: filterNode ? (params) => compileFilterNode(filterNode, filterProperties!, params) : undefined,
-    buildOrderBySql: sortSpecs.length > 0 ? (params) => compileSort(sortSpecs, propertyTypes, params) : undefined,
+    buildOrderBySql: sorted ? (params) => compileSort(sortSpecs, propertyTypes, params) : undefined,
+    keyset: sorted
+      ? {
+          buildAfterSql: (params) =>
+            sortCursor ? compileSortKeyset(sortSpecs, propertyTypes, sortCursor, params) : undefined,
+          encodeCursor: (last) => encodeSortCursor(sortSpecs, last),
+        }
+      : undefined,
   });
 }
 
@@ -159,13 +216,13 @@ function parseLimitInput(raw: unknown): number | undefined {
   return raw;
 }
 
-/** `usedForKeysetPaging` mirrors `queryItemsCore`'s own rule: a cursor only feeds `id > $cursor` SQL when no custom sort is in play, so only then must it look like an item id. */
-function parseCursorInput(raw: unknown, usedForKeysetPaging: boolean): string | undefined {
+/** `usedForIdPaging` mirrors `queryItemsCore`'s own rule: a cursor only feeds `id > $cursor` SQL when no custom sort is in play, so only then must it look like an item id — a sorted query's opaque cursor is validated by `decodeSortCursor` instead. */
+function parseCursorInput(raw: unknown, usedForIdPaging: boolean): string | undefined {
   if (raw === undefined) return undefined;
   if (typeof raw !== "string" || raw.length === 0) {
     throw new ValidationError("'cursor' must be a non-empty string", { field: "cursor" });
   }
-  if (usedForKeysetPaging && !UUID_RE.test(raw)) {
+  if (usedForIdPaging && !UUID_RE.test(raw)) {
     throw new ValidationError(`Invalid cursor: '${raw}'`, { field: "cursor" });
   }
   return raw;

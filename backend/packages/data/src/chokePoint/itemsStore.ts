@@ -260,12 +260,18 @@ export interface ListItemsOptions {
    * Views-layer pushdown hooks (issue #22): each is called with the same `params` array
    * this function is already building, so a compiled filter/sort predicate's bind
    * parameters land at the correct offset alongside `database_id`/`cursor`/`limit`.
-   * Combining `buildOrderBySql` with `cursor` is unsupported — keyset pagination via
-   * `id > cursor` only resumes correctly under the default `id ASC` order, so callers
-   * that need a custom sort must page with `limit` alone.
+   * `cursor` pages via `id > cursor`, which only resumes correctly under the default
+   * `id ASC` order; a custom order pages through `keyset`.
    */
   buildFilterSql?: (params: unknown[]) => string | undefined;
   buildOrderBySql?: (params: unknown[]) => string | undefined;
+  /**
+   * Keyset paging for a custom order (issue #664): `buildAfterSql` replaces the `id > cursor`
+   * predicate with "rows after the previous page's last row" under that order (or returns
+   * `undefined` on the first page), and `encodeCursor` turns a page's last row into the
+   * `nextCursor` that feeds it next time. When set, `cursor` is ignored.
+   */
+  keyset?: { buildAfterSql: (params: unknown[]) => string | undefined; encodeCursor: (last: ItemRow) => string };
 }
 
 export async function listItems(
@@ -284,7 +290,10 @@ export async function listItems(
   const customOrderBySql = options.buildOrderBySql?.(params);
   if (customOrderBySql) orderBySql = `${customOrderBySql}, id ASC`;
 
-  if (options.cursor) {
+  if (options.keyset) {
+    const afterSql = options.keyset.buildAfterSql(params);
+    if (afterSql) conditions.push(afterSql);
+  } else if (options.cursor) {
     params.push(options.cursor);
     conditions.push(`id > $${params.length}`);
   }
@@ -296,11 +305,11 @@ export async function listItems(
     params,
   );
   const hasMore = rows.length > limit;
-  const page = hasMore ? rows.slice(0, limit) : rows;
-  return {
-    items: page.map(mapItemRow),
-    nextCursor: hasMore ? (page[page.length - 1] as { id: string }).id : null,
-  };
+  const items = (hasMore ? rows.slice(0, limit) : rows).map(mapItemRow);
+  const last = items[items.length - 1];
+  let nextCursor: string | null = null;
+  if (hasMore && last) nextCursor = options.keyset ? options.keyset.encodeCursor(last) : last.id;
+  return { items, nextCursor };
 }
 
 /**
