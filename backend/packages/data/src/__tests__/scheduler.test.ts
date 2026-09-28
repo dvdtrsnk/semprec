@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
 import { getTraceContext } from "@semprec/shared";
@@ -18,7 +18,11 @@ import {
 } from "../scheduler/schedulerStore.js";
 import { createActionRegistry, CORE_AGENT_RUN_ACTION_ID, coreAgentRunAction } from "../scheduler/actions.js";
 import { createCoreTaskList } from "../worker.js";
-import { createHeartbeatFireCoreTask, createHeartbeatFireAgentTask } from "../scheduler/sweep.js";
+import {
+  createHeartbeatFireCoreTask,
+  createHeartbeatFireAgentTask,
+  handleHeartbeatSweepTask,
+} from "../scheduler/sweep.js";
 import { getSystemSettingsItemId } from "../systemSettings.js";
 import { createAgentRun, listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
 import { createHeartbeatTriggerTool } from "../scheduler/heartbeatAgentTools.js";
@@ -81,7 +85,7 @@ describe("scheduler", () => {
     );
     expect(heartbeat.nextFireAt).toBeNull();
 
-    const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    const { fired } = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
     expect(fired).toHaveLength(0);
   });
 
@@ -124,7 +128,7 @@ describe("scheduler", () => {
       heartbeat.id,
     ]);
 
-    const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    const { fired } = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
     expect(fired.map((f) => f.id)).toEqual([heartbeat.id]);
 
     await drainQueue(registry);
@@ -133,7 +137,7 @@ describe("scheduler", () => {
     expect(new Date(after!.nextFireAt!).getTime()).toBeGreaterThan(Date.now());
 
     // A second sweep right away finds nothing due.
-    const fired2 = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    const { fired: fired2 } = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
     expect(fired2).toHaveLength(0);
   });
 
@@ -356,7 +360,7 @@ describe("scheduler", () => {
       [heartbeat.id, dueAt, JSON.stringify(heartbeat.rule)],
     );
 
-    const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    const { fired } = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
     expect(fired).toHaveLength(0); // conflicting insert returned no id: not treated as newly fired
 
     const { rows: occurrences } = await pool.query("SELECT id FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
@@ -382,7 +386,7 @@ describe("scheduler", () => {
     await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
       heartbeat.id,
     ]);
-    const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    const { fired } = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
     expect(fired).toHaveLength(1);
     const { rows: occRows } = await pool.query("SELECT id FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
       heartbeat.id,
@@ -517,7 +521,7 @@ describe("scheduler", () => {
     await withTransaction(pool, (client) => setHeartbeatEnabled(client, heartbeat.id, true));
     await pool.query("UPDATE project_heartbeats SET next_fire_at = $2 WHERE id = $1", [heartbeat.id, dueAt]);
 
-    const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    const { fired } = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
     expect(fired.map((f) => f.id)).toEqual([heartbeat.id]);
 
     const { rows: reactivatedRows } = await pool.query<{ id: string; generation: number; status: string }>(
@@ -592,7 +596,7 @@ describe("scheduler", () => {
     );
     await pool.query("UPDATE project_heartbeats SET next_fire_at = $2 WHERE id = $1", [heartbeat.id, dueAt]);
 
-    const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    const { fired } = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
     expect(fired.map((f) => f.id)).toEqual([heartbeat.id]);
 
     const { rows: replacedRows } = await pool.query<{
@@ -670,11 +674,11 @@ describe("scheduler", () => {
 
     // `FOR UPDATE SKIP LOCKED` inside sweepDueHeartbeats means two concurrent sweep transactions
     // never both select this row: run them concurrently against the same pool to exercise that.
-    const [firedA, firedB] = await Promise.all([
+    const [resultA, resultB] = await Promise.all([
       withTransaction(pool, (client) => sweepDueHeartbeats(client)),
       withTransaction(pool, (client) => sweepDueHeartbeats(client)),
     ]);
-    const totalFired = firedA.length + firedB.length;
+    const totalFired = resultA.fired.length + resultB.fired.length;
     expect(totalFired).toBe(1);
 
     const { rows: occRows } = await pool.query("SELECT id FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
@@ -808,7 +812,7 @@ describe("scheduler", () => {
     await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
       heartbeat.id,
     ]);
-    const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    const { fired } = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
     expect(fired).toHaveLength(1);
     const { rows: occRows } = await pool.query("SELECT id FROM heartbeat_occurrences WHERE heartbeat_id = $1", [
       heartbeat.id,
@@ -1168,7 +1172,7 @@ describe("scheduler", () => {
         heartbeat.id,
       ]);
 
-      const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client, moduleRuleKinds));
+      const { fired } = await withTransaction(pool, (client) => sweepDueHeartbeats(client, moduleRuleKinds));
       expect(fired.map((f) => f.id)).toEqual([heartbeat.id]);
 
       // A module-declared rule kind is treated like a core fixed rule (only `everyNDays`/
@@ -1199,7 +1203,7 @@ describe("scheduler", () => {
       ]);
 
       // The module is now deactivated: the sweep is run with no module rule kinds registered.
-      const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+      const { fired } = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
       expect(fired).toHaveLength(0);
 
       const { rows } = await pool.query("SELECT last_error, next_fire_at FROM project_heartbeats WHERE id = $1", [
@@ -1305,7 +1309,7 @@ describe("scheduler", () => {
       ]);
 
       // Sweep while the module is still active: enqueues the fire job and advances next_fire_at.
-      const fired = await withTransaction(pool, (client) => sweepDueHeartbeats(client, moduleRuleKinds));
+      const { fired } = await withTransaction(pool, (client) => sweepDueHeartbeats(client, moduleRuleKinds));
       expect(fired.map((f) => f.id)).toEqual([heartbeat.id]);
 
       // The module is deactivated by the time the fire job actually runs: drainQueue's
@@ -1385,6 +1389,154 @@ describe("scheduler", () => {
       // The core heartbeat after it in the same batch still gets recomputed.
       const coreAfter = (await withTransaction(pool, (client) => getHeartbeat(client, coreHeartbeat.id)))!.nextFireAt;
       expect(coreAfter).not.toBe(coreBefore);
+    });
+  });
+
+  describe("chunked sweep (issue #688)", () => {
+    /** Wraps the real pool, counting every `connect()` call it makes. */
+    function poolCountingConnects(): { pool: Pool; count: () => number } {
+      let calls = 0;
+      const wrapped = new Proxy(pool, {
+        get(target, prop, receiver) {
+          if (prop === "connect") {
+            return () => {
+              calls += 1;
+              return target.connect();
+            };
+          }
+          const value: unknown = Reflect.get(target, prop, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      return { pool: wrapped, count: () => calls };
+    }
+
+    /** Wraps the real pool so its `callIndex`-th (1-based) `connect()` call rejects with `error`; every other call delegates. */
+    function poolWithFailingConnectAt(callIndex: number, error: Error): Pool {
+      let calls = 0;
+      return new Proxy(pool, {
+        get(target, prop, receiver) {
+          if (prop === "connect") {
+            return () => {
+              calls += 1;
+              return calls === callIndex ? Promise.reject(error) : target.connect();
+            };
+          }
+          const value: unknown = Reflect.get(target, prop, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    }
+
+    async function insertDueDailyHeartbeats(count: number): Promise<string[]> {
+      const projectItemId = await getSemprecProjectId();
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO project_heartbeats (project_item_id, name, rule, action_id, enabled, next_fire_at)
+         SELECT $1, 'Bulk heartbeat ' || gs, $2::jsonb, 'noop', true, now() - interval '1 minute'
+         FROM generate_series(1, $3) AS gs
+         RETURNING id`,
+        [projectItemId, JSON.stringify({ kind: "dailyTime", at: "09:00" }), count],
+      );
+      return rows.map((row) => row.id);
+    }
+
+    async function countFireJobs(): Promise<number> {
+      const { rows } = await pool.query<{ count: number }>(
+        `SELECT count(*)::int AS count
+         FROM graphile_worker._private_jobs j
+         JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+         WHERE t.identifier = 'heartbeatFireCore'`,
+      );
+      return rows[0]!.count;
+    }
+
+    it("fires every due heartbeat exactly once, in ceil(n/100) chunk transactions", async () => {
+      const ids = await insertDueDailyHeartbeats(250);
+      const { pool: countingPool, count } = poolCountingConnects();
+
+      await handleHeartbeatSweepTask(countingPool);
+
+      expect(count()).toBe(3); // 100 + 100 + 50
+
+      const { rows: occRows } = await pool.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM heartbeat_occurrences WHERE heartbeat_id = ANY($1)`,
+        [ids],
+      );
+      expect(occRows[0]!.count).toBe(250);
+      expect(await countFireJobs()).toBe(250);
+
+      const { rows: dueRows } = await pool.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM project_heartbeats WHERE id = ANY($1) AND next_fire_at > now()`,
+        [ids],
+      );
+      expect(dueRows[0]!.count).toBe(250);
+    });
+
+    it("leaves earlier chunks committed when a later chunk's transaction fails to start", async () => {
+      const ids = await insertDueDailyHeartbeats(150);
+      const failingPool = poolWithFailingConnectAt(2, new Error("simulated outage"));
+
+      await expect(handleHeartbeatSweepTask(failingPool)).rejects.toThrow("simulated outage");
+
+      const { rows: firedRows } = await pool.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM project_heartbeats WHERE id = ANY($1) AND next_fire_at > now()`,
+        [ids],
+      );
+      expect(firedRows[0]!.count).toBe(100);
+      expect(await countFireJobs()).toBe(100);
+
+      const { rows: stillDueRows } = await pool.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM project_heartbeats WHERE id = ANY($1) AND next_fire_at <= now()`,
+        [ids],
+      );
+      expect(stillDueRows[0]!.count).toBe(50);
+
+      // A second sweep against the real pool picks up exactly the untouched 50.
+      await handleHeartbeatSweepTask(pool);
+      expect(await countFireJobs()).toBe(150);
+      const { rows: allFiredRows } = await pool.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM project_heartbeats WHERE id = ANY($1) AND next_fire_at > now()`,
+        [ids],
+      );
+      expect(allFiredRows[0]!.count).toBe(150);
+    });
+
+    describe("clock skew between the application and the database", () => {
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it("computes the next fire from the database clock, not a lagging application clock", async () => {
+        const projectItemId = await getSemprecProjectId();
+        const heartbeat = await withTransaction(pool, (client) =>
+          createHeartbeat(client, {
+            projectItemId,
+            name: "Daily",
+            rule: { kind: "dailyTime", at: "09:00" },
+            actionId: "noop",
+          }),
+        );
+        await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+          heartbeat.id,
+        ]);
+
+        // The application clock lags the (real) database clock by two hours.
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(new Date(Date.now() - 2 * 60 * 60 * 1000));
+
+        await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+
+        vi.useRealTimers();
+
+        const { rows } = await pool.query<{ in_future: boolean }>(
+          "SELECT next_fire_at > now() AS in_future FROM project_heartbeats WHERE id = $1",
+          [heartbeat.id],
+        );
+        expect(rows[0]!.in_future).toBe(true);
+
+        const { fired } = await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+        expect(fired.map((f) => f.id)).not.toContain(heartbeat.id);
+      });
     });
   });
 

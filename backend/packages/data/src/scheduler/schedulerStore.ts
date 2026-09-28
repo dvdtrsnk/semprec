@@ -330,6 +330,16 @@ export interface SweptHeartbeat {
   id: string;
 }
 
+/** One chunk's outcome from {@link sweepDueHeartbeats} — see its docstring for `lastId`/`exhausted`. */
+export interface SweepChunkResult {
+  fired: SweptHeartbeat[];
+  lastId: string | null;
+  exhausted: boolean;
+}
+
+/** Keyset page size for `sweepDueHeartbeats` — one transaction per chunk, this many rows each. */
+const SWEEP_CHUNK_SIZE = 100;
+
 export interface OccurrenceInsertResult {
   occurrenceId: string;
   generation: number;
@@ -434,20 +444,45 @@ async function insertHeartbeatOccurrence(
  * execution time, not from this enqueue time (issue #213's fix for the delay-shifts-schedule
  * bug). `last_fired_at` is no longer touched here either — the first attempt sets it, for both
  * fixed and floating rules, to `first_started_at`.
+ *
+ * One chunk of at most `SWEEP_CHUNK_SIZE` rows, keyset-paginated by `id` via `afterId` — the
+ * caller (`handleHeartbeatSweepTask`) runs each chunk in its own transaction and loops until
+ * `exhausted`, so a failure partway through a sweep leaves earlier chunks committed instead of
+ * rolling back the whole tick. Pagination is by `id`, not by `next_fire_at`: a row this sweep
+ * deliberately leaves due (an unparseable rule, or a non-reactivatable occurrence conflict —
+ * both `continue` below without changing `next_fire_at`) must be visited at most once per sweep.
+ * `ORDER BY next_fire_at` would instead put such a row first in every subsequent chunk's page,
+ * since its `next_fire_at` never advances past `now()`.
+ *
+ * The next fire time is computed from each row's own `db_now` (Postgres' `now()` at select time),
+ * never the application clock — an application clock that lags the database clock must not
+ * recompute a fixed rule's next occurrence as still due, which would re-select the row next sweep
+ * and hit the `(heartbeat_id, scheduled_for)` conflict `insertHeartbeatOccurrence` treats as an
+ * idempotent no-op, permanently stalling that heartbeat.
  */
 export async function sweepDueHeartbeats(
   client: PoolClient,
   moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
-): Promise<SweptHeartbeat[]> {
-  const { rows } = await client.query<{ id: string; rule: unknown; next_fire_at: Date; action_id: string }>(
-    `SELECT id, rule, next_fire_at, action_id FROM project_heartbeats
+  afterId: string | null = null,
+): Promise<SweepChunkResult> {
+  const { rows } = await client.query<{
+    id: string;
+    rule: unknown;
+    next_fire_at: Date;
+    action_id: string;
+    db_now: Date;
+  }>(
+    `SELECT id, rule, next_fire_at, action_id, now() AS db_now FROM project_heartbeats
      WHERE enabled AND next_fire_at IS NOT NULL AND next_fire_at <= now()
+       AND ($1::uuid IS NULL OR id > $1)
+     ORDER BY id
+     LIMIT $2
      FOR UPDATE SKIP LOCKED`,
+    [afterId, SWEEP_CHUNK_SIZE],
   );
-  if (rows.length === 0) return [];
+  if (rows.length === 0) return { fired: [], lastId: null, exhausted: true };
 
   const timezone = await getSystemTimezone(client);
-  const now = new Date();
   const fired: SweptHeartbeat[] = [];
   for (const row of rows) {
     // A row whose rule kind belongs to a module deactivated since it was last scheduled must
@@ -458,7 +493,7 @@ export async function sweepDueHeartbeats(
     let calendarNextFireAt: Date | null;
     try {
       rule = parseHeartbeatRule(row.rule, moduleRuleKinds);
-      calendarNextFireAt = computeNextFireAt(rule, timezone, now, moduleRuleKinds);
+      calendarNextFireAt = computeNextFireAt(rule, timezone, row.db_now, moduleRuleKinds);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await recordHeartbeatFailure(client, row.id, message);
@@ -479,7 +514,8 @@ export async function sweepDueHeartbeats(
     );
     fired.push({ id: row.id });
   }
-  return fired;
+  const lastRow = rows[rows.length - 1];
+  return { fired, lastId: lastRow ? lastRow.id : null, exhausted: rows.length < SWEEP_CHUNK_SIZE };
 }
 
 export type OccurrenceFirePreparation =
