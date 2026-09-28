@@ -622,3 +622,79 @@ export async function failHeartbeatOccurrence(
     message,
   ]);
 }
+
+/**
+ * The fire task's "the failure happened before or instead of the action handler" close-out — the
+ * counterpart of `failHeartbeatOccurrence` for a handler failure. Runs inside the caller's
+ * transaction on the fire job's final attempt, when preparation, the affinity check or the handler
+ * lookup threw.
+ *
+ * A floating rule's `next_fire_at` is `NULL` from the sweep until the fire's first attempt commits
+ * its preparation; when that never happened, this recomputes it from the database clock so the
+ * heartbeat is not silently unscheduled. When the rule cannot be parsed or computed any more, the
+ * row stays unscheduled (the next edit/enable recomputes it) and `last_error` says so.
+ *
+ * A given `occurrenceId` still `queued` or `running` is marked `failed`; a terminal occurrence is
+ * left alone. Returns the heartbeat's `id`/`name` for the notification, or `null` when the
+ * heartbeat is gone.
+ */
+export async function recordHeartbeatFireSetupFailure(
+  client: PoolClient,
+  heartbeatId: string,
+  occurrenceId: string | undefined,
+  message: string,
+  moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+): Promise<{ id: string; name: string } | null> {
+  const { rows } = await client.query<{
+    id: string;
+    name: string;
+    rule: unknown;
+    enabled: boolean;
+    next_fire_at: Date | null;
+    db_now: Date;
+  }>(
+    `SELECT id, name, rule, enabled, next_fire_at, now() AS db_now
+     FROM project_heartbeats WHERE id = $1 FOR UPDATE`,
+    [heartbeatId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+
+  if (row.enabled && row.next_fire_at === null) {
+    // Read before the try: a database failure here must propagate as itself, not be recorded as
+    // an unrestorable rule (and a failed query has already aborted the transaction anyway).
+    const timezone = await getSystemTimezone(client);
+    let restored: { ok: true; nextFireAt: Date | null } | { ok: false; error: string };
+    try {
+      const rule = parseHeartbeatRule(row.rule, moduleRuleKinds);
+      const nextFireAt = computeNextFireAt(rule, timezone, row.db_now, moduleRuleKinds);
+      restored = { ok: true, nextFireAt };
+    } catch (err) {
+      restored = { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    if (restored.ok) {
+      await client.query(`UPDATE project_heartbeats SET next_fire_at = $2, last_error = $3 WHERE id = $1`, [
+        heartbeatId,
+        restored.nextFireAt,
+        message,
+      ]);
+    } else {
+      await client.query(`UPDATE project_heartbeats SET last_error = $2 WHERE id = $1`, [
+        heartbeatId,
+        `${message}; schedule could not be restored: ${restored.error}`,
+      ]);
+    }
+  } else {
+    await client.query(`UPDATE project_heartbeats SET last_error = $2 WHERE id = $1`, [heartbeatId, message]);
+  }
+
+  if (occurrenceId !== undefined) {
+    await client.query(
+      `UPDATE heartbeat_occurrences SET status = 'failed', last_error = $2
+       WHERE id = $1 AND status IN ('queued', 'running')`,
+      [occurrenceId, message],
+    );
+  }
+
+  return { id: row.id, name: row.name };
+}
