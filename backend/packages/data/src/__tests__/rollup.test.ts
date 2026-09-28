@@ -6,6 +6,7 @@ import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 import { ValidationError } from "../errors.js";
+import { recomputeRollupCell } from "../rollup/recompute.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -205,5 +206,90 @@ describe("rollup engine", () => {
 
     const item = await chokePoint.getItem(projects.id, project.id);
     expect(item?.computed[sumProp.key]).toBe(5);
+  });
+
+  it("ignores a non-ISO date in a latest rollup and completes the job on its first attempt", async () => {
+    const projects = await chokePoint.createDatabase({ name: "P3" });
+    const tasks = await chokePoint.createDatabase({ name: "T3" });
+    await chokePoint.createProperty({ databaseId: tasks.id, key: "due", name: "Due", type: "date" });
+    const { property: relation } = await chokePoint.createRelationProperty({
+      sourceDatabaseId: projects.id,
+      key: "tasks",
+      name: "Tasks",
+      targetDatabaseId: tasks.id,
+    });
+    const latestProp = await chokePoint.createProperty({
+      databaseId: projects.id,
+      key: "latestDue",
+      name: "Latest due",
+      type: "rollup",
+      config: { relationPropertyKey: "tasks", aggregation: "latest", targetPropertyKey: "due" },
+    });
+    await drainQueue(); // backfill over an empty database
+    const project = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
+    for (const due of ["2026-01-05", "2026-03-10T12:00:00Z", "tomorrow"]) {
+      const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { due } });
+      await chokePoint.createRelation({
+        relationPropertyId: relation.id,
+        callerItemId: project.id,
+        targetItemId: task.id,
+      });
+    }
+    await drainQueue();
+
+    const item = await chokePoint.getItem(projects.id, project.id);
+    expect(item?.computed[latestProp.key]).toBe("2026-03-10T12:00:00.000Z");
+    // A failed attempt leaves the job behind (rescheduled for a retry); a successful one deletes it.
+    const { rows } = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM graphile_worker._private_jobs WHERE key = $1`,
+      [`rollup-recompute:${latestProp.id}:${project.id}`],
+    );
+    expect(rows[0]?.count).toBe("0");
+  });
+
+  it("serialises a recompute behind a lock on the target row and aggregates the state committed meanwhile", async () => {
+    const { projects, tasks, tasksRelation, sumProp } = await makeProjectsAndTasks();
+    const project = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
+    const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { hours: 3 } });
+    await chokePoint.createRelation({
+      relationPropertyId: tasksRelation.id,
+      callerItemId: project.id,
+      targetItemId: task.id,
+    });
+    await drainQueue();
+    expect((await chokePoint.getItem(projects.id, project.id))?.computed[sumProp.key]).toBe(3);
+
+    const holder = await pool.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [project.id]);
+
+      let settled = false;
+      const recompute = recomputeRollupCell(pool, sumProp.id, project.id).finally(() => {
+        settled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(settled).toBe(false);
+
+      await chokePoint.updateItem({ databaseId: tasks.id, itemId: task.id, propertiesPatch: { hours: 8 } });
+      await holder.query("COMMIT");
+      await recompute;
+    } finally {
+      holder.release();
+    }
+
+    expect((await chokePoint.getItem(projects.id, project.id))?.computed[sumProp.key]).toBe(8);
+  });
+
+  it("returns without writing when the target item was purged", async () => {
+    const { projects, sumProp } = await makeProjectsAndTasks();
+    const project = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
+    await pool.query("DELETE FROM items WHERE id = $1", [project.id]);
+
+    await expect(recomputeRollupCell(pool, sumProp.id, project.id)).resolves.toBeUndefined();
+    const { rows } = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM items WHERE id = $1", [
+      project.id,
+    ]);
+    expect(rows[0]?.count).toBe("0");
   });
 });
