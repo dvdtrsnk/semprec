@@ -17,7 +17,7 @@ import * as relationsStore from "./relationsStore.js";
 import { assertNoComputedKeyCollision } from "./computedKeyRegistry.js";
 import { applyRollupConfig } from "../rollup/config.js";
 import { enqueueRollupBackfill } from "../rollup/recompute.js";
-import { assertRelationDeletable, assertSourceRetypeAllowed } from "../rollup/mirror.js";
+import { assertRelationDeletable, assertSourceDeletable, assertSourceRetypeAllowed } from "../rollup/mirror.js";
 import { enqueuePropertyTypeMigration, isConversionSupported } from "../migrationJob/propertyTypeMigration.js";
 
 /**
@@ -48,6 +48,8 @@ export async function propertyDeleteWithClient(
         await propertiesStore.deleteProperty(client, otherPropertyId);
       }
     }
+  } else {
+    await assertSourceDeletable(client, property.databaseId, property.key);
   }
   await propertiesStore.deleteProperty(client, id);
   runAfterCommit(client, () => {

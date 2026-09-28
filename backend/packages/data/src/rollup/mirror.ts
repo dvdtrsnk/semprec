@@ -19,6 +19,24 @@ export async function assertRelationDeletable(client: PoolClient, relationDefini
 }
 
 /**
+ * A DELETE on a property a rollup aggregates (its `targetPropertyKey`) must be rejected, not leave
+ * the dependency pointing at a key no property has — as with a relation, the user's path is to
+ * delete the rollup first, then the source property.
+ */
+export async function assertSourceDeletable(
+  client: PoolClient,
+  sourceDatabaseId: string,
+  sourcePropertyKey: string,
+): Promise<void> {
+  const dependents = await findDependenciesBySource(client, sourceDatabaseId, sourcePropertyKey);
+  if (dependents.length > 0) {
+    throw new ValidationError("Cannot delete a property that dependent rollups still aggregate", {
+      dependentRollups: dependents.map((d) => d.rollupPropertyId),
+    });
+  }
+}
+
+/**
  * A PATCH changing a source property's type must be rejected if it would leave a
  * dependent rollup's aggregation incompatible with the new type.
  */

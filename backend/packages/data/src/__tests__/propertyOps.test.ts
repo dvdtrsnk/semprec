@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
-import { ForbiddenError } from "../errors.js";
+import { ForbiddenError, ValidationError } from "../errors.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -141,6 +141,48 @@ describe("choke-point propertyOps", () => {
       [`rollup-recompute:${rollup.id}:full`],
     );
     expect(rows[0]?.count).toBe("1");
+  });
+
+  it("refuses deleting a property a rollup aggregates until the rollup itself is deleted", async () => {
+    const projects = await chokePoint.createDatabase({ name: "Projects" });
+    const tasks = await chokePoint.createDatabase({ name: "Tasks" });
+    const amount = await chokePoint.createProperty({
+      databaseId: tasks.id,
+      key: "amount",
+      name: "Amount",
+      type: "number",
+    });
+    const note = await chokePoint.createProperty({ databaseId: tasks.id, key: "note", name: "Note", type: "text" });
+    await chokePoint.createRelationProperty({
+      sourceDatabaseId: projects.id,
+      key: "tasks",
+      name: "Tasks",
+      targetDatabaseId: tasks.id,
+    });
+    const rollup = await chokePoint.createProperty({
+      databaseId: projects.id,
+      key: "totalAmount",
+      name: "Total amount",
+      type: "rollup",
+      config: { relationPropertyKey: "tasks", aggregation: "sum", targetPropertyKey: "amount" },
+    });
+
+    const rejection: unknown = await chokePoint.deleteProperty(amount.id).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    if (!(rejection instanceof ValidationError)) throw new Error("expected a ValidationError");
+    expect(rejection.details).toEqual({ dependentRollups: [rollup.id] });
+    expect(await chokePoint.getProperty(amount.id)).toEqual(amount);
+
+    const deletedNote = await chokePoint.deleteProperty(note.id);
+    expect(deletedNote.id).toBe(note.id);
+    expect(await chokePoint.getProperty(note.id)).toBeNull();
+
+    await chokePoint.deleteProperty(rollup.id);
+    const deletedAmount = await chokePoint.deleteProperty(amount.id);
+    expect(deletedAmount.id).toBe(amount.id);
+    expect(await chokePoint.getProperty(amount.id)).toBeNull();
   });
 
   describe("findPropertiesByKey (issue #432)", () => {
