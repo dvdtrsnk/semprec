@@ -26,6 +26,11 @@ export function runAfterCommit(client: PoolClient, callback: () => void): void {
   }
 }
 
+export interface WithTransactionOptions {
+  /** Defaults to READ COMMITTED (a plain `BEGIN`) when omitted. */
+  isolation?: "repeatable_read" | "serializable";
+}
+
 /**
  * Runs `fn` inside a single transaction on a dedicated client, committing on success and rolling back on error.
  *
@@ -33,11 +38,21 @@ export function runAfterCommit(client: PoolClient, callback: () => void): void {
  * `ROLLBACK` itself fails. A connection whose `ROLLBACK` failed is in an unknown state, so it is
  * released with that error — which makes `pg` destroy it — and never goes back into the pool.
  */
-export async function withTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T> {
+export async function withTransaction<T>(
+  pool: Pool,
+  fn: (client: PoolClient) => Promise<T>,
+  options: WithTransactionOptions = {},
+): Promise<T> {
   const client = await pool.connect();
   let releaseError: Error | undefined;
   try {
-    await client.query("BEGIN");
+    if (options.isolation === "serializable") {
+      await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    } else if (options.isolation === "repeatable_read") {
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
+    } else {
+      await client.query("BEGIN");
+    }
     try {
       const result = await fn(client);
       await client.query("COMMIT");
