@@ -3,7 +3,12 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
-import { createHeartbeat, occurrenceFireJobKey, sweepDueHeartbeats } from "../scheduler/schedulerStore.js";
+import {
+  createHeartbeat,
+  occurrenceFireJobKey,
+  setHeartbeatEnabled,
+  sweepDueHeartbeats,
+} from "../scheduler/schedulerStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -279,6 +284,36 @@ describe("heartbeat.list / heartbeat.history / heartbeat.trigger agent tools", (
     expect(jobs[0]!.key).toBe(`heartbeat-fire:manual:${heartbeat.id}`);
     expect(jobs[0]!.key).not.toBe(`heartbeat-fire:${heartbeat.id}`);
     expect(jobs[0]!.payload.payload).toEqual({ heartbeatId: heartbeat.id, triggeredByRunId: callingRun.id });
+  });
+
+  it("refuses to trigger a disabled heartbeat and enqueues nothing, then enqueues once it is re-enabled", async () => {
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId: PROJECT_A,
+        name: "Process Inbox",
+        rule: { kind: "interval", minutes: 5 },
+        actionId: "core.agentRun",
+      }),
+    );
+    await withTransaction(pool, (client) => setHeartbeatEnabled(client, heartbeat.id, false));
+    const callingRun = await createAgentRun(pool, { projectItemId: PROJECT_A, triggeredBy: "user", task: "trigger" });
+
+    const heartbeatTrigger = createHeartbeatTriggerTool(pool);
+    const disabledOutcome = await heartbeatTrigger(callingRun.id, { heartbeatId: heartbeat.id });
+
+    expect(disabledOutcome).toEqual({
+      error: true,
+      result: "this heartbeat is disabled; enable it before triggering it",
+    });
+    expect(await pendingTriggerJobs(pool)).toHaveLength(0);
+
+    await withTransaction(pool, (client) => setHeartbeatEnabled(client, heartbeat.id, true));
+    const enabledOutcome = await heartbeatTrigger(callingRun.id, { heartbeatId: heartbeat.id });
+
+    expect(enabledOutcome.error).toBe(false);
+    const jobs = await pendingTriggerJobs(pool);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]!.key).toBe(`heartbeat-fire:manual:${heartbeat.id}`);
   });
 
   it("collapses repeated pending manual triggers onto a single job", async () => {

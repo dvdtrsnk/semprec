@@ -27,6 +27,9 @@ export type HeartbeatTriggerArgs = z.infer<typeof heartbeatTriggerArgsSchema>;
 /** The canonical, machine-matchable error `heartbeat.trigger` returns for an `onItemEvent` heartbeat (issue #136) — event rules only ever fire from the write that produced the event, never manually. */
 export const HEARTBEAT_EVENT_TRIGGERED_ERROR = "heartbeat_event_triggered";
 
+/** `heartbeat.trigger`'s error message for a heartbeat the user disabled via `setHeartbeatEnabled` (issue #685). */
+const HEARTBEAT_DISABLED_ERROR = "this heartbeat is disabled; enable it before triggering it";
+
 export interface HeartbeatListEntry {
   id: string;
   /** The heartbeat's assignment/purpose text (`project_heartbeats.name`), e.g. "Manifest drift check". */
@@ -150,6 +153,9 @@ export function createHeartbeatHistoryTool(
  * would trigger it — this returns `HEARTBEAT_EVENT_TRIGGERED_ERROR` (the canonical 409) and
  * enqueues nothing, rather than firing with no `itemId`.
  *
+ * A heartbeat the user disabled via `setHeartbeatEnabled` is refused with no job enqueued,
+ * the same rule the sweep and `prepareHeartbeatOccurrenceFire` already enforce for scheduled fires.
+ *
  * The enqueued job payload carries `triggeredByRunId: currentRunId`, which `coreAgentRunAction`
  * (scheduler/actions.ts) writes onto the new run as `parent_run_id` — the child run's history
  * identifies exactly which run manually invoked it. The job key
@@ -182,6 +188,10 @@ export function createHeartbeatTriggerTool(
 
     if (isOnItemEventRule(heartbeat.rule)) {
       return { error: true, result: HEARTBEAT_EVENT_TRIGGERED_ERROR };
+    }
+
+    if (!heartbeat.enabled) {
+      return { error: true, result: HEARTBEAT_DISABLED_ERROR };
     }
 
     await enqueueJob(
