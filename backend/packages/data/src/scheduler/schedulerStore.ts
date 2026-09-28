@@ -2,7 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import { enqueueJob } from "@semprec/queue";
 import { NotFoundError } from "../errors.js";
 import { getSystemTimezone } from "../systemSettings.js";
-import { requireSingleRow, withTransaction } from "../db/pool.js";
+import { requireAffectedRows, requireSingleRow, withTransaction } from "../db/pool.js";
 import { computeNextFireAt } from "./nextFireAt.js";
 import {
   isFloatingRuleKind,
@@ -673,22 +673,32 @@ export async function recordHeartbeatFireSetupFailure(
       restored = { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
     if (restored.ok) {
-      await client.query(`UPDATE project_heartbeats SET next_fire_at = $2, last_error = $3 WHERE id = $1`, [
-        heartbeatId,
-        restored.nextFireAt,
-        message,
-      ]);
+      requireAffectedRows(
+        await client.query(`UPDATE project_heartbeats SET next_fire_at = $2, last_error = $3 WHERE id = $1`, [
+          heartbeatId,
+          restored.nextFireAt,
+          message,
+        ]),
+        "project_heartbeats schedule restore",
+      );
     } else {
-      await client.query(`UPDATE project_heartbeats SET last_error = $2 WHERE id = $1`, [
-        heartbeatId,
-        `${message}; schedule could not be restored: ${restored.error}`,
-      ]);
+      requireAffectedRows(
+        await client.query(`UPDATE project_heartbeats SET last_error = $2 WHERE id = $1`, [
+          heartbeatId,
+          `${message}; schedule could not be restored: ${restored.error}`,
+        ]),
+        "project_heartbeats last_error update",
+      );
     }
   } else {
-    await client.query(`UPDATE project_heartbeats SET last_error = $2 WHERE id = $1`, [heartbeatId, message]);
+    requireAffectedRows(
+      await client.query(`UPDATE project_heartbeats SET last_error = $2 WHERE id = $1`, [heartbeatId, message]),
+      "project_heartbeats last_error update",
+    );
   }
 
   if (occurrenceId !== undefined) {
+    // Zero rows is a valid outcome: the occurrence is already terminal (or gone) and stays as it is.
     await client.query(
       `UPDATE heartbeat_occurrences SET status = 'failed', last_error = $2
        WHERE id = $1 AND status IN ('queued', 'running')`,
