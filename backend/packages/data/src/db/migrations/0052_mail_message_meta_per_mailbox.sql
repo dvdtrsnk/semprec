@@ -68,7 +68,13 @@ FROM message_mailbox mm
 WHERE meta.item_id = mm.message_item_id
   AND meta.mailbox_item_id IS NULL;
 
+-- Leading column is message_id, not mailbox_item_id: threading.ts's
+-- `WHERE message_id = ANY($1::text[])` and mailMessageMetaStore's
+-- getMailMessageMetaByMessageId both look up by message_id alone, and need an index scan
+-- keyed on that column rather than a full index/seq scan. `ON CONFLICT (mailbox_item_id,
+-- message_id)` below still resolves against this index: the arbiter matches by column set,
+-- not by column order.
 CREATE UNIQUE INDEX IF NOT EXISTS mail_message_meta_mailbox_message_uq
-  ON mail_message_meta (mailbox_item_id, message_id);
+  ON mail_message_meta (message_id, mailbox_item_id);
 
 ALTER TABLE mail_message_meta DROP CONSTRAINT IF EXISTS mail_message_meta_message_id_key;
