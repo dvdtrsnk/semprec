@@ -237,20 +237,25 @@ export class DelegationRegistry {
   /**
    * 24 hours of inactivity (default) closes an idle delegated session: dropped from memory
    * and its `agent_runs` row finished as `done`, so `agent_runs` doesn't accumulate rows the
-   * in-memory registry has already forgotten about. A `busy` entry's own next `touch()` call
-   * reschedules a fresh timer past this fire, so this is a no-op for it.
+   * in-memory registry has already forgotten about.
+   *
+   * Claims the entry as `busy` synchronously, before its first `await` — the same invariant
+   * `delegate()`'s own busy check relies on — so a `delegate()` arriving mid-expiry never
+   * reuses a session whose run this is in the middle of finishing as `done`; it observes
+   * `busy` and is rejected with `BUSY_ERROR_MESSAGE` instead, same as if a turn were in flight.
    *
    * The entry is only removed from `entries` once both DB writes succeed — a transient DB
-   * failure here reschedules another attempt on the same cadence instead of losing track of
-   * the entry (which would otherwise leave its `agent_runs` row stuck at `running` forever
-   * with nothing left in memory to close it). A run another writer already finished is logged
-   * and still dropped from memory: its row is terminal either way, and its run_status event
-   * records the status that writer stored (read back after the lost close, since it may have
-   * been `error`) rather than `done`.
+   * failure here resets `busy` and reschedules another attempt on the same cadence instead of
+   * losing track of the entry (which would otherwise leave its `agent_runs` row stuck at
+   * `running` forever with nothing left in memory to close it). A run another writer already
+   * finished is logged and still dropped from memory: its row is terminal either way, and its
+   * run_status event records the status that writer stored (read back after the lost close,
+   * since it may have been `error`) rather than `done`.
    */
   private async expire(entryKey: string): Promise<void> {
     const entry = this.entries.get(entryKey);
     if (!entry || entry.busy) return;
+    entry.busy = true;
     try {
       const closed = await finishAgentRun(this.pool, entry.agentRunId, "done", null);
       if (closed) {
@@ -267,6 +272,7 @@ export class DelegationRegistry {
       this.entries.delete(entryKey);
     } catch (err) {
       logger.error({ err, entryKey }, "DelegationRegistry: failed to close expired session, will retry");
+      entry.busy = false;
       entry.ttlTimer = this.scheduleTtl(entryKey);
     }
   }
