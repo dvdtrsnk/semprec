@@ -133,4 +133,35 @@ describe("view filters and sorts on rollup properties", () => {
       expect(visited).toHaveLength(4);
     }
   });
+
+  it("sorts by a latest rollup's computed timestamp, nulls last in both directions", async () => {
+    const asc = await chokePoint.queryDatabaseItems(projectsId, {
+      sort: [{ property: "lastDue", direction: "asc" }],
+    });
+    expect(asc.items.map((item) => item.id)).toEqual([ids.beta, ids.alpha, ids.gamma, ids.empty]);
+
+    const desc = await chokePoint.queryDatabaseItems(projectsId, {
+      sort: [{ property: "lastDue", direction: "desc" }],
+    });
+    expect(desc.items.map((item) => item.id)).toEqual([ids.gamma, ids.alpha, ids.beta, ids.empty]);
+  });
+
+  it("pages through a latest-rollup sort one row at a time, visiting every parent once in order", async () => {
+    for (const direction of ["asc", "desc"] as const) {
+      const sort = [{ property: "lastDue", direction }];
+      const expected = (await chokePoint.queryDatabaseItems(projectsId, { sort })).items.map((item) => item.id);
+
+      const visited: string[] = [];
+      let cursor: string | undefined;
+      for (let pages = 0; ; pages += 1) {
+        if (pages > 10) throw new Error("paging did not terminate");
+        const page = await chokePoint.queryDatabaseItems(projectsId, { sort, limit: 1, cursor });
+        visited.push(...page.items.map((item) => item.id));
+        if (page.nextCursor === null) break;
+        cursor = page.nextCursor;
+      }
+      expect(visited).toEqual(expected);
+      expect(visited).toHaveLength(4);
+    }
+  });
 });
