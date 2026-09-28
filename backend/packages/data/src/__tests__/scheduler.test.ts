@@ -10,7 +10,6 @@ import {
   createHeartbeat,
   getHeartbeat,
   occurrenceFireJobKey,
-  ON_ITEM_EVENT_HEARTBEATS_QUERY,
   recomputeAllForTimezoneChange,
   recordHeartbeatFireSetupFailure,
   setHeartbeatEnabled,
@@ -1390,6 +1389,13 @@ describe("scheduler", () => {
   });
 
   describe("project_heartbeats_on_item_event_idx (issue #673)", () => {
+    // Verbatim copy of triggerOnItemEventHeartbeats's query (scheduler/schedulerStore.ts).
+    const ON_ITEM_EVENT_HEARTBEATS_QUERY = `SELECT id, action_id FROM project_heartbeats
+     WHERE enabled
+       AND rule ->> 'kind' = 'onItemEvent'
+       AND rule ->> 'databaseId' = $1
+       AND rule ->> 'event' = $2`;
+
     function collectIndexScanNames(plan: Record<string, unknown>, acc: Set<string>): void {
       const nodeType = plan["Node Type"];
       const indexName = plan["Index Name"];
