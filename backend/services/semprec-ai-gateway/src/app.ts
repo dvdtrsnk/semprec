@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import { createCompleteRequestListener, type CompleteHandlerOptions } from "./completeHandler.js";
 import { createAudioRequestListener, type AudioHandlerOptions } from "./audioHandler.js";
 import { createAudioConcurrencyLimit, MAX_CONCURRENT_AUDIO_REQUESTS } from "./audioConcurrencyLimit.js";
+import { createPiMessagesRequestListener, type PiMessagesHandlerOptions } from "./piMessagesHandler.js";
 
 /**
  * The full request dispatcher for `semprec-ai-gateway`, mirroring `semprec-api`'s `app.ts`
@@ -14,15 +15,21 @@ export function createDispatcher(
   pool: Pool,
   options: CompleteHandlerOptions,
   audioOptions: AudioHandlerOptions,
+  piOptions: PiMessagesHandlerOptions,
 ): (req: IncomingMessage, res: ServerResponse) => void {
   const completeListener = createCompleteRequestListener(pool, options);
   const audioListener = createAudioRequestListener(pool, audioOptions);
+  const piMessagesListener = createPiMessagesRequestListener(pool, piOptions);
   const audioLimit = createAudioConcurrencyLimit(MAX_CONCURRENT_AUDIO_REQUESTS);
 
   return function dispatch(req: IncomingMessage, res: ServerResponse): void {
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
     if (pathname === "/internal/complete") {
       void completeListener(req, res);
+      return;
+    }
+    if (pathname === "/internal/pi/messages") {
+      void piMessagesListener(req, res);
       return;
     }
     if (pathname === "/internal/diarize" || pathname === "/internal/transcribe") {
