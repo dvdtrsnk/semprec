@@ -1,5 +1,10 @@
 import { Pool } from "pg";
 
+// Test-only: lets a composition-root test outside this package make a Mailbox syncable (a stored
+// credential plus its sync-state row) without adding either writer to the production entry point.
+export { storeCredential } from "../credentials/externalCredentialsStore.js";
+export { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
+
 const TABLES = [
   "observability_checks",
   "process_heartbeats",

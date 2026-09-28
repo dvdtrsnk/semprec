@@ -200,6 +200,7 @@ export {
   type MailLiveSyncRoot,
   type MailLiveSyncRootOptions,
 } from "./mail/mailLiveSyncRoot.js";
+export { resolveMailModuleIds, type MailModuleIds } from "./mail/mailModuleIds.js";
 export { manifest as mailModuleManifest } from "./mail/mailModuleManifest.js";
 export {
   createImapMailFlagWritebackAdapter,
