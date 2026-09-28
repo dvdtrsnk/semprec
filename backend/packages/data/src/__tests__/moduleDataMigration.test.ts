@@ -5,6 +5,7 @@ import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { runModuleDataMigration } from "../migrationJob/moduleDataMigration.js";
+import type { ItemRow } from "../types.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -41,7 +42,7 @@ describe("module data migration", () => {
     return { databaseId: db.id, itemIds };
   }
 
-  async function getItem(databaseId: string, itemId: string): Promise<itemsStore.ItemRow> {
+  async function getItem(databaseId: string, itemId: string): Promise<ItemRow> {
     const item = await itemsStore.getItemById(pool, databaseId, itemId);
     return item!;
   }
