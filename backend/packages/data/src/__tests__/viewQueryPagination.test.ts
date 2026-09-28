@@ -114,6 +114,19 @@ describe("sorted view query pagination (issue #664)", () => {
     expect(viaViewPage.ids).toEqual(expected);
   });
 
+  it("pages an uncast sort key whose rows hold non-string values through every row exactly once", async () => {
+    await chokePoint.createItem({ databaseId, properties: { status: 42 } });
+    await chokePoint.createItem({ databaseId, properties: { status: true } });
+    const sort = [{ property: "status", direction: "asc" as const }];
+    const unpaged = (await chokePoint.queryDatabaseItems(databaseId, { sort })).items.map((item) => item.id);
+    expect(unpaged).toHaveLength(9);
+
+    const { ids: paged } = await collectPages((cursor) =>
+      chokePoint.queryDatabaseItems(databaseId, { sort, limit: 1, cursor }),
+    );
+    expect(paged).toEqual(unpaged);
+  });
+
   it("rejects a malformed or foreign cursor on a sorted query as a ValidationError naming cursor", async () => {
     const sort = [{ property: "rank", direction: "asc" as const }];
     const tampered = [
