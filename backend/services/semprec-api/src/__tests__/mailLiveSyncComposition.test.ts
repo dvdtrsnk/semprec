@@ -33,7 +33,8 @@ async function syncStateItemIds(pool: Pool): Promise<string[]> {
   return rows.map((row) => row.item_id);
 }
 
-async function mailAccountSyncPayloads(pool: Pool): Promise<unknown[]> {
+/** Returns each stored job's `enqueueJob` envelope (`{ traceId, payload }`), not the bare task payload. */
+async function mailAccountSyncJobEnvelopes(pool: Pool): Promise<unknown[]> {
   const { rows } = await pool.query<{ payload: unknown }>(
     `SELECT jobs.payload FROM graphile_worker._private_jobs jobs
      JOIN graphile_worker._private_tasks tasks ON tasks.id = jobs.task_id
@@ -86,7 +87,7 @@ describe("semprec-api mail live-sync composition (issue #650)", () => {
     await root.start();
 
     expect(await syncStateItemIds(pool)).toEqual([mailboxId]);
-    expect(await mailAccountSyncPayloads(pool)).toEqual([
+    expect(await mailAccountSyncJobEnvelopes(pool)).toEqual([
       expect.objectContaining({ payload: { mailboxItemId: mailboxId } }),
     ]);
 
@@ -106,7 +107,7 @@ describe("semprec-api mail live-sync composition (issue #650)", () => {
     await root.start();
 
     expect(await syncStateItemIds(pool)).toEqual([]);
-    expect(await mailAccountSyncPayloads(pool)).toEqual([]);
+    expect(await mailAccountSyncJobEnvelopes(pool)).toEqual([]);
   });
 
   it("picks up a mailbox inserted after start() on the next discovery pass", async () => {
@@ -117,8 +118,8 @@ describe("semprec-api mail live-sync composition (issue #650)", () => {
     const mailboxId = await insertMailbox(pool, composed.mailboxesDatabaseId, "Added");
 
     await waitFor(async () => (await syncStateItemIds(pool)).includes(mailboxId));
-    await waitFor(async () => (await mailAccountSyncPayloads(pool)).length === 1);
-    expect(await mailAccountSyncPayloads(pool)).toEqual([
+    await waitFor(async () => (await mailAccountSyncJobEnvelopes(pool)).length === 1);
+    expect(await mailAccountSyncJobEnvelopes(pool)).toEqual([
       expect.objectContaining({ payload: { mailboxItemId: mailboxId } }),
     ]);
   });

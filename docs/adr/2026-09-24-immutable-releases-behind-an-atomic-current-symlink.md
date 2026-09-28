@@ -1,9 +1,9 @@
 ---
-status: accepted
+status: superseded
 date: 2026-09-24
 area: [cross-cutting]
 supersedes: []
-superseded-by: null
+superseded-by: 2026-09-28-deploy-restarts-only-the-long-running-services
 ---
 
 # Immutable releases behind an atomic `current` symlink, migrated before activation
