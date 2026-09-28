@@ -283,7 +283,7 @@ describe("POST /internal/diarize and /internal/transcribe", () => {
     expect(((await res.json()) as { code: string }).code).toBe("validation_failed");
   });
 
-  it("diarizes, records the audio call with audio_seconds/cost_usd set and token columns/agent_run_id null", async () => {
+  it("diarizes, records the audio call with audio_seconds/cost_usd and its operation set and token columns/agent_run_id/project_item_id null", async () => {
     startServer(diarizationProvider, transcriptionProvider);
     await listen();
 
@@ -302,7 +302,9 @@ describe("POST /internal/diarize and /internal/transcribe", () => {
     expect(Number(rows[0].cost_usd)).toBeCloseTo((VALID_DIARIZE_BODY.audioSeconds / 3600) * 6, 10);
     expect(rows[0].input_tokens).toBeNull();
     expect(rows[0].output_tokens).toBeNull();
+    expect(rows[0].operation).toBe("transcription_diarize");
     expect(rows[0].agent_run_id).toBeNull();
+    expect(rows[0].project_item_id).toBeNull();
   });
 
   it("transcribes, passing the requested language through to the provider, and records the audio call", async () => {
@@ -322,7 +324,9 @@ describe("POST /internal/diarize and /internal/transcribe", () => {
     expect(Number(rows[0].audio_seconds)).toBe(VALID_TRANSCRIBE_BODY.audioSeconds);
     expect(Number(rows[0].cost_usd)).toBeCloseTo((VALID_TRANSCRIBE_BODY.audioSeconds / 3600) * 3, 10);
     expect(rows[0].input_tokens).toBeNull();
+    expect(rows[0].operation).toBe("transcription_transcribe");
     expect(rows[0].agent_run_id).toBeNull();
+    expect(rows[0].project_item_id).toBeNull();
   });
 
   it("returns 502 provider_failed and leaves one failed row when the diarization provider call fails", async () => {
