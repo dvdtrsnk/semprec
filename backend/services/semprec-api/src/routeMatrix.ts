@@ -175,6 +175,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     surface: "api",
     public: false,
   },
+  { name: "create transcription", method: "POST", path: "/api/transcriptions", surface: "api", public: false },
   {
     name: "transcription rerun",
     method: "POST",
@@ -204,7 +205,15 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     surface: "api",
     public: false,
   },
+  { name: "mcp json-rpc endpoint", method: "POST", path: "/mcp", surface: "api", public: false },
   { name: "agent run detail", method: "GET", path: `/api/agent-runs/${EXAMPLE_ID}`, surface: "api", public: false },
+  {
+    name: "mint mcp run credential",
+    method: "POST",
+    path: "/api/agent-runs/mcp-credentials",
+    surface: "api",
+    public: false,
+  },
   {
     name: "project mcp grants",
     method: "GET",
