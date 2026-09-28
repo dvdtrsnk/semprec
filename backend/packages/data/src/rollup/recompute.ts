@@ -5,11 +5,11 @@
 // Constrained by: docs/adr/2026-09-10-choke-point-api-for-state-writes.md
 import type { Pool, PoolClient } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
-import type { Queryable } from "../db/pool.js";
+import { runAfterCommit, withTransaction, type Queryable } from "../db/pool.js";
 import { getProperty } from "../chokePoint/propertiesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
-import { getItemById, writeComputed } from "../chokePoint/itemsStore.js";
+import { lockItemById, writeComputed } from "../chokePoint/itemsStore.js";
 import { findDependenciesByRelationDefinition, getRollupDependency } from "./dependencies.js";
 import { parseRollupConfig, type RollupAggregation } from "./config.js";
 import { notifyInvalidation } from "../realtimeHook.js";
@@ -46,6 +46,12 @@ export async function enqueueRollupBackfill(client: Queryable, rollupPropertyId:
   );
 }
 
+// An ISO 8601 date or date-time. Like a garbage number for `sum`, a garbage date (a `date` property
+// is a plain JSON string that nothing validates at write time) contributes nothing to
+// `earliest`/`latest` instead of failing the whole job on the `::timestamptz` cast.
+const ISO_DATE_PATTERN = "'^\\d{4}-\\d{2}-\\d{2}(T[\\d:.+\\-Z]*)?$'";
+const GUARDED_TIMESTAMP = `(CASE WHEN (t.properties ->> $3) ~ ${ISO_DATE_PATTERN} THEN (t.properties ->> $3)::timestamptz END)`;
+
 function aggregationSql(aggregation: RollupAggregation): { select: string } {
   switch (aggregation) {
     case "count":
@@ -81,21 +87,30 @@ function aggregationSql(aggregation: RollupAggregation): { select: string } {
       return { select: `${aggregation}(${filtered})::float8` };
     }
     case "earliest":
-      return { select: "min((t.properties ->> $3)::timestamptz)" };
+      return { select: `min(${GUARDED_TIMESTAMP})` };
     case "latest":
-      return { select: "max((t.properties ->> $3)::timestamptz)" };
+      return { select: `max(${GUARDED_TIMESTAMP})` };
   }
 }
 
-/** The actual aggregation: one SQL query over item_relations JOIN items, always a full recompute of one cell. */
+/**
+ * The actual aggregation: one SQL query over item_relations JOIN items, always a full recompute of
+ * one cell. Runs in one transaction holding `FOR UPDATE` on the target item, so two overlapping jobs
+ * for the same cell serialise: the later one blocks until the earlier commits, then aggregates the
+ * current source state — the last committed value is always computed from the newest source state.
+ */
 export async function recomputeRollupCell(pool: Pool, rollupPropertyId: string, itemId: string): Promise<void> {
-  const client = await pool.connect();
-  try {
-    const dependency = await getRollupDependency(client, rollupPropertyId);
-    if (!dependency) return; // rollup property (or its dependency row) was deleted since the job was enqueued
-
+  await withTransaction(pool, async (client) => {
+    // Loaded before the lock because the lock needs the target item's database id.
     const rollupProperty = await getProperty(client, rollupPropertyId);
-    if (!rollupProperty) return;
+    if (!rollupProperty) return; // rollup property was deleted since the job was enqueued
+
+    const locked = await lockItemById(client, rollupProperty.databaseId, itemId);
+    if (!locked) return; // target item was purged since the job was enqueued
+
+    const dependency = await getRollupDependency(client, rollupPropertyId);
+    if (!dependency) return; // dependency row was deleted since the job was enqueued
+
     const config = parseRollupConfig(rollupProperty.config);
     const { select } = aggregationSql(config.aggregation);
 
@@ -115,22 +130,18 @@ export async function recomputeRollupCell(pool: Pool, rollupPropertyId: string, 
 
     const value = rows[0]?.value ?? (config.aggregation === "count" ? 0 : null);
     await writeComputed(client, rollupProperty.databaseId, itemId, rollupProperty.key, value);
-    // No `withTransaction`/`runAfterCommit` here (see this function's doc comment: each statement
-    // above auto-commits on its own plain-connection client) — reading `updatedAt` back after the
-    // write above is already safe to announce immediately.
-    const item = await getItemById(client, rollupProperty.databaseId, itemId);
-    if (item) {
+    // `writeComputed` never advances `updated_at`, so the locked row's value is the one to announce;
+    // announced only once the write is committed and visible to whoever refetches.
+    runAfterCommit(client, () =>
       notifyInvalidation({
         scope: "item",
         databaseId: rollupProperty.databaseId,
         itemId,
         op: "update",
-        updatedAt: item.updatedAt,
-      });
-    }
-  } finally {
-    client.release();
-  }
+        updatedAt: locked.updatedAt,
+      }),
+    );
+  });
 }
 
 /**
