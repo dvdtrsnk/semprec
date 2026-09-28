@@ -54,10 +54,23 @@ export type ProposalEntityKind = "pageContent" | "database" | "relation";
 /** The entity kinds the Inbox tick itself computes, one per `processingMethod`. */
 type ComputedProposalEntityKind = Exclude<ProposalEntityKind, "relation">;
 
-export interface ProposalEnvelope {
-  entityKind: ProposalEntityKind;
-  target: string;
-  properties: Record<string, unknown>;
+export const proposalEnvelopeSchema = z.object({
+  entityKind: z.enum(["pageContent", "database", "relation"]),
+  target: z.string().min(1),
+  properties: z.record(z.string(), z.unknown()),
+});
+
+export type ProposalEnvelope = z.infer<typeof proposalEnvelopeSchema>;
+
+/**
+ * Parses a Processing proposal's stored `proposal` JSONB property: `null`/`undefined` (no
+ * envelope computed yet) → `null`; anything that is not a well-formed envelope throws.
+ */
+export function parseStoredProposalEnvelope(value: unknown, proposalId: string): ProposalEnvelope | null {
+  if (value === null || value === undefined) return null;
+  const parsed = proposalEnvelopeSchema.safeParse(value);
+  if (!parsed.success) throw new Error(`Malformed proposal envelope on proposal ${proposalId}`);
+  return parsed.data;
 }
 
 export interface ProposalComputationInput {
@@ -211,11 +224,13 @@ async function computeProposalEnvelope(
 }
 
 /** A Processing proposal's chat + decision log entry (issue #104). */
-export interface ProposalHistoryEntry {
-  author: "ai" | "user";
-  message: string;
-  at: string;
-}
+const proposalHistoryEntrySchema = z.object({
+  author: z.enum(["ai", "user"]),
+  message: z.string(),
+  at: z.string(),
+});
+
+export type ProposalHistoryEntry = z.infer<typeof proposalHistoryEntrySchema>;
 
 /**
  * Appends one history entry to a proposal's `history`, tolerating a missing/malformed
@@ -228,7 +243,8 @@ export function appendHistoryEntry(
   message: string,
   author: "ai" | "user" = "ai",
 ): ProposalHistoryEntry[] {
-  const existing = Array.isArray(history) ? (history as ProposalHistoryEntry[]) : [];
+  const parsed = z.array(proposalHistoryEntrySchema).safeParse(history);
+  const existing = parsed.success ? parsed.data : [];
   return [...existing, { author, message, at: new Date().toISOString() }];
 }
 

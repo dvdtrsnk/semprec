@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
 import { NotFoundError } from "./errors.js";
+import { assertShape } from "./dbRowValidation.js";
 import type { Queryable } from "./db/pool.js";
 
 /** Stable identifier for the singleton "System settings" database — see seed/seedSystem.ts. */
@@ -32,11 +33,12 @@ export async function getSystemTimezone(client: Queryable): Promise<string> {
   });
   if (databaseId === null) return DEFAULT_TIMEZONE;
 
-  const { rows } = await client.query<{ properties: { timezone?: string } }>(
+  const { rows } = await client.query<{ properties: Record<string, unknown> }>(
     `SELECT properties FROM items WHERE database_id = $1 LIMIT 1`,
     [databaseId],
   );
-  return rows[0]?.properties.timezone ?? DEFAULT_TIMEZONE;
+  if (!rows[0]) return DEFAULT_TIMEZONE;
+  return toSettingsProperties(rows[0].properties).timezone ?? DEFAULT_TIMEZONE;
 }
 
 export interface AiBudgets {
@@ -46,6 +48,26 @@ export interface AiBudgets {
 }
 
 type SettingsProperties = { dailyBudgetUsd?: number | null; monthlyBudgetUsd?: number | null; timezone?: string };
+
+function isAbsentNullOrFiniteNumber(value: unknown): value is number | null | undefined {
+  return value === undefined || value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
+/**
+ * Validates the settings row's JSONB `properties` at the read boundary instead of trusting the row
+ * type: each field is narrowed to its expected type, and a value that did not survive the narrowing
+ * unchanged (a non-string `timezone`, a non-finite or non-numeric budget) throws.
+ */
+function toSettingsProperties(raw: Record<string, unknown>): SettingsProperties {
+  const timezone = typeof raw.timezone === "string" ? raw.timezone : undefined;
+  const dailyBudgetUsd = isAbsentNullOrFiniteNumber(raw.dailyBudgetUsd) ? raw.dailyBudgetUsd : undefined;
+  const monthlyBudgetUsd = isAbsentNullOrFiniteNumber(raw.monthlyBudgetUsd) ? raw.monthlyBudgetUsd : undefined;
+  assertShape(
+    timezone === raw.timezone && dailyBudgetUsd === raw.dailyBudgetUsd && monthlyBudgetUsd === raw.monthlyBudgetUsd,
+    "system settings properties",
+  );
+  return { timezone, dailyBudgetUsd, monthlyBudgetUsd };
+}
 
 function toAiBudgets(properties: SettingsProperties): AiBudgets {
   return {
@@ -62,11 +84,11 @@ async function readSettingsProperties(client: Queryable): Promise<SettingsProper
   });
   if (databaseId === null) return null;
 
-  const { rows } = await client.query<{ properties: SettingsProperties }>(
+  const { rows } = await client.query<{ properties: Record<string, unknown> }>(
     `SELECT properties FROM items WHERE database_id = $1 LIMIT 1`,
     [databaseId],
   );
-  return rows[0]?.properties ?? {};
+  return rows[0] ? toSettingsProperties(rows[0].properties) : {};
 }
 
 /**

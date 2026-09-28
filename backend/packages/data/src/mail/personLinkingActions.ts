@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { z } from "zod";
 import { withTransaction } from "../db/pool.js";
 import type { ActionContext, ActionHandler } from "../scheduler/actions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
@@ -12,9 +13,9 @@ import { parseAddressListProperty } from "./addressListParsing.js";
 export const MAIL_REINDEX_PERSON_EMAILS_ACTION_ID = "mail.reindexPersonEmails";
 export const MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID = "mail.linkPeopleByEmail";
 
-export interface PersonEmailReindexActionConfig {
-  peopleDatabaseId: string;
-}
+const personEmailReindexActionConfigSchema = z.object({ peopleDatabaseId: z.string().min(1) });
+
+export type PersonEmailReindexActionConfig = z.infer<typeof personEmailReindexActionConfigSchema>;
 
 /**
  * Registered as an `onItemEvent` ('create' and 'update') heartbeat action on the People
@@ -27,7 +28,11 @@ export interface PersonEmailReindexActionConfig {
 export function createPersonEmailReindexAction(pool: Pool): ActionHandler {
   return async (actionConfig: Record<string, unknown>, context: ActionContext) => {
     if (!context.itemId) return;
-    const config = actionConfig as unknown as PersonEmailReindexActionConfig;
+    const parsed = personEmailReindexActionConfigSchema.safeParse(actionConfig);
+    if (!parsed.success) {
+      throw new Error(`Malformed action config for ${MAIL_REINDEX_PERSON_EMAILS_ACTION_ID}: ${parsed.error.message}`);
+    }
+    const config: PersonEmailReindexActionConfig = parsed.data;
     await withTransaction(pool, async (client) => {
       const person = await itemsStore.getItemById(client, config.peopleDatabaseId, context.itemId as string);
       if (!person || person.deletedAt) return;
@@ -37,11 +42,13 @@ export function createPersonEmailReindexAction(pool: Pool): ActionHandler {
   };
 }
 
-export interface LinkEmailToPeopleActionConfig {
-  emailsDatabaseId: string;
-  senderPeopleKey: string;
-  recipientsPeopleKey: string;
-}
+const linkEmailToPeopleActionConfigSchema = z.object({
+  emailsDatabaseId: z.string().min(1),
+  senderPeopleKey: z.string().min(1),
+  recipientsPeopleKey: z.string().min(1),
+});
+
+export type LinkEmailToPeopleActionConfig = z.infer<typeof linkEmailToPeopleActionConfigSchema>;
 
 /**
  * Registered as an `onItemEvent` ('create') heartbeat action on the Emails database: reads
@@ -55,7 +62,11 @@ export interface LinkEmailToPeopleActionConfig {
 export function createLinkEmailToPeopleAction(pool: Pool): ActionHandler {
   return async (actionConfig: Record<string, unknown>, context: ActionContext) => {
     if (!context.itemId) return;
-    const config = actionConfig as unknown as LinkEmailToPeopleActionConfig;
+    const parsed = linkEmailToPeopleActionConfigSchema.safeParse(actionConfig);
+    if (!parsed.success) {
+      throw new Error(`Malformed action config for ${MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID}: ${parsed.error.message}`);
+    }
+    const config: LinkEmailToPeopleActionConfig = parsed.data;
     await withTransaction(pool, async (client) => {
       const meta = await getMailMessageMetaByItemId(client, context.itemId as string);
       if (!meta) return;

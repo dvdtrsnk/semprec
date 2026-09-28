@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
-import { applyRollupConfig } from "../rollup/config.js";
+import { applyRollupConfig, validateRollupConfig } from "../rollup/config.js";
 import { ValidationError } from "../errors.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 
@@ -116,6 +116,32 @@ describe("applyRollupConfig", () => {
       expect(error).toBeInstanceOf(ValidationError);
       expect(error).toMatchObject({
         message: "Relation property has no targetDatabaseId in config",
+        details: { field: "relationPropertyKey" },
+      });
+      expect(await readDependencies(client, rollup.id)).toEqual([]);
+    });
+  });
+
+  it("rejects a non-string relationPropertyKey with validateRollupConfig's ValidationError, not a TypeError", async () => {
+    const { rollup } = await makeRollup();
+    const malformed = { ...rollup, config: { relationPropertyKey: 42, aggregation: "count" } };
+    const expected = (() => {
+      try {
+        validateRollupConfig(malformed.config, [], []);
+      } catch (e) {
+        return e;
+      }
+      throw new Error("expected validateRollupConfig to reject a non-string relationPropertyKey");
+    })();
+
+    await withClient(async (client) => {
+      await client.query(`DELETE FROM rollup_dependencies WHERE rollup_property_id = $1`, [rollup.id]);
+
+      const error = await applyRollupConfig(client, malformed).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(expected).toBeInstanceOf(ValidationError);
+      expect(error).toMatchObject({
+        message: (expected as ValidationError).message,
         details: { field: "relationPropertyKey" },
       });
       expect(await readDependencies(client, rollup.id)).toEqual([]);
