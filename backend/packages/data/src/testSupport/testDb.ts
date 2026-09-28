@@ -9,6 +9,7 @@ const TABLES = [
   "observability_checks",
   "process_heartbeats",
   "module_migrations",
+  "module_migration_progress",
   "idempotency_keys",
   "login_attempts",
   "push_subscriptions",
