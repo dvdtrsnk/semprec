@@ -6,8 +6,10 @@ import {
   assertTaskListMatchesAffinity,
   createApiCoreTaskList,
   mergeModuleTaskListForAffinity,
+  resolveMailModuleIds,
   resolveTaskAffinitySets,
   runHeartbeatFireQueueSplitMigration,
+  withTransaction,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { createApiActionRegistry } from "./actionRegistryComposition.js";
@@ -32,9 +34,12 @@ export interface ApiQueueRuntime {
  * The heartbeat action registry is populated by `createApiActionRegistry` with every seeded
  * api-affinity action (issue #641), and every `approvalExecute` job for an approved
  * generic-operation request replays through `replayApprovedGenericOperation` (issue #646). The
- * remaining adapters (an external library-metadata fetcher, mail sync transports, push senders)
- * still stay on `createApiCoreTaskList`'s own no-op defaults here — wiring one in is each
- * adapter's own composition-root concern once it exists.
+ * mail jobs receive the seeded mail databases' ids from `resolveMailModuleIds` (issue #648), so
+ * this rejects at startup — naming the missing module ids and the seed CLI — on a database the
+ * system seed has not run against. The remaining adapters (an external library-metadata fetcher,
+ * mail sync transports, mail blob storage, a legacy raw-MIME fetcher, push senders) still stay on
+ * `createApiCoreTaskList`'s own defaults here — wiring one in is each adapter's own
+ * composition-root concern once it exists.
  */
 export async function createApiQueueRuntime(
   pool: Pool,
@@ -47,13 +52,16 @@ export async function createApiQueueRuntime(
   // name — runs exactly once, here, at API install; the agents runtime never runs it.
   await runHeartbeatFireQueueSplitMigration(pool);
 
+  const mailModuleIds = await withTransaction(pool, (client) => resolveMailModuleIds(client));
   const actionRegistry = createApiActionRegistry(pool, moduleRegistry);
   const coreTaskList = createApiCoreTaskList(
     pool,
     actionRegistry,
     undefined, // libraryMetadataFetcher
+    // Transport adapters wait on mailbox onboarding: a Mailbox carries no server settings or stored
+    // credential yet, so a real IMAP/Gmail/Graph adapter would have nothing to connect with.
     undefined, // mailSyncAdapters
-    undefined, // mailModuleIds
+    mailModuleIds,
     undefined, // mailBlobStorage
     undefined, // legacyRawMimeFetcher
     moduleRegistry,

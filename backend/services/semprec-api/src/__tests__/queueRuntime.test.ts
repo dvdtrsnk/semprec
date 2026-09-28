@@ -66,6 +66,8 @@ describe("createApiQueueRuntime (issue #91)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    // The runtime resolves the seeded mail databases' ids at startup.
+    await seedSystem(pool);
     await pool.query("TRUNCATE graphile_worker._private_known_crontabs");
     apiFixtureModule.calls.length = 0;
     runtime = undefined;
