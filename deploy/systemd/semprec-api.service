@@ -2,8 +2,8 @@
 Description=Semprec API
 Wants=network-online.target
 After=network-online.target docker.service
-StartLimitIntervalSec=5min
-StartLimitBurst=3
+StartLimitIntervalSec=15min
+StartLimitBurst=180
 OnFailure=semprec-failping@%n.service
 
 [Service]

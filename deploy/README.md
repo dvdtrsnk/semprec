@@ -107,9 +107,10 @@ restic job excludes `/var/log/journal` along with secrets and reproducible confi
 
 The `semprec-dead-man` timer probes `https://$SEMPREC_DOMAIN/healthz` every five minutes before
 pinging `HEALTHCHECKS_PING_URL`; failed health probes therefore never report a false success. The
-four long-running services restart up to three times in five minutes. Only when that restart
-limit is exhausted does systemd invoke `semprec-failping@%n.service`, which sends the failed unit
-name to the monitor's `/fail` endpoint. A crash recovered by a restart does not trigger `/fail`.
+four long-running services restart every 5 seconds for up to 15 minutes (180 attempts). Only when
+that restart limit is exhausted does systemd invoke `semprec-failping@%n.service`, which sends the
+failed unit name to the monitor's `/fail` endpoint. A crash recovered by a restart does not trigger
+`/fail`.
 
 ## Encrypted off-site backups (issue #177)
 
