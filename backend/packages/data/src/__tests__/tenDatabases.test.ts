@@ -226,6 +226,8 @@ describe("ten hardcoded databases (issue #24)", () => {
       timezone: "Europe/Prague",
     });
     expect(noop).toBeNull();
+    const plainAfter = await chokePoint.getItem(tasksId, plain.id);
+    expect(plainAfter?.properties.status).toBe("notDone");
 
     // the rolling-model invariant: re-advancing the already-completed original instance is
     // also a no-op (its recurrence was deactivated when the next instance was created)

@@ -20,6 +20,7 @@ export type { AdvanceTaskRecurrenceInput };
 export async function advanceTaskRecurrence(pool: Pool, input: AdvanceTaskRecurrenceInput): Promise<ItemRow | null> {
   return withTransaction(pool, async (client) => {
     const next = await advanceTaskRecurrenceWithClient(client, input, createItemWithClient);
+    if (next === null) return null;
     await updateItemWithClient(client, {
       databaseId: input.databaseId,
       itemId: input.itemId,
