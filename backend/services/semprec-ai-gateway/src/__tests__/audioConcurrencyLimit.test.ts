@@ -24,7 +24,6 @@ const FAKE_PI_OPTIONS: PiMessagesHandlerOptions = {
   },
 };
 
-
 let pool: Pool;
 let server: Server;
 let baseUrl: string;

@@ -200,7 +200,8 @@ function serializeEvent(event: AssistantMessageEvent): PiMessagesEvent {
       return { type: "toolcall_end", contentIndex: event.contentIndex, toolCall: event.toolCall };
     case "done":
       // A deferred response is only produced when the caller asks for one, which this route never does.
-      if (event.reason === "deferred") throw new ProviderCallError("Provider returned an unrequested deferred response");
+      if (event.reason === "deferred")
+        throw new ProviderCallError("Provider returned an unrequested deferred response");
       return {
         type: "done",
         reason: event.reason,
@@ -333,11 +334,9 @@ export function createPiMessagesRequestListener(pool: Pool, options: PiMessagesH
       // cap or a default one) reserved before the call and replaced by the real cost on settle.
       // pi's `ModelCost` is USD per million tokens.
       const estimatedInputTokens = Math.ceil(JSON.stringify(body.context).length / 4);
-      const reservedOutputTokens =
-        body.options?.maxTokens ?? Math.min(model.maxTokens, DEFAULT_RESERVED_OUTPUT_TOKENS);
+      const reservedOutputTokens = body.options?.maxTokens ?? Math.min(model.maxTokens, DEFAULT_RESERVED_OUTPUT_TOKENS);
       const estimatedCostUsd =
-        (estimatedInputTokens / 1_000_000) * model.cost.input +
-        (reservedOutputTokens / 1_000_000) * model.cost.output;
+        (estimatedInputTokens / 1_000_000) * model.cost.input + (reservedOutputTokens / 1_000_000) * model.cost.output;
 
       try {
         await complete(

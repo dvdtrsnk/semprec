@@ -25,7 +25,6 @@ const FAKE_PI_OPTIONS: PiMessagesHandlerOptions = {
   },
 };
 
-
 const FAKE_AUDIO_OPTIONS: AudioHandlerOptions = {
   internalToken: "test-internal-token",
   diarizationProvider: { id: "fake-diarizer", model: "fake-model", diarize: async () => [] },
