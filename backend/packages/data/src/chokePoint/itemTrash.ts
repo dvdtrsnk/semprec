@@ -17,6 +17,10 @@ import type { ActionQueueAffinity } from "../scheduler/actions.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 import { assertDatabaseNotArchived } from "./databaseGuards.js";
 import { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
+import * as blobsStore from "../blobs/blobsStore.js";
+import * as docsStore from "../docs/docsStore.js";
+import * as itemAutomationStore from "../library/itemAutomationStore.js";
+import * as taskRecurrenceStore from "../tasks/taskRecurrenceStore.js";
 
 /**
  * Transaction-scoped counterpart to `chokePoint.softDeleteItem` (issue #89), factored out for the
@@ -176,11 +180,11 @@ function fileBlobId(row: ItemRow): string | null {
  * `itemsStore.hardDeleteItem` has removed `row` — the blob check below relies on the row already
  * being gone.
  *
- * For a Files item it also deletes the `blobs` row its `properties.file.blobId` names, but only
- * when no other item in any partition (live or trashed) and no mail attachment references that
- * blob — `findOrCreateBlob`'s content-hash dedup shares one blob between identical uploads. Returns
- * the deleted blob's `storage_key` so the caller can remove the bytes after the commit, or null
- * when no blob row was deleted.
+ * The doc, recurrence rule, automation state and blob rows are each deleted through their owning
+ * store. For a Files item it also deletes the `blobs` row its `properties.file.blobId` names, but
+ * only when nothing else references that blob (`blobsStore.deleteBlobIfUnreferenced`). Returns the
+ * deleted blob's `storage_key` so the caller can remove the bytes after the commit, or null when no
+ * blob row was deleted.
  */
 export async function deleteItemDependents(
   client: PoolClient,
@@ -189,24 +193,14 @@ export async function deleteItemDependents(
   await client.query("DELETE FROM item_relations WHERE item_a = $1 OR item_b = $1", [row.id]);
   await client.query("DELETE FROM view_items WHERE item_id = $1", [row.id]);
   await client.query("DELETE FROM idempotency_keys WHERE item_id = $1 AND database_id = $2", [row.id, row.databaseId]);
-  await client.query("DELETE FROM docs WHERE item_id = $1", [row.id]);
-  await client.query("DELETE FROM task_recurrence WHERE item_id = $1", [row.id]);
-  await client.query("DELETE FROM item_automation WHERE item_id = $1", [row.id]);
+  await docsStore.deleteDocByItemId(client, row.id);
+  await taskRecurrenceStore.deleteTaskRecurrence(client, row.id);
+  await itemAutomationStore.deleteItemAutomation(client, row.id);
   await client.query("DELETE FROM item_search_index WHERE item_id = $1", [row.id]);
 
   const blobId = fileBlobId(row);
   if (!blobId) return { blobStorageKey: null };
-  // `@>` rather than `->> =` so the lookup can use `items_props_gin` (jsonb_path_ops).
-  const { rows } = await client.query<{ storage_key: string }>(
-    `DELETE FROM blobs WHERE id = $1
-       AND NOT EXISTS (
-         SELECT 1 FROM items WHERE properties @> jsonb_build_object('file', jsonb_build_object('blobId', $2::text))
-       )
-       AND NOT EXISTS (SELECT 1 FROM mail_attachments WHERE blob_id = $1)
-     RETURNING storage_key`,
-    [blobId, blobId],
-  );
-  return { blobStorageKey: rows[0]?.storage_key ?? null };
+  return { blobStorageKey: await blobsStore.deleteBlobIfUnreferenced(client, blobId) };
 }
 
 export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAffinity">) {

@@ -82,3 +82,15 @@ export async function getRollupDependency(
   );
   return rows[0] ? mapRow(rows[0]) : null;
 }
+
+/**
+ * Removes every dependency whose source is `sourceDatabaseId` — used by the trash purge (issue #675)
+ * when it drops an emptied inline database, in that purge's own transaction. Zero rows is valid: most
+ * databases are no rollup's source.
+ */
+export async function deleteRollupDependenciesBySourceDatabase(
+  client: PoolClient,
+  sourceDatabaseId: string,
+): Promise<void> {
+  await client.query("DELETE FROM rollup_dependencies WHERE source_database_id = $1", [sourceDatabaseId]);
+}

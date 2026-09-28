@@ -171,3 +171,8 @@ export async function listErroredItemAutomationForDatabases(
   );
   return rows.map(mapRow);
 }
+
+/** Removes the automation state of a hard-deleted item (trash purge, issue #675); zero rows is valid — most items have none. */
+export async function deleteItemAutomation(client: PoolClient, itemId: string): Promise<void> {
+  await client.query(`DELETE FROM item_automation WHERE item_id = $1`, [itemId]);
+}

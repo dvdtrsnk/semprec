@@ -86,3 +86,25 @@ export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput
   if (!existing) throw new Error(`blob with content_hash '${input.contentHash}' vanished after a no-op conflict`);
   return existing;
 }
+
+/**
+ * Deletes blob `id` only when nothing references it any more — no item in any partition (live or
+ * trashed) whose `properties.file.blobId` names it and no mail attachment — because
+ * `findOrCreateBlob`'s content-hash dedup shares one blob between identical uploads. Used by the
+ * trash purge (issue #675) in its own transaction, after the referencing item is gone. Returns the
+ * deleted row's `storage_key` so the caller can remove the bytes after the commit, or null when the
+ * blob is still referenced or already absent.
+ */
+export async function deleteBlobIfUnreferenced(client: Queryable, id: string): Promise<string | null> {
+  // `@>` rather than `->> =` so the lookup can use `items_props_gin` (jsonb_path_ops).
+  const { rows } = await client.query<{ storage_key: string }>(
+    `DELETE FROM blobs WHERE id = $1
+       AND NOT EXISTS (
+         SELECT 1 FROM items WHERE properties @> jsonb_build_object('file', jsonb_build_object('blobId', $2::text))
+       )
+       AND NOT EXISTS (SELECT 1 FROM mail_attachments WHERE blob_id = $1)
+     RETURNING storage_key`,
+    [id, id],
+  );
+  return rows[0]?.storage_key ?? null;
+}

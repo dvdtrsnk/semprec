@@ -87,3 +87,8 @@ export async function getTaskRecurrence(
 export async function setTaskRecurrenceActive(client: Queryable, itemId: string, active: boolean): Promise<void> {
   await client.query(`UPDATE task_recurrence SET active = $2 WHERE item_id = $1`, [itemId, active]);
 }
+
+/** Removes the recurrence rule of a hard-deleted item (trash purge, issue #675); zero rows is valid — most items have none. */
+export async function deleteTaskRecurrence(client: Queryable, itemId: string): Promise<void> {
+  await client.query(`DELETE FROM task_recurrence WHERE item_id = $1`, [itemId]);
+}
