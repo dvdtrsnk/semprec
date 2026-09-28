@@ -79,14 +79,14 @@ async function createMcpTools(pool: Pool, runId: string, projectItemId: string):
         label: `${grant.mcpServerName}: ${grant.toolName}`,
         description: grant.description ?? `MCP tool '${grant.toolName}' on '${grant.mcpServerName}'.`,
         parameters: MCP_TOOL_PARAMETERS,
-        async execute(_toolCallId, params) {
+        async execute(_toolCallId, params, signal) {
           if (!isArgumentsObject(params)) {
             return {
               content: [{ type: "text", text: "Tool arguments must be a JSON object." }],
               details: { error: true },
             };
           }
-          const result = await invoke(params);
+          const result = await invoke(params, signal);
           return { content: [{ type: "text", text: result.result }], details: { error: result.error } };
         },
       } satisfies AgentTool;

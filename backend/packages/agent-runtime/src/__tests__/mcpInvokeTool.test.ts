@@ -112,6 +112,18 @@ describe("MCP invoke adapter (issue #128)", () => {
 
       expect(result).toEqual({ error: true, result: "contract-server-forced-error" });
     });
+
+    it("returns a cancelled error result without calling the tool when its signal is aborted", async () => {
+      const contractServer = await startServer();
+      servers.push(contractServer);
+      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+
+      const invoke = createMcpInvokeTool(pool, projectItemId, registration.id);
+      const result = await invoke({ query: "semprec" }, AbortSignal.abort());
+
+      expect(result).toEqual({ error: true, result: "MCP tool call was cancelled before it completed" });
+      expect(contractServer.getLastToolCall()).toBeNull();
+    });
   });
 
   it("rejects an unknown registration id before touching any transport", async () => {

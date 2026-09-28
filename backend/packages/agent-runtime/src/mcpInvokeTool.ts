@@ -16,7 +16,7 @@ import {
 export type { McpInvokeResult, McpInvokeArgs, McpInvokeOptions } from "@semprec/data";
 export { executeMcpInvocation } from "@semprec/data";
 
-export type McpInvokeTool = (args: McpInvokeArgs) => Promise<McpInvokeResult>;
+export type McpInvokeTool = (args: McpInvokeArgs, signal?: AbortSignal) => Promise<McpInvokeResult>;
 
 /**
  * The outbound MCP-invoke adapter (issue #128): resolves `mcpToolRegistrationId` against
@@ -112,10 +112,10 @@ export function createMcpInvokeTool(
   mcpToolRegistrationId: string,
   options: McpInvokeOptions = {},
 ): McpInvokeTool {
-  return async function invoke(args) {
+  return async function invoke(args, signal) {
     const resolution = await resolveMcpInvocation(pool, projectItemId, mcpToolRegistrationId, args);
     if (!resolution.ok) return resolution.result;
-    return executeMcpInvocation(pool, resolution.target, resolution.args, options);
+    return executeMcpInvocation(pool, resolution.target, resolution.args, options, signal);
   };
 }
 
@@ -156,7 +156,7 @@ export function createApprovalGatedMcpInvokeTool(
   mcpToolRegistrationId: string,
   options: McpInvokeOptions = {},
 ): McpInvokeTool {
-  return async function invoke(args) {
+  return async function invoke(args, signal) {
     const resolution = await resolveMcpInvocation(pool, projectItemId, mcpToolRegistrationId, args);
     if (!resolution.ok) return resolution.result;
 
@@ -194,6 +194,6 @@ export function createApprovalGatedMcpInvokeTool(
       return pendingApprovalResult(request.id, target.toolName);
     }
 
-    return executeMcpInvocation(pool, target, resolution.args, options);
+    return executeMcpInvocation(pool, target, resolution.args, options, signal);
   };
 }
