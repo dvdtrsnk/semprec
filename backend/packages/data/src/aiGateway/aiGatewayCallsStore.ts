@@ -147,35 +147,41 @@ export async function reserveGatewayCall(
   return mapRow(requireSingleRow(rows, "ai_gateway_calls reservation"));
 }
 
-/** Replaces a `reserved` row's estimate with the real token usage; throws when the row is not `reserved`. */
+/**
+ * Replaces a `reserved` row's estimate with the real token usage. Returns `null` when no `reserved`
+ * row matched (already settled or failed, or gone) — the caller decides what that means.
+ */
 export async function settleTokenGatewayCall(
   client: Pool | PoolClient,
   id: string,
   input: { inputTokens: number; outputTokens: number; costUsd: number },
-): Promise<AiGatewayCallRow> {
+): Promise<AiGatewayCallRow | null> {
   const result = await client.query<AiGatewayCallDbRow>(
     `UPDATE ai_gateway_calls SET status = 'settled', input_tokens = $2, output_tokens = $3, cost_usd = $4
      WHERE id = $1 AND status = 'reserved'
      RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status`,
     [id, input.inputTokens, input.outputTokens, input.costUsd],
   );
-  requireAffectedRows(result, `settling reserved ai_gateway_calls row ${id}`);
+  if (result.rowCount === 0) return null;
   return mapRow(requireSingleRow(result.rows, `reserved ai_gateway_calls row ${id}`));
 }
 
-/** Replaces a `reserved` row's estimate with the real audio usage; the token columns stay NULL. */
+/**
+ * Replaces a `reserved` row's estimate with the real audio usage; the token columns stay NULL.
+ * Returns `null` when no `reserved` row matched.
+ */
 export async function settleAudioGatewayCall(
   client: Pool | PoolClient,
   id: string,
   input: { audioSeconds: number; costUsd: number },
-): Promise<AiGatewayCallRow> {
+): Promise<AiGatewayCallRow | null> {
   const result = await client.query<AiGatewayCallDbRow>(
     `UPDATE ai_gateway_calls SET status = 'settled', audio_seconds = $2, cost_usd = $3
      WHERE id = $1 AND status = 'reserved'
      RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status`,
     [id, input.audioSeconds, input.costUsd],
   );
-  requireAffectedRows(result, `settling reserved ai_gateway_calls row ${id}`);
+  if (result.rowCount === 0) return null;
   return mapRow(requireSingleRow(result.rows, `reserved ai_gateway_calls row ${id}`));
 }
 
