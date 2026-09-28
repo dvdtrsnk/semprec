@@ -244,13 +244,17 @@ export class DelegationRegistry {
    * reuses a session whose run this is in the middle of finishing as `done`; it observes
    * `busy` and is rejected with `BUSY_ERROR_MESSAGE` instead, same as if a turn were in flight.
    *
-   * The entry is only removed from `entries` once both DB writes succeed — a transient DB
-   * failure here resets `busy` and reschedules another attempt on the same cadence instead of
-   * losing track of the entry (which would otherwise leave its `agent_runs` row stuck at
-   * `running` forever with nothing left in memory to close it). A run another writer already
-   * finished is logged and still dropped from memory: its row is terminal either way, and its
-   * run_status event records the status that writer stored (read back after the lost close,
-   * since it may have been `error`) rather than `done`.
+   * The entry is removed from `entries` as soon as the row is confirmed closed/terminal —
+   * before the subsequent `pushRunStatus` call, which can still throw. That ordering matters:
+   * once the row is terminal in the DB, leaving the entry behind with `busy` reset would let a
+   * `delegate()` arriving after a `pushRunStatus` failure reuse a session whose run is already
+   * closed, the exact race this method's `busy` claim exists to prevent. Only a failure *before*
+   * the row is confirmed terminal (`finishAgentRun`/`getAgentRun` itself throwing or never
+   * resolving) resets `busy` and reschedules another attempt on the same cadence — that failure
+   * leaves the row genuinely still open, so the entry must stay around to retry closing it. A
+   * run another writer already finished is logged and still dropped from memory: its row is
+   * terminal either way, and its run_status event records the status that writer stored (read
+   * back after the lost close, since it may have been `error`) rather than `done`.
    */
   private async expire(entryKey: string): Promise<void> {
     const entry = this.entries.get(entryKey);
@@ -258,8 +262,9 @@ export class DelegationRegistry {
     entry.busy = true;
     try {
       const closed = await finishAgentRun(this.pool, entry.agentRunId, "done", null);
+      let status: "running" | "done" | "error";
       if (closed) {
-        await pushRunStatus(this.pool, entry.agentRunId, "done");
+        status = "done";
       } else {
         logger.warn(
           { agentRunId: entry.agentRunId },
@@ -267,13 +272,20 @@ export class DelegationRegistry {
         );
         const finished = await getAgentRun(this.pool, entry.agentRunId);
         if (!finished) throw new Error(`agent run ${entry.agentRunId} vanished after finishing`);
-        await pushRunStatus(this.pool, entry.agentRunId, finished.status);
+        status = finished.status;
       }
+      // The row is confirmed closed/terminal at this point — drop the entry now, before the
+      // `pushRunStatus` call below that can still throw, so a failure there can't leave a
+      // busy=false entry in `entries` pointing at an already-terminal run.
       this.entries.delete(entryKey);
+      clearTimeout(entry.ttlTimer);
+      await pushRunStatus(this.pool, entry.agentRunId, status);
     } catch (err) {
       logger.error({ err, entryKey }, "DelegationRegistry: failed to close expired session, will retry");
-      entry.busy = false;
-      entry.ttlTimer = this.scheduleTtl(entryKey);
+      if (this.entries.has(entryKey)) {
+        entry.busy = false;
+        entry.ttlTimer = this.scheduleTtl(entryKey);
+      }
     }
   }
 }
