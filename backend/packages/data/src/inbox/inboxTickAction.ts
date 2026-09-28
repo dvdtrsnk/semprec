@@ -622,11 +622,16 @@ async function writeTickResult(
     await assertValidProposalEnvelope(client, envelope);
   } catch (err) {
     if (!(err instanceof ValidationError)) throw err;
+    // Same race as below: another tick may have created a proposal for this source while this
+    // one waited on the AI call, so a null `snapshot.existingProposal` doesn't mean there is
+    // still nothing to revise — re-check before falling through to `writeNeedsClarification`'s
+    // own create path, or this would create a second proposal row for the same source item.
+    const existingForClarification = snapshot.existingProposal ?? (await findExistingProposal(client, config, item.id));
     await writeNeedsClarification(
       client,
       config,
       item.id,
-      snapshot.existingProposal,
+      existingForClarification,
       `Computed proposal failed validation: ${err.message}`,
       fingerprint,
     );
@@ -692,7 +697,9 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
     const config = semprecTickActionConfigSchema.parse(actionConfig);
     const sourceItemId = context.itemId;
 
-    const snapshot = await withTransaction(pool, (client) => readTickSnapshot(client, config, sourceItemId));
+    const snapshot = await withTransaction(pool, (client) => readTickSnapshot(client, config, sourceItemId), {
+      isolation: "repeatable_read",
+    });
     if (!snapshot) return;
 
     const result = await computeProposal({
@@ -703,6 +710,8 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
     });
     const envelope = buildProposalEnvelope(snapshot, result);
 
-    await withTransaction(pool, (client) => writeTickResult(client, config, snapshot, envelope));
+    await withTransaction(pool, (client) => writeTickResult(client, config, snapshot, envelope), {
+      isolation: "repeatable_read",
+    });
   };
 }
