@@ -601,16 +601,8 @@ describe("DelegationRegistry", () => {
     // A fresh delegate() onto the same key now sees no entry (it was already dropped) and no
     // pending create, so it creates a brand-new run and entry.
     const { createAgentSession: secondSession } = scriptedSession(
-      [
-        { kind: "turn_start" },
-        { kind: "message", text: "second session" },
-        { kind: "turn_end" },
-      ],
-      [
-        { kind: "turn_start" },
-        { kind: "message", text: "second session, touched" },
-        { kind: "turn_end" },
-      ],
+      [{ kind: "turn_start" }, { kind: "message", text: "second session" }, { kind: "turn_end" }],
+      [{ kind: "turn_start" }, { kind: "message", text: "second session, touched" }, { kind: "turn_end" }],
     );
     const second = await registry.delegate({
       createAgentSession: secondSession,
