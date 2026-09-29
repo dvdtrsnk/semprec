@@ -13,6 +13,7 @@ import { runHeartbeatFireQueueSplitMigration } from "../scheduler/heartbeatFireQ
 import { runTranscriptsCatalogCutoverMigration } from "../transcription/transcriptsCatalogCutoverMigration.js";
 import { runTranscriptionRequeueHeartbeatCutoverMigration } from "../transcription/transcriptionRequeueHeartbeatCutoverMigration.js";
 import { activateCzechHunspellSearch } from "../mail/czechHunspellSearch.js";
+import { preserveFailingExitCode } from "./preserveFailingExitCode.js";
 
 /**
  * A fixed port made any second test run on the same machine fail in a way that reads like a
@@ -49,6 +50,7 @@ async function choosePort(): Promise<number> {
 
 /** vitest globalSetup: one embedded Postgres instance for the whole test run. */
 export default async function setup(): Promise<() => Promise<void>> {
+  preserveFailingExitCode();
   const port = await choosePort();
   const databaseDir = await mkdtemp(path.join(tmpdir(), "semprec-pg-"));
   const pg = new EmbeddedPostgres({
