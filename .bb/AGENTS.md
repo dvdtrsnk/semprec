@@ -2,8 +2,8 @@
 
 Semprec is a personal life-organization system: a Postgres data layer behind a
 generic choke-point API, Yjs CRDT blocks/canvas, an IMAP inbox pipeline, and an
-agent runtime. `backend/` is a pnpm workspace (`packages/`, `modules/`,
-`services/`), `web/` is React + TypeScript on Vite, `apple/` is one shared Swift
+agent runtime. `backend/` is a pnpm workspace (`packages/`, `services/`),
+`web/` is React + TypeScript on Vite, `apple/` is one shared Swift
 codebase for iOS and macOS (scaffold for now).
 
 ## The issue is the law

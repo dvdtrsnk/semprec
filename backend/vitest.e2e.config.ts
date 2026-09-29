@@ -10,7 +10,7 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
   test: {
-    include: ["packages/*/src/**/*.e2e.test.ts", "modules/*/src/**/*.e2e.test.ts", "services/*/src/**/*.e2e.test.ts"],
+    include: ["packages/*/src/**/*.e2e.test.ts", "services/*/src/**/*.e2e.test.ts"],
     globalSetup: ["./packages/data/src/testSupport/globalSetup.ts"],
     environment: "node",
     testTimeout: 30_000,

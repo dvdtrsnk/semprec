@@ -41,8 +41,8 @@ may be worked in parallel.
 
 - `backend/packages/` — shared core: `data`, `module-registry`,
   `agent-runtime`, `queue`, `realtime`, `credentials`, `shared`.
-- `backend/modules/` — vertical slices (Emails, Semprec, later Books/Films) —
-  created incrementally as the issue queue progresses.
+- Vertical slices (Emails, Semprec, later Books/Films) live under
+  `backend/packages/data/src/<domain>/`, each with its own `*ModuleManifest.ts`.
 - `backend/services/` — standalone processes (`semprec-api`,
   `semprec-agents`, `semprec-transcribe`, `semprec-ai-gateway`) — created
   incrementally as the issue queue progresses; mail live-sync runs inside

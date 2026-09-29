@@ -1,7 +1,7 @@
 This is the `backend/` platform of the Semprec monorepo (the other platforms,
 `apple/` and `web/`, have their own review-rules and are reviewed
 independently). Semprec is a personal life-organization system; the backend
-is a TypeScript/Node pnpm workspace (`packages/*`, `modules/*`, `services/*`)
+is a TypeScript/Node pnpm workspace (`packages/*`, `services/*`)
 implementing: a Postgres schema engine with a generic choke-point CRUD API,
 Yjs CRDT blocks/canvas, ten hardcoded core databases, IMAP email sync, an
 inbox processing pipeline, a module contract/registry, an AI agent runtime
