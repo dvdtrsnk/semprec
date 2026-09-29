@@ -4,6 +4,7 @@ import {
   insertAgentRunEvent,
   listAgentRunEvents,
   listRunningAgentRuns,
+  withTransaction,
 } from "@semprec/data";
 
 const INTERRUPTED_REASON = "interrupted_by_restart";
@@ -38,10 +39,7 @@ const INTERRUPTED_REASON = "interrupted_by_restart";
  * partial synthetic-event write is worse than repeating the whole sweep.
  */
 export async function repairInterruptedRuns(pool: Pool): Promise<{ repairedRunIds: string[] }> {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-
+  return withTransaction(pool, async (client) => {
     const orphaned = (await listRunningAgentRuns(client)).filter((run) => run.triggeredBy !== "mcp");
     for (const run of orphaned) {
       const events = await listAgentRunEvents(client, run.id);
@@ -64,12 +62,6 @@ export async function repairInterruptedRuns(pool: Pool): Promise<{ repairedRunId
       await finishAgentRunWithErrorNotification(client, run.id, INTERRUPTED_REASON);
     }
 
-    await client.query("COMMIT");
     return { repairedRunIds: orphaned.map((run) => run.id) };
-  } catch (err) {
-    await client.query("ROLLBACK");
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }

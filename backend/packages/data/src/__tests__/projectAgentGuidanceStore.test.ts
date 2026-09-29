@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { GuidanceReferenceNotFoundError } from "@semprec/shared";
-import { withTransaction } from "../db/pool.js";
+import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { insertItem } from "../chokePoint/itemsStore.js";
 import { createUser } from "../auth/usersStore.js";
@@ -207,6 +207,36 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
 
       const loaded = await withTransaction(pool, (client) => projectAgentGuidanceStore.load(client, projectItemId));
       expect(loaded).toBeNull();
+    });
+
+    it("fires an after-commit callback registered inside it exactly once, after the commit", async () => {
+      const runner = createPoolClientTransactionRunner(pool);
+      const spy = vi.fn();
+
+      await runner.withTransaction({ isolation: "repeatable_read" }, async (client) => {
+        runAfterCommit(client, spy);
+        expect(spy).not.toHaveBeenCalled();
+      });
+
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it("never fires an after-commit callback registered before a throw, not even from a later unrelated transaction", async () => {
+      const runner = createPoolClientTransactionRunner(pool);
+      const spy = vi.fn();
+
+      await expect(
+        runner.withTransaction({ isolation: "repeatable_read" }, async (client) => {
+          runAfterCommit(client, spy);
+          throw new Error("boom");
+        }),
+      ).rejects.toThrow("boom");
+
+      expect(spy).not.toHaveBeenCalled();
+
+      await withTransaction(pool, async () => undefined);
+
+      expect(spy).not.toHaveBeenCalled();
     });
   });
 });

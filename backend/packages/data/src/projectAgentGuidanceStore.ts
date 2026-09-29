@@ -6,7 +6,7 @@ import type {
   ProjectAgentGuidanceStore,
   TransactionRunner,
 } from "@semprec/shared";
-import { requireSingleRow } from "./db/pool.js";
+import { requireSingleRow, withTransaction } from "./db/pool.js";
 import { NotFoundError } from "./errors.js";
 import { getDatabaseByModuleId } from "./chokePoint/databasesStore.js";
 import { getItemById } from "./chokePoint/itemsStore.js";
@@ -104,32 +104,13 @@ export const guidanceReferenceStore: GuidanceReferenceStore<PoolClient> = {
 };
 
 /**
- * Concrete `TransactionRunner<PoolClient>`: opens a dedicated connection at the requested
- * isolation level, commits on success, and always rolls back and releases on throw.
+ * Concrete `TransactionRunner<PoolClient>`: delegates to `withTransaction` (`db/pool.ts`) at the
+ * requested isolation level, so after-commit hooks registered by stores inside the runner (e.g.
+ * `runAfterCommit` calls made by `writeNotification`) fire after the commit, exactly as they
+ * would for any other `withTransaction` caller.
  */
 export function createPoolClientTransactionRunner(pool: Pool): TransactionRunner<PoolClient> {
   return {
-    async withTransaction(options, work) {
-      const client = await pool.connect();
-      try {
-        const isolationClause = options.isolation === "serializable" ? "SERIALIZABLE" : "REPEATABLE READ";
-        await client.query(`BEGIN ISOLATION LEVEL ${isolationClause}`);
-        try {
-          const result = await work(client);
-          await client.query("COMMIT");
-          return result;
-        } catch (err) {
-          try {
-            await client.query("ROLLBACK");
-          } catch {
-            // The original error is the one worth propagating; a failed rollback (e.g. a
-            // broken connection) shouldn't mask it.
-          }
-          throw err;
-        }
-      } finally {
-        client.release();
-      }
-    },
+    withTransaction: (options, work) => withTransaction(pool, work, { isolation: options.isolation }),
   };
 }
