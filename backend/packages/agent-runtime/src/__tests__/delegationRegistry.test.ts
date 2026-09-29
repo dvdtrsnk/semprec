@@ -650,6 +650,77 @@ describe("DelegationRegistry", () => {
     registry.clear();
   });
 
+  it("drops the entry instead of retrying when finishAgentRun finds the run already closed and the follow-up getAgentRun read fails", async () => {
+    // `finishAgentRun` returns `false` here (another writer already closed the run before the
+    // TTL fired), which already confirms the row terminal — but the follow-up `getAgentRun` read
+    // of its final status then throws. The fix must still drop the entry rather than treating
+    // this as a retryable failure: the row is terminal either way, so leaving a busy=false entry
+    // behind would let a delegate() reuse a session for a run that's already closed.
+    const ttlMs = 60;
+    // Matches only `getAgentRun`'s full-column SELECT for the delegated run itself, not
+    // `finishAgentRun`'s own `SELECT status FROM agent_runs ...` fallback read (which must still
+    // succeed) and not the earlier `getAgentRun` call `createAgentRun` issues to resolve the
+    // delegated run's actor from its supervisor parent.
+    const target: { runId: string | undefined } = { runId: undefined };
+    const failingPool = poolWithFailingQuery(
+      "SELECT id, project_item_id",
+      new Error("simulated outage"),
+      (params) => params[0] === target.runId,
+    );
+    const registry = new DelegationRegistry(failingPool, ttlMs);
+    const supervisorRunId = await newSupervisorRunId();
+    const targetProjectItemId = "cccccccc-3333-3333-3333-333333333333";
+    const { createAgentSession: firstSession } = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "first session" },
+      { kind: "turn_end" },
+    ]);
+
+    await registry.delegate({ createAgentSession: firstSession, supervisorRunId, targetProjectItemId, task: "one" });
+    const { rows: firstRunRows } = await pool.query<{ id: string }>(
+      `SELECT id FROM agent_runs WHERE project_item_id = $1`,
+      [targetProjectItemId],
+    );
+    target.runId = firstRunRows[0]!.id;
+
+    // Simulate another writer closing the run before the TTL fires, so `finishAgentRun`'s own
+    // UPDATE affects zero rows and it falls into its "already finished" read, returning `false`.
+    await pool.query(`UPDATE agent_runs SET status = 'error', finished_at = now() WHERE project_item_id = $1`, [
+      targetProjectItemId,
+    ]);
+
+    await new Promise((resolve) => setTimeout(resolve, ttlMs + 150));
+
+    const { rows: afterTtl } = await pool.query<{ status: string }>(
+      `SELECT status FROM agent_runs WHERE project_item_id = $1`,
+      [targetProjectItemId],
+    );
+    expect(afterTtl).toHaveLength(1);
+    expect(afterTtl[0]!.status).toBe("error");
+
+    // If the entry were left behind (the bug), this delegate() would reuse it and reach
+    // `session.send()` instead of creating a fresh run — the run count would stay at 1.
+    const { createAgentSession: secondSession } = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "second session" },
+      { kind: "turn_end" },
+    ]);
+    const second = await registry.delegate({
+      createAgentSession: secondSession,
+      supervisorRunId,
+      targetProjectItemId,
+      task: "two",
+    });
+    expect(second).toEqual({ ok: true, message: "second session" });
+
+    const { rows: allRuns } = await pool.query(`SELECT count(*)::int AS n FROM agent_runs WHERE project_item_id = $1`, [
+      targetProjectItemId,
+    ]);
+    expect(allRuns[0].n).toBe(2);
+
+    registry.clear();
+  });
+
   it("does not expire a delegation touched again before its TTL elapses", async () => {
     const ttlMs = 150;
     const registry = new DelegationRegistry(pool, ttlMs);
