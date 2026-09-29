@@ -382,12 +382,7 @@ describe("relation edge contract", () => {
   describe("relation-definition ownership and protected entry points", () => {
     async function assertOwnerViolation(promise: Promise<unknown>): Promise<void> {
       await expect(promise).rejects.toBeInstanceOf(ForbiddenError);
-      try {
-        await promise;
-        expect.unreachable("expected an owner_violation ForbiddenError");
-      } catch (err) {
-        expect((err as ForbiddenError).code).toBe("owner_violation");
-      }
+      await expect(promise).rejects.toMatchObject({ code: "owner_violation" });
     }
 
     it("rejects ownerProcess present when owner is 'user', and missing/empty when owner is 'system' — independently per side", async () => {
