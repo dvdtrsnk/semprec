@@ -1,6 +1,41 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { requireAffectedRows, runAfterCommit, withClient, withTransaction } from "../db/pool.js";
+import { createPool, requireAffectedRows, runAfterCommit, withClient, withTransaction } from "../db/pool.js";
+import { logger } from "../db/logger.js";
+
+describe("createPool", () => {
+  let pool: Pool | undefined;
+
+  afterEach(async () => {
+    await pool?.end();
+    pool = undefined;
+  });
+
+  it("does not throw when an idle client errors, and logs it", () => {
+    pool = createPool("postgres://x");
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    const err = new Error("boom");
+
+    try {
+      expect(() => pool?.emit("error", err)).not.toThrow();
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith({ err }, "Idle pool client errored; the client was discarded");
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("sets the connection and statement timeouts", () => {
+    pool = createPool("postgres://x");
+    expect(pool.options.connectionTimeoutMillis).toBe(10_000);
+    expect(pool.options.statement_timeout).toBe(60_000);
+  });
+
+  it("disables the statement timeout when statementTimeoutMs is 0", () => {
+    pool = createPool("postgres://x", { statementTimeoutMs: 0 });
+    expect(pool.options.statement_timeout).toBeUndefined();
+  });
+});
 
 describe("requireAffectedRows", () => {
   it("returns the row count when at least one row was affected", () => {

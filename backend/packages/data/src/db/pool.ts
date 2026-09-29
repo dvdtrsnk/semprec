@@ -1,10 +1,36 @@
 import { Pool, type PoolClient } from "pg";
+import { logger } from "./logger.js";
 
 /** Anything a query can run against: a pool, or a client already inside a transaction. */
 export type Queryable = Pool | PoolClient;
 
-export function createPool(connectionString: string): Pool {
-  return new Pool({ connectionString });
+/** How long `pool.connect()` waits for a connection before rejecting. */
+export const CONNECTION_TIMEOUT_MS = 10_000;
+
+/** Default per-connection `statement_timeout`, in milliseconds. */
+export const STATEMENT_TIMEOUT_MS = 60_000;
+
+export interface CreatePoolOptions {
+  /** Per-connection `statement_timeout`; defaults to STATEMENT_TIMEOUT_MS; `0` disables it (the migrations CLI, whose contract-step cutovers may run longer). */
+  statementTimeoutMs?: number;
+}
+
+export function createPool(connectionString: string, options: CreatePoolOptions = {}): Pool {
+  const statementTimeoutMs = options.statementTimeoutMs ?? STATEMENT_TIMEOUT_MS;
+  const pool = new Pool({
+    connectionString,
+    connectionTimeoutMillis: CONNECTION_TIMEOUT_MS,
+    ...(statementTimeoutMs > 0 ? { statement_timeout: statementTimeoutMs } : {}),
+  });
+  // pg's Pool emits 'error' when an idle client is dropped by the server (restart,
+  // container recreate, idle_session_timeout, a network reset). An EventEmitter 'error'
+  // with no listener throws, which installFatalHandlers turns into an uncaughtException
+  // that exits the process. pg has already discarded the failed client from the pool by
+  // the time this fires, so nothing else needs to happen here.
+  pool.on("error", (err) => {
+    logger.error({ err }, "Idle pool client errored; the client was discarded");
+  });
+  return pool;
 }
 
 const afterCommitCallbacks = new WeakMap<PoolClient, Array<() => void>>();
