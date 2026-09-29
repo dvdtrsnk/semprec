@@ -99,7 +99,11 @@ describe("MCP invoke adapter (issue #128)", () => {
         error: false,
         result: JSON.stringify({ name: "search_web", arguments: { query: "semprec" } }),
       });
-      expect(contractServer.getLastToolCall()).toEqual({ name: "search_web", arguments: { query: "semprec" } });
+      expect(contractServer.getLastToolCall()).toEqual({
+        name: "search_web",
+        arguments: { query: "semprec" },
+        meta: null,
+      });
     });
 
     it("maps the server's isError result to an error result", async () => {
@@ -236,7 +240,11 @@ describe("MCP invoke adapter (issue #128)", () => {
         error: false,
         result: JSON.stringify({ name: "search_web", arguments: { query: "semprec" } }),
       });
-      expect(contractServer.getLastToolCall()).toEqual({ name: "search_web", arguments: { query: "semprec" } });
+      expect(contractServer.getLastToolCall()).toEqual({
+        name: "search_web",
+        arguments: { query: "semprec" },
+        meta: null,
+      });
     });
 
     it("writes an approval_pending notification alongside the request, one per created request, never deduped away (issue #149)", async () => {

@@ -231,18 +231,18 @@ export async function decideApprovalRequest(
 }
 
 /**
- * Claims one `approved` request for execution: sets `executed_at` iff it is still unset. A
- * redelivered `approvalExecute` job (queue retry, or a second worker) sees `rowCount === 0` and
- * treats it as a no-op instead of invoking the deferred tool call twice — see 0022's migration
- * comment. This is a best-effort single-attempt claim, not the exactly-once transactional
- * protocol issue #89 will add; it exists so #89 can replace it without touching the decision
- * state machine above.
+ * Claims one `approved` request for execution: sets `executed_at` iff it is still unset and the
+ * request is still `queued`. A redelivered `approvalExecute` job (queue retry, or a second
+ * worker) sees `rowCount === 0` and treats it as a no-op instead of invoking the deferred tool
+ * call twice — see 0022's migration comment. This claim is the exclusive "executing" marker for
+ * the row (`queued` + `executed_at` set, per that same migration's documented state); a second
+ * delivery arriving while it holds sees `null` here, not a fresh claim.
  */
 export async function claimApprovalRequestExecution(client: Queryable, id: string): Promise<ApprovalRequest | null> {
   const { rows } = await client.query<ApprovalRequestRow>(
     `UPDATE approval_requests
         SET executed_at = now()
-      WHERE id = $1 AND status = 'approved' AND executed_at IS NULL
+      WHERE id = $1 AND status = 'approved' AND executed_at IS NULL AND execution_status = 'queued'
       RETURNING *`,
     [id],
   );
@@ -266,21 +266,72 @@ export interface ApprovalRequestOutcome {
  * generic-operation approval replay handler is configured") is never recorded as `succeeded` and
  * can never be replayed by `replayApprovedGenericOperation`'s idempotency check as a false
  * success.
+ *
+ * Guarded on `execution_status = 'queued'` like every other targeted UPDATE in this file, and
+ * returns whether it actually wrote instead of throwing on zero rows (issue #693): a second
+ * delivery's outcome, or one that arrives after `settleStaleApprovalRequestClaim` already
+ * terminalized the row, finds it no longer `queued` and must discard its result rather than
+ * overwrite an already-settled outcome. `false` is a legitimate, expected result here — the
+ * caller logs the discard instead of treating it as an error.
  */
 export async function recordApprovalRequestOutcome(
   client: Queryable,
   id: string,
   outcome: ApprovalRequestOutcome,
-): Promise<void> {
+): Promise<boolean> {
   const result = await client.query(
     `UPDATE approval_requests
         SET execution_error = $2, execution_result_jsonb = $3::jsonb,
             execution_status = CASE WHEN $2 THEN 'conflict' ELSE 'succeeded' END,
             executed_at = COALESCE(executed_at, now())
-      WHERE id = $1`,
+      WHERE id = $1 AND execution_status = 'queued'`,
     [id, outcome.error, JSON.stringify(outcome.result)],
   );
-  requireAffectedRows(result, `recording approval request '${id}' outcome`);
+  return result.rowCount === 1;
+}
+
+/** What `settleStaleApprovalRequestClaim` returns can distinguish. */
+export type StaleApprovalClaimSettlement = "settled" | "in_flight" | "not_claimed";
+
+/**
+ * Settles a claim (`execution_status = 'queued'` with `executed_at` set — see
+ * `claimApprovalRequestExecution`'s docstring for that state's meaning) that has outlived
+ * `staleAfterMs` without an outcome ever being recorded for it (issue #693): a process crash or a
+ * transient database error between the claim and `recordApprovalRequestOutcome` otherwise leaves
+ * the row claimed forever, with no later delivery able to tell whether the tool call ran.
+ * `conflict` is the only terminal failure value `execution_status`'s `CHECK` constraint allows,
+ * so that is what a stale claim settles to — its `execution_result_jsonb` text is what
+ * distinguishes this "unknown outcome" case for a reader from an ordinary revalidation conflict.
+ *
+ * Returns `"settled"` when this call performed that write. Otherwise re-reads the row to tell
+ * apart the two reasons it didn't: `"in_flight"` when the claim is still within `staleAfterMs` (a
+ * delivery may genuinely still be running), and `"not_claimed"` when the row was never in the
+ * stale-claimed state at all (rejected, unknown, already terminal) — the caller treats those two
+ * outcomes differently (retry later vs. give up quietly).
+ */
+export async function settleStaleApprovalRequestClaim(
+  client: Queryable,
+  id: string,
+  staleAfterMs: number,
+): Promise<StaleApprovalClaimSettlement> {
+  const unknownOutcomeText =
+    "The deferred MCP tool call was claimed by an earlier delivery that never recorded its outcome; the tool may or may not have run.";
+  const result = await client.query(
+    `UPDATE approval_requests
+        SET execution_status = 'conflict', execution_error = true, execution_result_jsonb = $2::jsonb
+      WHERE id = $1 AND status = 'approved' AND execution_status = 'queued' AND executed_at IS NOT NULL
+        AND executed_at < now() - make_interval(secs => $3 / 1000.0)`,
+    [id, JSON.stringify(unknownOutcomeText), staleAfterMs],
+  );
+  if (result.rowCount === 1) return "settled";
+
+  const { rows } = await client.query<Pick<ApprovalRequestRow, "execution_status" | "executed_at">>(
+    `SELECT execution_status, executed_at FROM approval_requests WHERE id = $1`,
+    [id],
+  );
+  const row = rows[0];
+  if (row && row.execution_status === "queued" && row.executed_at !== null) return "in_flight";
+  return "not_claimed";
 }
 
 /**

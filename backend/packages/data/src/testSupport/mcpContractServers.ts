@@ -47,6 +47,8 @@ export const DEFAULT_CONTRACT_TOOLS: ContractServerTool[] = [
 export interface ContractToolCall {
   name: string;
   arguments: Record<string, unknown>;
+  /** The `tools/call` request's `_meta`, or `null` when the caller sent none (issue #693). */
+  meta: Record<string, unknown> | null;
 }
 
 export interface McpContractServer {
@@ -229,7 +231,11 @@ export async function startSseContractServer(
         // takes effect on this already-connected session's very next `tools/list` request.
         mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: currentTools }));
         mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
-          lastToolCall = { name: request.params.name, arguments: request.params.arguments ?? {} };
+          lastToolCall = {
+            name: request.params.name,
+            arguments: request.params.arguments ?? {},
+            meta: request.params._meta ?? null,
+          };
           return handleContractToolCall(request.params.name, request.params.arguments);
         });
         mcpServer.oninitialized = () => {
@@ -329,7 +335,11 @@ export async function startHttpContractServer(
       // Reads `currentTools` at request time, same as the sse server above.
       mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: currentTools }));
       mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
-        lastToolCall = { name: request.params.name, arguments: request.params.arguments ?? {} };
+        lastToolCall = {
+          name: request.params.name,
+          arguments: request.params.arguments ?? {},
+          meta: request.params._meta ?? null,
+        };
         return handleContractToolCall(request.params.name, request.params.arguments);
       });
       mcpServer.oninitialized = () => {
