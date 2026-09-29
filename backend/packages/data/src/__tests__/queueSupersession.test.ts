@@ -84,7 +84,6 @@ describe("registerTask supersession handling (issue #700)", () => {
 
     const rows = await probeRows();
     expect(rows).toHaveLength(0);
-    expect(rows.some((row) => row.attempts >= row.max_attempts)).toBe(false);
   });
 
   it("retries a genuine failure normally when the job was never superseded", async () => {
