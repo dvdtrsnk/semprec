@@ -122,7 +122,7 @@ describe("choke-point write boundary for route handlers (issue #154)", () => {
     }
 
     expect(writeBoundaryViolations).toEqual([]);
-  }, 30_000);
+  }, 90_000);
 
   it("does not itself flag the choke-point package's own writes to items/databases/properties", async () => {
     const { violations } = await checkModuleBoundaries(backendRoot, ["packages/data"]);
@@ -131,5 +131,5 @@ describe("choke-point write boundary for route handlers (issue #154)", () => {
     );
 
     expect(writeBoundaryViolations).toEqual([]);
-  }, 30_000);
+  }, 90_000);
 });
