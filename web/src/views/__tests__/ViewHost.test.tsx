@@ -46,6 +46,23 @@ describe("view resolution", () => {
     expect(resolveViewRenderer(registry, mailboxView)).toBe(byComponent);
   });
 
+  it("throws when registering the same key twice", () => {
+    const registry = createViewRegistry();
+    registerViewRenderer(registry, "mailboxClient", () => null);
+    expect(() => registerViewRenderer(registry, "mailboxClient", () => null)).toThrow(
+      "A view renderer is already registered for 'mailboxClient'",
+    );
+  });
+
+  it("does not throw when a component id and a view type share no key", () => {
+    const registry = createViewRegistry();
+    const renderer = () => null;
+    expect(() => {
+      registerViewRenderer(registry, "mailboxClient", renderer);
+      registerViewRenderer(registry, "mailbox-client", renderer);
+    }).not.toThrow();
+  });
+
   it("shows an unavailable state for a view type this client has no renderer for", async () => {
     const backend = createMailboxBackend();
     backend.views = [{ ...mailboxView, type: "kanban", clientComponent: "kanbanBoard" }];

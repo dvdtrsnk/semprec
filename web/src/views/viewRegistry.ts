@@ -6,6 +6,7 @@ import type { GenericOperations, View } from "../api/genericOperations.js";
  * identifier a registered view type carries (opaque to the backend) to the component that
  * renders it. A view whose component is not registered here renders nothing — the caller
  * decides what to show instead — rather than falling back to some other renderer.
+ * Registering an already-registered key throws rather than silently replacing it.
  */
 export interface ViewRendererProps {
   view: View;
@@ -21,6 +22,9 @@ export function createViewRegistry(): ViewRegistry {
 }
 
 export function registerViewRenderer(registry: ViewRegistry, clientComponent: string, renderer: ViewRenderer): void {
+  if (registry.has(clientComponent)) {
+    throw new Error(`A view renderer is already registered for '${clientComponent}'`);
+  }
   registry.set(clientComponent, renderer);
 }
 
