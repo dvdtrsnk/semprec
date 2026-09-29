@@ -52,6 +52,13 @@ async function jobCountFor(pool: Pool, identifier: string): Promise<number> {
   return Number(rows[0]?.count ?? 0);
 }
 
+async function knownCrontabIdentifiers(pool: Pool): Promise<string[]> {
+  const { rows } = await pool.query<{ identifier: string }>(
+    "SELECT identifier FROM graphile_worker._private_known_crontabs ORDER BY identifier",
+  );
+  return rows.map((row) => row.identifier).sort();
+}
+
 async function getSemprecProjectId(pool: Pool): Promise<string> {
   const { rows } = await pool.query("SELECT id FROM databases WHERE owner_module_id = 'projects'");
   if (rows.length === 0) throw new Error("getSemprecProjectId: no database with owner_module_id 'projects'");
@@ -88,10 +95,11 @@ describe("createApiQueueRuntime (issue #91)", () => {
     const registry = await buildRegistryWith("apiFixtureModule.js", "fixture-api-queue-runtime");
     runtime = await createApiQueueRuntime(pool, registry);
 
-    const { rows: crontabRows } = await pool.query<{ identifier: string }>(
-      "SELECT identifier FROM graphile_worker._private_known_crontabs ORDER BY identifier",
-    );
-    expect(crontabRows.map((row) => row.identifier).sort()).toEqual(EXPECTED_CRONTAB_IDENTIFIERS);
+    // graphile-worker registers the crontab's identifiers from a background step that `run()`
+    // does not await, so they are only readable once that registration has committed. It inserts
+    // every identifier in one statement, so the first non-empty read is already the whole set.
+    await waitFor(async () => (await knownCrontabIdentifiers(pool)).length > 0);
+    expect(await knownCrontabIdentifiers(pool)).toEqual(EXPECTED_CRONTAB_IDENTIFIERS);
 
     await enqueueJob(pool, "apiFixture.doThing", { hello: "world" });
     await enqueueJob(pool, CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM, {});
