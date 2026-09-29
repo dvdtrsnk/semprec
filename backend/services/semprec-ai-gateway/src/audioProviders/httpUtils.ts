@@ -12,7 +12,7 @@ export function isObject(value: unknown): value is Record<string, unknown> {
  * AudioProviderCallError's documented contract.
  */
 export async function readJsonBodyWithSizeCap(res: Response, providerName: string, maxBytes: number): Promise<unknown> {
-  const reader = res.body?.getReader();
+  const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = res.body?.getReader();
   if (!reader) throw new AudioProviderCallError(`${providerName} response body stream was unavailable`);
 
   const chunks: Uint8Array[] = [];

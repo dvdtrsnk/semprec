@@ -50,7 +50,7 @@ export interface GmailPubSubClientOptions {
 
 /** Reads a response body up to `maxBytes`, throwing rather than buffering an unbounded stream — `response.json()` alone has no such limit. */
 async function readBoundedText(response: Response, url: string, maxBytes: number): Promise<string> {
-  const reader = response.body?.getReader();
+  const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = response.body?.getReader();
   if (!reader) return response.text();
   const decoder = new TextDecoder();
   let received = 0;

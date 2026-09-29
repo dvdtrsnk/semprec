@@ -125,16 +125,20 @@ export function validateGuidanceDriftContradiction(entry: unknown, context: stri
   if (typeof guidanceExcerpt !== "string" || guidanceExcerpt.length === 0) {
     throw new Error(`${context}: contradiction has an invalid guidanceExcerpt`);
   }
-  if (
-    !Array.isArray(manifestFacts) ||
-    manifestFacts.length === 0 ||
-    !manifestFacts.every((fact) => typeof fact === "string" && fact.length > 0)
-  ) {
+  if (!Array.isArray(manifestFacts) || manifestFacts.length === 0) {
+    throw new Error(`${context}: contradiction has invalid manifestFacts`);
+  }
+  const facts: unknown[] = manifestFacts;
+  if (!facts.every(isNonEmptyString)) {
     throw new Error(`${context}: contradiction has invalid manifestFacts`);
   }
   if (severity !== "blocking" && severity !== "warning") {
     throw new Error(`${context}: contradiction has an invalid severity`);
   }
 
-  return { claim, guidanceExcerpt, manifestFacts, severity };
+  return { claim, guidanceExcerpt, manifestFacts: facts, severity };
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
 }

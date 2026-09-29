@@ -32,7 +32,7 @@ class ResponseTooLargeError extends Error {}
  * into memory wholesale before it's even parsed.
  */
 async function readJsonBodyWithSizeCap(res: Response, maxBytes: number): Promise<unknown> {
-  const reader = res.body?.getReader();
+  const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = res.body?.getReader();
   if (!reader) throw new ResponseTooLargeError("Response body stream was unavailable");
 
   const chunks: Uint8Array[] = [];

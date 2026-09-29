@@ -85,7 +85,7 @@ const anthropicMessagesResponseSchema = z.looseObject({
  * can't be buffered into memory wholesale before we even attempt to parse it.
  */
 async function readJsonBodyWithSizeCap(res: Response, maxBytes: number): Promise<unknown> {
-  const reader = res.body?.getReader();
+  const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = res.body?.getReader();
   if (!reader) throw new ProviderCallError("Anthropic response body stream was unavailable");
 
   const chunks: Uint8Array[] = [];
