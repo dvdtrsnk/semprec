@@ -16,6 +16,7 @@ import {
 import { createGenericOperationGateway, type GenericOperationGateway } from "@semprec/application";
 import { CAPABILITY_IDS, type CapabilityId } from "@semprec/shared";
 import { createMcpRequestListener } from "../mcpHandler.js";
+import { SESSION_COOKIE_NAME } from "../../authHandler.js";
 
 const PASSWORD = "s3cret-password";
 const ALL_CAPABILITIES: ReadonlySet<CapabilityId> = new Set(CAPABILITY_IDS);
@@ -93,6 +94,23 @@ describe("createMcpRequestListener (issue #220)", () => {
     const res = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects a web-session cookie with no Authorization header", async () => {
+    const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+    servers.push(server);
+
+    const email = `${randomUUID()}@example.com`;
+    const user = await createUser(pool, { email, passwordHash: await hashPassword(PASSWORD) });
+    const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "web", ip: "127.0.0.1" });
+
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: `${SESSION_COOKIE_NAME}=${token}` },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
     });
 
