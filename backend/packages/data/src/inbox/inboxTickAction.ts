@@ -173,13 +173,30 @@ async function findExistingProposal(
  * row the tick decided on: present, not soft-deleted, not `confirmed`/`rejected`, and with the
  * same `updatedAt`. Anything else — a confirm/reject or any other write that committed since
  * the snapshot — is logged with its reason and returns `null`, and the caller skips its write.
+ *
+ * Both of the tick's transactions run at `repeatable read`, where `FOR UPDATE` on a row another
+ * transaction wrote after this one's snapshot fails with a serialization error rather than
+ * returning the newer row. That is the same "a write committed since the snapshot" outcome, so
+ * it is skipped as `changed` too; the savepoint keeps the rest of the transaction usable after
+ * the failed statement. Any other error from the lock propagates.
  */
 async function lockUnlockedProposal(
   client: PoolClient,
   config: SemprecTickActionConfig,
   snapshot: ItemRow,
 ): Promise<ItemRow | null> {
-  const locked = await itemsStore.lockItemById(client, config.processingProposalsDatabaseId, snapshot.id);
+  await client.query("SAVEPOINT lock_unlocked_proposal");
+  let locked: ItemRow | null;
+  try {
+    locked = await itemsStore.lockItemById(client, config.processingProposalsDatabaseId, snapshot.id);
+    await client.query("RELEASE SAVEPOINT lock_unlocked_proposal");
+  } catch (err) {
+    if (!isSerializationFailure(err)) throw err;
+    await client.query("ROLLBACK TO SAVEPOINT lock_unlocked_proposal");
+    await client.query("RELEASE SAVEPOINT lock_unlocked_proposal");
+    logger.info({ proposalId: snapshot.id, reason: "changed" }, "Skipping proposal write");
+    return null;
+  }
   let reason: "gone" | "deleted" | "locked" | "changed" | null = null;
   if (!locked) reason = "gone";
   else if (locked.deletedAt !== null) reason = "deleted";
@@ -192,6 +209,11 @@ async function lockUnlockedProposal(
     return null;
   }
   return locked;
+}
+
+/** True when `err` is Postgres' `serialization_failure` (SQLSTATE 40001). */
+function isSerializationFailure(err: unknown): boolean {
+  return typeof err === "object" && err !== null && "code" in err && err.code === "40001";
 }
 
 /**

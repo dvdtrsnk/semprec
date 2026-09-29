@@ -1000,6 +1000,22 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
     expect(after!.properties).toEqual(card.properties);
   });
 
+  it("deleted-source path: a lock failure other than a serialization conflict propagates and writes nothing", async () => {
+    const { item, card } = await seedProposedCardWithChangedSource();
+    await softDeleteSource(item.id);
+
+    const tickPool = poolRunningBeforeCardLock(card.id, async () => {
+      throw new Error("connection lost while locking the card");
+    });
+    await expect(
+      runTick(item.id, async () => expect.unreachable("a deleted source is never recomputed"), tickPool),
+    ).rejects.toThrow("connection lost while locking the card");
+
+    const after = await readCard(card.id);
+    expect(after!.updatedAt).toBe(card.updatedAt);
+    expect(after!.properties).toEqual(card.properties);
+  });
+
   it("a confirm committed while the tick computes its proposal wins — the card stays confirmed and untouched", async () => {
     const { item, card } = await seedProposedCardWithChangedSource();
     // The tick and the confirm both enqueue the source's Journal-day recompute under the same job
