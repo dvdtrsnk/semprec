@@ -203,6 +203,8 @@ describe("module data migration", () => {
     const { databaseId, itemIds } = await seedDatabaseWithItems(3);
     await chokePoint.createProperty({ databaseId, key: "note", name: "Note", type: "text" });
     const lockedId = itemIds[0]!;
+    // Item ids are random UUIDs, so the lowest one's seeded `n` can be any of 0..2.
+    const { n: lockedN } = await getProperties(databaseId, lockedId);
 
     const lockClient = await pool.connect();
     let run: Promise<void> | undefined;
@@ -251,7 +253,7 @@ describe("module data migration", () => {
     }
     await run;
 
-    expect(await getProperties(databaseId, lockedId)).toEqual({ n: 0, note: "edited", converted: true });
+    expect(await getProperties(databaseId, lockedId)).toEqual({ n: lockedN, note: "edited", converted: true });
     for (const id of itemIds) {
       expect(await getProperties(databaseId, id)).toMatchObject({ converted: true });
     }
