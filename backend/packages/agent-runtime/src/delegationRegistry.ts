@@ -281,7 +281,12 @@ export class DelegationRegistry {
       clearTimeout(entry.ttlTimer);
       await pushRunStatus(this.pool, entry.agentRunId, status);
     } catch (err) {
-      if (this.entries.has(entryKey)) {
+      // Compare identity, not just key presence: if this failure happened after the row was
+      // confirmed terminal and `entries.delete` already ran, a concurrent `delegate()` could
+      // have inserted a brand-new entry under the same key in the meantime. `entries.get(...) ===
+      // entry` tells the stale entry this call is holding apart from that new one, so retrying
+      // never mutates or reschedules a TTL timer for someone else's live session.
+      if (this.entries.get(entryKey) === entry) {
         logger.error({ err, entryKey }, "DelegationRegistry: failed to close expired session, will retry");
         entry.busy = false;
         entry.ttlTimer = this.scheduleTtl(entryKey);
