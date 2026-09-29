@@ -14,7 +14,8 @@ if (!connectionString) {
   throw new Error("DATABASE_URL is not set");
 }
 
-const pool = createPool(connectionString);
+// Cutover migrations are not bounded by the runtime statement timeout.
+const pool = createPool(connectionString, { statementTimeoutMs: 0 });
 try {
   await runMigrations(pool);
   // Issue #207: upgrades a database migrated before provisioning installed the Czech Hunspell
