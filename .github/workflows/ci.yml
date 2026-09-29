@@ -145,7 +145,8 @@ jobs:
         working-directory: web
         run: pnpm test
 
-  # The named test tiers (#250, #188). Each job id is a required status check context on
+  # The named test tiers (#250, #188). Each tier's job id — for the integration tier, its
+  # fan-in job `integration` — is a required status check context on
   # `develop` and `main` and a stable identifier in docs/operations/required-checks.md:
   # renaming one is a contract change that must update branch protection and that
   # document together. They run alongside `ci`, not after it, so a failing tier is
@@ -175,9 +176,19 @@ jobs:
         working-directory: backend
         run: pnpm run test:unit
 
-  integration:
+  # The integration tier runs as three vitest shards (`--shard=<n>/3`), one per
+  # matrix runner. Every shard is its own vitest process, so
+  # `packages/data/src/testSupport/globalSetup.ts` gives each its own ephemeral
+  # PostgreSQL; the shards share nothing. The matrix reports one context per shard
+  # (`integration-shard (1)`, …) — the required `integration` context comes from the
+  # fan-in job below.
+  integration-shard:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
 
@@ -200,12 +211,34 @@ jobs:
       - name: Backend — install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 
-      # The ephemeral PostgreSQL is created for this run and removed after it by
+      # The ephemeral PostgreSQL is created for this shard and removed after it by
       # `packages/data/src/testSupport/globalSetup.ts` (an embedded server, no service
       # container and no external database).
-      - name: Backend — test:integration
+      - name: Backend — test:integration (shard ${{ matrix.shard }}/3)
         working-directory: backend
-        run: pnpm run test:integration
+        run: pnpm run test:integration --shard=${{ matrix.shard }}/3
+
+  # Exists so the required context keeps the name `integration` while the work runs in
+  # the `integration-shard` matrix above; renaming it is a branch-protection contract
+  # change (docs/operations/required-checks.md). `always()` makes it report even when a
+  # shard fails or is cancelled, so the context turns red instead of being skipped —
+  # and it is green only when every shard succeeded.
+  integration:
+    needs: integration-shard
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Every integration shard succeeded
+        env:
+          SHARDS_RESULT: ${{ needs.integration-shard.result }}
+        run: |
+          if [ "$SHARDS_RESULT" = "success" ]; then
+            echo "All integration shards succeeded."
+            exit 0
+          fi
+          echo "::error::The integration-shard matrix finished with result '${SHARDS_RESULT}'; every shard must succeed."
+          exit 1
 
   dependency-check:
     runs-on: ubuntu-latest
