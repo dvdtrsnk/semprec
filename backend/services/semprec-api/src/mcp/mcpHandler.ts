@@ -4,6 +4,7 @@ import {
   ApprovalRequiredError,
   ChokePointError,
   NotFoundError,
+  UnauthorizedError,
   ValidationError,
   withTransaction,
   resolveMcpRunCredential,
@@ -91,7 +92,11 @@ function extractBearerToken(req: IncomingMessage): string | null {
  * composition root (`packages/agent-runtime/src/tools/generic`) dispatch through — MCP names are
  * the operation names prefixed `semprec.` (`fromMcpToolName`/`toMcpToolName`).
  *
- * The actor is derived one of two ways, tried in this order (AC34/44/47):
+ * A request with no bearer token is rejected with `UnauthorizedError` before any session lookup
+ * runs — the web session cookie is never consulted, even though `authenticateRequest` would
+ * otherwise accept it (`extractBearerToken`'s docstring).
+ *
+ * Given a bearer token, the actor is derived one of two ways, tried in this order (AC34/44/47):
  *  1. A restricted MCP run-credential (`resolveMcpRunCredential`, minted via
  *     `POST /api/agent-runs/mcp-credentials`): resolves to `{ userId, runId, agentProjectItemId }`,
  *     so `gateway.invoke`'s approval gate actually applies, and the operations it can see are
@@ -116,9 +121,9 @@ export function createMcpRequestListener(
     req: IncomingMessage,
   ): Promise<{ actor: AuthenticatedActor; capabilities: ReadonlySet<CapabilityId> }> {
     const bearerToken = extractBearerToken(req);
-    const credential = bearerToken
-      ? await withTransaction(pool, (client) => resolveMcpRunCredential(client, bearerToken))
-      : null;
+    if (bearerToken === null) throw new UnauthorizedError();
+
+    const credential = await withTransaction(pool, (client) => resolveMcpRunCredential(client, bearerToken));
     if (credential) {
       const capabilities = new Set(
         (CAPABILITY_IDS as readonly CapabilityId[]).filter(
