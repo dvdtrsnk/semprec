@@ -311,7 +311,24 @@ export async function runWorker(options: RunnerOptions): Promise<Runner> {
   return graphileRun(options);
 }
 
-/** Processes all currently-available jobs once and returns — used by tests and one-off drains. */
+/**
+ * Processes all currently-available jobs once and returns — used by tests and one-off drains.
+ * Resolves only after every job it ran has been released: graphile-worker's worker fires a job's
+ * `complete_job`/`fail_job` statement without awaiting it and, with its default unbatched release,
+ * nothing else awaits it either, so its own `runOnce` can resolve while that statement is still in
+ * flight — the job still locked (a next drain skips it), its retry backoff not yet applied, or a
+ * completed job's row not yet deleted. Routing both through graphile-worker's release batchers
+ * (a delay of `0` flushes on the next tick) makes the pool's shutdown await them first.
+ */
 export async function runOnce(options: RunnerOptions, overrideTaskList?: TaskList): Promise<void> {
-  await graphileRunOnce(options, overrideTaskList);
+  await graphileRunOnce(
+    {
+      ...options,
+      preset: {
+        extends: options.preset ? [options.preset] : [],
+        worker: { completeJobBatchDelay: 0, failJobBatchDelay: 0 },
+      },
+    },
+    overrideTaskList,
+  );
 }
