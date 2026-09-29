@@ -195,12 +195,20 @@ describe("repairInterruptedRuns", () => {
       connect: async () => {
         const client = await pool.connect();
         const originalQuery = client.query.bind(client);
+        const originalRelease = client.release.bind(client);
         client.query = ((...args: Parameters<PoolClient["query"]>) => {
           if (args[0] === "COMMIT") {
             return Promise.reject(new Error("commit failed"));
           }
           return originalQuery(...args);
         }) as PoolClient["query"];
+        // withTransaction's ROLLBACK succeeds here, so it releases this client
+        // with no error and pg would return it — with its COMMIT still
+        // intercepted — to the real pool's idle queue for reuse by the next
+        // withTransaction call below. Force pg to discard it instead.
+        client.release = ((err?: Error | boolean) => {
+          return originalRelease(err instanceof Error ? err : new Error("discard client contaminated by commitFailingPool"));
+        }) as PoolClient["release"];
         return client;
       },
     } as unknown as Pool;
