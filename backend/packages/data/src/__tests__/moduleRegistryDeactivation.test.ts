@@ -2,15 +2,12 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { manifestPath } from "../testSupport/moduleManifestPath.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../seed/libraryModuleKeys.js";
 import { LIBRARY_GRID_VIEW_TYPE } from "../views/libraryGridViewType.js";
 
 let pool: Pool;
-
-function manifestPath(fileName: string): string {
-  return new URL(`../${fileName}`, import.meta.url).href;
-}
 
 const ALL_MODULE_IDS = ["schemaCore", "views", "docs", "systemDatabases", "library", "mailSync", "inboxPipeline"];
 

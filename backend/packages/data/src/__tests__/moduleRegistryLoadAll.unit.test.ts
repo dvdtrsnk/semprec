@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ModuleRegistry } from "@semprec/module-registry";
+import { manifestPath } from "../testSupport/moduleManifestPath.js";
 import { TEN_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
 import { BUILTIN_VIEW_TYPES } from "../chokePoint/viewTypeRegistry.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../seed/libraryModuleKeys.js";
@@ -22,10 +23,6 @@ import { JOURNAL_INBOX_VIEW_TYPE } from "../views/journalInboxViewType.js";
  * `libraryMailInboxModuleManifests.test.ts` each prove only within their own four/three-manifest
  * subset, never across all seven together.
  */
-function manifestPath(fileName: string): string {
-  return new URL(`../${fileName}`, import.meta.url).href;
-}
-
 const ALL_MODULE_IDS = ["schemaCore", "views", "docs", "systemDatabases", "library", "mailSync", "inboxPipeline"];
 
 const MANIFEST_PATHS = [
