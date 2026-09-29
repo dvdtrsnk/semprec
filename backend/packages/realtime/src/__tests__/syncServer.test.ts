@@ -1134,16 +1134,48 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
     const closedA = waitForClose(clientA);
     const closedB = waitForClose(clientB);
 
+    // `onError` starts the reconnect loop synchronously, and the loop's first step is
+    // `pool.connect()`. Holding that one call until `releaseReconnect()` keeps the server in the
+    // outage gap for exactly as long as this test needs: without it, whether the next socket
+    // connects before or after the reconnect completes is a race, and a socket that wins it is
+    // (correctly) closed with 1012 by the reconnect.
+    const originalConnect = pool.connect.bind(pool);
+    let releaseReconnect!: () => void;
+    const reconnectReleased = new Promise<void>((resolve) => {
+      releaseReconnect = resolve;
+    });
+    const poolConnect = pool as unknown as { connect: () => Promise<PoolClient> };
+    const reconnectSpy = vi.spyOn(poolConnect, "connect").mockImplementationOnce(async () => {
+      await reconnectReleased;
+      return originalConnect();
+    });
+
     // Simulates the LISTEN connection being lost (network blip, Postgres restart) without any
     // test-only hook in production code — `onError` is the real handler `syncServer.ts` wires.
-    listenClient.emit("error", new Error("simulated LISTEN connection loss"));
+    try {
+      listenClient.emit("error", new Error("simulated LISTEN connection loss"));
+      expect(reconnectSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      reconnectSpy.mockRestore();
+    }
 
     expect(await closedA).toBe(1012);
     expect(await closedB).toBe(1012);
 
-    // The reconnect loop (capped exponential backoff) restores a usable LISTEN connection: a
-    // client connecting after the outage is served exactly like one that connected before it.
+    // A socket that connects during the gap may already have missed a NOTIFY, so the reconnect
+    // closes it with 1012 as well. That close happens in the same step that installs the new
+    // LISTEN connection, which makes it this test's signal that the reconnect has completed.
+    const gapClient = await connect("a");
+    const closedGap = waitForClose(gapClient);
+    releaseReconnect();
+    expect(await closedGap).toBe(1012);
+
+    // A client connecting after the reconnect is served exactly like one that connected before
+    // the outage: it stays open and receives fan-out through the restored LISTEN connection.
     const clientC = await connect("a");
+    const receivedC = new Promise<string>((resolve) => clientC.once("message", (d) => resolve(messageText(d))));
+    await publishRealtimeMessage(pool, { type: "invalidation", scope: "schema", databaseId: "db-1" });
+    expect(JSON.parse(await receivedC)).toEqual({ type: "invalidate", scope: "schema", databaseId: "db-1" });
     expect(clientC.readyState).toBe(clientC.OPEN);
     clientC.close();
   });
