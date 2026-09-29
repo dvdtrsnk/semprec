@@ -213,6 +213,22 @@ describe("choke-point itemWrites", () => {
     expect(rows[0].n).toBe(1);
   });
 
+  it("a create replay whose idempotency key points at a soft-deleted item is rejected with database_archived, not the trashed row", async () => {
+    const db = await makeMoviesDb();
+    const original = await chokePoint.createItem({
+      databaseId: db.id,
+      properties: { title: "Dune" },
+      idempotencyKey: "k1",
+    });
+
+    await chokePoint.softDeleteItem(db.id, original.id);
+    await chokePoint.archiveDatabase(db.id);
+
+    await expectDatabaseArchived(
+      chokePoint.createItem({ databaseId: db.id, properties: { title: "Dune 2" }, idempotencyKey: "k1" }),
+    );
+  });
+
   describe("idempotent create replay skips create-only side effects", () => {
     let events: InvalidationEvent[];
 
