@@ -18,6 +18,13 @@ export interface BoundaryCheckResult {
   scannedFiles: string[];
 }
 
+function isCruiseResult(value: unknown): value is ICruiseResult {
+  if (typeof value !== "object" || value === null || !("modules" in value)) {
+    return false;
+  }
+  return Array.isArray(value.modules);
+}
+
 function loadForbiddenRules(): IForbiddenRuleType[] {
   const { forbidden } = JSON.parse(readFileSync(repoRulesPath, "utf8")) as {
     forbidden: IForbiddenRuleType[];
@@ -51,7 +58,11 @@ export async function checkModuleBoundaries(
     {},
     undefined,
   );
-  const output: ICruiseResult = typeof result.output === "string" ? JSON.parse(result.output) : result.output;
+  const parsed: unknown = typeof result.output === "string" ? JSON.parse(result.output) : result.output;
+  if (!isCruiseResult(parsed)) {
+    throw new Error("dependency-cruiser returned an unexpected result shape");
+  }
+  const output = parsed;
   const violations: BoundaryViolation[] = [];
   for (const module of output.modules) {
     for (const dependency of module.dependencies) {

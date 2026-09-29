@@ -78,7 +78,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 async function readJsonBodyWithSizeCap(res: Response): Promise<unknown> {
-  const reader = res.body?.getReader();
+  const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = res.body?.getReader();
   if (!reader) throw new AudioGatewayCallError("Response body stream was unavailable");
 
   const chunks: Uint8Array[] = [];

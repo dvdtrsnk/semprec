@@ -261,10 +261,15 @@ export async function seedInboxPipelineInTransaction(
     [inbox.id, inboxItemTypes.id, processingProposals.id],
   ]);
 
-  for (const database of Object.values(all)) {
+  const defaultViewDatabases: Array<[database: DatabaseRow, name: string]> = [
+    [all.inbox, "Inbox"],
+    [all.inboxItemTypes, "Inbox item types"],
+    [all.processingProposals, "Processing proposals"],
+  ];
+  for (const [database, name] of defaultViewDatabases) {
     await viewsStore.createView(
       client,
-      { databaseId: database.id, type: "table", name: database.name, isDefault: true, createdBy: "system" },
+      { databaseId: database.id, type: "table", name, isDefault: true, createdBy: "system" },
       viewTypeRegistry,
     );
   }
