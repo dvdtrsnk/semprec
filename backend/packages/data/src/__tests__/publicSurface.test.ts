@@ -43,6 +43,7 @@ export type FrozenTypeExports = [
 
 const EXPECTED_RUNTIME_EXPORTS = [
   "AGENT_GUIDANCE_DRIFT_ACTION_ID",
+  "AGENT_RUN_EVENTS_RETENTION_DAYS",
   "AGENT_TASK_NAME_SET",
   "APNS_ENVIRONMENTS",
   "AREAS_MODULE_ID",
@@ -276,6 +277,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "getUserById",
   "guidanceDriftHeartbeatStore",
   "guidanceReferenceStore",
+  "handleAgentRunEventsRetentionTask",
   "handleDocCompactionSweepTask",
   "handleDocHistoryCleanupTask",
   "handleGraphChangeNotification",

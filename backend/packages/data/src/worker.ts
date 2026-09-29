@@ -45,6 +45,7 @@ import type { PushSenders } from "./push/pushSenders.js";
 import { handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
 import { handleObservabilityCheckSystemTask } from "./observability/observabilityCheckSystem.js";
 import { handleMcpRunCredentialExpirySweepTask } from "./mcp/mcpRunCredentialExpiry.js";
+import { handleAgentRunEventsRetentionTask } from "./agentRuns/agentRunEventsRetention.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -84,6 +85,7 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 45 3 * * * ${CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP}
 * * * * * ${CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM}
 0 4 * * * ${CORE_TASK_NAMES.TRASH_PURGE}
+20 4 * * * ${CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION}
 10 * * * * ${CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP}
 `;
 
@@ -208,6 +210,9 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: async () => {
       await handleMcpRunCredentialExpirySweepTask(pool);
+    },
+    [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: async () => {
+      await handleAgentRunEventsRetentionTask(pool);
     },
     // Issue #221 declared this name in the closed API affinity set ("handler and enqueue routing
     // are delivered later") but nothing enqueues it yet — no crontab line, no producer. A no-op
