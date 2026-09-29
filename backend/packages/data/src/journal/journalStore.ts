@@ -42,7 +42,8 @@ export function computeJournalPeriodKey(type: JournalPeriodType, reference: Date
  * concurrent first-writes for the same period both attempt the same key, and `insertItem`'s
  * existing reservation-table mechanism (see chokePoint/itemsStore.ts) resolves the race to a
  * single winning item without ever raising a Postgres error that would abort the caller's
- * transaction.
+ * transaction. A period item that was later trashed or purged is not reused: the next write for
+ * that period is handed a fresh item, and its idempotency key now points at that new one.
  */
 export async function getOrCreateJournalItem(
   client: PoolClient,
