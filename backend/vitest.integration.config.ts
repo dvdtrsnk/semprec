@@ -9,7 +9,7 @@ import { configDefaults, defineConfig } from "vitest/config";
  */
 export default defineConfig({
   test: {
-    include: ["packages/*/src/**/*.test.ts", "modules/*/src/**/*.test.ts", "services/*/src/**/*.test.ts"],
+    include: ["packages/*/src/**/*.test.ts", "services/*/src/**/*.test.ts"],
     exclude: [...configDefaults.exclude, "**/*.unit.test.ts", "**/*.e2e.test.ts"],
     globalSetup: ["./packages/data/src/testSupport/globalSetup.ts"],
     environment: "node",

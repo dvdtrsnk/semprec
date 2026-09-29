@@ -1,17 +1,6 @@
 {
   "forbidden": [
     {
-      "name": "no-module-to-module",
-      "severity": "error",
-      "comment": "Issue #173: a module may only be imported by another module through its public entry point (src/index.ts). Reach into another module's internals directly, and this rule fires.",
-      "from": {
-        "path": "^modules/([^/]+)/src/"
-      },
-      "to": {
-        "path": "^(?!modules/$1/)modules/[^/]+/src/(?!index\\.ts$)"
-      }
-    },
-    {
       "name": "no-service-to-service",
       "severity": "error",
       "comment": "Issue #173: the deployable processes under services/ talk to each other only through Postgres, never by importing one another's code — not even through a public entry point, since importing a service's module bundles its runtime dependency stack into the caller and defeats independent deployability.",
@@ -23,36 +12,14 @@
       }
     },
     {
-      "name": "no-service-to-module",
-      "severity": "error",
-      "comment": "Issue #173: a service never imports module code across the service boundary; it reaches persisted state the same way every other process does — through Postgres.",
-      "from": {
-        "path": "^services/[^/]+/src/"
-      },
-      "to": {
-        "path": "^modules/[^/]+/src/"
-      }
-    },
-    {
-      "name": "no-module-to-service",
-      "severity": "error",
-      "comment": "Issue #173: a module never imports service code; a service is a separate deployable process, not a library a module can depend on.",
-      "from": {
-        "path": "^modules/[^/]+/src/"
-      },
-      "to": {
-        "path": "^services/[^/]+/src/"
-      }
-    },
-    {
       "name": "core-knows-nobody",
       "severity": "error",
-      "comment": "Issue #173: packages/* are the neutral core the rest of the system depends on; they import no module or service code, so a core package can never end up coupled to one vertical slice or one process.",
+      "comment": "Issue #173: packages/* are the neutral core the rest of the system depends on; they import no service code, so a core package can never end up coupled to one process.",
       "from": {
         "path": "^packages/[^/]+/src/"
       },
       "to": {
-        "path": "^(modules|services)/[^/]+/src/"
+        "path": "^services/[^/]+/src/"
       }
     },
     {
@@ -91,9 +58,9 @@
     {
       "name": "no-deep-imports",
       "severity": "error",
-      "comment": "Issue #173: same entry-point-only rule as above (index.ts or the hardcoded testSupport/ path), for modules/services reaching into a package's internals instead of its declared entry points.",
+      "comment": "Issue #173: same entry-point-only rule as above (index.ts or the hardcoded testSupport/ path), for services reaching into a package's internals instead of its declared entry points.",
       "from": {
-        "path": "^(modules|services)/[^/]+/src/"
+        "path": "^services/[^/]+/src/"
       },
       "to": {
         "path": "^packages/[^/]+/src/(?!index\\.ts$|testSupport/)"

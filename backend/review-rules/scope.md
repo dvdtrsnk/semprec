@@ -1,7 +1,6 @@
 # Include
 
 packages/**/*.ts
-modules/**/*.ts
 services/**/*.ts
 **/*.sql
 **/*.json
