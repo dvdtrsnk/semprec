@@ -65,7 +65,7 @@
     "packages/data/src/mcp/approvalRequestExecutionStatusCutoverMigration.ts::8b453fdeb0b2",
     "packages/data/src/mcp/approvalRequestExecutionStatusCutoverMigration.ts::d40632db3a90",
     "packages/data/src/mcp/approvalRequestsStore.ts::084fd054599e",
-    "packages/data/src/mcp/approvalRequestsStore.ts::1bd325fbdfb1",
+    "packages/data/src/mcp/approvalRequestsStore.ts::f680fb253d93",
     "packages/data/src/mcp/mcpGrantsAdminStore.ts::ea0f88cf00ec",
     "packages/data/src/mcp/mcpGrantsAdminStore.ts::f90879c77c7a",
     "packages/data/src/mcp/mcpToolRegistrationsStore.ts::5e9fbfdf76e6",
@@ -114,12 +114,10 @@
     "packages/data/src/library/libraryMetadataJob.ts::a5f226914063",
     "packages/data/src/migrationJob/mailLegacyEmailMigration.ts::9625d337eca8",
     "packages/data/src/migrationJob/moduleDataMigration.ts::7df2c2d63510",
-    "packages/data/src/migrationJob/propertyTypeMigration.ts::20e2a347246a",
     "packages/data/src/migrationJob/propertyTypeMigration.ts::278164cbdd45",
     "packages/data/src/migrationJob/propertyTypeMigration.ts::b119bdb3d6ad",
     "packages/data/src/projectAgentGuidanceStore.ts::7df2c2d63510",
     "packages/data/src/rollup/recompute.ts::278164cbdd45",
-    "packages/data/src/rollup/recompute.ts::7df2c2d63510",
     "packages/data/src/scheduler/sweep.ts::a5f226914063",
     "packages/realtime/src/syncServer.ts::7df2c2d63510"
   ]

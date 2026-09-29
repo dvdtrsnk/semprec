@@ -15,7 +15,12 @@ import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
 import { setProjectMcpGrantForAgentPage } from "../mcp/mcpAgentPageGrants.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
-import { createPendingApprovalRequest, getApprovalRequest } from "../mcp/approvalRequestsStore.js";
+import {
+  claimApprovalRequestExecution,
+  createPendingApprovalRequest,
+  getApprovalRequest,
+  recordApprovalRequestOutcome,
+} from "../mcp/approvalRequestsStore.js";
 import { decideAndEnqueueApprovalRequest } from "../mcp/approvalDecisionAction.js";
 import { createCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
@@ -113,7 +118,11 @@ describe("approval request decide+execute (issue #131)", () => {
 
     await drainQueue();
 
-    expect(contractServer.getLastToolCall()).toEqual({ name: "search_web", arguments: { query: "semprec" } });
+    expect(contractServer.getLastToolCall()).toEqual({
+      name: "search_web",
+      arguments: { query: "semprec" },
+      meta: { idempotencyKey: request.id },
+    });
     const finished = await getApprovalRequest(pool, request.id);
     expect(finished!.executedAt).not.toBeNull();
     expect(finished!.executionError).toBe(false);
@@ -186,5 +195,113 @@ describe("approval request decide+execute (issue #131)", () => {
     const finished = await getApprovalRequest(pool, request.id);
     expect(finished!.status).toBe("approved");
     expect(finished!.decidedBy).toBe(userId);
+  });
+
+  it("settles a stale claim (older than 10 minutes) as conflict without calling the tool", async () => {
+    const contractServer = startStdioContractServer([SEARCH_TOOL]);
+    servers.push(contractServer);
+    const { server, registration } = await createGrantedTool(contractServer);
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const request = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: SEARCH_TOOL.name,
+      riskClass: "unclassified",
+      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+    const userId = await createUser();
+
+    await withTransaction(pool, (client) =>
+      decideAndEnqueueApprovalRequest(client, {
+        approvalRequestId: request.id,
+        decision: "approved",
+        decidedByUserId: userId,
+      }),
+    );
+    // Simulate an earlier delivery that claimed the request and then died before recording an
+    // outcome, then age the claim past the 10-minute staleness threshold.
+    await withTransaction(pool, (client) => claimApprovalRequestExecution(client, request.id));
+    await pool.query(`UPDATE approval_requests SET executed_at = now() - interval '11 minutes' WHERE id = $1`, [
+      request.id,
+    ]);
+
+    await drainQueue();
+
+    expect(contractServer.getLastToolCall()).toBeNull();
+    const finished = await getApprovalRequest(pool, request.id);
+    expect(finished!.executionStatus).toBe("conflict");
+    expect(finished!.executionError).toBe(true);
+    expect(finished!.executionResult).toBe(
+      "The deferred MCP tool call was claimed by an earlier delivery that never recorded its outcome; the tool may or may not have run.",
+    );
+  });
+
+  it("fails retriably without calling the tool when a claim is less than 10 minutes old", async () => {
+    const contractServer = startStdioContractServer([SEARCH_TOOL]);
+    servers.push(contractServer);
+    const { server, registration } = await createGrantedTool(contractServer);
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const request = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: SEARCH_TOOL.name,
+      riskClass: "unclassified",
+      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+    const userId = await createUser();
+
+    await withTransaction(pool, (client) =>
+      decideAndEnqueueApprovalRequest(client, {
+        approvalRequestId: request.id,
+        decision: "approved",
+        decidedByUserId: userId,
+      }),
+    );
+    const claimed = await withTransaction(pool, (client) => claimApprovalRequestExecution(client, request.id));
+
+    await drainQueue();
+
+    expect(contractServer.getLastToolCall()).toBeNull();
+    const finished = await getApprovalRequest(pool, request.id);
+    expect(finished!.executionStatus).toBe("queued");
+    expect(finished!.executedAt).toEqual(claimed!.executedAt);
+    expect(finished!.executionResult).toBeNull();
+  });
+
+  it("recordApprovalRequestOutcome never overwrites a row that is no longer queued", async () => {
+    const contractServer = startStdioContractServer([SEARCH_TOOL]);
+    servers.push(contractServer);
+    const { server, registration } = await createGrantedTool(contractServer);
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const request = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: SEARCH_TOOL.name,
+      riskClass: "unclassified",
+      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+    const userId = await createUser();
+
+    await withTransaction(pool, (client) =>
+      decideAndEnqueueApprovalRequest(client, {
+        approvalRequestId: request.id,
+        decision: "approved",
+        decidedByUserId: userId,
+      }),
+    );
+    await withTransaction(pool, (client) => claimApprovalRequestExecution(client, request.id));
+    await withTransaction(pool, (client) =>
+      recordApprovalRequestOutcome(client, request.id, { error: true, result: "conflict-outcome" }),
+    );
+    const settled = await getApprovalRequest(pool, request.id);
+    expect(settled!.executionStatus).toBe("conflict");
+
+    const wroteAgain = await withTransaction(pool, (client) =>
+      recordApprovalRequestOutcome(client, request.id, { error: false, result: "should-not-write" }),
+    );
+    expect(wroteAgain).toBe(false);
+    const unchanged = await getApprovalRequest(pool, request.id);
+    expect(unchanged!.executionResult).toBe(settled!.executionResult);
+    expect(unchanged!.executionStatus).toBe("conflict");
   });
 });

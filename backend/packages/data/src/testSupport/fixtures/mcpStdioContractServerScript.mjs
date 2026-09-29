@@ -66,7 +66,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 const FORCE_ERROR_ARG = "__forceError";
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const callArguments = request.params.arguments ?? {};
-  lastToolCall = { name: request.params.name, arguments: callArguments };
+  lastToolCall = { name: request.params.name, arguments: callArguments, meta: request.params._meta ?? null };
   writeRecord({});
   if (callArguments[FORCE_ERROR_ARG] === true) {
     return { isError: true, content: [{ type: "text", text: "contract-server-forced-error" }] };

@@ -1,7 +1,10 @@
 import type { Pool } from "pg";
+import { createLogger } from "@semprec/shared";
 import { connectMcpServer, type McpClientHandle } from "./mcpConnectionFactory.js";
 import { McpConnectionError } from "./mcpConnectionError.js";
 import type { McpToolInvocationTarget } from "./mcpToolInvocation.js";
+
+const logger = createLogger("mcp");
 
 /** Shaped like a pi-agent-core `tool_result` payload — see `delegateTool.ts`'s own comment for the same convention. */
 export interface McpInvokeResult {
@@ -14,6 +17,13 @@ export type McpInvokeArgs = Record<string, unknown>;
 export interface McpInvokeOptions {
   /** Forwarded to `connectMcpServer`'s `credential_access_log.actor_id`. */
   actorId?: string;
+  /**
+   * Sent as `_meta.idempotencyKey` on the `tools/call` request — the MCP-permitted request
+   * metadata slot — so a server that de-duplicates can recognise a redelivered call (issue #693:
+   * the approval-execution job passes the claimed request's id here). This process never re-calls
+   * a request it has already claimed; the key exists purely for the server's own benefit.
+   */
+  idempotencyKey?: string;
 }
 
 /**
@@ -81,7 +91,10 @@ function formatCallToolResult(result: CallToolResultLike): McpInvokeResult {
  * `toolName` are read, so a caller that has just those two (the approval-execution job doesn't
  * have a full, freshly-resolved `McpToolInvocationTarget`) can pass a matching partial object.
  * `signal` cancels an in-flight `tools/call` (an aborted agent run passes its own), which then
- * resolves as an error result like any other failed call.
+ * resolves as an error result like any other failed call. `options.idempotencyKey`, when set, is
+ * sent as `_meta.idempotencyKey` on the call — see `McpInvokeOptions`'s docstring. A `close()`
+ * failure after the call never overrides the result the `try`/`catch` above already produced —
+ * see that block's own comment.
  */
 export async function executeMcpInvocation(
   pool: Pool,
@@ -96,15 +109,27 @@ export async function executeMcpInvocation(
       actorId: options.actorId,
       purpose: "mcp_tool_invoke",
     });
-    const callResult = await handle.client.callTool({ name: target.toolName, arguments: args }, undefined, {
-      signal,
-      timeout: MCP_TOOL_CALL_TIMEOUT_MS,
-    });
+    const callResult = await handle.client.callTool(
+      {
+        name: target.toolName,
+        arguments: args,
+        ...(options.idempotencyKey !== undefined ? { _meta: { idempotencyKey: options.idempotencyKey } } : {}),
+      },
+      undefined,
+      { signal, timeout: MCP_TOOL_CALL_TIMEOUT_MS },
+    );
     return formatCallToolResult(callResult as CallToolResultLike);
   } catch (err) {
     if (signal?.aborted) return { error: true, result: "MCP tool call was cancelled before it completed" };
     return { error: true, result: safeInvokeErrorMessage(err) };
   } finally {
-    await handle?.close();
+    // A close failure must never replace the `try`'s return value or the `catch`'s error result
+    // above — only log it, so a rejecting `close()` after a successful `tools/call` can't turn a
+    // successful outcome into a job failure (issue #693).
+    try {
+      await handle?.close();
+    } catch (err) {
+      logger.warn({ err }, "MCP connection close failed after tools/call");
+    }
   }
 }
