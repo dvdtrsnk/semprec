@@ -75,6 +75,8 @@ export const CORE_TASK_NAMES = {
   TRANSCRIPTION_JOB: "transcriptionJob",
   // Issue #643: the hourly sweep that closes every MCP-triggered run whose run-credential expired.
   MCP_RUN_CREDENTIAL_EXPIRY_SWEEP: "mcpRunCredentialExpirySweep",
+  // Issue #692: the daily sweep that deletes pre-checkpoint agent_run_events rows past retention.
+  AGENT_RUN_EVENTS_RETENTION: "agentRunEventsRetention",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
@@ -109,6 +111,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.TRASH_PURGE]: "api",
   [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: "transcribe",
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "api",
+  [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "api",
 };
 
 /**

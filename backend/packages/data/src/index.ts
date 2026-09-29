@@ -116,6 +116,10 @@ export * from "./notifications/notificationFanoutJob.js";
 
 export * from "./agentRuns/agentRunsStore.js";
 export * from "./agentRuns/agentRunEventsStore.js";
+export {
+  AGENT_RUN_EVENTS_RETENTION_DAYS,
+  handleAgentRunEventsRetentionTask,
+} from "./agentRuns/agentRunEventsRetention.js";
 export * from "./aiGateway/aiGatewayCallsStore.js";
 export * from "./aiGateway/aiUsageReport.js";
 export * from "./health/processHeartbeats.js";
