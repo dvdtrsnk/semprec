@@ -95,10 +95,28 @@ describe("processHeartbeats", () => {
   });
 
   it("startProcessHeartbeat ticks immediately and again every intervalMs, reporting the same started_at", async () => {
+    // A tick fires its UPSERT without awaiting it, so advancing the fake timers only proves the
+    // query was sent, not that it committed. Keeping each tick's query promise and awaiting it
+    // before reading the row is what makes the reads below see that tick's write.
+    const tickUpserts: Promise<unknown>[] = [];
+    const tickTrackingPool = {
+      query: (text: string, values?: unknown[]) => {
+        const upsert = pool.query(text, values);
+        tickUpserts.push(upsert);
+        return upsert;
+      },
+    } as unknown as Pool;
+
     vi.useFakeTimers();
     try {
-      const handle = startProcessHeartbeat(pool, { process: "api", pid: 42, version: "9.9.9" }, { intervalMs: 15_000 });
+      const handle = startProcessHeartbeat(
+        tickTrackingPool,
+        { process: "api", pid: 42, version: "9.9.9" },
+        { intervalMs: 15_000 },
+      );
       await vi.advanceTimersByTimeAsync(0);
+      expect(tickUpserts).toHaveLength(1);
+      await Promise.all(tickUpserts);
 
       expect(await isProcessHeartbeatFresh(pool, "api")).toBe(true);
       const { rows: firstTick } = await pool.query<{ started_at: Date }>(
@@ -106,6 +124,8 @@ describe("processHeartbeats", () => {
       );
 
       await vi.advanceTimersByTimeAsync(15_000);
+      expect(tickUpserts).toHaveLength(2);
+      await Promise.all(tickUpserts);
       const { rows: secondTick } = await pool.query<{ started_at: Date }>(
         "SELECT started_at FROM process_heartbeats WHERE process = 'api'",
       );
@@ -113,6 +133,7 @@ describe("processHeartbeats", () => {
 
       handle.stop();
       await vi.advanceTimersByTimeAsync(30_000);
+      expect(tickUpserts).toHaveLength(2);
       const { rows: afterStop } = await pool.query<{ count: string }>(
         "SELECT count(*)::text FROM process_heartbeats WHERE process = 'api'",
       );
