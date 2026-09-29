@@ -98,8 +98,8 @@ function assertWritableProperties(
  * through the one no-write exception the issue carves out — a replay of an idempotency key
  * that already committed a row before the database was archived returns that existing row
  * instead of failing, so a retried request doesn't turn a transient error into a permanent
- * failure. A new key, or a key reserved for this database whose row is somehow missing (see
- * the same defensive branch in `itemsStore.insertItem`), still gets `database_archived` — only
+ * failure. A new key, or a key reserved for this database whose item is missing or trashed
+ * (see `findIdempotentReplay`'s `deletedAt` filter), still gets `database_archived` — only
  * an exact, already-satisfied replay is spared. Returns the replay row to return verbatim (no
  * further writes or event emission), or `null` when the database isn't archived at all.
  */
@@ -113,7 +113,7 @@ async function assertDatabaseWritableForCreate(
   if (!database.archivedAt) return null;
 
   if (idempotencyKey) {
-    const replay = await itemsStore.findIdempotentReplay(client, databaseId, idempotencyKey);
+    const replay = await itemsStore.findIdempotentReplay(client, databaseId, idempotencyKey, { requireLive: true });
     if (replay) return replay;
   }
   throw new ForbiddenError(

@@ -145,14 +145,21 @@ export async function insertItem(client: Queryable, input: InsertItemInput): Pro
  * path, split out so the archived-database guard can decide whether a create is an allowed
  * no-write replay *before* calling `insertItem` at all. Returns null when no reservation exists
  * for this exact key+database (including a key reserved for a *different* database, which is a
- * new key as far as this database is concerned), when the reservation's item row is missing
- * (purged), or when it is soft-deleted (trashed) — a trashed item is not a satisfied replay,
- * since `insertItemWithReplay` itself treats that reservation as stale and replaces it.
+ * new key as far as this database is concerned), or when the reservation's item row is missing
+ * (purged).
+ *
+ * `requireLive: true` additionally returns null for a soft-deleted (trashed) item, matching
+ * `insertItemWithReplay`'s own treatment of that reservation as stale and due for replacement —
+ * used by the archived-database create-guard, which must not let a trashed item stand in for a
+ * satisfied replay. Other callers (a suggestion/proposal card's own idempotency key) default to
+ * `false`: a trashed card there is still the earlier run's completed work and must not be
+ * recreated, regardless of the user having since deleted it.
  */
 export async function findIdempotentReplay(
   client: Queryable,
   databaseId: string,
   idempotencyKey: string,
+  options: { requireLive?: boolean } = {},
 ): Promise<ItemRow | null> {
   const { rows } = await client.query<{ item_id: string; database_id: string }>(
     `SELECT item_id, database_id FROM idempotency_keys WHERE key = $1`,
@@ -161,7 +168,9 @@ export async function findIdempotentReplay(
   const reserved = rows[0];
   if (!reserved || reserved.database_id !== databaseId) return null;
   const item = await getItemById(client, databaseId, reserved.item_id);
-  return item && item.deletedAt === null ? item : null;
+  if (!item) return null;
+  if (options.requireLive && item.deletedAt !== null) return null;
+  return item;
 }
 
 export interface UpdateItemInput {
