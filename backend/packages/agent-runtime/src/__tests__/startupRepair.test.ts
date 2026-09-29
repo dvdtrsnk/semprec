@@ -206,9 +206,9 @@ describe("repairInterruptedRuns", () => {
         // with no error and pg would return it — with its COMMIT still
         // intercepted — to the real pool's idle queue for reuse by the next
         // withTransaction call below. Force pg to discard it instead.
-        client.release = ((err?: Error | boolean) => {
-          return originalRelease(err instanceof Error ? err : new Error("discard client contaminated by commitFailingPool"));
-        }) as PoolClient["release"];
+        client.release = (err?: Error | boolean) => {
+          originalRelease(err instanceof Error ? err : new Error("discard client contaminated by commitFailingPool"));
+        };
         return client;
       },
     } as unknown as Pool;
