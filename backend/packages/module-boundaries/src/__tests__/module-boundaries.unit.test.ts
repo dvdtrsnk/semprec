@@ -129,7 +129,9 @@ describe("checkModuleBoundaries", () => {
 
   it("rejects code outside packages/data importing the item store (issue #173: items-store-private)", async () => {
     const { violations } = await checkModuleBoundaries(fixturesDir, ["services", "packages"]);
-    const violation = violations.find((v: BoundaryViolation) => v.importer === "services/svcB/src/badCoreTableWrite.ts");
+    const violation = violations.find(
+      (v: BoundaryViolation) => v.importer === "services/svcB/src/badCoreTableWrite.ts",
+    );
 
     expect(violation?.imported).toBe("packages/data/src/chokePoint/itemsStore.ts");
     expect(violation?.rules).toContain("items-store-private");
