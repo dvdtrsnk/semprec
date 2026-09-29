@@ -249,17 +249,22 @@ export class DelegationRegistry {
    * once the row is terminal in the DB, leaving the entry behind with `busy` reset would let a
    * `delegate()` arriving after a `pushRunStatus` failure reuse a session whose run is already
    * closed, the exact race this method's `busy` claim exists to prevent. Only a failure *before*
-   * the row is confirmed terminal (`finishAgentRun`/`getAgentRun` itself throwing or never
-   * resolving) resets `busy` and reschedules another attempt on the same cadence — that failure
-   * leaves the row genuinely still open, so the entry must stay around to retry closing it. A
-   * run another writer already finished is logged and still dropped from memory: its row is
-   * terminal either way, and its run_status event records the status that writer stored (read
-   * back after the lost close, since it may have been `error`) rather than `done`.
+   * the row is confirmed terminal (`finishAgentRun` returning `true`, meaning this call closed
+   * it, or a `finishAgentRun` call that itself throws or never resolves) resets `busy` and
+   * reschedules another attempt on the same cadence — that failure leaves the row genuinely
+   * still open, so the entry must stay around to retry closing it. Once `finishAgentRun` returns
+   * `false` — another writer already finished the row — the row is terminal regardless of what
+   * happens next, so a subsequent `getAgentRun` failure still drops the entry instead of
+   * retrying: there is no open run left to retry closing. A run another writer already finished
+   * is logged and still dropped from memory: its row is terminal either way, and its run_status
+   * event records the status that writer stored (read back after the lost close, since it may
+   * have been `error`) rather than `done`.
    */
   private async expire(entryKey: string): Promise<void> {
     const entry = this.entries.get(entryKey);
     if (!entry || entry.busy) return;
     entry.busy = true;
+    let rowConfirmedTerminal = false;
     try {
       const closed = await finishAgentRun(this.pool, entry.agentRunId, "done", null);
       let status: "running" | "done" | "error";
@@ -270,6 +275,7 @@ export class DelegationRegistry {
           { agentRunId: entry.agentRunId },
           "DelegationRegistry: expired session's run was already finished by another writer",
         );
+        rowConfirmedTerminal = true;
         const finished = await getAgentRun(this.pool, entry.agentRunId);
         if (!finished) throw new Error(`agent run ${entry.agentRunId} vanished after finishing`);
         status = finished.status;
@@ -286,11 +292,20 @@ export class DelegationRegistry {
       // have inserted a brand-new entry under the same key in the meantime. `entries.get(...) ===
       // entry` tells the stale entry this call is holding apart from that new one, so retrying
       // never mutates or reschedules a TTL timer for someone else's live session.
-      if (this.entries.get(entryKey) === entry) {
+      if (this.entries.get(entryKey) === entry && !rowConfirmedTerminal) {
         logger.error({ err, entryKey }, "DelegationRegistry: failed to close expired session, will retry");
         entry.busy = false;
         entry.ttlTimer = this.scheduleTtl(entryKey);
       } else {
+        // Either a concurrent delegate() replaced this stale entry, or `finishAgentRun` already
+        // confirmed the row terminal before this failure (a `getAgentRun` throw reading back the
+        // other writer's status) — either way there is no open run left to retry closing, so
+        // drop the entry rather than leaving a busy=false entry pointing at an already-terminal
+        // run. If a concurrent delegate() already replaced it, leave that new entry alone.
+        if (this.entries.get(entryKey) === entry) {
+          this.entries.delete(entryKey);
+          clearTimeout(entry.ttlTimer);
+        }
         logger.error(
           { err, entryKey },
           "DelegationRegistry: expired session's run was already closed, but recording its final status failed; will not retry",
