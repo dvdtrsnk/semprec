@@ -1,4 +1,5 @@
 import { Pool, type PoolClient } from "pg";
+import type { TransactionIsolationLevel } from "@semprec/shared";
 import { logger } from "./logger.js";
 
 /** Anything a query can run against: a pool, or a client already inside a transaction. */
@@ -54,11 +55,18 @@ export function runAfterCommit(client: PoolClient, callback: () => void): void {
 
 export interface WithTransactionOptions {
   /** Defaults to READ COMMITTED (a plain `BEGIN`) when omitted. */
-  isolation?: "repeatable_read";
+  isolation?: TransactionIsolationLevel;
 }
 
 /**
  * Runs `fn` inside a single transaction on a dedicated client, committing on success and rolling back on error.
+ *
+ * This is the only sanctioned way to open a transaction on a pooled client: `runAfterCommit`
+ * keys its callbacks on the `PoolClient`, and only this function drains and fires them after
+ * its own `COMMIT` (or discards them on rollback). A hand-rolled `BEGIN`/`COMMIT` leaves those
+ * callbacks parked on the client, where the next `withTransaction` call that happens to acquire
+ * the same client from the pool fires or discards them instead — attached to an unrelated
+ * transaction.
  *
  * On failure (from `fn` or from `COMMIT`) the original error is what propagates, even when the
  * `ROLLBACK` itself fails. A connection whose `ROLLBACK` failed is in an unknown state, so it is
@@ -72,7 +80,9 @@ export async function withTransaction<T>(
   const client = await pool.connect();
   let releaseError: Error | undefined;
   try {
-    if (options.isolation === "repeatable_read") {
+    if (options.isolation === "serializable") {
+      await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    } else if (options.isolation === "repeatable_read") {
       await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
     } else {
       await client.query("BEGIN");

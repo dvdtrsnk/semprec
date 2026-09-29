@@ -186,6 +186,53 @@ describe("withTransaction", () => {
     expect(release.mock.calls[0]?.[0]).toBeUndefined();
   });
 
+  it("issues a plain BEGIN and runs after-commit callbacks after COMMIT when no isolation option is given", async () => {
+    const { pool, query } = fakeClient({});
+    const callback = vi.fn();
+
+    await withTransaction(pool, async (c) => {
+      runAfterCommit(c, callback);
+      return "done";
+    });
+
+    expect(sqlCalls(query)).toEqual(["BEGIN", "COMMIT"]);
+    expect(callback).toHaveBeenCalledTimes(1);
+  });
+
+  it("issues BEGIN ISOLATION LEVEL REPEATABLE READ and runs after-commit callbacks after COMMIT", async () => {
+    const { pool, query } = fakeClient({});
+    const callback = vi.fn();
+
+    await withTransaction(
+      pool,
+      async (c) => {
+        runAfterCommit(c, callback);
+        return "done";
+      },
+      { isolation: "repeatable_read" },
+    );
+
+    expect(sqlCalls(query)).toEqual(["BEGIN ISOLATION LEVEL REPEATABLE READ", "COMMIT"]);
+    expect(callback).toHaveBeenCalledTimes(1);
+  });
+
+  it("issues BEGIN ISOLATION LEVEL SERIALIZABLE and runs after-commit callbacks after COMMIT", async () => {
+    const { pool, query } = fakeClient({});
+    const callback = vi.fn();
+
+    await withTransaction(
+      pool,
+      async (c) => {
+        runAfterCommit(c, callback);
+        return "done";
+      },
+      { isolation: "serializable" },
+    );
+
+    expect(sqlCalls(query)).toEqual(["BEGIN ISOLATION LEVEL SERIALIZABLE", "COMMIT"]);
+    expect(callback).toHaveBeenCalledTimes(1);
+  });
+
   it("rethrows the COMMIT error and discards the client when COMMIT and ROLLBACK both fail", async () => {
     const commitError = new Error("commit failed");
     const rollbackError = new Error("rollback failed");

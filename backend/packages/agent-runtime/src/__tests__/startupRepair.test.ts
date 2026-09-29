@@ -1,7 +1,15 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Pool, PoolClient } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { createAgentRun, createUser, hashPassword, insertAgentRunEvent } from "@semprec/data";
+import {
+  createAgentRun,
+  createUser,
+  hashPassword,
+  insertAgentRunEvent,
+  setNotificationCreatedHook,
+  withTransaction,
+  type NotificationCreatedEvent,
+} from "@semprec/data";
 import { repairInterruptedRuns } from "../startupRepair.js";
 
 let pool: Pool;
@@ -12,6 +20,10 @@ describe("repairInterruptedRuns", () => {
     await resetDatabase(pool);
     const passwordHash = await hashPassword("s3cret-password");
     await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+  });
+
+  afterEach(() => {
+    setNotificationCreatedHook(() => {});
   });
 
   afterAll(async () => {
@@ -154,5 +166,49 @@ describe("repairInterruptedRuns", () => {
   it("is a no-op when there are no running runs", async () => {
     const { repairedRunIds } = await repairInterruptedRuns(pool);
     expect(repairedRunIds).toEqual([]);
+  });
+
+  it("fires one notification_created hook per repaired run, only after repairInterruptedRuns resolves", async () => {
+    const orphanA = await createAgentRun(pool, { triggeredBy: "heartbeat", task: "a" });
+    const orphanB = await createAgentRun(pool, { triggeredBy: "user", task: "b" });
+    const events: NotificationCreatedEvent[] = [];
+    setNotificationCreatedHook((event) => {
+      events.push(event);
+    });
+
+    const result = repairInterruptedRuns(pool);
+    expect(events).toEqual([]);
+    const { repairedRunIds } = await result;
+
+    expect(new Set(repairedRunIds)).toEqual(new Set([orphanA.id, orphanB.id]));
+    expect(events).toHaveLength(2);
+  });
+
+  it("fires no notification_created hook when the repair transaction fails, and none from a later unrelated transaction", async () => {
+    await createAgentRun(pool, { triggeredBy: "heartbeat", task: "a" });
+    const events: NotificationCreatedEvent[] = [];
+    setNotificationCreatedHook((event) => {
+      events.push(event);
+    });
+
+    const commitFailingPool: Pool = {
+      connect: async () => {
+        const client = await pool.connect();
+        const originalQuery = client.query.bind(client);
+        client.query = ((...args: Parameters<PoolClient["query"]>) => {
+          if (args[0] === "COMMIT") {
+            return Promise.reject(new Error("commit failed"));
+          }
+          return originalQuery(...args);
+        }) as PoolClient["query"];
+        return client;
+      },
+    } as unknown as Pool;
+
+    await expect(repairInterruptedRuns(commitFailingPool)).rejects.toThrow("commit failed");
+    expect(events).toEqual([]);
+
+    await withTransaction(pool, async () => undefined);
+    expect(events).toEqual([]);
   });
 });
