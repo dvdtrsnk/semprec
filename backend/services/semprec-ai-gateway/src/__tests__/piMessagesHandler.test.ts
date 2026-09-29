@@ -230,6 +230,11 @@ async function createRun(task: string): Promise<{ id: string }> {
   return createAgentRun(pool, { triggeredBy: "user", task });
 }
 
+/**
+ * Polls until every row has reached `status`. On a `done` or `error` event the handler ends the
+ * response before `complete()` settles or fails the row, and pi's client resolves a turn on that
+ * frame alone, so a row read as soon as the client has the response can still be `reserved`.
+ */
 async function waitForStatus(status: string): Promise<AiGatewayCallRow[]> {
   const deadline = Date.now() + 5000;
   for (;;) {
@@ -284,7 +289,7 @@ describe("POST /internal/pi/messages", () => {
     expect(done.usage.output).toBeGreaterThan(0);
     expect(done.usage.cost.total).toBeGreaterThan(0);
 
-    const rows = await gatewayCalls();
+    const rows = await waitForStatus("settled");
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       status: "settled",
@@ -311,7 +316,7 @@ describe("POST /internal/pi/messages", () => {
     const res = await post({ model: MODEL_ID, context: CONTEXT });
     await res.text();
 
-    const rows = await gatewayCalls();
+    const rows = await waitForStatus("settled");
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ status: "settled", agent_run_id: null });
   });
@@ -373,7 +378,7 @@ describe("POST /internal/pi/messages", () => {
     expect(message.usage.cost.total).toBeGreaterThan(0);
     expect(streamCalls[0]?.maxTokens).toBe(1000);
 
-    const rows = await gatewayCalls();
+    const rows = await waitForStatus("settled");
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ status: "settled", agent_run_id: run.id, operation: "agent_turn" });
   });
@@ -416,7 +421,7 @@ describe("POST /internal/pi/messages", () => {
 
     expect(message.content).toEqual(partial.content);
     expect(message.responseId).toBe("msg_1");
-    const rows = await gatewayCalls();
+    const rows = await waitForStatus("settled");
     expect(rows[0]).toMatchObject({ status: "settled", input_tokens: 10, output_tokens: 5 });
     expect(Number(rows[0]?.cost_usd)).toBeCloseTo(0.0001, 10);
   });
