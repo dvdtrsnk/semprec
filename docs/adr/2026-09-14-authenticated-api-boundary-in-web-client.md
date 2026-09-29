@@ -1,9 +1,9 @@
 ---
-status: accepted
+status: superseded
 date: 2026-09-14
 area: [web]
 supersedes: []
-superseded-by: null
+superseded-by: 2026-09-29-web-client-calls-the-api-through-operations-adapters
 ---
 
 # Authenticated web API calls use one boundary

@@ -182,8 +182,7 @@ Known hotspots and the convention for each:
   the same region collide even when their real code lives in disjoint files.
   Declare the barrel file in `## Touches`; if two concurrently-eligible
   issues both need to add an export there, block the later on the earlier.
-- **i18n message catalogs** — `web/src/i18n/cs.json`, `web/src/i18n/en.json`,
-  `web/src/i18n/messages.ts`. Same shape as the barrel case: declare these
+- **i18n message catalogs** — `web/src/i18n/messages.ts`. Same shape as the barrel case: declare these
   files in `## Touches` whenever the Task adds or changes a user-facing
   string, and resolve an overlapping key/namespace between siblings with a
   dependency rather than leaving it to the merge.
