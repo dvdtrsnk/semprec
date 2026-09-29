@@ -261,8 +261,10 @@ function writeEvent(res: ServerResponse, event: PiMessagesEvent): Promise<void> 
  * `usage.cost.total`, or `failed` at cost 0.
  *
  * The provider stream is relayed as `data: <PiMessagesEvent>` SSE frames ending in exactly one
- * `done` or `error`. An `error` event (the provider refused, or the turn was aborted) is still
- * delivered to the client before the row is marked `failed`, so nothing else is sent after it.
+ * `done` or `error`. The response is ended right after that event, before the row leaves
+ * `reserved`: a client that has read `done` can still see the row `reserved` at its estimate until
+ * the settle lands, and an `error` event (the provider refused, or the turn was aborted) is
+ * delivered before the row is marked `failed`, so nothing else is sent after it.
  * When the client disconnects mid-turn, an abort signal stops the provider stream, which ends in
  * an `aborted` error event and therefore a `failed` row. A turn still running after
  * `STREAM_TIMEOUT_MS` is aborted the same way, whatever the provider SDK's own timeout is.
