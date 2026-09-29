@@ -62,10 +62,14 @@ export interface InsertItemResult {
  * idempotency_keys row and the items row commit atomically together). `created` tells
  * the caller which of those two outcomes happened, so a replay can skip create-only
  * side effects (heartbeats, invalidations) that must fire at most once per item.
+ *
+ * A reservation whose item has since been purged (row gone) or trashed (soft-deleted)
+ * is treated as free: it is released and the key is reserved again for a freshly
+ * generated item, which this call then creates and returns as `created: true`.
  */
 export async function insertItemWithReplay(client: Queryable, input: InsertItemInput): Promise<InsertItemResult> {
   const generatedId = randomUUID();
-  let itemId: string = generatedId;
+  const itemId: string = generatedId;
 
   if (input.idempotencyKey) {
     const reserve = await client.query<{ item_id: string }>(
@@ -76,7 +80,7 @@ export async function insertItemWithReplay(client: Queryable, input: InsertItemI
     );
     if (reserve.rowCount === 0) {
       const { rows } = await client.query<{ item_id: string; database_id: string }>(
-        `SELECT item_id, database_id FROM idempotency_keys WHERE key = $1`,
+        `SELECT item_id, database_id FROM idempotency_keys WHERE key = $1 FOR UPDATE`,
         [input.idempotencyKey],
       );
       // The INSERT above hit ON CONFLICT DO NOTHING, so the conflicting row exists and this
@@ -96,13 +100,29 @@ export async function insertItemWithReplay(client: Queryable, input: InsertItemI
           reservedDatabaseId: reserved.database_id,
         });
       }
-      itemId = reserved.item_id;
-      const existing = await getItemById(client, input.databaseId, itemId);
-      if (existing) return { item: existing, created: false };
-      // The winning transaction committed the idempotency_keys row but, being the
-      // same transaction as its items insert, must also have committed that row —
-      // this branch is unreachable in practice and exists only as a defensive guard.
-      throw new ConflictError("Idempotency key reservation exists but its item is missing");
+      const existing = await getItemById(client, input.databaseId, reserved.item_id);
+      if (existing && existing.deletedAt === null) return { item: existing, created: false };
+
+      // The reserved item is gone (purged) or trashed (soft-deleted): the reservation no
+      // longer protects a live item, so release it and reserve the same key again for a
+      // fresh item below. Holding the row FOR UPDATE means a concurrent transaction racing
+      // the same key is either already blocked behind this one and will find the row gone
+      // once it commits (falling into the `reserved === undefined` branch above), or ran
+      // this same release-and-reserve first and this DELETE affects zero rows.
+      requireAffectedRows(
+        await client.query(`DELETE FROM idempotency_keys WHERE key = $1`, [input.idempotencyKey]),
+        `idempotency_keys row for key '${input.idempotencyKey}'`,
+      );
+      const reReserve = await client.query<{ item_id: string }>(
+        `INSERT INTO idempotency_keys (key, database_id, item_id) VALUES ($1, $2, $3)
+         ON CONFLICT (key) DO NOTHING
+         RETURNING item_id`,
+        [input.idempotencyKey, input.databaseId, generatedId],
+      );
+      // Guaranteed to succeed: the DELETE above ran in this same transaction, so the key is
+      // free for this transaction's own re-insert regardless of what any other transaction is
+      // doing. Kept as a defensive guard rather than trusted silently.
+      requireAffectedRows(reReserve, `idempotency_keys row for key '${input.idempotencyKey}'`);
     }
   }
 
@@ -125,8 +145,9 @@ export async function insertItem(client: Queryable, input: InsertItemInput): Pro
  * path, split out so the archived-database guard can decide whether a create is an allowed
  * no-write replay *before* calling `insertItem` at all. Returns null when no reservation exists
  * for this exact key+database (including a key reserved for a *different* database, which is a
- * new key as far as this database is concerned), or when the reservation's item row is somehow
- * missing (the same defensive, practically-unreachable case `insertItem` itself guards against).
+ * new key as far as this database is concerned), when the reservation's item row is missing
+ * (purged), or when it is soft-deleted (trashed) — a trashed item is not a satisfied replay,
+ * since `insertItemWithReplay` itself treats that reservation as stale and replaces it.
  */
 export async function findIdempotentReplay(
   client: Queryable,
@@ -139,7 +160,8 @@ export async function findIdempotentReplay(
   );
   const reserved = rows[0];
   if (!reserved || reserved.database_id !== databaseId) return null;
-  return getItemById(client, databaseId, reserved.item_id);
+  const item = await getItemById(client, databaseId, reserved.item_id);
+  return item && item.deletedAt === null ? item : null;
 }
 
 export interface UpdateItemInput {
