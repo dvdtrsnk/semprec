@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { pipeline } from "node:stream";
 import type { Pool } from "pg";
 import {
   ChokePointError,
@@ -164,14 +165,6 @@ export function createBlobsRequestListener(pool: Pool, options: BlobsRequestList
       if (etag) headers.ETag = etag;
 
       const stream = options.storage.readStream(blob.storageKey, range);
-      stream.once("error", (streamErr) => {
-        logger.error({ err: streamErr, blobId }, "Error streaming blob");
-        if (res.headersSent) {
-          res.destroy();
-        } else {
-          sendJson(res, 500, { error: { code: "internal_error" } });
-        }
-      });
 
       if (range) {
         headers["Content-Range"] = `bytes ${range.start}-${range.end}/${byteSize}`;
@@ -181,7 +174,19 @@ export function createBlobsRequestListener(pool: Pool, options: BlobsRequestList
         headers["Content-Length"] = String(byteSize);
         res.writeHead(200, headers);
       }
-      stream.pipe(res);
+
+      // Not awaited: handleRequest returns once headers are written, and handleRequestSafely
+      // only guards the pre-stream phase. pipeline (unlike pipe) destroys the other side on
+      // premature close of either stream, so an aborted client releases the read stream's fd.
+      pipeline(stream, res, (err) => {
+        if (!err) return;
+        if (err.code === "ERR_STREAM_PREMATURE_CLOSE") {
+          logger.debug({ blobId }, "Client aborted blob download");
+          return;
+        }
+        logger.error({ err, blobId }, "Error streaming blob");
+        res.destroy();
+      });
     } catch (err) {
       if (err instanceof ChokePointError) {
         sendJson(res, statusForError(err), toErrorResponseBody(err));
