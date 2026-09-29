@@ -1,8 +1,9 @@
 import type { Pool, PoolClient } from "pg";
 import { runMigrations, runOnce as graphileRunOnce, run as graphileRun } from "graphile-worker";
-import type { RunnerOptions, TaskList, Runner, Task } from "graphile-worker";
+import type { RunnerOptions, TaskList, Runner, Task, JobHelpers } from "graphile-worker";
 import { z } from "zod";
 import { getTraceId, mintTraceId, withTraceContext } from "@semprec/shared";
+import { logger } from "./logger.js";
 
 export type { TaskList, Task, Runner } from "graphile-worker";
 type Queryable = Pool | PoolClient;
@@ -232,23 +233,76 @@ export async function enqueueJob(
 }
 
 /**
+ * Returns true when the job's row has had its `key` cleared while it was running — the
+ * signature `add_jobs` (issue #700's `sql/000018.sql` lines 104-116) leaves on a job that is
+ * currently locked when a keyed re-enqueue supersedes it, and that `remove_job` leaves the
+ * same way on a running job it can no longer cancel outright. Both are "do not retry" cases,
+ * not "do not retry" bugs.
+ */
+async function jobKeyWasCleared(helpers: JobHelpers): Promise<boolean> {
+  const { rows } = await helpers.query<{ key: string | null }>("SELECT key FROM graphile_worker.jobs WHERE id = $1", [
+    helpers.job.id,
+  ]);
+  return rows[0] !== undefined && rows[0].key === null;
+}
+
+/**
  * Wraps a task handler so it restores the trace context its `enqueueJob` producer stamped,
  * instead of the handler seeing that envelope shape directly. A payload that isn't a valid
  * envelope (graphile-worker's own `crontab` calls a task with its raw configured payload, e.g.
  * `{}` for a sweep — there is no `enqueueJob` producer to have stamped one) mints a fresh trace
  * for that tick instead of rejecting it: crontab-fired jobs are themselves trace entry points
  * (issue #167's "scheduler ticks"), not queue producers subject to the envelope contract.
+ *
+ * This is also the only path that swallows a handler's thrown error, and it does so for one
+ * narrow reason: `enqueueJob`'s default `job_key_mode: 'replace'` (and `preserve_run_at`) route
+ * through `add_jobs`, whose first statement clears a *currently locked* (running) job's `key`
+ * and inserts the replacement under that key instead of waiting for the row to finish — "in the
+ * case of locked existing job create a new job instead as it must have already started
+ * executing". If that superseded run then throws, graphile-worker's normal `failJob` would leave
+ * `attempts = max_attempts` on a row whose failure is not actually a permanent one: the
+ * replacement job, already queued under the same key, redoes the work. So when the handler
+ * rejects and the job's own row shows its key was cleared while it ran, the rejection is
+ * swallowed and the job is left to complete normally instead — graphile-worker's `complete_job`
+ * then deletes the superseded row, and the replacement runs the current state of the world.
+ * `remove_job` on a running job clears the key the same way, and is correctly caught by the same
+ * check: a cancelled run should not be retried either. If the lookup itself throws, the
+ * *original* handler error is what propagates — a broken check must never hide a real failure.
  */
 export function registerTask(name: string, handler: Task): Task {
-  return (rawPayload, helpers) => {
+  return async (rawPayload, helpers) => {
     const jobId = helpers.job?.id !== undefined ? String(helpers.job.id) : undefined;
     const envelope = queueJobEnvelopeSchema.safeParse(rawPayload);
-    if (envelope.success) {
-      return withTraceContext({ traceId: envelope.data.traceId, jobName: name, jobId }, () =>
-        handler(envelope.data.payload, helpers),
-      );
+    const run = () =>
+      envelope.success
+        ? withTraceContext({ traceId: envelope.data.traceId, jobName: name, jobId }, () =>
+            handler(envelope.data.payload, helpers),
+          )
+        : withTraceContext({ jobName: name, jobId }, () => handler(rawPayload, helpers));
+    try {
+      return await run();
+    } catch (err) {
+      if (helpers.job?.key != null) {
+        let cleared: boolean;
+        try {
+          cleared = await jobKeyWasCleared(helpers);
+        } catch (lookupErr) {
+          logger.error(
+            { err: lookupErr, jobId, jobName: name, jobKey: helpers.job.key },
+            "Failed to check whether the superseded job's key was cleared; propagating the original handler error",
+          );
+          throw err;
+        }
+        if (cleared) {
+          logger.warn(
+            { err, jobId, jobName: name, jobKey: helpers.job.key },
+            "Job was superseded by a re-enqueue under the same key while it ran; its failure is not retried",
+          );
+          return;
+        }
+      }
+      throw err;
     }
-    return withTraceContext({ jobName: name, jobId }, () => handler(rawPayload, helpers));
   };
 }
 
