@@ -281,10 +281,15 @@ export class DelegationRegistry {
       clearTimeout(entry.ttlTimer);
       await pushRunStatus(this.pool, entry.agentRunId, status);
     } catch (err) {
-      logger.error({ err, entryKey }, "DelegationRegistry: failed to close expired session, will retry");
       if (this.entries.has(entryKey)) {
+        logger.error({ err, entryKey }, "DelegationRegistry: failed to close expired session, will retry");
         entry.busy = false;
         entry.ttlTimer = this.scheduleTtl(entryKey);
+      } else {
+        logger.error(
+          { err, entryKey },
+          "DelegationRegistry: expired session's run was already closed, but recording its final status failed; will not retry",
+        );
       }
     }
   }
