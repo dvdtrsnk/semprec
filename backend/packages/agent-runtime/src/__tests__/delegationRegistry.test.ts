@@ -535,6 +535,129 @@ describe("DelegationRegistry", () => {
     registry.clear();
   });
 
+  it("does not mutate or reschedule a stale entry when a concurrent delegate() replaces it while expire()'s run_status write is still failing", async () => {
+    // Reproduces the identity race: `finishAgentRun` closes the run and `entries.delete`
+    // already ran, but the `pushRunStatus` insert below is held pending rather than settled
+    // immediately. While it's pending, a fresh delegate() onto the same key creates a brand-new
+    // entry for a brand-new run. Only once that second entry exists do we reject the held
+    // insert, landing in expire()'s catch block with a *different* live entry now occupying the
+    // key. The fix must compare the stale `entry` object's identity against what's in `entries`
+    // (not just key presence) so it neither mutates the new entry's `busy` flag nor arms an
+    // orphaned TTL timer that would later force-close the new run out from under it.
+    let rejectPending: ((err: Error) => void) | null = null;
+    let matched = false;
+    const controlledPool = new Proxy(pool, {
+      get(target, prop, receiver) {
+        if (prop === "query") {
+          return (...args: unknown[]) => {
+            const text = typeof args[0] === "string" ? args[0] : (args[0] as { text?: string } | undefined)?.text;
+            const params = (args[1] as unknown[] | undefined) ?? [];
+            if (
+              !matched &&
+              text?.startsWith("INSERT INTO agent_run_events") &&
+              typeof params[2] === "string" &&
+              params[2].includes('"status":"done"')
+            ) {
+              matched = true;
+              return new Promise((_resolve, reject) => {
+                rejectPending = reject;
+              });
+            }
+            return (target.query as (...a: unknown[]) => unknown)(...args);
+          };
+        }
+        const value: unknown = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    const ttlMs = 300;
+    const registry = new DelegationRegistry(controlledPool, ttlMs);
+    const supervisorRunId = await newSupervisorRunId();
+    const targetProjectItemId = "bbbbbbbb-2222-2222-2222-222222222222";
+    const { createAgentSession: firstSession } = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "first session" },
+      { kind: "turn_end" },
+    ]);
+
+    await registry.delegate({ createAgentSession: firstSession, supervisorRunId, targetProjectItemId, task: "one" });
+    const { rows: firstRunRows } = await pool.query<{ id: string }>(
+      `SELECT id FROM agent_runs WHERE project_item_id = $1`,
+      [targetProjectItemId],
+    );
+    const firstRunId = firstRunRows[0]!.id;
+
+    // Wait until expire()'s finishAgentRun has closed the first run and its entry has been
+    // dropped, and its pushRunStatus insert is blocked pending our release.
+    await waitFor(async () => matched, "expire()'s run_status insert was never reached");
+    await waitFor(async () => {
+      const { rows } = await pool.query<{ status: string }>(`SELECT status FROM agent_runs WHERE id = $1`, [
+        firstRunId,
+      ]);
+      return rows[0]?.status === "done";
+    }, "first run was never closed as done");
+
+    // A fresh delegate() onto the same key now sees no entry (it was already dropped) and no
+    // pending create, so it creates a brand-new run and entry.
+    const { createAgentSession: secondSession } = scriptedSession(
+      [
+        { kind: "turn_start" },
+        { kind: "message", text: "second session" },
+        { kind: "turn_end" },
+      ],
+      [
+        { kind: "turn_start" },
+        { kind: "message", text: "second session, touched" },
+        { kind: "turn_end" },
+      ],
+    );
+    const second = await registry.delegate({
+      createAgentSession: secondSession,
+      supervisorRunId,
+      targetProjectItemId,
+      task: "two",
+    });
+    expect(second).toEqual({ ok: true, message: "second session" });
+    const { rows: secondRunRows } = await pool.query<{ id: string }>(
+      `SELECT id FROM agent_runs WHERE project_item_id = $1 AND id != $2`,
+      [targetProjectItemId, firstRunId],
+    );
+    const secondRunId = secondRunRows[0]!.id;
+
+    // Now let the first expire() call's pushRunStatus fail, landing in the catch block while
+    // the second run's entry occupies the key. A buggy reschedule (armed on the stale, deleted
+    // entry) would fire another `expire()` call `ttlMs` after this rejection lands.
+    const releasedAt = Date.now();
+    rejectPending!(new Error("simulated outage"));
+
+    // Touch the second entry partway through that window, pushing its own legitimate TTL out
+    // further than the buggy timer would fire — so if the fix is broken and the second run gets
+    // force-closed at (released + ttlMs), that's distinguishable from its own real expiry, which
+    // would only be due at (touch + ttlMs), later still.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const touched = await registry.delegate({
+      createAgentSession: secondSession,
+      supervisorRunId,
+      targetProjectItemId,
+      task: "touch",
+    });
+    expect(touched).toEqual({ ok: true, message: "second session, touched" });
+
+    // Past when the buggy orphaned timer would have fired (released + ttlMs), but comfortably
+    // before the second entry's own real, touch-extended expiry.
+    const elapsedSinceRelease = Date.now() - releasedAt;
+    await new Promise((resolve) => setTimeout(resolve, ttlMs + 30 - elapsedSinceRelease));
+
+    const { rows: secondRunStatus } = await pool.query<{ status: string }>(
+      `SELECT status FROM agent_runs WHERE id = $1`,
+      [secondRunId],
+    );
+    expect(secondRunStatus[0]!.status).toBe("running");
+
+    registry.clear();
+  });
+
   it("does not expire a delegation touched again before its TTL elapses", async () => {
     const ttlMs = 150;
     const registry = new DelegationRegistry(pool, ttlMs);
