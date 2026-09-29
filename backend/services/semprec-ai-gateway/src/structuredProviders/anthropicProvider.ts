@@ -8,6 +8,51 @@ const MAX_OUTPUT_TOKENS = 4096;
 /** Caps how much of a provider response this process ever buffers, regardless of what Content-Length claims. */
 const MAX_RESPONSE_BODY_BYTES = 10 * 1024 * 1024;
 
+/** The single deadline shared by every attempt of one `complete()` call. */
+const ATTEMPT_DEADLINE_MS = 55_000;
+
+const MAX_ATTEMPTS = 3;
+const RETRY_BASE_DELAY_MS = 500;
+const RETRY_MAX_DELAY_MS = 8_000;
+const RETRYABLE_STATUSES = new Set([429, 529]);
+
+function isRetryableStatus(status: number): boolean {
+  return RETRYABLE_STATUSES.has(status) || (status >= 500 && status <= 599);
+}
+
+/** Full jitter: a uniformly random delay between 0 and `base`. */
+function fullJitter(base: number): number {
+  return Math.random() * base;
+}
+
+/** Parses `retry-after` as either integer seconds or an HTTP-date; an unparsable value is ignored. */
+function parseRetryAfterMs(header: string | null): number | undefined {
+  if (!header) return undefined;
+  if (/^\d+$/.test(header.trim())) return Number(header.trim()) * 1000;
+  const dateMs = Date.parse(header);
+  if (Number.isNaN(dateMs)) return undefined;
+  return Math.max(0, dateMs - Date.now());
+}
+
+/** Resolves after `ms`, or immediately once `signal` fires — whichever comes first. */
+function sleepOrAbort(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 /**
  * The Anthropic Messages API has no `response_format`; native JSON-Schema-constrained output is
  * obtained by forcing a single tool call whose `input_schema` is the caller's schema (Anthropic's
@@ -65,44 +110,72 @@ export function createAnthropicStructuredProvider(apiKey: string): StructuredCom
     id: "anthropic",
     supportsJsonSchemaStructuredOutput: true,
     async complete(request: StructuredCompletionRequest) {
-      let res: Response;
-      try {
-        res = await fetch(ANTHROPIC_API_URL, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-api-key": apiKey,
-            "anthropic-version": ANTHROPIC_VERSION,
-          },
-          body: JSON.stringify({
-            model: request.model,
-            max_tokens: MAX_OUTPUT_TOKENS,
-            temperature: request.temperature,
-            system: request.system,
-            messages: request.messages,
-            tools: [
-              {
-                name: STRUCTURED_OUTPUT_TOOL_NAME,
-                description: "Emit the final structured result matching the required schema.",
-                input_schema: request.responseSchema,
-              },
-            ],
-            tool_choice: { type: "tool", name: STRUCTURED_OUTPUT_TOOL_NAME },
-          }),
-          // 55s: comfortably inside the client's 60s budget after this process's own overhead.
-          signal: request.signal
-            ? AbortSignal.any([AbortSignal.timeout(55_000), request.signal])
-            : AbortSignal.timeout(55_000),
-        });
-      } catch (err) {
-        throw new ProviderCallError(`Anthropic request failed: ${err instanceof Error ? err.name : "unknown error"}`);
-      }
+      // 55s: comfortably inside the client's 60s budget after this process's own overhead. Shared
+      // by every attempt below, so a retry can never push the call past that budget.
+      const deadline = AbortSignal.timeout(ATTEMPT_DEADLINE_MS);
+      const signal = request.signal ? AbortSignal.any([deadline, request.signal]) : deadline;
+      const deadlineAt = Date.now() + ATTEMPT_DEADLINE_MS;
 
-      if (!res.ok) {
+      const requestBody = JSON.stringify({
+        model: request.model,
+        max_tokens: MAX_OUTPUT_TOKENS,
+        temperature: request.temperature,
+        system: request.system,
+        messages: request.messages,
+        tools: [
+          {
+            name: STRUCTURED_OUTPUT_TOOL_NAME,
+            description: "Emit the final structured result matching the required schema.",
+            input_schema: request.responseSchema,
+          },
+        ],
+        tool_choice: { type: "tool", name: STRUCTURED_OUTPUT_TOOL_NAME },
+      });
+
+      let res: Response;
+      for (let attempt = 1; ; attempt++) {
+        try {
+          res = await fetch(ANTHROPIC_API_URL, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-api-key": apiKey,
+              "anthropic-version": ANTHROPIC_VERSION,
+            },
+            body: requestBody,
+            signal,
+          });
+        } catch (err) {
+          throw new ProviderCallError(`Anthropic request failed: ${err instanceof Error ? err.name : "unknown error"}`);
+        }
+
+        if (res.ok) break;
+
         // Cancelling only hands the connection back to the pool; whether it succeeds changes nothing
         // about the failure reported below, so a cancel error must not replace it.
         await res.body?.cancel().catch(() => {});
-        throw new ProviderCallError(`Anthropic responded with HTTP ${res.status}`);
+
+        if (!isRetryableStatus(res.status)) {
+          throw new ProviderCallError(`Anthropic responded with HTTP ${res.status}`);
+        }
+        if (attempt === MAX_ATTEMPTS) {
+          throw new ProviderCallError(`Anthropic responded with HTTP ${res.status} after ${attempt} attempts`);
+        }
+
+        const retryAfterMs = parseRetryAfterMs(res.headers.get("retry-after"));
+        const delay = Math.min(
+          RETRY_MAX_DELAY_MS,
+          retryAfterMs ?? fullJitter(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1)),
+        );
+        if (deadlineAt - Date.now() < delay) {
+          throw new ProviderCallError(`Anthropic responded with HTTP ${res.status} after ${attempt} attempts`);
+        }
+
+        await sleepOrAbort(delay, signal);
+        if (signal.aborted) {
+          const reasonName = signal.reason instanceof Error ? signal.reason.name : "AbortError";
+          throw new ProviderCallError(`Anthropic request aborted: ${reasonName}`);
+        }
       }
 
       let rawBody: unknown;
