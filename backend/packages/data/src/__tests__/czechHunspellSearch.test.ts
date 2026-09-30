@@ -31,17 +31,26 @@ function testDatabaseUrl(): string {
 async function withFreshDatabase(fn: (pool: Pool) => Promise<void>): Promise<void> {
   const name = `czech_fts_${randomUUID().replaceAll("-", "")}`;
   const admin = new Pool({ connectionString: testDatabaseUrl() });
+  admin.on("error", () => {});
   // UTF8 like production: the embedded instance's template1 is SQL_ASCII, which the text
   // search parser cannot split Czech words in.
   await admin.query(`CREATE DATABASE "${name}" ENCODING 'UTF8' TEMPLATE template0`);
   const url = new URL(testDatabaseUrl());
   url.pathname = `/${name}`;
   const pool = new Pool({ connectionString: url.toString() });
+  // WITH (FORCE) below calls pg_terminate_backend() on every connection of this database still
+  // open server-side, including this pool's own idle clients — that is the point, since it lets
+  // the DROP proceed without first waiting on `pool.end()`. node-postgres forwards a forcibly
+  // terminated idle client's error as a `pool` "error" event rather than throwing it, but only
+  // while the pool is still listening for it (an unhandled listener turns it into an uncaught
+  // exception that fails the whole run even though every assertion already passed) — so the
+  // handler has to be attached before the DROP, and `pool.end()` has to come after it, not before.
+  pool.on("error", () => {});
   try {
     await fn(pool);
   } finally {
-    await pool.end();
     await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+    await pool.end();
     await admin.end();
   }
 }
