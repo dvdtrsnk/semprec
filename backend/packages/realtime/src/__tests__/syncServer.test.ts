@@ -433,7 +433,9 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
 
   it("never replays an invalidation published while a socket was disconnected — reconnecting relies on the client's own bounded active-state refetch to heal, not a server-side replay (issue #161)", async () => {
     const userA = await createTestUser();
+    const sentinelUser = await createTestUser();
     identityByToken.set("a", { userId: userA, sessionId: "session-a" });
+    identityByToken.set("sentinel", { userId: sentinelUser, sessionId: "session-sentinel" });
 
     // A socket that was open, then dropped, before the invalidation below is published.
     const droppedClient = await connect("a");
@@ -449,6 +451,20 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
       updatedAt: "2026-01-01T00:00:00.000Z",
       userId: userA,
     });
+
+    // `publishRealtimeMessage` resolves once Postgres has queued the NOTIFY, not once this
+    // process's own LISTEN connection has received and dispatched it — without synchronizing on
+    // that, the reconnect below races the dispatch above and can win, landing the userA
+    // invalidation on a socket that did not exist when it was dispatched. A schema-scope
+    // broadcast (no userId) reaches every open socket and NOTIFYs are delivered to a LISTEN
+    // connection in the order their transactions committed, so a sentinel socket receiving this
+    // one proves the userA invalidation was already dispatched — to zero matching sockets, since
+    // `reconnected` below doesn't exist yet.
+    const sentinel = await connect("sentinel");
+    const sentinelReceived = new Promise<string>((resolve) => sentinel.once("message", (d) => resolve(messageText(d))));
+    await publishRealtimeMessage(pool, { type: "invalidation", scope: "schema", databaseId: "sentinel-db" });
+    expect(JSON.parse(await sentinelReceived)).toEqual({ type: "invalidate", scope: "schema", databaseId: "sentinel-db" });
+    sentinel.close();
 
     // Reconnecting afterwards opens a brand-new socket with no queued/replayed backlog — the
     // invalidation published above must never surface on it. A live socket converges only
