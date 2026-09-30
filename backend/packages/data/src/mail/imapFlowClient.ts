@@ -427,11 +427,13 @@ export class ImapFlowMailClient implements ImapMailClient {
   ): Promise<Array<{ uid: number; flags: string[] }>> {
     await this.client.mailboxOpen(path);
     const results: Array<{ uid: number; flags: string[] }> = [];
-    const iterator = this.client.fetch(
-      "1:*",
-      { uid: true, flags: true },
-      sinceModSeq !== null ? { uid: true, changedSince: BigInt(sinceModSeq) } : { uid: true },
-    )[Symbol.asyncIterator]();
+    const iterator = this.client
+      .fetch(
+        "1:*",
+        { uid: true, flags: true },
+        sinceModSeq !== null ? { uid: true, changedSince: BigInt(sinceModSeq) } : { uid: true },
+      )
+      [Symbol.asyncIterator]();
     try {
       // A manual `.next()` loop, not `for await`, so a step that never resolves (a server
       // that stops responding mid-stream) can be raced against a timer the same way
