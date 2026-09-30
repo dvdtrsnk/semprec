@@ -22,7 +22,11 @@ review:
   # line-number-free diff identity, so a rebase onto a develop that changed the
   # same file elsewhere no longer forces a full review. The checkout ref in
   # .github/workflows/code-review.yml pins the same commit (#548).
-  bot: { repo: dvdtrsnk/code-review-bot, ref: aa7d7e07f3bc3552887708a49dc319a3f4a2f640 }
+  # dvdtrsnk/code-review-bot#29 merged to main as
+  # 967a0c8472d2b9144a88635c5d5a9c1336a18aeb: a `**/` in a scope glob matches
+  # zero directories too, so `**/*.json` and `dir/**/*.ts` no longer silently
+  # skip files such as backend/package.json or top-level web/*.ts.
+  bot: { repo: dvdtrsnk/code-review-bot, ref: 967a0c8472d2b9144a88635c5d5a9c1336a18aeb }
   check-name: code-review
   env: { REVIEW_BLOCK_SEVERITY: medium, PROMOTION_SOURCE: develop, PROMOTION_TARGET: main }
 merge:
