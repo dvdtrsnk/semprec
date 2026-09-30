@@ -412,6 +412,29 @@ describe("docs (CRDT layer)", () => {
         docB.id,
       ]);
       expect(docBRows[0].n).toBeGreaterThan(0); // docB's failed transaction never compacted or deleted its rows
+
+      // docA is already compacted, so pair docB's still-failing doc with a fresh, valid
+      // one: a mixed outcome (some succeed, some fail) must still resolve the task, not reject it.
+      const itemC = await makeItem();
+      await docStore.putBlock(itemC.id, { id: "seed", flavour: "paragraph" }, "user");
+      const docC = await docStore.getDoc(itemC.id);
+      if (!docC) throw new Error("doc not created");
+      const validUpdatesC: Buffer[] = [];
+      for (let i = 0; i < DEFAULT_COMPACTION_THRESHOLD; i++) {
+        validUpdatesC.push(
+          Buffer.from(
+            captureUpdate(scratch, () => {
+              scratch.getMap("blocks").set(`c${i}`, new Y.Map());
+            }),
+          ),
+        );
+      }
+      await pool.query(
+        `INSERT INTO doc_updates (doc_id, update, created_by) SELECT $1, u, 'user' FROM unnest($2::bytea[]) AS u`,
+        [docC.id, validUpdatesC],
+      );
+
+      await expect(handleDocCompactionSweepTask(pool)).resolves.toBeUndefined();
     });
 
     it("handleDocCompactionSweepTask rejects when the only over-threshold doc failed entirely", async () => {
