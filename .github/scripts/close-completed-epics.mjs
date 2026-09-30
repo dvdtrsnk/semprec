@@ -105,7 +105,7 @@ function announcementBody(summary, graceHours) {
     MARKER,
     `All ${summary.total} sub-issues of this epic are closed, so it looks finished.`,
     "",
-    `Unless that changes, a run at least ${graceHours} hours from now will close this epic as completed.`,
+    `Unless that changes, a run at least ${graceHours} ${graceHours === 1 ? "hour" : "hours"} from now will close this epic as completed.`,
     "Adding a sub-issue, reopening one, or labelling this epic `" + OPT_OUT_LABEL + "` withdraws this notice.",
   ].join("\n");
 }
