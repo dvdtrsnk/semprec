@@ -5,6 +5,7 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createDocStore, putBlockWithClient, type DocStore } from "../docs/docStore.js";
+import { getOrCreateDoc } from "../docs/docsStore.js";
 import { ConflictError, HistoryNotRetainedError, NotFoundError, ValidationError } from "../errors.js";
 import { DEFAULT_COMPACTION_THRESHOLD, loadDoc, mutateDoc, runCompactionSweep } from "../docs/docPersistence.js";
 import {
@@ -98,6 +99,53 @@ describe("docs (CRDT layer)", () => {
       await expect(
         docStore.putCanvasElement(item.id, { id: "e1", type: "shape", xywh: [0, 0, 10, 10], index: "a0" }, "user"),
       ).rejects.toBeInstanceOf(ConflictError);
+    });
+  });
+
+  describe("getOrCreateDoc requires a live item (issue #669)", () => {
+    it("rejects a random uuid with NotFoundError and creates no docs row", async () => {
+      const itemId = "00000000-0000-0000-0000-000000000000";
+      await expect(withTransaction(pool, (client) => getOrCreateDoc(client, itemId, "page"))).rejects.toBeInstanceOf(
+        NotFoundError,
+      );
+
+      const { rows } = await pool.query(`SELECT id FROM docs WHERE item_id = $1`, [itemId]);
+      expect(rows).toHaveLength(0);
+    });
+
+    it("rejects a soft-deleted item with NotFoundError and creates no docs row", async () => {
+      const db = await chokePoint.createDatabase({ name: "Pages" });
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
+      await chokePoint.softDeleteItem(db.id, item.id);
+
+      await expect(withTransaction(pool, (client) => getOrCreateDoc(client, item.id, "page"))).rejects.toBeInstanceOf(
+        NotFoundError,
+      );
+
+      const { rows } = await pool.query(`SELECT id FROM docs WHERE item_id = $1`, [item.id]);
+      expect(rows).toHaveLength(0);
+    });
+
+    it("creates the doc for a live item", async () => {
+      const item = await makeItem();
+      const doc = await withTransaction(pool, (client) => getOrCreateDoc(client, item.id, "page"));
+      expect(doc.itemId).toBe(item.id);
+
+      const { rows } = await pool.query(`SELECT id FROM docs WHERE item_id = $1`, [item.id]);
+      expect(rows).toHaveLength(1);
+    });
+
+    it("still returns an existing doc of a trashed item, so restore keeps working", async () => {
+      const item = await makeItem();
+      await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph" }, "user");
+      const existingDoc = await docStore.getDoc(item.id);
+      if (!existingDoc) throw new Error("doc not created");
+
+      const db = await pool.query<{ database_id: string }>(`SELECT database_id FROM items WHERE id = $1`, [item.id]);
+      await chokePoint.softDeleteItem(db.rows[0]!.database_id, item.id);
+
+      const doc = await withTransaction(pool, (client) => getOrCreateDoc(client, item.id, "page"));
+      expect(doc.id).toBe(existingDoc.id);
     });
   });
 

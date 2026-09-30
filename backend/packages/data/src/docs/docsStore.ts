@@ -1,6 +1,7 @@
 import * as Y from "yjs";
 import type { Queryable } from "../db/pool.js";
-import { ConflictError } from "../errors.js";
+import { getItemsByIds } from "../chokePoint/itemsStore.js";
+import { ConflictError, NotFoundError } from "../errors.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import type { DocKind, DocRow } from "../types.js";
 
@@ -38,6 +39,13 @@ export async function getDocById(client: Queryable, docId: string): Promise<DocR
  * items never call this at all and stay with no doc, which is the expected normal
  * state, not an edge case.
  *
+ * `docs.item_id` has no Postgres FK (the partitioned `items` cannot be referenced), so
+ * referential integrity for it is enforced here at the application layer: the create
+ * path (only) requires a live `items` row, via `getItemsByIds` on the same `client`/
+ * transaction as the insert below, and rejects with `NotFoundError` otherwise. An
+ * already-existing doc is still returned regardless of the item's current state, so a
+ * trashed page's content stays reachable for restore.
+ *
  * A concurrent first-write race (two callers creating a doc for the same item at the
  * same moment) is resolved by `ON CONFLICT DO NOTHING` plus a re-read of the winner's
  * row; given this is a single/two-user system this is accepted as a rare, low-stakes
@@ -54,6 +62,9 @@ export async function getOrCreateDoc(client: Queryable, itemId: string, kind: Do
     }
     return existing;
   }
+
+  const [item] = await getItemsByIds(client, [itemId]);
+  if (!item) throw new NotFoundError(`Item ${itemId} not found`, { itemId });
 
   const { rows } = await client.query<DocDbRow & { history_available_from: Date }>(
     `INSERT INTO docs (item_id, kind, history_available_from) VALUES ($1, $2, now())
