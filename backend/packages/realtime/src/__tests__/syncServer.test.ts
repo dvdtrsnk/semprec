@@ -463,7 +463,11 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
     const sentinel = await connect("sentinel");
     const sentinelReceived = new Promise<string>((resolve) => sentinel.once("message", (d) => resolve(messageText(d))));
     await publishRealtimeMessage(pool, { type: "invalidation", scope: "schema", databaseId: "sentinel-db" });
-    expect(JSON.parse(await sentinelReceived)).toEqual({ type: "invalidate", scope: "schema", databaseId: "sentinel-db" });
+    expect(JSON.parse(await sentinelReceived)).toEqual({
+      type: "invalidate",
+      scope: "schema",
+      databaseId: "sentinel-db",
+    });
     sentinel.close();
 
     // Reconnecting afterwards opens a brand-new socket with no queued/replayed backlog — the
