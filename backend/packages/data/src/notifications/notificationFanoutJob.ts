@@ -17,6 +17,7 @@ import { sendWebPushNotification } from "../push/webPushAdapter.js";
 import { sendApnsNotification } from "../push/apnsAdapter.js";
 import type { PushSenders } from "../push/pushSenders.js";
 import type { PushSubscriptionRow } from "../push/types.js";
+import { logger } from "./logger.js";
 
 export function notificationFanoutJobKey(notificationId: string): string {
   return `notification-fanout:${notificationId}`;
@@ -77,7 +78,11 @@ export interface HandleNotificationFanoutInput {
  * A transient failure on any registration is collected and, after every other pending
  * registration has still been attempted, rethrown so graphile-worker retries the whole job. A
  * permanent one (provider 404/410/BadDeviceToken) invalidates just that registration via #150's
- * `revokePushSubscriptionByProviderInvalidation` and is never retried.
+ * `revokePushSubscriptionByProviderInvalidation` and is never retried. A `not-configured` result
+ * (issue #703, the server having no usable credentials for the channel at all) also marks the
+ * delivery permanently failed, but never revokes the registration — the gap is the server's, not
+ * a verdict on this device/subscription — and logs one warning per job and channel instead of
+ * letting the job retry ten times against a channel that will never become configured mid-retry.
  */
 export async function handleNotificationFanoutTask(
   pool: Pool,
@@ -105,6 +110,7 @@ export async function handleNotificationFanoutTask(
 
   const payload = { notificationId: notification.id, title: notification.title, linkHref: notification.linkHref };
   const transientFailures: unknown[] = [];
+  const loggedNotConfiguredChannels = new Set<PushSubscriptionRow["channel"]>();
 
   for (const registration of activeRegistrations) {
     const status = statusByRegistrationId.get(registration.id);
@@ -127,6 +133,15 @@ export async function handleNotificationFanoutTask(
             : { channel: "apns", deviceToken: apnsTarget(registration).deviceToken },
         );
       });
+    } else if (result.outcome === "not-configured") {
+      await withTransaction(pool, (client) => markPushDeliveryFailedPermanently(client, status.id, result.reason));
+      if (!loggedNotConfiguredChannels.has(registration.channel)) {
+        loggedNotConfiguredChannels.add(registration.channel);
+        logger.warn(
+          { notificationId: notification.id, channel: registration.channel, reason: result.reason },
+          "Push channel is not configured; delivery marked permanently failed",
+        );
+      }
     } else {
       transientFailures.push(result.error);
       await withTransaction(pool, (client) =>

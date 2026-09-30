@@ -22,19 +22,32 @@ function getVapidConfigFromEnv(): VapidConfig {
  * The `web_push` half of issue #151's fanout adapters. A 404/410 from the push service means the
  * subscription is gone (`WebPushError.statusCode`) — the caller pairs that with #150's
  * `revokePushSubscriptionByProviderInvalidation`. Anything else (network failure, 5xx, rate
- * limiting) is treated as transient and left for the job's own retry.
+ * limiting) is treated as transient and left for the job's own retry. Missing `VAPID_*` env vars
+ * (issue #703) resolve `not-configured` instead of throwing — a server-side gap, not a verdict on
+ * this subscription.
  */
 export async function sendWebPushNotification(
   target: WebPushTarget,
   payload: NotificationPushPayload,
-  config: VapidConfig = getVapidConfigFromEnv(),
+  config?: VapidConfig,
 ): Promise<PushSendResult> {
+  let resolvedConfig: VapidConfig;
+  try {
+    resolvedConfig = config ?? getVapidConfigFromEnv();
+  } catch (error) {
+    return { outcome: "not-configured", reason: error instanceof Error ? error.message : String(error) };
+  }
+
   try {
     await webpush.sendNotification(
       { endpoint: target.endpoint, keys: { p256dh: target.p256dh, auth: target.authSecret } },
       JSON.stringify({ title: payload.title, linkHref: payload.linkHref, notificationId: payload.notificationId }),
       {
-        vapidDetails: { subject: config.subject, publicKey: config.publicKey, privateKey: config.privateKey },
+        vapidDetails: {
+          subject: resolvedConfig.subject,
+          publicKey: resolvedConfig.publicKey,
+          privateKey: resolvedConfig.privateKey,
+        },
       },
     );
     return { outcome: "delivered" };
