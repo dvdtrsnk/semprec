@@ -35,6 +35,11 @@ describe("CORE_TASK_AFFINITY", () => {
     expect(CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION).toBe("agentRunEventsRetention");
     expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]).toBe("api");
   });
+
+  it("declares queueFailedJobsPrune in the exhaustive API set", () => {
+    expect(CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE).toBe("queueFailedJobsPrune");
+    expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]).toBe("api");
+  });
 });
 
 describe("AGENT_TASK_NAMES", () => {

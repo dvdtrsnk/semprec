@@ -149,6 +149,30 @@ describe("observability.checkSystem (issue #169)", () => {
     expect(await notificationsFor(check!.id)).toMatchObject([{ kind: "queue_backlog" }]);
   });
 
+  it("stays ok when the only permanently-failed job is locked (still running after a mid-run re-enqueue)", async () => {
+    await createTestUser();
+    await markAllProcessesFresh();
+    await enqueueJob(pool, "someUnregisteredTask", {}, { maxAttempts: 1 });
+    await pool.query(
+      `UPDATE graphile_worker._private_jobs SET attempts = 1, locked_at = now(), locked_by = 'test-worker'`,
+    );
+
+    await runCheck();
+    const check = await getCheck("queue:permanentlyFailedJobs");
+    expect(check?.status).toBe("ok");
+  });
+
+  it("stays ok when the only permanently-failed job is past the prune retention window", async () => {
+    await createTestUser();
+    await markAllProcessesFresh();
+    await enqueueJob(pool, "someUnregisteredTask", {}, { maxAttempts: 1 });
+    await pool.query(`UPDATE graphile_worker._private_jobs SET attempts = 1, updated_at = now() - interval '8 days'`);
+
+    await runCheck();
+    const check = await getCheck("queue:permanentlyFailedJobs");
+    expect(check?.status).toBe("ok");
+  });
+
   it("folds an overdue next_expected_activity_at and a non-null last_error into one mail_sync_stalled predicate", async () => {
     await createTestUser();
     await markAllProcessesFresh();

@@ -10,6 +10,7 @@ import {
   deleteOrphanedObservabilityChecks,
   type ObservabilityCheckStatus,
 } from "./observabilityChecksStore.js";
+import { FAILED_JOB_RETENTION_MS } from "./queueFailedJobsPrune.js";
 
 export interface ObservabilityCheckSystemHelpers {
   /** The firing crontab job's own id — the stable base a retry of this same tick reuses, so a redelivery after a mid-transaction crash lands on the same `transitionInstance` as the attempt it's retrying, instead of a fresh one that would slip past `writeNotification`'s dedupe. */
@@ -120,12 +121,28 @@ async function checkQueueBacklog(pool: Pool, helpers: ObservabilityCheckSystemHe
   });
 }
 
-/** graphile-worker's own "permanently failed" state (`attempts >= max_attempts`, the same condition its `permanently_fail_jobs` SQL function sets) — a job in this state will never run again on its own and needs a human, unlike an ordinary in-flight retry. */
+/**
+ * graphile-worker's own "permanently failed" state (`attempts >= max_attempts`, the same condition
+ * its `permanently_fail_jobs` SQL function sets) — a job in this state will never run again on its
+ * own and needs a human, unlike an ordinary in-flight retry.
+ *
+ * Excludes locked rows: `add_jobs` bumps `attempts` to `max_attempts` on a *running* job the
+ * moment its key is re-added (e.g. a long mail sync re-enqueued mid-run), so a locked row in this
+ * state is still in flight and about to succeed, not actually dead.
+ *
+ * Excludes rows older than `FAILED_JOB_RETENTION_MS`: `queueFailedJobsPrune` deletes those daily,
+ * and each was already alerted on while it was young (`fresh unlocked row` below). Once no new
+ * row appears, every existing one eventually ages out of this window and the check recovers on
+ * its own without anything having to acknowledge or clear it.
+ */
 async function checkPermanentlyFailedJobs(pool: Pool, helpers: ObservabilityCheckSystemHelpers): Promise<void> {
   const checkKey = "queue:permanentlyFailedJobs";
   await withTransaction(pool, async (client) => {
     const { rows } = await client.query<{ count: string }>(
-      `SELECT count(*) AS count FROM graphile_worker.jobs WHERE attempts >= max_attempts`,
+      `SELECT count(*) AS count FROM graphile_worker.jobs
+       WHERE attempts >= max_attempts AND locked_at IS NULL
+         AND updated_at >= now() - ($1::bigint * interval '1 millisecond')`,
+      [FAILED_JOB_RETENTION_MS],
     );
     const count = Number(rows[0]?.count ?? 0);
     const transition = await transitionObservabilityCheck(client, checkKey, () => ({
