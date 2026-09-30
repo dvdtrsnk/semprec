@@ -156,15 +156,20 @@ export async function runAgentSessionForRun(
 
     try {
       const lastMessage = await runAgentTurn(client, run.id, session.messages(), input.onEvent);
-      await finishAgentRun(client, run.id, "done", extractResultSnapshot(lastMessage));
+      // The event commits before the row flips to its terminal status: a bare-pool caller has
+      // no shared transaction across the two writes, so a poller reading the row right after it
+      // sees "done" must never race the corresponding run_status event still being written.
       await pushRunStatus(client, run.id, "done");
+      await finishAgentRun(client, run.id, "done", extractResultSnapshot(lastMessage));
     } catch (err) {
       try {
-        // Issue #149: same client as the status write, so a caller-supplied transaction rolls
-        // both back together; a bare pool gives the same best-effort guarantee this catch block
-        // already had before the notification existed.
-        await finishAgentRunWithErrorNotification(client, run.id, err instanceof Error ? err.message : String(err));
+        // Same ordering as the success path above, for the same reason: the run_status event
+        // commits before the row closes as `error`, so a poller never observes the closed row
+        // ahead of its final event. Issue #149: same client as the status write, so a
+        // caller-supplied transaction rolls both back together; a bare pool gives the same
+        // best-effort guarantee this catch block already had before the notification existed.
         await pushRunStatus(client, run.id, "error");
+        await finishAgentRunWithErrorNotification(client, run.id, err instanceof Error ? err.message : String(err));
       } catch (finishErr) {
         // Preserve the session failure for the caller, but do not erase evidence that the
         // secondary lifecycle close failed and left the row running.
