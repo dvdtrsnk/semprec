@@ -19,6 +19,7 @@ import {
 } from "@semprec/shared";
 import type { GenericOperationGateway } from "@semprec/application";
 import { toPublicErrorBody } from "../adapter/errorContract.js";
+import { extractBearerToken, PayloadTooLargeError, readJsonBody, sendJson } from "../adapter/http.js";
 import { authenticateRequest } from "../authHandler.js";
 import { logger } from "../logger.js";
 
@@ -36,11 +37,6 @@ function fromMcpToolName(name: string): GenericOperationName | null {
     : null;
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(body));
-}
-
 function rpcResult(id: unknown, result: unknown) {
   return { jsonrpc: "2.0", id: id ?? null, result };
 }
@@ -51,39 +47,11 @@ function rpcError(id: unknown, code: number, message: string, data?: unknown) {
 
 const MAX_BODY_BYTES = 1 * 1024 * 1024;
 
-class PayloadTooLargeError extends Error {}
-class JsonParseError extends Error {}
-
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    const buf = chunk as Buffer;
-    size += buf.length;
-    if (size > MAX_BODY_BYTES) throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
-    chunks.push(buf);
-  }
-  if (chunks.length === 0) return {};
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    throw new JsonParseError("Request body is not valid JSON");
-  }
-}
-
 interface JsonRpcRequestBody {
   jsonrpc?: unknown;
   id?: unknown;
   method?: unknown;
   params?: unknown;
-}
-
-/** Reads the raw bearer token only — this endpoint never accepts a cookie, unlike `authHandler.ts`'s `extractToken`. */
-function extractBearerToken(req: IncomingMessage): string | null {
-  const header = req.headers.authorization;
-  if (!header?.startsWith("Bearer ")) return null;
-  const token = header.slice("Bearer ".length).trim();
-  return token.length > 0 ? token : null;
 }
 
 /**
@@ -156,13 +124,13 @@ export function createMcpRequestListener(
 
       let body: unknown;
       try {
-        body = await readJsonBody(req);
+        body = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
       } catch (err) {
         if (err instanceof PayloadTooLargeError) {
           sendJson(res, 413, { error: err.message });
           return;
         }
-        if (err instanceof JsonParseError) {
+        if (err instanceof ValidationError) {
           sendJson(res, 200, rpcError(null, -32700, "Parse error"));
           return;
         }

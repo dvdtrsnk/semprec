@@ -2,7 +2,6 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   withTransaction,
   ChokePointError,
-  ValidationError,
   listMcpToolGrantsForProject,
   reclassifyMcpTool,
   setProjectMcpGrantForAgentPage,
@@ -10,35 +9,11 @@ import {
 import type { Pool } from "pg";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { assertUuid } from "./adapter/requestValidation.js";
+import { PayloadTooLargeError, readJsonBody, sendJson } from "./adapter/http.js";
 import { authenticateRequest } from "./authHandler.js";
 import { logger } from "./logger.js";
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(payload);
-}
-
 const MAX_BODY_BYTES = 1 * 1024 * 1024;
-
-class PayloadTooLargeError extends Error {}
-
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    const buf = chunk as Buffer;
-    size += buf.length;
-    if (size > MAX_BODY_BYTES) throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
-    chunks.push(buf);
-  }
-  if (chunks.length === 0) return {};
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    throw new ValidationError("Request body is not valid JSON");
-  }
-}
 
 const MCP_GRANTS_PATH = /^\/api\/projects\/([^/]+)\/mcp-grants(?:\/([^/]+))?$/;
 const MCP_TOOL_REGISTRATION_PATH = /^\/api\/mcp-tool-registrations\/([^/]+)$/;
@@ -80,7 +55,7 @@ export function createMcpAgentPageRequestListener(pool: Pool) {
         }
 
         if (req.method === "PATCH" && mcpToolRegistrationId) {
-          const body = (await readJsonBody(req)) as { granted?: unknown };
+          const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as { granted?: unknown };
           if (typeof body.granted !== "boolean") {
             sendJson(res, 400, { error: "'granted' must be a boolean" });
             return;
@@ -104,7 +79,10 @@ export function createMcpAgentPageRequestListener(pool: Pool) {
       if (registrationMatch && req.method === "PATCH") {
         // Group 1 of MCP_TOOL_REGISTRATION_PATH is not optional — see above.
         const mcpToolRegistrationId = assertUuid(registrationMatch[1]!, "mcpToolRegistrationId");
-        const body = (await readJsonBody(req)) as { riskClass?: unknown; requiresApproval?: unknown };
+        const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as {
+          riskClass?: unknown;
+          requiresApproval?: unknown;
+        };
         if (body.riskClass !== undefined && typeof body.riskClass !== "string") {
           sendJson(res, 400, { error: "'riskClass' must be a string" });
           return;

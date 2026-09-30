@@ -1,13 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { isProcessHeartbeatFresh, withClient } from "@semprec/data";
+import { sendJson } from "./adapter/http.js";
 import { logger } from "./logger.js";
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(payload);
-}
 
 /**
  * Handles unauthenticated `GET /healthz` (issue #168). Responds 200 `{"status":"ok"}` only when

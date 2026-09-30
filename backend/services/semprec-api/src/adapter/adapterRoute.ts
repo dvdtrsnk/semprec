@@ -1,10 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
-import { ChokePointError, ValidationError, type AuthenticatedIdentity, type ItemRow } from "@semprec/data";
+import { ChokePointError, type AuthenticatedIdentity, type ItemRow } from "@semprec/data";
 import { authenticateRequest } from "../authHandler.js";
 import { toErrorResponseBody, statusForError } from "./errorContract.js";
 import { toItemEnvelope } from "./itemEnvelope.js";
 import { logger } from "../logger.js";
+import { PayloadTooLargeError, readJsonBody, sendJson } from "./http.js";
+
+export { PayloadTooLargeError };
 
 /**
  * The `semprec-api` REST adapter foundation (issue #238): the one place a mounted route's
@@ -19,43 +22,17 @@ import { logger } from "../logger.js";
  * change without a transition period. See
  * `docs/adr/2026-09-11-additive-only-rest-contract-no-url-versioning.md` for why.
  *
- * `requireAuthenticatedIdentity`, `readJsonBody`, `sendErrorResponse`, and `sendItemResponse` are
- * deliberately module-private: `createAdapterRequestListener` is the only supported entry point,
- * so a route handler can never bypass its centralized auth gate or error mapping by calling one of
- * these directly.
+ * `requireAuthenticatedIdentity`, `sendErrorResponse`, and `sendItemResponse` are deliberately
+ * module-private: `createAdapterRequestListener` is the only supported entry point, so a route
+ * handler can never bypass its centralized auth gate or error mapping by calling one of these
+ * directly.
  */
 
 const MAX_BODY_BYTES = 1 * 1024 * 1024;
 
-export class PayloadTooLargeError extends Error {}
-
 /** Every route mounted through this adapter authenticates the same way — session cookie or `Authorization: Bearer` (issue #143) — before its handler ever runs. */
 async function requireAuthenticatedIdentity(pool: Pool, req: IncomingMessage): Promise<AuthenticatedIdentity> {
   return authenticateRequest(pool, req);
-}
-
-/** Parses the request body as JSON, capped at 1 MiB; malformed JSON is `validation_failed`, an oversized body is a distinct `PayloadTooLargeError` a caller maps to 413. */
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    const buf = chunk as Buffer;
-    size += buf.length;
-    if (size > MAX_BODY_BYTES) throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
-    chunks.push(buf);
-  }
-  if (chunks.length === 0) return {};
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    throw new ValidationError("Request body is not valid JSON");
-  }
-}
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(payload);
 }
 
 /** Sends a `ChokePointError` as this adapter's `{ error: { code, details } }` body, at the status the shared code→status table assigns it. */
@@ -106,7 +83,7 @@ export function createAdapterRequestListener(
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const identity = await requireAuthenticatedIdentity(pool, req);
-      const body = await readJsonBody(req);
+      const body = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
       const params = options.extractParams?.(req) ?? {};
       const result = await handler({ req, identity, params, body });
       if ("item" in result) {

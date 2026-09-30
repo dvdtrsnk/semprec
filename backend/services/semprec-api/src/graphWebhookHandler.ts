@@ -1,29 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { handleGraphChangeNotification } from "@semprec/data";
+import { PayloadTooLargeError, readRawBody, sendJson } from "./adapter/http.js";
 import { logger } from "./logger.js";
 
 /** Generous for a real Graph delivery (Graph itself caps a single batch around 20 notifications), but bounds a misbehaving or malicious POST from buffering an unbounded body before this handler ever looks at it — same discipline as `setupHandler.ts`'s `MAX_BODY_BYTES`. */
 const MAX_BODY_BYTES = 256 * 1024;
-
-class PayloadTooLargeError extends Error {}
-
-async function readBody(req: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    const buf = chunk as Buffer;
-    size += buf.length;
-    if (size > MAX_BODY_BYTES) throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
-    chunks.push(buf);
-  }
-  return Buffer.concat(chunks);
-}
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(body));
-}
 
 interface RawNotification {
   subscriptionId: string;
@@ -71,7 +53,7 @@ export function createGraphWebhookRequestListener(pool: Pool) {
     }
 
     try {
-      const raw = await readBody(req);
+      const raw = await readRawBody(req, { maxBytes: MAX_BODY_BYTES });
       let parsed: unknown;
       try {
         parsed = raw.length > 0 ? JSON.parse(raw.toString("utf8")) : {};

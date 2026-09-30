@@ -14,14 +14,9 @@ import {
 } from "@semprec/data";
 import { authenticateRequest } from "./authHandler.js";
 import { statusForError, toErrorResponseBody } from "./adapter/errorContract.js";
+import { sendJson } from "./adapter/http.js";
 import { assertUuid } from "./adapter/requestValidation.js";
 import { logger } from "./logger.js";
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(payload);
-}
 
 const BLOB_PATH = /^\/api\/blobs\/([^/]+)$/;
 

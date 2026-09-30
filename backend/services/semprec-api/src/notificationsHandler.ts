@@ -10,14 +10,9 @@ import {
 } from "@semprec/data";
 import { authenticateRequest } from "./authHandler.js";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
+import { sendJson } from "./adapter/http.js";
 import { assertUuid } from "./adapter/requestValidation.js";
 import { logger } from "./logger.js";
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(payload);
-}
 
 const VISIT_NOTIFICATION_PATH = /^\/api\/notifications\/([^/]+)\/visit$/;
 

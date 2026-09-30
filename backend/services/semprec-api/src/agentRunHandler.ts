@@ -3,36 +3,11 @@ import { withTransaction, ChokePointError, ValidationError, getAgentRun, mintMcp
 import type { Pool } from "pg";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { assertUuid } from "./adapter/requestValidation.js";
+import { PayloadTooLargeError, readJsonBody, sendJson } from "./adapter/http.js";
 import { authenticateRequest } from "./authHandler.js";
 import { logger } from "./logger.js";
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(payload);
-}
-
 const MAX_BODY_BYTES = 64 * 1024;
-
-class PayloadTooLargeError extends Error {}
-class JsonParseError extends Error {}
-
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    const buf = chunk as Buffer;
-    size += buf.length;
-    if (size > MAX_BODY_BYTES) throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
-    chunks.push(buf);
-  }
-  if (chunks.length === 0) return {};
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    throw new JsonParseError("Request body is not valid JSON");
-  }
-}
 
 const AGENT_RUN_PATH = /^\/api\/agent-runs\/([^/]+)$/;
 const MCP_CREDENTIALS_PATH = "/api/agent-runs/mcp-credentials";
@@ -90,14 +65,10 @@ export function createAgentRunRequestListener(pool: Pool) {
 
         let body: unknown;
         try {
-          body = await readJsonBody(req);
+          body = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
         } catch (err) {
           if (err instanceof PayloadTooLargeError) {
             sendJson(res, 413, { error: err.message });
-            return;
-          }
-          if (err instanceof JsonParseError) {
-            sendJson(res, 400, { error: err.message });
             return;
           }
           throw err;
