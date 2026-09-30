@@ -168,7 +168,14 @@ export async function runAgentSessionForRun(
         // ahead of its final event. Issue #149: same client as the status write, so a
         // caller-supplied transaction rolls both back together; a bare pool gives the same
         // best-effort guarantee this catch block already had before the notification existed.
-        await pushRunStatus(client, run.id, "error");
+        try {
+          await pushRunStatus(client, run.id, "error");
+        } catch (statusErr) {
+          // A failure specific to the events table must not skip closing the agent_runs row:
+          // that row closing unconditionally (for all non-connection failures) is the invariant
+          // this catch block guaranteed before the run_status write was added here.
+          logger.error({ err: statusErr, agentRunId: run.id }, "Failed to push error run_status event");
+        }
         await finishAgentRunWithErrorNotification(client, run.id, err instanceof Error ? err.message : String(err));
       } catch (finishErr) {
         // Preserve the session failure for the caller, but do not erase evidence that the

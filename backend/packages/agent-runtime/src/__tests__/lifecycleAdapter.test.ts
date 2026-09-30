@@ -265,6 +265,51 @@ describe("runAgentSession", () => {
     }
   });
 
+  it("still closes the agent_runs row as error when the error-path run_status write itself fails", async () => {
+    const queryable = pool as unknown as { query: QueryFn };
+    const origQuery = queryable.query.bind(queryable);
+    const queryMock = vi.spyOn(queryable, "query").mockImplementation((...args: unknown[]) => {
+      const [text, params] = args as [unknown, unknown[] | undefined];
+      const sql = String(text);
+      const status = params?.[2] ? (() => {
+        try {
+          return JSON.parse(params[2] as string).status;
+        } catch {
+          return undefined;
+        }
+      })() : undefined;
+      if (sql.includes("INSERT INTO agent_run_events") && params?.[1] === "run_status" && status === "error") {
+        return Promise.reject(new Error("events table unavailable"));
+      }
+      return origQuery(...args);
+    });
+
+    const createAgentSession: CreateAgentSession = (): AgentSession => ({
+      async *messages() {
+        yield { kind: "turn_start" };
+        throw new Error("boom");
+      },
+    });
+
+    try {
+      await expect(
+        runAgentSession(pool, {
+          createAgentSession,
+          task: "run_status write fails on error path",
+          triggeredBy: "supervisor",
+        }),
+      ).rejects.toThrow("boom");
+
+      const { rows } = await pool.query<{ status: string; result: string | null }>(
+        "SELECT status, result FROM agent_runs WHERE task = 'run_status write fails on error path'",
+      );
+      expect(rows[0]!.status).toBe("error");
+      expect(rows[0]!.result).toBe("boom");
+    } finally {
+      queryMock.mockRestore();
+    }
+  });
+
   it("announces durable events as thin references and sends message_update only on the ephemeral stream", async () => {
     const listenClient = await pool.connect();
     await listenClient.query("LISTEN semprec_events");
