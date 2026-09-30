@@ -60,6 +60,7 @@ describe("resolveGrantedMcpTool (issue #128)", () => {
       mcpServerItemId: server.id,
       toolName: "search_web",
       toolSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+      toolSchemaUpdatedAt: new Date(registration.updatedAt).toISOString(),
       requiresApproval: true,
       riskClass: "unclassified",
       serverItem: {
