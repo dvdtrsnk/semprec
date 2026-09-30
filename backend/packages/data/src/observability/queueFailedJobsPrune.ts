@@ -37,6 +37,12 @@ interface FailedJobRow {
  * rather than the `graphile_worker.jobs` view: the view's `LEFT JOIN` to `_private_job_queues`
  * puts `jobs` on the nullable side of an outer join, which Postgres refuses to lock with `FOR
  * UPDATE`.
+ *
+ * This is a deliberate deviation from graphile_worker's public interface (the `jobs` view and the
+ * `complete_jobs`/`add_job` functions) onto its `_private_`-prefixed internals, pinned to the
+ * schema shape of graphile-worker@0.17.x (see `backend/packages/queue/package.json`). Bumping
+ * that dependency to a version that renames or restructures `_private_jobs`/`_private_tasks`
+ * requires re-checking this query against the new schema.
  */
 export async function pruneQueueFailedJobs(pool: Pool, now = new Date()): Promise<number> {
   const cutoff = new Date(now.getTime() - FAILED_JOB_RETENTION_MS);
