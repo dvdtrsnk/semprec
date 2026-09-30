@@ -33,13 +33,13 @@
  * Inputs, all from the Actions runner environment:
  *   GITHUB_REPOSITORY, GITHUB_API_URL — where to look
  *   GITHUB_TOKEN                      — needs `issues: write`
- *   GRACE_HOURS                       — how old an announcement must be (default 20)
+ *   GRACE_HOURS                       — how old an announcement must be (default 1)
  *   DRY_RUN                           — "true" reports what it would do and writes nothing
  */
 
 const MARKER = "<!-- epic-sweeper:pending -->";
 const OPT_OUT_LABEL = "epic:wip";
-const DEFAULT_GRACE_HOURS = 20;
+const DEFAULT_GRACE_HOURS = 1;
 
 function requireEnv(name) {
   const value = process.env[name];

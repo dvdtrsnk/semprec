@@ -23,7 +23,7 @@ name: Harvest review follow-ups
 on:
   schedule:
     # 05:37 UTC — off the hour, so it does not join the stampede of jobs that every
-    # cron scheduler fires at :00, and apart from close-completed-epics' 04:15.
+    # cron scheduler fires at :00, and apart from close-completed-epics' :15 each hour.
     - cron: "37 5 * * *"
   workflow_dispatch:
     inputs:
