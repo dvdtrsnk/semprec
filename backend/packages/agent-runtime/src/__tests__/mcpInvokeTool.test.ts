@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
+import { Ajv } from "ajv";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   startHttpContractServer,
@@ -299,6 +300,76 @@ describe("MCP invoke adapter (issue #128)", () => {
       expect(contractServer.getHandshakeCount()).toBe(0);
       const { rows } = await pool.query(`SELECT count(*)::int AS count FROM approval_requests`);
       expect(rows[0].count).toBe(0);
+    });
+  });
+
+  describe("schema compile caching (issue #696)", () => {
+    it("compiles a registration's schema once across repeated invocations", async () => {
+      const contractServer = startStdioContractServer([SEARCH_TOOL]);
+      servers.push(contractServer);
+      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+      const compileSpy = vi.spyOn(Ajv.prototype, "compile");
+
+      const invoke = createMcpInvokeTool(pool, projectItemId, registration.id);
+      await invoke({ query: "first" });
+      await invoke({ query: "second" });
+
+      expect(compileSpy).toHaveBeenCalledTimes(1);
+      compileSpy.mockRestore();
+    });
+
+    it("recompiles after a re-sync changes the registration's schema, and validates against the new schema", async () => {
+      const contractServer = startStdioContractServer([SEARCH_TOOL]);
+      servers.push(contractServer);
+      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+
+      const invoke = createMcpInvokeTool(pool, projectItemId, registration.id);
+      const first = await invoke({ query: "semprec" });
+      expect(first.error).toBe(false);
+
+      await upsertMcpToolRegistration(pool, {
+        mcpServerItemId: registration.mcpServerItemId,
+        toolName: registration.toolName,
+        toolSchema: {
+          type: "object",
+          properties: { query: { type: "string" }, extra: { type: "string" } },
+          required: ["query", "extra"],
+        },
+        description: registration.description,
+      });
+      const compileSpy = vi.spyOn(Ajv.prototype, "compile");
+
+      const rejected = await invoke({ query: "semprec" });
+      expect(rejected.error).toBe(true);
+
+      const accepted = await invoke({ query: "semprec", extra: "value" });
+      expect(accepted.error).toBe(false);
+
+      expect(compileSpy).toHaveBeenCalledTimes(1);
+      compileSpy.mockRestore();
+    });
+
+    it("validates correctly on both the first and second call when the schema carries an $id", async () => {
+      const toolWithId: ContractServerTool = {
+        name: "search_web",
+        description: "Searches the web",
+        inputSchema: {
+          $id: "https://example.test/search-web-schema.json",
+          type: "object",
+          properties: { query: { type: "string" } },
+          required: ["query"],
+        } as unknown as ContractServerTool["inputSchema"],
+      };
+      const contractServer = startStdioContractServer([toolWithId]);
+      servers.push(contractServer);
+      const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig, toolWithId);
+
+      const invoke = createMcpInvokeTool(pool, projectItemId, registration.id);
+      const first = await invoke({ query: "first" });
+      const second = await invoke({ query: "second" });
+
+      expect(first.error).toBe(false);
+      expect(second.error).toBe(false);
     });
   });
 });

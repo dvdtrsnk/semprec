@@ -246,6 +246,96 @@ describe("MCP tool sync (issue #125)", () => {
   it("throws NotFoundError for a nonexistent MCP server item", async () => {
     await expect(syncMcpServerTools(pool, "00000000-0000-0000-0000-000000000000")).rejects.toThrow(NotFoundError);
   });
+
+  describe("tool schema policy (issue #696)", () => {
+    it("rejects a catastrophic-backtracking pattern, records a fixed error, and writes no registration", async () => {
+      const contract = startStdioContractServer([
+        {
+          name: "search_web",
+          description: "Searches the web",
+          inputSchema: { type: "object", properties: { q: { type: "string", pattern: "(a+)+$" } } },
+        },
+      ]);
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+
+        await expect(syncMcpServerTools(pool, item.id)).rejects.toThrow(ValidationError);
+
+        expect(await listMcpToolRegistrationsForServer(pool, item.id)).toEqual([]);
+        const updated = await getServerItem(item.id);
+        expect(updated.properties.syncStatus).toBe("error");
+        expect(typeof updated.properties.syncError).toBe("string");
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    it("rejects a remote $ref and writes no registration", async () => {
+      const contract = startStdioContractServer([
+        {
+          name: "search_web",
+          description: "Searches the web",
+          inputSchema: {
+            type: "object",
+            properties: { q: { $ref: "https://evil.example/schema.json" } as unknown as Record<string, unknown> },
+          },
+        },
+      ]);
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+
+        await expect(syncMcpServerTools(pool, item.id)).rejects.toThrow(ValidationError);
+
+        expect(await listMcpToolRegistrationsForServer(pool, item.id)).toEqual([]);
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    it("rejects a schema over 64 KiB and writes no registration", async () => {
+      const contract = startStdioContractServer([
+        {
+          name: "search_web",
+          description: "Searches the web",
+          inputSchema: {
+            type: "object",
+            properties: { q: { type: "string", description: "x".repeat(70 * 1024) } },
+          },
+        },
+      ]);
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+
+        await expect(syncMcpServerTools(pool, item.id)).rejects.toThrow(ValidationError);
+
+        expect(await listMcpToolRegistrationsForServer(pool, item.id)).toEqual([]);
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    it("syncs normally when a pattern is benign", async () => {
+      const contract = startStdioContractServer([
+        {
+          name: "search_web",
+          description: "Searches the web",
+          inputSchema: { type: "object", properties: { q: { type: "string", pattern: "^[a-z]+$" } } },
+        },
+      ]);
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+
+        const result = await syncMcpServerTools(pool, item.id);
+
+        expect(result.toolCount).toBe(1);
+        const registrations = await listMcpToolRegistrationsForServer(pool, item.id);
+        expect(registrations).toHaveLength(1);
+        expect(registrations[0]!.active).toBe(true);
+      } finally {
+        await contract.stop();
+      }
+    });
+  });
 });
 
 describe("listAllTools (pagination)", () => {

@@ -43,23 +43,66 @@ export interface RejectedMcpInvocation {
 
 export type McpInvocationResolution = ResolvedMcpInvocation | RejectedMcpInvocation;
 
-const ajv = new Ajv({ allErrors: true, strict: false });
+/** Bounds how many compiled schemas the agents process holds at once (issue #696's acceptance criterion). */
+const MAX_COMPILED_SCHEMAS = 256;
+
+interface CompiledSchemaEntry {
+  updatedAt: string;
+  /** `null` when the schema failed to compile, so a broken schema isn't recompiled on every call — see `validateArguments`. */
+  validate: ValidateFunction | null;
+}
 
 /**
- * Compiles fresh on every call rather than caching by registration id: a tool's schema can
- * change between calls (the next "Synchronize tools" pass, #125), and this adapter always
- * re-validates against whatever `resolveMcpInvocation` just read, not a stale compiled copy.
+ * Keyed by `mcpToolRegistrationId`, insertion-order-evicted once past `MAX_COMPILED_SCHEMAS`:
+ * a `Map`'s iteration order is insertion order, and re-`set`ting an existing key moves it to the
+ * end, so `.keys().next().value` is always the least-recently-inserted (LRU-by-insertion) entry.
  */
-function validateArguments(schema: unknown, args: McpInvokeArgs): string | null {
-  if (typeof schema !== "object" || schema === null) {
-    return "the tool's registered schema is not a valid JSON Schema object";
-  }
-  let validate: ValidateFunction;
+const compiledSchemas = new Map<string, CompiledSchemaEntry>();
+
+function compileSchema(schema: object, registrationId: string, updatedAt: string): CompiledSchemaEntry {
+  // A fresh Ajv instance per compile (rather than one shared, module-level instance) so a
+  // schema carrying its own `$id` can never collide with another registration's `$id` already
+  // registered on the same instance — the second `compile()` of a repeated `$id` on a shared
+  // instance throws "schema with key or id ... already exists".
+  const ajv = new Ajv({ allErrors: true, strict: false });
+  let validate: ValidateFunction | null;
   try {
     validate = ajv.compile(schema);
   } catch {
+    validate = null;
+  }
+  const entry: CompiledSchemaEntry = { updatedAt, validate };
+
+  compiledSchemas.delete(registrationId);
+  compiledSchemas.set(registrationId, entry);
+  if (compiledSchemas.size > MAX_COMPILED_SCHEMAS) {
+    const oldestKey = compiledSchemas.keys().next().value;
+    if (oldestKey !== undefined) compiledSchemas.delete(oldestKey);
+  }
+  return entry;
+}
+
+/**
+ * Compiles a granted tool's registered schema once per registration version instead of on every
+ * call: a cache miss, or a `target.toolSchemaUpdatedAt` that no longer matches the cached entry
+ * (the next "Synchronize tools" pass, #125, changed the schema), triggers a fresh compile; an
+ * unchanged registration reuses the previously compiled validator.
+ */
+function validateArguments(target: McpToolInvocationTarget, args: McpInvokeArgs): string | null {
+  const { toolSchema: schema, mcpToolRegistrationId, toolSchemaUpdatedAt } = target;
+  if (typeof schema !== "object" || schema === null) {
+    return "the tool's registered schema is not a valid JSON Schema object";
+  }
+
+  let entry = compiledSchemas.get(mcpToolRegistrationId);
+  if (!entry || entry.updatedAt !== toolSchemaUpdatedAt) {
+    entry = compileSchema(schema, mcpToolRegistrationId, toolSchemaUpdatedAt);
+  }
+  if (!entry.validate) {
     return "the tool's registered schema could not be compiled";
   }
+
+  const validate = entry.validate;
   if (validate(args)) return null;
   const errors = validate.errors ?? [];
   if (errors.length === 0) return "arguments do not match the tool's schema";
@@ -90,7 +133,7 @@ export async function resolveMcpInvocation(
     return rejection("This MCP tool is unavailable: it is unknown, inactive, or no longer granted to this project.");
   }
 
-  const validationError = validateArguments(target.toolSchema, args);
+  const validationError = validateArguments(target, args);
   if (validationError !== null) {
     return rejection(`Invalid arguments for MCP tool '${target.toolName}': ${validationError}`);
   }

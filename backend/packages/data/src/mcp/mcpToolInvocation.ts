@@ -23,6 +23,8 @@ export interface McpToolInvocationTarget {
   mcpServerItemId: string;
   toolName: string;
   toolSchema: unknown;
+  /** `mcp_tool_registrations.updated_at`, ISO 8601 — lets `mcpInvokeTool.ts` detect a schema change since it last compiled this registration. */
+  toolSchemaUpdatedAt: string;
   requiresApproval: boolean;
   riskClass: string;
   /** Exactly what `connectMcpServer` needs — see `mcpConnectionFactory.ts`. */
@@ -34,6 +36,7 @@ interface McpToolInvocationRow {
   mcp_server_item_id: string;
   tool_name: string;
   tool_schema: unknown;
+  tool_schema_updated_at: Date;
   requires_approval: boolean;
   risk_class: string;
   server_properties: Record<string, unknown>;
@@ -55,7 +58,8 @@ export async function resolveGrantedMcpTool(
 
   const { rows } = await client.query<McpToolInvocationRow>(
     `SELECT r.id AS registration_id, r.mcp_server_item_id, r.tool_name, r.tool_schema,
-            r.requires_approval, r.risk_class, s.properties AS server_properties
+            r.updated_at AS tool_schema_updated_at, r.requires_approval, r.risk_class,
+            s.properties AS server_properties
        FROM project_mcp_grants g
        JOIN mcp_tool_registrations r ON r.id = g.mcp_tool_registration_id
        JOIN items s ON s.database_id = $1 AND s.id = r.mcp_server_item_id
@@ -75,6 +79,7 @@ export async function resolveGrantedMcpTool(
     mcpServerItemId: row.mcp_server_item_id,
     toolName: row.tool_name,
     toolSchema: row.tool_schema,
+    toolSchemaUpdatedAt: row.tool_schema_updated_at.toISOString(),
     requiresApproval: row.requires_approval,
     riskClass: row.risk_class,
     serverItem: { id: row.mcp_server_item_id, properties: row.server_properties },

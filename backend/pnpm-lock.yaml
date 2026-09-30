@@ -181,6 +181,9 @@ importers:
       pg:
         specifier: ^8.23.0
         version: 8.23.0
+      safe-regex:
+        specifier: ^2.1.1
+        version: 2.1.1
       sanitize-html:
         specifier: ^2.17.7
         version: 2.17.7
@@ -206,6 +209,9 @@ importers:
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1
+      '@types/safe-regex':
+        specifier: ^1.1.6
+        version: 1.1.6
       '@types/sanitize-html':
         specifier: ^2.16.1
         version: 2.16.1
@@ -1415,6 +1421,9 @@ packages:
 
   '@types/retry@0.12.0':
     resolution: {integrity: sha512-wWKOClTTiizcZhXnPY4wikVAwmdYHp8q6DmC+EJUzAMsycb7HB32Kh9RN4+0gExjmPmZSAQjgURXIGATPegAvA==}
+
+  '@types/safe-regex@1.1.6':
+    resolution: {integrity: sha512-CQ/uPB9fLOPKwDsrTeVbNIkwfUthTWOx0l6uIGwVFjZxv7e68pCW5gtTYFzdJi3EBJp8h8zYhJbTasAbX7gEMQ==}
 
   '@types/sanitize-html@2.16.1':
     resolution: {integrity: sha512-n9wjs8bCOTyN/ynwD8s/nTcTreIHB1vf31vhLMGqUPNHaweKC4/fAl4Dj+hUlCTKYgm4P3k83fmiFfzkZ6sgMA==}
@@ -4069,6 +4078,8 @@ snapshots:
       pg-types: 2.2.0
 
   '@types/retry@0.12.0': {}
+
+  '@types/safe-regex@1.1.6': {}
 
   '@types/sanitize-html@2.16.1':
     dependencies:
