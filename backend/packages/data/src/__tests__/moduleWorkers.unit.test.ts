@@ -169,4 +169,54 @@ describe("createModuleWorkerInstanceReconciler", () => {
     expect(supervisor.stopped.map((i) => i.id)).toEqual(["semprec-mailsync@mailbox-1"]);
     expect(reconciler.getHostedInstanceIds().size).toBe(0);
   });
+
+  it("serializes overlapping reconcileOnce calls so each desired instance id starts exactly once", async () => {
+    const registry = fakeRegistry([mailSyncWorker]);
+    const started: WorkerInstanceIdentity[] = [];
+    let releaseStart!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    const supervisor: WorkerSupervisorPort = {
+      async start(instance) {
+        await gate;
+        started.push(instance);
+      },
+      async stop() {},
+    };
+    const reconciler = createModuleWorkerInstanceReconciler(registry, () => ["mailbox-1"], supervisor);
+
+    const first = reconciler.reconcileOnce();
+    const second = reconciler.reconcileOnce();
+    releaseStart();
+    await first;
+    await second;
+
+    expect(started.map((i) => i.id)).toEqual(["semprec-mailsync@mailbox-1"]);
+    expect(reconciler.getHostedInstanceIds()).toEqual(new Set(["semprec-mailsync@mailbox-1"]));
+  });
+
+  it("rejects only the failing call's promise, and still runs and resolves the overlapping call's own pass", async () => {
+    const registry = fakeRegistry([mailSyncWorker]);
+    const supervisor = fakeSupervisor();
+    const error = new Error("boom");
+    let callCount = 0;
+    supervisor.start = async (instance) => {
+      callCount += 1;
+      if (callCount === 1) {
+        throw error;
+      }
+      supervisor.started.push(instance);
+    };
+    const reconciler = createModuleWorkerInstanceReconciler(registry, () => ["mailbox-1"], supervisor);
+
+    const first = reconciler.reconcileOnce();
+    const second = reconciler.reconcileOnce();
+
+    await expect(first).rejects.toBe(error);
+    await expect(second).resolves.toBeUndefined();
+
+    expect(supervisor.started.map((i) => i.id)).toEqual(["semprec-mailsync@mailbox-1"]);
+    expect(reconciler.getHostedInstanceIds()).toEqual(new Set(["semprec-mailsync@mailbox-1"]));
+  });
 });
