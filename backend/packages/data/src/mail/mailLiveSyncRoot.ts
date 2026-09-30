@@ -3,6 +3,11 @@ import { withTransaction } from "../db/pool.js";
 import { listItems } from "../chokePoint/itemsStore.js";
 import { defaultSyncModeForProvider, ensureMailAccountSyncState, type SyncMode } from "./mailAccountSyncStateStore.js";
 import { enqueueMailAccountSync } from "./mailSyncJob.js";
+import {
+  mailSyncProcessName,
+  startProcessHeartbeat,
+  type ProcessHeartbeatHandle,
+} from "../health/processHeartbeats.js";
 
 export interface MailLiveSyncAccount {
   mailboxItemId: string;
@@ -55,7 +60,7 @@ export interface MailLiveSyncRootOptions {
    * is the one place that failure surfaces, since `reconcileOnce` itself never rejects because
    * of it.
    */
-  onLifecycleError?: (mailboxItemId: string, phase: "discover" | "start" | "stop", err: unknown) => void;
+  onLifecycleError?: (mailboxItemId: string, phase: "discover" | "start" | "stop" | "heartbeat", err: unknown) => void;
 }
 
 export interface MailLiveSyncRoot {
@@ -70,6 +75,7 @@ export interface MailLiveSyncRoot {
 interface HostedEntry {
   lifecycle: MailAccountLifecycle;
   syncMode: SyncMode;
+  heartbeat: ProcessHeartbeatHandle | null;
 }
 
 /**
@@ -77,6 +83,9 @@ interface HostedEntry {
  * Mailboxes database and hosts exactly one lifecycle per account for as long as it stays
  * active — deactivation (a soft-deleted Mailbox item, `deleted_at` set, the same signal
  * `listItems` already filters on by default) stops that account's lifecycle and nothing else.
+ * Each hosted account also beats its own `mailsync:<id>` process heartbeat (`processHeartbeats.ts`)
+ * for as long as it stays hosted, so `checkProcessHeartbeats` sees it as a live process rather
+ * than a permanent `process_stale` alert.
  *
  * Restart-safe by construction rather than by any explicit "am I already running" check: a
  * fresh process starts with an empty `hosted` map, and the only account state it ever reads is
@@ -152,6 +161,7 @@ export function createMailLiveSyncRoot(
 
   async function stopHosted(mailboxItemId: string, entry: HostedEntry): Promise<void> {
     hosted.delete(mailboxItemId);
+    entry.heartbeat?.stop();
     try {
       await entry.lifecycle.stop();
     } catch (err) {
@@ -171,9 +181,19 @@ export function createMailLiveSyncRoot(
       if (existing) await stopHosted(mailboxItemId, existing);
 
       const lifecycle = lifecycleFactory({ mailboxItemId, syncMode });
-      hosted.set(mailboxItemId, { lifecycle, syncMode });
+      const entry: HostedEntry = { lifecycle, syncMode, heartbeat: null };
+      hosted.set(mailboxItemId, entry);
       try {
         await lifecycle.start();
+        entry.heartbeat = startProcessHeartbeat(
+          pool,
+          {
+            process: mailSyncProcessName(mailboxItemId),
+            pid: process.pid,
+            version: process.env.APP_VERSION ?? "0.0.0",
+          },
+          { onError: (err) => options.onLifecycleError?.(mailboxItemId, "heartbeat", err) },
+        );
       } catch (err) {
         options.onLifecycleError?.(mailboxItemId, "start", err);
       }

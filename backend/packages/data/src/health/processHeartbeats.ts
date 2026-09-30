@@ -89,9 +89,17 @@ export function startProcessHeartbeat(
   };
 }
 
-/** One row per currently-connected mailbox (`mail_account_sync_state`, issue #26/#195) — the "active mailboxes" this issue's Task derives expected `mailsync:<id>` rows from. */
+/**
+ * One row per mailbox the live-sync root actually hosts (`mailLiveSyncRoot.ts`): a
+ * `mail_account_sync_state` row whose Mailbox item is still active (non-deleted). A
+ * soft-deleted Mailbox's sync-state row is never cleaned up, so without the join it would stay
+ * in the expected set — and therefore alert as `process_stale` — forever after its lifecycle
+ * stopped.
+ */
 export async function getActiveMailSyncProcessNames(client: Queryable): Promise<string[]> {
-  const result = await client.query<{ item_id: string }>("SELECT item_id FROM mail_account_sync_state");
+  const result = await client.query<{ item_id: string }>(
+    "SELECT s.item_id FROM mail_account_sync_state s JOIN items i ON i.id = s.item_id WHERE i.deleted_at IS NULL",
+  );
   return result.rows.map((row) => mailSyncProcessName(row.item_id));
 }
 

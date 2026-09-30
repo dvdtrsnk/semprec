@@ -12,6 +12,11 @@ import {
   type MailLiveSyncAccount,
   type MailLiveSyncLifecycleFactory,
 } from "../mail/mailLiveSyncRoot.js";
+import {
+  getExpectedProcessHeartbeatStatuses,
+  mailSyncProcessName,
+  PROCESS_HEARTBEAT_INTERVAL_MS,
+} from "../health/processHeartbeats.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -110,6 +115,55 @@ function failingSeedPool(target: Pool, failItemId: string): Pool {
     },
   });
   return proxy;
+}
+
+/**
+ * Wraps `pool.query` so a test can await every `process_heartbeats` UPSERT a heartbeat tick
+ * issued, rather than racing its own assertions against a write that `startProcessHeartbeat`
+ * never awaits (it fires the query and moves on). `rejectNextUpsert`, when set, makes the very
+ * next matching UPSERT reject instead of running, to exercise the `onError` -> `onLifecycleError`
+ * "heartbeat" phase.
+ */
+function heartbeatTrackingPool(target: Pool): {
+  pool: Pool;
+  drain: () => Promise<void>;
+  rejectNextUpsert: (err: Error) => void;
+} {
+  const pending: Promise<unknown>[] = [];
+  let rejectOnce: Error | null = null;
+  const proxy = new Proxy(target, {
+    get(t, prop, receiver) {
+      if (prop === "query") {
+        return (...args: unknown[]) => {
+          const [text] = args as [string];
+          if (typeof text === "string" && text.includes("INSERT INTO process_heartbeats")) {
+            if (rejectOnce) {
+              const err = rejectOnce;
+              rejectOnce = null;
+              const rejected = Promise.reject(err);
+              pending.push(rejected.catch(() => {}));
+              return rejected;
+            }
+            const result = (t.query as (...a: unknown[]) => Promise<unknown>)(...args);
+            pending.push(result.catch(() => {}));
+            return result;
+          }
+          return (t.query as (...a: unknown[]) => unknown)(...args);
+        };
+      }
+      return Reflect.get(t, prop, receiver);
+    },
+  });
+  return {
+    pool: proxy,
+    drain: async () => {
+      await Promise.all(pending);
+      pending.length = 0;
+    },
+    rejectNextUpsert: (err: Error) => {
+      rejectOnce = err;
+    },
+  };
 }
 
 describe("mail live-sync composition root (issue #195)", () => {
@@ -439,8 +493,10 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     await root.reconcileOnce();
 
     // A single page (three accounts, well under the 200-row page limit) costs exactly one
-    // transaction — one `pool.connect()` for the whole page's read-and-seed, not one per account.
-    expect(connectCount() - before).toBe(1);
+    // transaction for the whole page's read-and-seed, not one per account — plus one more
+    // `pool.connect()` per account that actually got hosted (A and C; B never enters the active
+    // set), since each one's first heartbeat tick fires its own `pool.query()` immediately.
+    expect(connectCount() - before).toBe(3);
 
     expect(errors).toEqual([{ mailboxItemId: b.id, phase: "discover" }]);
     // The failing account never enters the active set, so it never gets a hosted lifecycle...
@@ -456,6 +512,8 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     // The rolled-back savepoint means B's row was never actually inserted.
     expect(stateB).toBeNull();
     expect(stateC).not.toBeNull();
+
+    await root.stop();
   });
 
   it("resets the started guard when start()'s initial reconcile throws, so a later start() is not a permanent no-op", async () => {
@@ -487,6 +545,144 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     // no-op at the guard check instead of actually running discovery.
     await root.start();
     expect(byAccount.get(a.id)?.starts).toBe(1);
+
+    await root.stop();
+  });
+});
+
+describe("mail live-sync root: per-account process heartbeat (issue #707)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("beats a mailsync:<id> heartbeat once a lifecycle starts, reported present and not stale", async () => {
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const a = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }),
+    );
+
+    const { factory } = recordingFactory();
+    const { pool: trackingPool, drain } = heartbeatTrackingPool(pool);
+    const root = createMailLiveSyncRoot(trackingPool, mailboxesId, factory);
+
+    await root.reconcileOnce();
+    await drain();
+
+    const processName = mailSyncProcessName(a.id);
+    const { rows } = await pool.query<{ beat_at: Date }>("SELECT beat_at FROM process_heartbeats WHERE process = $1", [
+      processName,
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(Date.now() - rows[0]!.beat_at.getTime()).toBeLessThan(1000);
+
+    const statuses = await getExpectedProcessHeartbeatStatuses(pool);
+    const status = statuses.find((s) => s.process === processName);
+    expect(status?.present).toBe(true);
+    expect(status?.stale).toBe(false);
+
+    await root.stop();
+  });
+
+  it("stops beating once the account is deactivated, so beat_at is never rewritten again", async () => {
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const a = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }),
+    );
+
+    const { factory } = recordingFactory();
+    const { pool: trackingPool, drain } = heartbeatTrackingPool(pool);
+    const root = createMailLiveSyncRoot(trackingPool, mailboxesId, factory);
+
+    await root.reconcileOnce();
+    await drain();
+
+    const processName = mailSyncProcessName(a.id);
+    const beforeDelete = await pool.query<{ beat_at: Date }>(
+      "SELECT beat_at FROM process_heartbeats WHERE process = $1",
+      [processName],
+    );
+    const beatAtBeforeDelete = beforeDelete.rows[0]?.beat_at;
+    expect(beatAtBeforeDelete).toBeDefined();
+
+    await chokePoint.softDeleteItem(mailboxesId, a.id);
+
+    vi.useFakeTimers();
+    try {
+      // reconcileOnce() itself clears the heartbeat's interval synchronously via `stopHosted`;
+      // advancing well past the heartbeat interval afterwards proves nothing was scheduled that
+      // could still fire, not merely that we didn't wait long enough.
+      await root.reconcileOnce();
+      await vi.advanceTimersByTimeAsync(PROCESS_HEARTBEAT_INTERVAL_MS * 2);
+    } finally {
+      vi.useRealTimers();
+    }
+    await drain();
+
+    const afterWait = await pool.query<{ beat_at: Date }>("SELECT beat_at FROM process_heartbeats WHERE process = $1", [
+      processName,
+    ]);
+    expect(afterWait.rows[0]?.beat_at.toISOString()).toBe(beatAtBeforeDelete!.toISOString());
+
+    // The expected set no longer includes the deactivated account either, so nothing alerts on it.
+    const statuses = await getExpectedProcessHeartbeatStatuses(pool);
+    expect(statuses.some((s) => s.process === processName)).toBe(false);
+  });
+
+  it("starts no heartbeat for a lifecycle whose start() throws", async () => {
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const a = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }),
+    );
+
+    const errors: Array<{ mailboxItemId: string; phase: string }> = [];
+    const { factory } = recordingFactory(undefined, () => ({
+      start: async () => {
+        throw new Error("boom: simulated transport failure for account A");
+      },
+    }));
+    const { pool: trackingPool, drain } = heartbeatTrackingPool(pool);
+    const root = createMailLiveSyncRoot(trackingPool, mailboxesId, factory, {
+      onLifecycleError: (mailboxItemId, phase) => errors.push({ mailboxItemId, phase }),
+    });
+
+    await root.reconcileOnce();
+    await drain();
+
+    expect(errors).toEqual([{ mailboxItemId: a.id, phase: "start" }]);
+
+    const processName = mailSyncProcessName(a.id);
+    const { rows } = await pool.query("SELECT 1 FROM process_heartbeats WHERE process = $1", [processName]);
+    expect(rows).toHaveLength(0);
+
+    await root.stop();
+  });
+
+  it('reports a heartbeat UPSERT failure through onLifecycleError with phase "heartbeat"', async () => {
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const a = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }),
+    );
+
+    const { factory } = recordingFactory();
+    const { pool: trackingPool, drain, rejectNextUpsert } = heartbeatTrackingPool(pool);
+    rejectNextUpsert(new Error("boom: simulated heartbeat UPSERT failure"));
+
+    const errors: Array<{ mailboxItemId: string; phase: string }> = [];
+    const root = createMailLiveSyncRoot(trackingPool, mailboxesId, factory, {
+      onLifecycleError: (mailboxItemId, phase) => errors.push({ mailboxItemId, phase }),
+    });
+
+    await root.reconcileOnce();
+    await drain();
+
+    expect(errors).toEqual([{ mailboxItemId: a.id, phase: "heartbeat" }]);
 
     await root.stop();
   });

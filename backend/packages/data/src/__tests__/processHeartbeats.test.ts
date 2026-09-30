@@ -3,6 +3,10 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
+import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { withTransaction } from "../db/pool.js";
 import {
   FIXED_PROCESS_NAMES,
   getExpectedProcessHeartbeatStatuses,
@@ -14,11 +18,20 @@ import {
 } from "../health/processHeartbeats.js";
 
 let pool: Pool;
+let chokePoint: ChokePoint;
+
+async function databaseIdFor(moduleId: string): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
+  if (!rows[0]) throw new Error(`Database '${moduleId}' was not seeded`);
+  return rows[0].id;
+}
 
 describe("processHeartbeats", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
     await resetDatabase(pool);
+    await seedSystem(pool);
   });
 
   afterAll(async () => {
@@ -77,21 +90,31 @@ describe("processHeartbeats", () => {
     expect(transcribe?.stale).toBe(true);
   });
 
-  it("derives expected mail-sync rows from active mailboxes, and drops them once deactivated", async () => {
-    const mailboxItemId = randomUUID();
+  it("includes mailsync:<id> for a sync-state row whose Mailbox item is active, and excludes one whose item is soft-deleted", async () => {
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const active = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "Active", provider: "imap" } }),
+    );
+    const deleted = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "Deleted", provider: "imap" } }),
+    );
 
     let expected = await getExpectedProcessNames(pool);
     expect(expected).toEqual([...FIXED_PROCESS_NAMES]);
 
-    await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
+    await ensureMailAccountSyncState(pool, { itemId: active.id, syncMode: "imap" });
+    await ensureMailAccountSyncState(pool, { itemId: deleted.id, syncMode: "imap" });
     expected = await getExpectedProcessNames(pool);
-    expect(expected).toContain(mailSyncProcessName(mailboxItemId));
+    expect(expected).toContain(mailSyncProcessName(active.id));
+    expect(expected).toContain(mailSyncProcessName(deleted.id));
 
-    // "Active mailboxes" is read straight off `mail_account_sync_state` — a disconnected account
-    // has no row there at all, so removing it is exactly what deactivation looks like to this query.
-    await pool.query("DELETE FROM mail_account_sync_state WHERE item_id = $1", [mailboxItemId]);
+    // Soft-deleting the Mailbox item drops it from the expected set even though its
+    // `mail_account_sync_state` row is untouched — nothing deletes that row on a Mailbox's
+    // soft-delete, so the join against `items.deleted_at` is what actually derives deactivation.
+    await chokePoint.softDeleteItem(mailboxesId, deleted.id);
     expected = await getExpectedProcessNames(pool);
-    expect(expected).not.toContain(mailSyncProcessName(mailboxItemId));
+    expect(expected).toContain(mailSyncProcessName(active.id));
+    expect(expected).not.toContain(mailSyncProcessName(deleted.id));
   });
 
   it("startProcessHeartbeat ticks immediately and again every intervalMs, reporting the same started_at", async () => {
