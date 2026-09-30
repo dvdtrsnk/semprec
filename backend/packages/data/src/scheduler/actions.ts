@@ -3,6 +3,7 @@ import { AGENT_TASK_NAMES, CORE_TASK_NAMES, type AgentTaskName, type CoreTaskNam
 import { withTraceContext } from "@semprec/shared";
 import { createAgentRun, finishAgentRun, finishAgentRunWithErrorNotification } from "../agentRuns/agentRunsStore.js";
 import { withTransaction } from "../db/pool.js";
+import { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "../inbox/inboxTickKeys.js";
 import { parseItemRelationFilterConfig, passesItemRelationFilter } from "./itemRelationFilter.js";
 
 export interface ActionContext {
@@ -31,8 +32,15 @@ export function createActionRegistry(): ActionRegistry {
  */
 export type ActionQueueAffinity = Map<string, string>;
 
+/**
+ * This is the production routing table: every call site that does not pass an explicit
+ * `ActionQueueAffinity` gets this one, not an empty map. A caller only ever supplies its own map
+ * to override it (tests exercising the unaffinitized case, or a narrower affinity). Today it
+ * routes exactly `semprec.tick` to `semprec-tick`, closing the race where two ticks for the same
+ * Inbox item run concurrently and both create a Processing-proposal card.
+ */
 export function createActionQueueAffinity(): ActionQueueAffinity {
-  return new Map();
+  return new Map([[SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME]]);
 }
 
 export type RunAgentFn = (input: {

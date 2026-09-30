@@ -11,7 +11,7 @@ import {
   type AnyHeartbeatRule,
   type HeartbeatRuleKindRegistry,
 } from "./rule.js";
-import { resolveHeartbeatFireTaskName, type ActionQueueAffinity } from "./actions.js";
+import { createActionQueueAffinity, resolveHeartbeatFireTaskName, type ActionQueueAffinity } from "./actions.js";
 
 export interface HeartbeatRow {
   id: string;
@@ -305,7 +305,7 @@ export async function triggerOnItemEventHeartbeats(
   databaseId: string,
   event: "create" | "update" | "delete",
   itemId: string,
-  queueAffinity: ActionQueueAffinity = new Map(),
+  queueAffinity: ActionQueueAffinity = createActionQueueAffinity(),
 ): Promise<void> {
   // Served by project_heartbeats_on_item_event_idx (0052): its partial predicate must match this WHERE verbatim.
   const { rows } = await client.query<{ id: string; action_id: string }>(

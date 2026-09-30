@@ -37,7 +37,13 @@ export async function createTranscribeQueueRuntime(
   };
   const affinitySets = await resolveTaskAffinitySets(moduleRegistry);
   assertTaskListMatchesAffinity(taskList, affinitySets.transcribe, "transcribe");
-  const runner = await runWorker({ pgPool: pool, taskList, noHandleSignals: true });
+  const runner = await runWorker({
+    pgPool: pool,
+    taskList,
+    noHandleSignals: true,
+    // One ffmpeg/ASR pipeline per host: the TRANSCRIPTION_JOB handler is CPU- and disk-bound.
+    concurrency: 1,
+  });
   let stopped: Promise<void> | null = null;
   return { stop: () => (stopped ??= runner.stop()) };
 }

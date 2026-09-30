@@ -222,14 +222,35 @@ describe("Inbox item event dispatch (issue #103)", () => {
     expect(jobs[0]!.queue_name).toBe(SEMPREC_TICK_QUEUE_NAME);
   });
 
-  it("with no queue affinity supplied, the job runs unaffinitized (queue_name is null)", async () => {
+  it("with no queue affinity supplied, the job runs on the production semprec-tick queue", async () => {
     const inboxId = await databaseIdFor("inbox");
     const journalId = await databaseIdFor("journal");
     await createItem(inboxId, journalId);
 
     const jobs = await pendingTickJobs();
     expect(jobs).toHaveLength(1);
-    expect(jobs[0]!.queue_name).toBeNull();
+    expect(jobs[0]!.queue_name).toBe(SEMPREC_TICK_QUEUE_NAME);
+  });
+
+  it("createChokePoint(pool) with defaults routes update and delete ticks to semprec-tick", async () => {
+    const inboxId = await databaseIdFor("inbox");
+    const journalId = await databaseIdFor("journal");
+    const defaultChokePoint = createChokePoint(pool, undefined, viewTypeRegistry);
+    const item = await createItem(inboxId, journalId);
+
+    await defaultChokePoint.updateItem({
+      databaseId: inboxId,
+      itemId: item.id,
+      propertiesPatch: { text: "edited" },
+    });
+    const afterUpdate = await pendingTickJobs();
+    expect(afterUpdate).toHaveLength(2);
+    expect(afterUpdate.every((j) => j.queue_name === SEMPREC_TICK_QUEUE_NAME)).toBe(true);
+
+    await defaultChokePoint.softDeleteItem(inboxId, item.id);
+    const afterDelete = await pendingTickJobs();
+    expect(afterDelete).toHaveLength(3);
+    expect(afterDelete.every((j) => j.queue_name === SEMPREC_TICK_QUEUE_NAME)).toBe(true);
   });
 
   it("rejects a misconfigured heartbeat instead of silently no-op'ing", async () => {

@@ -27,10 +27,7 @@ const logger: Logger = createLogger("inbox-tick");
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export const SEMPREC_TICK_ACTION_ID = "semprec.tick";
-
-/** Graphile-worker queue affinity for `semprec.tick`: all Inbox ticks serialize against each other. */
-export const SEMPREC_TICK_QUEUE_NAME = "semprec-tick";
+export { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "./inboxTickKeys.js";
 
 /** `action_config` is a raw JSONB column (a module boundary) — validated, not just cast. */
 export const semprecTickActionConfigSchema = z.object({
