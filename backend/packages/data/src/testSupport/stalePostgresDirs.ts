@@ -45,7 +45,13 @@ export async function sweepStalePostgresDirs(options: SweepStalePostgresDirsOpti
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith(STALE_POSTGRES_DIR_PREFIX)) continue;
     const dir = path.join(tmpDir, entry.name);
-    const stats = await stat(dir);
+    let stats;
+    try {
+      stats = await stat(dir);
+    } catch {
+      // Another process may already have removed this directory; nothing to sweep.
+      continue;
+    }
     if (now() - stats.mtimeMs < maxAgeMs) continue;
     if (await hasLiveOwner(dir, isPidAlive)) continue;
     try {

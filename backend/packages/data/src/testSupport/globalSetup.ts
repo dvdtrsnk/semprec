@@ -134,8 +134,10 @@ export default async function setup(): Promise<() => Promise<void>> {
   }
 
   return async () => {
-    process.removeListener("SIGINT", onSignal);
-    process.removeListener("SIGTERM", onSignal);
+    if (onSignal) {
+      process.removeListener("SIGINT", onSignal);
+      process.removeListener("SIGTERM", onSignal);
+    }
     await pg.stop();
     await rm(databaseDir, { recursive: true, force: true });
   };
