@@ -271,13 +271,15 @@ describe("runAgentSession", () => {
     const queryMock = vi.spyOn(queryable, "query").mockImplementation((...args: unknown[]) => {
       const [text, params] = args as [unknown, unknown[] | undefined];
       const sql = String(text);
-      const status = params?.[2] ? (() => {
-        try {
-          return JSON.parse(params[2] as string).status;
-        } catch {
-          return undefined;
-        }
-      })() : undefined;
+      const status = params?.[2]
+        ? (() => {
+            try {
+              return JSON.parse(params[2] as string).status;
+            } catch {
+              return undefined;
+            }
+          })()
+        : undefined;
       if (sql.includes("INSERT INTO agent_run_events") && params?.[1] === "run_status" && status === "error") {
         return Promise.reject(new Error("events table unavailable"));
       }
