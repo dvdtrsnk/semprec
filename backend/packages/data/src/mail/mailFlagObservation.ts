@@ -1,7 +1,6 @@
 import type { PoolClient } from "pg";
 import { NotFoundError } from "../errors.js";
-import { lockItemById } from "../chokePoint/itemsStore.js";
-import { convergeObservedEmailFlagsWithClient } from "../chokePoint/itemWrites.js";
+import { convergeObservedEmailFlagsWithClient, lockItemForObservedMailFlags } from "../chokePoint/itemWrites.js";
 import { recordObservedMailMessageFlags, type MailMessageFlagKey } from "./mailMessageFlagSyncStore.js";
 import { FLAGGED_PROPERTY_KEY, READ_PROPERTY_KEY, messageFlagProperties } from "./messageFlags.js";
 
@@ -37,7 +36,7 @@ export async function applyObservedMailMessageFlags(
   client: PoolClient,
   input: ApplyObservedMailMessageFlagsInput,
 ): Promise<void> {
-  const item = await lockItemById(client, input.emailsDatabaseId, input.messageItemId);
+  const item = await lockItemForObservedMailFlags(client, input.emailsDatabaseId, input.messageItemId);
   if (!item) throw new NotFoundError(`Emails item ${input.messageItemId} not found`);
 
   const { rows } = await client.query<{
