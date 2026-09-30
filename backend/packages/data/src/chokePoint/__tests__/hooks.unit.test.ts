@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { PoolClient } from "pg";
-import { registerItemUpdateHook, runItemUpdateHooks, type ItemUpdateHookContext } from "../hooks.js";
+import { clearHooksForTests, registerItemUpdateHook, runItemUpdateHooks, type ItemUpdateHookContext } from "../hooks.js";
 
 const CONTEXT: ItemUpdateHookContext = {
   client: {} as PoolClient,
@@ -20,6 +20,10 @@ const CONTEXT: ItemUpdateHookContext = {
 };
 
 describe("chokePoint/hooks item-update registry", () => {
+  beforeEach(() => {
+    clearHooksForTests();
+  });
+
   it("runs a hook registered twice only once", async () => {
     let calls = 0;
     const hook = async () => {

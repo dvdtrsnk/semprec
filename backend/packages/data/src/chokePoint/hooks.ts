@@ -51,3 +51,12 @@ export async function runRelationEdgeWriteHooks(context: RelationEdgeWriteHookCo
     await hook(context);
   }
 }
+
+/** Test-only reset of both registries — guarded so it cannot run against a real process's hooks. */
+export function clearHooksForTests(): void {
+  if (process.env.NODE_ENV !== "test") {
+    throw new Error("clearHooksForTests() must only be called in tests");
+  }
+  itemUpdateHooks.clear();
+  relationEdgeWriteHooks.clear();
+}
