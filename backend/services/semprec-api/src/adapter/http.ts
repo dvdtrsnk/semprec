@@ -24,7 +24,16 @@ export async function readRawBody(req: IncomingMessage, options: { maxBytes: num
   return Buffer.concat(chunks);
 }
 
-/** `readRawBody`, then `{}` for an empty body, else `JSON.parse`; a parse failure throws `ValidationError` rather than crashing the listener. */
+/**
+ * `readRawBody`, then `{}` for an empty body, else `JSON.parse`; a parse failure throws
+ * `ValidationError` rather than crashing the listener. Every bespoke handler that calls this
+ * already lets a body-shape `ValidationError` (missing/wrong-typed field, etc.) fall through to
+ * its outer `catch (err instanceof ChokePointError)` and answer with `toPublicErrorBody`'s
+ * `{ error, code, details }` envelope — a malformed-JSON body takes that same path deliberately,
+ * so "the JSON didn't parse" reads as one more body-validation failure alongside the rest instead
+ * of reverting to the flat `{ error }` shape a bespoke per-listener `JsonParseError` catch used to
+ * produce. Status stays 400 either way.
+ */
 export async function readJsonBody(req: IncomingMessage, options: { maxBytes: number }): Promise<unknown> {
   const raw = await readRawBody(req, options);
   if (raw.length === 0) return {};
