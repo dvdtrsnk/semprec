@@ -8,6 +8,7 @@ readonly SYSTEMD_UNIT_DIR=/etc/systemd/system
 readonly JOURNALD_CONFIG_DIR=/etc/systemd/journald.conf.d
 readonly CADDY_CONFIG_DIR=/etc/caddy
 readonly CADDY_UNIT_DROPIN_DIR=/etc/systemd/system/caddy.service.d
+readonly NFTABLES_CONFIG=/etc/nftables.conf
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly APT_KEYRING_DIR=/etc/apt/keyrings
 readonly APT_SOURCES_DIR=/etc/apt/sources.list.d
@@ -94,6 +95,7 @@ install_host_packages() {
     docker-buildx-plugin \
     docker-compose-plugin \
     caddy \
+    nftables \
     restic \
     ffmpeg \
     hunspell-cs
@@ -274,6 +276,16 @@ render_caddy_environment() {
   systemctl reload-or-restart caddy
 }
 
+install_nftables_config() {
+  install -o root -g root -m 0644 "$SCRIPT_DIR/nftables.conf" "$NFTABLES_CONFIG"
+}
+
+apply_nftables() {
+  nft -c -f "$NFTABLES_CONFIG"
+  systemctl enable nftables
+  systemctl reload-or-restart nftables
+}
+
 main() {
   require_root
   require_supported_distribution
@@ -290,6 +302,8 @@ main() {
   enable_timers
   install_caddy_config
   render_caddy_environment
+  install_nftables_config
+  apply_nftables
 }
 
 main "$@"
