@@ -56,10 +56,7 @@ export interface CreateDriftCheckActionOptions {
  */
 export function createDriftCheckAction(pool: Pool, options: CreateDriftCheckActionOptions = {}): ActionHandler {
   return async (_actionConfig: Record<string, unknown>, context: ActionContext) => {
-    // The manifest generation and the orphan check must see one schema snapshot: reading
-    // the manifest outside this transaction would let a schema change land between the
-    // two reads, so the manifest and the orphan check would describe different states.
-    // The orphan check and the notification it produces must also be atomic: without a
+    // The orphan check and the notification it produces must be atomic: without a
     // transaction, a crash (or the INSERT throwing) between the SELECT and the INSERT
     // would drop the drift report for this cycle with no trace it was ever detected.
     await withTransaction(pool, async (client) => {

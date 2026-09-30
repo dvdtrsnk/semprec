@@ -100,6 +100,12 @@ export interface ModuleWorkerInstanceReconciler {
    * `supervisor.stop` for every id no longer desired. Comparing by id membership (not by list
    * position) is what makes back-to-back calls with an unchanged desired set issue no further
    * start/stop calls, and makes the emitted intents independent of iteration order.
+   *
+   * Passes on one reconciler are serialized: a call made while an earlier pass is still running
+   * starts its own pass only after that earlier pass settles, fulfilled or rejected, so two
+   * overlapping calls can never both see the same id as not-yet-hosted and start it twice. Each
+   * call's returned promise settles with the outcome of that call's own pass, not of whichever
+   * pass happened to run before it.
    */
   reconcileOnce(): Promise<void>;
   /** The instance ids this reconciler currently believes are hosted, for tests/introspection. */
@@ -112,22 +118,32 @@ export function createModuleWorkerInstanceReconciler(
   supervisor: WorkerSupervisorPort,
 ): ModuleWorkerInstanceReconciler {
   const hosted = new Map<string, DesiredWorkerInstance>();
+  let queue: Promise<void> = Promise.resolve();
+
+  async function runOnce(): Promise<void> {
+    const desired = await deriveDesiredWorkerInstances(moduleRegistry, getActiveRowIds);
+
+    for (const [id, instance] of desired) {
+      if (hosted.has(id)) continue;
+      await supervisor.start({ ...instance, id });
+      hosted.set(id, instance);
+    }
+
+    for (const [id, instance] of [...hosted]) {
+      if (desired.has(id)) continue;
+      await supervisor.stop({ ...instance, id });
+      hosted.delete(id);
+    }
+  }
 
   return {
-    async reconcileOnce() {
-      const desired = await deriveDesiredWorkerInstances(moduleRegistry, getActiveRowIds);
-
-      for (const [id, instance] of desired) {
-        if (hosted.has(id)) continue;
-        await supervisor.start({ ...instance, id });
-        hosted.set(id, instance);
-      }
-
-      for (const [id, instance] of [...hosted]) {
-        if (desired.has(id)) continue;
-        await supervisor.stop({ ...instance, id });
-        hosted.delete(id);
-      }
+    reconcileOnce() {
+      const pass = queue.then(runOnce);
+      queue = pass.then(
+        () => undefined,
+        () => undefined,
+      );
+      return pass;
     },
     getHostedInstanceIds() {
       return new Set(hosted.keys());
