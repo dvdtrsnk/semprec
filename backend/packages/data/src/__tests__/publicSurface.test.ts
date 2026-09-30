@@ -218,6 +218,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "enqueuePropertyTypeMigration",
   "enqueueRollupBackfill",
   "enqueueRollupRecompute",
+  "enqueueTranscriptionJob",
   "ensureItemAutomation",
   "executeMcpInvocation",
   "failGatewayCall",

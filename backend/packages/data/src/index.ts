@@ -136,6 +136,7 @@ export * from "./observability/systemHealthReport.js";
 export { seedSystem } from "./seed/seedSystem.js";
 export * from "./seed/tenDatabaseKeys.js";
 export {
+  enqueueTranscriptionJob,
   transcriptionJobPayloadSchema,
   transcriptionSourceLink,
   TRANSCRIPTION_OWNER_PROCESS,
