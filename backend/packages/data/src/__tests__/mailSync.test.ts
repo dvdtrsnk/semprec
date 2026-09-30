@@ -26,6 +26,7 @@ import {
   upsertMailMessageMeta,
 } from "../mail/mailMessageMetaStore.js";
 import { resolveDeliveredToAddress } from "../mail/deliveredTo.js";
+import { applyObservedMailMessageFlags } from "../mail/mailFlagObservation.js";
 import { isDeliveryStatusReport, parseContentTypeHeader } from "../mail/dsn.js";
 import {
   enqueueMailLegacyEmailMigration,
@@ -36,7 +37,7 @@ import {
 import type { ClassifiedAttachment } from "../mail/attachments.js";
 import { sanitizeMailHtml } from "../mail/htmlSanitize.js";
 import { parseMailSearchQuery, reindexItemSearch, searchItems } from "../mail/search.js";
-import { ValidationError } from "../errors.js";
+import { NotFoundError, ValidationError } from "../errors.js";
 import { storeCredential, getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import {
   reconcileImapAccount,
@@ -4209,6 +4210,98 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
 
     expect((await chokePoint.getItem(emailsId, first.itemId))?.properties.read).toBe(true);
     expect(await flagStateRowFor(first.itemId, "read")).toEqual({ desired_state: true, current_state: false });
+  });
+
+  describe("applyObservedMailMessageFlags, called directly", () => {
+    it("throws NotFoundError when the item does not exist", async () => {
+      const { params } = await setUpFolder();
+      await expect(
+        withTransaction(pool, (client) =>
+          applyObservedMailMessageFlags(client, {
+            emailsDatabaseId: params.emailsDatabaseId,
+            messageItemId: randomUUID(),
+            flags: [],
+          }),
+        ),
+      ).rejects.toThrow(NotFoundError);
+    });
+
+    it("patches the item and creates a converged sync-state row when none exists yet", async () => {
+      const { emailsId, params } = await setUpFolder();
+      const ingestArgs = {
+        emailsDatabaseId: params.emailsDatabaseId,
+        filesDatabaseId: params.filesDatabaseId,
+        folderRelationPropertyId: params.folderRelationPropertyId,
+        attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
+        folderItemId: params.folderItemId,
+        mailboxItemId: params.mailboxItemId,
+        folderUid: 1,
+        messageId: "<no-rows@x>",
+        envelope: {},
+        attachments: [],
+        storage: noopStorage,
+        storageKeyPrefix: "test",
+        // No `flags`: ingestEmailMessage's created branch only records observed flags when the
+        // caller passes them, so this message lands with no mail_message_flag_sync_state rows
+        // at all — the no-prior-row branch applyObservedMailMessageFlags has to handle itself.
+      };
+      const { itemId } = await withTransaction(pool, (client) => ingestEmailMessage(client, ingestArgs));
+      expect(await flagStateRowFor(itemId, "read")).toBeUndefined();
+
+      await withTransaction(pool, (client) =>
+        applyObservedMailMessageFlags(client, {
+          emailsDatabaseId: params.emailsDatabaseId,
+          messageItemId: itemId,
+          flags: [IMAP_SEEN_FLAG],
+        }),
+      );
+
+      expect((await chokePoint.getItem(emailsId, itemId))?.properties.read).toBe(true);
+      expect(await flagStateRowFor(itemId, "read")).toEqual({ desired_state: true, current_state: true });
+    });
+
+    it("leaves a pending property untouched while converging a different, non-pending property in the same call", async () => {
+      const { emailsId, params } = await setUpFolder();
+      const ingestArgs = {
+        emailsDatabaseId: params.emailsDatabaseId,
+        filesDatabaseId: params.filesDatabaseId,
+        folderRelationPropertyId: params.folderRelationPropertyId,
+        attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
+        folderItemId: params.folderItemId,
+        mailboxItemId: params.mailboxItemId,
+        folderUid: 1,
+        messageId: "<pending-plus-converge@x>",
+        envelope: {},
+        attachments: [],
+        storage: noopStorage,
+        storageKeyPrefix: "test",
+        flags: [], // unread, unflagged — seeds converged sync-state rows for both properties
+      };
+      const { itemId } = await withTransaction(pool, (client) => ingestEmailMessage(client, ingestArgs));
+
+      // Marked read but never confirmed by write-back — desired true, current still false.
+      await chokePoint.updateItem({ databaseId: emailsId, itemId, propertiesPatch: { read: true } });
+      expect(await flagStateRowFor(itemId, "read")).toEqual({ desired_state: true, current_state: false });
+      expect(await flagStateRowFor(itemId, "flagged")).toEqual({ desired_state: false, current_state: false });
+
+      await withTransaction(pool, (client) =>
+        applyObservedMailMessageFlags(client, {
+          emailsDatabaseId: params.emailsDatabaseId,
+          messageItemId: itemId,
+          flags: [IMAP_FLAGGED_FLAG], // still unread (the old value) but now flagged
+        }),
+      );
+
+      const item = await chokePoint.getItem(emailsId, itemId);
+      // The pending `read` write survives untouched...
+      expect(item?.properties.read).toBe(true);
+      expect(await flagStateRowFor(itemId, "read")).toEqual({ desired_state: true, current_state: false });
+      // ...while `flagged`, which had no pending write, converges to the observation — proof
+      // recordObservedMailMessageFlags ran for both properties in this one call, not just the
+      // one that happened to change the item.
+      expect(item?.properties.flagged).toBe(true);
+      expect(await flagStateRowFor(itemId, "flagged")).toEqual({ desired_state: true, current_state: true });
+    });
   });
 
   it("(d) fetchFlagsChangedSince is skipped on the initial sync, called with null without CONDSTORE, and with the stored highestmodseq with it", async () => {
