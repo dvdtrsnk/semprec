@@ -25,13 +25,13 @@ function readPrivateKey(privateKeyPath: string): string {
 }
 
 /**
- * Provisioned by issue #175: `APNS_PRIVATE_KEY_PATH` points at the root:root 0600
- * `apns-key.p8` file distributed alongside `/opt/semprec/shared/.env`, never at inline PEM —
- * a multi-line key has no safe representation in a systemd `EnvironmentFile=`/Docker
- * `env_file:` line, and shipping it as its own file keeps it out of `.env` and out of any
- * process log that might dump environment variables. Read lazily, only when a send is
- * actually attempted, and cached thereafter — this is called on every `sendApnsNotification`,
- * and the file never changes without a process restart.
+ * Provisioned by issue #175: `APNS_PRIVATE_KEY_PATH` points at the `apns-key.p8` file
+ * distributed alongside `/opt/semprec/shared/.env`, provisioned readable by the service user by
+ * `deploy/provision.sh`, never at inline PEM — a multi-line key has no safe representation in a
+ * systemd `EnvironmentFile=`/Docker `env_file:` line, and shipping it as its own file keeps it
+ * out of `.env` and out of any process log that might dump environment variables. Read lazily,
+ * only when a send is actually attempted, and cached thereafter — this is called on every
+ * `sendApnsNotification`, and the file never changes without a process restart.
  */
 export function getApnsConfigFromEnv(): ApnsConfig {
   const teamId = process.env.APNS_TEAM_ID;
@@ -184,13 +184,22 @@ function postApnsRequest(
  * `notification_id` in the payload, and the shared, cached provider JWT above. A 410 or
  * `BadDeviceToken` means this exact device token is dead — the caller pairs that with #150's
  * `revokePushSubscriptionByProviderInvalidation`. Everything else (network failure, other 4xx/5xx)
- * is transient and left for the job's own retry.
+ * is transient and left for the job's own retry. Missing `APNS_*` env vars or an unreadable key
+ * file (issue #703) resolve `not-configured` instead of throwing — a server-side gap, not a
+ * verdict on this device token.
  */
 export async function sendApnsNotification(
   target: ApnsTarget,
   payload: NotificationPushPayload,
-  config: ApnsConfig = getApnsConfigFromEnv(),
+  config?: ApnsConfig,
 ): Promise<PushSendResult> {
+  let resolvedConfig: ApnsConfig;
+  try {
+    resolvedConfig = config ?? getApnsConfigFromEnv();
+  } catch (error) {
+    return { outcome: "not-configured", reason: error instanceof Error ? error.message : String(error) };
+  }
+
   const body = JSON.stringify({
     // `notifications` (migration 0030) has no separate body/description column — `title` is the
     // only user-facing text there is, so the alert carries it as `title` alone rather than
@@ -205,8 +214,8 @@ export async function sendApnsNotification(
       APNS_HOSTS[target.apnsEnvironment],
       target.deviceToken,
       {
-        authorization: `bearer ${getProviderJwt(config)}`,
-        "apns-topic": config.topic,
+        authorization: `bearer ${getProviderJwt(resolvedConfig)}`,
+        "apns-topic": resolvedConfig.topic,
         "content-type": "application/json",
       },
       body,

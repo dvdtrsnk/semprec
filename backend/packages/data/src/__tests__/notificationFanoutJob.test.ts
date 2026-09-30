@@ -259,6 +259,59 @@ describe("notificationFanout job (issue #151)", () => {
     expect(sendWebPush).not.toHaveBeenCalled(); // both pairs already resolved (one delivered, one permanently failed)
   });
 
+  it("marks a not-configured registration permanently failed without revoking it, and still delivers the other one (issue #703)", async () => {
+    const userId = await createTestUser();
+    const notConfigured = await upsertWebPushSubscription(pool, {
+      userId,
+      sessionId: null,
+      endpoint: "https://push.example/web-not-configured",
+      p256dh: "p256dh-key",
+      authSecret: "auth-secret",
+    });
+    const configured = await upsertApnsSubscription(pool, {
+      userId,
+      sessionId: null,
+      platform: "ios",
+      deviceToken: "device-token-configured",
+      apnsEnvironment: "sandbox",
+    });
+    const notificationId = await writeTestNotification(userId, "hb-fanout-not-configured");
+
+    const sendWebPush = vi.fn().mockResolvedValue({
+      outcome: "not-configured",
+      reason: "Web Push delivery requires VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_SUBJECT to be set",
+    });
+    const sendApns = vi.fn().mockResolvedValue({ outcome: "delivered" });
+    const senders: PushSenders = { sendWebPush, sendApns };
+
+    await expect(handleNotificationFanoutTask(pool, { notificationId }, senders)).resolves.toBeUndefined();
+
+    const { rows } = await pool.query<{
+      push_subscription_id: string;
+      failed_permanently_at: Date | null;
+      delivered_at: Date | null;
+      last_error: string | null;
+    }>(
+      `SELECT push_subscription_id, failed_permanently_at, delivered_at, last_error FROM push_deliveries WHERE notification_id = $1`,
+      [notificationId],
+    );
+    const byId = new Map(rows.map((row) => [row.push_subscription_id, row]));
+
+    const notConfiguredRow = byId.get(notConfigured.id)!;
+    expect(notConfiguredRow.failed_permanently_at).not.toBeNull();
+    expect(notConfiguredRow.delivered_at).toBeNull();
+    expect(notConfiguredRow.last_error).toMatch(/VAPID_PUBLIC_KEY/);
+
+    const configuredRow = byId.get(configured.id)!;
+    expect(configuredRow.delivered_at).not.toBeNull();
+
+    const { rows: subscriptionRows } = await pool.query<{ id: string; revoked_at: Date | null }>(
+      `SELECT id, revoked_at FROM push_subscriptions WHERE id = $1`,
+      [notConfigured.id],
+    );
+    expect(subscriptionRows[0]!.revoked_at).toBeNull();
+  });
+
   it("is a no-op when the notification id no longer resolves to a row", async () => {
     const sendWebPush = vi.fn();
     const sendApns = vi.fn();
