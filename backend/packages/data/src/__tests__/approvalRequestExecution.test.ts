@@ -95,8 +95,8 @@ describe("approval request decide+execute (issue #131)", () => {
   it("executes the deferred call once a pending request is approved, recording the outcome", async () => {
     const contractServer = startStdioContractServer([SEARCH_TOOL]);
     servers.push(contractServer);
-    const { server, registration } = await createGrantedTool(contractServer);
-    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const { server, registration, projectItemId } = await createGrantedTool(contractServer);
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", projectItemId });
     const request = await createPendingApprovalRequest(pool, {
       agentRunId: run.id,
       toolName: SEARCH_TOOL.name,
@@ -161,8 +161,8 @@ describe("approval request decide+execute (issue #131)", () => {
   it("a retried decision does not create a second decision or a second execution", async () => {
     const contractServer = startStdioContractServer([SEARCH_TOOL]);
     servers.push(contractServer);
-    const { server, registration } = await createGrantedTool(contractServer);
-    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+    const { server, registration, projectItemId } = await createGrantedTool(contractServer);
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", projectItemId });
     const request = await createPendingApprovalRequest(pool, {
       agentRunId: run.id,
       toolName: SEARCH_TOOL.name,
@@ -303,5 +303,98 @@ describe("approval request decide+execute (issue #131)", () => {
     const unchanged = await getApprovalRequest(pool, request.id);
     expect(unchanged!.executionResult).toBe(settled!.executionResult);
     expect(unchanged!.executionStatus).toBe("conflict");
+  });
+
+  const NO_LONGER_AVAILABLE_MESSAGE =
+    "This MCP tool is no longer available to the requesting project: its grant was revoked, or its registration or server is inactive.";
+
+  async function approveAndSetUp() {
+    const contractServer = startStdioContractServer([SEARCH_TOOL]);
+    servers.push(contractServer);
+    const { server, registration, projectItemId } = await createGrantedTool(contractServer);
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", projectItemId });
+    const request = await createPendingApprovalRequest(pool, {
+      agentRunId: run.id,
+      toolName: SEARCH_TOOL.name,
+      riskClass: "unclassified",
+      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    });
+    const userId = await createUser();
+
+    await withTransaction(pool, (client) =>
+      decideAndEnqueueApprovalRequest(client, {
+        approvalRequestId: request.id,
+        decision: "approved",
+        decidedByUserId: userId,
+      }),
+    );
+
+    return { contractServer, server, registration, projectItemId, request };
+  }
+
+  it("records a conflict and calls no tool when the project's grant was revoked after approval", async () => {
+    const { contractServer, registration, projectItemId, request } = await approveAndSetUp();
+
+    await withTransaction(pool, (client) =>
+      setProjectMcpGrantForAgentPage(client, {
+        projectItemId,
+        mcpToolRegistrationId: registration.id,
+        granted: false,
+      }),
+    );
+
+    await drainQueue();
+
+    expect(contractServer.getLastToolCall()).toBeNull();
+    const finished = await getApprovalRequest(pool, request.id);
+    expect(finished!.executionStatus).toBe("conflict");
+    expect(finished!.executionError).toBe(true);
+    expect(finished!.executionResult).toBe(NO_LONGER_AVAILABLE_MESSAGE);
+  });
+
+  it("records a conflict and calls no tool when the tool registration was deactivated after approval", async () => {
+    const { contractServer, registration, request } = await approveAndSetUp();
+
+    await pool.query(`UPDATE mcp_tool_registrations SET active = false WHERE id = $1`, [registration.id]);
+
+    await drainQueue();
+
+    expect(contractServer.getLastToolCall()).toBeNull();
+    const finished = await getApprovalRequest(pool, request.id);
+    expect(finished!.executionStatus).toBe("conflict");
+    expect(finished!.executionError).toBe(true);
+    expect(finished!.executionResult).toBe(NO_LONGER_AVAILABLE_MESSAGE);
+  });
+
+  it("records a conflict and calls no tool when the server item was set inactive after approval", async () => {
+    const { contractServer, server, request } = await approveAndSetUp();
+
+    await pool.query(`UPDATE items SET properties = jsonb_set(properties, '{active}', 'false') WHERE id = $1`, [
+      server.id,
+    ]);
+
+    await drainQueue();
+
+    expect(contractServer.getLastToolCall()).toBeNull();
+    const finished = await getApprovalRequest(pool, request.id);
+    expect(finished!.executionStatus).toBe("conflict");
+    expect(finished!.executionError).toBe(true);
+    expect(finished!.executionResult).toBe(NO_LONGER_AVAILABLE_MESSAGE);
+  });
+
+  it("executes normally when grant, registration and server are unchanged at execution time", async () => {
+    const { contractServer, request } = await approveAndSetUp();
+
+    await drainQueue();
+
+    expect(contractServer.getLastToolCall()).toEqual({
+      name: "search_web",
+      arguments: { query: "semprec" },
+      meta: { idempotencyKey: request.id },
+    });
+    const finished = await getApprovalRequest(pool, request.id);
+    expect(finished!.executionStatus).toBe("succeeded");
+    expect(finished!.executionError).toBe(false);
   });
 });

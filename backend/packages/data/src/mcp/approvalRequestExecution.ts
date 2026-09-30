@@ -1,7 +1,7 @@
-import type { Pool, PoolClient } from "pg";
+import type { Pool } from "pg";
 import { createLogger } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
-import type { ItemRow } from "../types.js";
+import { getAgentRun } from "../agentRuns/agentRunsStore.js";
 import {
   claimApprovalRequestExecution,
   getApprovalRequest,
@@ -12,6 +12,7 @@ import {
   type ApprovalRequestOutcome,
   type GenericOperationApprovalRequestPayload,
 } from "./approvalRequestsStore.js";
+import { resolveGrantedMcpTool } from "./mcpToolInvocation.js";
 import { executeMcpInvocation } from "./mcpToolExecution.js";
 
 const logger = createLogger("mcp");
@@ -38,14 +39,6 @@ export type GenericOperationApprovalReplay = (
   pool: Pool,
   request: ApprovalRequest & { payload: GenericOperationApprovalRequestPayload },
 ) => Promise<ApprovalRequestOutcome>;
-
-async function loadServerItem(client: PoolClient, itemId: string): Promise<Pick<ItemRow, "id" | "properties"> | null> {
-  const { rows } = await client.query<Pick<ItemRow, "id" | "properties">>(
-    `SELECT id, properties FROM items WHERE id = $1 AND deleted_at IS NULL`,
-    [itemId],
-  );
-  return rows[0] ?? null;
-}
 
 export interface HandleApprovalRequestExecuteInput {
   approvalRequestId: string;
@@ -79,6 +72,16 @@ export interface HandleApprovalRequestExecuteInput {
  * `recordApprovalRequestOutcome` records the result — guarded on `execution_status = 'queued'`, so
  * if `settleStaleApprovalRequestClaim` already terminalized this same row from a concurrent stale
  * sweep, the outcome write finds it no longer `queued` and is discarded (logged, not thrown).
+ *
+ * The approval snapshot (`payload`) fixes *what* is called — args, tool, server — never *whether*
+ * it may still be called: that is re-derived from current state at execution time (issue #694),
+ * after the claim and before any connection is opened, via the same three-way check
+ * `resolveGrantedMcpTool` performs at request time (grant still `granted`, registration still
+ * `active`, server item still `active`) — re-run here because a human can approve hours after the
+ * request, long enough for any of the three to have changed. A missing run, a run with no
+ * `projectItemId`, no resolved target, or a resolved target whose server or tool no longer matches
+ * the snapshotted payload are all treated identically: recorded as a `conflict` outcome, no
+ * connection opened.
  */
 export async function handleApprovalRequestExecuteTask(
   pool: Pool,
@@ -138,12 +141,23 @@ export async function handleApprovalRequestExecuteTask(
   if (isGenericOperationApprovalRequestPayload(claimed.payload)) return;
 
   const payload = claimed.payload;
-  const serverItem = await withTransaction(pool, (client) => loadServerItem(client, payload.mcpServerItemId));
-  const outcome: ApprovalRequestOutcome = serverItem
-    ? await executeMcpInvocation(pool, { serverItem, toolName: claimed.toolName }, payload.args, {
-        idempotencyKey: claimed.id,
-      })
-    : { error: true, result: "The MCP server for this approval request no longer exists." };
+  const target = await withTransaction(pool, async (client) => {
+    const run = await getAgentRun(client, claimed.agentRunId);
+    if (!run || !run.projectItemId) return null;
+    return resolveGrantedMcpTool(client, run.projectItemId, payload.mcpToolRegistrationId);
+  });
+
+  const noLongerAvailableOutcome: ApprovalRequestOutcome = {
+    error: true,
+    result:
+      "This MCP tool is no longer available to the requesting project: its grant was revoked, or its registration or server is inactive.",
+  };
+  const outcome: ApprovalRequestOutcome =
+    target && target.mcpServerItemId === payload.mcpServerItemId && target.toolName === claimed.toolName
+      ? await executeMcpInvocation(pool, { serverItem: target.serverItem, toolName: claimed.toolName }, payload.args, {
+          idempotencyKey: claimed.id,
+        })
+      : noLongerAvailableOutcome;
 
   const recorded = await withTransaction(pool, (client) => recordApprovalRequestOutcome(client, claimed.id, outcome));
   if (!recorded) {
