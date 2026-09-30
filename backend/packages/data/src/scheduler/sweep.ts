@@ -191,6 +191,7 @@ function createHeartbeatFireTaskForAffinity(
     }
     if (!heartbeat) return; // heartbeat was deleted after this job was enqueued
 
+    const isFinalAttempt = helpers.job.attempts >= helpers.job.max_attempts;
     try {
       assertActionAffinity(heartbeat.actionId, expectedAffinity);
       const handler = registry.get(heartbeat.actionId);
@@ -200,11 +201,11 @@ function createHeartbeatFireTaskForAffinity(
         projectItemId: heartbeat.projectItemId,
         itemId: payload.itemId,
         triggeredByRunId: payload.triggeredByRunId,
+        isFinalAttempt,
       });
       await recordHeartbeatSuccess(pool, heartbeat.id);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const isFinalAttempt = helpers.job.attempts >= helpers.job.max_attempts;
       if (isFinalAttempt) {
         await withTransaction(pool, async (client) => {
           await recordHeartbeatFailure(client, heartbeat.id, message);
@@ -299,7 +300,11 @@ async function runScheduledOccurrenceFire(
   }
 
   try {
-    await handler(heartbeat.actionConfig, { heartbeatId: heartbeat.id, projectItemId: heartbeat.projectItemId });
+    await handler(heartbeat.actionConfig, {
+      heartbeatId: heartbeat.id,
+      projectItemId: heartbeat.projectItemId,
+      isFinalAttempt,
+    });
     await withTransaction(pool, async (client) => {
       await recordHeartbeatSuccess(client, heartbeat.id);
       await succeedHeartbeatOccurrence(client, occurrenceId);
