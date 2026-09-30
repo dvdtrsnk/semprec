@@ -17,7 +17,7 @@ import { SEMPREC_READ_ONLY_MODULE_IDS, PROCESSING_PROPOSALS_MODULE_ID } from "..
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { assertValidMcpServerProposalProperties } from "../mcp/mcpServerProposal.js";
 import { ValidationError } from "../errors.js";
-import type { ItemRow } from "../types.js";
+import type { DatabaseRow, ItemRow } from "../types.js";
 
 const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = {
   ownerProcess: PROCESSING_PROPOSALS_MODULE_ID,
@@ -277,9 +277,14 @@ export function appendHistoryEntry(
  * never against the generic choke-point schema engine's write path, since a proposal is
  * never itself written to the destination (`computeProposal`'s "no target write" guarantee,
  * carried over from issue #223). Throws `ValidationError` for a wrong `entityKind`, an
- * unknown/malformed target, or properties the destination could not accept.
+ * unknown/malformed target, or properties the destination could not accept. Resolves to the
+ * target database row for a valid `'database'` envelope (issue #735: so a caller checking
+ * `ownerModuleId` afterward reuses this fetch instead of re-querying it), `null` otherwise.
  */
-export async function assertValidProposalEnvelope(client: PoolClient, envelope: ProposalEnvelope): Promise<void> {
+export async function assertValidProposalEnvelope(
+  client: PoolClient,
+  envelope: ProposalEnvelope,
+): Promise<DatabaseRow | null> {
   if (
     envelope.entityKind !== "pageContent" &&
     envelope.entityKind !== "database" &&
@@ -341,7 +346,7 @@ export async function assertValidProposalEnvelope(client: PoolClient, envelope: 
         throw new ValidationError(`Proposal properties cannot set system-owned property '${key}'`, { field: key });
       }
     }
-    return;
+    return targetDatabase;
   }
 
   if (envelope.entityKind === "relation") {
@@ -359,7 +364,7 @@ export async function assertValidProposalEnvelope(client: PoolClient, envelope: 
         { field: "properties" },
       );
     }
-    return;
+    return null;
   }
 
   if (!UUID_RE.test(envelope.target)) {
@@ -391,6 +396,7 @@ export async function assertValidProposalEnvelope(client: PoolClient, envelope: 
       field: "properties",
     });
   }
+  return null;
 }
 
 /** Links a freshly created Processing proposal back to its source Inbox item via `sourceInbox`. */

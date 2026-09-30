@@ -20,7 +20,7 @@ import { EVENTS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys
 import { TRANSCRIPT_SPEAKERS_PROPERTY_KEY } from "../transcription/transcriptionSpeakerEdges.js";
 import { storeCredential, type CredentialType } from "../credentials/externalCredentialsStore.js";
 import { NotFoundError, ValidationError } from "../errors.js";
-import type { ItemRow } from "../types.js";
+import type { DatabaseRow, ItemRow } from "../types.js";
 
 export interface ProposalActionConfig {
   processingProposalsDatabaseId: string;
@@ -68,6 +68,17 @@ interface TranscriptCardEdge {
   role: TranscriptCardRole;
   transcriptId: string;
   relationPropertyId: string;
+}
+
+/**
+ * What `assertValidEnvelopeForCard` resolved on the caller's behalf: the transcript-card edge
+ * (`null` for a non-transcript card), and the envelope's target database row for a `'database'`
+ * envelope (`null` for `'relation'`/`'pageContent'`) — `confirmProposalWithClient`'s credential
+ * guard reuses that row instead of re-fetching it (issue #735).
+ */
+interface EnvelopeForCard {
+  transcriptCardEdge: TranscriptCardEdge | null;
+  targetDatabase: DatabaseRow | null;
 }
 
 function transcriptCardRole(envelope: ProposalEnvelope): TranscriptCardRole {
@@ -126,23 +137,24 @@ async function requireSourceTranscriptId(
  * person (`'relation'` through `speakers`, issue #185) — and never switches between an Event shape
  * and a speaker mapping (`transcriptCardRole`). A link is checked against the relation's
  * integrity, ownership and edge-metadata rules now, with the same canonical errors the write
- * itself would raise. Returns the edge confirm must write for a transcript card, `null` for any
- * other card.
+ * itself would raise. Returns the edge confirm must write for a transcript card (`null` for any
+ * other card) alongside the envelope's target database row (`null` for a non-`'database'`
+ * envelope).
  */
 async function assertValidEnvelopeForCard(
   client: PoolClient,
   config: ProposalActionConfig,
   proposal: ItemRow,
   envelope: ProposalEnvelope,
-): Promise<TranscriptCardEdge | null> {
-  await assertValidProposalEnvelope(client, envelope);
+): Promise<EnvelopeForCard> {
+  const targetDatabase = await assertValidProposalEnvelope(client, envelope);
   if (proposal.properties.kind !== "transcript") {
     if (envelope.entityKind === "relation") {
       throw new ValidationError("entityKind 'relation' is only valid on a transcript proposal", {
         field: "entityKind",
       });
     }
-    return null;
+    return { transcriptCardEdge: null, targetDatabase };
   }
 
   const role = transcriptCardRole(envelope);
@@ -189,7 +201,7 @@ async function assertValidEnvelopeForCard(
       throw new Error(`Unhandled proposal entityKind: ${String(exhaustive)}`);
     }
   }
-  return { role, transcriptId, relationPropertyId };
+  return { transcriptCardEdge: { role, transcriptId, relationPropertyId }, targetDatabase };
 }
 
 /**
@@ -249,13 +261,12 @@ export async function confirmProposalWithClient(
 
   const envelope = parseStoredProposalEnvelope(proposal.properties.proposal, proposal.id);
   if (!envelope) throw new ValidationError("Proposal has no computed envelope to confirm", { field: "proposal" });
-  const transcriptCardEdge = await assertValidEnvelopeForCard(client, config, proposal, envelope);
+  const { transcriptCardEdge, targetDatabase } = await assertValidEnvelopeForCard(client, config, proposal, envelope);
 
   let resultItemId: string;
   let resultLabel: string;
   if (envelope.entityKind === "database") {
     if (credential) {
-      const targetDatabase = await databasesStore.getDatabase(client, envelope.target);
       if (targetDatabase?.ownerModuleId !== MCP_SERVERS_MODULE_ID) {
         throw new ValidationError("A credential may only be supplied when confirming an MCP server proposal", {
           field: "credential",
