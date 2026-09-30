@@ -8,9 +8,20 @@ import { ValidationError } from "../errors.js";
  */
 export const MAX_MCP_TOOL_SCHEMA_BYTES = 64 * 1024;
 
-function assertNoRemoteRef(node: unknown, path: string): void {
+/**
+ * Far above any legitimate JSON Schema's nesting depth, but well short of the V8 call-stack
+ * ceiling — bounds `assertNoRemoteRef`/`assertPatternsSafe` recursion so a maximally nested
+ * schema within `MAX_MCP_TOOL_SCHEMA_BYTES` (e.g. `{"a":{"a":{...}}}`, ~10 900 levels) throws a
+ * catchable `ValidationError` instead of a `RangeError: Maximum call stack size exceeded`.
+ */
+const MAX_SCHEMA_DEPTH = 64;
+
+function assertNoRemoteRef(node: unknown, path: string, depth = 0): void {
+  if (depth > MAX_SCHEMA_DEPTH) {
+    throw new ValidationError("MCP tool schema is nested too deeply");
+  }
   if (Array.isArray(node)) {
-    node.forEach((item, index) => assertNoRemoteRef(item, `${path}/${index}`));
+    node.forEach((item, index) => assertNoRemoteRef(item, `${path}/${index}`, depth + 1));
     return;
   }
   if (node !== null && typeof node === "object") {
@@ -18,15 +29,18 @@ function assertNoRemoteRef(node: unknown, path: string): void {
       if (key === "$ref" && typeof value === "string" && !value.startsWith("#")) {
         throw new ValidationError("MCP tool schema contains a remote $ref");
       }
-      assertNoRemoteRef(value, `${path}/${key}`);
+      assertNoRemoteRef(value, `${path}/${key}`, depth + 1);
     }
   }
 }
 
 /** Ajv's own recommendation for untrusted schemas: reject a `pattern`/`patternProperties` regex that isn't provably safe from catastrophic backtracking. */
-function assertPatternsSafe(node: unknown): void {
+function assertPatternsSafe(node: unknown, depth = 0): void {
+  if (depth > MAX_SCHEMA_DEPTH) {
+    throw new ValidationError("MCP tool schema is nested too deeply");
+  }
   if (Array.isArray(node)) {
-    node.forEach((item) => assertPatternsSafe(item));
+    node.forEach((item) => assertPatternsSafe(item, depth + 1));
     return;
   }
   if (node === null || typeof node !== "object") return;
@@ -40,7 +54,7 @@ function assertPatternsSafe(node: unknown): void {
         assertSafePattern(pattern);
       }
     }
-    assertPatternsSafe(value);
+    assertPatternsSafe(value, depth + 1);
   }
 }
 
@@ -66,7 +80,8 @@ function assertSafePattern(pattern: string): void {
  * - serializes to more than `MAX_MCP_TOOL_SCHEMA_BYTES`;
  * - contains a `$ref` anywhere that does not resolve locally (does not start with `#`);
  * - contains a `pattern` or `patternProperties` key whose regular expression is invalid or not
- *   provably safe from catastrophic backtracking (`safe-regex`).
+ *   provably safe from catastrophic backtracking (`safe-regex`);
+ * - nests more than `MAX_SCHEMA_DEPTH` levels deep.
  *
  * A schema that fails any of these checks would otherwise let a compile or a validate call hang
  * the agents process (`mcpInvokeTool.ts`'s `validateArguments`) or make Ajv attempt to resolve an
