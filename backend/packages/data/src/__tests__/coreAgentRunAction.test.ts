@@ -82,9 +82,22 @@ describe("coreAgentRunAction", () => {
     });
     const baseContext: ActionContext = { heartbeatId, projectItemId };
 
-    await expect(handler({}, { ...baseContext, isFinalAttempt: false })).rejects.toThrow("model failed");
-    await expect(handler({}, { ...baseContext, isFinalAttempt: false })).rejects.toThrow("model failed");
-    await expect(handler({}, { ...baseContext, isFinalAttempt: true })).rejects.toThrow("model failed");
+    // Identifying "the final run" by comparing `startedAt` is unreliable: sequential inserts in a
+    // fast test environment can land in the same database millisecond. Instead, capture each
+    // call's newly created run id by diffing the run set immediately after that call returns.
+    const seenRunIds = new Set<string>();
+    async function runAndCaptureNewRunId(isFinalAttempt: boolean): Promise<string> {
+      await expect(handler({}, { ...baseContext, isFinalAttempt })).rejects.toThrow("model failed");
+      const runsAfter = await listAgentRunsByHeartbeat(pool, heartbeatId);
+      const created = runsAfter.find((run) => !seenRunIds.has(run.id));
+      if (!created) throw new Error("expected a new agent run to be created");
+      seenRunIds.add(created.id);
+      return created.id;
+    }
+
+    await runAndCaptureNewRunId(false);
+    await runAndCaptureNewRunId(false);
+    const finalRunId = await runAndCaptureNewRunId(true);
 
     const runs = await listAgentRunsByHeartbeat(pool, heartbeatId);
     expect(runs).toHaveLength(3);
@@ -95,8 +108,7 @@ describe("coreAgentRunAction", () => {
 
     const notifications = await getNotifications("agent_run_error");
     expect(notifications).toHaveLength(1);
-    const finalRun = runs.reduce((latest, run) => (run.startedAt > latest.startedAt ? run : latest));
-    expect(notifications[0]!.source_id).toBe(finalRun.id);
+    expect(notifications[0]!.source_id).toBe(finalRunId);
   });
 
   it("a direct caller with isFinalAttempt omitted gets the pre-existing behaviour: one run, one notification", async () => {
