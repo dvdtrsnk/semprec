@@ -309,9 +309,27 @@ export function registerTask(name: string, handler: Task): Task {
   };
 }
 
+/** `resolveQueueConcurrency`'s fallback when `QUEUE_CONCURRENCY` is unset or empty. */
+export const QUEUE_CONCURRENCY_DEFAULT = 4;
+
+/**
+ * Parses `QUEUE_CONCURRENCY` for `runWorker`'s default `concurrency`. Unset or empty falls back
+ * to `QUEUE_CONCURRENCY_DEFAULT`; anything else must be a positive integer string, or startup
+ * fails naming the offending value rather than silently running with graphile-worker's own
+ * default of 1.
+ */
+export function resolveQueueConcurrency(env: NodeJS.ProcessEnv): number {
+  const raw = env.QUEUE_CONCURRENCY;
+  if (raw === undefined || raw === "") return QUEUE_CONCURRENCY_DEFAULT;
+  if (!/^[1-9][0-9]*$/.test(raw)) {
+    throw new Error(`QUEUE_CONCURRENCY is not a positive integer: ${raw}`);
+  }
+  return Number(raw);
+}
+
 /** Runs the worker loop; resolves a `Runner` whose `.stop()` shuts it down. */
 export async function runWorker(options: RunnerOptions): Promise<Runner> {
-  return graphileRun(options);
+  return graphileRun({ concurrency: resolveQueueConcurrency(process.env), ...options });
 }
 
 /**
