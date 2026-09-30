@@ -32,11 +32,11 @@ function fakeStorage(onDelete: (storageKey: string) => Promise<void> = async () 
 }
 
 /** Backdates an already soft-deleted item's `deleted_at` past the retention cutoff, the way real trash ages over time. */
-async function ageDeletion(itemId: string, daysAgo: number): Promise<void> {
-  await pool.query(`UPDATE items SET deleted_at = now() - ($2 || ' days')::interval WHERE id = $1`, [
-    itemId,
-    String(daysAgo),
-  ]);
+async function ageDeletion(itemId: string, daysAgo: number, databaseId: string): Promise<void> {
+  await pool.query(
+    `UPDATE items SET deleted_at = now() - ($2 || ' days')::interval WHERE id = $1 AND database_id = $3`,
+    [itemId, String(daysAgo), databaseId],
+  );
 }
 
 describe("purgeExpiredTrash (issue #156)", () => {
@@ -59,7 +59,7 @@ describe("purgeExpiredTrash (issue #156)", () => {
     const db = await makeMoviesDb();
     const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
     await chokePoint.softDeleteItem(db.id, item.id);
-    await ageDeletion(item.id, 31);
+    await ageDeletion(item.id, 31, db.id);
 
     const purgedCount = await purgeExpiredTrash(pool, fakeStorage().storage);
     expect(purgedCount).toBe(1);
@@ -83,7 +83,7 @@ describe("purgeExpiredTrash (issue #156)", () => {
     const db = await makeMoviesDb();
     const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
     await chokePoint.softDeleteItem(db.id, item.id);
-    await ageDeletion(item.id, 5);
+    await ageDeletion(item.id, 5, db.id);
 
     const purgedCount = await purgeExpiredTrash(pool, fakeStorage().storage);
     expect(purgedCount).toBe(0);
@@ -101,9 +101,9 @@ describe("purgeExpiredTrash (issue #156)", () => {
     const leafItem = await chokePoint.createItem({ databaseId: leafDb.id, properties: {} });
 
     await chokePoint.softDeleteItem(rootDb.id, rootItem.id);
-    await ageDeletion(rootItem.id, 31);
-    await ageDeletion(midItem.id, 31);
-    await ageDeletion(leafItem.id, 31);
+    await ageDeletion(rootItem.id, 31, rootDb.id);
+    await ageDeletion(midItem.id, 31, midDb.id);
+    await ageDeletion(leafItem.id, 31, leafDb.id);
 
     const purgedCount = await purgeExpiredTrash(pool, fakeStorage().storage);
     expect(purgedCount).toBe(3);
@@ -118,7 +118,7 @@ describe("purgeExpiredTrash (issue #156)", () => {
     const rootDb = await makeMoviesDb();
     const rootItem = await chokePoint.createItem({ databaseId: rootDb.id, properties: {} });
     await chokePoint.softDeleteItem(rootDb.id, rootItem.id);
-    await ageDeletion(rootItem.id, 31);
+    await ageDeletion(rootItem.id, 31, rootDb.id);
 
     // Added under the already-trashed root after the fact, so it was never part of the delete
     // cascade and is still live — the purge sweep must not treat it as part of the old root's subtree.
@@ -150,7 +150,13 @@ describe("purgeExpiredTrash (issue #156)", () => {
       const leafDb = await chokePoint.createInlineDatabase({ name: "Leaf", parentItemId: midItem.id });
       const leafItem = await chokePoint.createItem({ databaseId: leafDb.id, properties: {} });
       await chokePoint.softDeleteItem(rootDb.id, rootItem.id);
-      for (const id of [rootItem.id, midItem.id, leafItem.id]) await ageDeletion(id, 31);
+      for (const [id, dbId] of [
+        [rootItem.id, rootDb.id],
+        [midItem.id, midDb.id],
+        [leafItem.id, leafDb.id],
+      ] satisfies [string, string][]) {
+        await ageDeletion(id, 31, dbId);
+      }
 
       const { purgedItemIds: purgedIds } = await chokePoint.purgeExpiredTrashSubtree(rootItem.id, retentionCutoff());
 
@@ -174,8 +180,14 @@ describe("purgeExpiredTrash (issue #156)", () => {
       const liveLeaf = await chokePoint.createItem({ databaseId: liveLeafDb.id, properties: {} });
 
       await chokePoint.softDeleteItem(rootDb.id, rootItem.id);
-      for (const id of [rootItem.id, eligibleItem.id, freshLeaf.id]) await ageDeletion(id, 31);
-      await ageDeletion(freshItem.id, 5);
+      for (const [id, dbId] of [
+        [rootItem.id, rootDb.id],
+        [eligibleItem.id, midDb.id],
+        [freshLeaf.id, freshLeafDb.id],
+      ] satisfies [string, string][]) {
+        await ageDeletion(id, 31, dbId);
+      }
+      await ageDeletion(freshItem.id, 5, midDb.id);
       // Restoring liveItem cascades to its leaf, leaving both live under an expired root.
       const restored = await chokePoint.restoreItem(midDb.id, liveItem.id);
       expect(restored?.deletedAt).toBeNull();
@@ -195,8 +207,8 @@ describe("purgeExpiredTrash (issue #156)", () => {
       const midDb = await chokePoint.createInlineDatabase({ name: "Mid", parentItemId: rootItem.id });
       const midItem = await chokePoint.createItem({ databaseId: midDb.id, properties: {} });
       await chokePoint.softDeleteItem(rootDb.id, rootItem.id);
-      await ageDeletion(rootItem.id, 31);
-      await ageDeletion(midItem.id, 31);
+      await ageDeletion(rootItem.id, 31, rootDb.id);
+      await ageDeletion(midItem.id, 31, midDb.id);
       // Corrupt the tree into a loop: the root's own database now hangs under its descendant.
       await pool.query("UPDATE databases SET parent_item_id = $1 WHERE id = $2", [midItem.id, rootDb.id]);
 
@@ -210,7 +222,7 @@ describe("purgeExpiredTrash (issue #156)", () => {
     const db = await makeMoviesDb();
     const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
     await chokePoint.softDeleteItem(db.id, item.id);
-    await ageDeletion(item.id, 31);
+    await ageDeletion(item.id, 31, db.id);
     await chokePoint.archiveDatabase(db.id);
 
     const purgedCount = await purgeExpiredTrash(pool, fakeStorage().storage);
@@ -229,7 +241,7 @@ describe("purgeExpiredTrash (issue #156)", () => {
     const db = await makeMoviesDb();
     const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
     await chokePoint.softDeleteItem(db.id, item.id);
-    await ageDeletion(item.id, 31);
+    await ageDeletion(item.id, 31, db.id);
 
     // Simulates a concurrent restoreItem committing after purgeExpiredTrashSubtree's eligibility
     // scan already read this row as trashed, but before its delete loop reaches it.
@@ -322,8 +334,8 @@ describe("purgeExpiredTrash (issue #156)", () => {
       );
 
       await chokePoint.softDeleteItem(db.id, page.id);
-      await ageDeletion(page.id, 31);
-      await ageDeletion(inlineRow.id, 31);
+      await ageDeletion(page.id, 31, db.id);
+      await ageDeletion(inlineRow.id, 31, inlineDb.id);
 
       const purgedCount = await purgeExpiredTrash(pool, fakeStorage().storage);
       expect(purgedCount).toBe(2);
@@ -359,8 +371,8 @@ describe("purgeExpiredTrash (issue #156)", () => {
       const inlineDb = await chokePoint.createInlineDatabase({ name: "Inline", parentItemId: page.id });
       const inlineRow = await chokePoint.createItem({ databaseId: inlineDb.id, properties: {} });
       await chokePoint.softDeleteItem(db.id, page.id);
-      await ageDeletion(page.id, 31);
-      await ageDeletion(inlineRow.id, 31);
+      await ageDeletion(page.id, 31, db.id);
+      await ageDeletion(inlineRow.id, 31, inlineDb.id);
       const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
       // The nested row is a candidate of its own and may be reached first: its own database is
@@ -382,8 +394,8 @@ describe("purgeExpiredTrash (issue #156)", () => {
       const expiredRow = await chokePoint.createItem({ databaseId: inlineDb.id, properties: {} });
       const liveRow = await chokePoint.createItem({ databaseId: inlineDb.id, properties: {} });
       await chokePoint.softDeleteItem(db.id, page.id);
-      await ageDeletion(page.id, 31);
-      await ageDeletion(expiredRow.id, 31);
+      await ageDeletion(page.id, 31, db.id);
+      await ageDeletion(expiredRow.id, 31, inlineDb.id);
       await chokePoint.restoreItem(inlineDb.id, liveRow.id);
 
       const purgedCount = await purgeExpiredTrash(pool, fakeStorage().storage);
@@ -401,7 +413,7 @@ describe("purgeExpiredTrash (issue #156)", () => {
       const purgedFile = await makeFilesItem(db.id, blob.id);
       await makeFilesItem(db.id, blob.id);
       await chokePoint.softDeleteItem(db.id, purgedFile.id);
-      await ageDeletion(purgedFile.id, 31);
+      await ageDeletion(purgedFile.id, 31, db.id);
 
       const { storage, deleteMock } = fakeStorage();
       const purgedCount = await purgeExpiredTrash(pool, storage);
@@ -416,7 +428,7 @@ describe("purgeExpiredTrash (issue #156)", () => {
       const blob = await createBlob(pool, { mimeType: "text/plain", byteSize: 3, storageKey: "unshared-key" });
       const purgedFile = await makeFilesItem(db.id, blob.id);
       await chokePoint.softDeleteItem(db.id, purgedFile.id);
-      await ageDeletion(purgedFile.id, 31);
+      await ageDeletion(purgedFile.id, 31, db.id);
 
       // Read on a separate connection: the row is only invisible there once the purge has committed.
       const blobRowsSeenByDelete: number[] = [];
@@ -442,7 +454,7 @@ describe("purgeExpiredTrash (issue #156)", () => {
         [blob.id],
       );
       await chokePoint.softDeleteItem(db.id, purgedFile.id);
-      await ageDeletion(purgedFile.id, 31);
+      await ageDeletion(purgedFile.id, 31, db.id);
 
       const { storage, deleteMock } = fakeStorage();
       expect(await purgeExpiredTrash(pool, storage)).toBe(1);
@@ -463,7 +475,7 @@ describe("purgeExpiredTrash (issue #156)", () => {
       );
       for (const item of [first, second]) {
         await chokePoint.softDeleteItem(db.id, item.id);
-        await ageDeletion(item.id, 31);
+        await ageDeletion(item.id, 31, db.id);
       }
       const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       const { storage, deleteMock } = fakeStorage(async (key) => {
