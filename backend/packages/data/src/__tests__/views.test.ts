@@ -664,6 +664,50 @@ describe("views", () => {
       expect(secondPage.nextCursor).toBeNull();
     });
 
+    it("filters trashed members out of a curated view's default pages, but includes them with includeDeleted", async () => {
+      const db = await makeTasksDb();
+      const items = [];
+      for (let i = 0; i < 6; i++) {
+        items.push(await chokePoint.createItem({ databaseId: db.id, properties: { title: `Item ${i}` } }));
+      }
+      const collection = await chokePoint.createView({ type: "list", name: "Paged", config: { membership: "manual" } });
+      for (const item of items) {
+        await chokePoint.addViewItem({ viewId: collection.id, itemId: item.id, actor: userActor });
+      }
+      // Members 2, 3 and 4 (0-indexed 1, 2, 3) are trashed.
+      await chokePoint.softDeleteItem(db.id, items[1]!.id);
+      await chokePoint.softDeleteItem(db.id, items[2]!.id);
+      await chokePoint.softDeleteItem(db.id, items[3]!.id);
+
+      const firstPage = await chokePoint.queryView(collection.id, { limit: 2 });
+      expect(firstPage.items.map((i) => i.id)).toEqual([items[0]!.id, items[4]!.id]);
+      expect(firstPage.nextCursor).not.toBeNull();
+
+      const secondPage = await chokePoint.queryView(collection.id, { limit: 2, cursor: firstPage.nextCursor! });
+      expect(secondPage.items.map((i) => i.id)).toEqual([items[5]!.id]);
+      expect(secondPage.nextCursor).toBeNull();
+
+      const trashedPage = await chokePoint.queryView(collection.id, { limit: 10, includeDeleted: true });
+      expect(trashedPage.items.map((i) => i.id).sort()).toEqual([...items].map((i) => i.id).sort());
+      expect(trashedPage.nextCursor).toBeNull();
+    });
+
+    it("a curated view whose members are all trashed returns an empty first page", async () => {
+      const db = await makeTasksDb();
+      const item = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Only" } });
+      const collection = await chokePoint.createView({
+        type: "list",
+        name: "AllTrashed",
+        config: { membership: "manual" },
+      });
+      await chokePoint.addViewItem({ viewId: collection.id, itemId: item.id, actor: userActor });
+      await chokePoint.softDeleteItem(db.id, item.id);
+
+      const page = await chokePoint.queryView(collection.id, { limit: 2 });
+      expect(page.items).toEqual([]);
+      expect(page.nextCursor).toBeNull();
+    });
+
     it("two concurrent reorders on the same view never leave two items tied on a position", async () => {
       // Two racing reorders don't tie deterministically — the window in which both
       // transactions read the same pre-shift positions is narrow — so run enough

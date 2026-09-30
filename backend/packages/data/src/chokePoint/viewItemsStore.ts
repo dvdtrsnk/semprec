@@ -19,6 +19,35 @@ export async function listViewItems(client: PoolClient, viewId: string): Promise
 }
 
 /**
+ * `listViewItems` filtered to live (non-trashed) members and paged by `position` — used to
+ * page a curated view's default listing, where a page must fill with `limit` live items
+ * rather than come back short whenever memberships happen to point at trashed items. The
+ * join has no `database_id`, so it scans the `items` parent across partitions the same way
+ * `getItemsByIds` does (`itemsStore.ts`, `getItemsByIds`'s doc comment).
+ */
+export async function listLiveViewItemsAfter(
+  client: PoolClient,
+  viewId: string,
+  input: { afterPosition: number | null; limit: number },
+): Promise<ViewItemRow[]> {
+  const conditions = ["m.view_id = $1", "i.deleted_at IS NULL"];
+  const params: unknown[] = [viewId, input.limit];
+  if (input.afterPosition !== null) {
+    params.push(input.afterPosition);
+    conditions.push(`m.position > $${params.length}`);
+  }
+  const { rows } = await client.query<ViewItemDbRow>(
+    `SELECT m.view_id, m.item_id, m.position FROM view_items m
+     JOIN items i ON i.id = m.item_id
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY m.position ASC
+     LIMIT $2`,
+    params,
+  );
+  return rows.map(mapViewItemRow);
+}
+
+/**
  * Adding an already-present item is a move, not a duplicate insert: it delegates to
  * `reorderViewItem`, whose position-shifting logic is what keeps `position` values
  * unique. A brand-new member inserted at an explicit position likewise shifts every

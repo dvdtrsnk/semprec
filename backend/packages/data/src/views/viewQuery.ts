@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { NotFoundError, ValidationError } from "../errors.js";
-import type { ItemRow, ViewRow } from "../types.js";
+import type { ItemRow, ViewItemRow, ViewRow } from "../types.js";
 import { getItemsByIds, getItemsByIdsIncludingDeleted, listItems } from "../chokePoint/itemsStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
@@ -173,7 +173,6 @@ async function queryCuratedView(
   options: QueryViewOptions,
 ): Promise<QueryViewResult> {
   const limit = Math.min(options.limit ?? 50, 200);
-  const all = await viewItemsStore.listViewItems(client, view.id);
   let cursorPosition: number | undefined;
   if (options.cursor !== undefined) {
     cursorPosition = Number(options.cursor);
@@ -184,9 +183,22 @@ async function queryCuratedView(
       throw new ValidationError(`Invalid cursor: '${options.cursor}'`, { field: "cursor" });
     }
   }
-  const afterCursor = cursorPosition !== undefined ? all.filter((m) => m.position > cursorPosition) : all;
-  const hasMore = afterCursor.length > limit;
-  const page = afterCursor.slice(0, limit);
+
+  let page: ViewItemRow[];
+  let hasMore: boolean;
+  if (options.includeDeleted) {
+    const all = await viewItemsStore.listViewItems(client, view.id);
+    const afterCursor = cursorPosition !== undefined ? all.filter((m) => m.position > cursorPosition) : all;
+    hasMore = afterCursor.length > limit;
+    page = afterCursor.slice(0, limit);
+  } else {
+    const afterCursor = await viewItemsStore.listLiveViewItemsAfter(client, view.id, {
+      afterPosition: cursorPosition ?? null,
+      limit: limit + 1,
+    });
+    hasMore = afterCursor.length > limit;
+    page = afterCursor.slice(0, limit);
+  }
 
   const lookup = options.includeDeleted ? getItemsByIdsIncludingDeleted : getItemsByIds;
   const itemsById = new Map(
