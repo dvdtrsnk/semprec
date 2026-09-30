@@ -43,7 +43,8 @@ async function relationDefinitionIdFor(propertyId: string): Promise<string> {
     "SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1",
     [propertyId],
   );
-  return rows[0]!.id;
+  if (!rows[0]) throw new Error(`Relation definition for property '${propertyId}' was not seeded`);
+  return rows[0].id;
 }
 
 /** Issue #659: the mail flag-sync write moves from a direct `chokePoint/itemWrites.ts` import to `mailMessageFlagsItemUpdateHook`, run through the choke point's per-process registry. */

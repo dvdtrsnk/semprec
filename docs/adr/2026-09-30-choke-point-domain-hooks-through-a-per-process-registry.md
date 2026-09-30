@@ -2,7 +2,7 @@
 status: accepted
 date: 2026-09-30
 area: [backend]
-supersedes: [2026-09-28-module-transactional-side-effects-inline-at-choke-point]
+supersedes: []
 superseded-by: null
 ---
 
