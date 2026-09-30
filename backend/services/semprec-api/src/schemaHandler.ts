@@ -2,14 +2,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { withTransaction, ChokePointError, generateSchemaProjection, toManifestLocale } from "@semprec/data";
 import type { Pool } from "pg";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
+import { sendJson } from "./adapter/http.js";
 import { authenticateRequest } from "./authHandler.js";
 import { logger } from "./logger.js";
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(payload);
-}
 
 /**
  * Handles `GET /api/schema` for issue #147: the localized, system-wide projection of every

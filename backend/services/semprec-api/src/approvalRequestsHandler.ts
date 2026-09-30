@@ -2,7 +2,6 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   withTransaction,
   ChokePointError,
-  ValidationError,
   getApprovalRequest,
   decideAndEnqueueApprovalRequest,
   listApprovalRequestsQueue,
@@ -11,35 +10,11 @@ import {
 import type { Pool } from "pg";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { assertUuid } from "./adapter/requestValidation.js";
+import { PayloadTooLargeError, readJsonBody, sendJson } from "./adapter/http.js";
 import { authenticateRequest } from "./authHandler.js";
 import { logger } from "./logger.js";
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(payload);
-}
-
 const MAX_BODY_BYTES = 1 * 1024 * 1024;
-
-class PayloadTooLargeError extends Error {}
-
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    const buf = chunk as Buffer;
-    size += buf.length;
-    if (size > MAX_BODY_BYTES) throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
-    chunks.push(buf);
-  }
-  if (chunks.length === 0) return {};
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    throw new ValidationError("Request body is not valid JSON");
-  }
-}
 
 const APPROVAL_REQUEST_PATH = /^\/api\/approval-requests\/([^/]+)$/;
 
@@ -88,7 +63,7 @@ export function createApprovalRequestsRequestListener(pool: Pool) {
       // Group 1 of the route pattern above is not optional, so a successful match always
       // captured it; a runtime check here would be unreachable code.
       const approvalRequestId = assertUuid(match[1]!, "id");
-      const body = (await readJsonBody(req)) as { decision?: unknown };
+      const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as { decision?: unknown };
       if (body.decision !== "approved" && body.decision !== "rejected") {
         sendJson(res, 400, { error: "'decision' must be 'approved' or 'rejected'" });
         return;

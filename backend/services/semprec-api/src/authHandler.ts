@@ -21,17 +21,12 @@ import {
 import type { Pool } from "pg";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { assertUuid } from "./adapter/requestValidation.js";
+import { PayloadTooLargeError, readJsonBody, sendJson } from "./adapter/http.js";
 import { clientIpFromRequest } from "./clientIp.js";
 import { logger } from "./logger.js";
 
 /** Name of the cookie a web client's login response carries the session token in. */
 export const SESSION_COOKIE_NAME = "semprec_session";
-
-function sendJson(res: ServerResponse, status: number, body: unknown, headers?: Record<string, string>): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", ...headers });
-  res.end(payload);
-}
 
 function parseCookieHeader(header: string): Record<string, string> {
   const cookies: Record<string, string> = {};
@@ -97,25 +92,6 @@ function isSessionPlatform(value: unknown): value is SessionPlatform {
 
 const MAX_BODY_BYTES = 64 * 1024;
 
-class PayloadTooLargeError extends Error {}
-
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    const buf = chunk as Buffer;
-    size += buf.length;
-    if (size > MAX_BODY_BYTES) throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
-    chunks.push(buf);
-  }
-  if (chunks.length === 0) return {};
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    throw new ValidationError("Request body is not valid JSON");
-  }
-}
-
 const REVOKE_SESSION_PATH = /^\/api\/auth\/sessions\/([^/]+)\/revoke$/;
 
 export interface AuthRequestListenerOptions {
@@ -151,7 +127,11 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
 
     try {
       if (req.method === "POST" && url.pathname === "/api/auth/login") {
-        const body = (await readJsonBody(req)) as { email?: unknown; password?: unknown; platform?: unknown };
+        const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as {
+          email?: unknown;
+          password?: unknown;
+          platform?: unknown;
+        };
         if (typeof body.email !== "string" || body.email.length === 0) {
           throw new ValidationError("'email' must be a non-empty string");
         }
@@ -192,7 +172,7 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
       }
 
       if (req.method === "POST" && url.pathname === "/api/auth/password-reset/request") {
-        const body = (await readJsonBody(req)) as { email?: unknown };
+        const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as { email?: unknown };
         if (typeof body.email !== "string" || body.email.length === 0) {
           throw new ValidationError("'email' must be a non-empty string");
         }
@@ -208,7 +188,10 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
       }
 
       if (req.method === "POST" && url.pathname === "/api/auth/password-reset/consume") {
-        const body = (await readJsonBody(req)) as { token?: unknown; newPassword?: unknown };
+        const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as {
+          token?: unknown;
+          newPassword?: unknown;
+        };
         if (typeof body.token !== "string" || body.token.length === 0) {
           throw new ValidationError("'token' must be a non-empty string");
         }

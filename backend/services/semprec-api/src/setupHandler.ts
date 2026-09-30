@@ -2,14 +2,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { ChokePointError, ValidationError, bootstrapFirstAccount } from "@semprec/data";
 import type { Pool } from "pg";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
+import { extractBearerToken, PayloadTooLargeError, readJsonBody, sendJson } from "./adapter/http.js";
 import { logger } from "./logger.js";
-
-/** Same `Authorization: Bearer <token>` extraction as `approvalRequestsHandler.ts`'s `isAuthorized`. */
-function extractBearerToken(req: IncomingMessage): string {
-  const header = req.headers.authorization;
-  if (!header || !header.startsWith("Bearer ")) return "";
-  return header.slice("Bearer ".length);
-}
 
 export interface SetupHandlerOptions {
   /**
@@ -19,32 +13,7 @@ export interface SetupHandlerOptions {
   setupToken: string;
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(payload);
-}
-
 const MAX_BODY_BYTES = 64 * 1024;
-
-class PayloadTooLargeError extends Error {}
-
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    const buf = chunk as Buffer;
-    size += buf.length;
-    if (size > MAX_BODY_BYTES) throw new PayloadTooLargeError("Request body exceeds the maximum allowed size");
-    chunks.push(buf);
-  }
-  if (chunks.length === 0) return {};
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    throw new ValidationError("Request body is not valid JSON");
-  }
-}
 
 /**
  * Handles `POST /api/setup` (token via `Authorization: Bearer <token>`) for issue #233 — the
@@ -61,7 +30,7 @@ export function createSetupRequestListener(pool: Pool, options: SetupHandlerOpti
 
     try {
       if (req.method === "POST" && url.pathname === "/api/setup") {
-        const body = (await readJsonBody(req)) as { email?: unknown; password?: unknown };
+        const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as { email?: unknown; password?: unknown };
         if (typeof body.email !== "string" || body.email.length === 0) {
           throw new ValidationError("'email' must be a non-empty string");
         }
@@ -69,7 +38,7 @@ export function createSetupRequestListener(pool: Pool, options: SetupHandlerOpti
           throw new ValidationError("'password' must be a non-empty string");
         }
 
-        const user = await bootstrapFirstAccount(pool, options.setupToken, extractBearerToken(req), {
+        const user = await bootstrapFirstAccount(pool, options.setupToken, extractBearerToken(req) ?? "", {
           email: body.email,
           password: body.password,
         });

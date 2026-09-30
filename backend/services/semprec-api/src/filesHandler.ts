@@ -14,6 +14,7 @@ import { authenticateRequest } from "./authHandler.js";
 import { requireHeader } from "./adapter/requestValidation.js";
 import { toItemEnvelope } from "./adapter/itemEnvelope.js";
 import { statusForError, toErrorResponseBody } from "./adapter/errorContract.js";
+import { sendJson } from "./adapter/http.js";
 import { logger } from "./logger.js";
 
 /**
@@ -23,12 +24,6 @@ import { logger } from "./logger.js";
  * rejects here rather than surfacing as an `ENAMETOOLONG` 500 once it reaches the filesystem.
  */
 const MAX_FILENAME_BYTES = 200;
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(payload);
-}
 
 export interface FilesRequestListenerOptions {
   storage: BlobStorageWriter;
