@@ -3,6 +3,8 @@ import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { HistoryNotRetainedError, NotFoundError, ValidationError } from "../errors.js";
 import { resolveDocHistoryRetentionDays, retentionHours } from "./docHistoryConfig.js";
+import { logger } from "./logger.js";
+import { assertSweepNotFailedEntirely, type SweepOutcome } from "./sweepOutcome.js";
 
 /**
  * Re-baselines one document's history at the retention cutoff (issue #86). Issue #216
@@ -132,17 +134,21 @@ export async function rebaselineDocHistory(
 export async function runDocHistoryRetentionSweep(
   pool: Pool,
   retentionDays = resolveDocHistoryRetentionDays(),
-): Promise<number> {
+): Promise<SweepOutcome & { rebaselined: number }> {
   const { rows } = await pool.query<{ id: string }>(`SELECT id FROM docs`);
   let succeeded = 0;
+  let failed = 0;
+  let rebaselined = 0;
   for (const row of rows) {
     try {
-      if (await rebaselineDocHistory(pool, row.id, retentionDays)) succeeded++;
+      if (await rebaselineDocHistory(pool, row.id, retentionDays)) rebaselined++;
+      succeeded++;
     } catch (err) {
-      console.error(`Failed to rebaseline history for doc ${row.id}`, err);
+      failed++;
+      logger.error({ err, docId: row.id }, "Failed to rebaseline doc history");
     }
   }
-  return succeeded;
+  return { succeeded, failed, rebaselined };
 }
 
 /** Deletes expired checkpoints past their retention window — a cleanup job, not a business/tiering layer.
@@ -158,8 +164,9 @@ export async function cleanupExpiredDocHistory(pool: Pool): Promise<number> {
 }
 
 export async function handleDocHistoryCleanupTask(pool: Pool): Promise<void> {
-  await runDocHistoryRetentionSweep(pool);
+  const outcome = await runDocHistoryRetentionSweep(pool);
   await cleanupExpiredDocHistory(pool);
+  assertSweepNotFailedEntirely("docHistoryCleanup", outcome);
 }
 
 /**

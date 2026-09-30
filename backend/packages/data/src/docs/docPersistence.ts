@@ -4,6 +4,8 @@ import { runAfterCommit, withTransaction } from "../db/pool.js";
 import type { CreatedBy } from "../types.js";
 import { notifyDocUpdate } from "../realtimeHook.js";
 import { resolveDocHistoryRetentionDays, retentionHours } from "./docHistoryConfig.js";
+import { logger } from "./logger.js";
+import { assertSweepNotFailedEntirely, type SweepOutcome } from "./sweepOutcome.js";
 
 /** y-leveldb uses 500, y-postgresql uses 200 — the issue asks for "the same shape", 200-500. */
 export const DEFAULT_COMPACTION_THRESHOLD = 200;
@@ -242,23 +244,26 @@ export async function runCompactionSweep(
   pool: Pool,
   threshold = DEFAULT_COMPACTION_THRESHOLD,
   retentionDays = resolveDocHistoryRetentionDays(),
-): Promise<number> {
+): Promise<SweepOutcome> {
   const { rows } = await pool.query<{ doc_id: string }>(
     `SELECT doc_id FROM doc_updates GROUP BY doc_id HAVING count(*) >= $1`,
     [threshold],
   );
   let succeeded = 0;
+  let failed = 0;
   for (const row of rows) {
     try {
       await loadDoc(pool, row.doc_id, threshold, retentionDays);
       succeeded++;
     } catch (err) {
-      console.error(`Failed to compact doc ${row.doc_id}`, err);
+      failed++;
+      logger.error({ err, docId: row.doc_id }, "Failed to compact doc");
     }
   }
-  return succeeded;
+  return { succeeded, failed };
 }
 
 export async function handleDocCompactionSweepTask(pool: Pool): Promise<void> {
-  await runCompactionSweep(pool);
+  const outcome = await runCompactionSweep(pool);
+  assertSweepNotFailedEntirely("docCompactionSweep", outcome);
 }
