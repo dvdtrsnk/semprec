@@ -377,12 +377,14 @@ export class ImapFlowMailClient implements ImapMailClient {
     try {
       // A QRESYNC-enabled fetch with changedSince surfaces VANISHED via the 'expunge' event,
       // not as a return value — this drains that event stream for the duration of the call.
+      // Flag changes on UIDs that didn't vanish are not picked up here; they are a known-UID
+      // reconcile concern handled separately by fetchFlagsChangedSince below.
       for await (const _raw of this.client.fetch(
         "1:*",
         { uid: true },
         { uid: true, changedSince: BigInt(sinceModSeq) },
       )) {
-        // draining only — flags themselves are picked up by fetchMessagesSince's next pass.
+        // draining only — see fetchFlagsChangedSince for the flags themselves.
       }
     } finally {
       this.client.off("expunge", onExpunge);
@@ -394,6 +396,29 @@ export class ImapFlowMailClient implements ImapMailClient {
     await this.client.mailboxOpen(path);
     const uids = await this.client.search({ all: true }, { uid: true });
     return uids === false ? [] : uids;
+  }
+
+  /**
+   * Peek-only flag re-fetch for UIDs the folder already knows about (imapReconcile.ts's
+   * known-UID pass) — the same bounded `fetch` call `fetchMessagesSince`/`fetchVanishedSince`
+   * already make, just for `flags` instead of envelope/body data. `sinceModSeq` given (CONDSTORE
+   * and a stored modseq) scopes the fetch with `changedSince`; `null` (no CONDSTORE, or the
+   * first pass after a UIDVALIDITY reset) fetches every UID's current flags.
+   */
+  async fetchFlagsChangedSince(
+    path: string,
+    sinceModSeq: number | null,
+  ): Promise<Array<{ uid: number; flags: string[] }>> {
+    await this.client.mailboxOpen(path);
+    const results: Array<{ uid: number; flags: string[] }> = [];
+    for await (const raw of this.client.fetch(
+      "1:*",
+      { uid: true, flags: true },
+      sinceModSeq !== null ? { uid: true, changedSince: BigInt(sinceModSeq) } : { uid: true },
+    )) {
+      results.push({ uid: raw.uid, flags: raw.flags ? [...raw.flags] : [] });
+    }
+    return results;
   }
 
   /**

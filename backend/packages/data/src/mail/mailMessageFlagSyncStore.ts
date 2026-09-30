@@ -54,7 +54,17 @@ export const mailMessageFlagsItemUpdateHook: ItemUpdateHook = async ({ client, d
   await recordDesiredMailMessageFlags(client, item.id, propertiesPatch);
 };
 
-/** Records flags observed from a provider without replacing a pending user request. */
+/**
+ * Records flags observed from a provider. `current_state` always takes the observed value.
+ * `desired_state` follows it too, but only when the row was converged going into this call
+ * (`current_state IS NOT DISTINCT FROM desired_state`, evaluated against the row as it stood
+ * before this statement) — a converged pair has no pending user intent to protect, so the
+ * observation becomes the new desired state as well as the new current state. A row with a
+ * pending write (`current` differs from `desired`) keeps its existing `desired_state`
+ * untouched, so the write-back that resolves it still runs — this is the ADR's "never replace
+ * a *differing* desired value" (docs/adr/2026-09-20-desired-current-state-sync-for-provider-writebacks.md),
+ * which a converged pair is not.
+ */
 export async function recordObservedMailMessageFlags(
   client: PoolClient,
   messageItemId: string,
@@ -66,7 +76,13 @@ export async function recordObservedMailMessageFlags(
       `INSERT INTO mail_message_flag_sync_state (message_item_id, property_key, desired_state, current_state)
        VALUES ($1, $2, $3, $3)
        ON CONFLICT (message_item_id, property_key) DO UPDATE
-       SET current_state = EXCLUDED.current_state, updated_at = now()`,
+       SET current_state = EXCLUDED.current_state,
+           desired_state = CASE
+             WHEN mail_message_flag_sync_state.current_state IS NOT DISTINCT FROM mail_message_flag_sync_state.desired_state
+             THEN EXCLUDED.current_state
+             ELSE mail_message_flag_sync_state.desired_state
+           END,
+           updated_at = now()`,
       [messageItemId, propertyKey, value],
     );
   }
