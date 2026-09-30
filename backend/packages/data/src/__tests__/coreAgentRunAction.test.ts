@@ -4,9 +4,13 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
-import { coreAgentRunAction, CORE_AGENT_RUN_ACTION_ID, type ActionContext } from "../scheduler/actions.js";
+import {
+  coreAgentRunAction,
+  CORE_AGENT_RUN_ACTION_ID,
+  createActionRegistry,
+  type ActionContext,
+} from "../scheduler/actions.js";
 import { createHeartbeatFireAgentTask } from "../scheduler/sweep.js";
-import { createActionRegistry } from "../scheduler/actions.js";
 import { listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
@@ -133,7 +137,7 @@ describe("coreAgentRunAction", () => {
     expect(notifications).toHaveLength(0);
   });
 
-  it("through the fire task: a core.agentRun heartbeat failing on the final attempt notifies once; a non-final attempt notifies zero times", async () => {
+  it("through the fire task: a core.agentRun heartbeat failing on the final attempt notifies once", async () => {
     const { heartbeatId } = await createTestHeartbeat();
     const registry = createActionRegistry();
     registry.set(
@@ -147,19 +151,31 @@ describe("coreAgentRunAction", () => {
     const finalHelpers = { job: { id: "job-final", attempts: 3, max_attempts: 3 } } as Parameters<typeof task>[1];
     await expect(task({ heartbeatId, itemId: "unused" }, finalHelpers)).rejects.toThrow("model failed");
 
-    const runsAfterFinal = await listAgentRunsByHeartbeat(pool, heartbeatId);
-    expect(runsAfterFinal).toHaveLength(1);
-    expect(runsAfterFinal[0]!.status).toBe("error");
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeatId);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.status).toBe("error");
     expect(await getNotifications("agent_run_error")).toHaveLength(1);
     expect(await getNotifications("heartbeat_error")).toHaveLength(1);
+  });
+
+  it("through the fire task: a core.agentRun heartbeat failing on a non-final attempt notifies zero times", async () => {
+    const { heartbeatId } = await createTestHeartbeat();
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async () => {
+        throw new Error("model failed");
+      }),
+    );
+    const task = createHeartbeatFireAgentTask(pool, registry);
 
     const nonFinalHelpers = { job: { id: "job-retry", attempts: 1, max_attempts: 3 } } as Parameters<typeof task>[1];
     await expect(task({ heartbeatId, itemId: "unused" }, nonFinalHelpers)).rejects.toThrow("model failed");
 
-    const runsAfterNonFinal = await listAgentRunsByHeartbeat(pool, heartbeatId);
-    expect(runsAfterNonFinal).toHaveLength(2);
-    expect(runsAfterNonFinal.every((run) => run.status === "error")).toBe(true);
-    // Still exactly one agent_run_error total — the non-final attempt didn't add another.
-    expect(await getNotifications("agent_run_error")).toHaveLength(1);
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeatId);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.status).toBe("error");
+    expect(await getNotifications("agent_run_error")).toHaveLength(0);
+    expect(await getNotifications("heartbeat_error")).toHaveLength(0);
   });
 });
