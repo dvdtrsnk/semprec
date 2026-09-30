@@ -312,6 +312,45 @@ describe("runAgentSession", () => {
     }
   });
 
+  it("still closes the agent_runs row as done with the real result when the done-path run_status write itself fails", async () => {
+    const queryable = pool as unknown as { query: QueryFn };
+    const origQuery = queryable.query.bind(queryable);
+    const queryMock = vi.spyOn(queryable, "query").mockImplementation((...args: unknown[]) => {
+      const [text, params] = args as [unknown, unknown[] | undefined];
+      const sql = String(text);
+      const status = params?.[2]
+        ? (() => {
+            try {
+              return JSON.parse(params[2] as string).status;
+            } catch {
+              return undefined;
+            }
+          })()
+        : undefined;
+      if (sql.includes("INSERT INTO agent_run_events") && params?.[1] === "run_status" && status === "done") {
+        return Promise.reject(new Error("events table unavailable"));
+      }
+      return origQuery(...args);
+    });
+
+    try {
+      const run = await runAgentSession(pool, {
+        createAgentSession: fakeSession([
+          { kind: "turn_start" },
+          { kind: "message", text: "Hello there" },
+          { kind: "turn_end" },
+        ]),
+        task: "run_status write fails on done path",
+        triggeredBy: "user",
+      });
+
+      expect(run.status).toBe("done");
+      expect(run.result).toBe("Hello there");
+    } finally {
+      queryMock.mockRestore();
+    }
+  });
+
   it("announces durable events as thin references and sends message_update only on the ephemeral stream", async () => {
     const listenClient = await pool.connect();
     await listenClient.query("LISTEN semprec_events");
