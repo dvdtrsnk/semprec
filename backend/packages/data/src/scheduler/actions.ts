@@ -1,10 +1,12 @@
 import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, type AgentTaskName, type CoreTaskName } from "@semprec/queue";
-import { withTraceContext } from "@semprec/shared";
+import { createLogger, withTraceContext } from "@semprec/shared";
 import { createAgentRun, finishAgentRun, finishAgentRunWithErrorNotification } from "../agentRuns/agentRunsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "../inbox/inboxTickKeys.js";
 import { parseItemRelationFilterConfig, passesItemRelationFilter } from "./itemRelationFilter.js";
+
+const logger = createLogger("scheduler");
 
 export interface ActionContext {
   heartbeatId: string;
@@ -13,6 +15,11 @@ export interface ActionContext {
   itemId?: string;
   /** the run id from `heartbeat.trigger`'s payload (issue #136) — the agent run that manually fired this heartbeat, becoming the new run's `parent_run_id`. Unset for a scheduler-fired (sweep or onItemEvent) run. */
   triggeredByRunId?: string;
+  /**
+   * Set by the heartbeat fire task from the queue job's `attempts >= max_attempts`. `undefined`
+   * for a caller outside the queue (treated as final — a direct caller has no retry).
+   */
+  isFinalAttempt?: boolean;
 }
 
 export type ActionHandler = (actionConfig: Record<string, unknown>, context: ActionContext) => Promise<void>;
@@ -59,6 +66,13 @@ export type RunAgentFn = (input: {
  * an Emails item related to an inbox Folder and not to a junk/trash one, without any mail-specific
  * scheduler. Only applied for item-triggered (`onItemEvent`) heartbeats, where `context.itemId`
  * is set; time-based heartbeats ignore it.
+ *
+ * A `runAgent` failure closes this attempt's `agent_runs` row as `error` on every attempt, but
+ * writes the `agent_run_error` notification only on the final one (`context.isFinalAttempt !==
+ * false`) — so a heartbeat occurrence retried up to `maxAttempts` times yields exactly one
+ * `agent_run_error` notification (linking to the last attempt's run), not one per attempt. If
+ * closing/notifying itself throws, that error is logged and the original `runAgent` error is what
+ * this handler rejects with — never the close failure.
  */
 export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHandler {
   return async (actionConfig, context) => {
@@ -83,9 +97,27 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
         await finishAgentRun(pool, run.id, "done", outcome?.result ?? null);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        // Same transaction as the source write, per issue #149: a crash between closing the run
-        // and writing its `agent_run_error` notification never leaves one without the other.
-        await withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, run.id, message));
+        // A non-final attempt closes its run silently: only the last attempt of a failed
+        // occurrence writes the `agent_run_error` notification, so three retries of the same
+        // occurrence produce exactly one notification (linking to the last attempt's run)
+        // instead of one per attempt. `isFinalAttempt === undefined` (a direct caller outside
+        // the queue, with no retries) keeps the pre-existing single-notification behaviour.
+        try {
+          if (context.isFinalAttempt === false) {
+            await finishAgentRun(pool, run.id, "error", message);
+          } else {
+            // Same transaction as the source write, per issue #149: a crash between closing the
+            // run and writing its `agent_run_error` notification never leaves one without the other.
+            await withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, run.id, message));
+          }
+        } catch (closeErr) {
+          // The close/notify write failing must never replace `err` — the caller's retry
+          // decision and the job's `last_error` have to reflect the actual `runAgent` failure.
+          logger.error(
+            { err: closeErr, agentRunId: run.id, heartbeatId: context.heartbeatId },
+            "core.agentRun: failed to record failed agent run lifecycle",
+          );
+        }
         throw err;
       }
     });
