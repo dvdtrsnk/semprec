@@ -119,6 +119,17 @@ every platform you touched, and sweep it for debug prints, commented-out code
 and files unrelated to this issue. Every claim you write in a docstring is a
 claim the reviewer will check against the code — make it true or delete it.
 
+Other agents and Relay's own `verify-*` jobs run this pipeline on the same host
+at the same time, so every process you did not start belongs to someone else:
+
+- Never select processes by name or pattern — no `pkill`, `killall`,
+  `pgrep … | xargs kill` or `kill $(pgrep …)`. `pkill -f "pnpm run verify"`
+  kills every verify on the host, Relay's included.
+- Wait on or kill only a PID you started yourself (capture `$!`) or a process
+  group you own.
+- Write scratch logs to a unique path (`mktemp`, or inside your own worktree),
+  never a fixed `/tmp/<name>.log`.
+
 ## Review findings
 
 The code-review bot blocks the merge at `medium` severity and above. Fix what it
