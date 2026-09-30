@@ -1,8 +1,19 @@
 import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sweepStalePostgresDirs } from "../stalePostgresDirs.js";
+
+const { stat: realStat } = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+const statMock = vi.fn<typeof stat>(realStat);
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    stat: (...args: Parameters<typeof stat>) => statMock(...args),
+  };
+});
 
 const HOUR_MS = 60 * 60 * 1000;
 const NOW = Date.parse("2026-09-30T12:00:00.000Z");
@@ -16,6 +27,8 @@ describe("sweepStalePostgresDirs", () => {
 
   afterEach(async () => {
     await rm(root, { recursive: true, force: true });
+    statMock.mockClear();
+    statMock.mockImplementation(realStat);
   });
 
   async function makeDir(name: string, ageMs: number): Promise<string> {
@@ -80,6 +93,16 @@ describe("sweepStalePostgresDirs", () => {
 
   it("ignores a sibling entry not named semprec-pg-*", async () => {
     await makeDir("some-other-dir", 25 * HOUR_MS);
+
+    const removed = await sweepStalePostgresDirs({ tmpDir: root, now: () => NOW });
+
+    expect(removed).toEqual([]);
+  });
+
+  it("skips a directory removed by another process between readdir and stat", async () => {
+    await makeDir("semprec-pg-race", 25 * HOUR_MS);
+    const enoent = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    statMock.mockRejectedValueOnce(enoent);
 
     const removed = await sweepStalePostgresDirs({ tmpDir: root, now: () => NOW });
 
