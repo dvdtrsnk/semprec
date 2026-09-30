@@ -1,9 +1,15 @@
 import type { PoolClient } from "pg";
 import { requireSingleRow } from "../db/pool.js";
-import { NotFoundError, PropertyLockedError, SchemaLockedError, ValidationError } from "../errors.js";
+import { ConflictError, NotFoundError, PropertyLockedError, SchemaLockedError, ValidationError } from "../errors.js";
 import { PROPERTY_TYPES, type DatabaseRow, type PropertyOwner, type PropertyRow, type PropertyType } from "../types.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { getDatabase } from "./databasesStore.js";
+
+/** True when a Postgres error is the named unique-index violation, so callers can turn it into a clean ConflictError. */
+function isUniqueViolation(err: unknown, constraint: string): boolean {
+  const pgErr = err as { code?: string; constraint?: string };
+  return pgErr?.code === "23505" && pgErr?.constraint === constraint;
+}
 
 /**
  * Issue #145: a select/multi_select property's `config.options` must already be in the
@@ -187,22 +193,32 @@ export async function createProperty(client: PoolClient, input: CreatePropertyIn
   }
   assertValidSelectOptions(input.type, input.config);
 
-  const { rows } = await client.query<PropertyDbRow>(
-    `INSERT INTO properties (database_id, key, name, type, config, locked, owner, owner_process)
-     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
-     RETURNING ${PROPERTY_COLUMNS}`,
-    [
-      input.databaseId,
-      input.key,
-      input.name,
-      input.type,
-      JSON.stringify(input.config ?? {}),
-      input.locked ?? false,
-      input.owner ?? "user",
-      input.ownerProcess ?? null,
-    ],
-  );
-  return mapPropertyRow(requireSingleRow(rows, "properties row"));
+  try {
+    const { rows } = await client.query<PropertyDbRow>(
+      `INSERT INTO properties (database_id, key, name, type, config, locked, owner, owner_process)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+       RETURNING ${PROPERTY_COLUMNS}`,
+      [
+        input.databaseId,
+        input.key,
+        input.name,
+        input.type,
+        JSON.stringify(input.config ?? {}),
+        input.locked ?? false,
+        input.owner ?? "user",
+        input.ownerProcess ?? null,
+      ],
+    );
+    return mapPropertyRow(requireSingleRow(rows, "properties row"));
+  } catch (err) {
+    if (isUniqueViolation(err, "properties_database_id_key_key")) {
+      throw new ConflictError(`Property key '${input.key}' already exists in database ${input.databaseId}`, {
+        field: "key",
+        reason: "duplicate",
+      });
+    }
+    throw err;
+  }
 }
 
 /** The label is always renamable — `locked` governs deletion / type change, never the display name. */

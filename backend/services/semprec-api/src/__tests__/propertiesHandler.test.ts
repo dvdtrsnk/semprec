@@ -429,4 +429,20 @@ describe("property routes (issue #240)", () => {
     const res = await fetch(`${baseUrl}/api/properties`, { headers });
     expect(res.status).toBe(400);
   });
+
+  it("returns 409 version_conflict naming 'key' when creating a property with a duplicate key (issue #672)", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const database = await chokePoint.createDatabase({ name: "D" });
+    await chokePoint.createProperty({ databaseId: database.id, key: "title", name: "Title", type: "text" });
+
+    const res = await fetch(`${baseUrl}/api/databases/${database.id}/properties`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ key: "title", name: "Other Title", type: "text" }),
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: { code: string; details?: { field?: string; reason?: string } } };
+    expect(body.error.code).toBe("version_conflict");
+    expect(body.error.details?.field).toBe("key");
+  });
 });
