@@ -27,6 +27,21 @@ the write and its domain side effect to share one transaction — but the
 generic write path knew three domains by name, and every further domain
 wanting the same would add another import with nothing to catch it.
 
+[[2026-09-28-module-transactional-side-effects-inline-at-choke-point]]
+documents the inline-import shape this ADR's Decision replaces for all three
+side effects it names — the Emails desired-flags write, the Tasks recurrence
+advance, and the Transcript speaker-edge validation. Issue #659, which this
+ADR implements, scopes `supersedes: []` and forbids editing any existing ADR
+file (`git diff --stat docs/adr/` must show no other file changed), so
+`2026-09-28-module-transactional-side-effects-inline-at-choke-point` stays
+`accepted` even though the inline-call shape it describes no longer exists in
+the code after this PR. A reader who finds both ADRs while adding a new
+domain's transactional side effect should follow this one, the registry —
+not the inline-import shape 2026-09-28 documents. Reconciling the two
+ADRs' frontmatter (a proper supersession) is left to a follow-up issue,
+per this repository's "the issue is the law" convention: it is not this
+ADR's decision to make.
+
 `ChokePointDeps`/`createChokePoint()` could not carry these as injected
 dependencies: about sixty call sites across every domain (mail sync, inbox,
 docs, library, tasks, transcription, …) call `createItemWithClient` /
