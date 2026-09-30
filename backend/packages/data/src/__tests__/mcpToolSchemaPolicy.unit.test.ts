@@ -55,4 +55,12 @@ describe("assertAcceptableMcpToolSchema (issue #696)", () => {
     const schema = { type: "object", properties: { a: { type: "string", pattern: "(unclosed" } } };
     expect(() => assertAcceptableMcpToolSchema(schema)).toThrow(ValidationError);
   });
+
+  it("rejects a schema nested deeper than the maximum depth without exceeding the byte cap", () => {
+    let schema: Record<string, unknown> = { type: "string" };
+    for (let i = 0; i < 200; i++) {
+      schema = { type: "object", properties: { a: schema } };
+    }
+    expect(() => assertAcceptableMcpToolSchema(schema)).toThrow(ValidationError);
+  });
 });
