@@ -86,6 +86,13 @@ function failingSeedPool(target: Pool, failItemId: string): Pool {
     get(t, prop, receiver) {
       if (prop === "connect") {
         return async (...args: unknown[]) => {
+          // `pool.query()` (a heartbeat tick's own write, unrelated to this helper's rewrite
+          // target) calls `this.connect(callback)` in callback style internally, which doesn't
+          // resolve a client through this wrapper's return value at all. Only the promise-style
+          // call this helper's SAVEPOINT-seeding transaction actually makes needs wrapping.
+          if (typeof args[0] === "function") {
+            return (t.connect as (...a: unknown[]) => unknown)(...args);
+          }
           const client = await (t.connect as (...a: unknown[]) => Promise<PoolClient>)(...args);
           return new Proxy(client, {
             get(clientTarget, clientProp, clientReceiver) {
@@ -482,15 +489,22 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     );
 
     const { pool: countingPool, connectCount } = countingConnectPool(failingSeedPool(pool, b.id));
+    // Each hosted account's first heartbeat tick fires `pool.query()` immediately without being
+    // awaited by `startProcessHeartbeat` — left untracked, that write can still be in flight when
+    // this test (or a later one sharing the module-level `pool`) tears the connection down,
+    // surfacing as an unrelated unhandled rejection deep in `failingSeedPool`'s proxy. Draining it
+    // here keeps this test's own async work fully settled before it returns.
+    const { pool: trackingPool, drain } = heartbeatTrackingPool(countingPool);
 
     const errors: Array<{ mailboxItemId: string; phase: string }> = [];
     const { factory, byAccount } = recordingFactory();
-    const root = createMailLiveSyncRoot(countingPool, mailboxesId, factory, {
+    const root = createMailLiveSyncRoot(trackingPool, mailboxesId, factory, {
       onLifecycleError: (mailboxItemId, phase) => errors.push({ mailboxItemId, phase }),
     });
 
     const before = connectCount();
     await root.reconcileOnce();
+    await drain();
 
     // A single page (three accounts, well under the 200-row page limit) costs exactly one
     // transaction for the whole page's read-and-seed, not one per account — plus one more
@@ -514,6 +528,7 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     expect(stateC).not.toBeNull();
 
     await root.stop();
+    await drain();
   });
 
   it("resets the started guard when start()'s initial reconcile throws, so a later start() is not a permanent no-op", async () => {
