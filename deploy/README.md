@@ -10,7 +10,10 @@ and host provisioning (#244, #176):
   `POST /api/files` request-body limit. Proxies everything to `semprec-api` on `127.0.0.1:8080`.
   Installed to `/etc/caddy/Caddyfile` by `provision.sh`, which also enables `caddy.service` and
   hands it `SEMPREC_DOMAIN` through `/etc/caddy/semprec.env`.
-- `nftables.conf` — the host firewall: only 22/80/443 reachable from outside the host.
+- `nftables.conf` — the host firewall: only 22/80/443 reachable from outside the host. Installed
+  to `/etc/nftables.conf` and enabled by `provision.sh`, which also reloads `nftables.service`. It
+  owns only its own `table inet semprec` and never flushes the ruleset, so Docker's own `ip
+  filter`/`ip nat` tables are left alone.
 - `docker-compose.yml` — PostgreSQL and MinIO, both explicitly bound to `127.0.0.1`, both loading
   their init-time credentials from `/opt/semprec/shared/.env` via `env_file:`.
 - `shared/.env.example` — the values-free template for `/opt/semprec/shared/.env`, the one
@@ -215,3 +218,11 @@ validates the rendered config. Rerunning with an unchanged domain is a no-op on 
 
 `PORT=8080` must also be set in the shared `.env` — `Caddyfile`'s `reverse_proxy` targets
 `127.0.0.1:8080` and `semprec-api` listens on `PORT`, so the two values have to agree.
+
+## Host firewall (nftables)
+
+`provision.sh` installs `nftables.conf` to `/etc/nftables.conf`, enables `nftables.service`, and
+reloads it. The ruleset owns only its own `table inet semprec` and never flushes the ruleset, so
+Docker's own `ip filter`/`ip nat` tables — and the port mappings and masquerading they provide —
+are left alone. Container-to-container traffic is governed entirely by Docker's own chains; this
+ruleset has no `forward` chain of its own.

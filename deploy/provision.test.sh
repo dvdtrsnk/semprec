@@ -31,6 +31,8 @@ sed -i "s|readonly CADDY_CONFIG_DIR=/etc/caddy|readonly CADDY_CONFIG_DIR=$TEST_R
   "$TEST_DEPLOY/provision.sh"
 sed -i "s|readonly CADDY_UNIT_DROPIN_DIR=/etc/systemd/system/caddy.service.d|readonly CADDY_UNIT_DROPIN_DIR=$TEST_ROOT/systemd/system/caddy.service.d|" \
   "$TEST_DEPLOY/provision.sh"
+sed -i "s|readonly NFTABLES_CONFIG=/etc/nftables.conf|readonly NFTABLES_CONFIG=$TEST_ROOT/nftables.conf|" \
+  "$TEST_DEPLOY/provision.sh"
 sed -i "s|readonly APT_KEYRING_DIR=/etc/apt/keyrings|readonly APT_KEYRING_DIR=$TEST_ROOT/keyrings|" \
   "$TEST_DEPLOY/provision.sh"
 sed -i "s|readonly APT_SOURCES_DIR=/etc/apt/sources.list.d|readonly APT_SOURCES_DIR=$TEST_ROOT/sources|" \
@@ -84,6 +86,7 @@ if [[ "$1" == "exec" ]]; then
   esac
 fi'
 write_mock caddy 'echo "caddy $*" >> "$TEST_STATE/commands"'
+write_mock nft 'echo "nft $*" >> "$TEST_STATE/commands"'
 
 run_provision() {
   PATH="$TEST_BIN:$PATH" bash "$TEST_DEPLOY/provision.sh"
@@ -152,6 +155,7 @@ grep -q 'caddy' "$TEST_STATE/commands"
 grep -q 'restic' "$TEST_STATE/commands"
 grep -q 'ffmpeg' "$TEST_STATE/commands"
 grep -q 'hunspell-cs' "$TEST_STATE/commands"
+grep -q 'nftables' "$TEST_STATE/commands"
 test "$(grep -c '^docker cp ' "$TEST_STATE/commands")" -eq 2
 
 test -f "$TEST_ROOT/caddy/Caddyfile"
@@ -171,6 +175,16 @@ run_provision
 test "$(cat "$TEST_ROOT/caddy/semprec.env")" = "$semprec_env_before"
 test "$(grep -c '^caddy validate ' "$TEST_STATE/commands")" -eq 2
 test "$(grep -c '^systemctl reload-or-restart caddy$' "$TEST_STATE/commands")" -eq 2
+
+test -f "$TEST_ROOT/nftables.conf"
+grep -qx 'table inet semprec' "$TEST_ROOT/nftables.conf"
+if grep -q '^flush ruleset' "$TEST_ROOT/nftables.conf"; then
+  echo "nftables.conf flushes the whole ruleset, which would delete Docker's own tables" >&2
+  exit 1
+fi
+grep -q "^nft -c -f $TEST_ROOT/nftables.conf$" "$TEST_STATE/commands"
+grep -qx 'systemctl enable nftables' "$TEST_STATE/commands"
+grep -qx 'systemctl reload-or-restart nftables' "$TEST_STATE/commands"
 
 chmod 000 "$TEST_STATE/hunspell/cs_CZ.dic"
 if run_provision >"$TEST_STATE/unreadable-asset.out" 2>&1; then
