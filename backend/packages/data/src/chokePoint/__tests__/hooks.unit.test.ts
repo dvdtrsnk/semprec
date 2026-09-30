@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { PoolClient } from "pg";
-import { clearHooksForTests, registerItemUpdateHook, runItemUpdateHooks, type ItemUpdateHookContext } from "../hooks.js";
+import {
+  clearHooksForTests,
+  registerItemUpdateHook,
+  runItemUpdateHooks,
+  type ItemUpdateHookContext,
+} from "../hooks.js";
 
 const CONTEXT: ItemUpdateHookContext = {
   client: {} as PoolClient,
