@@ -79,7 +79,8 @@ In this order, because each step is cheaper than the one after it:
 2. **Sweep for leftovers** — debug prints, commented-out code, files unrelated
    to this issue.
 3. **Run the pipeline**: `pnpm run verify` in `backend/`, then in `web/`. This
-   is the same sequence CI runs, in the same order.
+   is the same sequence CI runs, in the same order. The host is shared — read
+   `.bb/AGENTS.md` before you wait on, kill or log a process.
 
 Fix what each step finds and commit it before moving on.
 
