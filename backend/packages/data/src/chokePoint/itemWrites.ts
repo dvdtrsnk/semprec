@@ -371,6 +371,22 @@ export async function convergeObservedEmailFlagsWithClient(
   );
 }
 
+/**
+ * The items-row `FOR UPDATE` lock `mail/mailFlagObservation.ts`'s `applyObservedMailMessageFlags`
+ * takes before it locks `mail_message_flag_sync_state`, in that order — see that function's doc
+ * comment for why the ordering matters. Exposed here, next to `convergeObservedEmailFlagsWithClient`
+ * (mail sync's other declared handoff into the choke point), so mail sync locks the items row
+ * through chokePoint's own public write surface instead of importing `itemsStore.js` — an internal
+ * module only chokePoint/ files import from — directly.
+ */
+export async function lockItemForObservedMailFlags(
+  client: PoolClient,
+  databaseId: string,
+  itemId: string,
+): Promise<ItemRow | null> {
+  return itemsStore.lockItemById(client, databaseId, itemId);
+}
+
 export function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAffinity">) {
   const { pool, queueAffinity } = deps;
   return {
