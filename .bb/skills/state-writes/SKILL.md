@@ -12,7 +12,8 @@ hangs on writes being observable in exactly one place.
 Recorded as ADRs: `docs/adr/2026-09-10-choke-point-api-for-state-writes.md`,
 `docs/adr/2026-09-10-single-writer-ownership-model.md`,
 `docs/adr/2026-09-10-agent-writes-are-proposals-not-direct-writes.md`,
-`docs/adr/2026-09-10-side-effects-follow-the-commit.md`.
+`docs/adr/2026-09-10-side-effects-follow-the-commit.md`,
+`docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md`.
 
 ## 1. All writes go through the choke-point
 
@@ -29,6 +30,20 @@ edit history lies.
 
 The one exception: an issue whose explicit Task is to build or extend the
 choke-point itself.
+
+A domain's transactional side effect on an item or relation-edge write — one
+that must share the write's own open transaction, per §4 below — is never
+added as a direct import inside a choke-point module (`chokePoint/itemWrites.ts`,
+`chokePoint/relationOps.ts`, …). The `chokepoint-knows-no-domain`
+dependency-cruiser rule forbids it. Instead, register a hook next to the
+domain logic it wraps and add it to `backend/packages/data/src/domainWriteHooks.ts`,
+the single composition point that wires every domain's hook into
+`chokePoint/hooks.ts`'s per-process registries:
+`registerItemUpdateHook`/`runItemUpdateHooks` for `updateItemWithClient`, and
+`registerRelationEdgeWriteHook`/`runRelationEdgeWriteHooks` for
+`createRelationWithClient`/`updateRelationWithClient`. See
+`docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md`
+for the rationale and the boundary rule's exemptions.
 
 ## 2. One owner, one writer
 
@@ -82,6 +97,16 @@ reaches the caller, because the write it announces actually succeeded. That is
 deliberate, and it cuts both ways: a callback whose delivery matters has to
 report its own failure, since nothing above it will. Anything needing a real
 delivery guarantee belongs in a queue job written inside the same transaction.
+
+This is a different pattern from the domain write hooks in §1: `runAfterCommit`
+is for effects that must observe the committed row and are allowed to fail
+independently of the write (`NOTIFY`, a push, an invalidation). A domain side
+effect that itself must be part of the write's atomicity — it either commits
+with the row or rolls back with it — is not a "side effect that follows the
+commit" at all; it is registered via `registerItemUpdateHook`/
+`registerRelationEdgeWriteHook` and runs *inside* the transaction, before
+commit. Reach for `runAfterCommit` only once the domain hook's own transactional
+work is done and something outside the transaction needs to know.
 
 Related checks worth doing in the same pass:
 
