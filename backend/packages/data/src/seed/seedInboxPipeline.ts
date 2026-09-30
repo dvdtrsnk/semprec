@@ -261,15 +261,13 @@ export async function seedInboxPipelineInTransaction(
     [inbox.id, inboxItemTypes.id, processingProposals.id],
   ]);
 
-  const defaultViewDatabases: Array<[database: DatabaseRow, name: string]> = [
-    [all.inbox, "Inbox"],
-    [all.inboxItemTypes, "Inbox item types"],
-    [all.processingProposals, "Processing proposals"],
-  ];
-  for (const [database, name] of defaultViewDatabases) {
+  // View name is sourced from `database.name` — createDb above always supplies one for these
+  // three databases — so the label's single source of truth stays outside this file.
+  const defaultViewDatabases: DatabaseRow[] = [all.inbox, all.inboxItemTypes, all.processingProposals];
+  for (const database of defaultViewDatabases) {
     await viewsStore.createView(
       client,
-      { databaseId: database.id, type: "table", name, isDefault: true, createdBy: "system" },
+      { databaseId: database.id, type: "table", name: database.name!, isDefault: true, createdBy: "system" },
       viewTypeRegistry,
     );
   }
