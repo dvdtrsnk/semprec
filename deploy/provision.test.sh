@@ -205,4 +205,6 @@ for unit in semprec-api semprec-agents semprec-transcribe semprec-ai-gateway; do
   grep -qx 'StartLimitBurst=180' "$TEST_ROOT/systemd/system/$unit.service"
 done
 
+grep -qx 'TimeoutStopSec=960' "$TEST_ROOT/systemd/system/semprec-transcribe.service"
+
 echo 'provision.sh idempotence test passed'

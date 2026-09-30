@@ -665,6 +665,126 @@ describe("transcription steps 2 and 3 (diarize, ASR)", () => {
     const asr = asrCheckpointSchema.parse(finalSource?.computed.asr);
     expect(Object.keys(asr.chunks)).toEqual(["0", "1"]);
   });
+
+  async function readTranscriptStatus(fileId: string): Promise<{ id: string; status: unknown }> {
+    const { rows } = await pool.query<{ id: string; status: unknown }>(
+      `SELECT t.id, t.properties->>'status' AS status FROM items f JOIN items t ON t.id = (f.computed->>'create')::uuid
+       WHERE f.id = $1`,
+      [fileId],
+    );
+    const row = rows[0];
+    if (!row) throw new Error("expected a transcript for the file");
+    return row;
+  }
+
+  async function readAutomation(transcriptId: string) {
+    const { rows } = await pool.query<{ status: string; error: string | null; attempts: number }>(
+      "SELECT status, error, attempts FROM item_automation WHERE item_id = $1",
+      [transcriptId],
+    );
+    const row = rows[0];
+    if (!row) throw new Error("expected an item_automation row");
+    return row;
+  }
+
+  async function readQueuedJobAttempts(fileId: string): Promise<Array<{ attempts: number }>> {
+    const { rows } = await pool.query<{ attempts: number }>(
+      "SELECT attempts FROM graphile_worker.jobs WHERE key = $1",
+      [`transcription-job:${fileId}`],
+    );
+    return rows;
+  }
+
+  it("stops at the next ASR checkpoint when shutdown is requested and re-enqueues itself", async () => {
+    const { files, file } = await createSourceFile(audioFixture);
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+    await inflateDurationAndResetLaterSteps(file.id, 45 * 60);
+    gatewayClient.diarizeCalls = [];
+    gatewayClient.transcribeCalls = [];
+
+    const controller = new AbortController();
+    gatewayClient.transcribeResult = (request) => {
+      const index = gatewayClient.transcribeCalls.length - 1;
+      if (index === 0) controller.abort();
+      return { text: `chunk-${index}`, language: request.language ?? "cs", segments: [] };
+    };
+
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, { job: { attempts: 1, max_attempts: 3 }, abortSignal: controller.signal });
+
+    expect(gatewayClient.transcribeCalls).toHaveLength(1);
+    const midSource = await readSource(files.id, file.id);
+    expect(Object.keys(asrCheckpointSchema.parse(midSource?.computed.asr).chunks)).toEqual(["0"]);
+
+    expect(await readQueuedJobAttempts(file.id)).toEqual([{ attempts: 0 }]);
+
+    // The recording already finalized once before duration/checkpoints were reset for this test
+    // (`inflateDurationAndResetLaterSteps` needs step 1's checkpoint), so `properties.status` still
+    // reads its prior "done" — only `item_automation`, re-opened by this attempt, shows the
+    // interruption left nothing failed.
+    const transcript = await readTranscriptStatus(file.id);
+    const automation = await readAutomation(transcript.id);
+    expect(automation.status).toBe("pending");
+    expect(automation.error).toBeNull();
+
+    gatewayClient.transcribeCalls = [];
+    gatewayClient.transcribeResult = (request) => {
+      const index = gatewayClient.transcribeCalls.length - 1;
+      return { text: `chunk-${index + 1}`, language: request.language ?? "cs", segments: [] };
+    };
+
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, { job: { attempts: 2, max_attempts: 3 } });
+
+    expect(gatewayClient.transcribeCalls).toHaveLength(2);
+    const finalSource = await readSource(files.id, file.id);
+    expect(Object.keys(asrCheckpointSchema.parse(finalSource?.computed.asr).chunks)).toEqual(["0", "1", "2"]);
+    expect((await readTranscriptStatus(file.id)).status).toBe("done");
+  });
+
+  it("stops between steps when shutdown is requested", async () => {
+    const { files, file } = await createSourceFile(audioFixture);
+    const controller = new AbortController();
+    gatewayClient.transcribeResult = () => {
+      controller.abort();
+      return { text: "chunk-0", language: "cs", segments: [] };
+    };
+
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, { job: { attempts: 1, max_attempts: 3 }, abortSignal: controller.signal });
+
+    expect(summaryClient.calls).toHaveLength(0);
+    expect(await readQueuedJobAttempts(file.id)).toEqual([{ attempts: 0 }]);
+    const transcript = await readTranscriptStatus(file.id);
+    expect(transcript.status).toBe("processing");
+    const automation = await readAutomation(transcript.id);
+    expect(automation.status).toBe("pending");
+    expect(automation.error).toBeNull();
+    const source = await readSource(files.id, file.id);
+    expect(source?.computed.asr).toBeDefined();
+    const { rows: transcriptRows } = await pool.query<{ computed: { segments?: unknown } }>(
+      "SELECT computed FROM items WHERE id = $1",
+      [transcript.id],
+    );
+    expect(transcriptRows[0]?.computed.segments).toBeUndefined();
+  });
 });
 
 const transcriptOutputSchema = z.object({

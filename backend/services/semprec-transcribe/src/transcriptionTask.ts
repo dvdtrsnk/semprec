@@ -18,6 +18,7 @@ import {
   createItemWithClient,
   createBlob,
   getBlob,
+  enqueueTranscriptionJob,
   ensureItemAutomation,
   getEarliestUserId,
   getItemById,
@@ -108,6 +109,19 @@ export class TranscriptionLockedError extends Error {
   }
 }
 
+/**
+ * A shutdown signal (graphile-worker's `Runner.stop()` aborting `helpers.abortSignal`) arrived
+ * between checkpoints. Thrown instead of letting the step continue, so the handler's `catch`
+ * re-enqueues a fresh job to resume from the checkpoints already written rather than losing the
+ * in-flight step to a SIGKILL.
+ */
+export class TranscriptionInterruptedError extends Error {
+  constructor(fileItemId: string, where: string) {
+    super(`Shutdown requested while transcribing Files item '${fileItemId}' (${where})`);
+    this.name = "TranscriptionInterruptedError";
+  }
+}
+
 /** Identifies the source file a run transcribes; all step 0 and the attempt start need. */
 interface TranscriptionSourceContext {
   pool: Pool;
@@ -118,6 +132,13 @@ interface TranscriptionSourceContext {
 /** Steps 1–8 also know the Transcriptions row step 0 created, whose lock every one of their transactions checks. */
 interface TranscriptionStepContext extends TranscriptionSourceContext {
   transcriptId: string;
+  /** True once graphile-worker's `Runner.stop()` has begun; checked between checkpoints via `throwIfShutdownRequested`. */
+  shutdownRequested: () => boolean;
+}
+
+/** Throws `TranscriptionInterruptedError` when the step context's shutdown signal has fired. Called between checkpoints, never mid-write, so it never interrupts a step's own transaction. */
+function throwIfShutdownRequested(context: TranscriptionStepContext, where: string): void {
+  if (context.shutdownRequested()) throw new TranscriptionInterruptedError(context.fileItemId, where);
 }
 
 /**
@@ -371,10 +392,11 @@ async function runDiarizeStep(
  * on chunk 0 is passed explicitly to every later chunk, including across a resume.
  */
 async function runAsrStep(
-  { pool, filesDatabaseId, fileItemId, transcriptId }: TranscriptionStepContext,
+  context: TranscriptionStepContext,
   blobStorage: BlobStorageWriter,
   gatewayClient: AudioGatewayClient,
 ): Promise<void> {
+  const { pool, filesDatabaseId, fileItemId, transcriptId } = context;
   const prepare = await withTransaction(pool, async (client) => {
     const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
     return requirePrepareCheckpoint(source, fileItemId);
@@ -408,6 +430,7 @@ async function runAsrStep(
         continue;
       }
 
+      throwIfShutdownRequested(context, `ASR chunk ${index}`);
       const chunkAudio = await extractAudioChunkBytes(tempPath, boundary.start, boundary.end - boundary.start);
       const result = await gatewayClient.transcribe({
         audio: chunkAudio,
@@ -765,6 +788,8 @@ async function recordTranscriptionFailure(
 /** The part of graphile-worker's `JobHelpers` this task reads: which attempt of how many this run is. */
 export interface TranscriptionJobHelpers {
   job: { attempts: number; max_attempts: number };
+  /** graphile-worker 0.17 aborts this `gracefulShutdownAbortTimeout` (5s) after `Runner.stop()` begins. Optional so existing tests' `{ job: {...} }` helpers keep compiling. */
+  abortSignal?: AbortSignal;
 }
 
 function requireGatewayInternalToken(): string {
@@ -783,7 +808,13 @@ function requireGatewayInternalToken(): string {
  * is recorded by `recordTranscriptionFailure` and rethrown for graphile-worker to retry, except a
  * budget rejection: that is permanent at once, so once recorded the job completes instead of
  * spending its remaining attempts on calls the gateway will reject. A failure in step 0 happens
- * before there is a Transcriptions row to record it on and is only rethrown.
+ * before there is a Transcriptions row to record it on and is only rethrown. When
+ * `helpers.abortSignal` fires (graphile-worker's `Runner.stop()`, given the systemd unit's
+ * `TimeoutStopSec` to let the in-flight chunk finish and checkpoint), the next
+ * `throwIfShutdownRequested` check — before a step or an ASR chunk — throws
+ * `TranscriptionInterruptedError`; the handler re-enqueues a fresh job for the same file and
+ * returns normally, recording no failure, so the interrupted attempt spends none of the job's
+ * three attempts and resumes from the checkpoints already written.
  * `blobStorage` defaults to the same local-filesystem backend semprec-api writes Files blobs to
  * (issue #246), configured via `FILES_STORAGE_DIR`. `gatewayClient` defaults to a loopback HTTP
  * client for `semprec-ai-gateway`'s `/internal/diarize` and `/internal/transcribe` routes
@@ -827,7 +858,11 @@ export function createTranscriptionTask(
     await runCreateStep(sourceContext);
     const transcriptId = await startTranscriptionAttempt(sourceContext);
     if (!transcriptId) return;
-    const context: TranscriptionStepContext = { ...sourceContext, transcriptId };
+    const context: TranscriptionStepContext = {
+      ...sourceContext,
+      transcriptId,
+      shutdownRequested: () => helpers.abortSignal?.aborted === true,
+    };
 
     const transcriptionSteps = createTranscriptionSteps(
       blobStorage,
@@ -836,9 +871,20 @@ export function createTranscriptionTask(
       summaryInstruction,
     );
     try {
-      for (const step of transcriptionSteps) await step(context);
+      for (const step of transcriptionSteps) {
+        throwIfShutdownRequested(context, "between steps");
+        await step(context);
+      }
     } catch (err) {
       if (err instanceof TranscriptionLockedError) return;
+      if (err instanceof TranscriptionInterruptedError) {
+        await withTransaction(pool, (client) => enqueueTranscriptionJob(client, { fileItemId }));
+        logger.info(
+          { transcriptId, fileItemId },
+          "Shutdown requested; re-enqueued the transcription to resume from its checkpoints",
+        );
+        return;
+      }
       const budgetRejected = isBudgetRejection(err);
       const permanent = budgetRejected || helpers.job.attempts >= helpers.job.max_attempts;
       const message = err instanceof Error ? err.message : String(err);
