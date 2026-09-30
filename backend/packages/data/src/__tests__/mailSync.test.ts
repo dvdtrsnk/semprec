@@ -38,7 +38,12 @@ import { sanitizeMailHtml } from "../mail/htmlSanitize.js";
 import { parseMailSearchQuery, reindexItemSearch, searchItems } from "../mail/search.js";
 import { ValidationError } from "../errors.js";
 import { storeCredential, getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
-import { reconcileImapAccount, type ImapFetchedMessage, type ImapMailClient } from "../mail/imapReconcile.js";
+import {
+  reconcileImapAccount,
+  reconcileImapFolder,
+  type ImapFetchedMessage,
+  type ImapMailClient,
+} from "../mail/imapReconcile.js";
 import { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
 import { reconcileGraphAccount, type GraphMailClient } from "../mail/graphReconcile.js";
 import {
@@ -72,7 +77,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
-import { listPendingImapFlagWrites } from "../mail/mailMessageFlagSyncStore.js";
+import { listPendingImapFlagWrites, recordConfirmedMailMessageFlag } from "../mail/mailMessageFlagSyncStore.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1415,6 +1420,7 @@ describe("IMAP reconcile core (issue #26)", () => {
       ],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [1, 2],
+      fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
       ...overrides,
     };
@@ -2111,6 +2117,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [],
+      fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
     };
 
@@ -2204,6 +2211,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => null,
       fetchAllUids: async () => [],
+      fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
     };
     await handleSyncMailAccountTask(
@@ -2244,6 +2252,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchAllUids: async () => {
         throw new Error("boom after the attachment was already written");
       },
+      fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
     };
 
@@ -2283,6 +2292,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [],
+      fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
     };
     const adapters: MailSyncAdapterFactory = { createImapClient: async () => emptyImap };
@@ -2525,6 +2535,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [],
+      fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
     }));
     const adapters: MailSyncAdapterFactory = { createImapClient };
@@ -2562,6 +2573,7 @@ describe("mail sync job error handling (issue #26)", () => {
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [],
+      fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
     }));
     const adapters: MailSyncAdapterFactory = { createImapClient };
@@ -3634,6 +3646,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [],
+      fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
     };
 
@@ -3689,6 +3702,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [],
+      fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
     };
 
@@ -3764,6 +3778,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [],
+      fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
     };
     const emptyImap: ImapMailClient = {
@@ -3773,6 +3788,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => [],
       fetchAllUids: async () => [],
+      fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
     };
 
@@ -3874,6 +3890,7 @@ describe("mail flag write-back (issue #251)", () => {
       fetchMessagesSince: async (path) => [{ uid: path === "INBOX" ? 1 : 2, message }],
       fetchVanishedSince: async () => [],
       fetchAllUids: async (path) => (path === "INBOX" ? [1] : [2]),
+      fetchFlagsChangedSince: async () => [],
       setMessageFlag: async () => {},
     };
     await withTransaction(pool, (client) => reconcileImapAccount(client, initial, params));
@@ -3951,6 +3968,281 @@ describe("mail flag write-back (issue #251)", () => {
         { path: "Archive", flag: IMAP_FLAGGED_FLAG, value: true },
       ]),
     );
+  });
+});
+
+describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+    await seedSystem(pool);
+  });
+
+  async function relationDefinitionIdFor(propertyId: string): Promise<string> {
+    const { rows } = await pool.query<{ id: string }>(
+      "SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1",
+      [propertyId],
+    );
+    return rows[0]!.id;
+  }
+
+  async function flagStateRowFor(itemId: string, propertyKey: string) {
+    const { rows } = await pool.query<{ desired_state: boolean; current_state: boolean }>(
+      `SELECT desired_state, current_state FROM mail_message_flag_sync_state
+       WHERE message_item_id = $1 AND property_key = $2`,
+      [itemId, propertyKey],
+    );
+    return rows[0];
+  }
+
+  /** One Mailbox with one Folder, and the params reconcileImapFolder needs for it. */
+  async function setUpFolder() {
+    const [emailsId, foldersId, filesId, mailboxesId] = await Promise.all([
+      databaseIdFor("emails"),
+      databaseIdFor("folders"),
+      databaseIdFor("files"),
+      databaseIdFor("mailboxes"),
+    ]);
+    const [emailProperties, folderProperties] = await Promise.all([
+      chokePoint.listProperties(emailsId),
+      chokePoint.listProperties(foldersId),
+    ]);
+    const mailbox = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M", provider: "generic" } }),
+    );
+    const folderRelationPropertyId = emailProperties.find((p) => p.key === "folder")!.id;
+    const mailboxFolderRelationPropertyId = folderProperties.find((p) => p.key === "mailbox")!.id;
+    const folder = await withTransaction(pool, async (client) => {
+      const created = await createItemWithClient(
+        client,
+        { databaseId: foldersId, properties: { name: "INBOX", behavior: "folder", providerId: "INBOX" } },
+        { allowedSystemKeys: ["name", "behavior", "providerId"] },
+      );
+      await createRelationWithClient(
+        client,
+        { relationPropertyId: mailboxFolderRelationPropertyId, callerItemId: created.id, targetItemId: mailbox.id },
+        { ownerProcess: FOLDERS_MODULE_ID },
+      );
+      return created;
+    });
+    const params = {
+      folderItemId: folder.id,
+      folderPath: "INBOX",
+      emailsDatabaseId: emailsId,
+      filesDatabaseId: filesId,
+      folderRelationPropertyId,
+      attachmentsRelationPropertyId: emailProperties.find((p) => p.key === "attachments")!.id,
+      storage: noopStorage,
+      storageKeyPrefix: "test",
+      mailboxItemId: mailbox.id,
+      foldersDatabaseId: foldersId,
+      mailboxFolderRelationPropertyId,
+    };
+    return { emailsId, mailbox, folder, params };
+  }
+
+  /** Ingests one message (uid 1, unread/unflagged) via reconcileImapFolder's own initial-sync pass, so mail_folder_sync_state carries real uidnext/uidvalidity for the second pass to build on. */
+  async function ingestFirstMessage(
+    params: Awaited<ReturnType<typeof setUpFolder>>["params"],
+    overrides: Partial<ImapMailClient> = {},
+  ): Promise<string> {
+    const firstPassImap: ImapMailClient = {
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [{ path: "INBOX" }],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
+      fetchMessagesSince: async () => [
+        { uid: 1, message: { messageId: "<obs@x>", envelope: {}, attachments: [], flags: [] } },
+      ],
+      fetchVanishedSince: async () => null,
+      fetchAllUids: async () => [1],
+      fetchFlagsChangedSince: async () => [],
+      setMessageFlag: async () => {
+        throw new Error("write-back is out of scope for this test");
+      },
+      ...overrides,
+    };
+    await withTransaction(pool, (client) => reconcileImapFolder(client, firstPassImap, params));
+    const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [
+      params.emailsDatabaseId,
+    ]);
+    return rows[0]!.id;
+  }
+
+  it("(a) an observation on a converged flag replaces the item's value and both state halves, leaving no pending write", async () => {
+    const { emailsId, mailbox, params } = await setUpFolder();
+    const emailItemId = await ingestFirstMessage(params);
+
+    await chokePoint.updateItem({ databaseId: emailsId, itemId: emailItemId, propertiesPatch: { read: true } });
+    await withTransaction(pool, (client) => recordConfirmedMailMessageFlag(client, emailItemId, "read", true));
+    expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: true });
+
+    const secondPassImap: ImapMailClient = {
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [{ path: "INBOX" }],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
+      fetchMessagesSince: async () => [],
+      fetchVanishedSince: async () => null,
+      fetchAllUids: async () => [1],
+      fetchFlagsChangedSince: async () => [{ uid: 1, flags: [] }], // observed unread
+      setMessageFlag: async () => {
+        throw new Error("a converged observation must not be echoed as a write-back");
+      },
+    };
+    await withTransaction(pool, (client) => reconcileImapFolder(client, secondPassImap, params));
+
+    expect((await chokePoint.getItem(emailsId, emailItemId))?.properties.read).toBe(false);
+    expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: false, current_state: false });
+
+    const folderRelationDefinitionId = await relationDefinitionIdFor(params.folderRelationPropertyId);
+    const mailboxFolderRelationDefinitionId = await relationDefinitionIdFor(params.mailboxFolderRelationPropertyId);
+    expect(
+      await listPendingImapFlagWrites(pool, {
+        folderRelationDefinitionId,
+        mailboxFolderRelationDefinitionId,
+        mailboxItemId: mailbox.id,
+      }),
+    ).toEqual([]);
+  });
+
+  it("(b) an observation of the old value while a write is pending leaves the item and the pending write untouched", async () => {
+    const { emailsId, mailbox, params } = await setUpFolder();
+    const emailItemId = await ingestFirstMessage(params);
+
+    // Marked read but never confirmed by write-back — desired true, current still false.
+    await chokePoint.updateItem({ databaseId: emailsId, itemId: emailItemId, propertiesPatch: { read: true } });
+    expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: false });
+
+    const secondPassImap: ImapMailClient = {
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [{ path: "INBOX" }],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
+      fetchMessagesSince: async () => [],
+      fetchVanishedSince: async () => null,
+      fetchAllUids: async () => [1],
+      fetchFlagsChangedSince: async () => [{ uid: 1, flags: [] }], // observed unread, the old value
+      setMessageFlag: async () => {
+        throw new Error("this pass must not attempt a write-back itself");
+      },
+    };
+    await withTransaction(pool, (client) => reconcileImapFolder(client, secondPassImap, params));
+
+    expect((await chokePoint.getItem(emailsId, emailItemId))?.properties.read).toBe(true);
+    expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: false });
+
+    const folderRelationDefinitionId = await relationDefinitionIdFor(params.folderRelationPropertyId);
+    const mailboxFolderRelationDefinitionId = await relationDefinitionIdFor(params.mailboxFolderRelationPropertyId);
+    expect(
+      await listPendingImapFlagWrites(pool, {
+        folderRelationDefinitionId,
+        mailboxFolderRelationDefinitionId,
+        mailboxItemId: mailbox.id,
+      }),
+    ).toEqual([{ messageItemId: emailItemId, propertyKey: "read", desiredState: true, folderPath: "INBOX", uid: 1 }]);
+  });
+
+  it("(c) an observation equal to the pending desired value converges the row without patching the item", async () => {
+    const { emailsId, mailbox, params } = await setUpFolder();
+    const emailItemId = await ingestFirstMessage(params);
+
+    await chokePoint.updateItem({ databaseId: emailsId, itemId: emailItemId, propertiesPatch: { read: true } });
+    expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: false });
+
+    const secondPassImap: ImapMailClient = {
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [{ path: "INBOX" }],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
+      fetchMessagesSince: async () => [],
+      fetchVanishedSince: async () => null,
+      fetchAllUids: async () => [1],
+      fetchFlagsChangedSince: async () => [{ uid: 1, flags: [IMAP_SEEN_FLAG] }], // observed read, matching desired
+      setMessageFlag: async () => {
+        throw new Error("an observation matching desired state must not be echoed as a write-back");
+      },
+    };
+    await withTransaction(pool, (client) => reconcileImapFolder(client, secondPassImap, params));
+
+    expect((await chokePoint.getItem(emailsId, emailItemId))?.properties.read).toBe(true);
+    expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: true });
+
+    const folderRelationDefinitionId = await relationDefinitionIdFor(params.folderRelationPropertyId);
+    const mailboxFolderRelationDefinitionId = await relationDefinitionIdFor(params.mailboxFolderRelationPropertyId);
+    expect(
+      await listPendingImapFlagWrites(pool, {
+        folderRelationDefinitionId,
+        mailboxFolderRelationDefinitionId,
+        mailboxItemId: mailbox.id,
+      }),
+    ).toEqual([]);
+  });
+
+  it("(d) fetchFlagsChangedSince is skipped on the initial sync, called with null without CONDSTORE, and with the stored highestmodseq with it", async () => {
+    const { params } = await setUpFolder();
+    const calls: Array<number | null> = [];
+
+    await ingestFirstMessage(params, {
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: 42 }),
+      fetchFlagsChangedSince: async (_path, sinceModSeq) => {
+        calls.push(sinceModSeq);
+        return [];
+      },
+    });
+    // The very first sync of a folder never calls it: nothing has been observed as "known" yet.
+    expect(calls).toEqual([]);
+
+    const noCondstoreImap: ImapMailClient = {
+      getCapabilities: async () => new Set(),
+      listFolders: async () => [{ path: "INBOX" }],
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: 42 }),
+      fetchMessagesSince: async () => [],
+      fetchVanishedSince: async () => null,
+      fetchAllUids: async () => [1],
+      fetchFlagsChangedSince: async (_path, sinceModSeq) => {
+        calls.push(sinceModSeq);
+        return [];
+      },
+      setMessageFlag: async () => {},
+    };
+    await withTransaction(pool, (client) => reconcileImapFolder(client, noCondstoreImap, params));
+    expect(calls).toEqual([null]);
+
+    const condstoreImap: ImapMailClient = { ...noCondstoreImap, getCapabilities: async () => new Set(["CONDSTORE"]) };
+    await withTransaction(pool, (client) => reconcileImapFolder(client, condstoreImap, params));
+    expect(calls).toEqual([null, 42]);
+  });
+});
+
+describe("ImapFlowMailClient.fetchFlagsChangedSince (issue #681)", () => {
+  function fakeImapFlow(): ImapFlow {
+    const calls: Array<{ criteria: unknown; query: unknown; options: unknown }> = [];
+    return {
+      calls,
+      async mailboxOpen() {
+        return { uidValidity: 1n, uidNext: 3, highestModseq: undefined, noModseq: true };
+      },
+      fetch(criteria: unknown, query: unknown, options: unknown) {
+        calls.push({ criteria, query, options });
+        return (async function* () {
+          yield { uid: 1, flags: new Set([IMAP_SEEN_FLAG]) };
+          yield { uid: 2, flags: new Set() };
+        })();
+      },
+    } as unknown as ImapFlow;
+  }
+
+  it("(e) fetches flags for every known UID, passing changedSince only when a modseq is given", async () => {
+    const raw = fakeImapFlow() as unknown as { calls: Array<{ criteria: unknown; query: unknown; options: unknown }> };
+    const client = new ImapFlowMailClient(raw as unknown as ImapFlow);
+
+    const withoutModseq = await client.fetchFlagsChangedSince("INBOX", null);
+    expect(withoutModseq).toEqual([
+      { uid: 1, flags: [IMAP_SEEN_FLAG] },
+      { uid: 2, flags: [] },
+    ]);
+    expect(raw.calls[0]).toMatchObject({ criteria: "1:*", options: { uid: true } });
+
+    await client.fetchFlagsChangedSince("INBOX", 42);
+    expect(raw.calls[1]).toMatchObject({ criteria: "1:*", options: { uid: true, changedSince: 42n } });
   });
 });
 

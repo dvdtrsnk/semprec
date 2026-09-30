@@ -18,6 +18,7 @@ import { ensureMailAccountSyncState, recordImapActivity } from "./mailAccountSyn
 import type { WritableImapFlag } from "./messageFlags.js";
 import { listPendingImapFlagWrites, recordConfirmedMailMessageFlag } from "./mailMessageFlagSyncStore.js";
 import { createImapMailFlagWritebackAdapter } from "./mailFlagWriteback.js";
+import { applyObservedMailMessageFlags } from "./mailFlagObservation.js";
 
 export interface ImapFetchedMessage {
   uid: number;
@@ -52,6 +53,14 @@ export interface ImapMailClient {
   fetchVanishedSince(path: string, sinceModSeq: number): Promise<number[] | null>;
   /** Every UID currently in the folder — the no-QRESYNC deletion-detection fallback (a full UID diff against what this folder's edges already know, see folderMembershipStore.ts). */
   fetchAllUids(path: string): Promise<number[]>;
+  /**
+   * Flags for every UID the folder already knows about, re-fetched so a change made on the
+   * provider (not through this codebase's own `setMessageFlag`) is observed rather than only
+   * ever seen for messages new since `uidnext`. `sinceModSeq` non-null (CONDSTORE, and a modseq
+   * already stored from a prior pass) fetches only what changed since then; `null` (no
+   * CONDSTORE, or the first pass after a UIDVALIDITY reset) fetches every UID's current flags.
+   */
+  fetchFlagsChangedSince(path: string, sinceModSeq: number | null): Promise<Array<{ uid: number; flags: string[] }>>;
   /**
    * The one place a message flag is ever written on this account — every fetch above must
    * stay peek-only regardless of caller. Exists so an explicit user triage action (mark
@@ -190,6 +199,27 @@ export async function reconcileImapFolder(
 
     if (item.message.gmailLabels) {
       await syncGmailLabelFolders(dbClient, params, relationDefinition.id, result.itemId, item.message.gmailLabels);
+    }
+  }
+
+  // Flags on UIDs this folder already knew about, before this pass's new-message fetch above —
+  // those are re-fetched here rather than relying on a later fetchMessagesSince pass to notice
+  // them, since a UID below sinceUid is never fetched again by that call. Skipped on the very
+  // first sync of a folder (state.uidvalidity not yet recorded): there is nothing to converge
+  // into yet, since every UID in that initial fetchMessagesSince pass is being ingested for the
+  // first time with its flags already seeded at creation.
+  if (state.uidvalidity) {
+    const sinceModSeq = capabilities.has("CONDSTORE") && state.highestmodseq ? Number(state.highestmodseq) : null;
+    const changedFlags = await imap.fetchFlagsChangedSince(params.folderPath, sinceModSeq);
+    for (const { uid, flags } of changedFlags) {
+      if (uid >= sinceUid) continue; // already handled by the new-message loop above
+      const emailItemId = await findEmailItemIdByFolderUid(dbClient, relationDefinition.id, params.folderItemId, uid);
+      if (!emailItemId) continue;
+      await applyObservedMailMessageFlags(dbClient, {
+        emailsDatabaseId: params.emailsDatabaseId,
+        messageItemId: emailItemId,
+        flags,
+      });
     }
   }
 
