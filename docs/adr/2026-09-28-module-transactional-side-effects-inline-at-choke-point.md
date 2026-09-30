@@ -1,9 +1,9 @@
 ---
-status: accepted
+status: superseded
 date: 2026-09-28
 area: [backend]
 supersedes: []
-superseded-by: null
+superseded-by: 2026-09-30-choke-point-domain-hooks-through-a-per-process-registry
 ---
 
 # A module's own transactional side effect on a specific write runs inline in the choke point, gated by module identity and the patch's own content
