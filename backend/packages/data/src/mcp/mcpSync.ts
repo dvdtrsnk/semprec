@@ -8,6 +8,7 @@ import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { connectMcpServer, type McpClientHandle } from "./mcpConnectionFactory.js";
 import { McpConnectionError } from "./mcpConnectionError.js";
 import { deactivateMcpToolRegistrationsNotIn, upsertMcpToolRegistration } from "./mcpToolRegistrationsStore.js";
+import { assertAcceptableMcpToolSchema } from "./mcpToolSchemaPolicy.js";
 
 /**
  * The human-only "Synchronize tools" action (issue #125): opens a connection through the
@@ -79,6 +80,12 @@ export async function listAllTools(client: McpClientHandle["client"]): Promise<R
  * silently collapse into whichever entry it processes last). Both fail the whole sync before
  * anything is written, with a fixed, secret-free message — never the response's own tool
  * name/description content, which originates from the (not fully trusted) server.
+ *
+ * Also applies `assertAcceptableMcpToolSchema` (issue #696) to each tool's `inputSchema` before
+ * anything is written: a schema over 64 KiB, carrying a remote `$ref`, or carrying a `pattern`/
+ * `patternProperties` regex that isn't provably safe from catastrophic backtracking fails the
+ * whole sync exactly like a duplicate name does, since `mcpInvokeTool.ts` compiles and evaluates
+ * this same schema against untrusted-adjacent model-supplied arguments on every future invocation.
  */
 function validateListedTools(tools: readonly RawListedTool[]): ParsedListedTool[] {
   const seenNames = new Set<string>();
@@ -92,6 +99,7 @@ function validateListedTools(tools: readonly RawListedTool[]): ParsedListedTool[
       throw new ValidationError("MCP server's tools/list response listed the same tool name more than once");
     }
     seenNames.add(name);
+    assertAcceptableMcpToolSchema(tool.inputSchema);
     parsed.push({ name, description: tool.description ?? null, inputSchema: tool.inputSchema });
   }
   return parsed;
