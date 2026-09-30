@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
 import type { Pool } from "pg";
-import { withTransaction } from "../db/pool.js";
+import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { safeStorageFilename } from "../mail/attachments.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
@@ -46,6 +46,16 @@ export interface IngestUploadedFileResult {
  * blob (no conflict possible — the blob row itself didn't exist for anyone else to have already
  * created one), or the first caller's whole transaction — blob insert and Files item insert
  * together — has already committed and this call simply finds it.
+ *
+ * `docs/adr/2026-09-10-side-effects-follow-the-commit.md`: writing the bytes has to happen before
+ * the transaction (the content hash driving the dedup only exists once they're written), so both
+ * ways that leaves storage and rows out of step are handled by ordering the cleanup around the
+ * commit rather than by avoiding the early write. If the transaction throws, the bytes just
+ * streamed are always garbage — nothing committed references them — so they're deleted after the
+ * rollback, from the `catch` below. If a dedup hit means the transaction instead keeps a
+ * *different* key's bytes, the ones just streamed are deleted only once that transaction has
+ * committed (`runAfterCommit`), because a delete that ran inside the transaction and then failed
+ * would abort a transaction whose database work was otherwise fine.
  */
 export async function ingestUploadedFile(
   pool: Pool,
@@ -67,26 +77,43 @@ export async function ingestUploadedFile(
     throw err;
   }
 
-  return withTransaction(pool, async (client) => {
-    const blob = await findOrCreateBlob(client, {
-      mimeType: input.contentType,
-      byteSize,
-      storageKey,
-      contentHash,
+  try {
+    return await withTransaction(pool, async (client) => {
+      const blob = await findOrCreateBlob(client, {
+        mimeType: input.contentType,
+        byteSize,
+        storageKey,
+        contentHash,
+      });
+      // A content-hash dedup hit means `blob` already existed under a different storageKey — the
+      // bytes just streamed above are an unneeded duplicate on disk, not the ones kept. Deleted
+      // only once this transaction commits: a delete that ran here and then failed would abort a
+      // transaction whose database work was otherwise fine.
+      if (blob.storageKey !== storageKey) {
+        runAfterCommit(client, () => {
+          void input.storage.delete(storageKey).catch((err) => {
+            console.error(`Failed to delete duplicate upload bytes ${storageKey}`, err);
+          });
+        });
+      }
+
+      const existing = await findFileItemByBlobId(client, input.filesDatabaseId, blob.id);
+      if (existing) return { item: existing, blob, created: false };
+
+      const item = await createItemWithClient(client, {
+        databaseId: input.filesDatabaseId,
+        properties: { name: input.filename, file: { blobId: blob.id } },
+      });
+      return { item, blob, created: true };
     });
-    // A content-hash dedup hit means `blob` already existed under a different storageKey — the
-    // bytes just streamed above are an unneeded duplicate on disk, not the ones kept.
-    if (blob.storageKey !== storageKey) {
+  } catch (err) {
+    // A rolled-back transaction kept nothing, so the bytes streamed above are always garbage on
+    // this path.
+    try {
       await input.storage.delete(storageKey);
+    } catch (deleteErr) {
+      console.error(`Failed to delete upload bytes ${storageKey} after a failed transaction`, deleteErr);
     }
-
-    const existing = await findFileItemByBlobId(client, input.filesDatabaseId, blob.id);
-    if (existing) return { item: existing, blob, created: false };
-
-    const item = await createItemWithClient(client, {
-      databaseId: input.filesDatabaseId,
-      properties: { name: input.filename, file: { blobId: blob.id } },
-    });
-    return { item, blob, created: true };
-  });
+    throw err;
+  }
 }
