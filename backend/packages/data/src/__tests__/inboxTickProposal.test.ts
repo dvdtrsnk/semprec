@@ -11,7 +11,11 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
-import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inbox/inboxTickAction.js";
+import {
+  assertValidProposalEnvelope,
+  createSemprecTickAction,
+  type ComputeSemprecProposalFn,
+} from "../inbox/inboxTickAction.js";
 import { confirmProposalWithClient } from "../inbox/proposalActions.js";
 
 let pool: Pool;
@@ -27,11 +31,43 @@ function sha256Of(emoji: string, text: string): string {
   return createHash("sha256").update(JSON.stringify({ emoji, text })).digest("hex");
 }
 
+type TickDatabaseIds = {
+  inboxDatabaseId: string;
+  inboxItemTypesDatabaseId: string;
+  processingProposalsDatabaseId: string;
+};
+
+async function findProposalForItem(tickPool: Pool, proposalsId: string, itemId: string) {
+  return withTransaction(tickPool, async (client) => {
+    const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
+    const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, sourceInboxProperty!.id);
+    // Every edge, not `edges[0]`: the same scan production's `findExistingProposal` does, so a
+    // soft-deleted proposal still linked to the item is skipped here as it is there.
+    const edges = await relationsStore.listRelationsForItem(client, relationDefinition!.id, itemId);
+    for (const edge of edges) {
+      const proposal = await itemsStore.getItemById(client, proposalsId, relationsStore.otherSide(edge, itemId));
+      if (proposal && !proposal.deletedAt) return proposal;
+    }
+    return null;
+  });
+}
+
+async function runTick(
+  tickPool: Pool,
+  databaseIds: TickDatabaseIds,
+  itemId: string,
+  computeProposal: ComputeSemprecProposalFn,
+): Promise<void> {
+  const handler = createSemprecTickAction(tickPool, computeProposal);
+  await handler(databaseIds, { heartbeatId: "hb", projectItemId: "proj", itemId });
+}
+
 describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #223)", () => {
   let inboxId: string;
   let typesId: string;
   let proposalsId: string;
   let journalId: string;
+  let databaseIds: TickDatabaseIds;
 
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -42,33 +78,12 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     typesId = await databaseIdFor("inboxItemTypes");
     proposalsId = await databaseIdFor("processingProposals");
     journalId = await databaseIdFor("journal");
+    databaseIds = {
+      inboxDatabaseId: inboxId,
+      inboxItemTypesDatabaseId: typesId,
+      processingProposalsDatabaseId: proposalsId,
+    };
   });
-
-  async function findProposalForItem(itemId: string) {
-    return withTransaction(pool, async (client) => {
-      const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
-      const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(
-        client,
-        sourceInboxProperty!.id,
-      );
-      // Every edge, not `edges[0]`: the same scan production's `findExistingProposal` does, so a
-      // soft-deleted proposal still linked to the item is skipped here as it is there.
-      const edges = await relationsStore.listRelationsForItem(client, relationDefinition!.id, itemId);
-      for (const edge of edges) {
-        const proposal = await itemsStore.getItemById(client, proposalsId, relationsStore.otherSide(edge, itemId));
-        if (proposal && !proposal.deletedAt) return proposal;
-      }
-      return null;
-    });
-  }
-
-  async function runTick(itemId: string, computeProposal: ComputeSemprecProposalFn): Promise<void> {
-    const handler = createSemprecTickAction(pool, computeProposal);
-    await handler(
-      { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
-      { heartbeatId: "hb", projectItemId: "proj", itemId },
-    );
-  }
 
   it("creates exactly one proposed row with the generic envelope and correct fingerprint for a 'database' type", async () => {
     const type = await withTransaction(pool, (client) =>
@@ -93,7 +108,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     );
 
     let calls = 0;
-    await runTick(item.id, async (input) => {
+    await runTick(pool, databaseIds, item.id, async (input) => {
       calls++;
       expect(input.entityKind).toBe("database");
       expect(input.targetDatabaseId).toBeTruthy();
@@ -101,7 +116,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     });
     expect(calls).toBe(1);
 
-    const proposal = await findProposalForItem(item.id);
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposal).toBeTruthy();
     expect(proposal!.properties.status).toBe("proposed");
     expect(proposal!.properties.fingerprint).toBe(sha256Of("☑️", "Buy milk"));
@@ -141,13 +156,13 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       }),
     );
 
-    await runTick(item.id, async (input) => {
+    await runTick(pool, databaseIds, item.id, async (input) => {
       expect(input.entityKind).toBe("pageContent");
       expect(input.targetDatabaseId).toBeUndefined();
       return { target: type.id, properties: { flavour: "paragraph", fields: { content: "A thought" } } };
     });
 
-    const proposal = await findProposalForItem(item.id);
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposal!.properties.proposal).toEqual({
       entityKind: "pageContent",
       target: type.id,
@@ -177,13 +192,13 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       }),
     );
 
-    await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const first = await findProposalForItem(item.id);
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+    const first = await findProposalForItem(pool, proposalsId, item.id);
 
-    await runTick(item.id, async () => {
+    await runTick(pool, databaseIds, item.id, async () => {
       throw new Error("computeProposal must not be called for an unchanged fingerprint");
     });
-    const second = await findProposalForItem(item.id);
+    const second = await findProposalForItem(pool, proposalsId, item.id);
     expect(second!.updatedAt).toBe(first!.updatedAt);
   });
 
@@ -208,8 +223,8 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
         type: type.id,
       }),
     );
-    await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const first = await findProposalForItem(item.id);
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+    const first = await findProposalForItem(pool, proposalsId, item.id);
 
     await withTransaction(pool, (client) =>
       itemsStore.updateItemProperties(client, {
@@ -219,8 +234,8 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       }),
     );
 
-    await runTick(item.id, async () => ({ properties: { name: "Buy milk and eggs" } }));
-    const revised = await findProposalForItem(item.id);
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk and eggs" } }));
+    const revised = await findProposalForItem(pool, proposalsId, item.id);
 
     expect(revised!.id).toBe(first!.id);
     expect(revised!.properties.fingerprint).toBe(sha256Of("☑️", "Buy milk and eggs"));
@@ -258,8 +273,8 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
           type: type.id,
         }),
       );
-      await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
-      const proposal = await findProposalForItem(item.id);
+      await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+      const proposal = await findProposalForItem(pool, proposalsId, item.id);
 
       await withTransaction(pool, (client) =>
         itemsStore.updateItemProperties(client, {
@@ -276,11 +291,11 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
         }),
       );
 
-      await runTick(item.id, async () => {
+      await runTick(pool, databaseIds, item.id, async () => {
         throw new Error("computeProposal must not be called for a locked proposal");
       });
 
-      const stillLocked = await findProposalForItem(item.id);
+      const stillLocked = await findProposalForItem(pool, proposalsId, item.id);
       expect(stillLocked!.properties.status).toBe(lockedStatus);
       expect(stillLocked!.properties.fingerprint).toBe(sha256Of("☑️", "Buy milk"));
     },
@@ -307,13 +322,13 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
         type: type.id,
       }),
     );
-    await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const original = await findProposalForItem(item.id);
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+    const original = await findProposalForItem(pool, proposalsId, item.id);
     await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, proposalsId, original!.id));
 
     // The relation edge to the now-deleted proposal is still there, so this must not throw
     // NotFoundError from trying to update a deleted item — it must fall through and create.
-    await runTick(item.id, async () => ({ properties: { name: "Buy milk (retry)" } }));
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk (retry)" } }));
 
     const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [proposalsId]);
     expect(rows[0].n).toBe(2);
@@ -331,7 +346,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
         propertiesPatch: { text: "Buy milk and eggs" },
       }),
     );
-    await runTick(item.id, async () => ({ properties: { name: "Buy milk and eggs" } }));
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk and eggs" } }));
 
     const { rows: afterThirdTick } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
       proposalsId,
@@ -358,11 +373,11 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       }),
     );
 
-    await runTick(item.id, async () => {
+    await runTick(pool, databaseIds, item.id, async () => {
       throw new Error("computeProposal must not be called for an untyped item");
     });
 
-    const proposal = await findProposalForItem(item.id);
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposal).toBeTruthy();
     expect(proposal!.properties.status).toBe("needsClarification");
     expect(proposal!.properties.proposal).toBeNull();
@@ -385,10 +400,10 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     const throwing: ComputeSemprecProposalFn = async () => {
       throw new Error("computeProposal must not be called for an untyped item");
     };
-    await runTick(item.id, throwing);
-    await runTick(item.id, throwing);
+    await runTick(pool, databaseIds, item.id, throwing);
+    await runTick(pool, databaseIds, item.id, throwing);
 
-    const proposal = await findProposalForItem(item.id);
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposal!.properties.status).toBe("needsClarification");
     expect(proposal!.properties.history).toHaveLength(1);
   });
@@ -420,7 +435,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       tasksDbId,
     ]);
 
-    await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
 
     const { rows: after } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
       tasksDbId,
@@ -434,6 +449,7 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
   let typesId: string;
   let proposalsId: string;
   let journalId: string;
+  let databaseIds: TickDatabaseIds;
 
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -444,33 +460,12 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     typesId = await databaseIdFor("inboxItemTypes");
     proposalsId = await databaseIdFor("processingProposals");
     journalId = await databaseIdFor("journal");
+    databaseIds = {
+      inboxDatabaseId: inboxId,
+      inboxItemTypesDatabaseId: typesId,
+      processingProposalsDatabaseId: proposalsId,
+    };
   });
-
-  async function findProposalForItem(itemId: string) {
-    return withTransaction(pool, async (client) => {
-      const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
-      const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(
-        client,
-        sourceInboxProperty!.id,
-      );
-      // Every edge, not `edges[0]`: the same scan production's `findExistingProposal` does, so a
-      // soft-deleted proposal still linked to the item is skipped here as it is there.
-      const edges = await relationsStore.listRelationsForItem(client, relationDefinition!.id, itemId);
-      for (const edge of edges) {
-        const proposal = await itemsStore.getItemById(client, proposalsId, relationsStore.otherSide(edge, itemId));
-        if (proposal && !proposal.deletedAt) return proposal;
-      }
-      return null;
-    });
-  }
-
-  async function runTick(itemId: string, computeProposal: ComputeSemprecProposalFn): Promise<void> {
-    const handler = createSemprecTickAction(pool, computeProposal);
-    await handler(
-      { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
-      { heartbeatId: "hb", projectItemId: "proj", itemId },
-    );
-  }
 
   async function createTypedItem(text: string) {
     const type = await withTransaction(pool, (client) =>
@@ -508,11 +503,11 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
       }),
     );
 
-    await runTick(item.id, async () => {
+    await runTick(pool, databaseIds, item.id, async () => {
       throw new Error("computeProposal must not be called once the type is deleted");
     });
 
-    const proposal = await findProposalForItem(item.id);
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposal!.properties.status).toBe("needsClarification");
     expect(proposal!.properties.proposal).toBeNull();
     expect(proposal!.properties.history).toHaveLength(1);
@@ -530,10 +525,10 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
       }),
     );
 
-    await runTick(item.id, async () => {
+    await runTick(pool, databaseIds, item.id, async () => {
       throw new Error("computeProposal must not be called for an untyped item");
     });
-    const needsClarification = await findProposalForItem(item.id);
+    const needsClarification = await findProposalForItem(pool, proposalsId, item.id);
     expect(needsClarification!.properties.status).toBe("needsClarification");
     expect(needsClarification!.properties.fingerprint).toBeNull();
 
@@ -555,9 +550,9 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
       });
     });
 
-    await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
 
-    const proposed = await findProposalForItem(item.id);
+    const proposed = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposed!.id).toBe(needsClarification!.id);
     expect(proposed!.properties.status).toBe("proposed");
     expect(proposed!.properties.fingerprint).toBe(sha256Of("☑️", "Buy milk"));
@@ -571,16 +566,16 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
 
   it("deleting a source item invalidates its unlocked proposal", async () => {
     const { item } = await createTypedItem("Buy milk");
-    await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const proposed = await findProposalForItem(item.id);
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+    const proposed = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposed!.properties.status).toBe("proposed");
 
     await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, item.id));
-    await runTick(item.id, async () => {
+    await runTick(pool, databaseIds, item.id, async () => {
       throw new Error("computeProposal must not be called for a deleted source");
     });
 
-    const invalidated = await findProposalForItem(item.id);
+    const invalidated = await findProposalForItem(pool, proposalsId, item.id);
     expect(invalidated!.id).toBe(proposed!.id);
     expect(invalidated!.properties.status).toBe("invalid");
     expect(invalidated!.properties.history).toHaveLength(2);
@@ -589,8 +584,8 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
 
   it("a confirmed proposal keeps its status when its source item is deleted", async () => {
     const { item } = await createTypedItem("Buy milk");
-    await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const proposal = await findProposalForItem(item.id);
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
     await withTransaction(pool, (client) =>
       itemsStore.updateItemProperties(client, {
         databaseId: proposalsId,
@@ -600,18 +595,18 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     );
 
     await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, item.id));
-    await runTick(item.id, async () => {
+    await runTick(pool, databaseIds, item.id, async () => {
       throw new Error("computeProposal must not be called for a deleted source");
     });
 
-    const stillConfirmed = await findProposalForItem(item.id);
+    const stillConfirmed = await findProposalForItem(pool, proposalsId, item.id);
     expect(stillConfirmed!.properties.status).toBe("confirmed");
   });
 
   it("a rejected proposal keeps its status when its source item is deleted", async () => {
     const { item } = await createTypedItem("Buy milk");
-    await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const proposal = await findProposalForItem(item.id);
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
     await withTransaction(pool, (client) =>
       itemsStore.updateItemProperties(client, {
         databaseId: proposalsId,
@@ -622,11 +617,11 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     const historyLengthBeforeDelete = (proposal!.properties.history as unknown[]).length;
 
     await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, item.id));
-    await runTick(item.id, async () => {
+    await runTick(pool, databaseIds, item.id, async () => {
       throw new Error("computeProposal must not be called for a deleted source");
     });
 
-    const stillRejected = await findProposalForItem(item.id);
+    const stillRejected = await findProposalForItem(pool, proposalsId, item.id);
     expect(stillRejected!.properties.status).toBe("rejected");
     expect((stillRejected!.properties.history as unknown[]).length).toBe(historyLengthBeforeDelete);
   });
@@ -635,19 +630,19 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     const { item } = await createTypedItem("Buy milk");
     await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, item.id));
 
-    await runTick(item.id, async () => {
+    await runTick(pool, databaseIds, item.id, async () => {
       throw new Error("computeProposal must not be called for a deleted source");
     });
 
-    expect(await findProposalForItem(item.id)).toBeNull();
+    expect(await findProposalForItem(pool, proposalsId, item.id)).toBeNull();
   });
 
   it("a proposed envelope naming an unknown property on the target database fails validation and is stored as needsClarification, never as proposed", async () => {
     const { item } = await createTypedItem("Buy milk");
 
-    await runTick(item.id, async () => ({ properties: { name: "Buy milk", notAKey: "x" } }));
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk", notAKey: "x" } }));
 
-    const proposal = await findProposalForItem(item.id);
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposal!.properties.status).toBe("needsClarification");
     expect(proposal!.properties.proposal).toBeNull();
     expect(proposal!.properties.history).toHaveLength(1);
@@ -661,9 +656,11 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
   it("a proposed envelope trying to set a relation property directly fails validation", async () => {
     const { item } = await createTypedItem("Buy milk");
 
-    await runTick(item.id, async () => ({ properties: { name: "Buy milk", project: "some-project-id" } }));
+    await runTick(pool, databaseIds, item.id, async () => ({
+      properties: { name: "Buy milk", project: "some-project-id" },
+    }));
 
-    const proposal = await findProposalForItem(item.id);
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposal!.properties.status).toBe("needsClarification");
   });
 
@@ -688,12 +685,12 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
       }),
     );
 
-    await runTick(item.id, async () => ({
+    await runTick(pool, databaseIds, item.id, async () => ({
       target: "00000000-0000-0000-0000-000000000000",
       properties: { flavour: "paragraph" },
     }));
 
-    const proposal = await findProposalForItem(item.id);
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposal!.properties.status).toBe("needsClarification");
   });
 
@@ -718,9 +715,12 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
       }),
     );
 
-    await runTick(item.id, async () => ({ target: type.id, properties: { note: "no flavour here" } }));
+    await runTick(pool, databaseIds, item.id, async () => ({
+      target: type.id,
+      properties: { note: "no flavour here" },
+    }));
 
-    const proposal = await findProposalForItem(item.id);
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposal!.properties.status).toBe("needsClarification");
   });
 
@@ -745,12 +745,12 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
       }),
     );
 
-    await runTick(item.id, async () => ({
+    await runTick(pool, databaseIds, item.id, async () => ({
       target: type.id,
       properties: { flavour: "paragraph", fields: "not an object" },
     }));
 
-    const proposal = await findProposalForItem(item.id);
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposal!.properties.status).toBe("needsClarification");
   });
 
@@ -775,12 +775,12 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
       }),
     );
 
-    await runTick(item.id, async () => ({
+    await runTick(pool, databaseIds, item.id, async () => ({
       target: type.id,
       properties: { flavour: "paragraph", children: [1, 2, 3] },
     }));
 
-    const proposal = await findProposalForItem(item.id);
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposal!.properties.status).toBe("needsClarification");
   });
 
@@ -792,11 +792,11 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
       calls++;
       return { properties: { notAKey: "x" } };
     };
-    await runTick(item.id, compute);
-    await runTick(item.id, compute);
+    await runTick(pool, databaseIds, item.id, compute);
+    await runTick(pool, databaseIds, item.id, compute);
     expect(calls).toBe(1);
 
-    const proposal = await findProposalForItem(item.id);
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposal!.properties.status).toBe("needsClarification");
     expect(proposal!.properties.history).toHaveLength(1);
   });
@@ -807,6 +807,7 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
   let typesId: string;
   let proposalsId: string;
   let journalId: string;
+  let databaseIds: TickDatabaseIds;
 
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -817,19 +818,12 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
     typesId = await databaseIdFor("inboxItemTypes");
     proposalsId = await databaseIdFor("processingProposals");
     journalId = await databaseIdFor("journal");
+    databaseIds = {
+      inboxDatabaseId: inboxId,
+      inboxItemTypesDatabaseId: typesId,
+      processingProposalsDatabaseId: proposalsId,
+    };
   });
-
-  async function runTick(
-    itemId: string,
-    computeProposal: ComputeSemprecProposalFn,
-    tickPool: Pool = pool,
-  ): Promise<void> {
-    const handler = createSemprecTickAction(tickPool, computeProposal);
-    await handler(
-      { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
-      { heartbeatId: "hb", projectItemId: "proj", itemId },
-    );
-  }
 
   /** A typed Inbox item with one `proposed` card, then a text edit so the next tick recomputes it. */
   async function seedProposedCardWithChangedSource() {
@@ -853,7 +847,7 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
         type: type.id,
       }),
     );
-    await runTick(item.id, async () => ({ properties: { name: "Buy milk" } }));
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
     const { rows } = await pool.query<{ id: string }>(
       "SELECT id FROM items WHERE database_id = $1 AND deleted_at IS NULL",
       [proposalsId],
@@ -942,7 +936,7 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
     const { item, card } = await seedProposedCardWithChangedSource();
 
     let rejectedVersion: string | undefined;
-    await runTick(item.id, async () => {
+    await runTick(pool, databaseIds, item.id, async () => {
       rejectedVersion = await rejectCard(card.id);
       return invalidEnvelope;
     });
@@ -956,7 +950,7 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
     const { item, card } = await seedProposedCardWithChangedSource();
 
     let deletedVersion: string | undefined;
-    await runTick(item.id, async () => {
+    await runTick(pool, databaseIds, item.id, async () => {
       deletedVersion = await softDeleteCard(card.id);
       return invalidEnvelope;
     });
@@ -975,7 +969,9 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
     const tickPool = poolRunningBeforeCardLock(card.id, async () => {
       rejectedVersion = await rejectCard(card.id);
     });
-    await runTick(item.id, async () => expect.unreachable("a deleted source is never recomputed"), tickPool);
+    await runTick(tickPool, databaseIds, item.id, async () =>
+      expect.unreachable("a deleted source is never recomputed"),
+    );
 
     expect(rejectedVersion).toBeDefined();
     const after = await readCard(card.id);
@@ -991,7 +987,9 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
     const tickPool = poolRunningBeforeCardLock(card.id, async () => {
       deletedVersion = await softDeleteCard(card.id);
     });
-    await runTick(item.id, async () => expect.unreachable("a deleted source is never recomputed"), tickPool);
+    await runTick(tickPool, databaseIds, item.id, async () =>
+      expect.unreachable("a deleted source is never recomputed"),
+    );
 
     expect(deletedVersion).toBeDefined();
     const after = await readCard(card.id);
@@ -1008,7 +1006,7 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
       throw new Error("connection lost while locking the card");
     });
     await expect(
-      runTick(item.id, async () => expect.unreachable("a deleted source is never recomputed"), tickPool),
+      runTick(tickPool, databaseIds, item.id, async () => expect.unreachable("a deleted source is never recomputed")),
     ).rejects.toThrow("connection lost while locking the card");
 
     const after = await readCard(card.id);
@@ -1031,7 +1029,7 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
     });
 
     let calls = 0;
-    await runTick(item.id, async () => {
+    await runTick(pool, databaseIds, item.id, async () => {
       calls++;
       await withTransaction(pool, (client) =>
         confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card.id),
@@ -1052,7 +1050,7 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
     const { item, card } = await seedProposedCardWithChangedSource();
 
     let deletedVersion: string | undefined;
-    await runTick(item.id, async () => {
+    await runTick(pool, databaseIds, item.id, async () => {
       const deleted = await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, proposalsId, card.id));
       deletedVersion = deleted!.updatedAt;
       return { properties: { name: "Buy milk and eggs" } };
@@ -1085,22 +1083,6 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     proposalsId = await databaseIdFor("processingProposals");
     journalId = await databaseIdFor("journal");
   });
-
-  async function findProposalForItem(itemId: string) {
-    return withTransaction(pool, async (client) => {
-      const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
-      const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(
-        client,
-        sourceInboxProperty!.id,
-      );
-      const edges = await relationsStore.listRelationsForItem(client, relationDefinition!.id, itemId);
-      for (const edge of edges) {
-        const proposal = await itemsStore.getItemById(client, proposalsId, relationsStore.otherSide(edge, itemId));
-        if (proposal && !proposal.deletedAt) return proposal;
-      }
-      return null;
-    });
-  }
 
   async function createTypedItem(text: string) {
     const type = await withTransaction(pool, (client) =>
@@ -1152,7 +1134,7 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       await tickPool.end();
     }
 
-    const proposal = await findProposalForItem(item.id);
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposal).toBeTruthy();
     expect(proposal!.properties.status).toBe("proposed");
   }, 10000);
@@ -1175,7 +1157,7 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
     );
 
-    expect(await findProposalForItem(item.id)).toBeNull();
+    expect(await findProposalForItem(pool, proposalsId, item.id)).toBeNull();
 
     let calls = 0;
     const handlerAgain = createSemprecTickAction(pool, async () => {
@@ -1188,7 +1170,7 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     );
     expect(calls).toBe(1);
 
-    const proposal = await findProposalForItem(item.id);
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposal).toBeTruthy();
     expect(proposal!.properties.fingerprint).toBe(sha256Of("☑️", "Buy milk and eggs"));
     expect(proposal!.properties.proposal).toEqual({
@@ -1221,7 +1203,7 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [proposalsId]);
     expect(rows[0].n).toBe(1);
 
-    const proposal = await findProposalForItem(item.id);
+    const proposal = await findProposalForItem(pool, proposalsId, item.id);
     expect(proposal!.properties.status).toBe("proposed");
     expect(proposal!.properties.proposal).toEqual({
       entityKind: "database",
@@ -1229,6 +1211,54 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       properties: { name: "Buy milk (from A)" },
     });
     expect(proposal!.properties.history).toHaveLength(2);
+  });
+});
+
+describe("assertValidProposalEnvelope resolves the target database row (issue #735)", () => {
+  let typesId: string;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    viewTypeRegistry = createViewTypeRegistry();
+    await resetDatabase(pool);
+    await seedSystem(pool, viewTypeRegistry);
+    typesId = await databaseIdFor("inboxItemTypes");
+  });
+
+  it("resolves to the target database row for a valid 'database' envelope", async () => {
+    const tasksDbId = await databaseIdFor("tasks");
+
+    const targetDatabase = await withTransaction(pool, (client) =>
+      assertValidProposalEnvelope(client, {
+        entityKind: "database",
+        target: tasksDbId,
+        properties: { name: "Buy milk" },
+      }),
+    );
+
+    expect(targetDatabase).not.toBeNull();
+    expect(targetDatabase!.id).toBe(tasksDbId);
+  });
+
+  it("resolves to null for a valid 'pageContent' envelope", async () => {
+    const type = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Thought",
+        emoji: "💭",
+        processingMethod: "pageContent",
+      }),
+    );
+
+    const targetDatabase = await withTransaction(pool, (client) =>
+      assertValidProposalEnvelope(client, {
+        entityKind: "pageContent",
+        target: type.id,
+        properties: { flavour: "paragraph" },
+      }),
+    );
+
+    expect(targetDatabase).toBeNull();
   });
 });
 
