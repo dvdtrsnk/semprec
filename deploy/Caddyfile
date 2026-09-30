@@ -3,7 +3,7 @@
 # address that is a bare domain, so neither needs an explicit directive here.
 #
 # `semprec-api` is the only public-facing process; it must be configured (via
-# /opt/semprec/shared/.env's PORT, see services/semprec-api/.env.example) to listen on the same
+# /opt/semprec/shared/.env's PORT, see deploy/shared/.env.example) to listen on the same
 # port this reverse_proxy targets. It alone serves every public route behind this domain,
 # including the `/api/sync` WebSocket upgrade and the Graph webhook — Caddy's reverse_proxy
 # forwards WebSocket upgrades transparently, so no separate handling is needed for either.

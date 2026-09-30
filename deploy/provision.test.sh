@@ -14,7 +14,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$TEST_BIN" "$TEST_STATE" "$TEST_ROOT/systemd/system"
+mkdir -p "$TEST_BIN" "$TEST_STATE" "$TEST_ROOT/systemd/system" "$TEST_ROOT/caddy"
 cp -R "$REPOSITORY_ROOT/deploy" "$TEST_DEPLOY"
 mkdir -p "$TEST_STATE/hunspell" "$TEST_STATE/tsearch_data"
 printf 'Czech dictionary\n' > "$TEST_STATE/hunspell/cs_CZ.dic"
@@ -26,6 +26,10 @@ sed -i "s|readonly BACKUP_DIRECTORY=/var/backups/semprec|readonly BACKUP_DIRECTO
 sed -i "s|readonly SYSTEMD_UNIT_DIR=/etc/systemd/system|readonly SYSTEMD_UNIT_DIR=$TEST_ROOT/systemd/system|" \
   "$TEST_DEPLOY/provision.sh"
 sed -i "s|readonly JOURNALD_CONFIG_DIR=/etc/systemd/journald.conf.d|readonly JOURNALD_CONFIG_DIR=$TEST_ROOT/systemd/journald.conf.d|" \
+  "$TEST_DEPLOY/provision.sh"
+sed -i "s|readonly CADDY_CONFIG_DIR=/etc/caddy|readonly CADDY_CONFIG_DIR=$TEST_ROOT/caddy|" \
+  "$TEST_DEPLOY/provision.sh"
+sed -i "s|readonly CADDY_UNIT_DROPIN_DIR=/etc/systemd/system/caddy.service.d|readonly CADDY_UNIT_DROPIN_DIR=$TEST_ROOT/systemd/system/caddy.service.d|" \
   "$TEST_DEPLOY/provision.sh"
 sed -i "s|readonly APT_KEYRING_DIR=/etc/apt/keyrings|readonly APT_KEYRING_DIR=$TEST_ROOT/keyrings|" \
   "$TEST_DEPLOY/provision.sh"
@@ -79,6 +83,7 @@ if [[ "$1" == "exec" ]]; then
     *) exit 1 ;;
   esac
 fi'
+write_mock caddy 'echo "caddy $*" >> "$TEST_STATE/commands"'
 
 run_provision() {
   PATH="$TEST_BIN:$PATH" bash "$TEST_DEPLOY/provision.sh"
@@ -148,6 +153,24 @@ grep -q 'restic' "$TEST_STATE/commands"
 grep -q 'ffmpeg' "$TEST_STATE/commands"
 grep -q 'hunspell-cs' "$TEST_STATE/commands"
 test "$(grep -c '^docker cp ' "$TEST_STATE/commands")" -eq 2
+
+test -f "$TEST_ROOT/caddy/Caddyfile"
+test -f "$TEST_ROOT/systemd/system/caddy.service.d/semprec.conf"
+test ! -f "$TEST_ROOT/caddy/semprec.env"
+test "$(grep -c '^systemctl enable caddy$' "$TEST_STATE/commands")" -eq 0
+
+printf 'SEMPREC_DOMAIN=example.test\n' >> "$TEST_ROOT/opt/semprec/shared/.env"
+run_provision
+grep -qx 'SEMPREC_DOMAIN=example.test' "$TEST_ROOT/caddy/semprec.env"
+test "$(wc -l < "$TEST_ROOT/caddy/semprec.env")" -eq 1
+test "$(grep -c '^caddy validate ' "$TEST_STATE/commands")" -eq 1
+test "$(grep -c '^systemctl reload-or-restart caddy$' "$TEST_STATE/commands")" -eq 1
+
+semprec_env_before="$(cat "$TEST_ROOT/caddy/semprec.env")"
+run_provision
+test "$(cat "$TEST_ROOT/caddy/semprec.env")" = "$semprec_env_before"
+test "$(grep -c '^caddy validate ' "$TEST_STATE/commands")" -eq 2
+test "$(grep -c '^systemctl reload-or-restart caddy$' "$TEST_STATE/commands")" -eq 2
 
 chmod 000 "$TEST_STATE/hunspell/cs_CZ.dic"
 if run_provision >"$TEST_STATE/unreadable-asset.out" 2>&1; then

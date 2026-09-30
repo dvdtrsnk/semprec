@@ -8,6 +8,8 @@ and host provisioning (#244, #176):
 - `Caddyfile` — the single public entry point. One domain, automatic TLS, HSTS without
   `includeSubDomains`/`preload`, compression, JSON access log to stderr, and the two-tier
   `POST /api/files` request-body limit. Proxies everything to `semprec-api` on `127.0.0.1:8080`.
+  Installed to `/etc/caddy/Caddyfile` by `provision.sh`, which also enables `caddy.service` and
+  hands it `SEMPREC_DOMAIN` through `/etc/caddy/semprec.env`.
 - `nftables.conf` — the host firewall: only 22/80/443 reachable from outside the host.
 - `docker-compose.yml` — PostgreSQL and MinIO, both explicitly bound to `127.0.0.1`, both loading
   their init-time credentials from `/opt/semprec/shared/.env` via `env_file:`.
@@ -196,3 +198,20 @@ provisioning. Messages indexed before that keep their fallback lexemes until the
 The files live in the container's filesystem, not in a volume. Once the dictionary is active,
 PostgreSQL needs them to index or search any message, so rerun `provision.sh` whenever the
 `postgres` container is recreated.
+
+## Front door (Caddy)
+
+`provision.sh` installs `Caddyfile` to `/etc/caddy/Caddyfile` and a systemd drop-in
+(`systemd/caddy-semprec.conf`) to `/etc/systemd/system/caddy.service.d/semprec.conf` that points
+`caddy.service` at an `EnvironmentFile=/etc/caddy/semprec.env`. It then reads `SEMPREC_DOMAIN` out
+of `/opt/semprec/shared/.env` and renders that one value into `/etc/caddy/semprec.env`
+(`root:root 0600`) — Caddy never reads the shared `.env` itself, only the one value it needs.
+
+On a first run against a freshly copied `shared/.env` template, `SEMPREC_DOMAIN` is still empty:
+provisioning prints a warning to stderr and leaves Caddy unconfigured rather than failing, so the
+rest of provisioning still completes. Once an operator sets `SEMPREC_DOMAIN` and reruns
+`provision.sh`, it writes `/etc/caddy/semprec.env`, enables and (re)loads `caddy.service`, and
+validates the rendered config. Rerunning with an unchanged domain is a no-op on the rendered file.
+
+`PORT=8080` must also be set in the shared `.env` — `Caddyfile`'s `reverse_proxy` targets
+`127.0.0.1:8080` and `semprec-api` listens on `PORT`, so the two values have to agree.

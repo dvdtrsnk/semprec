@@ -6,6 +6,8 @@ readonly SEMPREC_ROOT=/opt/semprec
 readonly BACKUP_DIRECTORY=/var/backups/semprec
 readonly SYSTEMD_UNIT_DIR=/etc/systemd/system
 readonly JOURNALD_CONFIG_DIR=/etc/systemd/journald.conf.d
+readonly CADDY_CONFIG_DIR=/etc/caddy
+readonly CADDY_UNIT_DROPIN_DIR=/etc/systemd/system/caddy.service.d
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly APT_KEYRING_DIR=/etc/apt/keyrings
 readonly APT_SOURCES_DIR=/etc/apt/sources.list.d
@@ -243,6 +245,35 @@ enable_timers() {
   done
 }
 
+install_caddy_config() {
+  install -o root -g root -m 0644 "$SCRIPT_DIR/Caddyfile" "$CADDY_CONFIG_DIR/Caddyfile"
+  install -d -o root -g root -m 0755 "$CADDY_UNIT_DROPIN_DIR"
+  install -o root -g root -m 0644 \
+    "$SCRIPT_DIR/systemd/caddy-semprec.conf" \
+    "$CADDY_UNIT_DROPIN_DIR/semprec.conf"
+}
+
+render_caddy_environment() {
+  local domain
+  domain="$(sed -n 's/^SEMPREC_DOMAIN=//p' "$SEMPREC_ROOT/shared/.env")"
+
+  if [[ -z "$domain" ]]; then
+    echo "SEMPREC_DOMAIN is not set in $SEMPREC_ROOT/shared/.env; Caddy stays unconfigured until it is set and provision.sh is rerun" >&2
+    return 0
+  fi
+
+  local tmp_env
+  tmp_env="$(mktemp)"
+  printf 'SEMPREC_DOMAIN=%s\n' "$domain" > "$tmp_env"
+  install -o root -g root -m 0600 "$tmp_env" "$CADDY_CONFIG_DIR/semprec.env"
+  rm -f "$tmp_env"
+
+  systemctl daemon-reload
+  systemctl enable caddy
+  SEMPREC_DOMAIN="$domain" caddy validate --config "$CADDY_CONFIG_DIR/Caddyfile"
+  systemctl reload-or-restart caddy
+}
+
 main() {
   require_root
   require_supported_distribution
@@ -257,6 +288,8 @@ main() {
   systemctl daemon-reload
   systemctl restart systemd-journald
   enable_timers
+  install_caddy_config
+  render_caddy_environment
 }
 
 main "$@"
