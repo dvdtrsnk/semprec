@@ -4,6 +4,7 @@ import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
+import type { RelationEdgeWriteHook } from "../chokePoint/hooks.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRow, PropertyRow } from "../types.js";
 import { TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
@@ -89,6 +90,31 @@ export async function assertSpeakerEdgeWritable(client: PoolClient, input: Speak
     });
   }
 }
+
+/**
+ * The choke point's relation-edge-write hook for the Transcripts `speakers` relation (registered
+ * by `../domainWriteHooks.ts`): rejects edge metadata its relation gives a required shape to —
+ * today only the Transcripts `speakers` relation (issue #185), whose edges each map one speaker
+ * key of the transcript to one person. Runs on both add and metadata replace, so neither can
+ * leave a mapping the render path cannot read; removing an edge needs no metadata and is not
+ * checked here.
+ */
+export const transcriptSpeakerEdgeWriteHook: RelationEdgeWriteHook = async ({
+  client,
+  edgeContext,
+  callerItemId,
+  targetItemId,
+  metadata,
+}) => {
+  if (!(await isTranscriptSpeakersProperty(client, edgeContext.property))) return;
+  await assertSpeakerEdgeWritable(client, {
+    relationDefinitionId: edgeContext.reldef.id,
+    transcriptsDatabaseId: edgeContext.property.databaseId,
+    transcriptId: callerItemId,
+    personId: targetItemId,
+    metadata,
+  });
+};
 
 /** One speaker key of a transcript as it is shown: its 1-based ordinal for the "Speaker N" label, and the person it is mapped to, if any. */
 export interface TranscriptSpeaker {

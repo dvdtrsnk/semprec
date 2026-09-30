@@ -1,14 +1,17 @@
 // Owns the choke point's item writes: `createItem` / `updateItem` and their transaction-scoped
 // `createItemWithClient` / `updateItemWithClient` counterparts, the property writability checks
 // they share, the archived-database create guard with its idempotent-replay exception, the inline
-// derivation of Tasks `time`, the Tasks recurrence advance on a `status: 'done'` write, and
-// `writeComputedAndAnnounce`. It does not own item reads
+// derivation of Tasks `time`, and `writeComputedAndAnnounce`. A domain's own transactional side
+// effect on an item update (e.g. the Emails flag-sync write, the Tasks recurrence advance on a
+// `status: 'done'` write) runs through `runItemUpdateHooks` (./hooks.ts), never a direct import
+// of the domain. It does not own item reads
 // (itemReads.ts), trash and restore (itemTrash.ts), or relation writes (relationOps.ts).
 // Constrained by:
 // - docs/adr/2026-09-19-derived-system-properties-computed-inline-at-choke-point.md
 // - docs/adr/2026-09-28-module-transactional-side-effects-inline-at-choke-point.md
 // - docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
 // - docs/adr/2026-09-10-choke-point-api-for-state-writes.md
+// - docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
 import type { PoolClient } from "pg";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
@@ -26,11 +29,9 @@ import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 import { assertDatabaseNotArchived } from "./databaseGuards.js";
 import { assertValidTimezone } from "../timezone.js";
-import { getSystemSettingsItemId, getSystemTimezone } from "../systemSettings.js";
+import { getSystemSettingsItemId } from "../systemSettings.js";
 import { deriveTaskTime } from "../tasks/deriveTaskTime.js";
-import { advanceTaskRecurrenceWithClient } from "../tasks/advanceTaskRecurrenceWithClient.js";
-import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
-import { recordDesiredMailMessageFlags } from "../mail/mailMessageFlagSyncStore.js";
+import { runItemUpdateHooks } from "./hooks.js";
 
 interface AssertWritablePropertiesOptions {
   /**
@@ -278,23 +279,10 @@ export async function updateItemWithClient(
     propertiesPatch,
     ifVersion: input.ifVersion,
   });
-  // Completing a recurring task advances it to its next instance in this same transaction, so
-  // the `done` write and the new instance commit or roll back together. A no-op when the task
-  // has no active recurrence, including a repeated `done` write (the first one deactivated it).
-  // See docs/adr/2026-09-28-module-transactional-side-effects-inline-at-choke-point.md.
-  if (database.ownerModuleId === TASKS_MODULE_ID && input.propertiesPatch.status === "done") {
-    await advanceTaskRecurrenceWithClient(
-      client,
-      { databaseId: input.databaseId, itemId: item.id, timezone: await getSystemTimezone(client) },
-      createItemWithClient,
-    );
-  }
-  // The generic item mutation is the sole origin for user/agent triage intent. Persist it
-  // in the same transaction as the Email patch so a crash cannot leave UI state committed
-  // without a restart-safe provider write to perform.
-  if (database.ownerModuleId === EMAILS_MODULE_ID) {
-    await recordDesiredMailMessageFlags(client, item.id, propertiesPatch);
-  }
+  // Every domain's transactional side effect on this write (the Tasks recurrence advance on a
+  // `status: 'done'` write, the Emails flag-sync write, ...) runs here, in the same transaction,
+  // through the per-process registry — see docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md.
+  await runItemUpdateHooks({ client, database, item, propertiesPatch });
   await triggerOnItemEventHeartbeats(client, input.databaseId, "update", item.id, options.queueAffinity);
 
   for (const key of patchKeys) {

@@ -188,6 +188,18 @@
       }
     },
     {
+      "name": "chokepoint-knows-no-domain",
+      "severity": "error",
+      "comment": "Issue #659 (pre-tenancy-groundwork batch): docs/adr/2026-09-24-choke-point-composed-from-domain-modules.md forbids a choke-point domain module importing another one, but nothing previously stopped a choke-point module from importing a domain folder directly. A domain's own transactional side effect reaches the choke point through chokePoint/hooks.ts's per-process registry (registered by domainWriteHooks.ts), never a direct import back the other way. The domain list is explicit, so a new domain folder must be added here to be covered. schemaCoreModuleManifest.ts is exempt because it legitimately wires domain route handlers and tools; itemTrash.ts is exempt because its cascade delete/restore/purge imports of blobs/docs/library are the itemDeleteWithClient path, which this issue deliberately leaves without a hook (no domain needs a delete hook today). scheduler/, rollup/, views/, seed/, tasks/, migrationJob/ and the root-level systemSettings.ts/timezone.ts/realtimeHook.ts are deliberately not listed — they are imported by several choke-point modules today and are not this issue's concern.",
+      "from": {
+        "path": "^packages/data/src/chokePoint/",
+        "pathNot": "^packages/data/src/chokePoint/(schemaCoreModuleManifest|itemTrash)\\.ts$"
+      },
+      "to": {
+        "path": "^packages/data/src/(mail|transcription|inbox|journal|library|docs|push|notifications|mcp|blobs|agentRuns|auth|credentials|aiGateway|observability|health|guidanceDrift|trash)/"
+      }
+    },
+    {
       "name": "no-choke-point-rollup-cycle",
       "severity": "error",
       "comment": "Issue #497 (choke-point-split batch): the batch moves rollup helpers out of chokePoint.ts into packages/data/src/rollup/ and splits the choke point into modules under packages/data/src/chokePoint/. Code moving between two directories that import each other is how import cycles appear, and a cycle there would make module initialization order-dependent. This rule forbids any circular dependency that involves a module in either directory.",

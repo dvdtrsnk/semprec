@@ -1,5 +1,7 @@
 import type { PoolClient } from "pg";
 import { requireAffectedRows, type Queryable } from "../db/pool.js";
+import type { ItemUpdateHook } from "../chokePoint/hooks.js";
+import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { FLAGGED_PROPERTY_KEY, READ_PROPERTY_KEY, type WritableImapFlag } from "./messageFlags.js";
 
 export type MailMessageFlagKey = typeof READ_PROPERTY_KEY | typeof FLAGGED_PROPERTY_KEY;
@@ -40,6 +42,17 @@ export async function recordDesiredMailMessageFlags(
     );
   }
 }
+
+/**
+ * The choke point's item-update hook for Emails (registered by `../domainWriteHooks.ts`): the
+ * generic item mutation is the sole origin for user/agent triage intent, so this persists it in
+ * the same transaction as the Email patch — a crash cannot leave UI state committed without a
+ * restart-safe provider write to perform.
+ */
+export const mailMessageFlagsItemUpdateHook: ItemUpdateHook = async ({ client, database, item, propertiesPatch }) => {
+  if (database.ownerModuleId !== EMAILS_MODULE_ID) return;
+  await recordDesiredMailMessageFlags(client, item.id, propertiesPatch);
+};
 
 /** Records flags observed from a provider without replacing a pending user request. */
 export async function recordObservedMailMessageFlags(

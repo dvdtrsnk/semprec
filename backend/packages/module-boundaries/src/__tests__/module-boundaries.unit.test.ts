@@ -171,4 +171,21 @@ describe("checkModuleBoundaries", () => {
 
     expect(importers).not.toContain("packages/data/src/chokePoint/usesRollup.ts");
   });
+
+  it("rejects a choke-point module importing a domain folder (issue #659: chokepoint-knows-no-domain)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["services", "packages"]);
+    const violation = violations.find(
+      (v: BoundaryViolation) => v.importer === "packages/data/src/chokePoint/badDomainImport.ts",
+    );
+
+    expect(violation?.imported).toBe("packages/data/src/mail/anything.ts");
+    expect(violation?.rules).toContain("chokepoint-knows-no-domain");
+  });
+
+  it("lets a choke-point module import the domain-hooks registry (issue #659: chokepoint-knows-no-domain)", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["services", "packages"]);
+    const importers = violations.map((violation: BoundaryViolation) => violation.importer);
+
+    expect(importers).not.toContain("packages/data/src/chokePoint/usesHooks.ts");
+  });
 });

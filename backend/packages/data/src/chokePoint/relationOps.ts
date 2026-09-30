@@ -1,12 +1,15 @@
 // Owns the choke point's relation edge writes: linking, re-linking (metadata replacement) and
-// unlinking two items, the endpoint and edge-metadata checks those writes run (including the
-// Transcripts speaker-edge rule), and the transaction-scoped `*RelationWithClient` functions that
-// internal callers and the approved-operation executor use. Relation property and relation
-// definition management does not belong here, and neither does any other domain module's code.
+// unlinking two items, the endpoint checks those writes run, and the transaction-scoped
+// `*RelationWithClient` functions that internal callers and the approved-operation executor use.
+// A domain's own edge-metadata rule (e.g. the Transcripts speaker-edge rule) runs through
+// `runRelationEdgeWriteHooks` (./hooks.ts), never a direct import of the domain — relation
+// property and relation definition management does not belong here, and neither does any other
+// domain module's code.
 // Constrained by:
 // - docs/adr/2026-09-23-speaker-mappings-are-edges-proposed-on-transcript-cards.md
 // - docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
 // - docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
+// - docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
 import type { PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
@@ -23,7 +26,7 @@ import {
   type RelationEdgeContext,
   type SystemRelationWriteContext,
 } from "./relationEdgeContext.js";
-import { assertSpeakerEdgeWritable, isTranscriptSpeakersProperty } from "../transcription/transcriptionSpeakerEdges.js";
+import { runRelationEdgeWriteHooks } from "./hooks.js";
 
 /** The normalized public shape of a stored edge — same fields as `relationsStore.ItemRelationRow`, named here to match the choke-point's own edge contract. */
 export type RelationEdge = ItemRelationRow;
@@ -82,27 +85,6 @@ async function loadCreatableRelationEdgeContext(
 }
 
 /**
- * Rejects edge metadata its relation gives a required shape to — today only the Transcripts
- * `speakers` relation (issue #185), whose edges each map one speaker key of the transcript to one
- * person. Runs on both add and metadata replace, so neither can leave a mapping the render path
- * cannot read; removing an edge needs no metadata and is not checked here.
- */
-async function assertRelationEdgeMetadataValid(
-  client: PoolClient,
-  edgeContext: RelationEdgeContext,
-  input: CreateRelationInput,
-): Promise<void> {
-  if (!(await isTranscriptSpeakersProperty(client, edgeContext.property))) return;
-  await assertSpeakerEdgeWritable(client, {
-    relationDefinitionId: edgeContext.reldef.id,
-    transcriptsDatabaseId: edgeContext.property.databaseId,
-    transcriptId: input.callerItemId,
-    personId: input.targetItemId,
-    metadata: input.metadata,
-  });
-}
-
-/**
  * Rejects an edge `createRelationWithClient` would reject for authorization or integrity —
  * `database_archived`, `owner_violation`, `validation_failed` (including its edge-metadata rules,
  * issue #185) — without writing it (issue #184: a revised link-existing proposal is refused when
@@ -115,7 +97,13 @@ export async function assertRelationCreatableWithClient(
   context?: SystemRelationWriteContext,
 ): Promise<void> {
   const edgeContext = await loadCreatableRelationEdgeContext(client, input, context);
-  await assertRelationEdgeMetadataValid(client, edgeContext, input);
+  await runRelationEdgeWriteHooks({
+    client,
+    edgeContext,
+    callerItemId: input.callerItemId,
+    targetItemId: input.targetItemId,
+    metadata: input.metadata,
+  });
 }
 
 /**
@@ -133,7 +121,13 @@ export async function createRelationWithClient(
   context?: SystemRelationWriteContext,
 ): Promise<RelationEdge> {
   const edgeContext = await loadCreatableRelationEdgeContext(client, input, context);
-  await assertRelationEdgeMetadataValid(client, edgeContext, input);
+  await runRelationEdgeWriteHooks({
+    client,
+    edgeContext,
+    callerItemId: input.callerItemId,
+    targetItemId: input.targetItemId,
+    metadata: input.metadata,
+  });
 
   const { itemA, itemB } = normalizeRelationSides(
     edgeContext.reldef,
@@ -161,7 +155,13 @@ export async function updateRelationWithClient(
   await assertRelationDatabasesNotArchived(client, edgeContext);
   assertRelationPropertyWritable(edgeContext.property, context);
   await assertRelationEndpointsValid(client, edgeContext, input.callerItemId, input.targetItemId);
-  await assertRelationEdgeMetadataValid(client, edgeContext, input);
+  await runRelationEdgeWriteHooks({
+    client,
+    edgeContext,
+    callerItemId: input.callerItemId,
+    targetItemId: input.targetItemId,
+    metadata: input.metadata,
+  });
 
   const { itemA, itemB } = normalizeRelationSides(
     edgeContext.reldef,
