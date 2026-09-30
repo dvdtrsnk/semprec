@@ -7,7 +7,13 @@ import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createDocStore, putBlockWithClient, type DocStore } from "../docs/docStore.js";
 import { getOrCreateDoc } from "../docs/docsStore.js";
 import { ConflictError, HistoryNotRetainedError, NotFoundError, ValidationError } from "../errors.js";
-import { DEFAULT_COMPACTION_THRESHOLD, loadDoc, mutateDoc, runCompactionSweep } from "../docs/docPersistence.js";
+import {
+  DEFAULT_COMPACTION_THRESHOLD,
+  handleDocCompactionSweepTask,
+  loadDoc,
+  mutateDoc,
+  runCompactionSweep,
+} from "../docs/docPersistence.js";
 import {
   cleanupExpiredDocHistory,
   rebaselineDocHistory,
@@ -351,13 +357,76 @@ describe("docs (CRDT layer)", () => {
       ]);
       expect(beforeSweep[0].n).toBe(threshold + 1); // the seed write, plus these
 
-      const compactedCount = await runCompactionSweep(pool, threshold);
-      expect(compactedCount).toBeGreaterThanOrEqual(1);
+      const outcome = await runCompactionSweep(pool, threshold);
+      expect(outcome.succeeded).toBeGreaterThanOrEqual(1);
 
       const { rows: afterSweep } = await pool.query(`SELECT count(*)::int AS n FROM doc_updates WHERE doc_id = $1`, [
         doc.id,
       ]);
       expect(afterSweep[0].n).toBe(0);
+    });
+
+    it("runCompactionSweep isolates a corrupted doc's failure from another doc's success", async () => {
+      const itemA = await makeItem();
+      await docStore.putBlock(itemA.id, { id: "seed", flavour: "paragraph" }, "user");
+      const docA = await docStore.getDoc(itemA.id);
+      if (!docA) throw new Error("doc not created");
+
+      const scratch = new Y.Doc();
+      scratch.gc = false;
+      const validUpdates: Buffer[] = [];
+      for (let i = 0; i < DEFAULT_COMPACTION_THRESHOLD; i++) {
+        validUpdates.push(
+          Buffer.from(
+            captureUpdate(scratch, () => {
+              scratch.getMap("blocks").set(`a${i}`, new Y.Map());
+            }),
+          ),
+        );
+      }
+      await pool.query(
+        `INSERT INTO doc_updates (doc_id, update, created_by) SELECT $1, u, 'user' FROM unnest($2::bytea[]) AS u`,
+        [docA.id, validUpdates],
+      );
+
+      const itemB = await makeItem();
+      await docStore.putBlock(itemB.id, { id: "seed", flavour: "paragraph" }, "user");
+      const docB = await docStore.getDoc(itemB.id);
+      if (!docB) throw new Error("doc not created");
+      // A doc_updates row whose bytes are not a valid Yjs update: Y.applyUpdate throws while
+      // replaying docB, so the whole doc is counted as failed rather than partially compacted.
+      await pool.query(
+        `INSERT INTO doc_updates (doc_id, update, created_by) SELECT $1, $2, 'user' FROM generate_series(1, $3)`,
+        [docB.id, Buffer.from([0x00, 0xff]), DEFAULT_COMPACTION_THRESHOLD],
+      );
+
+      const outcome = await runCompactionSweep(pool);
+      expect(outcome).toEqual({ succeeded: 1, failed: 1 });
+
+      const { rows: docARows } = await pool.query(`SELECT count(*)::int AS n FROM doc_updates WHERE doc_id = $1`, [
+        docA.id,
+      ]);
+      expect(docARows[0].n).toBe(0); // docA compacted
+
+      const { rows: docBRows } = await pool.query(`SELECT count(*)::int AS n FROM doc_updates WHERE doc_id = $1`, [
+        docB.id,
+      ]);
+      expect(docBRows[0].n).toBeGreaterThan(0); // docB's failed transaction never compacted or deleted its rows
+    });
+
+    it("handleDocCompactionSweepTask rejects when the only over-threshold doc failed entirely", async () => {
+      const item = await makeItem();
+      await docStore.putBlock(item.id, { id: "seed", flavour: "paragraph" }, "user");
+      const doc = await docStore.getDoc(item.id);
+      if (!doc) throw new Error("doc not created");
+      await pool.query(
+        `INSERT INTO doc_updates (doc_id, update, created_by) SELECT $1, $2, 'user' FROM generate_series(1, $3)`,
+        [doc.id, Buffer.from([0x00, 0xff]), DEFAULT_COMPACTION_THRESHOLD],
+      );
+
+      await expect(handleDocCompactionSweepTask(pool)).rejects.toThrow(
+        "docCompactionSweep: all 1 attempted doc(s) failed",
+      );
     });
 
     it("compaction leaves behind a doc_snapshot_history checkpoint, so version reconstruction never loses granularity it merged away", async () => {
@@ -824,8 +893,8 @@ describe("docs (CRDT layer)", () => {
         Buffer.from([0xff, 0xff, 0xff, 0xff]),
       ]);
 
-      const succeeded = await runDocHistoryRetentionSweep(pool, 30);
-      expect(succeeded).toBe(1); // only docA rebaselined; docB wasn't eligible, docC's threw
+      const outcome = await runDocHistoryRetentionSweep(pool, 30);
+      expect(outcome.rebaselined).toBe(1); // only docA rebaselined; docB wasn't eligible, docC's threw
 
       const { rows: docARows } = await pool.query<{ history_available_from: Date }>(
         `SELECT history_available_from FROM docs WHERE id = $1`,
