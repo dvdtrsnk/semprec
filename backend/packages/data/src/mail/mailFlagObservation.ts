@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { NotFoundError } from "../errors.js";
-import { getItemById } from "../chokePoint/itemsStore.js";
+import { lockItemById } from "../chokePoint/itemsStore.js";
 import { convergeObservedEmailFlagsWithClient } from "../chokePoint/itemWrites.js";
 import { recordObservedMailMessageFlags, type MailMessageFlagKey } from "./mailMessageFlagSyncStore.js";
 import { FLAGGED_PROPERTY_KEY, READ_PROPERTY_KEY, messageFlagProperties } from "./messageFlags.js";
@@ -26,11 +26,20 @@ export interface ApplyObservedMailMessageFlagsInput {
  * `recordObservedMailMessageFlags` runs once for both flags afterwards to set `current_state`
  * and, for a converged row, `desired_state` too (`mailMessageFlagSyncStore.ts`'s own
  * converged/pending check), so the two calls agree regardless of ordering.
+ *
+ * The items row is locked FOR UPDATE first, before mail_message_flag_sync_state, to match the
+ * lock order the user-initiated write path takes (updateItemWithClient locks items, then
+ * recordDesiredMailMessageFlags upserts the sync-state row). Locking sync-state first here would
+ * let a concurrent reconcile pass and a concurrent user flag update each hold one row's lock and
+ * wait on the other's, deadlocking (Postgres 40P01).
  */
 export async function applyObservedMailMessageFlags(
   client: PoolClient,
   input: ApplyObservedMailMessageFlagsInput,
 ): Promise<void> {
+  const item = await lockItemById(client, input.emailsDatabaseId, input.messageItemId);
+  if (!item) throw new NotFoundError(`Emails item ${input.messageItemId} not found`);
+
   const { rows } = await client.query<{
     property_key: string;
     desired_state: boolean;
@@ -42,9 +51,6 @@ export async function applyObservedMailMessageFlags(
   );
   const stateByKey = new Map(rows.map((row) => [row.property_key, row]));
   const observed = messageFlagProperties(input.flags);
-
-  const item = await getItemById(client, input.emailsDatabaseId, input.messageItemId);
-  if (!item) throw new NotFoundError(`Emails item ${input.messageItemId} not found`);
 
   const propertiesPatch: Record<string, boolean> = {};
   for (const propertyKey of [READ_PROPERTY_KEY, FLAGGED_PROPERTY_KEY] as const) {
