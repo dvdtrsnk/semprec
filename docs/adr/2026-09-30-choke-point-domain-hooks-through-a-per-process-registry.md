@@ -64,8 +64,9 @@ choke-point module by its deep path instead of the barrel must import
 
 The new dependency-cruiser rule `chokepoint-knows-no-domain` forbids any file
 under `chokePoint/` (except `schemaCoreModuleManifest.ts`, which legitimately
-wires domain route handlers and tools) from importing a listed domain folder
-directly — `chokePoint/hooks.ts` is the only way across that boundary. The
+wires domain route handlers and tools, and `itemTrash.ts`, whose cascade
+delete/restore/purge imports are the `itemDeleteWithClient` path deliberately
+left without a hook) from importing a listed domain folder directly — `chokePoint/hooks.ts` is the only way across that boundary. The
 rule lists domains explicitly, so a new domain must be added to it to be
 covered; `scheduler/`, `rollup/`, `views/`, `seed/`, `tasks/` (the
 `deriveTaskTime` derivation), `migrationJob/` and the root-level
