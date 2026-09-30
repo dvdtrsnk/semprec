@@ -85,6 +85,13 @@ describe("error contract (issue #238)", () => {
     expect(body.error.details).toEqual({ currentItem: toItemEnvelope(SAMPLE_ITEM) });
   });
 
+  it("falls through to the generic details branch when current is missing an ItemRow field", () => {
+    const { computed: _computed, deletedAt: _deletedAt, ...currentMissingFields } = SAMPLE_ITEM;
+    const error = new ConflictError("conflict", { current: currentMissingFields });
+    const body = toErrorResponseBody(error);
+    expect(body.error.details).toBeUndefined();
+  });
+
   it("carries approval_required's link to the resulting approval request", () => {
     const error = new ApprovalRequiredError("Requires approval", {
       approvalRequestId: "33333333-3333-3333-3333-333333333333",

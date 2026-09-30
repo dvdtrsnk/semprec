@@ -73,13 +73,17 @@ export interface ErrorResponseBody {
 function isVersionConflictDetails(details: unknown): details is { current: ItemRow } {
   if (typeof details !== "object" || details === null || !("current" in details)) return false;
   const current = details.current;
+  if (typeof current !== "object" || current === null) return false;
+  const row = current as Partial<ItemRow>;
   return (
-    typeof current === "object" &&
-    current !== null &&
-    typeof (current as Partial<ItemRow>).id === "string" &&
-    typeof (current as Partial<ItemRow>).databaseId === "string" &&
-    typeof (current as Partial<ItemRow>).properties === "object" &&
-    typeof (current as Partial<ItemRow>).updatedAt === "string"
+    typeof row.id === "string" &&
+    typeof row.databaseId === "string" &&
+    typeof row.properties === "object" &&
+    row.properties !== null &&
+    typeof row.computed === "object" &&
+    row.computed !== null &&
+    typeof row.updatedAt === "string" &&
+    (row.deletedAt === null || typeof row.deletedAt === "string")
   );
 }
 
