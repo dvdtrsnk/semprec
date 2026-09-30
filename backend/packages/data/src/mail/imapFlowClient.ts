@@ -1,7 +1,12 @@
 import type { ImapFlow, FetchMessageObject, MessageAddressObject, MessageStructureObject } from "imapflow";
 import { Readable } from "node:stream";
 import type { ImapFetchedMessage, ImapFolderRef, ImapFolderSelection, ImapMailClient } from "./imapReconcile.js";
-import { AttachmentCapExceededError, MAX_ATTACHMENT_BYTES, type FetchedMessage } from "./providerTypes.js";
+import {
+  AttachmentCapExceededError,
+  FlagFetchCapExceededError,
+  MAX_ATTACHMENT_BYTES,
+  type FetchedMessage,
+} from "./providerTypes.js";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { isDeliveryStatusReport } from "./dsn.js";
@@ -20,6 +25,17 @@ const IMAP_PARTIAL_FETCH_BYTES = 64 * 1024;
 // that stops responding mid-response, rather than closing the socket, could hang the sync
 // worker indefinitely on this one request.
 const IMAP_PARTIAL_FETCH_TIMEOUT_MS = 30_000;
+
+// Without CONDSTORE, fetchFlagsChangedSince below has no server-side way to scope itself to
+// "what changed" and fetches every UID in the mailbox — this bounds how much of that response
+// it will hold in memory at once, the same backstop role MAX_ATTACHMENT_BYTES plays for a
+// single part. Chosen generously above any real mailbox's message count.
+const MAX_FLAG_FETCH_RESULTS = 100_000;
+
+// Same rationale as IMAP_PARTIAL_FETCH_TIMEOUT_MS above, applied per iteration step of the
+// flag-fetch response stream rather than to a single fetchOne() call, since a full-mailbox
+// flag fetch is itself a long-lived `for await` rather than one bounded request.
+const IMAP_FLAG_FETCH_STEP_TIMEOUT_MS = 30_000;
 
 /**
  * `MAX_ATTACHMENT_BYTES` (providerTypes.ts, shared with the Gmail/Graph adapters) is passed to
@@ -411,12 +427,44 @@ export class ImapFlowMailClient implements ImapMailClient {
   ): Promise<Array<{ uid: number; flags: string[] }>> {
     await this.client.mailboxOpen(path);
     const results: Array<{ uid: number; flags: string[] }> = [];
-    for await (const raw of this.client.fetch(
+    const iterator = this.client.fetch(
       "1:*",
       { uid: true, flags: true },
       sinceModSeq !== null ? { uid: true, changedSince: BigInt(sinceModSeq) } : { uid: true },
-    )) {
-      results.push({ uid: raw.uid, flags: raw.flags ? [...raw.flags] : [] });
+    )[Symbol.asyncIterator]();
+    try {
+      // A manual `.next()` loop, not `for await`, so a step that never resolves (a server
+      // that stops responding mid-stream) can be raced against a timer the same way
+      // fetchOneWithTimeout races a single fetchOne() — a bare `for await` has no such hook.
+      for (;;) {
+        let timer: NodeJS.Timeout | undefined;
+        let step: IteratorResult<FetchMessageObject>;
+        try {
+          step = await Promise.race([
+            iterator.next(),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error(`IMAP flag fetch timed out after ${IMAP_FLAG_FETCH_STEP_TIMEOUT_MS}ms`)),
+                IMAP_FLAG_FETCH_STEP_TIMEOUT_MS,
+              );
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+        if (step.done) break;
+        if (results.length >= MAX_FLAG_FETCH_RESULTS) {
+          throw new FlagFetchCapExceededError(
+            `IMAP flag fetch for ${path} exceeded the ${MAX_FLAG_FETCH_RESULTS}-message cap`,
+          );
+        }
+        results.push({ uid: step.value.uid, flags: step.value.flags ? [...step.value.flags] : [] });
+      }
+    } finally {
+      // Best-effort close on the cap/timeout/error paths above — imapflow has no abort signal
+      // for an in-flight fetch (see FetchOptions), so this only stops local consumption of
+      // whatever the server keeps streaming, same limitation fetchOneWithTimeout has.
+      await iterator.return?.();
     }
     return results;
   }

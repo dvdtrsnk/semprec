@@ -39,6 +39,14 @@ export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 export class AttachmentCapExceededError extends Error {}
 
 /**
+ * Thrown by an adapter's known-UID flag re-fetch when a mailbox has more messages than
+ * `MAX_FLAG_FETCH_RESULTS` (imapFlowClient.ts) — without CONDSTORE this fetch has no way to
+ * scope itself to "what changed," so an unbounded mailbox would otherwise load every UID's
+ * flags into memory in one pass. A hard backstop, not an expected outcome for a real mailbox.
+ */
+export class FlagFetchCapExceededError extends Error {}
+
+/**
  * Minimal module-boundary validation for a REST client's parsed JSON response (gmailRestClient.ts,
  * graphRestClient.ts): not a full per-endpoint schema — that would mean hand-maintaining a
  * shape for every Gmail/Graph resource this issue touches, which is exactly the kind of

@@ -4176,6 +4176,41 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
     ).toEqual([]);
   });
 
+  it("a repeat ingest of an already-known message with a pending write-back leaves the item and desired_state untouched", async () => {
+    const { emailsId, params } = await setUpFolder();
+    const ingestArgs = {
+      emailsDatabaseId: params.emailsDatabaseId,
+      filesDatabaseId: params.filesDatabaseId,
+      folderRelationPropertyId: params.folderRelationPropertyId,
+      attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
+      folderItemId: params.folderItemId,
+      mailboxItemId: params.mailboxItemId,
+      folderUid: 1,
+      messageId: "<repeat-pending@x>",
+      envelope: {},
+      attachments: [],
+      storage: noopStorage,
+      storageKeyPrefix: "test",
+      flags: [], // unread on the provider
+    };
+
+    const first = await withTransaction(pool, (client) => ingestEmailMessage(client, ingestArgs));
+    expect(first.created).toBe(true);
+
+    // Marked read but never confirmed by write-back — desired true, current still false.
+    await chokePoint.updateItem({ databaseId: emailsId, itemId: first.itemId, propertiesPatch: { read: true } });
+    expect(await flagStateRowFor(first.itemId, "read")).toEqual({ desired_state: true, current_state: false });
+
+    // A later fetchMessagesSince pass re-observes the same message, still carrying the old
+    // (unread) flag value the provider had before the pending write-back has had a chance to run.
+    const second = await withTransaction(pool, (client) => ingestEmailMessage(client, ingestArgs));
+    expect(second.created).toBe(false);
+    expect(second.itemId).toBe(first.itemId);
+
+    expect((await chokePoint.getItem(emailsId, first.itemId))?.properties.read).toBe(true);
+    expect(await flagStateRowFor(first.itemId, "read")).toEqual({ desired_state: true, current_state: false });
+  });
+
   it("(d) fetchFlagsChangedSince is skipped on the initial sync, called with null without CONDSTORE, and with the stored highestmodseq with it", async () => {
     const { params } = await setUpFolder();
     const calls: Array<number | null> = [];
