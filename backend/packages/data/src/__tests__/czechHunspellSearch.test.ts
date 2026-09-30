@@ -43,8 +43,8 @@ async function withFreshDatabase(fn: (pool: Pool) => Promise<void>): Promise<voi
   try {
     await fn(pool);
   } finally {
-    await pool.end();
     await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+    await pool.end();
     await admin.end();
   }
 }
