@@ -30,15 +30,15 @@ function testDatabaseUrl(): string {
  */
 async function withFreshDatabase(fn: (pool: Pool) => Promise<void>): Promise<void> {
   const name = `czech_fts_${randomUUID().replaceAll("-", "")}`;
+  // createPool (not `new Pool`) so a connection this test's own DROP DATABASE ... FORCE
+  // races against a client mid-teardown gets pool.ts's 'error' handler, not an unhandled
+  // EventEmitter exception that crashes the run.
   const admin = createPool(testDatabaseUrl());
   // UTF8 like production: the embedded instance's template1 is SQL_ASCII, which the text
   // search parser cannot split Czech words in.
   await admin.query(`CREATE DATABASE "${name}" ENCODING 'UTF8' TEMPLATE template0`);
   const url = new URL(testDatabaseUrl());
   url.pathname = `/${name}`;
-  // createPool (not `new Pool`) so a connection this test's own DROP DATABASE ... FORCE
-  // races against a client mid-teardown gets pool.ts's 'error' handler, not an unhandled
-  // EventEmitter exception that crashes the run.
   const pool = createPool(url.toString());
   try {
     await fn(pool);
