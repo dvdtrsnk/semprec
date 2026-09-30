@@ -78,6 +78,8 @@ export const CORE_TASK_NAMES = {
   MCP_RUN_CREDENTIAL_EXPIRY_SWEEP: "mcpRunCredentialExpirySweep",
   // Issue #692: the daily sweep that deletes pre-checkpoint agent_run_events rows past retention.
   AGENT_RUN_EVENTS_RETENTION: "agentRunEventsRetention",
+  // Issue #706: the daily sweep that deletes permanently-failed graphile_worker.jobs rows past retention.
+  QUEUE_FAILED_JOBS_PRUNE: "queueFailedJobsPrune",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
@@ -113,6 +115,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: "transcribe",
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "api",
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "api",
+  [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: "api",
 };
 
 /**

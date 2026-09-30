@@ -46,6 +46,7 @@ import { handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
 import { handleObservabilityCheckSystemTask } from "./observability/observabilityCheckSystem.js";
 import { handleMcpRunCredentialExpirySweepTask } from "./mcp/mcpRunCredentialExpiry.js";
 import { handleAgentRunEventsRetentionTask } from "./agentRuns/agentRunEventsRetention.js";
+import { handleQueueFailedJobsPruneTask } from "./observability/queueFailedJobsPrune.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -86,6 +87,7 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 * * * * * ${CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM}
 0 4 * * * ${CORE_TASK_NAMES.TRASH_PURGE}
 20 4 * * * ${CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION}
+20 4 * * * ${CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE}
 10 * * * * ${CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP}
 `;
 
@@ -213,6 +215,9 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: async () => {
       await handleAgentRunEventsRetentionTask(pool);
+    },
+    [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: async () => {
+      await handleQueueFailedJobsPruneTask(pool);
     },
     // Issue #221 declared this name in the closed API affinity set ("handler and enqueue routing
     // are delivered later") but nothing enqueues it yet — no crontab line, no producer. A no-op

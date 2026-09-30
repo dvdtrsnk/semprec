@@ -125,6 +125,11 @@ export * from "./aiGateway/aiUsageReport.js";
 export * from "./health/processHeartbeats.js";
 export * from "./observability/observabilityChecksStore.js";
 export * from "./observability/observabilityCheckSystem.js";
+export {
+  FAILED_JOB_RETENTION_MS,
+  pruneQueueFailedJobs,
+  handleQueueFailedJobsPruneTask,
+} from "./observability/queueFailedJobsPrune.js";
 export * from "./observability/systemHealthReport.js";
 export { seedSystem } from "./seed/seedSystem.js";
 export * from "./seed/tenDatabaseKeys.js";
