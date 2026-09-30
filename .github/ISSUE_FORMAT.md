@@ -216,12 +216,12 @@ nothing updates, so it goes stale as soon as the first issue closes. The epic:
 
 ### Closing
 
-`.github/workflows/close-completed-epics.yml` runs daily
+`.github/workflows/close-completed-epics.yml` runs hourly
 (`.github/scripts/close-completed-epics.mjs`) and closes an epic once GitHub's own
 `sub_issues_summary` reports every linked sub-issue closed. An epic with no
 sub-issues linked is never a candidate. On the run that first finds it complete,
 the workflow only announces that in a comment; it closes the epic on a later run
-once that announcement is at least `GRACE_HOURS` (default 20) old. Linking a new
+once that announcement is at least `GRACE_HOURS` (default 1) old. Linking a new
 sub-issue in between withdraws the announcement and restarts the clock. Labeling
 the epic `epic:wip` opts it out of this entirely, for as long as the label is
 there — use it for a batch that is deliberately going to stay open. A
