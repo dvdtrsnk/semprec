@@ -160,6 +160,11 @@ describe("relation cardinality enforcement (issue #82)", () => {
 
       await clientY.query("BEGIN");
       const pendingY = createRelationWithClient(clientY, input.loser);
+      // Attach a handler synchronously so Node never flags this as an unhandled rejection: Y's
+      // INSERT can settle (once X's COMMIT below unblocks it) well before the `await
+      // expect(pendingY)...` below runs, especially under a loaded test run. The real assertion
+      // is the `.rejects` check further down; multiple handlers on the same promise are fine.
+      pendingY.catch(() => {});
 
       // Each client's own transaction is closed in its own try/catch/finally — if an
       // assertion throws partway through, both clients still leave the pool with no open
