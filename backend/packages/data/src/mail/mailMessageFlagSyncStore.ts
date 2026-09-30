@@ -49,8 +49,14 @@ export async function recordDesiredMailMessageFlags(
  * the same transaction as the Email patch — a crash cannot leave UI state committed without a
  * restart-safe provider write to perform.
  */
-export const mailMessageFlagsItemUpdateHook: ItemUpdateHook = async ({ client, database, item, propertiesPatch }) => {
-  if (database.ownerModuleId !== EMAILS_MODULE_ID) return;
+export const mailMessageFlagsItemUpdateHook: ItemUpdateHook = async ({
+  client,
+  database,
+  item,
+  propertiesPatch,
+  skipMailDesiredStateRecording,
+}) => {
+  if (database.ownerModuleId !== EMAILS_MODULE_ID || skipMailDesiredStateRecording) return;
   await recordDesiredMailMessageFlags(client, item.id, propertiesPatch);
 };
 

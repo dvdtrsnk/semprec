@@ -4,7 +4,9 @@
 // derivation of Tasks `time`, and `writeComputedAndAnnounce`. A domain's own transactional side
 // effect on an item update (e.g. the Emails flag-sync write, the Tasks recurrence advance on a
 // `status: 'done'` write) runs through `runItemUpdateHooks` (./hooks.ts), never a direct import
-// of the domain. It does not own item reads
+// of the domain, with `convergeObservedEmailFlagsWithClient` below as mail sync's own declared,
+// narrow ownership handoff for Emails' owner:'user' `read`/`flagged` properties — see its doc
+// comment. It does not own item reads
 // (itemReads.ts), trash and restore (itemTrash.ts), or relation writes (relationOps.ts).
 // Constrained by:
 // - docs/adr/2026-09-19-derived-system-properties-computed-inline-at-choke-point.md
@@ -12,6 +14,7 @@
 // - docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
 // - docs/adr/2026-09-10-choke-point-api-for-state-writes.md
 // - docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
+// - docs/adr/2026-09-10-single-writer-ownership-model.md
 import type { PoolClient } from "pg";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
@@ -227,6 +230,15 @@ export interface UpdateItemWithClientOptions extends AssertWritablePropertiesOpt
   queueAffinity?: ActionQueueAffinity;
   /** The user whose write this is, when there is one — see `InvalidationEvent`'s doc comment. Absent for a system/background caller. */
   actingUserId?: string;
+  /**
+   * Set only by `convergeObservedEmailFlagsWithClient` below, mail sync's declared, narrow
+   * ownership handoff for Emails' owner:'user' `read`/`flagged` properties — never by a
+   * user-initiated write. Skips `recordDesiredMailMessageFlags`: that call exists to persist
+   * *user/agent triage intent* (its own comment below), and a provider observation is not
+   * that — `mailFlagObservation.ts`'s `recordObservedMailMessageFlags` already derives
+   * `mail_message_flag_sync_state`'s desired/current state correctly for an observation.
+   */
+  skipMailDesiredStateRecording?: boolean;
 }
 
 /**
@@ -282,7 +294,15 @@ export async function updateItemWithClient(
   // Every domain's transactional side effect on this write (the Tasks recurrence advance on a
   // `status: 'done'` write, the Emails flag-sync write, ...) runs here, in the same transaction,
   // through the per-process registry — see docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md.
-  await runItemUpdateHooks({ client, database, item, propertiesPatch });
+  // `skipMailDesiredStateRecording` opts a provider-observation convergence out of the Emails
+  // flag-sync write — see `UpdateItemWithClientOptions`'s doc comment.
+  await runItemUpdateHooks({
+    client,
+    database,
+    item,
+    propertiesPatch,
+    skipMailDesiredStateRecording: options.skipMailDesiredStateRecording,
+  });
   await triggerOnItemEventHeartbeats(client, input.databaseId, "update", item.id, options.queueAffinity);
 
   for (const key of patchKeys) {
@@ -318,6 +338,37 @@ export async function updateItemWithClient(
     }),
   );
   return item;
+}
+
+export interface ConvergeObservedEmailFlagsInput {
+  databaseId: string;
+  itemId: string;
+  propertiesPatch: Record<string, boolean>;
+}
+
+/**
+ * The explicit ownership handoff docs/adr/2026-09-10-single-writer-ownership-model.md's
+ * "Consequences" section calls for when a feature needs a second writer: mail sync
+ * (mail/mailFlagObservation.ts) is the sole declared writer of Emails' owner:'user'
+ * `read`/`flagged` properties for exactly one case — folding a *converged* provider
+ * observation (no pending user write-back to protect) into the item, so the mailbox doesn't
+ * keep showing state the provider itself has already moved past. Distinct from a plain call to
+ * `updateItemWithClient` (which a user-initiated PATCH also uses, indistinguishably, since
+ * `assertWritableProperties` never restricts owner:'user' fields) so this one narrow,
+ * code-reviewed call site is the only thing that can pass `skipMailDesiredStateRecording` —
+ * see that option's doc comment for why an observation must skip it. Never call
+ * `updateItemWithClient` directly with that option from anywhere else, and never use this
+ * function for any field but Emails' `read`/`flagged`.
+ */
+export async function convergeObservedEmailFlagsWithClient(
+  client: PoolClient,
+  input: ConvergeObservedEmailFlagsInput,
+): Promise<ItemRow> {
+  return updateItemWithClient(
+    client,
+    { databaseId: input.databaseId, itemId: input.itemId, propertiesPatch: input.propertiesPatch },
+    { skipMailDesiredStateRecording: true },
+  );
 }
 
 export function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAffinity">) {

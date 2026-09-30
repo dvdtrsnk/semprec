@@ -13,6 +13,13 @@ export interface ItemUpdateHookContext {
   database: DatabaseRow;
   item: ItemRow;
   propertiesPatch: Record<string, unknown>;
+  /**
+   * Set only by `convergeObservedEmailFlagsWithClient` (itemWrites.ts), mail sync's declared,
+   * narrow ownership handoff for Emails' owner:'user' `read`/`flagged` properties — never by a
+   * user-initiated write. See `UpdateItemWithClientOptions.skipMailDesiredStateRecording`'s doc
+   * comment for why a provider observation must opt out of the Emails flag-sync hook.
+   */
+  skipMailDesiredStateRecording?: boolean;
 }
 
 export type ItemUpdateHook = (context: ItemUpdateHookContext) => Promise<void>;

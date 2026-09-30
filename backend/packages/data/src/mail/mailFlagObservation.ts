@@ -1,7 +1,7 @@
 import type { PoolClient } from "pg";
 import { NotFoundError } from "../errors.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
-import { updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { convergeObservedEmailFlagsWithClient } from "../chokePoint/itemWrites.js";
 import { recordObservedMailMessageFlags, type MailMessageFlagKey } from "./mailMessageFlagSyncStore.js";
 import { FLAGGED_PROPERTY_KEY, READ_PROPERTY_KEY, messageFlagProperties } from "./messageFlags.js";
 
@@ -18,12 +18,14 @@ export interface ApplyObservedMailMessageFlagsInput {
  *
  * For each of `read`/`flagged`: when the sync-state row is absent or converged (no pending
  * write-back), and the observed value differs from what the item currently stores, the item is
- * patched through the generic choke point — whose Emails branch (`itemWrites.ts`) records the
- * patched value as the new `desired_state` itself. When the row is pending (a user change is
- * still awaiting write-back), the item is left alone so the pending write survives. Either way,
- * `recordObservedMailMessageFlags` runs once for both flags afterwards to set `current_state`;
- * its own converged/pending check (`mailMessageFlagSyncStore.ts`) decides `desired_state`
- * independently, so the two calls agree regardless of ordering.
+ * patched through `convergeObservedEmailFlagsWithClient` (`itemWrites.ts`) — this module's own
+ * declared, narrow ownership handoff for these two owner:'user' fields, not the generic
+ * `updateItemWithClient` a user-initiated PATCH goes through (see that function's doc comment
+ * for why the distinction matters). When the row is pending (a user change is still awaiting
+ * write-back), the item is left alone so the pending write survives. Either way,
+ * `recordObservedMailMessageFlags` runs once for both flags afterwards to set `current_state`
+ * and, for a converged row, `desired_state` too (`mailMessageFlagSyncStore.ts`'s own
+ * converged/pending check), so the two calls agree regardless of ordering.
  */
 export async function applyObservedMailMessageFlags(
   client: PoolClient,
@@ -55,7 +57,7 @@ export async function applyObservedMailMessageFlags(
   }
 
   if (Object.keys(propertiesPatch).length > 0) {
-    await updateItemWithClient(client, {
+    await convergeObservedEmailFlagsWithClient(client, {
       databaseId: input.emailsDatabaseId,
       itemId: input.messageItemId,
       propertiesPatch,
