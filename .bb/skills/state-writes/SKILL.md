@@ -41,7 +41,10 @@ the single composition point that wires every domain's hook into
 `chokePoint/hooks.ts`'s per-process registries:
 `registerItemUpdateHook`/`runItemUpdateHooks` for `updateItemWithClient`, and
 `registerRelationEdgeWriteHook`/`runRelationEdgeWriteHooks` for
-`createRelationWithClient`/`updateRelationWithClient`. See
+`createRelationWithClient`/`updateRelationWithClient`'s write and
+`assertRelationCreatableWithClient`'s pre-validation check (the assertion path
+does not commit — hooks registered here must be safe to run with no
+subsequent write). See
 `docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md`
 for the rationale and the boundary rule's exemptions.
 
