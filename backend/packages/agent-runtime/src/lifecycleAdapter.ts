@@ -156,34 +156,15 @@ export async function runAgentSessionForRun(
 
     try {
       const lastMessage = await runAgentTurn(client, run.id, session.messages(), input.onEvent);
-      // The event commits before the row flips to its terminal status: a bare-pool caller has
-      // no shared transaction across the two writes, so a poller reading the row right after it
-      // sees "done" must never race the corresponding run_status event still being written.
-      try {
-        await pushRunStatus(client, run.id, "done");
-      } catch (statusErr) {
-        // A failure specific to the events table must not be mistaken for a failed session: it
-        // must not propagate to the outer catch below, which would close the row as `error` with
-        // the events-table error instead of `done` with the real result snapshot.
-        logger.error({ err: statusErr, agentRunId: run.id }, "Failed to push done run_status event");
-      }
       await finishAgentRun(client, run.id, "done", extractResultSnapshot(lastMessage));
+      await pushRunStatus(client, run.id, "done");
     } catch (err) {
       try {
-        // Same ordering as the success path above, for the same reason: the run_status event
-        // commits before the row closes as `error`, so a poller never observes the closed row
-        // ahead of its final event. Issue #149: same client as the status write, so a
-        // caller-supplied transaction rolls both back together; a bare pool gives the same
-        // best-effort guarantee this catch block already had before the notification existed.
-        try {
-          await pushRunStatus(client, run.id, "error");
-        } catch (statusErr) {
-          // A failure specific to the events table must not skip closing the agent_runs row:
-          // that row closing unconditionally (for all non-connection failures) is the invariant
-          // this catch block guaranteed before the run_status write was added here.
-          logger.error({ err: statusErr, agentRunId: run.id }, "Failed to push error run_status event");
-        }
+        // Issue #149: same client as the status write, so a caller-supplied transaction rolls
+        // both back together; a bare pool gives the same best-effort guarantee this catch block
+        // already had before the notification existed.
         await finishAgentRunWithErrorNotification(client, run.id, err instanceof Error ? err.message : String(err));
+        await pushRunStatus(client, run.id, "error");
       } catch (finishErr) {
         // Preserve the session failure for the caller, but do not erase evidence that the
         // secondary lifecycle close failed and left the row running.
