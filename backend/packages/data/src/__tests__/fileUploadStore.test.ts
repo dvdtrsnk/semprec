@@ -12,16 +12,17 @@ import type { BlobStorageWriter } from "../mail/blobStorage.js";
 
 /**
  * In-memory stand-in for `LocalFsBlobStorageWriter`: records every `writeStream`/`delete` call
- * and can be told to make a specific key's `delete` throw, so the tests can drive the "delete
- * inside vs. after commit" distinction the ADR requires without touching the filesystem.
+ * and can be told to make the *next* written key's `delete` throw, so the tests can drive the
+ * "delete inside vs. after commit" distinction the ADR requires without touching the filesystem.
  */
 class FakeBlobStorageWriter implements BlobStorageWriter {
   readonly bytesByKey = new Map<string, Buffer>();
   readonly deleteCalls: string[] = [];
-  private deleteFailureKeys = new Set<string>();
+  private readonly deleteFailureKeys = new Set<string>();
+  private failNextWrittenKeysDelete = false;
 
-  failDeleteFor(storageKey: string): void {
-    this.deleteFailureKeys.add(storageKey);
+  failDeleteForNextWrite(): void {
+    this.failNextWrittenKeysDelete = true;
   }
 
   async writeStream(storageKey: string, source: Readable): Promise<{ byteSize: number; contentHash: string }> {
@@ -31,6 +32,10 @@ class FakeBlobStorageWriter implements BlobStorageWriter {
     }
     const bytes = Buffer.concat(chunks);
     this.bytesByKey.set(storageKey, bytes);
+    if (this.failNextWrittenKeysDelete) {
+      this.deleteFailureKeys.add(storageKey);
+      this.failNextWrittenKeysDelete = false;
+    }
     return { byteSize: bytes.length, contentHash: createHash("sha256").update(bytes).digest("hex") };
   }
 
@@ -45,6 +50,11 @@ class FakeBlobStorageWriter implements BlobStorageWriter {
   readStream(): Readable {
     throw new Error("not used by these tests");
   }
+}
+
+function requireDefined<T>(value: T | undefined, message: string): T {
+  if (value === undefined) throw new Error(message);
+  return value;
 }
 
 let pool: Pool;
@@ -105,14 +115,14 @@ describe("ingestUploadedFile (issue #670)", () => {
 
     const first = await upload(storage, filesId, "same content");
     expect(first.created).toBe(true);
-    const firstKey = [...storage.bytesByKey.keys()][0];
+    const firstKey = first.blob.storageKey;
 
     const second = await upload(storage, filesId, "same content");
     expect(second.created).toBe(false);
     expect(second.item.id).toBe(first.item.id);
 
     expect(storage.deleteCalls).toHaveLength(1);
-    const secondKey = storage.deleteCalls[0];
+    const secondKey = requireDefined(storage.deleteCalls[0], "expected one delete call");
     expect(secondKey).not.toBe(firstKey);
     expect(storage.bytesByKey.has(firstKey)).toBe(true);
     expect(storage.bytesByKey.has(secondKey)).toBe(false);
@@ -124,15 +134,7 @@ describe("ingestUploadedFile (issue #670)", () => {
     const storage = new FakeBlobStorageWriter();
 
     const first = await upload(storage, filesId, "same content again");
-
-    const beforeSecondKeys = new Set(storage.bytesByKey.keys());
-    // The second call's storage key doesn't exist yet, so fail every delete from here on —
-    // whichever key the second upload streams to is the one that must be told to throw.
-    const originalWriteStream = storage.writeStream.bind(storage);
-    storage.writeStream = async (storageKey, source, options) => {
-      storage.failDeleteFor(storageKey);
-      return originalWriteStream(storageKey, source, options);
-    };
+    storage.failDeleteForNextWrite();
 
     const second = await upload(storage, filesId, "same content again");
 
@@ -141,8 +143,7 @@ describe("ingestUploadedFile (issue #670)", () => {
     expect(storage.deleteCalls).toHaveLength(1);
     // The duplicate's bytes are still present because the fake's delete failed — the point
     // being verified is that the failure did not abort the transaction.
-    const secondKey = storage.deleteCalls[0];
-    expect(beforeSecondKeys.has(secondKey)).toBe(false);
+    const secondKey = requireDefined(storage.deleteCalls[0], "expected one delete call");
     expect(storage.bytesByKey.has(secondKey)).toBe(true);
 
     // The delete runs from an `afterCommit` callback, whose rejection is handled asynchronously.
