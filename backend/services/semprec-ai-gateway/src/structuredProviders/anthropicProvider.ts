@@ -191,8 +191,9 @@ export function createAnthropicStructuredProvider(apiKey: string): StructuredCom
         // Names the schema path only — never any response content.
         const issue = parsed.error.issues[0];
         const path = issue ? issue.path.map(String).join(".") : "";
+        const detail = issue?.message ?? "unknown issue";
         throw new ProviderCallError(
-          `Anthropic response did not match the expected shape: ${path} ${issue?.message ?? "unknown issue"}`,
+          `Anthropic response did not match the expected shape: ${path === "" ? detail : `${path} ${detail}`}`,
         );
       }
       const body = parsed.data;
@@ -201,7 +202,7 @@ export function createAnthropicStructuredProvider(apiKey: string): StructuredCom
       if (!toolUse) {
         throw new ProviderCallError("Anthropic response did not include the forced tool_use block");
       }
-      if (toolUse.input === undefined) {
+      if (toolUse.input === undefined || toolUse.input === null) {
         throw new ProviderCallError("Anthropic tool_use block carried no input");
       }
 

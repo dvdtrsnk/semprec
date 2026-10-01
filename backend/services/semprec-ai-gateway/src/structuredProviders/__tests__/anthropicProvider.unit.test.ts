@@ -170,6 +170,42 @@ describe("createAnthropicStructuredProvider", () => {
     await expect(rejection).rejects.toThrow("Anthropic tool_use block carried no input");
   });
 
+  it("throws ProviderCallError when the tool_use block carries a null input", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              content: [{ type: "tool_use", input: null }],
+              usage: { input_tokens: 12, output_tokens: 3 },
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    const provider = createAnthropicStructuredProvider("test-api-key");
+    const rejection = provider.complete(REQUEST);
+
+    await expect(rejection).rejects.toBeInstanceOf(ProviderCallError);
+    await expect(rejection).rejects.toThrow("Anthropic tool_use block carried no input");
+  });
+
+  it("builds the shape-mismatch message without a double space when the issue path is empty", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify("not an object"), { status: 200 })),
+    );
+
+    const provider = createAnthropicStructuredProvider("test-api-key");
+    const rejection = provider.complete(REQUEST);
+
+    await expect(rejection).rejects.toBeInstanceOf(ProviderCallError);
+    await expect(rejection).rejects.toThrow(/^Anthropic response did not match the expected shape: \S/);
+    await expect(rejection).rejects.not.toThrow("  ");
+  });
+
   it("cancels the response body before throwing ProviderCallError on a non-retryable non-2xx status", async () => {
     let bodyCancelled = false;
     const errorBody = new ReadableStream<Uint8Array>({
