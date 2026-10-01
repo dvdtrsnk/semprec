@@ -182,9 +182,17 @@ jobs:
   # PostgreSQL; the shards share nothing. The matrix reports one context per shard
   # (`integration-shard (1)`, …) — the required `integration` context comes from the
   # fan-in job below.
+  #
+  # The job timeout is the sum of its step budgets plus about a minute for checkout,
+  # toolchain setup and `pnpm install`: 13 minutes for ffmpeg (the slowest uncached
+  # install seen took 12.5) and 9 for the shard's tests (a shard takes 2–5 minutes; the
+  # whole tier took about 13 serially). The two slow steps carry their own
+  # `timeout-minutes`, so a stalled package mirror and a stalled test run each fail
+  # under their own step name instead of both surfacing as the job being cancelled,
+  # and time the mirror takes never comes out of the tests' budget.
   integration-shard:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 23
     strategy:
       fail-fast: false
       matrix:
@@ -208,13 +216,46 @@ jobs:
       # tier exercises that for real rather than mocking the binaries away. They are a
       # system dependency, not an npm one, and the GitHub-hosted runner image does not
       # carry them — without this step the tier fails with `spawn ffmpeg ENOENT`.
+      #
+      # ffmpeg pulls in about 63 MB of packages, and the runner's Ubuntu mirror has
+      # served them at under 100 kB/s: 18 of 599 installs on 2026-09-30/10-01 took over
+      # 4 minutes and 7 over 10 (run 36871665352: 11 min 39 s). The downloaded
+      # `.deb` files are therefore cached per runner image (`ImageOS`/`ImageVersion`,
+      # so a new image starts a fresh cache) and apt reads them from there; only a
+      # package the mirror has updated since is downloaded again. The cache is saved
+      # right after the install, not at the end of the job, so a shard whose tests fail
+      # still fills it.
+      - name: Backend — ffmpeg package cache key
+        id: ffmpeg-cache-key
+        run: echo "key=ffmpeg-debs-${ImageOS}-${ImageVersion}-${RUNNER_ARCH}" >> "$GITHUB_OUTPUT"
+
+      - name: Backend — restore ffmpeg packages
+        id: ffmpeg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.ffmpeg-cache-key.outputs.key }}
+
       - name: Backend — install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+        timeout-minutes: 13
+        run: |
+          mkdir -p ~/apt-archives/partial
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/apt-archives" ffmpeg
+          sudo chown -R "$(id -u):$(id -g)" ~/apt-archives
+
+      - name: Backend — save ffmpeg packages
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.ffmpeg-cache-key.outputs.key }}
 
       # The ephemeral PostgreSQL is created for this shard and removed after it by
       # `packages/data/src/testSupport/globalSetup.ts` (an embedded server, no service
       # container and no external database).
       - name: Backend — test:integration (shard ${{ matrix.shard }}/3)
+        timeout-minutes: 9
         working-directory: backend
         run: pnpm run test:integration --shard=${{ matrix.shard }}/3
 
