@@ -20,7 +20,7 @@ export async function assertRelationDatabasesNotArchived(
   await assertDatabaseNotArchived(client, context.targetDatabaseId);
 }
 
-/** Proves the caller's process identity for a protected system relation write — see `assertRelationSideCreatable`/`assertRelationPropertyWritable` below. Never accepted on the public facade. */
+/** Proves the caller's process identity for a protected system relation write — see `assertRelationSideCreatable` in `relationPropertyOps.ts` and `assertRelationPropertyWritable` below in this file. Never accepted on the public facade. */
 export interface SystemRelationWriteContext {
   ownerProcess: string;
 }

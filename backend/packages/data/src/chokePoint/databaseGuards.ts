@@ -9,8 +9,8 @@ import * as databasesStore from "./databasesStore.js";
 /**
  * The one reusable archived-database guard: blocks every item/relation mutation against an
  * archived database with a canonical 403 `database_archived`, while reads (and restoring the
- * database itself) remain unaffected. Used directly by every mutation below except item
- * creation, which needs the idempotent-replay carve-out in `assertDatabaseWritableForCreate`.
+ * database itself) remain unaffected. Used directly by every item and relation mutation except item
+ * creation, which needs the idempotent-replay carve-out in `assertDatabaseWritableForCreate` (in `itemWrites.ts`).
  */
 export async function assertDatabaseNotArchived(client: PoolClient, databaseId: string): Promise<void> {
   const database = await databasesStore.getDatabase(client, databaseId);

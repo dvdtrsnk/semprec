@@ -18,7 +18,7 @@ export function createComputedKeyRegistry(): ComputedKeyRegistry {
   return new Set();
 }
 
-/** `items.computed` is a shared namespace between rollup values and declared module cache keys — see computedKeyRegistry.ts. */
+/** `items.computed` is a shared namespace between rollup values and declared module cache keys — see the `ComputedKeyRegistry` type above. */
 export function assertNoComputedKeyCollision(registry: ComputedKeyRegistry, key: string): void {
   if (registry.has(key)) {
     throw new ValidationError(`Property key '${key}' collides with a declared module cache key`, { field: key });

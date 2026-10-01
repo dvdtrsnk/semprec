@@ -15,8 +15,10 @@ import * as databasesStore from "./databasesStore.js";
 /**
  * Transaction-scoped counterpart to `chokePoint.archiveDatabase` (issue #89): `databasesStore.archiveDatabase`
  * already takes a `client` rather than opening its own transaction, so this is a thin named alias —
- * kept alongside the other four `*WithClient` exports so `ApprovedOperationExecutor` has one uniform
- * naming convention to call the destructive half of each of the five approval-gated operations.
+ * one of the five approval-gated destructive `*WithClient` exports, one per operation, each exported from
+ * its own operation module (`databaseOps.ts`, `viewOps.ts`, `propertyOps.ts`, `itemTrash.ts`,
+ * `relationOps.ts`), so `ApprovedOperationExecutor` has one uniform naming convention to call the
+ * destructive half of each operation.
  */
 export async function databaseArchiveWithClient(
   client: PoolClient,
