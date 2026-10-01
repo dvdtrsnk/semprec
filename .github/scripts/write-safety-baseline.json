@@ -105,7 +105,8 @@
     "packages/data/src/seed/seedSystem.ts::585149463ceb",
     "packages/data/src/seed/seedTenDatabases.ts::0f8343d1c537",
     "packages/data/src/tasks/taskRecurrenceStore.ts::40ad64005ff9",
-    "packages/data/src/tasks/taskRecurrenceStore.ts::5b0cb3061f25"
+    "packages/data/src/tasks/taskRecurrenceStore.ts::5b0cb3061f25",
+    "packages/data/src/transcription/transcriptsCatalogCutoverMigration.ts::0fb01077aa9d"
   ],
   "leakedConnects": [
     "packages/agent-runtime/src/startupRepair.ts::7df2c2d63510",
