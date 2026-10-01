@@ -145,6 +145,7 @@ export async function syncMcpServerTools(
   });
 
   let handle: McpClientHandle | undefined;
+  let toolCount: number;
   try {
     handle = await connectMcpServer(pool, item, { actorId: options.actorId, purpose: "mcp_tool_sync" });
     const tools = await listAllTools(handle.client);
@@ -176,7 +177,7 @@ export async function syncMcpServerTools(
       );
     });
 
-    return { toolCount: parsedTools.length };
+    toolCount = parsedTools.length;
   } catch (err) {
     const syncError = safeSyncErrorMessage(err);
     try {
@@ -196,8 +197,18 @@ export async function syncMcpServerTools(
       // secondary failure while merely trying to *record* it must never replace or hide it.
       console.error("syncMcpServerTools: failed to record syncStatus:'error' after a sync failure", recordingErr);
     }
+    try {
+      await handle?.close();
+    } catch (closeErr) {
+      // Same discipline as the recordingErr handling above: `err` is what the caller needs to
+      // see, so a secondary failure while merely closing the connection must never replace it.
+      console.error("syncMcpServerTools: failed to close the MCP client handle", closeErr);
+    }
     throw err;
-  } finally {
-    await handle?.close();
   }
+
+  // No error is in flight here — a close failure is the only failure and must propagate as-is,
+  // exactly as it did before this connection was ever wrapped in error-recording logic.
+  await handle.close();
+  return { toolCount };
 }
