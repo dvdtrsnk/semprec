@@ -106,6 +106,31 @@ describe("choke-point propertyOps", () => {
     ).rejects.toBeInstanceOf(NotFoundError);
   });
 
+  it("updatePropertyWithDatabase rolls back the patch and throws NotFoundError when the owning database is missing", async () => {
+    const db = await chokePoint.createDatabase({ name: "Db" });
+    const property = await chokePoint.createProperty({ databaseId: db.id, key: "score", name: "Score", type: "text" });
+
+    // `database_id` has an ON DELETE CASCADE foreign key to `databases`, so deleting the
+    // database would delete this property too rather than orphaning it. Trigger-disable the
+    // constraint check just long enough to point this row at a database id that doesn't
+    // exist, reproducing the orphaned-row state `updatePropertyWithDatabase`'s `!database`
+    // guard exists for without going through any choke-point write path.
+    const missingDatabaseId = "00000000-0000-0000-0000-000000000000";
+    await pool.query("ALTER TABLE properties DISABLE TRIGGER ALL");
+    try {
+      await pool.query("UPDATE properties SET database_id = $1 WHERE id = $2", [missingDatabaseId, property.id]);
+    } finally {
+      await pool.query("ALTER TABLE properties ENABLE TRIGGER ALL");
+    }
+
+    await expect(chokePoint.updatePropertyWithDatabase(property.id, { name: "New Score" })).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+
+    const reloaded = await chokePoint.getProperty(property.id);
+    expect(reloaded?.name).toBe("Score");
+  });
+
   it("updateProperty applies a config-only change for a non-rollup property", async () => {
     const db = await chokePoint.createDatabase({ name: "Db" });
     const property = await chokePoint.createProperty({
