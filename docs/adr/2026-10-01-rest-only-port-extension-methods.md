@@ -28,7 +28,7 @@ established "one dispatch path, three transports": every transport
 through `dispatchGenericOperation`, and no transport gets a parallel
 business-logic path. `patchPropertyWithDatabase`, added to
 `GenericApplicationPort` and called directly by
-`services/semprec-api/src/propertiesHandler.ts` instead of through
+`backend/services/semprec-api/src/propertiesHandler.ts` instead of through
 `dispatchGenericOperation`, is a new shape neither ADR anticipated: a port
 method that exists to serve one transport's response shape and is never
 reachable from the catalog's 29 dispatchable operation names. Left
