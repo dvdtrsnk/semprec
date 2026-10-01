@@ -594,7 +594,10 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
       onLifecycleError: (mailboxItemId, phase, err) => errors.push({ mailboxItemId, phase, err }),
     });
 
-    await root.reconcileOnce();
+    // The rollback's own failure still aborts the page's transaction and propagates out of
+    // reconcileOnce() — this test only asserts that onLifecycleError already ran with the
+    // original seed error before that happens.
+    await expect(root.reconcileOnce()).rejects.toBe(rollbackErr);
     await drain();
 
     expect(errors).toHaveLength(1);
