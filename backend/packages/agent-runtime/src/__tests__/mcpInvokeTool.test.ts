@@ -260,7 +260,7 @@ describe("MCP invoke adapter (issue #128)", () => {
       const firstRequestId = first.result.match(/Approval request ([0-9a-f-]{36})/i)![1]!;
 
       const { rows: afterFirst } = await pool.query(
-        `SELECT user_id, kind, title, source_table, source_id, transition_instance FROM notifications WHERE source_id = $1`,
+        `SELECT user_id, kind, title, source_table, source_id, transition_instance, link_href FROM notifications WHERE source_id = $1`,
         [firstRequestId],
       );
       expect(afterFirst).toMatchObject([
@@ -270,6 +270,7 @@ describe("MCP invoke adapter (issue #128)", () => {
           title: `"search_web" needs approval`,
           source_table: "approval_requests",
           transition_instance: firstRequestId,
+          link_href: `?page=approvals&user=${user.id}`,
         },
       ]);
 

@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
-import { ForbiddenError, ValidationError } from "../errors.js";
+import { ForbiddenError, PropertyLockedError, ValidationError } from "../errors.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -75,7 +75,7 @@ describe("choke-point propertyOps", () => {
     });
 
     await expect(chokePoint.updateProperty(property.id, { name: "New Score", type: "number" })).rejects.toBeInstanceOf(
-      ForbiddenError,
+      PropertyLockedError,
     );
 
     const reloaded = await chokePoint.getProperty(property.id);

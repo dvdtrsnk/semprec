@@ -278,6 +278,21 @@ describe("createAuthRequestListener", () => {
       });
       expect(res.status).toBe(401);
     });
+
+    it("rejects a macos native session's token when presented as a cookie", async () => {
+      const user = await makeUser();
+      const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "macos" }),
+      });
+      const { token } = (await loginRes.json()) as { token: string };
+
+      const res = await fetch(`${baseUrl}/api/auth/session`, {
+        headers: { Cookie: `${SESSION_COOKIE_NAME}=${token}` },
+      });
+      expect(res.status).toBe(401);
+    });
   });
 
   describe("POST /api/auth/logout", () => {
