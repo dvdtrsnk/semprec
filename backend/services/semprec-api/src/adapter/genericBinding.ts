@@ -14,7 +14,9 @@ import {
  * isn't one of the errors `adapterRoute.ts` catches. Exported (issue #789) so a route calling a
  * `GenericApplicationPort` method outside the 29-operation catalog — e.g.
  * `patchPropertyWithDatabase` — can still validate its input against the same operation's schema
- * before calling that method directly, instead of going through `dispatchGenericOperation`.
+ * before calling that method directly, instead of going through `dispatchGenericOperation`. See
+ * `docs/adr/2026-10-01-rest-only-port-extension-methods.md` for when a catalog-external port
+ * method like this is appropriate and what it must satisfy.
  */
 export function parseOperationInput<K extends GenericOperationName>(operation: K, raw: unknown): InputByOperation[K] {
   const binding = GENERIC_OPERATION_BINDINGS[operation] as {
