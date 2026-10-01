@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
-import { ForbiddenError, PropertyLockedError, ValidationError } from "../errors.js";
+import { ForbiddenError, NotFoundError, PropertyLockedError, ValidationError } from "../errors.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -81,6 +81,29 @@ describe("choke-point propertyOps", () => {
     const reloaded = await chokePoint.getProperty(property.id);
     expect(reloaded?.name).toBe("Score");
     expect(reloaded?.type).toBe("text");
+  });
+
+  it("updatePropertyWithDatabase applies the patch and returns the owning database row from the same transaction (issue #789)", async () => {
+    const db = await chokePoint.createDatabase({ name: "Db" });
+    const property = await chokePoint.createProperty({ databaseId: db.id, key: "score", name: "Score", type: "text" });
+
+    const {
+      property: updated,
+      typeChanged,
+      database,
+    } = await chokePoint.updatePropertyWithDatabase(property.id, {
+      name: "New Score",
+    });
+    expect(updated.name).toBe("New Score");
+    expect(typeChanged).toBe(false);
+    expect(database.id).toBe(db.id);
+    expect(database.key).toBe(db.key);
+  });
+
+  it("updatePropertyWithDatabase throws NotFoundError for an unknown property id, same as updateProperty", async () => {
+    await expect(
+      chokePoint.updatePropertyWithDatabase("00000000-0000-0000-0000-000000000000", {}),
+    ).rejects.toBeInstanceOf(NotFoundError);
   });
 
   it("updateProperty applies a config-only change for a non-rollup property", async () => {

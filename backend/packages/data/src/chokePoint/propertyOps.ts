@@ -10,10 +10,11 @@ import type { PoolClient } from "pg";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
-import type { PropertyRow, PropertyType } from "../types.js";
+import type { DatabaseRow, PropertyRow, PropertyType } from "../types.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as relationsStore from "./relationsStore.js";
+import * as databasesStore from "./databasesStore.js";
 import { assertNoComputedKeyCollision } from "./computedKeyRegistry.js";
 import { applyRollupConfig } from "../rollup/config.js";
 import { enqueueRollupBackfill } from "../rollup/recompute.js";
@@ -108,6 +109,52 @@ async function changePropertyTypeWithClient(
   return updated;
 }
 
+/**
+ * Transaction-scoped counterpart to `chokePoint.updateProperty`, factored out so
+ * `updatePropertyWithDatabase` can resolve the property's owning `Database` row against the same
+ * transaction client this applies the patch in, instead of each caller opening its own.
+ */
+async function updatePropertyWithClient(
+  client: PoolClient,
+  id: string,
+  input: { name?: string; config?: Record<string, unknown>; type?: PropertyType },
+): Promise<{ property: PropertyRow; typeChanged: boolean }> {
+  let property = await propertiesStore.getProperty(client, id);
+  if (!property) throw new NotFoundError(`Property ${id} not found`);
+
+  // Issue #219: checked here, inside the same transaction as the existence check above,
+  // so an unknown id is always 404 regardless of patch shape — a caller-side pre-check for
+  // this would itself be an out-of-transaction read the existence check above already makes
+  // redundant.
+  if (input.name === undefined && input.config === undefined && input.type === undefined) {
+    throw new ValidationError("Patch must include at least one field", { reason: "empty_patch" });
+  }
+
+  // Issue #219: re-checked against the row this same transaction just fetched, not a
+  // caller-supplied snapshot — a concurrent type change between an outer read and this
+  // write can't slip a type/config patch past a relation property this way.
+  if (property.type === "relation" && (input.type !== undefined || input.config !== undefined)) {
+    const field = input.type !== undefined ? "type" : "config";
+    throw new ValidationError(`Property ${id} is a relation; ${field} is changed only via its relation definition`, {
+      field,
+      reason: "relation_definition_required",
+    });
+  }
+
+  if (input.name !== undefined) {
+    property = await propertiesStore.renameProperty(client, id, input.name);
+  }
+  if (input.config !== undefined) {
+    property = await updatePropertyConfigWithClient(client, id, input.config);
+  }
+  let typeChanged = false;
+  if (input.type !== undefined && input.type !== property.type) {
+    property = await changePropertyTypeWithClient(client, id, input.type);
+    typeChanged = true;
+  }
+  return { property, typeChanged };
+}
+
 export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedKeyRegistry">) {
   const { pool, computedKeyRegistry } = deps;
   return {
@@ -198,43 +245,34 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
       actingUserId?: string,
     ): Promise<{ property: PropertyRow; typeChanged: boolean }> {
       return withTransaction(pool, async (client) => {
-        let property = await propertiesStore.getProperty(client, id);
-        if (!property) throw new NotFoundError(`Property ${id} not found`);
-
-        // Issue #219: checked here, inside the same transaction as the existence check above,
-        // so an unknown id is always 404 regardless of patch shape — a caller-side pre-check for
-        // this would itself be an out-of-transaction read the existence check above already makes
-        // redundant.
-        if (input.name === undefined && input.config === undefined && input.type === undefined) {
-          throw new ValidationError("Patch must include at least one field", { reason: "empty_patch" });
-        }
-
-        // Issue #219: re-checked against the row this same transaction just fetched, not a
-        // caller-supplied snapshot — a concurrent type change between an outer read and this
-        // write can't slip a type/config patch past a relation property this way.
-        if (property.type === "relation" && (input.type !== undefined || input.config !== undefined)) {
-          const field = input.type !== undefined ? "type" : "config";
-          throw new ValidationError(
-            `Property ${id} is a relation; ${field} is changed only via its relation definition`,
-            { field, reason: "relation_definition_required" },
-          );
-        }
-
-        if (input.name !== undefined) {
-          property = await propertiesStore.renameProperty(client, id, input.name);
-        }
-        if (input.config !== undefined) {
-          property = await updatePropertyConfigWithClient(client, id, input.config);
-        }
-        let typeChanged = false;
-        if (input.type !== undefined && input.type !== property.type) {
-          property = await changePropertyTypeWithClient(client, id, input.type);
-          typeChanged = true;
-        }
+        const result = await updatePropertyWithClient(client, id, input);
         runAfterCommit(client, () =>
-          notifyInvalidation({ scope: "schema", databaseId: property.databaseId, userId: actingUserId }),
+          notifyInvalidation({ scope: "schema", databaseId: result.property.databaseId, userId: actingUserId }),
         );
-        return { property, typeChanged };
+        return result;
+      });
+    },
+
+    /**
+     * REST-only counterpart to `updateProperty` (issue #789), for `PATCH /api/properties/:id`'s
+     * catalog/locale resolution: reads the property's owning `Database` row inside the same
+     * transaction `updateProperty` applies the patch in, so a database deleted between the patch
+     * and a separate `database.get` call can no longer surface as a second, independent
+     * not-found failure for an update that already succeeded.
+     */
+    async updatePropertyWithDatabase(
+      id: string,
+      input: { name?: string; config?: Record<string, unknown>; type?: PropertyType },
+      actingUserId?: string,
+    ): Promise<{ property: PropertyRow; typeChanged: boolean; database: DatabaseRow }> {
+      return withTransaction(pool, async (client) => {
+        const result = await updatePropertyWithClient(client, id, input);
+        const database = await databasesStore.getDatabase(client, result.property.databaseId);
+        if (!database) throw new NotFoundError(`Database ${result.property.databaseId} not found`);
+        runAfterCommit(client, () =>
+          notifyInvalidation({ scope: "schema", databaseId: result.property.databaseId, userId: actingUserId }),
+        );
+        return { ...result, database };
       });
     },
 

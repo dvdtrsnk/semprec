@@ -523,6 +523,7 @@ const EXPECTED_CHOKE_POINT_METHODS = [
   "updateItem",
   "updateProperty",
   "updatePropertyConfig",
+  "updatePropertyWithDatabase",
   "updateRelation",
 ];
 

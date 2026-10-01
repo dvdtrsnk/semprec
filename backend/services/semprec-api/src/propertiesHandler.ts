@@ -3,7 +3,7 @@ import { createCatalogResolver, resolveProperty, toManifestLocale } from "@sempr
 import type { GenericApplicationPort } from "@semprec/shared";
 import type { RouteDefinition } from "./adapter/routeTable.js";
 import { requireJsonObjectBody, requireStringQueryParam, requireUuidParam } from "./adapter/requestValidation.js";
-import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js";
+import { dispatchGenericOperation, parseOperationInput, restActor } from "./adapter/genericBinding.js";
 import { toPropertyEnvelope } from "./adapter/propertyEnvelope.js";
 
 function requestUrl(rawUrl: string | undefined): URL {
@@ -57,12 +57,17 @@ export function createPropertyRoutes(
         if (body.config !== undefined) patch.config = body.config;
         if (body.type !== undefined) patch.type = body.type;
 
-        const property = await dispatchGenericOperation(service, "property.patch", actor, { propertyId, patch });
+        // The owning `Database` row comes from `property.patch`'s own transaction via
+        // `patchPropertyWithDatabase` (issue #789), not a separate `database.get` dispatch after
+        // the patch has already committed — a database deleted between the two calls can no
+        // longer surface as an independent not-found failure for an update that already
+        // succeeded. `parseOperationInput` validates the same way `dispatchGenericOperation`
+        // would for `property.patch`; `patchPropertyWithDatabase` isn't one of the 29 catalog
+        // operations, so it's called directly on `service` instead.
+        const input = parseOperationInput("property.patch", { propertyId, patch });
+        const { property, database } = await service.patchPropertyWithDatabase(actor, input);
 
         const locale = toManifestLocale(ctx.identity.user.locale);
-        const database = await dispatchGenericOperation(service, "database.get", actor, {
-          databaseId: property.databaseId,
-        });
         const catalogResolver = await createCatalogResolver(moduleRegistry);
         const catalogs = await catalogResolver.getCatalogsForDbKey(database.key);
         const resolved = resolveProperty(property, database.key, catalogs, locale);
