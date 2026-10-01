@@ -167,7 +167,7 @@ export async function matchTranscriptToEvent(
         proposal: envelope,
         history: appendHistoryEntry(
           [],
-          `${candidates.length} Events matched the recording's time window, so none was linked; proposed a new Event.`,
+          `${candidates.length === 1 ? "1 Event" : `${candidates.length} Events`} matched the recording's time window, so none was linked; proposed a new Event.`,
         ),
         status: "proposed",
       },
