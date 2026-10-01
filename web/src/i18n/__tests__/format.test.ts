@@ -7,7 +7,7 @@ describe("formatUsd", () => {
   });
 
   it("formats USD for cs", () => {
-    expect(formatUsd("cs", 3.55)).toBe("3,55 US$");
+    expect(formatUsd("cs", 3.55)).toBe("3,55\u00A0US$");
   });
 });
 

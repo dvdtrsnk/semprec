@@ -84,7 +84,7 @@ export function App({
   login?: true;
   languages?: readonly string[];
 }) {
-  const { session, setSession, retry } = useSession(auth, sessionEvents);
+  const { session, setSession, retry } = useSession(auth, sessionEvents, setup !== undefined);
   const locale: Locale =
     session.status === "authenticated" ? resolveLocale([session.user.locale]) : resolveLocale(languages);
 
@@ -112,16 +112,19 @@ export function App({
 /**
  * Bootstraps the session from `GET /api/auth/session` on mount and drops back to anonymous when
  * an adapter reports a 401 mid-session. Lifted out of `SessionGate` so `App` can read the session
- * user's locale before the `I18nProvider` that `SessionGate` renders under.
+ * user's locale before the `I18nProvider` that `SessionGate` renders under. Skipped entirely
+ * during the setup wizard, which runs before any user exists.
  */
 function useSession(
   auth: AuthOperations,
   sessionEvents: EventTarget,
+  skip: boolean,
 ): { session: SessionState; setSession: (session: SessionState) => void; retry: () => void } {
   const [session, setSession] = useState<SessionState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
+    if (skip) return;
     let cancelled = false;
     auth.getSession().then(
       (user) => {
@@ -134,15 +137,16 @@ function useSession(
     return () => {
       cancelled = true;
     };
-  }, [auth, attempt]);
+  }, [auth, attempt, skip]);
 
   useEffect(() => {
+    if (skip) return;
     const onUnauthorized = () => {
       setSession((current) => (current.status === "authenticated" ? { status: "anonymous" } : current));
     };
     sessionEvents.addEventListener("unauthorized", onUnauthorized);
     return () => sessionEvents.removeEventListener("unauthorized", onUnauthorized);
-  }, [sessionEvents]);
+  }, [sessionEvents, skip]);
 
   const retry = () => {
     setSession({ status: "loading" });

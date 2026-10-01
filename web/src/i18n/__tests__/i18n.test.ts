@@ -25,7 +25,7 @@ describe("i18n", () => {
   });
 
   it("useLocale returns the provider's locale", () => {
-    render(createElement(I18nProvider, { locale: "cs" }, createElement(LocaleProbe)));
+    render(createElement(I18nProvider, { locale: "cs", children: createElement(LocaleProbe) }));
     expect(screen.getByText("cs")).toBeInTheDocument();
   });
 });
