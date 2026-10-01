@@ -7,9 +7,11 @@ and host provisioning (#244, #176):
 
 - `Caddyfile` — the single public entry point. One domain, automatic TLS, HSTS without
   `includeSubDomains`/`preload`, compression, JSON access log to stderr, and the two-tier
-  `POST /api/files` request-body limit. Proxies everything to `semprec-api` on `127.0.0.1:8080`.
-  Installed to `/etc/caddy/Caddyfile` by `provision.sh`, which also enables `caddy.service` and
-  hands it `SEMPREC_DOMAIN` through `/etc/caddy/semprec.env`.
+  `POST /api/files` request-body limit. Reverse-proxies `/api/*`, `/mcp` and `/healthz` to
+  `semprec-api` on `127.0.0.1:8080` and serves the web client from
+  `/opt/semprec/current/web/dist` with an `index.html` fallback. Installed to
+  `/etc/caddy/Caddyfile` by `provision.sh`, which also enables `caddy.service` and hands it
+  `SEMPREC_DOMAIN` through `/etc/caddy/semprec.env`.
 - `nftables.conf` — the host firewall: only 22/80/443 reachable from outside the host. Installed
   to `/etc/nftables.conf` and enabled by `provision.sh`, which also reloads `nftables.service`. It
   owns only its own `table inet semprec` and never flushes the ruleset, so Docker's own `ip
@@ -63,8 +65,9 @@ In order, it:
 1. refuses a tag that is not `vMAJOR.MINOR.PATCH`, is not an annotated tag on `origin`, does not
    point at a commit on `main`, or already has a `releases/<tag>` directory;
 2. exports the tagged commit into a hidden `releases/.<tag>.partial.*` directory, runs
-   `pnpm install --frozen-lockfile` and `pnpm -r run build` in its `backend/`, and writes
-   `release.env` (`APP_VERSION=<tag>`, not a secret);
+   `pnpm install --frozen-lockfile` and `pnpm -r run build` in its `backend/` and
+   `pnpm install --frozen-lockfile` + `pnpm run build` in its `web/`, producing `web/dist`, and
+   writes `release.env` (`APP_VERSION=<tag>`, not a secret);
 3. runs the release's migrations CLI in a transient `systemd-run` unit that loads
    `/opt/semprec/shared/.env` and connects with its `SEMPREC_MIGRATE_DATABASE_URL`, then runs the
    seed CLI (`runSeedCli.js`) right after it the same way, under the same URL — it creates the
@@ -228,6 +231,15 @@ validates the rendered config. Rerunning with an unchanged domain is a no-op on 
 
 `PORT=8080` must also be set in the shared `.env` — `Caddyfile`'s `reverse_proxy` targets
 `127.0.0.1:8080` and `semprec-api` listens on `PORT`, so the two values have to agree.
+
+## Web client
+
+`deploy.sh` builds `web/` (`pnpm install --frozen-lockfile` and `pnpm run build`) into the staged
+release alongside `backend/`, producing `web/dist`. `Caddyfile` serves that directory straight off
+the `current` symlink, so a deploy or rollback switches the web client and the backend together —
+there is no separate release or version for the client. The prefixes `Caddyfile` reverse-proxies to
+`semprec-api` (`/api/*`, `/mcp`, `/healthz`) must stay in step with the ones `web/vite.config.ts`
+proxies in development.
 
 ## Host firewall (nftables)
 

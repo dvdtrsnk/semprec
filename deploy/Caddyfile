@@ -2,11 +2,13 @@
 # point, no subdomains. Automatic TLS (Let's Encrypt) and HTTP/2 are Caddy defaults for a site
 # address that is a bare domain, so neither needs an explicit directive here.
 #
-# `semprec-api` is the only public-facing process; it must be configured (via
-# /opt/semprec/shared/.env's PORT, see deploy/shared/.env.example) to listen on the same
-# port this reverse_proxy targets. It alone serves every public route behind this domain,
-# including the `/api/sync` WebSocket upgrade and the Graph webhook — Caddy's reverse_proxy
-# forwards WebSocket upgrades transparently, so no separate handling is needed for either.
+# `semprec-api` (configured via /opt/semprec/shared/.env's PORT, see deploy/shared/.env.example,
+# to listen on the same port this reverse_proxy targets) serves `/api/*` (including the
+# `/api/sync` WebSocket upgrade and the Graph webhook — Caddy's reverse_proxy forwards WebSocket
+# upgrades transparently, so no separate handling is needed), `/mcp` and `/healthz`. Caddy serves
+# everything else itself: the web client's static files from the current release, falling back to
+# its index.html for any path it does not have a file for (every client route is a query
+# parameter on `/`).
 {$SEMPREC_DOMAIN} {
 	encode zstd gzip
 
@@ -37,7 +39,20 @@
 		max_size 16MB
 	}
 
-	reverse_proxy 127.0.0.1:8080
+	# Backend-owned URL space — the same prefixes web/vite.config.ts proxies in development.
+	@backend path /api/* /mcp /healthz
+	handle @backend {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# Everything else is the web client: static files from the current release, and the SPA's
+	# index.html for any path it does not have a file for (every client route is a query
+	# parameter on /).
+	handle {
+		root * /opt/semprec/current/web/dist
+		try_files {path} /index.html
+		file_server
+	}
 
 	log {
 		output stderr

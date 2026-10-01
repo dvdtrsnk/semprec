@@ -104,12 +104,20 @@ stage_release() {
 
 # Copying packages out of the store keeps the release's files from sharing inodes with it. The
 # steps are chained with `&&` because `set -e` does not apply inside a subshell tested by `||`.
+# The release carries the built `web/dist`, which Caddy serves directly (deploy/Caddyfile); a
+# failed web build is a pre-activation failure, exactly like a failed backend build.
 build_release() {
   (
     cd "$staging_dir/backend" &&
       CI=true pnpm install --frozen-lockfile --package-import-method=copy &&
       pnpm -r run build
   ) || fail "build of the staged release failed"
+
+  (
+    cd "$staging_dir/web" &&
+      CI=true pnpm install --frozen-lockfile --package-import-method=copy &&
+      pnpm run build
+  ) || fail "build of the staged web client failed"
 }
 
 # Non-secret and release-specific, so it lives in the release; every unit loads it after the
