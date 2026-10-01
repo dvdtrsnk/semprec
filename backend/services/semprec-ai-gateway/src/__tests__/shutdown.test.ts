@@ -9,7 +9,7 @@ import { createDispatcher } from "../app.js";
 import type { CompleteHandlerOptions } from "../completeHandler.js";
 import type { AudioHandlerOptions } from "../audioHandler.js";
 import type { StructuredCompletionProvider, StructuredCompletionRequest } from "../structuredProviders/types.js";
-import { createGracefulShutdown, POOL_END_TIMEOUT_MS } from "../shutdown.js";
+import { createGracefulShutdown, POOL_END_TIMEOUT_MS, SHUTDOWN_DRAIN_TIMEOUT_MS } from "../shutdown.js";
 import { createModels } from "@earendil-works/pi-ai";
 import type { PiMessagesHandlerOptions } from "../piMessagesHandler.js";
 /** This suite never reaches `/internal/pi/messages`; the dispatcher only needs the options to exist. */
@@ -255,11 +255,26 @@ describe("createGracefulShutdown, driven directly with a stub server/pool/heartb
     expect(lines.some((line) => line.level === "error" && line.msg.includes("already elapsed"))).toBe(true);
   });
 
-  it("uses SHUTDOWN_DRAIN_TIMEOUT_MS when drainTimeoutMs is omitted", async () => {
-    const { createGracefulShutdown: create, SHUTDOWN_DRAIN_TIMEOUT_MS } = await import("../shutdown.js");
+  it("uses SHUTDOWN_DRAIN_TIMEOUT_MS as the default drain timeout when drainTimeoutMs is omitted", async () => {
     expect(SHUTDOWN_DRAIN_TIMEOUT_MS).toBe(600_000);
     expect(POOL_END_TIMEOUT_MS).toBe(5_000);
-    expect(typeof create).toBe("function");
+
+    vi.useFakeTimers();
+    const { server, closeAllConnectionsMock } = createStubServer(); // close() callback deliberately never invoked
+    const { pool } = createStubPool(async () => {});
+    const { heartbeat } = createStubHeartbeat();
+    const { logger, lines } = createCapturingLogger();
+    const shutdown = createGracefulShutdown({ server, pool, heartbeat, logger });
+
+    const shutdownPromise = shutdown("SIGTERM");
+    await vi.advanceTimersByTimeAsync(SHUTDOWN_DRAIN_TIMEOUT_MS - 1);
+    expect(closeAllConnectionsMock).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await shutdownPromise;
+
+    expect(closeAllConnectionsMock).toHaveBeenCalledTimes(1);
+    expect(lines[1]).toMatchObject({ obj: { signal: "SIGTERM", timedOut: true } });
   });
 });
 
