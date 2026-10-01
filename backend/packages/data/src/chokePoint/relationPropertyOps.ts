@@ -182,13 +182,15 @@ export function createRelationPropertyOps(deps: Pick<ChokePointDeps, "pool" | "c
     /** Public facade: never passes a `SystemRelationWriteContext`, so an `owner: 'system'` side is always rejected (`owner_violation`). */
     async createRelationProperty(
       input: CreateRelationPropertyInput,
+      actingUserId?: string,
     ): Promise<{ property: PropertyRow; inverseProperty: PropertyRow | null }> {
       return withTransaction(pool, async (client) => {
         const result = await createRelationPropertyWithClient(client, input, undefined, computedKeyRegistry);
         const invalidatedDatabaseIds = new Set([result.property.databaseId]);
         if (result.inverseProperty) invalidatedDatabaseIds.add(result.inverseProperty.databaseId);
         runAfterCommit(client, () => {
-          for (const databaseId of invalidatedDatabaseIds) notifyInvalidation({ scope: "schema", databaseId });
+          for (const databaseId of invalidatedDatabaseIds)
+            notifyInvalidation({ scope: "schema", databaseId, userId: actingUserId });
         });
         return result;
       });

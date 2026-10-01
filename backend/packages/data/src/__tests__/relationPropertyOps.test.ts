@@ -1,9 +1,10 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { ValidationError } from "../errors.js";
+import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -94,5 +95,40 @@ describe("choke-point relationPropertyOps", () => {
     // The stored row must agree with the returned value — not just the in-memory patch.
     const reloadedInverse = await chokePoint.getProperty(inverseProperty!.id);
     expect(reloadedInverse?.locked).toBe(true);
+  });
+
+  describe("invalidation", () => {
+    let events: InvalidationEvent[];
+
+    beforeEach(() => {
+      events = [];
+      setInvalidationHook((event) => events.push(event));
+    });
+
+    afterEach(() => {
+      setInvalidationHook(() => {});
+    });
+
+    it("createRelationProperty carries the acting user id on the schema invalidation of both sides", async () => {
+      const source = await chokePoint.createDatabase({ name: "Source" });
+      const target = await chokePoint.createDatabase({ name: "Target" });
+      events.length = 0;
+      const actingUserId = randomUUID();
+
+      await chokePoint.createRelationProperty(
+        {
+          sourceDatabaseId: source.id,
+          key: "tasks",
+          name: "Tasks",
+          targetDatabaseId: target.id,
+          inverse: { key: "project", name: "Project" },
+        },
+        actingUserId,
+      );
+
+      const schemaEvents = events.filter((e) => e.scope === "schema");
+      expect(schemaEvents.map((e) => e.databaseId).sort()).toEqual([source.id, target.id].sort());
+      expect(schemaEvents.every((e) => e.userId === actingUserId)).toBe(true);
+    });
   });
 });
