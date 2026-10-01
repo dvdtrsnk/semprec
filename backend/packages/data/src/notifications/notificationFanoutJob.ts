@@ -15,7 +15,7 @@ import {
 } from "../push/pushDeliveriesStore.js";
 import { sendWebPushNotification } from "../push/webPushAdapter.js";
 import { sendApnsNotification } from "../push/apnsAdapter.js";
-import type { PushSenders } from "../push/pushSenders.js";
+import type { PushSendResult, PushSenders } from "../push/pushSenders.js";
 import type { PushSubscriptionRow } from "../push/types.js";
 import { logger } from "./logger.js";
 
@@ -116,10 +116,19 @@ export async function handleNotificationFanoutTask(
     const status = statusByRegistrationId.get(registration.id);
     if (!status || status.delivered || status.failedPermanently) continue;
 
-    const result =
-      registration.channel === "web_push"
-        ? await senders.sendWebPush(webPushTarget(registration), payload)
-        : await senders.sendApns(apnsTarget(registration), payload);
+    let result: PushSendResult;
+    switch (registration.channel) {
+      case "web_push":
+        result = await senders.sendWebPush(webPushTarget(registration), payload);
+        break;
+      case "apns":
+        result = await senders.sendApns(apnsTarget(registration), payload);
+        break;
+      default: {
+        const _exhaustive: never = registration.channel;
+        throw new Error(`notificationFanout: unhandled push channel ${String(_exhaustive)}`);
+      }
+    }
 
     if (result.outcome === "delivered") {
       await withTransaction(pool, (client) => markPushDeliveryDelivered(client, status.id));
