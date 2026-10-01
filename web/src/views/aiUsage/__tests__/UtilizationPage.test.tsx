@@ -102,8 +102,10 @@ describe("UtilizationPage (issue #121)", () => {
       "cs",
     );
 
-    expect(await screen.findByText("3,55 US$")).toBeInTheDocument();
-    expect(screen.getByText(`Denní rozpočet: 50,00 US$`)).toBeInTheDocument();
+    const formatAmount = (value: number) =>
+      new Intl.NumberFormat("cs", { style: "currency", currency: "USD" }).format(value).replace(/ /g, " ");
+    expect(await screen.findByText(formatAmount(3.55))).toBeInTheDocument();
+    expect(screen.getByText(`Denní rozpočet: ${formatAmount(50)}`)).toBeInTheDocument();
   });
 
   it("shows an error state and retries on demand", async () => {
