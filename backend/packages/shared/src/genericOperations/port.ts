@@ -103,7 +103,11 @@ export interface GenericApplicationPort {
    * inside the same transaction the patch itself commits in, so `PATCH /api/properties/:id` can
    * resolve catalog/locale without a second, independently-committed `database.get` call after
    * the patch. Not one of the 29 catalog operations — `OutputByOperation["property.patch"]` (the
-   * shape every MCP/AgentTool `property.patch` call returns) is untouched by this.
+   * shape every MCP/AgentTool `property.patch` call returns) is untouched by this. Only
+   * `services/semprec-api`'s REST handler may call this directly; `mcpHandler.ts` and the
+   * AgentTool composition root never call a catalog-external port method. See
+   * `docs/adr/2026-10-01-rest-only-port-extension-methods.md` for the full set of constraints
+   * this pattern must satisfy.
    */
   patchPropertyWithDatabase(
     actor: AuthenticatedActor,
