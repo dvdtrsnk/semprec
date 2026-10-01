@@ -27,6 +27,12 @@ function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
   return value;
 }
 
+function requireDatabaseUrlFallback(env: NodeJS.ProcessEnv): string {
+  const value = env.DATABASE_URL;
+  if (!value) throw new Error("DATABASE_URL (or SEMPREC_SIDE_DATABASE_URL) is not set");
+  return value;
+}
+
 function requirePositiveFloat(env: NodeJS.ProcessEnv, name: string): number {
   const raw = requireEnv(env, name);
   const value = Number(raw);
@@ -50,7 +56,7 @@ export function resolveStartupConfig(
   // side-table-only process reads out of the single `/opt/semprec/shared/.env` (issue #175,
   // see docs/operations/database-roles.md) — `DATABASE_URL` remains the fallback for local
   // development, where a developer runs this service alone against its own per-service `.env`.
-  const databaseUrl = env.SEMPREC_SIDE_DATABASE_URL ?? requireEnv(env, "DATABASE_URL");
+  const databaseUrl = env.SEMPREC_SIDE_DATABASE_URL ?? requireDatabaseUrlFallback(env);
 
   const rawPort = env.AI_GATEWAY_PORT ?? "3002";
   const port = Number(rawPort);
