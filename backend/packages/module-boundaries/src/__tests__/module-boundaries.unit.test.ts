@@ -14,6 +14,13 @@ describe("checkModuleBoundaries", () => {
     expect(violation?.rules).toContain("no-service-to-service");
   });
 
+  it("allows a service reaching into its own internals", async () => {
+    const { violations } = await checkModuleBoundaries(fixturesDir, ["services", "packages"]);
+    const importers = violations.map((violation: BoundaryViolation) => violation.importer);
+
+    expect(importers).not.toContain("services/svcA/src/usesOwnInternal.ts");
+  });
+
   it("rejects a service importing another service's public entry point (issue #173: no imports across the service boundary at all)", async () => {
     const { violations } = await checkModuleBoundaries(fixturesDir, ["services", "packages"]);
     const violation = violations.find(

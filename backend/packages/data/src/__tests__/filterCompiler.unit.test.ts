@@ -100,19 +100,40 @@ describe("compileFilterNode", () => {
     expect(params).toEqual(["rel-1", targetId]);
   });
 
+  it("compiles relation_contains for the 'a' side, flipping which column holds items.id versus the target", () => {
+    const props = properties([["tasks", { type: "relation", relationDefinitionId: "rel-1", relationSide: "a" }]]);
+    const params: unknown[] = [];
+    const targetId = "11111111-1111-4111-8111-111111111111";
+
+    const sql = compileFilterNode(
+      parseFilterNode({ type: "relation_contains", property: "tasks", value: targetId }),
+      props,
+      params,
+    );
+
+    expect(sql).toBe(
+      "EXISTS (SELECT 1 FROM item_relations r WHERE r.relation_definition_id = $1 AND r.item_a = items.id AND r.item_b = $2::uuid)",
+    );
+    expect(params).toEqual(["rel-1", targetId]);
+  });
+
   it("is_empty/is_not_empty compile against the jsonb form for multi_select but the text form for everything else", () => {
     const props = properties([
       ["tags", { type: "multi_select" }],
       ["title", { type: "text" }],
     ]);
 
-    const multiSql = compileFilterNode(parseFilterNode({ type: "is_empty", property: "tags" }), props, []);
+    const multiParams: unknown[] = [];
+    const multiSql = compileFilterNode(parseFilterNode({ type: "is_empty", property: "tags" }), props, multiParams);
     expect(multiSql).toBe(
       "(properties -> $1 IS NULL OR properties -> $1 = 'null'::jsonb OR properties -> $1 = '[]'::jsonb)",
     );
+    expect(multiParams).toEqual(["tags"]);
 
-    const scalarSql = compileFilterNode(parseFilterNode({ type: "is_empty", property: "title" }), props, []);
+    const scalarParams: unknown[] = [];
+    const scalarSql = compileFilterNode(parseFilterNode({ type: "is_empty", property: "title" }), props, scalarParams);
     expect(scalarSql).toBe("(properties ->> $1 IS NULL OR properties ->> $1 = '')");
+    expect(scalarParams).toEqual(["title"]);
   });
 
   it("'in' compiles to an overlap check for multi_select but plain membership for a scalar", () => {
@@ -121,15 +142,23 @@ describe("compileFilterNode", () => {
       ["title", { type: "text" }],
     ]);
 
-    const multiSql = compileFilterNode(parseFilterNode({ type: "in", property: "tags", value: ["a", "b"] }), props, []);
+    const multiParams: unknown[] = [];
+    const multiSql = compileFilterNode(
+      parseFilterNode({ type: "in", property: "tags", value: ["a", "b"] }),
+      props,
+      multiParams,
+    );
     expect(multiSql).toBe("properties -> $1 ?| $2::text[]");
+    expect(multiParams).toEqual(["tags", ["a", "b"]]);
 
+    const scalarParams: unknown[] = [];
     const scalarSql = compileFilterNode(
       parseFilterNode({ type: "in", property: "title", value: ["a", "b"] }),
       props,
-      [],
+      scalarParams,
     );
     expect(scalarSql).toBe("properties ->> $1 = ANY($2::text[])");
+    expect(scalarParams).toEqual(["title", ["a", "b"]]);
   });
 
   it("reads a rollup property from computed and every other property from properties", () => {
