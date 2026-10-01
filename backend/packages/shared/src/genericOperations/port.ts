@@ -98,6 +98,17 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["property.patch"],
   ): Promise<OutputByOperation["property.patch"]>;
+  /**
+   * REST-only extension of `patchProperty` (issue #789): the property's owning `Database`, read
+   * inside the same transaction the patch itself commits in, so `PATCH /api/properties/:id` can
+   * resolve catalog/locale without a second, independently-committed `database.get` call after
+   * the patch. Not one of the 29 catalog operations — `OutputByOperation["property.patch"]` (the
+   * shape every MCP/AgentTool `property.patch` call returns) is untouched by this.
+   */
+  patchPropertyWithDatabase(
+    actor: AuthenticatedActor,
+    input: InputByOperation["property.patch"],
+  ): Promise<{ property: Property; database: Database }>;
   deleteProperty(
     actor: AuthenticatedActor,
     input: InputByOperation["property.delete"],

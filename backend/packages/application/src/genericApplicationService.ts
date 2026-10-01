@@ -162,6 +162,18 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
       return updated;
     },
 
+    async patchPropertyWithDatabase(actor, input) {
+      // Same transaction-scoped guards as `patchProperty` above (issue #219); the only
+      // difference is `chokePoint.updatePropertyWithDatabase` also reads the owning `Database`
+      // row inside that same transaction (issue #789).
+      const { property, database } = await chokePoint.updatePropertyWithDatabase(
+        input.propertyId,
+        { name: input.patch.name, config: input.patch.config, type: input.patch.type },
+        actor.userId,
+      );
+      return { property, database };
+    },
+
     async deleteProperty(actor, input) {
       return chokePoint.deleteProperty(input.propertyId, actor.userId);
     },
