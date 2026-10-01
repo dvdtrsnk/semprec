@@ -99,13 +99,12 @@ describe("createApprovalRequestsRequestListener", () => {
 
   it("approves a pending request", async () => {
     const id = await createPendingRequest();
-    const userId = await createUser();
     const session = await authSession();
 
     const res = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
       headers: { ...session.headers, "Content-Type": "application/json" },
-      body: JSON.stringify({ decision: "approved", decidedByUserId: userId }),
+      body: JSON.stringify({ decision: "approved" }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { status: string; decidedBy: string };
@@ -191,21 +190,19 @@ describe("createApprovalRequestsRequestListener", () => {
 
   it("treats a repeated decision as a deterministic no-op, returning the current state with 200", async () => {
     const id = await createPendingRequest();
-    const userId = await createUser();
-    const otherUser = await createUser();
     const firstSession = await authSession();
 
     const first = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
       headers: { ...firstSession.headers, "Content-Type": "application/json" },
-      body: JSON.stringify({ decision: "approved", decidedByUserId: userId }),
+      body: JSON.stringify({ decision: "approved" }),
     });
     expect(first.status).toBe(200);
 
     const second = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
       headers: { ...(await authHeader()), "Content-Type": "application/json" },
-      body: JSON.stringify({ decision: "rejected", decidedByUserId: otherUser }),
+      body: JSON.stringify({ decision: "rejected" }),
     });
     expect(second.status).toBe(200);
     const body = (await second.json()) as { status: string; decidedBy: string };
