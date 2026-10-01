@@ -58,11 +58,7 @@ async function withFreshDatabase(fn: (pool: Pool) => Promise<void>): Promise<voi
   }
   // Every step runs even when an earlier one rejects, so the database is dropped and both
   // pools are released; fn's own error wins over cleanup errors, otherwise the first cleanup error.
-  const cleanup = [
-    () => pool.end(),
-    () => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`),
-    () => admin.end(),
-  ];
+  const cleanup = [() => pool.end(), () => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`), () => admin.end()];
   for (const step of cleanup) {
     try {
       await step();
