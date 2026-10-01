@@ -30,7 +30,11 @@ export function ErrorState({ error, onRetry }: { error: OperationError; onRetry?
   return (
     <div className={`state state--error${unavailable ? " state--unavailable" : ""}`} role="alert">
       <p className="state__title">{unavailable ? t("state.unavailable.title") : t("state.error.title")}</p>
-      <p className="state__detail">{error.message}</p>
+      <p className="state__detail">
+        {typeof error.status === "number"
+          ? t("state.error.status", { status: error.status })
+          : t("state.error.transport")}
+      </p>
       {!unavailable && onRetry ? (
         <button type="button" className="button" onClick={onRetry}>
           {t("state.retry")}

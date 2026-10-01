@@ -88,7 +88,7 @@ describe("ApprovalQueue (issue #132)", () => {
 
     renderQueue(stubOperations({ listApprovalRequests }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("transport down");
+    expect(await screen.findByRole("alert")).toHaveTextContent("The server could not be reached");
 
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
 

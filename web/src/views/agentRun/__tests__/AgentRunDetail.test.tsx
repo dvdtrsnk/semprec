@@ -69,7 +69,7 @@ describe("AgentRunDetail (issue #132)", () => {
 
     renderDetail(stubOperations({ getAgentRun }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("transport down");
+    expect(await screen.findByRole("alert")).toHaveTextContent("The server could not be reached");
 
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
 

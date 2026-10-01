@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EmptyState, ErrorState, LoadingState } from "../../components/StateViews.js";
-import { useTranslate } from "../../i18n/index.js";
+import { useTranslate, type MessageKey } from "../../i18n/index.js";
 import { toOperationError, type OperationError } from "../../api/genericOperations.js";
 import type { McpAgentPageOperations, McpToolGrant } from "../../api/mcpAgentPageOperations.js";
+
+const RISK_CLASS_KEYS: Record<string, MessageKey> = {
+  unclassified: "agentPage.tools.riskClass.unclassified",
+  low: "agentPage.tools.riskClass.low",
+  moderate: "agentPage.tools.riskClass.moderate",
+  high: "agentPage.tools.riskClass.high",
+  destructive: "agentPage.tools.riskClass.destructive",
+};
 
 type ToolsResource =
   | { status: "loading" }
@@ -118,7 +126,7 @@ function ToolRow({
               .filter((value, index, all) => all.indexOf(value) === index)
               .map((value) => (
                 <option key={value} value={value}>
-                  {value}
+                  {RISK_CLASS_KEYS[value] ? t(RISK_CLASS_KEYS[value]) : value}
                 </option>
               ))}
           </select>
