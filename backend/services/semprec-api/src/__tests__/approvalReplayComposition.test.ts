@@ -59,7 +59,6 @@ async function createPendingDeleteAndApprove(pool: Pool): Promise<{ requestId: s
   try {
     await gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id });
     expect.unreachable("expected ApprovalRequiredError");
-    return { requestId: "", itemId: item.id };
   } catch (err) {
     expect(err).toBeInstanceOf(ApprovalRequiredError);
     requestId = (err as ApprovalRequiredError).details.approvalRequestId;
