@@ -219,12 +219,15 @@ jobs:
       #
       # ffmpeg pulls in about 63 MB of packages, and the runner's Ubuntu mirror has
       # served them at under 100 kB/s: 18 of 599 installs on 2026-09-30/10-01 took over
-      # 4 minutes and 7 over 10 (run 36871665352: 11 min 39 s). The downloaded
-      # `.deb` files are therefore cached per runner image (`ImageOS`/`ImageVersion`,
-      # so a new image starts a fresh cache) and apt reads them from there; only a
-      # package the mirror has updated since is downloaded again. The cache is saved
-      # right after the install, not at the end of the job, so a shard whose tests fail
-      # still fills it.
+      # 4 minutes and 7 over 10 (run 36871665352: 11 min 39 s). The downloaded `.deb`
+      # files are therefore cached per runner image and architecture
+      # (`ImageOS`/`ImageVersion`/`RUNNER_ARCH`, so a new image or architecture starts a
+      # fresh cache) and apt reads them from there; only a package the mirror has
+      # updated since is downloaded again. The cache is saved right after the install,
+      # not at the end of the job, so a shard whose tests fail still fills it. GitHub
+      # scopes a cache to the ref that saved it: what push runs on `develop` (the default
+      # branch) save, every pull request restores; what a pull request saves, only that
+      # pull request does.
       - name: Backend — ffmpeg package cache key
         id: ffmpeg-cache-key
         run: echo "key=ffmpeg-debs-${ImageOS}-${ImageVersion}-${RUNNER_ARCH}" >> "$GITHUB_OUTPUT"
