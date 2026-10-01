@@ -134,7 +134,7 @@ export function SystemStatusPanel({ operations }: { operations: SystemHealthOper
       )}
 
       <h2>{t("systemStatus.agentRunErrors.title")}</h2>
-      <p className={report.agentRunErrors7d > 0 ? "system-status__summary--degraded" : undefined}>
+      <p className={report.agentRunErrors7d > 0 ? "system-status__summary system-status__summary--degraded" : "system-status__summary"}>
         {t("systemStatus.agentRunErrors.count", { count: report.agentRunErrors7d })}
       </p>
 
