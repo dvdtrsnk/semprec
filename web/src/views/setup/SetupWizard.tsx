@@ -1,4 +1,4 @@
-import { useId, useState, type FormEvent } from "react";
+import { useEffect, useId, useState, type FormEvent } from "react";
 import { useTranslate } from "../../i18n/index.js";
 import { toOperationError } from "../../api/genericOperations.js";
 import type { SetupOperations } from "../../api/setupOperations.js";
@@ -15,6 +15,12 @@ const NOT_FOUND_STATUS = 404;
  * logic lives here. A 404 (already bootstrapped, or a wrong token — the API never distinguishes
  * the two) renders the not-found state instead of the form; success hands off to the login
  * page without creating a session of its own.
+ *
+ * The bootstrap token is stripped from the address bar on mount: it otherwise stays in the
+ * tab's history entry (and the browser's history/autocomplete), and is sent as the `Referer`
+ * of the `POST /api/setup` request and of the `?page=login` link the success state renders,
+ * landing the token in access logs as a query string. The component keeps using the `token`
+ * prop it already received; nothing re-reads the URL afterwards.
  */
 export function SetupWizard({ token, operations }: { token: string; operations: SetupOperations }) {
   const t = useTranslate();
@@ -22,6 +28,15 @@ export function SetupWizard({ token, operations }: { token: string; operations: 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [state, setState] = useState<WizardState>({ status: "form", submitting: false, error: null });
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("token")) {
+      return;
+    }
+    url.searchParams.delete("token");
+    window.history.replaceState(window.history.state, "", url);
+  }, []);
 
   if (state.status === "notFound") {
     return (

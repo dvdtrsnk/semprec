@@ -35,7 +35,45 @@ async function fillAndSubmit(email: string, password: string) {
 }
 
 describe("SetupWizard (issue #234)", () => {
-  afterEach(() => cleanup());
+  const originalUrl = window.location.href;
+
+  afterEach(() => {
+    cleanup();
+    window.history.replaceState(null, "", originalUrl);
+  });
+
+  it("strips the token from the address bar on mount without adding a history entry", async () => {
+    window.history.replaceState(null, "", "/?page=setup&token=abc");
+    const lengthBeforeRender = window.history.length;
+
+    renderWizard(stubOperations());
+
+    expect(window.location.search).toBe("?page=setup");
+    expect(window.history.length).toBe(lengthBeforeRender);
+  });
+
+  it("still submits the token prop to the setup API after stripping it from the URL", async () => {
+    window.history.replaceState(null, "", "/?page=setup&token=abc");
+    const setupAccount = vi.fn(async (): Promise<SetupPublicUser> => ({
+      id: "user-1",
+      email: "operator@example.com",
+      locale: "en",
+      createdAt: "2026-09-01T12:00:00.000Z",
+    }));
+    render(
+      <I18nProvider locale="en">
+        <SetupWizard token="abc" operations={stubOperations({ setupAccount })} />
+      </I18nProvider>,
+    );
+
+    await fillAndSubmit("operator@example.com", "correct horse battery staple");
+
+    expect(setupAccount).toHaveBeenCalledWith({
+      token: "abc",
+      email: "operator@example.com",
+      password: "correct horse battery staple",
+    });
+  });
 
   it("shows the form and submits email, password, and token to the setup API", async () => {
     const setupAccount = vi.fn(async (): Promise<SetupPublicUser> => ({
