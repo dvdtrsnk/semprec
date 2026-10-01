@@ -1,5 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ModuleRegistry } from "../registry.js";
+import { loadModuleCatalogs } from "../catalog.js";
+
+// `../catalog.js`'s named export binding can't be `vi.spyOn`'d directly under vitest's
+// ESM module loader, so `vi.mock` with a factory that wraps the real implementation in a
+// `vi.fn` is the supported way to observe calls while every test keeps the real behavior.
+vi.mock("../catalog.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../catalog.js")>();
+  return {
+    ...actual,
+    loadModuleCatalogs: vi.fn(actual.loadModuleCatalogs),
+  };
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 function fixturePath(name: string): string {
   return new URL(`./fixtures/${name}`, import.meta.url).href;
@@ -398,5 +414,35 @@ describe("ModuleRegistry.loadModule catalogs (issue #236)", () => {
       /Duplicate i18n catalog key "database.fixtureCatalogShared.name" loading .* \(already claimed by module "fixture-catalog-duplicate-key-a"\)/,
     );
     expect(registry.listModuleIds()).toEqual(["fixture-catalog-duplicate-key-a"]);
+  });
+});
+
+describe("ModuleRegistry.loadModule check ordering (issue #783)", () => {
+  it("rejects a module failing assertExportsExist without loading its catalogs", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await expect(registry.loadModule(fixturePath("missingExportModule.js"))).rejects.toThrow(
+      /missing export "doesNotExist"/,
+    );
+    expect(loadModuleCatalogs).not.toHaveBeenCalled();
+  });
+
+  it("rejects a module failing assertDataMigrationsReferenceOwnDatabases without loading its catalogs", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await expect(registry.loadModule(fixturePath("unknownDatabaseKeyDataMigrationModule.js"))).rejects.toThrow(
+      /targets database key "notMyDatabase", which this manifest does not declare/,
+    );
+    expect(loadModuleCatalogs).not.toHaveBeenCalled();
+  });
+
+  it("still loads and commits catalogs for a module passing both synchronous checks", async () => {
+    const registry = new ModuleRegistry(() => new Set(["fixture-catalog-good"]));
+    const moduleId = await registry.loadModule(fixturePath("catalogGood/module.js"));
+
+    expect(moduleId).toBe("fixture-catalog-good");
+    expect(loadModuleCatalogs).toHaveBeenCalledTimes(1);
+    expect(await registry.getCatalogs("fixture-catalog-good")).toEqual({
+      cs: { "database.fixtureCatalogGood.name": "Fixtura dobrého katalogu" },
+      en: { "database.fixtureCatalogGood.name": "Fixture Catalog Good" },
+    });
   });
 });

@@ -180,10 +180,11 @@ export class ModuleRegistry {
       );
     }
 
-    const catalogs = await loadModuleCatalogs(path);
-
     this.assertExportsExist(path, manifest, imported);
     this.assertDataMigrationsReferenceOwnDatabases(path, manifest);
+
+    const catalogs = await loadModuleCatalogs(path);
+
     this.assertCatalogKeysAvailable(path, catalogs);
     this.assertCustomRoutesAvailable(path, manifest);
     this.claimCrossModuleIdentifiers(path, manifest);
