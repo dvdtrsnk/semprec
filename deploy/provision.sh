@@ -225,7 +225,7 @@ install_systemd_units() {
 install_timer_scripts() {
   local script
   for script in dead-man failping backup restore-test trash-purge; do
-    install -o root -g root -m 0750 \
+    install -o root -g semprec -m 0750 \
       "$SCRIPT_DIR/systemd/scripts/semprec-$script.sh" \
       "$SEMPREC_ROOT/shared/bin/semprec-$script.sh"
   done
@@ -286,6 +286,31 @@ apply_nftables() {
   systemctl reload-or-restart nftables
 }
 
+# The `semprec` services and timer scripts need to read `shared/` and `shared/bin`, but
+# ensure_directory only sets the mode when it creates a directory, so an already-provisioned
+# host needs its existing mode corrected on every run instead.
+ensure_shared_permissions() {
+  local shared_dir="$SEMPREC_ROOT/shared"
+  local bin_dir="$shared_dir/bin"
+  local env_file="$shared_dir/.env"
+  local apns_key="$shared_dir/apns-key.p8"
+
+  chown root:semprec "$shared_dir"
+  chmod 0750 "$shared_dir"
+  chown root:semprec "$bin_dir"
+  chmod 0750 "$bin_dir"
+
+  # systemd reads EnvironmentFile= as root before dropping privileges, so no service user
+  # needs this file; a hand-edited mode is healed back on every rerun.
+  chown root:root "$env_file"
+  chmod 0600 "$env_file"
+
+  if [[ -e "$apns_key" ]]; then
+    chown root:semprec "$apns_key"
+    chmod 0640 "$apns_key"
+  fi
+}
+
 main() {
   require_root
   require_supported_distribution
@@ -296,6 +321,7 @@ main() {
   ensure_backup_directory
   install_systemd_units
   install_timer_scripts
+  ensure_shared_permissions
   verify_systemd_units
   systemctl daemon-reload
   systemctl restart systemd-journald

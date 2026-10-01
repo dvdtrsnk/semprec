@@ -165,7 +165,11 @@ pings the monitor's `/fail` endpoint, and exits non-zero. It never sends the suc
 - **Two files, one contract.** `/opt/semprec/shared/.env` (this directory's `shared/.env.example`
   is its template) and `/opt/semprec/shared/apns-key.p8` (Apple's `.p8` APNs auth key — no
   template committed, since there is no values-free form of a private key; see the `.env.example`
-  header for why it's a separate file instead of an inlined value). Both `root:root 0600`.
+  header for why it's a separate file instead of an inlined value). `.env` is `root:root 0600`,
+  since systemd reads `EnvironmentFile=` as root before dropping privileges; `apns-key.p8` is
+  `root:semprec 0640` inside `/opt/semprec/shared` (itself `root:semprec 0750`), since the
+  `semprec` service user reads the key directly by path. `provision.sh` corrects both files' and
+  `shared`'s ownership and mode on every run.
 - **Distribution.** Every systemd unit (#176) loads `.env` via `EnvironmentFile=`; `apns-key.p8`
   is read directly by path (`APNS_PRIVATE_KEY_PATH`, `backend/packages/data/src/push/apnsAdapter.ts`).
   `docker-compose.yml`'s `postgres`/`minio` services load `.env` via `env_file:` (#174). No
