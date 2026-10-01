@@ -21,8 +21,8 @@ export async function loadMailboxes(operations: GenericOperations, config: Mailb
 
 /**
  * Which mailbox each folder belongs to. A scoped view already knows — every folder it lists is
- * that mailbox's — so it costs nothing there; an unscoped one asks per account, which is one
- * query per mailbox rather than one per folder.
+ * that mailbox's — so it costs nothing there; an unscoped one asks per account, one query per
+ * mailbox, in parallel.
  */
 export async function loadFolderMailboxes(
   operations: GenericOperations,
@@ -35,11 +35,19 @@ export async function loadFolderMailboxes(
     for (const folder of folders) map[folder.id] = config.mailboxItemId;
     return map;
   }
-  for (const mailbox of mailboxes) {
-    const page = await operations.listItems(config.foldersDatabaseId, {
-      filter: { type: "relation_contains", property: config.mailboxRelationKey, value: mailbox.id },
-      limit: 200,
-    });
+  const pairs = await Promise.all(
+    mailboxes.map(
+      async (mailbox) =>
+        [
+          mailbox,
+          await operations.listItems(config.foldersDatabaseId, {
+            filter: { type: "relation_contains", property: config.mailboxRelationKey, value: mailbox.id },
+            limit: 200,
+          }),
+        ] as const,
+    ),
+  );
+  for (const [mailbox, page] of pairs) {
     for (const folder of page.items) map[folder.id] = mailbox.id;
   }
   return map;

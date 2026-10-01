@@ -3,7 +3,12 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { OperationError, type GenericOperations } from "../../../api/genericOperations.js";
 import { createFakeOperations } from "../../../test/fakeOperations.js";
-import { EMAILS_DATABASE_ID, createMailboxBackend, mailboxView } from "../../../test/mailboxFixture.js";
+import {
+  EMAILS_DATABASE_ID,
+  MAILBOXES_DATABASE_ID,
+  createMailboxBackend,
+  mailboxView,
+} from "../../../test/mailboxFixture.js";
 import { renderMailbox, setViewport } from "../../../test/renderMailbox.js";
 
 function panes() {
@@ -83,6 +88,36 @@ describe("MailboxClient", () => {
       renderMailbox(createFakeOperations(backend));
 
       expect(await screen.findByText("No folders yet")).toBeInTheDocument();
+    });
+
+    it("loads the mailbox/folder-mailbox chain while the per-folder unread counts are still pending", async () => {
+      const inner = createFakeOperations(createMailboxBackend());
+      let mailboxesListed = false;
+      const countReleases: Array<() => void> = [];
+      const operations: GenericOperations = {
+        ...inner,
+        listItems: async (databaseId, request) => {
+          if (databaseId === MAILBOXES_DATABASE_ID) mailboxesListed = true;
+          return inner.listItems(databaseId, request);
+        },
+        countItems: async (databaseId, request) => {
+          await new Promise<void>((resolve) => countReleases.push(resolve));
+          return inner.countItems(databaseId, request);
+        },
+      };
+      renderMailbox(operations, {
+        view: {
+          ...mailboxView,
+          config: { ...(mailboxView.config as Record<string, unknown>), mailboxItemId: undefined },
+        },
+      });
+
+      await waitFor(() => expect(mailboxesListed).toBe(true));
+      expect(screen.queryByRole("button", { name: /Inbox/ })).toBeNull();
+
+      countReleases.forEach((release) => release());
+      const inbox = await screen.findByRole("button", { name: /Inbox/ });
+      expect(within(inbox).getByLabelText("2 unread")).toHaveTextContent("2");
     });
   });
 
