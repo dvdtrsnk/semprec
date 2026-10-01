@@ -201,6 +201,8 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     });
     const res = await fetch(`${baseUrl}/api/properties/${scratch.id}`, { method: "DELETE", headers });
     expect(res.status).toBe(200);
+    const body = (await res.json()) as PropertyRow;
+    expect(body).toEqual(scratch);
   },
   "view.list": async (fx, headers, baseUrl) => {
     const res = await fetch(`${baseUrl}/api/views`, { headers });
@@ -236,6 +238,8 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     const scratch = await chokePoint.createView({ type: "list", name: "Scratch", config: { membership: "manual" } });
     const res = await fetch(`${baseUrl}/api/views/${scratch.id}`, { method: "DELETE", headers });
     expect(res.status).toBe(200);
+    const body = (await res.json()) as ViewRow;
+    expect(body).toEqual(scratch);
   },
   "view.query": async (fx, headers, baseUrl) => {
     const res = await fetch(`${baseUrl}/api/views/${fx.curatedView.id}/query`, {
