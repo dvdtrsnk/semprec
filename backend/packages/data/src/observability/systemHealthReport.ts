@@ -115,7 +115,7 @@ async function getQueueHealthCounts(client: Queryable): Promise<QueueHealthCount
     `SELECT
        count(*) FILTER (WHERE locked_at IS NULL AND attempts < max_attempts) AS pending,
        count(*) FILTER (WHERE locked_at IS NULL AND attempts < max_attempts AND run_at < now() - interval '1 minute') AS overdue,
-       count(*) FILTER (WHERE attempts >= max_attempts) AS permanent
+       count(*) FILTER (WHERE locked_at IS NULL AND attempts >= max_attempts) AS permanent
      FROM graphile_worker.jobs`,
   );
   const row = rows[0];

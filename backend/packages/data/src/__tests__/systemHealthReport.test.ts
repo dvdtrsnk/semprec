@@ -89,6 +89,18 @@ describe("getSystemHealthReport (issue #170)", () => {
     expect(report.queue).toEqual({ pending: 2, overdue: 1, permanent: 1 });
   });
 
+  it("does not count an in-flight final-attempt job as permanently failed", async () => {
+    await enqueueJob(pool, "someUnregisteredTask", {}, { jobKey: "locked-final-job", maxAttempts: 1 });
+    await pool.query(`UPDATE graphile_worker._private_jobs SET attempts = 1, locked_at = now() WHERE key = $1`, [
+      "locked-final-job",
+    ]);
+    await enqueueJob(pool, "someUnregisteredTask", {}, { jobKey: "failed-final-job", maxAttempts: 1 });
+    await pool.query(`UPDATE graphile_worker._private_jobs SET attempts = 1 WHERE key = $1`, ["failed-final-job"]);
+
+    const report = await getSystemHealthReport(pool);
+    expect(report.queue).toEqual({ pending: 0, overdue: 0, permanent: 1 });
+  });
+
   it("groups item_automation error rows by their item's database", async () => {
     const tasksDb = await withTransaction(pool, (client) => getDatabaseByModuleId(client, TASKS_MODULE_ID));
     const item = await chokePoint.createItem({ databaseId: tasksDb!.id, properties: { name: "Do the thing" } });
