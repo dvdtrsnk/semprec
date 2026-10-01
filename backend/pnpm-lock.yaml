@@ -87,9 +87,6 @@ importers:
       '@semprec/shared':
         specifier: workspace:*
         version: link:../shared
-      pg:
-        specifier: ^8.23.0
-        version: 8.23.0
     devDependencies:
       '@types/pg':
         specifier: ^8.23.1
