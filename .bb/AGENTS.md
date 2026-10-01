@@ -37,7 +37,7 @@ the failure mode that rule exists to prevent.
 | Skill | Load it when |
 |---|---|
 | `implement-issue` | starting any issue — the execution contract |
-| `adr-conventions` | introducing a cross-cutting pattern no ADR covers — or adding, editing, superseding or narrowing an ADR |
+| `adr-conventions` | introducing a cross-cutting pattern that no rule and no ADR covers — or adding, editing, superseding or narrowing an ADR |
 | `state-writes` | creating, updating or deleting persisted state — items, relations, blocks, rows in any table, or a `NOTIFY` that follows one |
 | `db-migrations` | a schema change, constraint, index, or backfill |
 | `canonical-keys` | a stored key, option value, view type, or any string a user will see |

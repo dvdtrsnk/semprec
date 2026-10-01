@@ -38,7 +38,7 @@ means to "remember them as it goes" reliably does not.
 | `db-migrations` | a schema change, constraint, index, or backfill |
 | `canonical-keys` | a stored key, option value, view type, or any string a user will see |
 | `ai-gateway` | any model call, provider SDK, or provider credential |
-| `adr-conventions` | introducing a cross-cutting pattern no ADR covers — or adding, editing, superseding or narrowing an ADR |
+| `adr-conventions` | introducing a cross-cutting pattern that no rule and no ADR covers — or adding, editing, superseding or narrowing an ADR |
 
 Most issues match more than one. Load all that apply — they are short, and the
 cost of reading one is far below the cost of the finding it prevents.
