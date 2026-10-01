@@ -11,6 +11,14 @@ interface ProbeRun {
   end: number;
 }
 
+/**
+ * How long an unaffinitized probe waits for the other one to start before it gives up and
+ * finishes alone. It only bounds the failure case (the two never overlap), so it sits well above
+ * graphile-worker's 2s `pollInterval`, the latest an idle worker picks up a job whose
+ * `jobs:insert` notification reached no idle worker.
+ */
+const UNAFFINITIZED_OVERLAP_WAIT_MS = 5_000;
+
 describe("production concurrency: semprec-tick serializes, unaffinitized jobs run in parallel (issue #705)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -31,18 +39,41 @@ describe("production concurrency: semprec-tick serializes, unaffinitized jobs ru
     delete process.env.QUEUE_CONCURRENCY;
 
     const tickRuns: ProbeRun[] = [];
-    const unaffinitizedRuns: ProbeRun[] = [];
+    // One entry per finished unaffinitized probe: whether the other one had started before it
+    // stopped waiting.
+    const unaffinitizedOverlaps: boolean[] = [];
+
+    // A fixed sleep only shows the two unaffinitized runs overlapping if graphile-worker picks the
+    // second one up within that sleep of the first, which it does not promise: a `jobs:insert`
+    // notification only nudges a worker that is idle at that moment, and a job it misses waits for
+    // a freed worker or the next poll. Each unaffinitized probe instead stays in flight until both
+    // have started, so they overlap whenever they can run concurrently at all, and a serialized
+    // pair shows up as the first giving up before the second ever started.
+    let unaffinitizedStarted = 0;
+    let releaseUnaffinitized!: () => void;
+    const bothUnaffinitizedStarted = new Promise<void>((resolve) => {
+      releaseUnaffinitized = resolve;
+    });
+    async function otherUnaffinitizedProbeStarted(): Promise<boolean> {
+      let timer: NodeJS.Timeout | undefined;
+      const gaveUp = new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), UNAFFINITIZED_OVERLAP_WAIT_MS);
+      });
+      const overlapped = await Promise.race([bothUnaffinitizedStarted.then(() => true as const), gaveUp]);
+      clearTimeout(timer);
+      return overlapped;
+    }
 
     const taskList: TaskList = {
       probe: registerTask("probe", async (payload) => {
-        const start = Date.now();
-        await new Promise((resolve) => setTimeout(resolve, 300));
-        const end = Date.now();
-        const run = { start, end };
         if ((payload as { queue: string }).queue === "semprec-tick") {
-          tickRuns.push(run);
+          const start = Date.now();
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          tickRuns.push({ start, end: Date.now() });
         } else {
-          unaffinitizedRuns.push(run);
+          unaffinitizedStarted += 1;
+          if (unaffinitizedStarted === 2) releaseUnaffinitized();
+          unaffinitizedOverlaps.push(await otherUnaffinitizedProbeStarted());
         }
       }),
     };
@@ -56,19 +87,18 @@ describe("production concurrency: semprec-tick serializes, unaffinitized jobs ru
 
     await vi.waitFor(
       () => {
-        if (tickRuns.length !== 2 || unaffinitizedRuns.length !== 2) {
+        if (tickRuns.length !== 2 || unaffinitizedOverlaps.length !== 2) {
           throw new Error(
-            `expected 2 tick runs and 2 unaffinitized runs, got ${tickRuns.length}/${unaffinitizedRuns.length}`,
+            `expected 2 tick runs and 2 unaffinitized runs, got ${tickRuns.length}/${unaffinitizedOverlaps.length}`,
           );
         }
       },
-      { timeout: 5_000, interval: 20 },
+      { timeout: 2 * UNAFFINITIZED_OVERLAP_WAIT_MS, interval: 20 },
     );
 
     const [firstTick, secondTick] = tickRuns.sort((a, b) => a.start - b.start);
     expect(secondTick!.start).toBeGreaterThanOrEqual(firstTick!.end);
 
-    const [firstUnaffinitized, secondUnaffinitized] = unaffinitizedRuns.sort((a, b) => a.start - b.start);
-    expect(secondUnaffinitized!.start).toBeLessThan(firstUnaffinitized!.end);
+    expect(unaffinitizedOverlaps).toEqual([true, true]);
   });
 });
