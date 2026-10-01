@@ -29,9 +29,10 @@ git init --quiet --bare --initial-branch=main "$ORIGIN"
 git clone --quiet "$ORIGIN" "$AUTHOR" 2>/dev/null
 commit_release_content() {
   local marker="$1"
-  mkdir -p "$AUTHOR/backend"
+  mkdir -p "$AUTHOR/backend" "$AUTHOR/web"
   printf '{"name":"semprec","private":true}\n' > "$AUTHOR/backend/package.json"
   printf '%s\n' "$marker" > "$AUTHOR/backend/marker"
+  printf '{"name":"@semprec/web","private":true}\n' > "$AUTHOR/web/package.json"
   git -C "$AUTHOR" add -A
   git -C "$AUTHOR" commit --quiet -m "$marker"
 }
@@ -73,7 +74,9 @@ write_mock pnpm '
 assert-not-current "$(dirname "$PWD")"
 echo "pnpm $*" >> "$TEST_STATE/commands"
 if [[ "$1" == "install" && -f "$TEST_STATE/fail-build" ]]; then exit 1; fi
-if [[ "$1" == "-r" ]]; then touch "$PWD/built"; fi'
+if [[ "$1" == "install" && -f "$TEST_STATE/fail-web-build" && "$PWD" == */web ]]; then exit 1; fi
+if [[ "$1" == "-r" ]]; then touch "$PWD/built"; fi
+if [[ "$1" == "run" && "$2" == "build" ]]; then mkdir -p "$PWD/dist" && printf "<!doctype html>\n" > "$PWD/dist/index.html"; fi'
 write_mock systemd-run '
 working_directory=""
 for arg in "$@"; do
@@ -158,6 +161,8 @@ grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runSeedCl
 test "$(wc -l < "$TEST_STATE/migrate.line")" -eq 1
 test "$(wc -l < "$TEST_STATE/seed.line")" -eq 1
 test "$(cat "$TEST_STATE/migrate.line")" -lt "$(cat "$TEST_STATE/seed.line")"
+test -f "$TEST_SEMPREC_ROOT/releases/v1.0.0/web/dist/index.html"
+grep -qx 'pnpm run build' "$TEST_STATE/commands"
 if grep -q 'shared-secret-value' "$TEST_STATE/deploy.out"; then
   echo 'deploy output exposed a shared secret' >&2
   exit 1
@@ -171,6 +176,9 @@ rm "$TEST_STATE/commands"
 touch "$TEST_STATE/fail-build"
 expect_refused 'build of the staged release failed' v1.1.0
 rm "$TEST_STATE/fail-build"
+touch "$TEST_STATE/fail-web-build"
+expect_refused 'build of the staged web client failed' v1.1.0
+rm "$TEST_STATE/fail-web-build"
 touch "$TEST_STATE/fail-migrate"
 expect_refused 'migrations failed' v1.1.0
 rm "$TEST_STATE/fail-migrate"
