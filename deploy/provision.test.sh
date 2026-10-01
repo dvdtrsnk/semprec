@@ -87,6 +87,8 @@ if [[ "$1" == "exec" ]]; then
 fi'
 write_mock caddy 'echo "caddy $*" >> "$TEST_STATE/commands"'
 write_mock nft 'echo "nft $*" >> "$TEST_STATE/commands"'
+write_mock chown 'echo "chown $*" >> "$TEST_STATE/commands"'
+write_mock chmod 'echo "chmod $*" >> "$TEST_STATE/commands"; /bin/chmod "$@"'
 
 run_provision() {
   PATH="$TEST_BIN:$PATH" bash "$TEST_DEPLOY/provision.sh"
@@ -185,6 +187,24 @@ fi
 grep -q "^nft -c -f $TEST_ROOT/nftables.conf$" "$TEST_STATE/commands"
 grep -qx 'systemctl enable nftables' "$TEST_STATE/commands"
 grep -qx 'systemctl reload-or-restart nftables' "$TEST_STATE/commands"
+
+test "$(stat -c %a "$TEST_ROOT/opt/semprec/shared")" -eq 750
+test "$(stat -c %a "$TEST_ROOT/opt/semprec/shared/bin")" -eq 750
+grep -qx "chown root:semprec $TEST_ROOT/opt/semprec/shared" "$TEST_STATE/commands"
+grep -qx "chown root:semprec $TEST_ROOT/opt/semprec/shared/bin" "$TEST_STATE/commands"
+grep -qx "chown root:root $TEST_ROOT/opt/semprec/shared/.env" "$TEST_STATE/commands"
+grep -qx "chmod 0600 $TEST_ROOT/opt/semprec/shared/.env" "$TEST_STATE/commands"
+grep -Eq "^install -o root -g semprec -m 0750 .*/shared/bin/semprec-dead-man\.sh\$" "$TEST_STATE/commands"
+if grep -q 'apns-key.p8' "$TEST_STATE/commands"; then
+  echo "provision recorded an apns-key.p8 command although the file does not exist" >&2
+  exit 1
+fi
+
+touch "$TEST_ROOT/opt/semprec/shared/apns-key.p8"
+run_provision
+grep -qx "chown root:semprec $TEST_ROOT/opt/semprec/shared/apns-key.p8" "$TEST_STATE/commands"
+grep -qx "chmod 0640 $TEST_ROOT/opt/semprec/shared/apns-key.p8" "$TEST_STATE/commands"
+test "$(stat -c %a "$TEST_ROOT/opt/semprec/shared/apns-key.p8")" -eq 640
 
 chmod 000 "$TEST_STATE/hunspell/cs_CZ.dic"
 if run_provision >"$TEST_STATE/unreadable-asset.out" 2>&1; then
