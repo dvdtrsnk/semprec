@@ -29,16 +29,13 @@ export async function runTranscriptsCatalogCutoverMigration(pool: Pool): Promise
 
     // #245 assigns the three pipeline-owned properties to its sole composition root. This is
     // part of the catalog cutover as populated installs have locked Transcripts schemas.
-    const ownerProcessUpdate = await client.query(
+    // Bulk, idempotent UPDATE rather than a targeted one: zero affected rows is legitimate, so rowCount is deliberately not checked.
+    await client.query(
       `UPDATE properties SET owner_process = $2
        WHERE database_id = $1 AND key = ANY($3::text[]) AND owner = 'system'
          AND owner_process IS DISTINCT FROM $2`,
       [transcripts.id, TRANSCRIPTION_OWNER_PROCESS, ["status", "date", "link"]],
     );
-    // Zero is the expected idempotent outcome once every field already names this process.
-    if (ownerProcessUpdate.rowCount === 0) {
-      // Intentionally no-op.
-    }
 
     const { rows: statusRows } = await client.query<{
       id: string;
