@@ -116,18 +116,21 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
 
     async createProperty(actor, input) {
       if (input.type === "relation") {
-        const { property } = await chokePoint.createRelationProperty({
-          sourceDatabaseId: input.databaseId,
-          key: input.key,
-          name: input.name,
-          targetDatabaseId: input.targetDatabaseId,
-          cardinality: input.cardinality,
-          owner: "user",
-          locked: input.locked,
-          inverse: input.inverse
-            ? { key: input.inverse.key, name: input.inverse.name, owner: "user", locked: input.inverse.locked }
-            : undefined,
-        });
+        const { property } = await chokePoint.createRelationProperty(
+          {
+            sourceDatabaseId: input.databaseId,
+            key: input.key,
+            name: input.name,
+            targetDatabaseId: input.targetDatabaseId,
+            cardinality: input.cardinality,
+            owner: "user",
+            locked: input.locked,
+            inverse: input.inverse
+              ? { key: input.inverse.key, name: input.inverse.name, owner: "user", locked: input.inverse.locked }
+              : undefined,
+          },
+          actor.userId,
+        );
         return property;
       }
       return chokePoint.createProperty(
