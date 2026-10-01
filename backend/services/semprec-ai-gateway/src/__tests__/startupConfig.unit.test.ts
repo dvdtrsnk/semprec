@@ -36,7 +36,9 @@ describe("resolveStartupConfig database url resolution", () => {
   });
 
   it("throws when neither SEMPREC_SIDE_DATABASE_URL nor DATABASE_URL is set", () => {
-    expect(() => resolveStartupConfig({ ...BASE_ENV }, [FAKE_PROVIDER])).toThrow(/DATABASE_URL is not set/);
+    expect(() => resolveStartupConfig({ ...BASE_ENV }, [FAKE_PROVIDER])).toThrow(
+      /DATABASE_URL \(or SEMPREC_SIDE_DATABASE_URL\) is not set/,
+    );
   });
 });
 
