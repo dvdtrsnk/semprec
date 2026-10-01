@@ -36,17 +36,41 @@ async function withFreshDatabase(fn: (pool: Pool) => Promise<void>): Promise<voi
   const admin = createPool(testDatabaseUrl());
   // UTF8 like production: the embedded instance's template1 is SQL_ASCII, which the text
   // search parser cannot split Czech words in.
-  await admin.query(`CREATE DATABASE "${name}" ENCODING 'UTF8' TEMPLATE template0`);
+  try {
+    await admin.query(`CREATE DATABASE "${name}" ENCODING 'UTF8' TEMPLATE template0`);
+  } catch (createError) {
+    // admin stays open on success for the cleanup's DROP DATABASE; here nothing will use it again.
+    try {
+      await admin.end();
+    } catch {
+      // The CREATE DATABASE rejection below is the real failure; a failed pool teardown must not replace it.
+    }
+    throw createError;
+  }
   const url = new URL(testDatabaseUrl());
   url.pathname = `/${name}`;
   const pool = createPool(url.toString());
+  let failure: { error: unknown } | undefined;
   try {
     await fn(pool);
-  } finally {
-    await pool.end();
-    await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
-    await admin.end();
+  } catch (error) {
+    failure = { error };
   }
+  // Every step runs even when an earlier one rejects, so the database is dropped and both
+  // pools are released; fn's own error wins over cleanup errors, otherwise the first cleanup error.
+  const cleanup = [
+    () => pool.end(),
+    () => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`),
+    () => admin.end(),
+  ];
+  for (const step of cleanup) {
+    try {
+      await step();
+    } catch (error) {
+      failure ??= { error };
+    }
+  }
+  if (failure) throw failure.error;
 }
 
 async function tsearchDataDir(pool: Pool): Promise<string> {
