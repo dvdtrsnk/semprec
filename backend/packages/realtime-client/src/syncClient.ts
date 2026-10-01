@@ -241,6 +241,7 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
         clearTimeout(reconnectTimer);
         reconnectTimer = undefined;
       }
+      reconnectAttempt = 0;
       socket?.close(1000, "client closed");
       socket = null;
     },

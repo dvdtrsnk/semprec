@@ -191,4 +191,19 @@ describe("createSyncClient (issue #164)", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(sockets).toHaveLength(1);
   });
+
+  it("restarts the backoff from the first attempt after close() and a fresh connect()", async () => {
+    const onReconnecting = vi.fn();
+    const client = createSyncClient({ createSocket, random: () => 0, onReconnecting });
+    client.connect();
+    sockets[0]!.serverClose(1013, "slow consumer");
+    await vi.advanceTimersByTimeAsync(1_000);
+    sockets[1]!.serverClose(1013, "slow consumer");
+    expect(onReconnecting).toHaveBeenLastCalledWith(2, expect.any(Number));
+
+    client.close();
+    client.connect();
+    sockets[2]!.serverClose(1013, "slow consumer");
+    expect(onReconnecting).toHaveBeenLastCalledWith(1, expect.any(Number));
+  });
 });
