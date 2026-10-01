@@ -15,11 +15,34 @@ import { withTransaction } from "../db/pool.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { listAllTools, syncMcpServerTools } from "../mcp/mcpSync.js";
-import type { McpClientHandle } from "../mcp/mcpConnectionFactory.js";
+import type { connectMcpServer as ConnectMcpServerFn, McpClientHandle } from "../mcp/mcpConnectionFactory.js";
 import { listMcpToolRegistrationsForServer } from "../mcp/mcpToolRegistrationsStore.js";
 import { setMcpToolRequiresApproval, setMcpToolRiskClass } from "../mcp/mcpGrantsAdminStore.js";
 import type { McpConnectionConfig } from "../mcp/mcpConnectionConfig.js";
 import { NotFoundError, ValidationError } from "../errors.js";
+
+/**
+ * `connectMock.impl` is what the mocked `connectMcpServer` actually calls — defaults to the real
+ * implementation (`connectMock.actual`, captured once the real module loads) and is swapped per
+ * test to inject a connection whose `close()` rejects, without touching every other test's
+ * use of a genuine contract server. Declared via `vi.hoisted` because the `vi.mock` factory below
+ * is hoisted above this file's own top-level statements and needs this object to already exist.
+ */
+const connectMock = vi.hoisted(() => ({
+  impl: undefined as unknown as typeof ConnectMcpServerFn,
+  actual: undefined as unknown as typeof ConnectMcpServerFn,
+}));
+
+vi.mock("../mcp/mcpConnectionFactory.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../mcp/mcpConnectionFactory.js")>();
+  connectMock.actual = actual.connectMcpServer;
+  connectMock.impl = actual.connectMcpServer;
+  return {
+    ...actual,
+    connectMcpServer: ((...args: Parameters<typeof ConnectMcpServerFn>) =>
+      connectMock.impl(...args)) as typeof ConnectMcpServerFn,
+  };
+});
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
@@ -69,6 +92,7 @@ describe("MCP tool sync (issue #125)", () => {
     await resetDatabase(pool);
     await seedSystem(pool, viewTypeRegistry);
     mcpServersId = await databaseIdFor("mcpServers");
+    connectMock.impl = connectMock.actual;
   });
 
   afterAll(async () => {
@@ -241,6 +265,50 @@ describe("MCP tool sync (issue #125)", () => {
     // No open-socket assertion possible once the server itself is stopped; the connection
     // factory's own tests (mcpConnectionFactory.test.ts) already cover "no leak after a failed
     // connect" at the transport level — this just confirms the sync path surfaces the failure.
+  });
+
+  it("keeps the original sync error when closing the connection also fails (issue #781)", async () => {
+    const contract = startStdioContractServer([
+      { name: "dup", description: "one", inputSchema: { type: "object", properties: {} } },
+      { name: "dup", description: "two", inputSchema: { type: "object", properties: {} } },
+    ]);
+    const closeErr = new Error("close failed: ECONNRESET");
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const item = await createMcpServerItem(contract.connectionConfig);
+      connectMock.impl = async (...args: Parameters<typeof ConnectMcpServerFn>) => {
+        const handle = await connectMock.actual(...args);
+        return { ...handle, close: () => Promise.reject(closeErr) };
+      };
+
+      // The duplicate tool name fails strict validation after the connection is already open,
+      // so both the sync error and the close failure are in flight when `finally` runs.
+      await expect(syncMcpServerTools(pool, item.id)).rejects.toThrow(ValidationError);
+
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "syncMcpServerTools: failed to close the MCP client handle",
+        closeErr,
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+      await contract.stop();
+    }
+  });
+
+  it("still throws the close failure when the sync itself succeeds (issue #781)", async () => {
+    const contract = startStdioContractServer();
+    const closeErr = new Error("close failed: ECONNRESET");
+    try {
+      const item = await createMcpServerItem(contract.connectionConfig);
+      connectMock.impl = async (...args: Parameters<typeof ConnectMcpServerFn>) => {
+        const handle = await connectMock.actual(...args);
+        return { ...handle, close: () => Promise.reject(closeErr) };
+      };
+
+      await expect(syncMcpServerTools(pool, item.id)).rejects.toThrow(closeErr);
+    } finally {
+      await contract.stop();
+    }
   });
 
   it("throws NotFoundError for a nonexistent MCP server item", async () => {
