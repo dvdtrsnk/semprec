@@ -97,10 +97,13 @@ describe("UtilizationPage (issue #121)", () => {
   });
 
   it("formats currency amounts in Czech when the locale is cs", async () => {
-    renderPage(stubOperations(async () => makeReport()), "cs");
+    renderPage(
+      stubOperations(async () => makeReport()),
+      "cs",
+    );
 
-    expect(await screen.findByText("3,55 US$")).toBeInTheDocument();
-    expect(screen.getByText(`Denní rozpočet: 50,00 US$`)).toBeInTheDocument();
+    expect(await screen.findByText("3,55 US$")).toBeInTheDocument();
+    expect(screen.getByText(`Denní rozpočet: 50,00 US$`)).toBeInTheDocument();
   });
 
   it("shows an error state and retries on demand", async () => {

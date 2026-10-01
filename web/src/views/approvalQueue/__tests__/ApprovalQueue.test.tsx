@@ -112,10 +112,7 @@ describe("ApprovalQueue (issue #132)", () => {
 
   it("formats the requested-at timestamp in Czech when the locale is cs", async () => {
     const requestedAt = "2026-09-01T12:00:00.000Z";
-    renderQueue(
-      stubOperations({ listApprovalRequests: vi.fn(async () => [okEntry({ requestedAt })]) }),
-      "cs",
-    );
+    renderQueue(stubOperations({ listApprovalRequests: vi.fn(async () => [okEntry({ requestedAt })]) }), "cs");
 
     const when = new Intl.DateTimeFormat("cs", { dateStyle: "medium", timeStyle: "short" }).format(
       new Date(requestedAt),
