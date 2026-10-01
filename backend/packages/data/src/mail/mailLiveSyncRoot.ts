@@ -147,10 +147,11 @@ export function createMailLiveSyncRoot(
             active.set(item.id, state.syncMode);
             await client.query("RELEASE SAVEPOINT discover_account");
           } catch (err) {
-            await client.query("ROLLBACK TO SAVEPOINT discover_account");
             // One account's state failing to read/seed must not drop every other account on this
-            // page from the active set, and must not throw out of discovery entirely.
+            // page from the active set, and must not throw out of discovery entirely. Reported
+            // before the rollback so the original error still surfaces even if the rollback itself throws.
             options.onLifecycleError?.(item.id, "discover", err);
+            await client.query("ROLLBACK TO SAVEPOINT discover_account");
           }
         }
         return page.nextCursor;
