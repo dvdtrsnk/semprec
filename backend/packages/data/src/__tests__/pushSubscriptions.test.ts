@@ -512,4 +512,63 @@ describe("push subscriptions (issue #150)", () => {
       expect(revoked).toBe(false);
     });
   });
+
+  describe("session deletion (issue #784)", () => {
+    it("orphans session_id to NULL instead of raising a foreign-key violation", async () => {
+      const user = await makeUser();
+      const { session } = await makeSession(user.email);
+      const subscription = await registerPushSubscription(pool, {
+        userId: user.id,
+        sessionId: session.id,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/1",
+        p256dh: "key",
+        authSecret: "secret",
+      });
+
+      await pool.query("DELETE FROM sessions WHERE id = $1", [session.id]);
+
+      const { rows } = await pool.query<{ id: string; session_id: string | null }>(
+        "SELECT id, session_id FROM push_subscriptions WHERE id = $1",
+        [subscription.id],
+      );
+      expect(rows).toEqual([{ id: subscription.id, session_id: null }]);
+    });
+
+    it("leaves other push_subscriptions rows unaffected when their session is deleted", async () => {
+      const user = await makeUser();
+      const sessionA = await makeSession(user.email);
+      const sessionB = await makeSession(user.email);
+      const subA = await registerPushSubscription(pool, {
+        userId: user.id,
+        sessionId: sessionA.session.id,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/a",
+        p256dh: "key",
+        authSecret: "secret",
+      });
+      const subB = await registerPushSubscription(pool, {
+        userId: user.id,
+        sessionId: sessionB.session.id,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/b",
+        p256dh: "key",
+        authSecret: "secret",
+      });
+
+      await pool.query("DELETE FROM sessions WHERE id = $1", [sessionA.session.id]);
+
+      const [rowA] = await listPushSubscriptionsForUser(pool, user.id).then((rows) =>
+        rows.filter((r) => r.id === subA.id),
+      );
+      const [rowB] = await listPushSubscriptionsForUser(pool, user.id).then((rows) =>
+        rows.filter((r) => r.id === subB.id),
+      );
+      expect(rowA!.sessionId).toBeNull();
+      expect(rowB!.sessionId).toBe(sessionB.session.id);
+    });
+  });
 });
