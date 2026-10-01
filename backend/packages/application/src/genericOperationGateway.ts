@@ -36,6 +36,8 @@ import {
   type GenericOperationName,
   type InputByOperation,
   type OutputByOperation,
+  type ValidationIssueLike,
+  validationIssueField,
 } from "@semprec/shared";
 import { createGenericApplicationService, toActor } from "./genericApplicationService.js";
 
@@ -150,13 +152,13 @@ function parseInput<K extends GenericOperationName>(operation: K, raw: unknown):
         value: unknown,
       ):
         | { success: true; data: InputByOperation[K] }
-        | { success: false; error: { issues: { path: (string | number)[]; message: string }[] } };
+        | { success: false; error: { issues: (ValidationIssueLike & { message: string })[] } };
     };
   };
   const parsed = binding.input.safeParse(raw);
   if (!parsed.success) {
     const firstIssue = parsed.error.issues[0];
-    const field = firstIssue !== undefined && firstIssue.path.length > 0 ? firstIssue.path.join(".") : undefined;
+    const field = validationIssueField(parsed.error.issues);
     throw new ValidationError(
       firstIssue?.message ?? "Request failed validation",
       field === undefined ? undefined : { field },

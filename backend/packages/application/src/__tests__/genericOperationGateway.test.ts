@@ -145,6 +145,25 @@ describe("createGenericOperationGateway (issue #220)", () => {
       await expect(gateway.invoke("item.get", actor, ALL_CAPABILITIES, {})).rejects.toThrow(ValidationError);
     });
 
+    it("names the offending field when property.create fails its union schema", async () => {
+      const gateway = createGenericOperationGateway(pool);
+      const actor: AuthenticatedActor = { userId: await createUser() };
+      const database = await chokePoint.createDatabase({ name: "Gateway DB" });
+      const base = { databaseId: database.id, key: "rel", name: "Rel" };
+
+      await expect(
+        gateway.invoke("property.create", actor, ALL_CAPABILITIES, {
+          ...base,
+          type: "relation",
+          cardinality: "one_to_many",
+          locked: false,
+        }),
+      ).rejects.toMatchObject({ details: { field: "targetDatabaseId" } });
+      await expect(
+        gateway.invoke("property.create", actor, ALL_CAPABILITIES, { ...base, type: "bogus" }),
+      ).rejects.toMatchObject({ details: { field: "type" } });
+    });
+
     it("executes a non-destructive operation immediately for a REST-style human actor", async () => {
       const gateway = createGenericOperationGateway(pool);
       const actor: AuthenticatedActor = { userId: await createUser() };
