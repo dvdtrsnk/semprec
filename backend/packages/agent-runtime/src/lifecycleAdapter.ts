@@ -1,4 +1,4 @@
-import type { Pool, PoolClient } from "pg";
+import { Pool, type PoolClient } from "pg";
 import {
   createAgentRun,
   finishAgentRun,
@@ -9,6 +9,7 @@ import {
   type AgentRunRow,
   type AgentRunUnit,
   type TriggeredBy,
+  withTransaction,
 } from "@semprec/data";
 import { publishAgentRunDelta } from "@semprec/realtime";
 import { withTraceContext } from "@semprec/shared";
@@ -137,6 +138,15 @@ export async function runAgentSession(client: Pool | PoolClient, input: RunAgent
 }
 
 /**
+ * Runs `close` atomically: a bare `Pool` gets one transaction for the whole close, while a
+ * caller-supplied `PoolClient` is reused as is, so the caller's own transaction decides.
+ */
+function closeAtomically(client: Pool | PoolClient, close: (c: PoolClient) => Promise<void>): Promise<void> {
+  if (client instanceof Pool) return withTransaction(client, close);
+  return close(client);
+}
+
+/**
  * `runAgentSession` without the `createAgentRun`: drives one session for an `agent_runs` row
  * someone else already opened (issue #647's queued `agentRun`/`delegatedAgentRun` jobs), with the
  * row's own `task`, and closes it exactly as `runAgentSession` does. The caller records the run's
@@ -156,15 +166,27 @@ export async function runAgentSessionForRun(
 
     try {
       const lastMessage = await runAgentTurn(client, run.id, session.messages(), input.onEvent);
-      await finishAgentRun(client, run.id, "done", extractResultSnapshot(lastMessage));
-      await pushRunStatus(client, run.id, "done");
+      // The row's terminal status and its `run_status` event commit together, so a poller never
+      // sees the row closed before the event exists, and a failed close leaves neither behind —
+      // the catch below then writes the only terminal state, `error`.
+      await closeAtomically(client, async (c) => {
+        if (!(await finishAgentRun(c, run.id, "done", extractResultSnapshot(lastMessage)))) return;
+        await pushRunStatus(c, run.id, "done");
+      });
     } catch (err) {
       try {
         // Issue #149: same client as the status write, so a caller-supplied transaction rolls
-        // both back together; a bare pool gives the same best-effort guarantee this catch block
-        // already had before the notification existed.
-        await finishAgentRunWithErrorNotification(client, run.id, err instanceof Error ? err.message : String(err));
-        await pushRunStatus(client, run.id, "error");
+        // both back together. A `false` close means another closer already decided the outcome,
+        // so this session writes no terminal event of its own.
+        await closeAtomically(client, async (c) => {
+          const closed = await finishAgentRunWithErrorNotification(
+            c,
+            run.id,
+            err instanceof Error ? err.message : String(err),
+          );
+          if (!closed) return;
+          await pushRunStatus(c, run.id, "error");
+        });
       } catch (finishErr) {
         // Preserve the session failure for the caller, but do not erase evidence that the
         // secondary lifecycle close failed and left the row running.

@@ -1,11 +1,11 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { setAgentRunEventHook } from "@semprec/data";
+import { createAgentRun, setAgentRunEventHook, type AgentRunRow } from "@semprec/data";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { getTraceContext } from "@semprec/shared";
 import { publishRealtimeMessage } from "@semprec/realtime";
-import { runAgentSession } from "../lifecycleAdapter.js";
+import { pushRunStatus, runAgentSession, runAgentSessionForRun } from "../lifecycleAdapter.js";
 import type { AgentMessage, AgentSession, CreateAgentSession } from "../types.js";
 
 let pool: Pool;
@@ -26,6 +26,10 @@ function fakeSession(messages: AgentMessage[]): CreateAgentSession {
   });
 }
 
+afterAll(async () => {
+  await pool?.end();
+});
+
 describe("runAgentSession", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -40,10 +44,6 @@ describe("runAgentSession", () => {
 
   afterEach(() => {
     setAgentRunEventHook(() => {});
-  });
-
-  afterAll(async () => {
-    await pool?.end();
   });
 
   it("reconstructs a completed run's transcript from agent_run_events in monotonic order", async () => {
@@ -206,5 +206,162 @@ describe("runAgentSession", () => {
     });
 
     listenClient.release(true);
+  });
+});
+
+describe("runAgentSessionForRun terminal close", () => {
+  const okSession = fakeSession([{ kind: "turn_start" }, { kind: "message", text: "fine" }, { kind: "turn_end" }]);
+  const throwingSession: CreateAgentSession = (): AgentSession => ({
+    // eslint-disable-next-line require-yield
+    async *messages() {
+      throw new Error("boom");
+    },
+  });
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await createUser();
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION test_fail_terminal_event() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.kind = 'run_status' AND NEW.payload->>'status' = ANY (TG_ARGV) THEN
+          RAISE EXCEPTION 'injected run_status failure';
+        END IF;
+        RETURN NEW;
+      END $$ LANGUAGE plpgsql`);
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION test_fail_done_close() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.status = 'done' THEN RAISE EXCEPTION 'injected finishAgentRun failure'; END IF;
+        RETURN NEW;
+      END $$ LANGUAGE plpgsql`);
+  });
+
+  afterEach(async () => {
+    await pool.query("DROP TRIGGER IF EXISTS test_fail_terminal_event ON agent_run_events");
+    await pool.query("DROP TRIGGER IF EXISTS test_fail_done_close ON agent_runs");
+  });
+
+  async function openRun(): Promise<AgentRunRow> {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "close me" });
+    await pushRunStatus(pool, run.id, "running");
+    return run;
+  }
+
+  async function rowStatus(runId: string): Promise<string> {
+    const { rows } = await pool.query<{ status: string }>("SELECT status FROM agent_runs WHERE id = $1", [runId]);
+    return rows[0]!.status;
+  }
+
+  async function terminalEvents(runId: string): Promise<string[]> {
+    const { rows } = await pool.query<{ status: string }>(
+      `SELECT payload->>'status' AS status FROM agent_run_events
+       WHERE agent_run_id = $1 AND kind = 'run_status' AND payload->>'status' <> 'running' ORDER BY id`,
+      [runId],
+    );
+    return rows.map((r) => r.status);
+  }
+
+  function failEventsFor(...statuses: string[]): Promise<unknown> {
+    const args = statuses.map((s) => `'${s}'`).join(", ");
+    return pool.query(
+      `CREATE TRIGGER test_fail_terminal_event BEFORE INSERT ON agent_run_events
+       FOR EACH ROW EXECUTE FUNCTION test_fail_terminal_event(${args})`,
+    );
+  }
+
+  it("closes a succeeding session as done with exactly one done event on a bare pool", async () => {
+    const run = await openRun();
+    const finished = await runAgentSessionForRun(pool, run, { createAgentSession: okSession });
+    expect(finished.status).toBe("done");
+    expect(await terminalEvents(run.id)).toEqual(["done"]);
+  });
+
+  it("closes a throwing session as error with exactly one error event on a bare pool", async () => {
+    const run = await openRun();
+    await expect(runAgentSessionForRun(pool, run, { createAgentSession: throwingSession })).rejects.toThrow("boom");
+    expect(await rowStatus(run.id)).toBe("error");
+    expect(await terminalEvents(run.id)).toEqual(["error"]);
+  });
+
+  it("leaves the row running with no terminal event when every terminal event write fails (success)", async () => {
+    const run = await openRun();
+    await failEventsFor("done", "error");
+    await expect(runAgentSessionForRun(pool, run, { createAgentSession: okSession })).rejects.toThrow(
+      "injected run_status failure",
+    );
+    expect(await rowStatus(run.id)).toBe("running");
+    expect(await terminalEvents(run.id)).toEqual([]);
+  });
+
+  it("leaves the row running with no terminal event when every terminal event write fails (throwing)", async () => {
+    const run = await openRun();
+    await failEventsFor("done", "error");
+    await expect(runAgentSessionForRun(pool, run, { createAgentSession: throwingSession })).rejects.toThrow("boom");
+    expect(await rowStatus(run.id)).toBe("running");
+    expect(await terminalEvents(run.id)).toEqual([]);
+  });
+
+  it("falls back to a single error close when only the done event write fails", async () => {
+    const run = await openRun();
+    await failEventsFor("done");
+    await runAgentSessionForRun(pool, run, { createAgentSession: okSession }).catch(() => undefined);
+    expect(await rowStatus(run.id)).toBe("error");
+    expect(await terminalEvents(run.id)).toEqual(["error"]);
+  });
+
+  it("ends with a single error event when finishAgentRun throws on the success path", async () => {
+    const run = await openRun();
+    await pool.query(
+      `CREATE TRIGGER test_fail_done_close BEFORE UPDATE ON agent_runs
+       FOR EACH ROW EXECUTE FUNCTION test_fail_done_close()`,
+    );
+    await runAgentSessionForRun(pool, run, { createAgentSession: okSession }).catch(() => undefined);
+    expect(await rowStatus(run.id)).toBe("error");
+    expect(await terminalEvents(run.id)).toEqual(["error"]);
+  });
+
+  it("writes no done event and keeps the other closer's status when the row was closed elsewhere", async () => {
+    const run = await openRun();
+    const createAgentSession: CreateAgentSession = (): AgentSession => ({
+      async *messages() {
+        yield { kind: "turn_start" };
+        await pool.query("UPDATE agent_runs SET status = 'error', result = 'elsewhere' WHERE id = $1", [run.id]);
+      },
+    });
+    const finished = await runAgentSessionForRun(pool, run, { createAgentSession });
+    expect(finished.status).toBe("error");
+    expect(finished.result).toBe("elsewhere");
+    expect(await terminalEvents(run.id)).toEqual([]);
+  });
+
+  it("writes no error event and rethrows when the row was closed elsewhere before the failure", async () => {
+    const run = await openRun();
+    const createAgentSession: CreateAgentSession = (): AgentSession => ({
+      // eslint-disable-next-line require-yield
+      async *messages() {
+        await pool.query("UPDATE agent_runs SET status = 'done', result = 'elsewhere' WHERE id = $1", [run.id]);
+        throw new Error("boom");
+      },
+    });
+    await expect(runAgentSessionForRun(pool, run, { createAgentSession })).rejects.toThrow("boom");
+    expect(await rowStatus(run.id)).toBe("done");
+    expect(await terminalEvents(run.id)).toEqual([]);
+  });
+
+  it("leaves a caller-supplied PoolClient's close to the caller's transaction", async () => {
+    const run = await openRun();
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const finished = await runAgentSessionForRun(client, run, { createAgentSession: okSession });
+      expect(finished.status).toBe("done");
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+    expect(await rowStatus(run.id)).toBe("running");
+    expect(await terminalEvents(run.id)).toEqual([]);
   });
 });
