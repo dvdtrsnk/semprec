@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -263,12 +263,23 @@ describe("rollup engine", () => {
     try {
       await holder.query("BEGIN");
       await holder.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [project.id]);
+      const { rows: holderRows } = await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+      const holderPid = holderRows[0]!.pid;
 
       let settled = false;
       const recompute = recomputeRollupCell(pool, sumProp.id, project.id).finally(() => {
         settled = true;
       });
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      await vi.waitFor(
+        async () => {
+          const { rows: waiters } = await pool.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+            [holderPid],
+          );
+          expect(Number(waiters[0]!.count), "recompute never blocked on the holder's row lock").toBe(1);
+        },
+        { timeout: 10_000, interval: 20 },
+      );
       expect(settled).toBe(false);
 
       await chokePoint.updateItem({ databaseId: tasks.id, itemId: task.id, propertiesPatch: { hours: 8 } });
