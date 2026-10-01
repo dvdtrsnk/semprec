@@ -1064,7 +1064,9 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       `SELECT CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END AS other
        FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
        JOIN properties p ON p.id IN (d.property_id_a, d.property_id_b)
-       WHERE p.key = 'event' AND (r.item_a = $1 OR r.item_b = $1)`,
+       WHERE p.key = 'event'
+         AND p.database_id = (SELECT id FROM databases WHERE owner_module_id = 'transcripts')
+         AND (r.item_a = $1 OR r.item_b = $1)`,
       [transcriptId],
     );
     const { rows: cards } = await pool.query<{ id: string; kind: string }>(
