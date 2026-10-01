@@ -154,6 +154,20 @@ describe("aiGatewayCallsStore", () => {
     expect(row?.outputTokens).toBeNull();
   });
 
+  it("returns null from settleTokenGatewayCall when the driver reports a null rowCount", async () => {
+    const client = { query: async () => ({ rows: [], rowCount: null }) } as unknown as Pool;
+
+    await expect(
+      settleTokenGatewayCall(client, randomUUID(), { inputTokens: 1, outputTokens: 1, costUsd: 0.001 }),
+    ).resolves.toBeNull();
+  });
+
+  it("returns null from settleAudioGatewayCall when the driver reports a null rowCount", async () => {
+    const client = { query: async () => ({ rows: [], rowCount: null }) } as unknown as Pool;
+
+    await expect(settleAudioGatewayCall(client, randomUUID(), { audioSeconds: 1, costUsd: 0.001 })).resolves.toBeNull();
+  });
+
   it("returns null and leaves the row untouched when settling an audio row that is already failed", async () => {
     const reserved = await reserveGatewayCall(pool, {
       provider: "deepinfra",
