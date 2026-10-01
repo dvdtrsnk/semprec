@@ -189,7 +189,7 @@ describe("MailboxClient", () => {
 
       await screen.findByRole("button", { name: /Inbox/ });
       const messages = panes().messages as HTMLElement;
-      expect(await within(messages).findByRole("alert")).toHaveTextContent("Timed out");
+      expect(await within(messages).findByRole("alert")).toHaveTextContent("The server could not be reached");
       expect(within(messages).getByRole("button", { name: "Try again" })).toBeInTheDocument();
     });
 

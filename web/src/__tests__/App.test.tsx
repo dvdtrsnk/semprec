@@ -14,12 +14,13 @@ const USER: SessionUser = {
   createdAt: "2026-09-01T12:00:00.000Z",
 };
 
-const CONTENT_MARKER = "routed content marker";
+const CONTENT_MARKER_STATUS = 599;
+const CONTENT_MARKER = `The server answered with status ${CONTENT_MARKER_STATUS}`;
 
-/** Generic operations whose view load fails with a recognizable message, so the routed content's presence is observable. */
+/** Generic operations whose view load fails with a recognizable status, so the routed content's presence is observable. */
 function contentOperations(): GenericOperations & { getView: ReturnType<typeof vi.fn> } {
   const getView = vi.fn(async () => {
-    throw new OperationError("unavailable", CONTENT_MARKER);
+    throw new OperationError("unavailable", "routed content marker", CONTENT_MARKER_STATUS);
   });
   return { ...createFakeOperations({ items: [], relations: [], views: [] }), getView };
 }
@@ -144,7 +145,7 @@ describe("App session lifecycle", () => {
       .mockResolvedValueOnce(USER);
     renderApp({ auth: stubAuth({ getSession }) });
 
-    expect(await screen.findByText("Request to /auth/session failed with 503")).toBeInTheDocument();
+    expect(await screen.findByText("The server answered with status 503")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
 
     expect(await screen.findByText("Signed in as operator@example.com")).toBeInTheDocument();

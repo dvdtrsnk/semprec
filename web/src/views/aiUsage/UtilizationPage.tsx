@@ -33,6 +33,7 @@ function CostByDayChart({
   points: readonly DailyCostPoint[];
   dailyBudgetUsd: number | null;
 }) {
+  const t = useTranslate();
   const locale = useLocale();
   const width = 600;
   const height = 160;
@@ -42,7 +43,12 @@ function CostByDayChart({
   const scale = (value: number) => (value / maxCost) * (height - padding * 2);
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="ai-usage__chart" role="img" aria-label="cost-per-day">
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      className="ai-usage__chart"
+      role="img"
+      aria-label={t("aiUsage.chart.costPerDay")}
+    >
       {points.map((point, index) => {
         const barHeight = scale(point.costUsd);
         const exceeded = dailyBudgetUsd !== null && point.costUsd > dailyBudgetUsd;
@@ -55,7 +61,7 @@ function CostByDayChart({
             height={barHeight}
             className={exceeded ? "ai-usage__bar ai-usage__bar--exceeded" : "ai-usage__bar"}
           >
-            <title>{`${point.day}: ${formatUsd(locale, point.costUsd)}`}</title>
+            <title>{t("aiUsage.chart.costPoint", { day: point.day, amount: formatUsd(locale, point.costUsd) })}</title>
           </rect>
         );
       })}
@@ -67,7 +73,7 @@ function CostByDayChart({
           y2={height - padding - scale(dailyBudgetUsd)}
           className="ai-usage__budget-line"
         >
-          <title>{`daily budget: ${formatUsd(locale, dailyBudgetUsd)}`}</title>
+          <title>{t("aiUsage.chart.budgetLine", { amount: formatUsd(locale, dailyBudgetUsd) })}</title>
         </line>
       ) : null}
     </svg>
@@ -76,6 +82,7 @@ function CostByDayChart({
 
 /** Stacked input/output token bars per day, mirroring CostByDayChart's layout but with two series instead of a budget line. */
 function TokenUsageByDayChart({ points }: { points: readonly DailyTokenPoint[] }) {
+  const t = useTranslate();
   const width = 600;
   const height = 160;
   const padding = 8;
@@ -84,7 +91,12 @@ function TokenUsageByDayChart({ points }: { points: readonly DailyTokenPoint[] }
   const scale = (value: number) => (value / maxTokens) * (height - padding * 2);
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="ai-usage__chart" role="img" aria-label="tokens-per-day">
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      className="ai-usage__chart"
+      role="img"
+      aria-label={t("aiUsage.chart.tokensPerDay")}
+    >
       {points.map((point, index) => {
         const inputHeight = scale(point.inputTokens);
         const outputHeight = scale(point.outputTokens);
@@ -99,7 +111,7 @@ function TokenUsageByDayChart({ points }: { points: readonly DailyTokenPoint[] }
               height={inputHeight}
               className="ai-usage__bar ai-usage__bar--input-tokens"
             >
-              <title>{`${point.day}: ${point.inputTokens} input tokens`}</title>
+              <title>{t("aiUsage.chart.inputTokensPoint", { day: point.day, count: point.inputTokens })}</title>
             </rect>
             <rect
               x={x}
@@ -108,7 +120,7 @@ function TokenUsageByDayChart({ points }: { points: readonly DailyTokenPoint[] }
               height={outputHeight}
               className="ai-usage__bar ai-usage__bar--output-tokens"
             >
-              <title>{`${point.day}: ${point.outputTokens} output tokens`}</title>
+              <title>{t("aiUsage.chart.outputTokensPoint", { day: point.day, count: point.outputTokens })}</title>
             </rect>
           </g>
         );

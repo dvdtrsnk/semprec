@@ -67,11 +67,29 @@ describe("UtilizationPage (issue #121)", () => {
 
     expect(await screen.findByText("AI utilization")).toBeInTheDocument();
     expect(screen.getByText("$3.55")).toBeInTheDocument();
-    expect(screen.getByText("Daily budget: $50.00")).toBeInTheDocument();
+    expect(screen.getAllByText("Daily budget: $50.00").length).toBeGreaterThan(0);
     expect(screen.getByText("Monthly budget: uncapped")).toBeInTheDocument();
     expect(screen.getByText("100s audio (audio-only, no tokens)")).toBeInTheDocument();
     expect(screen.getByText("400 in / 120 out tokens")).toBeInTheDocument();
     expect(screen.getByText("Not tied to a run")).toBeInTheDocument();
+  });
+
+  it("gives the charts translated accessible names and tooltips in en", async () => {
+    renderPage(stubOperations(async () => makeReport()));
+
+    const costChart = await screen.findByRole("img", { name: "Cost per day" });
+    expect(costChart.querySelector("title")).toHaveTextContent("2026-09-05: $1.00");
+    expect(screen.getByRole("img", { name: "Tokens per day" })).toBeInTheDocument();
+  });
+
+  it("gives the charts translated accessible names in cs", async () => {
+    renderPage(
+      stubOperations(async () => makeReport()),
+      "cs",
+    );
+
+    expect(await screen.findByRole("img", { name: "Náklady za den" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Tokeny za den" })).toBeInTheDocument();
   });
 
   it("flags a day that exceeded the daily budget", async () => {
@@ -105,7 +123,7 @@ describe("UtilizationPage (issue #121)", () => {
     const formatAmount = (value: number) =>
       new Intl.NumberFormat("cs", { style: "currency", currency: "USD" }).format(value).replace(/\u00a0/g, " ");
     expect(await screen.findByText(formatAmount(3.55))).toBeInTheDocument();
-    expect(screen.getByText(`Denní rozpočet: ${formatAmount(50)}`)).toBeInTheDocument();
+    expect(screen.getAllByText(`Denní rozpočet: ${formatAmount(50)}`).length).toBeGreaterThan(0);
   });
 
   it("shows an error state and retries on demand", async () => {
@@ -118,7 +136,7 @@ describe("UtilizationPage (issue #121)", () => {
       }),
     );
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("network blip");
+    expect(await screen.findByRole("alert")).toHaveTextContent("The server could not be reached");
 
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
 

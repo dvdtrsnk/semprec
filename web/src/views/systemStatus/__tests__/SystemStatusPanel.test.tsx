@@ -121,7 +121,7 @@ describe("SystemStatusPanel (issue #170)", () => {
       }),
     );
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("network blip");
+    expect(await screen.findByRole("alert")).toHaveTextContent("The server could not be reached");
 
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
 

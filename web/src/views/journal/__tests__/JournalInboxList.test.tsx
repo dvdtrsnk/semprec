@@ -125,7 +125,7 @@ describe("JournalInboxList (issue #106)", () => {
       </I18nProvider>,
     );
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("network blip");
+    expect(await screen.findByRole("alert")).toHaveTextContent("The server could not be reached");
     expect(calls).toBe(1);
 
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));

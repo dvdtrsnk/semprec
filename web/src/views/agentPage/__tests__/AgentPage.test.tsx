@@ -74,7 +74,7 @@ describe("AgentPage (issue #127)", () => {
 
     renderPage(getItem);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("transport down");
+    expect(await screen.findByRole("alert")).toHaveTextContent("The server could not be reached");
     expect(getItem).toHaveBeenCalledWith(DATABASE_ID, PROJECT_ID);
 
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));

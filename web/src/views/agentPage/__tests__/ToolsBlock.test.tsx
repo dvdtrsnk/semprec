@@ -90,7 +90,7 @@ describe("ToolsBlock (issue #127)", () => {
 
     renderBlock(stubOperations({ listMcpToolGrants }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("transport down");
+    expect(await screen.findByRole("alert")).toHaveTextContent("The server could not be reached");
 
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
 
@@ -170,6 +170,25 @@ describe("ToolsBlock (issue #127)", () => {
     await userEvent.selectOptions(select, "high");
 
     expect(reclassifyMcpTool).toHaveBeenCalledWith({ mcpToolRegistrationId: "reg-1", riskClass: "high" });
+  });
+
+  it("shows translated risk-class option labels while the select value stays the raw key", async () => {
+    renderBlock(stubOperations({ listMcpToolGrants: vi.fn(async () => [makeRow()]) }));
+
+    await screen.findByRole("checkbox", { name: "search_docs" });
+    const select = screen.getByRole("combobox") as HTMLSelectElement;
+
+    expect(screen.getByRole("option", { name: "Low" })).toHaveValue("low");
+    expect(screen.getByRole("option", { name: "High" })).toHaveValue("high");
+    expect(select.value).toBe("low");
+  });
+
+  it("renders an unknown stored risk class as its raw value", async () => {
+    renderBlock(stubOperations({ listMcpToolGrants: vi.fn(async () => [makeRow({ riskClass: "weird" })]) }));
+
+    await screen.findByRole("checkbox", { name: "search_docs" });
+
+    expect(screen.getByRole("option", { name: "weird" })).toHaveValue("weird");
   });
 
   it("round-trips a requiresApproval checkbox change to the exact registration", async () => {
