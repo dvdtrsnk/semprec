@@ -35,8 +35,8 @@ export const dailyTokenPointSchema = z.object({ day: z.string(), inputTokens: z.
 export type DailyTokenPoint = z.infer<typeof dailyTokenPointSchema>;
 
 export const aiUsageReportSchema = z.object({
-  from: z.string(),
-  to: z.string(),
+  from: z.iso.datetime(),
+  to: z.iso.datetime(),
   rows: z.array(aiUsageRowSchema),
   totalCostUsd: z.number(),
   dailyCostUsd: z.array(dailyCostPointSchema),
