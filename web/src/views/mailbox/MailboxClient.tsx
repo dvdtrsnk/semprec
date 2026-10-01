@@ -448,16 +448,21 @@ function MailboxPanes({
     const page = await operations.listItems(config.foldersDatabaseId, { filter: foldersFilter(config), limit: 200 });
     const folders = sortFolders(page.items);
     // Unread counts are the same generic count operation, once per folder — the sidebar
-    // never asks for a mailbox-specific aggregate endpoint.
-    const counts = await Promise.all(
-      folders.map((folder) => operations.countItems(databaseId, { filter: unreadFilter(config, folder.id) })),
-    );
+    // never asks for a mailbox-specific aggregate endpoint. They depend on nothing the
+    // mailbox/folder-mailbox chain produces, so both run concurrently.
+    const [counts, { mailboxes, folderMailbox }] = await Promise.all([
+      Promise.all(
+        folders.map((folder) => operations.countItems(databaseId, { filter: unreadFilter(config, folder.id) })),
+      ),
+      loadMailboxes(operations, config).then(async (mailboxes) => ({
+        mailboxes,
+        folderMailbox: await loadFolderMailboxes(operations, config, folders, mailboxes),
+      })),
+    ]);
     const unreadCounts: Record<string, number> = {};
     folders.forEach((folder, index) => {
       unreadCounts[folder.id] = counts[index] ?? 0;
     });
-    const mailboxes = await loadMailboxes(operations, config);
-    const folderMailbox = await loadFolderMailboxes(operations, config, folders, mailboxes);
     return { folders, unreadCounts, mailboxes, folderMailbox };
   }, [config, databaseId]);
 
