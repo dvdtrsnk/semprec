@@ -213,4 +213,13 @@ describe("relation cardinality enforcement (issue #82)", () => {
       loser: { relationPropertyId: property.id, callerItemId: a2.id, targetItemId: b1.id },
     });
   });
+
+  it("under concurrency, a losing racer against a one_to_one conflict (same item_a, different item_b) is rejected, not silently corrupted", async () => {
+    const { property, a1, b1, b2 } = await makeRelation("one_to_one");
+    await assertLosesRaceOnConflict({
+      relationDefinitionId: (property.config as { relationDefinitionId: string }).relationDefinitionId,
+      winner: { relationPropertyId: property.id, callerItemId: a1.id, targetItemId: b1.id },
+      loser: { relationPropertyId: property.id, callerItemId: a1.id, targetItemId: b2.id },
+    });
+  });
 });
