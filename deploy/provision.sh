@@ -148,7 +148,7 @@ install_postgresql_hunspell_assets() {
   require_readable_hunspell_asset "$HUNSPELL_AFFIX_SOURCE"
 
   local postgres_container
-  if ! postgres_container="$(docker compose -f "$SCRIPT_DIR/docker-compose.yml" ps --quiet postgres)" || [[ -z "$postgres_container" ]]; then
+  if ! postgres_container="$(docker compose --env-file "$SEMPREC_ROOT/shared/.env" -f "$SCRIPT_DIR/docker-compose.yml" ps --quiet postgres)" || [[ -z "$postgres_container" ]]; then
     echo "Cannot install Czech Hunspell assets: the PostgreSQL container is not active" >&2
     exit 1
   fi

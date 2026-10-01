@@ -62,6 +62,7 @@ write_mock systemd-analyze 'echo "systemd-analyze $*" >> "$TEST_STATE/commands"'
 write_mock install 'echo "install $*" >> "$TEST_STATE/commands"; args=(); while [[ "$#" -gt 0 ]]; do case "$1" in -o|-g) shift 2;; *) args+=("$1"); shift;; esac; done; /usr/bin/install "${args[@]}"'
 write_mock docker '
 if [[ "$1" == "compose" ]]; then
+  echo "docker $*" >> "$TEST_STATE/commands"
   printf "postgres-container\\n"
   exit 0
 fi
@@ -117,6 +118,7 @@ test -s "$TEST_STATE/tsearch_data/cs_cz.dict"
 test -s "$TEST_STATE/tsearch_data/cs_cz.affix"
 test -r "$TEST_STATE/tsearch_data/cs_cz.dict"
 test -r "$TEST_STATE/tsearch_data/cs_cz.affix"
+grep -q '^docker compose .*--env-file ' "$TEST_STATE/commands"
 grep -qx 'Storage=persistent' "$TEST_ROOT/systemd/journald.conf.d/semprec.conf"
 grep -qx 'SystemMaxUse=2G' "$TEST_ROOT/systemd/journald.conf.d/semprec.conf"
 grep -qx 'MaxRetentionSec=90day' "$TEST_ROOT/systemd/journald.conf.d/semprec.conf"
