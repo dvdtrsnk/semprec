@@ -1,6 +1,12 @@
+import { createElement } from "react";
 import { describe, expect, it } from "vitest";
-import { createTranslate, resolveLocale } from "../index.js";
+import { render, screen } from "@testing-library/react";
+import { I18nProvider, createTranslate, resolveLocale, useLocale } from "../index.js";
 import { cs, en } from "../messages.js";
+
+function LocaleProbe() {
+  return createElement("span", null, useLocale());
+}
 
 describe("i18n", () => {
   it("keeps every catalog in step with the English key set", () => {
@@ -16,5 +22,10 @@ describe("i18n", () => {
     expect(resolveLocale(["en-GB", "cs"])).toBe("en");
     expect(resolveLocale(["de-DE"])).toBe("cs");
     expect(resolveLocale([])).toBe("cs");
+  });
+
+  it("useLocale returns the provider's locale", () => {
+    render(createElement(I18nProvider, { locale: "cs" }, createElement(LocaleProbe)));
+    expect(screen.getByText("cs")).toBeInTheDocument();
   });
 });

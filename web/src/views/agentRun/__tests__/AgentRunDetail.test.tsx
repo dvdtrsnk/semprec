@@ -29,9 +29,9 @@ function stubOperations(overrides: Partial<AgentRunOperations> = {}): AgentRunOp
   };
 }
 
-function renderDetail(operations: AgentRunOperations, agentRunId = "run-1") {
+function renderDetail(operations: AgentRunOperations, agentRunId = "run-1", locale: "en" | "cs" = "en") {
   return render(
-    <I18nProvider locale="en">
+    <I18nProvider locale={locale}>
       <AgentRunDetail agentRunId={agentRunId} operations={operations} />
     </I18nProvider>,
   );
@@ -74,6 +74,16 @@ describe("AgentRunDetail (issue #132)", () => {
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
 
     expect(await screen.findByText("search the docs")).toBeInTheDocument();
+  });
+
+  it("formats the started/finished timestamps in Czech when the locale is cs", async () => {
+    const startedAt = "2026-09-01T12:00:00.000Z";
+    renderDetail(stubOperations({ getAgentRun: vi.fn(async () => makeRun({ startedAt })) }), "run-1", "cs");
+
+    const expected = new Intl.DateTimeFormat("cs", { dateStyle: "medium", timeStyle: "short" }).format(
+      new Date(startedAt),
+    );
+    expect(await screen.findByText(expected)).toBeInTheDocument();
   });
 
   it("renders the run's task, status, triggeredBy, and result", async () => {

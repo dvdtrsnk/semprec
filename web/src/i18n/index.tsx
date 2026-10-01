@@ -29,15 +29,27 @@ export function resolveLocale(languages: readonly string[]): Locale {
   return DEFAULT_LOCALE;
 }
 
-const I18nContext = createContext<Translate>(createTranslate(DEFAULT_LOCALE));
+interface I18nContextValue {
+  locale: Locale;
+  translate: Translate;
+}
+
+const I18nContext = createContext<I18nContextValue>({
+  locale: DEFAULT_LOCALE,
+  translate: createTranslate(DEFAULT_LOCALE),
+});
 
 export function I18nProvider({ locale, children }: { locale: Locale; children: ReactNode }) {
-  const translate = useMemo(() => createTranslate(locale), [locale]);
-  return <I18nContext.Provider value={translate}>{children}</I18nContext.Provider>;
+  const value = useMemo(() => ({ locale, translate: createTranslate(locale) }), [locale]);
+  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }
 
 export function useTranslate(): Translate {
-  return useContext(I18nContext);
+  return useContext(I18nContext).translate;
+}
+
+export function useLocale(): Locale {
+  return useContext(I18nContext).locale;
 }
 
 export type { Locale, MessageKey };

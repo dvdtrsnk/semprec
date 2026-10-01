@@ -48,9 +48,9 @@ function stubOperations(overrides: Partial<ApprovalQueueOperations> = {}): Appro
   };
 }
 
-function renderQueue(operations: ApprovalQueueOperations) {
+function renderQueue(operations: ApprovalQueueOperations, locale: "en" | "cs" = "en") {
   return render(
-    <I18nProvider locale="en">
+    <I18nProvider locale={locale}>
       <ApprovalQueue operations={operations} />
     </I18nProvider>,
   );
@@ -108,6 +108,19 @@ describe("ApprovalQueue (issue #132)", () => {
     expect(screen.getByText("Acme project", { exact: false })).toBeInTheDocument();
     const agentRunLink = screen.getByRole("link", { name: "Agent run run-1" });
     expect(agentRunLink).toHaveAttribute("href", "?page=agent-run&id=run-1");
+  });
+
+  it("formats the requested-at timestamp in Czech when the locale is cs", async () => {
+    const requestedAt = "2026-09-01T12:00:00.000Z";
+    renderQueue(
+      stubOperations({ listApprovalRequests: vi.fn(async () => [okEntry({ requestedAt })]) }),
+      "cs",
+    );
+
+    const when = new Intl.DateTimeFormat("cs", { dateStyle: "medium", timeStyle: "short" }).format(
+      new Date(requestedAt),
+    );
+    expect(await screen.findByText(`Vyžádáno ${when}`)).toBeInTheDocument();
   });
 
   it("renders a generic-operation-originated row (issue #220) the same as an mcp-invoke one", async () => {

@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { I18nProvider, resolveLocale, useTranslate } from "./i18n/index.js";
+import { I18nProvider, resolveLocale, useTranslate, type Locale } from "./i18n/index.js";
 import { toOperationError, type GenericOperations, type OperationError } from "./api/genericOperations.js";
 import type { AuthOperations, SessionUser } from "./api/authOperations.js";
 import type { AiUsageOperations } from "./api/aiUsageOperations.js";
@@ -84,12 +84,16 @@ export function App({
   login?: true;
   languages?: readonly string[];
 }) {
+  const { session, setSession, retry } = useSession(auth, sessionEvents);
+  const locale: Locale =
+    session.status === "authenticated" ? resolveLocale([session.user.locale]) : resolveLocale(languages);
+
   return (
-    <I18nProvider locale={resolveLocale(languages)}>
+    <I18nProvider locale={locale}>
       {setup ? (
         <SetupWizard token={setup.token} operations={setup.operations} />
       ) : (
-        <SessionGate auth={auth} sessionEvents={sessionEvents} login={login}>
+        <SessionGate auth={auth} session={session} setSession={setSession} retry={retry} login={login}>
           <RoutedContent
             viewId={viewId}
             operations={operations}
@@ -106,26 +110,16 @@ export function App({
 }
 
 /**
- * The session lifecycle around the routed content: bootstraps from `GET /api/auth/session` on
- * mount, shows the login page for an anonymous visitor, drops back to it when an adapter reports
- * a 401 mid-session, and logs out from the header. The setup wizard never reaches this — it runs
- * before any user exists, so there is no session to ask about.
+ * Bootstraps the session from `GET /api/auth/session` on mount and drops back to anonymous when
+ * an adapter reports a 401 mid-session. Lifted out of `SessionGate` so `App` can read the session
+ * user's locale before the `I18nProvider` that `SessionGate` renders under.
  */
-function SessionGate({
-  auth,
-  sessionEvents,
-  login,
-  children,
-}: {
-  auth: AuthOperations;
-  sessionEvents: EventTarget;
-  login?: true;
-  children: ReactNode;
-}) {
-  const t = useTranslate();
+function useSession(
+  auth: AuthOperations,
+  sessionEvents: EventTarget,
+): { session: SessionState; setSession: (session: SessionState) => void; retry: () => void } {
   const [session, setSession] = useState<SessionState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
-  const [logoutError, setLogoutError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -145,22 +139,49 @@ function SessionGate({
   useEffect(() => {
     const onUnauthorized = () => {
       setSession((current) => (current.status === "authenticated" ? { status: "anonymous" } : current));
-      setLogoutError(null);
     };
     sessionEvents.addEventListener("unauthorized", onUnauthorized);
     return () => sessionEvents.removeEventListener("unauthorized", onUnauthorized);
   }, [sessionEvents]);
 
-  const authenticated = session.status === "authenticated";
-  useEffect(() => {
-    // There is no router to re-resolve the URL, so leaving `?page=login` is a full navigation.
-    if (login && authenticated) window.location.replace("/");
-  }, [login, authenticated]);
-
   const retry = () => {
     setSession({ status: "loading" });
     setAttempt((current) => current + 1);
   };
+
+  return { session, setSession, retry };
+}
+
+/**
+ * The session-driven UI around the routed content: shows the login page for an anonymous
+ * visitor, drops back to it when `useSession` observes a mid-session 401, and logs out from the
+ * header. The setup wizard never reaches this — it runs before any user exists, so there is no
+ * session to ask about.
+ */
+function SessionGate({
+  auth,
+  session,
+  setSession,
+  retry,
+  login,
+  children,
+}: {
+  auth: AuthOperations;
+  session: SessionState;
+  setSession: (session: SessionState) => void;
+  retry: () => void;
+  login?: true;
+  children: ReactNode;
+}) {
+  const t = useTranslate();
+  const [logoutError, setLogoutError] = useState<string | null>(null);
+
+  const authenticated = session.status === "authenticated";
+  useEffect(() => {
+    // There is no router to re-resolve the URL, so leaving `?page=login` is a full navigation.
+    if (login && authenticated) window.location.replace("/");
+    if (!authenticated) setLogoutError(null);
+  }, [login, authenticated]);
 
   const onLogout = async () => {
     setLogoutError(null);
