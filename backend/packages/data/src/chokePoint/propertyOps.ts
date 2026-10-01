@@ -182,7 +182,11 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
           const property = await propertiesStore.createProperty(client, input);
           await applyRollupConfig(client, property);
           await enqueueRollupBackfill(client, property.id);
-          const finalProperty = (await propertiesStore.getProperty(client, property.id)) as PropertyRow;
+          const finalProperty = await propertiesStore.getProperty(client, property.id);
+          if (!finalProperty) {
+            // An invariant breach, not a domain NotFoundError: the row was created in this transaction.
+            throw new Error(`Rollup property ${property.id} created in this transaction could not be read back`);
+          }
           runAfterCommit(client, () =>
             notifyInvalidation({ scope: "schema", databaseId: finalProperty.databaseId, userId: actingUserId }),
           );
