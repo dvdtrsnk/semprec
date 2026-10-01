@@ -201,7 +201,8 @@ export async function ingestEmailMessage(
       await client.query("RELEASE SAVEPOINT ingest_provider_msg_conflict");
 
       // The constraint that just fired guarantees a winning row exists under this provider id.
-      const winner = await getMailMessageMetaByProviderMessageId(client, input.providerMessageId as string);
+      if (input.providerMessageId == null) throw err;
+      const winner = await getMailMessageMetaByProviderMessageId(client, input.providerMessageId);
       if (!winner) throw err;
       itemId = winner.itemId;
       created = false;

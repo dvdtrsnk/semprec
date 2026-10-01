@@ -125,6 +125,54 @@ function failingSeedPool(target: Pool, failItemId: string): Pool {
 }
 
 /**
+ * Like `failingSeedPool`, but also rewrites the subsequent `ROLLBACK TO SAVEPOINT
+ * discover_account` into a rejection with `rollbackErr` — exercises the discover `catch`'s
+ * ordering: `onLifecycleError` must still receive the original seed error even when the rollback
+ * that follows it also throws.
+ */
+function failingSeedAndRollbackPool(target: Pool, failItemId: string, rollbackErr: Error): Pool {
+  const proxy = new Proxy(target, {
+    get(t, prop, receiver) {
+      if (prop === "connect") {
+        return async (...args: unknown[]) => {
+          if (typeof args[0] === "function") {
+            return (t.connect as (...a: unknown[]) => unknown)(...args);
+          }
+          const client = await (t.connect as (...a: unknown[]) => Promise<PoolClient>)(...args);
+          return new Proxy(client, {
+            get(clientTarget, clientProp, clientReceiver) {
+              if (clientProp === "query") {
+                return (...queryArgs: unknown[]) => {
+                  const [text, params] = queryArgs as [string, unknown[] | undefined];
+                  if (
+                    typeof text === "string" &&
+                    text.includes("INSERT INTO mail_account_sync_state") &&
+                    Array.isArray(params) &&
+                    params[0] === failItemId
+                  ) {
+                    return (clientTarget.query as (...a: unknown[]) => unknown)(
+                      "INSERT INTO mail_account_sync_state (item_id, sync_mode, this_column_does_not_exist) VALUES ($1, $2, 'x')",
+                      params,
+                    );
+                  }
+                  if (typeof text === "string" && text === "ROLLBACK TO SAVEPOINT discover_account") {
+                    return Promise.reject(rollbackErr);
+                  }
+                  return (clientTarget.query as (...a: unknown[]) => unknown)(...queryArgs);
+                };
+              }
+              return Reflect.get(clientTarget, clientProp, clientReceiver);
+            },
+          });
+        };
+      }
+      return Reflect.get(t, prop, receiver);
+    },
+  });
+  return proxy;
+}
+
+/**
  * Wraps `pool.query` so a test can await every `process_heartbeats` UPSERT a heartbeat tick
  * issued, rather than racing its own assertions against a write that `startProcessHeartbeat`
  * never awaits (it fires the query and moves on). `rejectNextUpsert`, when set, makes the very
@@ -526,6 +574,36 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     // The rolled-back savepoint means B's row was never actually inserted.
     expect(stateB).toBeNull();
     expect(stateC).not.toBeNull();
+
+    await root.stop();
+    await drain();
+  });
+
+  it("reports the seed error through onLifecycleError even when the savepoint rollback itself throws", async () => {
+    const mailboxesId = await databaseIdFor("mailboxes");
+    const a = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "A", provider: "generic" } }),
+    );
+
+    const rollbackErr = new Error("rollback failed: connection reset");
+    const { pool: trackingPool, drain } = heartbeatTrackingPool(failingSeedAndRollbackPool(pool, a.id, rollbackErr));
+
+    const errors: Array<{ mailboxItemId: string; phase: string; err: unknown }> = [];
+    const { factory, byAccount } = recordingFactory();
+    const root = createMailLiveSyncRoot(trackingPool, mailboxesId, factory, {
+      onLifecycleError: (mailboxItemId, phase, err) => errors.push({ mailboxItemId, phase, err }),
+    });
+
+    await root.reconcileOnce();
+    await drain();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0].mailboxItemId).toBe(a.id);
+    expect(errors[0].phase).toBe("discover");
+    // The seed statement's own error must surface, not the rollback error that followed it.
+    expect(errors[0].err).not.toBe(rollbackErr);
+    expect(String((errors[0].err as Error).message)).not.toContain("rollback failed");
+    expect(byAccount.has(a.id)).toBe(false);
 
     await root.stop();
     await drain();
