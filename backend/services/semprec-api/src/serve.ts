@@ -65,9 +65,14 @@ function buildPasswordResetMailer(): PasswordResetMailer {
   const from = process.env.SMTP_FROM_ADDRESS;
   if (!host || !from) return noopPasswordResetMailer;
 
+  const rawSmtpPort = process.env.SMTP_PORT ?? "587";
+  const smtpPort = Number(rawSmtpPort);
+  if (!Number.isInteger(smtpPort) || smtpPort <= 0 || smtpPort > 65535)
+    throw new Error(`SMTP_PORT is not a valid port number: ${rawSmtpPort}`);
+
   const transporter = createTransport({
     host,
-    port: Number(process.env.SMTP_PORT ?? "587"),
+    port: smtpPort,
     secure: process.env.SMTP_SECURE === "true",
     auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD } : undefined,
   });
