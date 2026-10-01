@@ -74,7 +74,7 @@ async function assertRelationEndpointsValid(
 /** Every check `createRelationWithClient` runs before its write, in the same order, so both raise the same canonical error for the same input. */
 async function loadCreatableRelationEdgeContext(
   client: PoolClient,
-  input: DeleteRelationInput,
+  input: CreateRelationInput,
   context: SystemRelationWriteContext | undefined,
 ): Promise<RelationEdgeContext> {
   const edgeContext = await loadRelationEdgeContext(client, input.relationPropertyId);
