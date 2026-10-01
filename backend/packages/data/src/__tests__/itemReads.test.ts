@@ -21,14 +21,6 @@ describe("choke-point itemReads", () => {
   async function makeMoviesDb() {
     const db = await chokePoint.createDatabase({ name: "Movies" });
     await chokePoint.createProperty({ databaseId: db.id, key: "title", name: "Title", type: "text" });
-    await chokePoint.createProperty({
-      databaseId: db.id,
-      key: "rating",
-      name: "Rating",
-      type: "number",
-      owner: "system",
-      ownerProcess: "critics.rate",
-    });
     return db;
   }
 
