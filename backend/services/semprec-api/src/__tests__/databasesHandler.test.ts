@@ -297,8 +297,24 @@ describe("database routes (issue #240)", () => {
       body: JSON.stringify({ key: "title", name: "Title", type: "bogus" }),
     });
     expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: { code: string } };
+    const body = (await res.json()) as { error: { code: string; details: unknown } };
     expect(body.error.code).toBe("validation_failed");
+    expect(body.error.details).toEqual({ field: "type" });
+  });
+
+  it("names targetDatabaseId when a relation property is created without it", async () => {
+    const headers = { ...(await authHeader()), "Content-Type": "application/json" };
+    const database = await chokePoint.createDatabase({ name: "Books" });
+
+    const res = await fetch(`${baseUrl}/api/databases/${database.id}/properties`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ key: "rel", name: "Rel", type: "relation", cardinality: "one_to_many", locked: false }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string; details: unknown } };
+    expect(body.error.code).toBe("validation_failed");
+    expect(body.error.details).toEqual({ field: "targetDatabaseId" });
   });
 
   it("returns 403 schema_locked when creating a property on a schema-locked database", async () => {
