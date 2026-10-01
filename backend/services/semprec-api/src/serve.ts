@@ -52,7 +52,8 @@ if (!setupToken) throw new Error("SETUP_TOKEN is not set");
 
 const rawPort = process.env.PORT ?? "3001";
 const port = Number(rawPort);
-if (!Number.isInteger(port) || port <= 0) throw new Error(`PORT is not a valid port number: ${rawPort}`);
+if (!Number.isInteger(port) || port <= 0 || port > 65535)
+  throw new Error(`PORT is not a valid port number: ${rawPort}`);
 
 // `APP_BASE_URL` and `SMTP_*` back issue #142's password-reset emails. Both are optional at
 // startup — a deployment that hasn't configured outbound SMTP yet still boots, and only the
