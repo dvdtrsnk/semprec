@@ -484,6 +484,13 @@ function MailboxPanes({
     () => triagedMessages ?? (messagesResource.status === "ready" ? messagesResource.value : []),
     [triagedMessages, messagesResource],
   );
+  // Lets runTriage read the latest rendered list without capturing it as a dependency: two
+  // overlapping triage actions must each see what the other already applied, not the list as
+  // it stood when each one started.
+  const messagesRef = useRef(messages);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
   const unreadCounts = useMemo(() => {
     const base = resource.status === "ready" ? resource.value.unreadCounts : {};
     const entries = Object.entries(unreadDeltas);
@@ -557,7 +564,9 @@ function MailboxPanes({
             );
 
       const succeeded = new Set(result.succeeded);
-      const unreadMoved = countUnread(messages, result.succeeded, config.readPropertyKey);
+      const currentMessages = messagesRef.current;
+      const unreadMoved = countUnread(currentMessages, result.succeeded, config.readPropertyKey);
+      const loadedMessages = messagesResource.status === "ready" ? messagesResource.value : [];
 
       const addUnreadDelta = (deltas: Record<string, number>) =>
         setUnreadDeltas((current) => {
@@ -569,17 +578,17 @@ function MailboxPanes({
       if (action.kind === "move") {
         setCursorId((current) =>
           nextCursorAfterRemoval(
-            messages.map((message) => message.id),
+            currentMessages.map((message) => message.id),
             current,
             result.succeeded,
           ),
         );
-        setTriagedMessages(messages.filter((message) => !succeeded.has(message.id)));
+        setTriagedMessages((current) => (current ?? loadedMessages).filter((message) => !succeeded.has(message.id)));
         setMessageId((current) => (current && succeeded.has(current) ? null : current));
         addUnreadDelta({ [folderId]: -unreadMoved, [action.toFolderId]: unreadMoved });
       } else {
-        setTriagedMessages(
-          messages.map((message) =>
+        setTriagedMessages((current) =>
+          (current ?? loadedMessages).map((message) =>
             succeeded.has(message.id)
               ? { ...message, properties: { ...message.properties, [action.propertyKey]: action.value } }
               : message,
@@ -597,7 +606,7 @@ function MailboxPanes({
       setSelectedIds((current) => current.filter((id) => !succeeded.has(id)));
       setFailure(result.failed.length > 0 ? { failed: result.failed.length, total: messageIds.length } : null);
     },
-    [operations, databaseId, config, folderId, messages],
+    [operations, databaseId, config, folderId, messagesResource],
   );
 
   const orderedIds = useMemo(() => messages.map((message) => message.id), [messages]);

@@ -30,6 +30,21 @@ function toolbar(): HTMLElement {
   return screen.getByRole("toolbar", { name: "Selected messages" });
 }
 
+/** A promise the test resolves by hand, plus whether the operation under test has reached it. */
+interface Deferred {
+  promise: Promise<void>;
+  resolve: () => void;
+  started: boolean;
+}
+
+function createDeferred(): Deferred {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve, started: false };
+}
+
 describe("mailbox triage (issue #97)", () => {
   beforeEach(() => setViewport(false));
 
@@ -131,6 +146,85 @@ describe("mailbox triage (issue #97)", () => {
       const archived = await row("Invoice for March");
       expect(within(archived).queryByRole("button", { name: "Archive" })).toBeNull();
       expect(within(archived).getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    });
+
+    it("drops both messages when two archive actions overlap, in either resolution order", async () => {
+      const user = userEvent.setup();
+      const backend = createMailboxBackend();
+      const base = createFakeOperations(backend);
+      const gates = new Map<string, Deferred>();
+      // moveMessages links onto the destination before unlinking the source; gating the link
+      // call is enough to hold the whole move open for exactly the message it names.
+      const operations: GenericOperations = {
+        ...base,
+        async linkItem(databaseId, itemId, relationKey, targetItemId) {
+          const gate = gates.get(itemId);
+          if (gate) {
+            gate.started = true;
+            await gate.promise;
+          }
+          return base.linkItem(databaseId, itemId, relationKey, targetItemId);
+        },
+      };
+      renderMailbox(operations);
+
+      gates.set("email-1", createDeferred());
+      gates.set("email-2", createDeferred());
+
+      void user.click(within(await row("Invoice for March")).getByRole("button", { name: "Archive" }));
+      await waitFor(() => expect(gates.get("email-1")?.started).toBe(true));
+      void user.click(within(await row("Lunch?")).getByRole("button", { name: "Archive" }));
+      await waitFor(() => expect(gates.get("email-2")?.started).toBe(true));
+
+      // Both actions are now in flight against the same pre-triage list; resolving them in
+      // order must not let the first action's overlay overwrite what the second one already did.
+      gates.get("email-1")?.resolve();
+      await waitFor(async () =>
+        expect(await subjects()).not.toContainEqual(expect.stringContaining("Invoice for March")),
+      );
+      gates.get("email-2")?.resolve();
+
+      await waitFor(async () => expect(await subjects()).toHaveLength(1));
+      const remaining = await subjects();
+      expect(remaining).not.toContainEqual(expect.stringContaining("Invoice for March"));
+      expect(remaining).not.toContainEqual(expect.stringContaining("Lunch?"));
+      expect(remaining).toContainEqual(expect.stringContaining("Newsletter"));
+    });
+
+    it("reflects both reads when two mark-as-read actions overlap", async () => {
+      const user = userEvent.setup();
+      const backend = createMailboxBackend();
+      const base = createFakeOperations(backend);
+      const gates = new Map<string, Deferred>();
+      const operations: GenericOperations = {
+        ...base,
+        async updateItem(databaseId, itemId, propertiesPatch) {
+          const gate = gates.get(itemId);
+          if (gate) {
+            gate.started = true;
+            await gate.promise;
+          }
+          return base.updateItem(databaseId, itemId, propertiesPatch);
+        },
+      };
+      renderMailbox(operations);
+
+      gates.set("email-1", createDeferred());
+      gates.set("email-2", createDeferred());
+
+      void user.click(within(await row("Invoice for March")).getByRole("button", { name: "Mark as read" }));
+      await waitFor(() => expect(gates.get("email-1")?.started).toBe(true));
+      void user.click(within(await row("Lunch?")).getByRole("button", { name: "Mark as read" }));
+      await waitFor(() => expect(gates.get("email-2")?.started).toBe(true));
+
+      gates.get("email-1")?.resolve();
+      await waitFor(async () => expect(within(await row("Invoice for March")).queryByLabelText("Unread")).toBeNull());
+      gates.get("email-2")?.resolve();
+
+      await waitFor(async () => expect(within(await row("Lunch?")).queryByLabelText("Unread")).toBeNull());
+      // Both messages started unread, so marking both read drops the Inbox's unread count to
+      // zero, which renders no label at all rather than "0 unread".
+      await waitFor(() => expect(within(folderButton("Inbox")).queryByLabelText(/unread/)).toBeNull());
     });
   });
 
