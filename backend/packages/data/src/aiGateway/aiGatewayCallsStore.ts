@@ -162,7 +162,7 @@ export async function settleTokenGatewayCall(
      RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status`,
     [id, input.inputTokens, input.outputTokens, input.costUsd],
   );
-  if (result.rowCount === 0) return null;
+  if (!result.rowCount) return null;
   return mapRow(requireSingleRow(result.rows, `reserved ai_gateway_calls row ${id}`));
 }
 
@@ -181,7 +181,7 @@ export async function settleAudioGatewayCall(
      RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status`,
     [id, input.audioSeconds, input.costUsd],
   );
-  if (result.rowCount === 0) return null;
+  if (!result.rowCount) return null;
   return mapRow(requireSingleRow(result.rows, `reserved ai_gateway_calls row ${id}`));
 }
 
