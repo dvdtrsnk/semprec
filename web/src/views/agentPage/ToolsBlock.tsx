@@ -27,12 +27,16 @@ function useMcpToolGrants(operations: McpAgentPageOperations, projectItemId: str
   // each triggering their own `refresh`) can resolve in either order, and only the response to
   // the most-recently-started request should ever be applied.
   const loadGeneration = useRef(0);
-  useEffect(
-    () => () => {
+  // The flag is set to `true` in the effect body, not just at `useRef` init, because
+  // StrictMode's development-only mount -> cleanup -> mount cycle runs this cleanup once
+  // before the ref's lifetime really ends; without resetting it on the second mount the ref
+  // would stay `false` forever and every `load` result would be dropped at lines 47 and 50.
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
       mounted.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
 
   const load = useCallback(
     async (background: boolean) => {
