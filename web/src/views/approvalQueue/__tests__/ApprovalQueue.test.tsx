@@ -42,7 +42,7 @@ function stubOperations(overrides: Partial<ApprovalQueueOperations> = {}): Appro
       id: input.approvalRequestId,
       status: input.decision,
       decidedAt: "2026-09-01T12:05:00.000Z",
-      decidedBy: input.decidedByUserId,
+      decidedBy: DECIDED_BY,
     })),
     ...overrides,
   };
@@ -51,7 +51,7 @@ function stubOperations(overrides: Partial<ApprovalQueueOperations> = {}): Appro
 function renderQueue(operations: ApprovalQueueOperations) {
   return render(
     <I18nProvider locale="en">
-      <ApprovalQueue operations={operations} decidedByUserId={DECIDED_BY} />
+      <ApprovalQueue operations={operations} />
     </I18nProvider>,
   );
 }
@@ -161,7 +161,6 @@ describe("ApprovalQueue (issue #132)", () => {
     expect(decideApprovalRequest).toHaveBeenCalledWith({
       approvalRequestId: "req-1",
       decision: "approved",
-      decidedByUserId: DECIDED_BY,
     });
     expect(await screen.findByText("Approved by user-1")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
@@ -237,5 +236,34 @@ describe("ApprovalQueue (issue #132)", () => {
       await screen.findByText("This request could not be displayed (malformed data)", { exact: false }),
     ).toBeInTheDocument();
     expect(screen.getByText("delete_file")).toBeInTheDocument();
+  });
+
+  it("keeps two malformed rows without ids as distinct, stable list items across a re-render", async () => {
+    renderQueue(
+      stubOperations({
+        listApprovalRequests: vi.fn(async (): Promise<ApprovalQueueEntry[]> => [
+          { kind: "malformed", row: { id: null, raw: { toolName: 1 } } },
+          { kind: "malformed", row: { id: null, raw: { toolName: 2 } } },
+          okEntry({ id: "req-2", toolName: "delete_file" }),
+        ]),
+      }),
+    );
+
+    const malformedBefore = await screen.findAllByText(
+      "This request could not be displayed (malformed data)",
+      { exact: false },
+    );
+    expect(malformedBefore).toHaveLength(2);
+    const [firstElement, secondElement] = malformedBefore;
+
+    await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    await screen.findByText("Approved by user-1");
+
+    const malformedAfter = screen.getAllByText("This request could not be displayed (malformed data)", {
+      exact: false,
+    });
+    expect(malformedAfter).toHaveLength(2);
+    expect(malformedAfter[0]).toBe(firstElement);
+    expect(malformedAfter[1]).toBe(secondElement);
   });
 });

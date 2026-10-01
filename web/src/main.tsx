@@ -15,13 +15,14 @@ import { createSessionFetch } from "./api/sessionFetch.js";
  * Composition root: which backend to talk to and which view to open come from the
  * environment and the URL, never from a component. `?page=ai-usage` routes to the System
  * page's Utilization graph (issue #121), `?page=agent&project=<id>&database=<id>` routes to
- * a project's AGENT page (issue #127), `?page=approvals&user=<id>` routes to the global
- * approval queue (issue #132), and `?page=agent-run&id=<id>` routes to a single agent run's
- * detail (issue #132's source agent-run link) instead of an item/view id — none of these are
- * choke-point views, so they don't go through `?view=`. `user` is a stopgap stand-in for a real
- * session. The session itself is bootstrapped by `App` from `GET /api/auth/session`, which shows
- * the login page (`?page=login` routes there directly) until the session cookie exists, and
- * drops back to it whenever an adapter's fetch receives a 401.
+ * a project's AGENT page (issue #127), `?page=approvals` routes to the global approval queue
+ * (issue #132; a `user` query parameter from older backend-generated links is ignored), and
+ * `?page=agent-run&id=<id>` routes to a single agent run's detail (issue #132's source
+ * agent-run link) instead of an item/view id — none of these are choke-point views, so they
+ * don't go through `?view=`. The session itself is bootstrapped by `App` from
+ * `GET /api/auth/session`, which shows the login page (`?page=login` routes there directly)
+ * until the session cookie exists, and drops back to it whenever an adapter's fetch receives
+ * a 401.
  * `?page=setup&token=<setupToken>` routes to the first-account setup wizard (issue #234).
  */
 const params = new URLSearchParams(window.location.search);
@@ -48,12 +49,7 @@ const agentPage =
       }
     : undefined;
 const approvalQueue =
-  page === "approvals" && params.get("user")
-    ? {
-        operations: createApprovalQueueOperations({ baseUrl: apiBaseUrl, fetchImpl }),
-        decidedByUserId: params.get("user")!,
-      }
-    : undefined;
+  page === "approvals" ? { operations: createApprovalQueueOperations({ baseUrl: apiBaseUrl, fetchImpl }) } : undefined;
 const agentRun =
   page === "agent-run" && params.get("id")
     ? {

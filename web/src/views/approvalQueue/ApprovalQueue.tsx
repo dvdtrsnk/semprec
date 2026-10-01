@@ -119,13 +119,7 @@ function PendingRow({
  * to validate (`ApprovalQueueEntry.kind === "malformed"`) degrades to a placeholder for that row
  * alone rather than failing the whole list.
  */
-export function ApprovalQueue({
-  operations,
-  decidedByUserId,
-}: {
-  operations: ApprovalQueueOperations;
-  decidedByUserId: string;
-}) {
+export function ApprovalQueue({ operations }: { operations: ApprovalQueueOperations }) {
   const t = useTranslate();
   const { resource, reload } = useAsyncResource(() => operations.listApprovalRequests(), [operations]);
   const [mutations, setMutations] = useState<Record<string, RowMutationState>>({});
@@ -140,7 +134,6 @@ export function ApprovalQueue({
         const decided = await operations.decideApprovalRequest({
           approvalRequestId: row.id,
           decision,
-          decidedByUserId,
         });
         setMutations((prev) => ({ ...prev, [row.id]: { pending: false, error: null } }));
         setDecisions((prev) => ({ ...prev, [row.id]: { decided, requestedDecision: decision } }));
@@ -149,7 +142,7 @@ export function ApprovalQueue({
         setMutations((prev) => ({ ...prev, [row.id]: { pending: false, error: message } }));
       }
     },
-    [operations, decidedByUserId],
+    [operations],
   );
 
   if (resource.status === "loading") return <LoadingState />;
@@ -162,8 +155,9 @@ export function ApprovalQueue({
     <section className="approval-queue">
       <h1>{t("approvalQueue.title")}</h1>
       <ul className="approval-queue__list">
-        {entries.map((entry) => {
-          if (entry.kind === "malformed") return <MalformedRow key={entry.row.id ?? Math.random()} id={entry.row.id} />;
+        {entries.map((entry, index) => {
+          if (entry.kind === "malformed")
+            return <MalformedRow key={entry.row.id ?? `malformed-${index}`} id={entry.row.id} />;
           const decision = decisions[entry.row.id];
           if (decision) {
             return (
