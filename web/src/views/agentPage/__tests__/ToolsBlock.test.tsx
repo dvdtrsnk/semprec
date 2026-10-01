@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -56,6 +57,21 @@ describe("ToolsBlock (issue #127)", () => {
     expect(screen.getByRole("status")).toBeInTheDocument();
     resolve([]);
     await screen.findByText("No active MCP tools are registered in the system yet");
+  });
+
+  it("still loads under StrictMode's mount -> cleanup -> mount cycle", async () => {
+    const listMcpToolGrants = vi.fn(async () => [makeRow()]);
+
+    render(
+      <StrictMode>
+        <I18nProvider locale="en">
+          <ToolsBlock projectItemId={PROJECT_ID} operations={stubOperations({ listMcpToolGrants })} />
+        </I18nProvider>
+      </StrictMode>,
+    );
+
+    expect(await screen.findByRole("checkbox", { name: "search_docs" })).toBeInTheDocument();
+    expect(listMcpToolGrants).toHaveBeenCalled();
   });
 
   it("shows an empty state when nothing is registered", async () => {
