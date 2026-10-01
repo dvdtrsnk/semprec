@@ -287,13 +287,22 @@ describe("createSyncServer (issue #160)", () => {
 });
 
 describe("createSyncServer heartbeat fallback (issue #160)", () => {
-  let httpServer: Server;
-  let syncServer: SyncServer;
+  let httpServer: Server | undefined;
+  let syncServer: SyncServer | undefined;
   let heartbeatPool: Pool;
 
   afterEach(async () => {
-    await syncServer.close();
-    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    // Either may be unassigned when the test body threw before reaching it; an unguarded
+    // cleanup would raise a TypeError that masks that original failure.
+    const server = httpServer;
+    const sync = syncServer;
+    httpServer = undefined;
+    syncServer = undefined;
+    try {
+      await sync?.close();
+    } finally {
+      if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   afterAll(async () => {
@@ -308,10 +317,12 @@ describe("createSyncServer heartbeat fallback (issue #160)", () => {
       revalidateSession: async () => false,
       heartbeatIntervalMs: 20,
     });
-    httpServer = createServer();
-    httpServer.on("upgrade", (req, socket, head) => syncServer.handleUpgrade(req, socket, head));
-    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
-    const address = httpServer.address();
+    const sync = syncServer;
+    const server = createServer();
+    httpServer = server;
+    server.on("upgrade", (req, socket, head) => sync.handleUpgrade(req, socket, head));
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
     if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
 
     const client = new WebSocket(`ws://127.0.0.1:${address.port}/api/sync`);

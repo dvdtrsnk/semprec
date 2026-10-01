@@ -29,6 +29,13 @@ describe("sendWithBackpressure (issue #242)", () => {
     expect(close).not.toHaveBeenCalled();
   });
 
+  it("still sends when the outgoing buffer is exactly at the threshold, since only a buffer over it triggers backpressure", () => {
+    const { ws, send, close } = fakeSocket({ bufferedAmount: MAX_BUFFERED_BYTES });
+    sendWithBackpressure(ws, "payload");
+    expect(send).toHaveBeenCalledWith("payload");
+    expect(close).not.toHaveBeenCalled();
+  });
+
   it("closes with 1013 instead of sending once the outgoing buffer exceeds the threshold — never silently dropping the frame by skipping it", () => {
     const { ws, send, close } = fakeSocket({ bufferedAmount: MAX_BUFFERED_BYTES + 1 });
     sendWithBackpressure(ws, "payload");
