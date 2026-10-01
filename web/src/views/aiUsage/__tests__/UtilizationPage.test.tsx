@@ -103,7 +103,7 @@ describe("UtilizationPage (issue #121)", () => {
     );
 
     const formatAmount = (value: number) =>
-      new Intl.NumberFormat("cs", { style: "currency", currency: "USD" }).format(value).replace(/ /g, " ");
+      new Intl.NumberFormat("cs", { style: "currency", currency: "USD" }).format(value).replace(/\u00a0/g, " ");
     expect(await screen.findByText(formatAmount(3.55))).toBeInTheDocument();
     expect(screen.getByText(`Denní rozpočet: ${formatAmount(50)}`)).toBeInTheDocument();
   });
