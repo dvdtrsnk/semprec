@@ -80,11 +80,11 @@ export interface CreateAgentRunInput {
   unit?: AgentRunUnit;
   task: string;
   /**
-   * The authenticated session user creating this root run (issue #220, AC11) — required for a
-   * user-triggered root so its `actor_user_id` reflects who actually asked for it. Ignored for a
-   * delegated run (`parentRunId` set), which always inherits its parent's `actorUserId` instead;
-   * omit it for a root run with no session to capture (a heartbeat/system-triggered one), which
-   * falls back to the sole account (`getEarliestUserId`).
+   * The authenticated session user creating this root run (issue #220, AC11). Optional for every
+   * root run, including a `triggeredBy: "user"` one: when supplied, `actor_user_id` reflects who
+   * actually asked for the run; when omitted, the store falls back to the sole account
+   * (`getEarliestUserId`). Ignored for a delegated run (`parentRunId` set), which always inherits
+   * its parent's `actorUserId` instead.
    */
   userId?: string;
 }
