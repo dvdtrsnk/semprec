@@ -249,10 +249,9 @@ describe("ApprovalQueue (issue #132)", () => {
       }),
     );
 
-    const malformedBefore = await screen.findAllByText(
-      "This request could not be displayed (malformed data)",
-      { exact: false },
-    );
+    const malformedBefore = await screen.findAllByText("This request could not be displayed (malformed data)", {
+      exact: false,
+    });
     expect(malformedBefore).toHaveLength(2);
     const [firstElement, secondElement] = malformedBefore;
 
