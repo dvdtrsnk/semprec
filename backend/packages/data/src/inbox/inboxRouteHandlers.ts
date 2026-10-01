@@ -37,7 +37,7 @@ async function resolveDatabaseIdByModuleId(client: PoolClient, moduleId: string)
 
 /** `undefined` when the body carries no `credential` at all — not every proposal confirm needs one (issue #123). */
 function parseConfirmCredential(body: unknown): ConfirmProposalCredentialInput | undefined {
-  if (body === undefined || body === null) return undefined;
+  if (body === null) return undefined;
   if (typeof body !== "object" || Array.isArray(body)) {
     throw new ValidationError("Request body must be a JSON object");
   }

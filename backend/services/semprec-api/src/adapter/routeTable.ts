@@ -61,8 +61,8 @@ export function mountRoutes(
     const { matcher, paramNames } = compilePath(route.path);
     const listener = createAdapterRequestListener(pool, route.handler, {
       extractParams: (req) => {
-        const match = pathnameOf(req).match(matcher);
-        if (!match) return {};
+        // dispatchRoute already tested this pattern before calling this closure's enclosing listener.
+        const match = pathnameOf(req).match(matcher)!;
         return Object.fromEntries(paramNames.map((name, index) => [name, match[index + 1] as string]));
       },
     });
