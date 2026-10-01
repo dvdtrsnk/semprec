@@ -140,9 +140,15 @@ button unblocks.
    gh pr checks <n> --watch --interval 30   # run_in_background: true
    ```
 
-   Do not end your turn believing the work is done while that wait is still
-   armed. A pull request left green but unmerged goes stale the moment another
-   branch lands, and nothing wakes you to notice.
+   (The trailing comment is a convention, not literal shell text: invoke this
+   command with the Bash tool's `run_in_background: true` parameter, rather
+   than passing the comment to the shell.)
+
+   End the turn normally once the wait is started — do not stay in it. What
+   you must not do is declare the work or the merge done while that
+   background wait is still armed and unresolved. A pull request left green
+   but unmerged goes stale the moment another branch lands, and nothing wakes
+   you to notice.
 2. Read the findings:
    - summary comment:
      `gh api repos/dvdtrsnk/semprec/issues/<n>/comments --jq '.[] | select(.user.login=="github-actions[bot]") | .body'`
