@@ -91,7 +91,7 @@ describe("SystemStatusPanel (issue #170)", () => {
     renderPanel(operations);
 
     expect(await screen.findByText(/1 component/i)).toBeTruthy();
-    expect(screen.queryByText(/nothing is being monitored/i)).toBeNull();
+    expect(screen.queryByText("No system status data is available")).toBeNull();
     expect(screen.getByText("queue_backlog")).toBeTruthy();
   });
 
