@@ -11,6 +11,9 @@ import { OperationError } from "./genericOperations.js";
  *
  * Never carries the endpoint's stopgap bearer secret — same same-origin-fetch reasoning as
  * `aiUsageOperations.ts`.
+ *
+ * The decider is the session, not a client-supplied id: the backend derives `decided_by` from
+ * the session identity (issue #629) and ignores any id the client sends in the PATCH body.
  */
 
 const approvalRequestSafeSummarySchema = z.discriminatedUnion("kind", [
@@ -77,6 +80,8 @@ const decidedApprovalRequestSchema = z.object({
 
 export type DecidedApprovalRequest = z.infer<typeof decidedApprovalRequestSchema>;
 
+const approvalQueueResponseSchema = z.object({ rows: z.array(z.unknown()) });
+
 const UNAVAILABLE_STATUSES = new Set([401, 403, 404, 501]);
 
 export interface ApprovalQueueOperationsOptions {
@@ -87,7 +92,6 @@ export interface ApprovalQueueOperationsOptions {
 export interface DecideApprovalRequestInput {
   approvalRequestId: string;
   decision: ApprovalDecision;
-  decidedByUserId: string;
 }
 
 export interface ApprovalQueueOperations {
@@ -124,15 +128,15 @@ export function createApprovalQueueOperations(options: ApprovalQueueOperationsOp
 
   return {
     async listApprovalRequests() {
-      const body = (await request("/approval-requests")) as { rows?: unknown[] };
-      return (body.rows ?? []).map(parseQueueRow);
+      const body = await request("/approval-requests");
+      return approvalQueueResponseSchema.parse(body).rows.map(parseQueueRow);
     },
 
     async decideApprovalRequest(input) {
       const body = await request(`/approval-requests/${encodeURIComponent(input.approvalRequestId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision: input.decision, decidedByUserId: input.decidedByUserId }),
+        body: JSON.stringify({ decision: input.decision }),
       });
       return decidedApprovalRequestSchema.parse(body);
     },

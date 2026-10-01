@@ -31,7 +31,6 @@ export interface AgentPageRoute {
 
 export interface ApprovalQueueRoute {
   operations: ApprovalQueueOperations;
-  decidedByUserId: string;
 }
 
 export interface AgentRunRoute {
@@ -237,7 +236,7 @@ function RoutedContent({
       />
     );
   } else if (approvalQueue) {
-    content = <ApprovalQueue operations={approvalQueue.operations} decidedByUserId={approvalQueue.decidedByUserId} />;
+    content = <ApprovalQueue operations={approvalQueue.operations} />;
   } else if (agentRun) {
     content = <AgentRunDetail agentRunId={agentRun.agentRunId} operations={agentRun.operations} />;
   } else {

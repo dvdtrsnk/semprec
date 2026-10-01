@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OperationError } from "../genericOperations.js";
+import { OperationError, toOperationError } from "../genericOperations.js";
 import { createApprovalQueueOperations } from "../approvalQueueOperations.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -82,6 +82,39 @@ describe("approval queue operations", () => {
     expect(entries).toEqual([{ kind: "malformed", row: { id: null, raw: { id: 123 } } }]);
   });
 
+  it("resolves an empty list when the body has an empty rows array", async () => {
+    const operations = createApprovalQueueOperations({
+      baseUrl: "/api",
+      fetchImpl: async () => jsonResponse({ rows: [] }),
+    });
+
+    await expect(operations.listApprovalRequests()).resolves.toEqual([]);
+  });
+
+  it("rejects with a retryable error, not a TypeError, when the body is null", async () => {
+    const operations = createApprovalQueueOperations({
+      baseUrl: "/api",
+      fetchImpl: async () => jsonResponse(null),
+    });
+
+    const error = await operations.listApprovalRequests().catch((caught: unknown) => caught);
+
+    expect(error).not.toBeInstanceOf(TypeError);
+    expect(toOperationError(error)).toMatchObject({ kind: "retryable" });
+  });
+
+  it("rejects with a retryable error, not a TypeError, when rows is not an array", async () => {
+    const operations = createApprovalQueueOperations({
+      baseUrl: "/api",
+      fetchImpl: async () => jsonResponse({ rows: "nope" }),
+    });
+
+    const error = await operations.listApprovalRequests().catch((caught: unknown) => caught);
+
+    expect(error).not.toBeInstanceOf(TypeError);
+    expect(toOperationError(error)).toMatchObject({ kind: "retryable" });
+  });
+
   it("sends a decision as a PATCH and validates the response", async () => {
     const calls: Array<{ url: string; method?: string; body: unknown }> = [];
     const operations = createApprovalQueueOperations({
@@ -100,13 +133,12 @@ describe("approval queue operations", () => {
     const result = await operations.decideApprovalRequest({
       approvalRequestId: "req-1",
       decision: "approved",
-      decidedByUserId: "user-1",
     });
 
-    expect(calls[0]).toMatchObject({
+    expect(calls[0]).toEqual({
       url: "/api/approval-requests/req-1",
       method: "PATCH",
-      body: { decision: "approved", decidedByUserId: "user-1" },
+      body: { decision: "approved" },
     });
     expect(result).toEqual({
       id: "req-1",
