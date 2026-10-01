@@ -149,7 +149,15 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     expect(await match(transcriptId)).toBe("suggested");
 
     expect(await linkedEventIds(transcriptId)).toEqual([]);
-    expect(await cardsFor(transcriptId)).toHaveLength(1);
+    const cards = await cardsFor(transcriptId);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.properties).toMatchObject({
+      history: [
+        expect.objectContaining({
+          message: "2 Events matched the recording's time window, so none was linked; proposed a new Event.",
+        }),
+      ],
+    });
   });
 
   it("never considers Events outside the window, of another type, without a time, or deleted", async () => {
@@ -176,7 +184,15 @@ describe("matchTranscriptToEvent (issue #247)", () => {
 
     expect(await linkedEventIds(transcriptId)).toEqual([]);
     expect(await linkedEventIds(otherTranscriptId)).toEqual([eventId]);
-    expect(await cardsFor(transcriptId)).toHaveLength(1);
+    const cards = await cardsFor(transcriptId);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.properties).toMatchObject({
+      history: [
+        expect.objectContaining({
+          message: "1 Event matched the recording's time window, so none was linked; proposed a new Event.",
+        }),
+      ],
+    });
   });
 
   it("re-running on a linked transcript creates no card and no second edge", async () => {
