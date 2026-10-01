@@ -9,7 +9,7 @@ import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRunti
 let pool: Pool;
 let runtime: AgentsQueueRuntime | undefined;
 
-describe("semprec-agents startup repair ordering (issue #642)", () => {
+describe("semprec-agents startup repair (issue #642)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
@@ -27,20 +27,15 @@ describe("semprec-agents startup repair ordering (issue #642)", () => {
     await pool.end();
   });
 
-  it("repairs orphaned runs, skips mcp-credential runs, and only then starts the queue runtime", async () => {
+  it("repairs orphaned runs, skips mcp-credential runs, and creates the queue runtime", async () => {
     const orphan = await createAgentRun(pool, { triggeredBy: "heartbeat", task: "search something" });
     await insertAgentRunEvent(pool, orphan.id, "tool_use", { kind: "tool_use", tool: "search", toolCallId: "call-1" });
     const mcpRun = await createAgentRun(pool, { triggeredBy: "mcp", task: "mcp credential" });
     await insertAgentRunEvent(pool, mcpRun.id, "turn_start", { kind: "turn_start" });
 
-    // Same order as serve.ts: the repair resolves before the queue runtime is created.
-    const order: string[] = [];
     const { repairedRunIds } = await repairInterruptedRuns(pool);
-    order.push("repaired");
     runtime = await createAgentsQueueRuntime(pool, new ModuleRegistry(() => new Set()));
-    order.push("runtimeStarted");
 
-    expect(order).toEqual(["repaired", "runtimeStarted"]);
     expect(runtime).toBeDefined();
     expect(repairedRunIds).toEqual([orphan.id]);
 
