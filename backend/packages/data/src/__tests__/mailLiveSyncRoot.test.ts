@@ -598,11 +598,13 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     await drain();
 
     expect(errors).toHaveLength(1);
-    expect(errors[0].mailboxItemId).toBe(a.id);
-    expect(errors[0].phase).toBe("discover");
+    const [reported] = errors;
+    if (!reported) throw new Error("expected one lifecycle error");
+    expect(reported.mailboxItemId).toBe(a.id);
+    expect(reported.phase).toBe("discover");
     // The seed statement's own error must surface, not the rollback error that followed it.
-    expect(errors[0].err).not.toBe(rollbackErr);
-    expect(String((errors[0].err as Error).message)).not.toContain("rollback failed");
+    expect(reported.err).not.toBe(rollbackErr);
+    expect(String((reported.err as Error).message)).not.toContain("rollback failed");
     expect(byAccount.has(a.id)).toBe(false);
 
     await root.stop();
