@@ -14,8 +14,13 @@ and host provisioning (#244, #176):
   to `/etc/nftables.conf` and enabled by `provision.sh`, which also reloads `nftables.service`. It
   owns only its own `table inet semprec` and never flushes the ruleset, so Docker's own `ip
   filter`/`ip nat` tables are left alone.
-- `docker-compose.yml` — PostgreSQL and MinIO, both explicitly bound to `127.0.0.1`, both loading
-  their init-time credentials from `/opt/semprec/shared/.env` via `env_file:`.
+- `docker-compose.yml` — PostgreSQL only, bound to `127.0.0.1`. Its container receives exactly
+  `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB`, interpolated from
+  `/opt/semprec/shared/.env` by `docker compose --env-file /opt/semprec/shared/.env -f
+  deploy/docker-compose.yml up -d` — no other variable in that file reaches the container. A host
+  provisioned before this file dropped MinIO can remove its now-unused volume by hand (check its
+  name with `docker volume ls`, typically `<project>_minio_data`) with `docker volume rm
+  <volume-name>` — optional, not scripted.
 - `shared/.env.example` — the values-free template for `/opt/semprec/shared/.env`, the one
   production secrets file every service and both Docker Compose services read. See its header
   comment for the full contract (ownership/mode, distribution, backup exclusion). `provision.sh`
@@ -104,8 +109,8 @@ is a new, fixed release deployed normally. `deploy.test.sh` covers rollback too.
 
 ## Logs and external liveness (issue #171)
 
-Every Semprec systemd service supplies a distinct `SyslogIdentifier`; PostgreSQL and MinIO use
-the Docker Compose `journald` driver with their own tags. This keeps process and container logs
+Every Semprec systemd service supplies a distinct `SyslogIdentifier`; PostgreSQL uses
+the Docker Compose `journald` driver with its own tag. This keeps process and container logs
 filterable in one persistent journal. Provisioning configures `Storage=persistent`, a 2 GiB
 maximum, and 90-day retention. Journal state is operational evidence, not backup input: #177's
 restic job excludes `/var/log/journal` along with secrets and reproducible configuration.
@@ -172,9 +177,10 @@ pings the monitor's `/fail` endpoint, and exits non-zero. It never sends the suc
   `shared`'s ownership and mode on every run.
 - **Distribution.** Every systemd unit (#176) loads `.env` via `EnvironmentFile=`; `apns-key.p8`
   is read directly by path (`APNS_PRIVATE_KEY_PATH`, `backend/packages/data/src/push/apnsAdapter.ts`).
-  `docker-compose.yml`'s `postgres`/`minio` services load `.env` via `env_file:` (#174). No
-  process ever receives a secret through a command-line argument, a file inside `releases/`, or a
-  hardcoded default.
+  `docker-compose.yml`'s `postgres` service (#174) receives three of its values —
+  `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` — interpolated by `docker compose
+  --env-file`, never the file itself. No process ever receives a secret through a command-line
+  argument, a file inside `releases/`, or a hardcoded default.
 - **`external_credentials` stays separate.** A user's own IMAP/OAuth/MCP secrets
   (`packages/credentials`, `packages/data/src/credentials/externalCredentialsStore.ts`) are
   encrypted at rest under `CREDENTIALS_MASTER_KEY` (itself provisioned here) and live in their own
