@@ -53,7 +53,7 @@ describe("getApnsConfigFromEnv", () => {
     process.env.APNS_PRIVATE_KEY_PATH = path.join(os.tmpdir(), "does-not-exist.p8");
     process.env.APNS_TOPIC = "com.example.app";
 
-    expect(() => getApnsConfigFromEnv()).toThrow();
+    expect(() => getApnsConfigFromEnv()).toThrow(/ENOENT.*does-not-exist\.p8/);
   });
 });
 
