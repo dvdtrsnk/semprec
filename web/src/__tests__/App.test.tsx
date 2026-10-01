@@ -39,12 +39,14 @@ function renderApp({
   sessionEvents = new EventTarget(),
   setup,
   login,
+  languages = ["en"],
 }: {
   auth: AuthOperations;
   operations?: GenericOperations;
   sessionEvents?: EventTarget;
   setup?: { token: string; operations: SetupOperations };
   login?: true;
+  languages?: readonly string[];
 }) {
   render(
     <App
@@ -54,7 +56,7 @@ function renderApp({
       sessionEvents={sessionEvents}
       setup={setup}
       login={login}
-      languages={["en"]}
+      languages={languages}
     />,
   );
   return { operations, sessionEvents };
@@ -147,6 +149,18 @@ describe("App session lifecycle", () => {
 
     expect(await screen.findByText("Signed in as operator@example.com")).toBeInTheDocument();
     expect(getSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("follows the browser language for the login page, before a session is known", async () => {
+    renderApp({ auth: stubAuth({ getSession: vi.fn(async () => null) }), languages: ["cs"] });
+
+    expect(await screen.findByRole("heading", { name: "Přihlášení" })).toBeInTheDocument();
+  });
+
+  it("follows the session user's locale once authenticated, even when it differs from the browser's", async () => {
+    renderApp({ auth: stubAuth({ getSession: vi.fn(async () => ({ ...USER, locale: "en" })) }), languages: ["cs"] });
+
+    expect(await screen.findByText("Signed in as operator@example.com")).toBeInTheDocument();
   });
 
   it("navigates to / when an authenticated user opens the login route", async () => {

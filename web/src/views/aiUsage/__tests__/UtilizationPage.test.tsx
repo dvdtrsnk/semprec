@@ -51,9 +51,9 @@ function stubOperations(getAiUsageReport: AiUsageOperations["getAiUsageReport"])
   return { getAiUsageReport };
 }
 
-function renderPage(operations: AiUsageOperations) {
+function renderPage(operations: AiUsageOperations, locale: "en" | "cs" = "en") {
   return render(
-    <I18nProvider locale="en">
+    <I18nProvider locale={locale}>
       <UtilizationPage operations={operations} />
     </I18nProvider>,
   );
@@ -94,6 +94,13 @@ describe("UtilizationPage (issue #121)", () => {
     );
 
     expect(await screen.findByText("No AI usage in this period")).toBeInTheDocument();
+  });
+
+  it("formats currency amounts in Czech when the locale is cs", async () => {
+    renderPage(stubOperations(async () => makeReport()), "cs");
+
+    expect(await screen.findByText("3,55 US$")).toBeInTheDocument();
+    expect(screen.getByText(`Denní rozpočet: 50,00 US$`)).toBeInTheDocument();
   });
 
   it("shows an error state and retries on demand", async () => {

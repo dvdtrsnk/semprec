@@ -1,5 +1,6 @@
 import { EmptyState, ErrorState, LoadingState } from "../../components/StateViews.js";
-import { useTranslate, type MessageKey } from "../../i18n/index.js";
+import { useLocale, useTranslate, type MessageKey } from "../../i18n/index.js";
+import { formatUsd } from "../../i18n/format.js";
 import { useAsyncResource } from "../mailbox/useAsyncResource.js";
 import type {
   AiUsageOperations,
@@ -25,10 +26,6 @@ const RUN_UNIT_KEYS: Record<string, MessageKey> = {
   session: "aiUsage.run.session",
 };
 
-function formatUsd(amount: number): string {
-  return `$${amount.toFixed(2)}`;
-}
-
 function CostByDayChart({
   points,
   dailyBudgetUsd,
@@ -36,6 +33,7 @@ function CostByDayChart({
   points: readonly DailyCostPoint[];
   dailyBudgetUsd: number | null;
 }) {
+  const locale = useLocale();
   const width = 600;
   const height = 160;
   const padding = 8;
@@ -57,7 +55,7 @@ function CostByDayChart({
             height={barHeight}
             className={exceeded ? "ai-usage__bar ai-usage__bar--exceeded" : "ai-usage__bar"}
           >
-            <title>{`${point.day}: ${formatUsd(point.costUsd)}`}</title>
+            <title>{`${point.day}: ${formatUsd(locale, point.costUsd)}`}</title>
           </rect>
         );
       })}
@@ -69,7 +67,7 @@ function CostByDayChart({
           y2={height - padding - scale(dailyBudgetUsd)}
           className="ai-usage__budget-line"
         >
-          <title>{`daily budget: ${formatUsd(dailyBudgetUsd)}`}</title>
+          <title>{`daily budget: ${formatUsd(locale, dailyBudgetUsd)}`}</title>
         </line>
       ) : null}
     </svg>
@@ -133,6 +131,7 @@ function runLabel(t: ReturnType<typeof useTranslate>, runUnit: AiUsageRow["runUn
 
 function UsageTable({ rows }: { rows: readonly AiUsageRow[] }) {
   const t = useTranslate();
+  const locale = useLocale();
   return (
     <table className="ai-usage__table">
       <caption>{t("aiUsage.table.title")}</caption>
@@ -154,7 +153,7 @@ function UsageTable({ rows }: { rows: readonly AiUsageRow[] }) {
             <td>{runLabel(t, row.runUnit)}</td>
             <td>{row.callCount}</td>
             <td>{amountCell(t, row)}</td>
-            <td>{formatUsd(row.costUsd)}</td>
+            <td>{formatUsd(locale, row.costUsd)}</td>
           </tr>
         ))}
       </tbody>
@@ -164,6 +163,7 @@ function UsageTable({ rows }: { rows: readonly AiUsageRow[] }) {
 
 function BudgetSummary({ report }: { report: AiUsageReport }) {
   const t = useTranslate();
+  const locale = useLocale();
   const exceededDays = report.dailyCostUsd.filter(
     (point) => report.budgets.dailyBudgetUsd !== null && point.costUsd > report.budgets.dailyBudgetUsd,
   ).length;
@@ -172,20 +172,20 @@ function BudgetSummary({ report }: { report: AiUsageReport }) {
     <dl className="ai-usage__budgets">
       <div>
         <dt>{t("aiUsage.totalCost", { from: report.from.slice(0, 10), to: report.to.slice(0, 10) })}</dt>
-        <dd>{formatUsd(report.totalCostUsd)}</dd>
+        <dd>{formatUsd(locale, report.totalCostUsd)}</dd>
       </div>
       <div>
         <dt>
           {report.budgets.dailyBudgetUsd === null
             ? t("aiUsage.dailyBudget.none")
-            : t("aiUsage.dailyBudget.set", { amount: formatUsd(report.budgets.dailyBudgetUsd) })}
+            : t("aiUsage.dailyBudget.set", { amount: formatUsd(locale, report.budgets.dailyBudgetUsd) })}
         </dt>
       </div>
       <div>
         <dt>
           {report.budgets.monthlyBudgetUsd === null
             ? t("aiUsage.monthlyBudget.uncapped")
-            : t("aiUsage.monthlyBudget.set", { amount: formatUsd(report.budgets.monthlyBudgetUsd) })}
+            : t("aiUsage.monthlyBudget.set", { amount: formatUsd(locale, report.budgets.monthlyBudgetUsd) })}
         </dt>
       </div>
       {exceededDays > 0 ? (

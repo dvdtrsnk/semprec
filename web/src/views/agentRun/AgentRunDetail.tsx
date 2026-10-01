@@ -1,14 +1,9 @@
 import { EmptyState, ErrorState, LoadingState } from "../../components/StateViews.js";
-import { useTranslate } from "../../i18n/index.js";
+import { useLocale, useTranslate } from "../../i18n/index.js";
+import { formatDateTime } from "../../i18n/format.js";
 import type { AgentRunOperations } from "../../api/agentRunOperations.js";
 import { useAsyncResource } from "../mailbox/useAsyncResource.js";
 import "./agentRunDetail.css";
-
-function formatTimestamp(iso: string | null): string {
-  if (!iso) return "—";
-  const parsed = new Date(iso);
-  return Number.isNaN(parsed.getTime()) ? iso : parsed.toLocaleString();
-}
 
 /**
  * A single agent run's detail (issue #132): the destination the global approval queue's
@@ -16,6 +11,7 @@ function formatTimestamp(iso: string | null): string {
  */
 export function AgentRunDetail({ agentRunId, operations }: { agentRunId: string; operations: AgentRunOperations }) {
   const t = useTranslate();
+  const locale = useLocale();
   const { resource, reload } = useAsyncResource(() => operations.getAgentRun(agentRunId), [operations, agentRunId]);
 
   if (resource.status === "loading") return <LoadingState />;
@@ -35,9 +31,9 @@ export function AgentRunDetail({ agentRunId, operations }: { agentRunId: string;
         <dt>{t("agentRun.field.triggeredBy")}</dt>
         <dd>{t(`agentRun.triggeredBy.${run.triggeredBy}`)}</dd>
         <dt>{t("agentRun.field.startedAt")}</dt>
-        <dd>{formatTimestamp(run.startedAt)}</dd>
+        <dd>{formatDateTime(locale, run.startedAt)}</dd>
         <dt>{t("agentRun.field.finishedAt")}</dt>
-        <dd>{formatTimestamp(run.finishedAt)}</dd>
+        <dd>{formatDateTime(locale, run.finishedAt)}</dd>
         <dt>{t("agentRun.field.result")}</dt>
         <dd>{run.result ?? t("agentRun.result.none")}</dd>
       </dl>

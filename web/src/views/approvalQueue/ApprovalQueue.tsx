@@ -1,7 +1,8 @@
 import { useCallback, useState } from "react";
 import { EmptyState, ErrorState, LoadingState } from "../../components/StateViews.js";
 import "./approvalQueue.css";
-import { useTranslate } from "../../i18n/index.js";
+import { useLocale, useTranslate } from "../../i18n/index.js";
+import { formatDateTime } from "../../i18n/format.js";
 import { toOperationError } from "../../api/genericOperations.js";
 import { useAsyncResource } from "../mailbox/useAsyncResource.js";
 import type {
@@ -15,11 +16,6 @@ import type {
 interface RowMutationState {
   pending: boolean;
   error: string | null;
-}
-
-function formatRequestedAt(iso: string): string {
-  const parsed = new Date(iso);
-  return Number.isNaN(parsed.getTime()) ? iso : parsed.toLocaleString();
 }
 
 function MalformedRow({ id }: { id: string | null }) {
@@ -67,6 +63,7 @@ function PendingRow({
   onDecide: (row: ApprovalRequestRow, decision: ApprovalDecision) => void;
 }) {
   const t = useTranslate();
+  const locale = useLocale();
   const pending = mutation?.pending ?? false;
   const argsSummary =
     row.safeSummary.argKeys.length > 0
@@ -83,7 +80,7 @@ function PendingRow({
       </div>
       <p className="approval-queue__args">{argsSummary}</p>
       <p className="approval-queue__meta">
-        {t("approvalQueue.row.requestedAt", { when: formatRequestedAt(row.requestedAt) })}
+        {t("approvalQueue.row.requestedAt", { when: formatDateTime(locale, row.requestedAt) })}
       </p>
       <p className="approval-queue__source">
         {row.projectName ??
