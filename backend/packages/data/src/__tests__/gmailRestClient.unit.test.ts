@@ -74,6 +74,28 @@ describe("Gmail Drive replacement attachments", () => {
     expect(fetched?.message.attachments).toEqual([]);
   });
 
+  it("recognizes a tiny Docs replacement the same way as a Drive one", async () => {
+    const shareUrl = "https://docs.google.com/document/d/docs-file-1/edit?usp=sharing";
+    const fetched = await fetchFixture({
+      mimeType: "multipart/alternative",
+      parts: [
+        {
+          mimeType: "text/html",
+          body: { data: encodeBase64Url(`<p><a href="${shareUrl}">Meeting notes</a></p>`) },
+        },
+        {
+          mimeType: "application/pdf",
+          filename: "Meeting notes.pdf",
+          body: { size: 1, data: encodeBase64Url(shareUrl) },
+        },
+      ],
+    });
+
+    expect(fetched?.message.bodyHtml).toContain(">Meeting notes</a>");
+    expect(fetched?.message.bodyHtml).toContain(shareUrl);
+    expect(fetched?.message.attachments).toEqual([]);
+  });
+
   it("does not turn ordinary Drive prose into an attachment decision", async () => {
     const shareUrl = "https://drive.google.com/file/d/drive-file-3/view?usp=sharing";
     const attachment = "a real PDF payload";
