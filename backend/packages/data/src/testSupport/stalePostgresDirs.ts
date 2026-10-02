@@ -48,9 +48,11 @@ export async function sweepStalePostgresDirs(options: SweepStalePostgresDirsOpti
     let stats;
     try {
       stats = await stat(dir);
-    } catch {
-      // Another process may already have removed this directory; nothing to sweep.
-      continue;
+    } catch (err) {
+      // ENOENT: another process may already have removed this directory; nothing to sweep.
+      // Anything else (EACCES, EIO, ...) is a real failure and must surface.
+      if (err instanceof Error && "code" in err && err.code === "ENOENT") continue;
+      throw err;
     }
     if (now() - stats.mtimeMs < maxAgeMs) continue;
     if (await hasLiveOwner(dir, isPidAlive)) continue;
