@@ -28,10 +28,13 @@
  *   6. Write — creates the harvest issue first (`followups:harvest` and
  *      `followups:ready`; or, when every finding was skipped as fixed, `followups:harvest`
  *      only and closed at once; or no issue when there is no finding at all), and only
- *      then labels every planned pull request `followups:harvested`. A crash between the
+ *      then labels the planned pull requests `followups:harvested`: at most LABEL_LIMIT
+ *      of them, lowest number first, LABEL_INTERVAL_MS apart. A crash between the
  *      two leaves the harvest issue open, so it holds back every harvest until triage
  *      closes it; the next run then finds the pull requests in its harvest marker and
- *      only labels them. A crash between creating a record-only
+ *      only labels them. A pull request left over the limit is labelled by a later run
+ *      the same way: from the harvest marker, or, when no issue was created, by scanning
+ *      it again. A crash between creating a record-only
  *      issue and closing it leaves an open `followups:harvest` issue that no triage
  *      picks up; it holds back every later harvest until someone closes it.
  *
@@ -48,6 +51,7 @@
  */
 
 import { appendFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -71,6 +75,12 @@ const BASE = "develop";
 const MAX_BODY_LENGTH = 60_000;
 const DIGITS = /^[0-9]+$/;
 const POSITIVE_INTEGER = /^[1-9][0-9]*$/;
+
+// GitHub allows about 80 content-creating requests a minute and 500 an hour, so a run
+// labels at most 200 pull requests, one a second: a backlog of several hundred drains
+// over a few runs instead of tripping the secondary rate limit in one.
+export const LABEL_LIMIT = 200;
+export const LABEL_INTERVAL_MS = 1_000;
 
 /** `issues` without a second entry for the same number; the first one wins. */
 function uniqueByNumber(issues) {
@@ -184,14 +194,16 @@ function renderBody(prs, harvested, skipped) {
 /**
  * One harvest run against `api`: the github.mjs endpoints `listIssuesWithLabel`,
  * `listIssueComments`, `listMergedPullRequests`, `listReviewThreads`, `listTreePaths`,
- * `createIssue`, `addLabels` and `closeIssue` without their `client` argument, plus the
- * four functions of `hintsApi`.
+ * `createIssue`, `addLabels` and `closeIssue` without their `client` argument, the four
+ * functions of `hintsApi`, and `pause(ms)`, which waits between two labels.
  *
- * Returns `{ pending, scanned, prs, labelOnly, harvested, skipped, stoppedAt, issue }`:
- * `pending` holds the issues that held the run back (everything else is then empty);
- * `scanned` every pull request offered to the plan; `harvested` the finding records and
- * `skipped` the findings fixed on their pull request; `issue` is `{ number }` of the
- * created issue, `{ title, bodyLength }` of the one a dry run would create, or null.
+ * Returns `{ pending, scanned, prs, labelOnly, harvested, skipped, stoppedAt, labelled,
+ * deferred, issue }`: `pending` holds the issues that held the run back (everything else
+ * is then empty); `scanned` every pull request offered to the plan; `harvested` the
+ * finding records and `skipped` the findings fixed on their pull request; `labelled` the
+ * pull requests the run labels (a dry run: would label) and `deferred` the ones over
+ * LABEL_LIMIT left to a later run; `issue` is `{ number }` of the created issue,
+ * `{ title, bodyLength }` of the one a dry run would create, or null.
  */
 export async function runHarvest(api, { minPr, dryRun }) {
   const openIssues = uniqueByNumber([
@@ -200,7 +212,18 @@ export async function runHarvest(api, { minPr, dryRun }) {
   ]);
   const pending = pendingWork(openIssues);
   if (pending.length > 0) {
-    return { pending, scanned: [], prs: [], labelOnly: [], harvested: [], skipped: [], stoppedAt: null, issue: null };
+    return {
+      pending,
+      scanned: [],
+      prs: [],
+      labelOnly: [],
+      harvested: [],
+      skipped: [],
+      stoppedAt: null,
+      labelled: [],
+      deferred: [],
+      issue: null,
+    };
   }
 
   const ledger = computeLedger(await readLedgerIssues(api));
@@ -234,7 +257,11 @@ export async function runHarvest(api, { minPr, dryRun }) {
     }
   }
 
-  const report = { pending, scanned, prs, labelOnly, harvested, skipped, stoppedAt, issue: null };
+  const toLabel = [...prs, ...labelOnly].sort((a, b) => a - b);
+  const labelled = toLabel.slice(0, LABEL_LIMIT);
+  const deferred = toLabel.slice(LABEL_LIMIT);
+
+  const report = { pending, scanned, prs, labelOnly, harvested, skipped, stoppedAt, labelled, deferred, issue: null };
   if (dryRun) {
     if (draft !== null) report.issue = { title: draft.title, bodyLength: draft.body.length };
     return report;
@@ -247,7 +274,8 @@ export async function runHarvest(api, { minPr, dryRun }) {
     if (recordOnly) await api.closeIssue(number);
     report.issue = { number };
   }
-  for (const pr of [...prs, ...labelOnly].sort((a, b) => a - b)) {
+  for (const [i, pr] of labelled.entries()) {
+    if (i > 0) await api.pause(LABEL_INTERVAL_MS);
     await api.addLabels(pr, [LABELS.harvested]);
   }
   return report;
@@ -264,6 +292,7 @@ function apiFromClient(client) {
     addLabels: (number, labels) => addLabels(client, number, labels),
     closeIssue: (number) => closeIssue(client, number),
     ...hintsApi(client),
+    pause: (ms) => delay(ms),
   };
 }
 
@@ -287,6 +316,8 @@ function reportLines(report, dryRun) {
     `- Scanned: ${prList(report.scanned)}`,
     `- Harvested pull requests: ${prList(report.prs)}`,
     `- Labelled only: ${prList(report.labelOnly)}`,
+    `- Labelled followups:harvested: ${prList(report.labelled)}`,
+    `- Labelling deferred to a later run: ${prList(report.deferred)}`,
     `- Harvested findings: ${report.harvested.length}`,
     ...findingLines(report.harvested),
     `- Skipped findings: ${report.skipped.length}`,

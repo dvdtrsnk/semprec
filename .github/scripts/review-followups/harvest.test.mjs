@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 
-import { main, runHarvest } from "./harvest.mjs";
+import { LABEL_INTERVAL_MS, LABEL_LIMIT, main, runHarvest } from "./harvest.mjs";
 import {
   LABELS,
   parseFindingMarkers,
@@ -57,7 +57,7 @@ function memoryComment(pr, findings) {
  * memory findings, `prComments` overrides a pull request's comments, `threads` maps a
  * pull request to its review threads, `pathCommits` maps a path to the SHAs touching it
  * on develop and `commitPrs` a SHA to pull request numbers. Every call is recorded in
- * `calls`, and writes also in `writes`.
+ * `calls`, and writes also in `writes`; `pause` returns at once.
  */
 function fakeApi({
   issues = [],
@@ -132,6 +132,9 @@ function fakeApi({
     async listPullRequestsForCommit(sha) {
       record("listPullRequestsForCommit", sha);
       return (commitPrs[sha] ?? []).map((number) => ({ number, mergedAt: MERGED_AT }));
+    },
+    async pause(ms) {
+      record("pause", ms);
     },
   };
 }
@@ -391,6 +394,54 @@ test("a description with a pipe, a newline and a marker stays in its table row a
   );
 });
 
+/** `count` merged pull requests numbered from `from`, the first `labelled` of them already labelled. */
+function pullRange(from, count, { labelled = 0 } = {}) {
+  return Array.from({ length: count }, (_, i) => ({
+    number: from + i,
+    labels: i < labelled ? [LABELS.harvested] : [],
+  }));
+}
+
+test("a run labels at most LABEL_LIMIT pull requests, lowest first, one LABEL_INTERVAL_MS apart", async () => {
+  const api = fakeApi({ pulls: pullRange(10, LABEL_LIMIT + 2) });
+  const report = await runHarvest(api, live);
+
+  const all = pullRange(10, LABEL_LIMIT + 2).map(({ number }) => number);
+  assert.deepEqual(labelledPrs(api), all.slice(0, LABEL_LIMIT));
+  assert.deepEqual(report.labelled, all.slice(0, LABEL_LIMIT));
+  assert.deepEqual(report.deferred, all.slice(LABEL_LIMIT));
+  const sequence = api.calls.filter((call) => call.name === "addLabels" || call.name === "pause");
+  assert.equal(sequence.length, 2 * LABEL_LIMIT - 1);
+  sequence.forEach((call, i) => {
+    if (i % 2 === 0) assert.equal(call.name, "addLabels", `call ${i}`);
+    else assert.deepEqual(call, { name: "pause", args: [LABEL_INTERVAL_MS] }, `call ${i}`);
+  });
+});
+
+test("a pull request deferred over LABEL_LIMIT is labelled by the next run from the harvest marker", async () => {
+  const pulls = pullRange(10, LABEL_LIMIT + 2, { labelled: LABEL_LIMIT });
+  const deferred = pulls.slice(LABEL_LIMIT).map(({ number }) => number);
+  const api = fakeApi({
+    issues: [
+      {
+        number: 300,
+        state: "closed",
+        labels: [LABELS.harvest],
+        body: `${renderHarvestMarker(pulls.map(({ number }) => number))}\n`,
+      },
+    ],
+    pulls,
+    memories: Object.fromEntries(deferred.map((pr) => [pr, findings(pr, 1)])),
+  });
+  const report = await runHarvest(api, live);
+
+  assert.deepEqual(report.labelOnly, deferred);
+  assert.deepEqual(report.deferred, []);
+  assert.deepEqual(labelledPrs(api), deferred);
+  assert.ok(!api.called("createIssue"));
+  assert.ok(!deferred.some((pr) => api.called("listIssueComments", pr)), "a recorded pull request was read again");
+});
+
 test("a body over 60,000 characters rejects the run before any write", async () => {
   const long = "x".repeat(300);
   const api = fakeApi({ pulls: [{ number: 70 }], memories: { 70: findings(1, 100, { description: long }) } });
@@ -403,6 +454,9 @@ test("a dry run writes nothing and reports the issue it would create", async () 
   const dry = fakeApi(fixture());
   const report = await runHarvest(dry, { minPr: 10, dryRun: true });
   assert.deepEqual(dry.writes, []);
+  assert.ok(!dry.called("pause"));
+  assert.deepEqual(report.labelled, [20, 21]);
+  assert.deepEqual(report.deferred, []);
 
   const wet = fakeApi(fixture());
   await runHarvest(wet, live);
@@ -457,5 +511,6 @@ test("main in live mode writes and reports the issue it created", async () => {
   assert.ok(api.called("createIssue"));
   const text = await readFile(summary, "utf8");
   assert.match(text, /- Mode: live\n/);
+  assert.match(text, /- Labelled followups:harvested: #20\n- Labelling deferred to a later run: none\n/);
   assert.match(text, /- Issue: created #900\n/);
 });

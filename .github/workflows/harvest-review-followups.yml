@@ -35,12 +35,14 @@ on:
 permissions:
   # Reads the `develop` git tree, pull-request commits, commit files and commits by path.
   contents: read
-  # Lists issues by label and their comments, creates and closes the harvest issue, and
-  # adds `followups:harvested` to merged pull requests through the issues API.
+  # Lists issues by label and their comments, and creates and closes the harvest issue.
   issues: write
   # Lists closed pull requests into `develop`, their review threads (GraphQL) and the
-  # pull requests of a commit.
-  pull-requests: read
+  # pull requests of a commit, and adds `followups:harvested` to merged pull requests.
+  # The label goes through the issues API, but GitHub checks the permission of the
+  # resource the number resolves to, so labelling a pull request needs this write;
+  # `issues: write` alone answers 403 "Resource not accessible by integration".
+  pull-requests: write
 
 concurrency:
   group: harvest-review-followups
