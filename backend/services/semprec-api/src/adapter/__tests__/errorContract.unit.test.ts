@@ -85,9 +85,16 @@ describe("error contract (issue #238)", () => {
     expect(body.error.details).toEqual({ currentItem: toItemEnvelope(SAMPLE_ITEM) });
   });
 
-  it("falls through to the generic details branch when current is missing an ItemRow field", () => {
-    const { computed: _computed, deletedAt: _deletedAt, ...currentMissingFields } = SAMPLE_ITEM;
-    const error = new ConflictError("conflict", { current: currentMissingFields });
+  it("falls through to the generic details branch when current is missing computed", () => {
+    const { computed: _computed, ...currentMissingComputed } = SAMPLE_ITEM;
+    const error = new ConflictError("conflict", { current: currentMissingComputed });
+    const body = toErrorResponseBody(error);
+    expect(body.error.details).toBeUndefined();
+  });
+
+  it("falls through to the generic details branch when current is missing deletedAt", () => {
+    const { deletedAt: _deletedAt, ...currentMissingDeletedAt } = SAMPLE_ITEM;
+    const error = new ConflictError("conflict", { current: currentMissingDeletedAt });
     const body = toErrorResponseBody(error);
     expect(body.error.details).toBeUndefined();
   });

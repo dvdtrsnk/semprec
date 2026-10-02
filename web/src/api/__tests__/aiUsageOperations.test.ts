@@ -24,4 +24,9 @@ describe("aiUsageReportSchema", () => {
     const result = aiUsageReportSchema.safeParse(makeReport({ from: "27. 9. 2026" }));
     expect(result.success).toBe(false);
   });
+
+  it("rejects a report whose to is not an ISO-8601 datetime", () => {
+    const result = aiUsageReportSchema.safeParse(makeReport({ to: "27. 9. 2026" }));
+    expect(result.success).toBe(false);
+  });
 });
