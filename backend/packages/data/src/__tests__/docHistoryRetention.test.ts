@@ -42,11 +42,12 @@ async function docWithTwoUpdates(): Promise<{ docId: string; firstId: string; se
 
 /** Moves the doc's availability and its initial baseline checkpoint back to `at`. */
 async function backdateBaseline(docId: string, at: Date): Promise<void> {
-  await pool.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [docId, at]);
+  const docs = await pool.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [docId, at]);
   const { rowCount } = await pool.query(
     `UPDATE doc_snapshot_history SET represented_at = $2 WHERE doc_id = $1 AND through_update_id = 0`,
     [docId, at],
   );
+  expect(docs.rowCount).toBe(1);
   expect(rowCount).toBe(1);
 }
 

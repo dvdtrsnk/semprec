@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { runOnce } from "@semprec/queue";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
@@ -13,6 +13,41 @@ let chokePoint: ChokePoint;
 
 async function drainQueue() {
   await runOnce({ pgPool: pool, taskList: createCoreTaskList(pool, createActionRegistry()) });
+}
+
+/**
+ * Wraps `target` so every client answers a query whose SQL contains `sqlFragment` with a zero-row
+ * result without running it, and forwards every other query unchanged. The migration batch holds
+ * its rows under `FOR UPDATE`, so a real concurrent delete cannot produce this zero count.
+ */
+function zeroRowUpdatePool(target: Pool, sqlFragment: string): Pool {
+  return new Proxy(target, {
+    get(t, prop, receiver) {
+      if (prop === "connect") {
+        return async (...args: unknown[]) => {
+          if (typeof args[0] === "function") {
+            return (t.connect as (...a: unknown[]) => unknown)(...args);
+          }
+          const client = await (t.connect as (...a: unknown[]) => Promise<PoolClient>)(...args);
+          return new Proxy(client, {
+            get(clientTarget, clientProp, clientReceiver) {
+              if (clientProp === "query") {
+                return (...queryArgs: unknown[]) => {
+                  const [text] = queryArgs;
+                  if (typeof text === "string" && text.includes(sqlFragment)) {
+                    return Promise.resolve({ rowCount: 0, rows: [] });
+                  }
+                  return (clientTarget.query as (...a: unknown[]) => unknown)(...queryArgs);
+                };
+              }
+              return Reflect.get(clientTarget, clientProp, clientReceiver);
+            },
+          });
+        };
+      }
+      return Reflect.get(t, prop, receiver);
+    },
+  });
 }
 
 describe("property type migration", () => {
@@ -180,5 +215,35 @@ describe("property type migration", () => {
       locked: true,
     });
     await expect(chokePoint.changePropertyType(prop.id, "number")).rejects.toThrow();
+  });
+
+  it("rolls the batch back when the converting UPDATE affects zero rows", async () => {
+    const db = await chokePoint.createDatabase({ name: "D7" });
+    const prop = await chokePoint.createProperty({ databaseId: db.id, key: "score", name: "Score", type: "text" });
+    const a = await chokePoint.createItem({ databaseId: db.id, properties: { score: "1" } });
+    const b = await chokePoint.createItem({ databaseId: db.id, properties: { score: "2" } });
+    await chokePoint.changePropertyType(prop.id, "number");
+
+    await expect(runPropertyTypeMigrationJob(zeroRowUpdatePool(pool, "jsonb_set"), prop.id, "text")).rejects.toThrow(
+      /property type migration value conversion update to affect at least one row, got 0/,
+    );
+
+    expect((await chokePoint.getItem(db.id, a.id))?.properties.score).toBe("1");
+    expect((await chokePoint.getItem(db.id, b.id))?.properties.score).toBe("2");
+  });
+
+  it("rolls the batch back when the dropping UPDATE affects zero rows", async () => {
+    const db = await chokePoint.createDatabase({ name: "D8" });
+    const prop = await chokePoint.createProperty({ databaseId: db.id, key: "score", name: "Score", type: "text" });
+    const bad = await chokePoint.createItem({ databaseId: db.id, properties: { score: "not a number" } });
+    const good = await chokePoint.createItem({ databaseId: db.id, properties: { score: "2" } });
+    await chokePoint.changePropertyType(prop.id, "number");
+
+    await expect(
+      runPropertyTypeMigrationJob(zeroRowUpdatePool(pool, "properties - $3"), prop.id, "text"),
+    ).rejects.toThrow(/property type migration dropped value update to affect at least one row, got 0/);
+
+    expect((await chokePoint.getItem(db.id, bad.id))?.properties.score).toBe("not a number");
+    expect((await chokePoint.getItem(db.id, good.id))?.properties.score).toBe("2");
   });
 });
