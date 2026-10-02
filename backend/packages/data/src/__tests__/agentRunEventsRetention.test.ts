@@ -13,12 +13,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 let pool: Pool;
 
-async function createUser(): Promise<string> {
-  const { rows } = await pool.query<{ id: string }>(
-    `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
-    [`${randomUUID()}@example.com`],
-  );
-  return rows[0]!.id;
+async function createUser(): Promise<void> {
+  await pool.query(`INSERT INTO users (email, password_hash) VALUES ($1, 'unused')`, [`${randomUUID()}@example.com`]);
 }
 
 /** All ids of `agent_run_events` rows currently belonging to `agentRunId`, in id order. */
