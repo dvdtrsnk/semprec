@@ -441,8 +441,7 @@ describe("property routes (issue #240)", () => {
       body: JSON.stringify({ key: "title", name: "Other Title", type: "text" }),
     });
     expect(res.status).toBe(409);
-    const body = (await res.json()) as { error: { code: string; details?: { field?: string; reason?: string } } };
-    expect(body.error.code).toBe("version_conflict");
-    expect(body.error.details?.field).toBe("key");
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ error: { code: "version_conflict", details: { field: "key" } } });
   });
 });

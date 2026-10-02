@@ -66,7 +66,15 @@ describe("production concurrency: semprec-tick serializes, unaffinitized jobs ru
 
     const taskList: TaskList = {
       probe: registerTask("probe", async (payload) => {
-        if ((payload as { queue: string }).queue === "semprec-tick") {
+        if (
+          typeof payload !== "object" ||
+          payload === null ||
+          !("queue" in payload) ||
+          typeof payload.queue !== "string"
+        ) {
+          throw new Error(`probe payload must be an object with a string queue, got ${JSON.stringify(payload)}`);
+        }
+        if (payload.queue === "semprec-tick") {
           const start = Date.now();
           await new Promise((resolve) => setTimeout(resolve, 300));
           tickRuns.push({ start, end: Date.now() });
