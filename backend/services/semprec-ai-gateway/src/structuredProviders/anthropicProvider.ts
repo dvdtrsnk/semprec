@@ -14,7 +14,7 @@ const ATTEMPT_DEADLINE_MS = 55_000;
 const MAX_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 500;
 const RETRY_MAX_DELAY_MS = 8_000;
-const RETRYABLE_STATUSES = new Set([429, 529]);
+const RETRYABLE_STATUSES = new Set([429]);
 
 function isRetryableStatus(status: number): boolean {
   return RETRYABLE_STATUSES.has(status) || (status >= 500 && status <= 599);
@@ -168,7 +168,8 @@ export function createAnthropicStructuredProvider(apiKey: string): StructuredCom
           retryAfterMs ?? fullJitter(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1)),
         );
         if (deadlineAt - Date.now() < delay) {
-          throw new ProviderCallError(`Anthropic responded with HTTP ${res.status} after ${attempt} attempts`);
+          const attempts = attempt === 1 ? "1 attempt" : `${attempt} attempts`;
+          throw new ProviderCallError(`Anthropic responded with HTTP ${res.status} after ${attempts}`);
         }
 
         await sleepOrAbort(delay, signal);

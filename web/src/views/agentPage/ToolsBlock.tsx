@@ -38,7 +38,7 @@ function useMcpToolGrants(operations: McpAgentPageOperations, projectItemId: str
   // The flag is set to `true` in the effect body, not just at `useRef` init, because
   // StrictMode's development-only mount -> cleanup -> mount cycle runs this cleanup once
   // before the ref's lifetime really ends; without resetting it on the second mount the ref
-  // would stay `false` forever and every `load` result would be dropped at lines 47 and 50.
+  // would stay `false` forever and every `load` result would be dropped by the two `mounted.current` checks in `load`.
   useEffect(() => {
     mounted.current = true;
     return () => {
