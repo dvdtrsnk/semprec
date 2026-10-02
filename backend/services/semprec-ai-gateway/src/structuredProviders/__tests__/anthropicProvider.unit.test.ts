@@ -334,6 +334,39 @@ describe("createAnthropicStructuredProvider", () => {
       expect(cancelled).toEqual([true, true, true]);
     });
 
+    it("says '1 attempt' when the first retry delay would exceed the remaining deadline", async () => {
+      const fetchMock = vi.fn().mockImplementationOnce(async () => {
+        vi.setSystemTime(54_000);
+        return errorResponse(429, { headers: { "retry-after": "2" } });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const rejection = createAnthropicStructuredProvider("test-api-key").complete(REQUEST);
+      const assertion = expect(rejection).rejects.toThrow(/HTTP 429 after 1 attempt$/);
+
+      await vi.advanceTimersByTimeAsync(0);
+      await assertion;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("says '2 attempts' when the second retry delay would exceed the remaining deadline", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(errorResponse(500))
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(54_000);
+          return errorResponse(429, { headers: { "retry-after": "2" } });
+        });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const rejection = createAnthropicStructuredProvider("test-api-key").complete(REQUEST);
+      const assertion = expect(rejection).rejects.toThrow(/HTTP 429 after 2 attempts$/);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await assertion;
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
     it("rejects after a single fetch on a non-retryable status", async () => {
       const fetchMock = vi.fn().mockResolvedValueOnce(errorResponse(400));
       vi.stubGlobal("fetch", fetchMock);

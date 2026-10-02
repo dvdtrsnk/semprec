@@ -50,7 +50,7 @@ describe("checkModuleBoundaries", () => {
       "services/svcB/src/badCoreTableWriteProperties.ts",
       "packages/data/src/chokePoint/propertiesStore.ts",
     ],
-  ])("rejects a route handler or module importing %s directly (issue #154)", async (_storeName, importer, imported) => {
+  ])("rejects a service importing %s directly (issue #154)", async (_storeName, importer, imported) => {
     const { violations } = await checkModuleBoundaries(fixturesDir, ["services", "packages"]);
     const violation = violations.find((v: BoundaryViolation) => v.importer === importer);
 
