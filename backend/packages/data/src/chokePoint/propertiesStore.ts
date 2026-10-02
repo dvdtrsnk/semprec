@@ -6,9 +6,9 @@ import { assertKnownValue } from "../dbRowValidation.js";
 import { getDatabase } from "./databasesStore.js";
 
 /** True when a Postgres error is the named unique-index violation, so callers can turn it into a clean ConflictError. */
-function isUniqueViolation(err: unknown, constraint: string): boolean {
-  const pgErr = err as { code?: string; constraint?: string };
-  return pgErr?.code === "23505" && pgErr?.constraint === constraint;
+export function isUniqueViolation(err: unknown, constraint: string): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  return "code" in err && err.code === "23505" && "constraint" in err && err.constraint === constraint;
 }
 
 /**
