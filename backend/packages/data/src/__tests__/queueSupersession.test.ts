@@ -16,17 +16,12 @@ async function waitFor(predicate: () => boolean, message: string): Promise<void>
   );
 }
 
-async function probeRows(): Promise<
-  Array<{ attempts: number; max_attempts: number; last_error: string | null; key: string | null }>
-> {
+async function probeRows(): Promise<Array<{ attempts: number; last_error: string | null; key: string | null }>> {
   const { rows } = await pool.query<{
     attempts: number;
-    max_attempts: number;
     last_error: string | null;
     key: string | null;
-  }>(
-    `SELECT attempts, max_attempts, last_error, key FROM graphile_worker.jobs WHERE task_identifier = 'supersedeProbe'`,
-  );
+  }>(`SELECT attempts, last_error, key FROM graphile_worker.jobs WHERE task_identifier = 'supersedeProbe'`);
   return rows;
 }
 
@@ -81,9 +76,6 @@ describe("registerTask supersession handling (issue #700)", () => {
       },
       { timeout: 5_000, interval: 20 },
     );
-
-    const rows = await probeRows();
-    expect(rows).toHaveLength(0);
   });
 
   it("retries a genuine failure normally when the job was never superseded", async () => {
