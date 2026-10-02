@@ -187,7 +187,11 @@ describe("runAgentSession", () => {
       [run.id],
     );
     expect(durable.every((m) => m.type === "agent_run_event")).toBe(true);
-    expect(durable.map((m) => m.eventId)).toEqual(rows.map((row) => row.id));
+    // Each announcement is an independent pg_notify on its own pooled connection, so arrival order
+    // across events is not guaranteed; compare the set of announced ids with the stored ids.
+    expect(durable.map((m) => m.eventId).sort((a, b) => Number(BigInt(a) - BigInt(b)))).toEqual(
+      rows.map((row) => row.id),
+    );
     expect(durable.every((m) => !("payload" in m) && !("kind" in m))).toBe(true);
     expect(deltasForRun()).toEqual([
       {
