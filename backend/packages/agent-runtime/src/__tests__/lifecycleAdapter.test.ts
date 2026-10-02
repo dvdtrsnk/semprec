@@ -263,9 +263,7 @@ describe("runAgentSessionForRun terminal close", () => {
     return rows.map((r) => r.status);
   }
 
-  function failEventsFor(
-    ...statuses: Array<"done" | "error">
-  ): Promise<unknown> {
+  function failEventsFor(...statuses: Array<"done" | "error">): Promise<unknown> {
     const args = statuses.map((s) => `'${s}'`).join(", ");
     return pool.query(
       `CREATE TRIGGER test_fail_terminal_event BEFORE INSERT ON agent_run_events
