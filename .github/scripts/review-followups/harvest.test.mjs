@@ -442,6 +442,31 @@ test("a pull request deferred over LABEL_LIMIT is labelled by the next run from 
   assert.ok(!deferred.some((pr) => api.called("listIssueComments", pr)), "a recorded pull request was read again");
 });
 
+test("pull requests of the created issue deferred over LABEL_LIMIT are in its harvest marker", async () => {
+  const recorded = pullRange(10, 150).map(({ number }) => number);
+  const fresh = pullRange(160, 100).map(({ number }) => number);
+  const api = fakeApi({
+    issues: [{ number: 300, state: "closed", labels: [LABELS.harvest], body: `${renderHarvestMarker(recorded)}\n` }],
+    pulls: pullRange(10, 250),
+    memories: { 160: findings(1, 1) },
+  });
+  const report = await runHarvest(api, live);
+
+  assert.deepEqual(report.labelOnly, recorded);
+  assert.deepEqual(report.prs, fresh);
+  const all = [...recorded, ...fresh];
+  assert.deepEqual(report.labelled, all.slice(0, LABEL_LIMIT));
+  assert.deepEqual(report.deferred, all.slice(LABEL_LIMIT));
+  assert.deepEqual(labelledPrs(api), all.slice(0, LABEL_LIMIT));
+  assert.equal(api.writes[0].name, "createIssue");
+  const marker = parseHarvestMarker(created(api).body.split("\n")[0]);
+  assert.deepEqual(marker, fresh);
+  assert.ok(
+    report.deferred.every((pr) => marker.includes(pr)),
+    "a deferred pull request is missing from the harvest marker",
+  );
+});
+
 test("a body over 60,000 characters rejects the run before any write", async () => {
   const long = "x".repeat(300);
   const api = fakeApi({ pulls: [{ number: 70 }], memories: { 70: findings(1, 100, { description: long }) } });
