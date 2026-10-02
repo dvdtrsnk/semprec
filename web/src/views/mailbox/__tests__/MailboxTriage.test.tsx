@@ -148,48 +148,52 @@ describe("mailbox triage (issue #97)", () => {
       expect(within(archived).getByRole("button", { name: "Delete" })).toBeInTheDocument();
     });
 
-    it("drops both messages when two archive actions overlap, in either resolution order", async () => {
-      const user = userEvent.setup();
-      const backend = createMailboxBackend();
-      const base = createFakeOperations(backend);
-      const gates = new Map<string, Deferred>();
-      // moveMessages links onto the destination before unlinking the source; gating the link
-      // call is enough to hold the whole move open for exactly the message it names.
-      const operations: GenericOperations = {
-        ...base,
-        async linkItem(databaseId, itemId, relationKey, targetItemId) {
-          const gate = gates.get(itemId);
-          if (gate) {
-            gate.started = true;
-            await gate.promise;
-          }
-          return base.linkItem(databaseId, itemId, relationKey, targetItemId);
-        },
-      };
-      renderMailbox(operations);
+    it.each([
+      { first: "email-1", second: "email-2", firstSubject: "Invoice for March" },
+      { first: "email-2", second: "email-1", firstSubject: "Lunch?" },
+    ])(
+      "drops both messages when two archive actions overlap, resolving $first first",
+      async ({ first, second, firstSubject }) => {
+        const user = userEvent.setup();
+        const backend = createMailboxBackend();
+        const base = createFakeOperations(backend);
+        const gates = new Map<string, Deferred>();
+        // moveMessages links onto the destination before unlinking the source; gating the link
+        // call is enough to hold the whole move open for exactly the message it names.
+        const operations: GenericOperations = {
+          ...base,
+          async linkItem(databaseId, itemId, relationKey, targetItemId) {
+            const gate = gates.get(itemId);
+            if (gate) {
+              gate.started = true;
+              await gate.promise;
+            }
+            return base.linkItem(databaseId, itemId, relationKey, targetItemId);
+          },
+        };
+        renderMailbox(operations);
 
-      gates.set("email-1", createDeferred());
-      gates.set("email-2", createDeferred());
+        gates.set("email-1", createDeferred());
+        gates.set("email-2", createDeferred());
 
-      void user.click(within(await row("Invoice for March")).getByRole("button", { name: "Archive" }));
-      await waitFor(() => expect(gates.get("email-1")?.started).toBe(true));
-      void user.click(within(await row("Lunch?")).getByRole("button", { name: "Archive" }));
-      await waitFor(() => expect(gates.get("email-2")?.started).toBe(true));
+        void user.click(within(await row("Invoice for March")).getByRole("button", { name: "Archive" }));
+        await waitFor(() => expect(gates.get("email-1")?.started).toBe(true));
+        void user.click(within(await row("Lunch?")).getByRole("button", { name: "Archive" }));
+        await waitFor(() => expect(gates.get("email-2")?.started).toBe(true));
 
-      // Both actions are now in flight against the same pre-triage list; resolving them in
-      // order must not let the first action's overlay overwrite what the second one already did.
-      gates.get("email-1")?.resolve();
-      await waitFor(async () =>
-        expect(await subjects()).not.toContainEqual(expect.stringContaining("Invoice for March")),
-      );
-      gates.get("email-2")?.resolve();
+        // Both actions are now in flight against the same pre-triage list; resolving them in
+        // order must not let the first action's overlay overwrite what the second one already did.
+        gates.get(first)?.resolve();
+        await waitFor(async () => expect(await subjects()).not.toContainEqual(expect.stringContaining(firstSubject)));
+        gates.get(second)?.resolve();
 
-      await waitFor(async () => expect(await subjects()).toHaveLength(1));
-      const remaining = await subjects();
-      expect(remaining).not.toContainEqual(expect.stringContaining("Invoice for March"));
-      expect(remaining).not.toContainEqual(expect.stringContaining("Lunch?"));
-      expect(remaining).toContainEqual(expect.stringContaining("Newsletter"));
-    });
+        await waitFor(async () => expect(await subjects()).toHaveLength(1));
+        const remaining = await subjects();
+        expect(remaining).not.toContainEqual(expect.stringContaining("Invoice for March"));
+        expect(remaining).not.toContainEqual(expect.stringContaining("Lunch?"));
+        expect(remaining).toContainEqual(expect.stringContaining("Newsletter"));
+      },
+    );
 
     it("reflects both reads when two mark-as-read actions overlap", async () => {
       const user = userEvent.setup();

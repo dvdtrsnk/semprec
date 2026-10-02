@@ -44,4 +44,14 @@ describe("serve.ts startup SMTP_PORT check", () => {
 
     await expect(import("../serve.js")).rejects.toThrow("SMTP_PORT is not a valid port number: smtp");
   });
+
+  it.each(["0", "65536"])("rejects an out-of-range SMTP_PORT of %s", async (value) => {
+    process.env.SEMPREC_API_DATABASE_URL = "postgres://localhost/unused";
+    process.env.SETUP_TOKEN = "test-setup-token";
+    process.env.SMTP_HOST = "smtp.example.com";
+    process.env.SMTP_FROM_ADDRESS = "no-reply@example.com";
+    process.env.SMTP_PORT = value;
+
+    await expect(import("../serve.js")).rejects.toThrow(`SMTP_PORT is not a valid port number: ${value}`);
+  });
 });

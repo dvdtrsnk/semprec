@@ -567,6 +567,8 @@ describe("push subscriptions (issue #150)", () => {
       const [rowB] = await listPushSubscriptionsForUser(pool, user.id).then((rows) =>
         rows.filter((r) => r.id === subB.id),
       );
+      expect(rowA).toBeDefined();
+      expect(rowB).toBeDefined();
       expect(rowA!.sessionId).toBeNull();
       expect(rowB!.sessionId).toBe(sessionB.session.id);
     });
