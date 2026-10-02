@@ -109,6 +109,14 @@ describe("sweepStalePostgresDirs", () => {
     expect(removed).toEqual([]);
   });
 
+  it("rethrows a stat error that is not ENOENT", async () => {
+    await makeDir("semprec-pg-denied", 25 * HOUR_MS);
+    const eacces = Object.assign(new Error("EACCES"), { code: "EACCES" });
+    statMock.mockRejectedValueOnce(eacces);
+
+    await expect(sweepStalePostgresDirs({ tmpDir: root, now: () => NOW })).rejects.toBe(eacces);
+  });
+
   it("returns exactly the removed paths", async () => {
     const stale = await makeDir("semprec-pg-stale", 25 * HOUR_MS);
     await makeDir("semprec-pg-fresh2", 1 * HOUR_MS);
