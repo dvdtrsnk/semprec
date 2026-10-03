@@ -23,21 +23,30 @@ Graphile Worker-backed scheduler (heartbeats, mail sync sweeps, notification fan
 trash purge, and more). Review-rules here apply in full to every PR touching this
 tree, not just from some future first-real-implementation PR.
 
-Tenancy: `bootstrapFirstAccount` (`packages/data/src/auth/authActions.ts`) is the
-only path to `createUser` outside tests, and it throws `NotFoundError` — before even
-checking the provided token — as soon as `anyUserExists` is true, holding a Postgres
-advisory lock across that check to close the race for concurrent callers. This
-deployment can therefore never have more than one human account. Do not report
-missing per-user authorization (a second human user reading or writing another
-human user's data) as a finding — there is no second human user for one to read or
-write. The authorization boundary that *is* real and load-bearing here is actor
-type, not per-user ownership: `Actor.type` is `'user' | 'ai_agent' | 'system'`
-(e.g. `createdBy` on a view, `packages/data/src/chokePoint/authorization.ts`'s
-`assertViewWritable`), and it gates what an AI agent may read, write, or adopt, per
+Tenancy: Semprec is multi-tenant. Each user has one tenant, which holds all of that
+user's data and agents, and nothing is shared between tenants. Isolation is enforced
+twice: by Postgres row-level security on every table classified
+`semprec:tenancy=tenant`, and by an explicit tenant scope (`app.tenant_id`) on every
+code path. A missing scope fails closed: nothing visible, writes refused. Until
+go-live, `tenants_single_tenant_guard` keeps a deployment at one tenant, and the
+transitional `app_tenant_default()` falls back to that sole tenant (`app_sole_tenant()`),
+so the previous release keeps working. Code written before tenant scoping is moved onto
+the scope by dedicated issues: do not report a pre-existing scope-less query that the
+pull request neither adds nor changes. Earlier ADRs that rest on a single human account
+(`docs/adr/2026-09-12-per-process-agent-run-watch-registry.md`,
+`docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md`) describe code that is
+being replaced; they justify no new single-account code. Cross-tenant access is this
+platform's most severe defect class; the rules are in `rules.md` and
+`tasks/security.md`, and the decision is `docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`.
+
+Actor type is the second authorization boundary, alongside tenant. `Actor.type` is
+`'user' | 'ai_agent' | 'system'` (e.g. `createdBy` on a view,
+`packages/data/src/chokePoint/authorization.ts`'s `assertViewWritable`), and it gates
+what an AI agent may read, write, or adopt, per
 `docs/adr/2026-09-10-single-writer-ownership-model.md` and
 `docs/adr/2026-09-10-agent-writes-are-proposals-not-direct-writes.md`. A missing or
 bypassable `actor.type === 'ai_agent'` check is the real privilege-escalation shape
-to flag here — a human-vs-human check is not.
+to flag here.
 
 This platform also reviews changes to its own `review-rules/` directory — the
 rules, tasks, severities and scope enforced here — through
