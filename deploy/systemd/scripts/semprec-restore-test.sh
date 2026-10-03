@@ -135,7 +135,7 @@ start_postgres() {
   POSTGRES_CREATED=true
   docker run --detach --name "$POSTGRES_CONTAINER" --network "$NETWORK_NAME" \
     --env POSTGRES_HOST_AUTH_METHOD=trust --env POSTGRES_DB="$RESTORE_DATABASE" \
-    "$POSTGRES_IMAGE" >/dev/null
+    "$POSTGRES_IMAGE" postgres -c max_locks_per_transaction=2048 >/dev/null
   # TCP rather than the socket: the image's init-time server listens on the socket only and is
   # restarted before the real one accepts connections.
   wait_until_ready docker exec "$POSTGRES_CONTAINER" pg_isready --host=127.0.0.1 --username=postgres \

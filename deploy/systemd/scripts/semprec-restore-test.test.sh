@@ -149,6 +149,11 @@ test "$(count_lines . "$TEST_STATE/results")" -eq 1
 grep -Eq '^passed [0-9]{8}T[0-9]{6}Z-[0-9]+ DATABASE_URL=postgres://semprec_side@' "$TEST_STATE/results"
 grep -q -- '--exit-on-error' "$TEST_STATE/commands"
 test "$(count_lines '^docker run ' "$TEST_STATE/commands")" -eq 1
+# The disposable server runs with the same lock-table size as production's compose file.
+production_max_locks="$(sed -n 's/^ *command: \["postgres", "-c", "max_locks_per_transaction=\([0-9]*\)"\]$/\1/p' \
+  "$REPOSITORY_ROOT/deploy/docker-compose.yml")"
+test -n "$production_max_locks"
+grep '^docker run ' "$TEST_STATE/commands" | grep -q -- " postgres -c max_locks_per_transaction=$production_max_locks\$"
 if grep -q -e 'test-only-password' "$TEST_STATE/commands"; then
   echo "a secret appeared on a command line" >&2
   exit 1
