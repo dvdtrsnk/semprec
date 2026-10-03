@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { readdir, rm } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import {
   createBlob,
@@ -394,6 +394,46 @@ describe("transcription step 1 (prepare)", () => {
     await createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     expect(checkedOutDuringFfmpeg).toBe(0);
+    expect((await readSource(files.id, file.id))?.computed.prepare).toBeDefined();
+  });
+
+  it("opens its read and write transactions with the isolation level on BEGIN and issues no SET TRANSACTION", async () => {
+    const { files, file } = await createSourceFile("audio/mp4", audioFixture);
+    const statements: string[] = [];
+    // Pooled clients are reused across `connect()` calls: wrap each client's `query` once.
+    const wrappedClients = new WeakSet<PoolClient>();
+    async function connectAndRecord(): Promise<PoolClient> {
+      const client = await pool.connect();
+      if (!wrappedClients.has(client)) {
+        wrappedClients.add(client);
+        const originalQuery = client.query.bind(client) as (...args: unknown[]) => unknown;
+        (client as unknown as { query: unknown }).query = (...queryArgs: unknown[]) => {
+          const first = queryArgs[0];
+          const text = typeof first === "string" ? first : (first as { text?: string } | undefined)?.text;
+          if (text !== undefined) statements.push(text);
+          return originalQuery(...queryArgs);
+        };
+      }
+      return client;
+    }
+    const recordingPool = new Proxy(pool, {
+      get(target, prop, receiver) {
+        if (prop === "connect") return connectAndRecord;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await createTranscriptionTask(
+      recordingPool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+    expect(statements.filter((text) => text === "BEGIN ISOLATION LEVEL REPEATABLE READ").length).toBeGreaterThanOrEqual(
+      2,
+    );
+    expect(statements.filter((text) => /SET\s+TRANSACTION/i.test(text))).toEqual([]);
     expect((await readSource(files.id, file.id))?.computed.prepare).toBeDefined();
   });
 
