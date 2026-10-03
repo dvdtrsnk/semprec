@@ -12,13 +12,14 @@ import { logger } from "./logger.js";
 // fatally and exit non-zero rather than crash silently or hang.
 installFatalHandlers(logger);
 
-// SEMPREC_SIDE_DATABASE_URL is the shared key every `semprec_side`-role process authenticates
-// with (issue #175's `/opt/semprec/shared/.env`; see
-// docs/adr/2026-09-17-two-tier-runtime-database-roles.md) — this process is never
-// `semprec_data`. `DATABASE_URL` remains the fallback for local development, where a developer
-// runs this service alone against its own per-service `.env`.
-const connectionString = process.env.SEMPREC_SIDE_DATABASE_URL ?? process.env.DATABASE_URL;
-if (!connectionString) throw new Error("SEMPREC_SIDE_DATABASE_URL (or DATABASE_URL) is not set");
+// This process hosts the choke point in-process: every agent run's generic-operation tools
+// (`createGenericOperationAgentTools`) dispatch through `createGenericOperationGateway(pool)` to
+// `createChokePoint(pool)`, and non-destructive operations commit directly. It therefore
+// authenticates as `semprec_data` via SEMPREC_API_DATABASE_URL (the shared key of
+// `/opt/semprec/shared/.env`; see docs/adr/2026-10-03-agents-worker-choke-point-access.md).
+// `DATABASE_URL` remains the fallback for local development.
+const connectionString = process.env.SEMPREC_API_DATABASE_URL ?? process.env.DATABASE_URL;
+if (!connectionString) throw new Error("SEMPREC_API_DATABASE_URL (or DATABASE_URL) is not set");
 
 const pool = createPool(connectionString);
 

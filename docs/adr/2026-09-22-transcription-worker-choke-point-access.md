@@ -1,9 +1,9 @@
 ---
-status: accepted
+status: superseded
 date: 2026-09-22
 area: [backend]
 supersedes: [2026-09-17-two-tier-runtime-database-roles]
-superseded-by: null
+superseded-by: 2026-10-03-agents-worker-choke-point-access
 ---
 
 # The transcription worker hosts its narrow in-process choke-point writer
