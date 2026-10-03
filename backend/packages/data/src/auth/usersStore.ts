@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { requireSingleRow } from "../db/pool.js";
-import type { UserRow } from "./types.js";
+import type { UserRole, UserRow } from "./types.js";
 
 /** The raw `users` row shape this module reads back from Postgres. */
 type UserDbRow = { id: string; email: string; password_hash: string; locale: string; created_at: Date };
@@ -20,22 +20,32 @@ export interface CreateUserInput {
   passwordHash: string;
   /** Defaults to the `users.locale` column default (`cs`) when omitted. */
   locale?: string;
+  /** Defaults to NULL (no tenant) when omitted. */
+  tenantId?: string;
+  /** Defaults to the `users.role` column default (`member`) when omitted. */
+  role?: UserRole;
 }
 
 /** Throws (unique violation, Postgres error code `23505`) if `email` is already taken. */
 export async function createUser(client: Pool | PoolClient, input: CreateUserInput): Promise<UserRow> {
-  const { rows } =
-    input.locale === undefined
-      ? await client.query<UserDbRow>(
-          `INSERT INTO users (email, password_hash) VALUES ($1, $2)
-           RETURNING id, email, password_hash, locale, created_at`,
-          [input.email, input.passwordHash],
-        )
-      : await client.query<UserDbRow>(
-          `INSERT INTO users (email, password_hash, locale) VALUES ($1, $2, $3)
-           RETURNING id, email, password_hash, locale, created_at`,
-          [input.email, input.passwordHash, input.locale],
-        );
+  const columns = ["email", "password_hash"];
+  const values: unknown[] = [input.email, input.passwordHash];
+  const optional: [string, unknown][] = [
+    ["locale", input.locale],
+    ["tenant_id", input.tenantId],
+    ["role", input.role],
+  ];
+  for (const [column, value] of optional) {
+    if (value === undefined) continue;
+    columns.push(column);
+    values.push(value);
+  }
+  const placeholders = values.map((_, i) => `$${i + 1}`).join(", ");
+  const { rows } = await client.query<UserDbRow>(
+    `INSERT INTO users (${columns.join(", ")}) VALUES (${placeholders})
+     RETURNING id, email, password_hash, locale, created_at`,
+    values,
+  );
   return mapRow(requireSingleRow(rows, "users row"));
 }
 
