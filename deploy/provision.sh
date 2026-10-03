@@ -311,6 +311,29 @@ ensure_shared_permissions() {
   fi
 }
 
+# Warns, never fails: an operator's .env is never edited, and the settings below are only
+# consequential once semprec-api sends mail. Prints key names and the two non-secret URL values only.
+check_outbound_link_settings() {
+  local env_file="$SEMPREC_ROOT/shared/.env"
+  local app_base_url domain smtp_host smtp_from
+  app_base_url="$(sed -n 's/^APP_BASE_URL=//p' "$env_file" | tail -n 1)"
+  domain="$(sed -n 's/^SEMPREC_DOMAIN=//p' "$env_file" | tail -n 1)"
+  smtp_host="$(sed -n 's/^SMTP_HOST=//p' "$env_file" | tail -n 1)"
+  smtp_from="$(sed -n 's/^SMTP_FROM_ADDRESS=//p' "$env_file" | tail -n 1)"
+
+  if [[ -z "$app_base_url" ]]; then
+    echo "APP_BASE_URL is not set in $env_file; every emailed link will point at http://localhost:3000 until it is set to https://<SEMPREC_DOMAIN> and semprec-api is restarted" >&2
+  elif [[ -n "$domain" && "${app_base_url%/}" != "https://$domain" ]]; then
+    echo "APP_BASE_URL is $app_base_url but SEMPREC_DOMAIN is $domain; emailed links expect APP_BASE_URL=https://$domain" >&2
+  fi
+
+  if [[ -z "$smtp_host" || -z "$smtp_from" ]]; then
+    echo "Outbound mail is not configured: SMTP_HOST and SMTP_FROM_ADDRESS must both be set in $env_file, otherwise password-reset requests answer 200 but no mail is sent" >&2
+  fi
+
+  return 0
+}
+
 main() {
   require_root
   require_supported_distribution
@@ -328,6 +351,7 @@ main() {
   enable_timers
   install_caddy_config
   render_caddy_environment
+  check_outbound_link_settings
   install_nftables_config
   apply_nftables
 }
