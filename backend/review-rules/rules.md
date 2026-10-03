@@ -69,3 +69,50 @@
   non-integer for an integer column) and letting it reach the query is a
   high-severity finding: the caller sees an unhandled 500 from the database
   instead of a 400 that names the field.
+- A migration that creates a table states `COMMENT ON TABLE <t> IS 'semprec:tenancy=tenant'`
+  or `'semprec:tenancy=global'` in the same file. A tenant table also gets, in that file,
+  `tenant_id uuid NOT NULL DEFAULT app_tenant_default() REFERENCES tenants(id)`,
+  `ENABLE ROW LEVEL SECURITY`, the RESTRICTIVE `tenant_isolation` policy
+  (`USING`/`WITH CHECK (tenant_id = (SELECT app_tenant_default()))`) and the PERMISSIVE
+  `tenant_rows` policy (`USING (true) WITH CHECK (true)`). Global is only for
+  identity-plane, admin-plane and operator tables that hold no user content. Missing any
+  of these is high: an unclassified or unprotected table is invisible to the mechanical
+  isolation guarantee. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+- A unique index, unique constraint or primary key on a tenant table that does not lead
+  with `tenant_id` is high, unless it is a server-generated surrogate key or is scoped by
+  the server-generated id of a parent row in the same tenant (such as
+  `properties (database_id, key)`). Unique and foreign-key checks ignore RLS, so a global
+  key is an existence oracle and a cross-tenant collision. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+- Tenant identity taken from a request body, query string, path segment, a header an
+  untrusted caller can set, a job payload field, or model output is critical: the caller
+  chooses whose data it reaches. Its only sources are the authenticated session, the
+  queue job envelope stamped from the producer's scope, a NOTIFY payload stamped by its
+  publisher, an internal-token-authenticated caller cross-checked against a row visible
+  in that tenant, an MCP run credential, and a router function resolving an external
+  identifier (a Graph subscription id, a Gmail address) to its tenant. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+- New code that reads or writes a tenant table must run in a scope established from one
+  of those sources, or as explicit system work under the next rule. New code that relies
+  on the transitional sole-tenant fallback as its tenant, or that picks "the" user or
+  tenant by earliest, first or `LIMIT 1`, is high, because it silently breaks the day a
+  second tenant exists; it is critical when it lets one tenant reach another's rows.
+  Pre-existing scope-less code the pull request neither adds nor changes is not reported.
+  (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+- Cross-tenant system work enumerates tenants and does each tenant's work inside that
+  tenant, and one tenant's failure must not skip the others. The alternative is a
+  `SECURITY DEFINER` function owned by a dedicated `NOLOGIN BYPASSRLS` router role:
+  column-level `SELECT` only, pinned `search_path`, `EXECUTE` revoked from `PUBLIC` and
+  granted to one runtime role, returning only ids or numbers. Any of the following is
+  critical, because it removes the second enforcement layer: granting a runtime role
+  `BYPASSRLS`, superuser or table ownership; `SET row_security = off`; a permissive
+  policy that widens visibility; one query reading several tenants' rows. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+- A `SECURITY DEFINER` function that reads or writes a tenant table without confining
+  itself to `app_current_tenant()` (filtering by it, or verifying the referenced row's
+  tenant) is critical: it runs with the owner's privileges and so bypasses RLS for any
+  caller. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+- An endpoint, socket frame, MCP tool or job must answer another tenant's id exactly as
+  it answers a random id: same status, body and headers, and no branch such as an
+  ETag/304 check taken before the tenant check. A difference is critical, because it
+  tells the caller that the foreign row exists. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+- A log line or error message carrying user content (item properties, mail subjects,
+  bodies or addresses, file names, prompts, model output) is high: logs are not
+  tenant-scoped. Log ids and counts. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
