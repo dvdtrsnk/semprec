@@ -46,7 +46,25 @@ introduces a new table — there is no default-privilege rule that grants new ta
 automatically, so adding a new choke-point or side table always requires a visible, reviewable
 grant change in the same migration. A new table the choke-point writes goes in both the
 `semprec_data` (full) and `semprec_side` (`SELECT`-only) grant lists; every other new table
-goes only in the `semprec_side` (full) grant list.
+goes only in the `semprec_side` (full) grant list. A new identity-plane table (see below) is the
+exception: it is granted full DML directly to `semprec_data` and `SELECT` only to `semprec_side`, never
+through `semprec_side`'s full grant.
+
+## Identity tables
+
+`users`, `sessions`, `password_reset_tokens`, `login_attempts` and `tenants` make up the identity
+plane: they decide who a request is and which tenant it belongs to. Only `semprec-api` writes them
+(login, logout, session touch, first-account setup, password reset), so:
+
+- `semprec_data` holds `SELECT, INSERT, UPDATE, DELETE` on them directly — granted to the role itself,
+  not inherited from `semprec_side`. Its `login_attempts.id` sequence access still comes through the
+  inherited `USAGE, SELECT` on all sequences.
+- `semprec_side` holds `SELECT` only (the restore-test recorder and `app_sole_tenant()` read them).
+
+The reason is containment: a compromised side-role process (`semprec-ai-gateway`,
+`semprec-restore-test`) must not be able to mint a session, rebind a user to another tenant, promote a
+user to `admin` or change a tenant's status. Migration
+`0057_identity_tables_api_role_only.sql` applies the split.
 
 ## DDL the API role needs
 

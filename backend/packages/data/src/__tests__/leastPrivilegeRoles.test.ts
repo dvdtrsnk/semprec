@@ -187,6 +187,8 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
       "rollup_dependencies",
     ];
     const WRITE_PRIVILEGES = ["INSERT", "UPDATE", "DELETE"];
+    // Written only by semprec_data (migration 0057); covered by identityTablePrivileges.test.ts.
+    const IDENTITY_TABLES = new Set(["users", "sessions", "password_reset_tokens", "login_attempts", "tenants"]);
 
     async function listTables(): Promise<{ name: string; oid: string }[]> {
       const { rows } = await adminPool.query<{ name: string; oid: string }>(
@@ -219,13 +221,13 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
       const chokePointNames = new Set(CHOKE_POINT_TABLES);
       const offenders: string[] = [];
       for (const table of await listTables()) {
-        const isChokePoint = chokePointNames.has(table.name);
+        const sideReadOnly = chokePointNames.has(table.name) || IDENTITY_TABLES.has(table.name);
         if (!(await hasPrivilege("semprec_side", table.oid, "SELECT"))) {
           offenders.push(`${table.name}:semprec_side:SELECT`);
         }
         for (const privilege of WRITE_PRIVILEGES) {
           const sideHas = await hasPrivilege("semprec_side", table.oid, privilege);
-          if (sideHas === isChokePoint) offenders.push(`${table.name}:semprec_side:${privilege}`);
+          if (sideHas === sideReadOnly) offenders.push(`${table.name}:semprec_side:${privilege}`);
         }
         for (const privilege of ["SELECT", ...WRITE_PRIVILEGES]) {
           if (!(await hasPrivilege("semprec_data", table.oid, privilege))) {
