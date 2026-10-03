@@ -148,7 +148,8 @@ another's. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security
   authenticated session, a NOTIFY payload stamped by its publisher, an internal
   caller verified against a row visible in that tenant, an MCP run credential,
   or a router function resolving an external identifier to its tenant. It never
-  comes from a request body or a model's output.
+  comes from a request body, query string, path segment, caller-settable
+  header or a model's output.
 - Until the enqueue-stamp mechanism exists, do not read the tenant from any
   job payload field. Once it is implemented, a tenant stamped onto the job at
   enqueue by the producing code (from the producer's scope, not filled in by
@@ -177,8 +178,9 @@ another's. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security
 - [ ] Every guard the "add"/"create"/"lock" side of a pair enforces is enforced
       by its "remove"/"delete"/"unlock" counterpart too.
 - [ ] The tenant of every write comes from a trusted source, never from a
-      request body, model output or any job payload field (until the enqueue-stamp
-      mechanism exists).
+      request body, query string, path segment, caller-settable header, model
+      output or any job payload field (until the enqueue-stamp mechanism
+      exists).
 - [ ] No write sets `tenant_id` explicitly; the column default stamps it.
 - [ ] Existence and uniqueness checks are per tenant, and another tenant's id
       gets the same outcome as a missing id.
