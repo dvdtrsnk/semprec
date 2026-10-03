@@ -1,6 +1,6 @@
 /**
  * Wraps `fetch` so that any 401 an adapter receives mid-session is reported to the app — which
- * swaps its content for the login page — before the response is handed back unchanged. Adapters
+ * reloads to a clean URL, so the next sign-in starts from a fresh app — before the response is handed back unchanged. Adapters
  * keep their own status handling; this only observes.
  */
 export function createSessionFetch(

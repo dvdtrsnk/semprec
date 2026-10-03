@@ -47,6 +47,7 @@ type SessionState =
   | { status: "loading" }
   | { status: "anonymous" }
   | { status: "authenticated"; user: SessionUser }
+  | { status: "ending" }
   | { status: "failed"; error: OperationError };
 
 export function App({
@@ -110,8 +111,9 @@ export function App({
 }
 
 /**
- * Bootstraps the session from `GET /api/auth/session` on mount and drops back to anonymous when
- * an adapter reports a 401 mid-session. Lifted out of `SessionGate` so `App` can read the session
+ * Bootstraps the session from `GET /api/auth/session` on mount. When an adapter reports a 401
+ * mid-session, the session moves to `ending` and a full reload to `/` discards the whole
+ * in-memory app and URL instead of clearing state piece by piece. Lifted out of `SessionGate` so `App` can read the session
  * user's locale before the `I18nProvider` that `SessionGate` renders under. Skipped entirely
  * during the setup wizard, which runs before any user exists.
  */
@@ -139,10 +141,15 @@ function useSession(
     };
   }, [auth, attempt, skip]);
 
+  const ending = session.status === "ending";
+  useEffect(() => {
+    if (ending) window.location.replace("/");
+  }, [ending]);
+
   useEffect(() => {
     if (skip) return;
     const onUnauthorized = () => {
-      setSession((current) => (current.status === "authenticated" ? { status: "anonymous" } : current));
+      setSession((current) => (current.status === "authenticated" ? { status: "ending" } : current));
     };
     sessionEvents.addEventListener("unauthorized", onUnauthorized);
     return () => sessionEvents.removeEventListener("unauthorized", onUnauthorized);
@@ -158,8 +165,8 @@ function useSession(
 
 /**
  * The session-driven UI around the routed content: shows the login page for an anonymous
- * visitor, drops back to it when `useSession` observes a mid-session 401, and logs out from the
- * header. The setup wizard never reaches this — it runs before any user exists, so there is no
+ * visitor and logs out from the header. A successful logout or a mid-session 401 puts the session
+ * in `ending`, which renders neither header nor content while `useSession` reloads to `/`. The setup wizard never reaches this — it runs before any user exists, so there is no
  * session to ask about.
  */
 function SessionGate({
@@ -195,11 +202,12 @@ function SessionGate({
       setLogoutError(toOperationError(error).message);
       return;
     }
-    setSession({ status: "anonymous" });
+    setSession({ status: "ending" });
   };
 
   switch (session.status) {
     case "loading":
+    case "ending":
       return <LoadingState />;
     case "failed":
       return <ErrorState error={session.error} onRetry={retry} />;
