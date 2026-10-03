@@ -57,6 +57,8 @@ async function countItems(databaseId: string): Promise<number> {
 describe("semprec-agents database role", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
+    // ALTER ROLE ... WITH PASSWORD cannot take query parameters, so the value is interpolated.
+    // It must stay derived from a source limited to SQL-safe characters (randomUUID(): [0-9a-f-]).
     await adminPool.query(`ALTER ROLE semprec_data WITH PASSWORD '${TEST_ROLE_PASSWORD}'`);
     await adminPool.query(`ALTER ROLE semprec_side WITH PASSWORD '${TEST_ROLE_PASSWORD}'`);
     dataPool = new Pool({ connectionString: roleConnectionString("semprec_data") });
