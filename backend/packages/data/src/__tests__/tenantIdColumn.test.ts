@@ -25,10 +25,14 @@ function testDatabaseUrl(): string {
   return url;
 }
 
-/** A scratch database created and dropped by the test (the pattern of czechHunspellSearch.test.ts). */
+/**
+ * A scratch database created and dropped by the test (the pattern of czechHunspellSearch.test.ts).
+ * Both pools run without a statement_timeout: creating, migrating and force-dropping a database is
+ * test infrastructure, and DROP DATABASE can exceed the default 60 s while the host is flushing a checkpoint.
+ */
 async function withFreshDatabase(fn: (pool: Pool) => Promise<void>): Promise<void> {
   const name = `tenant_id_${randomUUID().replaceAll("-", "")}`;
-  const admin = createPool(testDatabaseUrl());
+  const admin = createPool(testDatabaseUrl(), { statementTimeoutMs: 0 });
   try {
     await admin.query(`CREATE DATABASE "${name}" ENCODING 'UTF8' TEMPLATE template0`);
   } catch (createError) {
@@ -41,7 +45,7 @@ async function withFreshDatabase(fn: (pool: Pool) => Promise<void>): Promise<voi
   }
   const url = new URL(testDatabaseUrl());
   url.pathname = `/${name}`;
-  const pool = createPool(url.toString());
+  const pool = createPool(url.toString(), { statementTimeoutMs: 0 });
   let failure: { error: unknown } | undefined;
   try {
     await fn(pool);
