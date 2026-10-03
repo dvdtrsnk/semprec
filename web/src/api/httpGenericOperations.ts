@@ -1,6 +1,6 @@
+import { z } from "zod";
 import {
   OperationError,
-  countSchema,
   itemPageSchema,
   itemSchema,
   viewSchema,
@@ -28,7 +28,24 @@ const UNAVAILABLE_STATUSES = new Set([401, 403, 404, 501]);
 interface RequestOptions {
   /** A write whose answer the client does not read: the response body is not parsed, so a `204 No Content` is as valid as a JSON one. */
   discardBody?: boolean;
+  /**
+   * A 404 whose JSON body matches this schema is an expected outcome, not a failure: the
+   * request resolves `undefined`. Any other 404 body (another resource, non-JSON, none) keeps
+   * the ordinary `unavailable` classification.
+   */
+  notFoundBody?: z.ZodType;
 }
+
+/** The backend's answer to deleting a relation edge that is not there. */
+const absentRelationEdgeSchema = z.object({
+  error: z.object({
+    code: z.literal("not_found"),
+    details: z.object({ resource: z.literal("relationEdge") }),
+  }),
+});
+
+/** The largest page the backend's query route serves. */
+const COUNT_PAGE_LIMIT = 200;
 
 async function request(
   options: Required<Pick<HttpGenericOperationsOptions, "baseUrl">> & { fetchImpl: typeof fetch },
@@ -48,6 +65,17 @@ async function request(
   }
 
   if (!response.ok) {
+    if (response.status === 404 && requestOptions.notFoundBody) {
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        // An unparseable 404 body is not the expected answer; it falls through to the
+        // ordinary `unavailable` rejection below, which is the failure being reported.
+        body = undefined;
+      }
+      if (requestOptions.notFoundBody.safeParse(body).success) return undefined;
+    }
     throw new OperationError(
       UNAVAILABLE_STATUSES.has(response.status) ? "unavailable" : "retryable",
       `Request to ${path} failed with ${response.status}`,
@@ -72,55 +100,70 @@ export function createHttpGenericOperations(options: HttpGenericOperationsOption
 
   const post = (path: string, body: unknown) => request(config, path, { method: "POST", body: JSON.stringify(body) });
   const id = encodeURIComponent;
-  // The relation endpoints address the relation by its *property key* on the item's own
-  // database; the backend resolves the key to the relation property (and its definition) —
-  // the client never learns a property id, exactly as it never learns a table name.
-  const relationPath = (databaseId: string, itemId: string, relationKey: string) =>
-    `/databases/${id(databaseId)}/items/${id(itemId)}/relations/${id(relationKey)}`;
+  // The relation routes address the relation by its *property key*; the backend resolves it
+  // against the item's own database, so the client sends no database id and never learns a
+  // property id.
+  const edgePath = (itemId: string, relationKey: string, targetItemId: string) =>
+    `/items/${id(itemId)}/relations/${id(relationKey)}/${id(targetItemId)}`;
+
+  // The backend serves items by id alone; the port is database-scoped, so an item that
+  // belongs to another database reads as absent.
+  const readItem = async (databaseId: string, itemId: string) => {
+    try {
+      const item = itemSchema.parse(await request(config, `/items/${id(itemId)}`));
+      return item.databaseId === databaseId ? item : null;
+    } catch (error) {
+      // A missing item is an ordinary outcome of reading a list that has moved on, not a
+      // failure state for the whole pane.
+      if (error instanceof OperationError && error.status === 404) return null;
+      throw error;
+    }
+  };
 
   return {
     async listItems(databaseId, listRequest: ListItemsRequest = {}) {
-      return itemPageSchema.parse(await post(`/databases/${encodeURIComponent(databaseId)}/items/query`, listRequest));
+      return itemPageSchema.parse(await post(`/databases/${id(databaseId)}/query`, listRequest));
     },
 
     async countItems(databaseId, listRequest = {}) {
-      return countSchema.parse(await post(`/databases/${encodeURIComponent(databaseId)}/items/count`, listRequest))
-        .count;
+      // The backend has no count route: page through the query and sum the pages.
+      let count = 0;
+      let cursor: string | undefined;
+      do {
+        const page = itemPageSchema.parse(
+          await post(`/databases/${id(databaseId)}/query`, {
+            filter: listRequest.filter,
+            limit: COUNT_PAGE_LIMIT,
+            ...(cursor === undefined ? {} : { cursor }),
+          }),
+        );
+        count += page.items.length;
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor !== undefined);
+      return count;
     },
 
-    async getItem(databaseId, itemId) {
-      try {
-        return itemSchema.parse(
-          await request(config, `/databases/${encodeURIComponent(databaseId)}/items/${encodeURIComponent(itemId)}`),
-        );
-      } catch (error) {
-        // A missing item is an ordinary outcome of reading a list that has moved on, not a
-        // failure state for the whole pane.
-        if (error instanceof OperationError && error.status === 404) return null;
-        throw error;
-      }
-    },
+    getItem: readItem,
 
     async getView(viewId) {
-      return viewSchema.parse(await request(config, `/views/${encodeURIComponent(viewId)}`));
+      return viewSchema.parse(await request(config, `/views/${id(viewId)}`));
     },
 
     async updateItem(databaseId, itemId, propertiesPatch) {
+      const current = await readItem(databaseId, itemId);
+      if (current === null) {
+        throw new OperationError("unavailable", `Item ${itemId} not found in database ${databaseId}`, 404);
+      }
       return itemSchema.parse(
-        await request(config, `/databases/${id(databaseId)}/items/${id(itemId)}`, {
+        await request(config, `/items/${id(itemId)}`, {
           method: "PATCH",
-          body: JSON.stringify({ properties: propertiesPatch }),
+          body: JSON.stringify({ properties: propertiesPatch, ifVersion: current.updatedAt }),
         }),
       );
     },
 
-    async linkItem(databaseId, itemId, relationKey, targetItemId) {
-      await request(
-        config,
-        relationPath(databaseId, itemId, relationKey),
-        { method: "POST", body: JSON.stringify({ targetItemId }) },
-        { discardBody: true },
-      );
+    async linkItem(_databaseId, itemId, relationKey, targetItemId) {
+      await request(config, edgePath(itemId, relationKey, targetItemId), { method: "PUT" }, { discardBody: true });
     },
 
     async callOperation(operationId, input) {
@@ -129,12 +172,12 @@ export function createHttpGenericOperations(options: HttpGenericOperationsOption
       return post(`/operations/${id(operationId)}`, input);
     },
 
-    async unlinkItem(databaseId, itemId, relationKey, targetItemId) {
+    async unlinkItem(_databaseId, itemId, relationKey, targetItemId) {
       await request(
         config,
-        `${relationPath(databaseId, itemId, relationKey)}/${id(targetItemId)}`,
+        edgePath(itemId, relationKey, targetItemId),
         { method: "DELETE" },
-        { discardBody: true },
+        { discardBody: true, notFoundBody: absentRelationEdgeSchema },
       );
     },
   };
