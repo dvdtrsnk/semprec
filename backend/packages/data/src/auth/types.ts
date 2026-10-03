@@ -19,6 +19,8 @@ export const SESSION_DELIVERY_CHANNEL_BY_PLATFORM: Record<SessionPlatform, Sessi
   macos: "bearer",
 };
 
+export type UserRole = "admin" | "member";
+
 export interface UserRow {
   id: string;
   email: string;

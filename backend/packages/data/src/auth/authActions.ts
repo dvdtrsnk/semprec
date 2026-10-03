@@ -15,7 +15,8 @@ import {
 import { recordLoginAttempt, getFailureStreak } from "./loginAttemptsStore.js";
 import { normalizeEmail } from "./emailNormalization.js";
 import { lockoutDurationSeconds } from "./loginLockout.js";
-import type { SessionPlatform, SessionRow, UserRow } from "./types.js";
+import type { SessionPlatform, SessionRow, UserRole, UserRow } from "./types.js";
+import { getSoleTenantId } from "../tenancy/tenantsStore.js";
 import { revokePushSubscriptionsForSession } from "../push/pushSubscriptionsStore.js";
 
 /** How long a freshly-issued session stays valid without further activity. */
@@ -37,6 +38,8 @@ export const MIN_PASSWORD_LENGTH = 8;
 interface CreateAccountInput {
   email: string;
   password: string;
+  tenantId: string;
+  role: UserRole;
 }
 
 /**
@@ -54,7 +57,7 @@ async function createAccount(client: Pool | PoolClient, input: CreateAccountInpu
   }
 
   const passwordHash = await hashPassword(input.password);
-  const user = await createUser(client, { email, passwordHash });
+  const user = await createUser(client, { email, passwordHash, tenantId: input.tenantId, role: input.role });
   return toPublicUser(user);
 }
 
@@ -166,6 +169,8 @@ export interface BootstrapFirstAccountInput {
  * beyond "not found". The same `NotFoundError`/404 is used for a wrong token, so the route
  * doesn't leak "setup is still open, you just guessed wrong" either.
  *
+ * The first account becomes tenant zero's admin: it is bound to the sole tenant with role `admin`.
+ *
  * Race safety: a cheap unlocked check short-circuits the common post-bootstrap case, then the
  * actual decision runs inside a transaction holding `SETUP_ADVISORY_LOCK_KEY` for its duration —
  * concurrent callers queue on that lock, and every one after the first to commit re-checks
@@ -185,7 +190,8 @@ export async function bootstrapFirstAccount(
     if (await anyUserExists(client)) throw new NotFoundError("Not found");
     if (!tokensMatch(providedToken, expectedToken)) throw new NotFoundError("Not found");
 
-    return createAccount(client, { email: input.email, password: input.password });
+    const tenantId = await getSoleTenantId(client);
+    return createAccount(client, { email: input.email, password: input.password, tenantId, role: "admin" });
   });
 }
 
