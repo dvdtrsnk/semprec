@@ -3,6 +3,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { withTransaction } from "../db/pool.js";
+import { createUser } from "../auth/usersStore.js";
+import { hashPassword } from "../auth/passwordHash.js";
+import { mintMcpRunCredential, resolveMcpRunCredential } from "../mcp/mcpRunCredentialAction.js";
+import { recordDesiredMailMessageFlags } from "../mail/mailMessageFlagSyncStore.js";
 
 /**
  * Issue #243: `0040_least_privilege_roles.sql` (run once by `globalSetup.ts` for the whole test
@@ -166,6 +171,138 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
       await expect(
         dataPool.query(`DELETE FROM process_heartbeats WHERE process = 'least-privilege-test-data-role'`),
       ).resolves.toBeDefined();
+    });
+  });
+
+  describe("runtime role grants cover every table", () => {
+    const CHOKE_POINT_TABLES = [
+      "databases",
+      "properties",
+      "relation_definitions",
+      "items",
+      "item_relations",
+      "views",
+      "view_items",
+      "idempotency_keys",
+      "rollup_dependencies",
+    ];
+    const WRITE_PRIVILEGES = ["INSERT", "UPDATE", "DELETE"];
+
+    async function listTables(): Promise<{ name: string; oid: string }[]> {
+      const { rows } = await adminPool.query<{ name: string; oid: string }>(
+        `SELECT c.relname AS name, c.oid::text AS oid
+           FROM pg_class c
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public'
+            AND c.relkind IN ('r', 'p')
+            AND NOT c.relispartition
+            AND c.relname <> 'schema_migrations'
+          ORDER BY c.relname`,
+      );
+      return rows;
+    }
+
+    async function hasPrivilege(role: string, tableOid: string, privilege: string): Promise<boolean> {
+      const { rows } = await adminPool.query<{ granted: boolean }>(
+        `SELECT has_table_privilege($1, $2::oid, $3) AS granted`,
+        [role, tableOid, privilege],
+      );
+      return rows[0]?.granted === true;
+    }
+
+    it("lists every choke-point table", async () => {
+      const names = new Set((await listTables()).map((table) => table.name));
+      expect(CHOKE_POINT_TABLES.filter((name) => !names.has(name))).toEqual([]);
+    });
+
+    it("grants every table the privileges its class requires, and no more on choke-point tables", async () => {
+      const chokePointNames = new Set(CHOKE_POINT_TABLES);
+      const offenders: string[] = [];
+      for (const table of await listTables()) {
+        const isChokePoint = chokePointNames.has(table.name);
+        if (!(await hasPrivilege("semprec_side", table.oid, "SELECT"))) {
+          offenders.push(`${table.name}:semprec_side:SELECT`);
+        }
+        for (const privilege of WRITE_PRIVILEGES) {
+          const sideHas = await hasPrivilege("semprec_side", table.oid, privilege);
+          if (sideHas === isChokePoint) offenders.push(`${table.name}:semprec_side:${privilege}`);
+        }
+        for (const privilege of ["SELECT", ...WRITE_PRIVILEGES]) {
+          if (!(await hasPrivilege("semprec_data", table.oid, privilege))) {
+            offenders.push(`${table.name}:semprec_data:${privilege}`);
+          }
+        }
+      }
+      expect(offenders).toEqual([]);
+    });
+  });
+
+  describe("late side tables (agent_run_mcp_credentials, mail_message_flag_sync_state)", () => {
+    it("mints and resolves an MCP run credential as semprec_data", async () => {
+      const passwordHash = await hashPassword("s3cret-password");
+      const user = await createUser(adminPool, {
+        email: `owner-${randomUUID()}@example.test`,
+        passwordHash,
+        locale: "en",
+      });
+
+      const minted = await mintMcpRunCredential(dataPool, {
+        projectItemId: randomUUID(),
+        capabilities: ["core.item.read"],
+        userId: user.id,
+      });
+      const resolved = await resolveMcpRunCredential(dataPool, minted.token);
+
+      expect(resolved?.runId).toBe(minted.run.id);
+    });
+
+    it("records desired mail flags as semprec_data and reads them back as semprec_side", async () => {
+      const messageItemId = randomUUID();
+
+      await withTransaction(dataPool, (client) => recordDesiredMailMessageFlags(client, messageItemId, { read: true }));
+
+      const { rows } = await sidePool.query<{ desired_state: boolean }>(
+        `SELECT desired_state FROM mail_message_flag_sync_state WHERE message_item_id = $1 AND property_key = 'read'`,
+        [messageItemId],
+      );
+      expect(rows).toEqual([{ desired_state: true }]);
+    });
+
+    it("lets semprec_side UPDATE and DELETE rows of both tables", async () => {
+      const passwordHash = await hashPassword("s3cret-password");
+      const user = await createUser(adminPool, {
+        email: `owner-${randomUUID()}@example.test`,
+        passwordHash,
+        locale: "en",
+      });
+      const minted = await mintMcpRunCredential(adminPool, {
+        projectItemId: randomUUID(),
+        capabilities: ["core.item.read"],
+        userId: user.id,
+      });
+      const messageItemId = randomUUID();
+      await withTransaction(adminPool, (client) =>
+        recordDesiredMailMessageFlags(client, messageItemId, { read: true }),
+      );
+
+      const credentialUpdate = await sidePool.query(
+        `UPDATE agent_run_mcp_credentials SET expires_at = now() WHERE agent_run_id = $1`,
+        [minted.run.id],
+      );
+      const flagUpdate = await sidePool.query(
+        `UPDATE mail_message_flag_sync_state SET current_state = true WHERE message_item_id = $1`,
+        [messageItemId],
+      );
+      const credentialDelete = await sidePool.query(`DELETE FROM agent_run_mcp_credentials WHERE agent_run_id = $1`, [
+        minted.run.id,
+      ]);
+      const flagDelete = await sidePool.query(`DELETE FROM mail_message_flag_sync_state WHERE message_item_id = $1`, [
+        messageItemId,
+      ]);
+
+      expect([credentialUpdate.rowCount, flagUpdate.rowCount, credentialDelete.rowCount, flagDelete.rowCount]).toEqual([
+        1, 1, 1, 1,
+      ]);
     });
   });
 });
