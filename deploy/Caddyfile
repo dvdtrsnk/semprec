@@ -54,8 +54,18 @@
 		file_server
 	}
 
+	# Two secrets travel in URLs Caddy serves itself: the first-account setup link
+	# (`/?page=setup&token=…`) and the password-reset link (`/reset-password?token=…`). The query
+	# string is therefore cut from the logged URI, and `Referer` is dropped because every asset
+	# the browser loads after either page repeats the full page URL in it.
 	log {
 		output stderr
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp "[?].*" ""
+				request>headers>Referer delete
+			}
+		}
 	}
 }
