@@ -18,6 +18,23 @@ readonly HUNSPELL_BASENAME=cs_cz
 readonly HUNSPELL_DICT_SOURCE=/usr/share/hunspell/cs_CZ.dic
 readonly HUNSPELL_AFFIX_SOURCE=/usr/share/hunspell/cs_CZ.aff
 
+# Every key lives in exactly one group file, shared/env/<group>.env, installed from
+# shared/env/<group>.env.example (docs/adr/2026-10-03-per-service-secret-groups.md).
+readonly -a SECRET_GROUPS=(
+  postgres
+  migrate
+  data-role
+  side-role
+  master-key
+  gateway-token
+  ai-gateway
+  api
+  agents
+  settings
+  backup
+  monitor
+)
+
 readonly -a SERVICE_UNITS=(
   semprec-api.service
   semprec-agents.service
@@ -148,7 +165,7 @@ install_postgresql_hunspell_assets() {
   require_readable_hunspell_asset "$HUNSPELL_AFFIX_SOURCE"
 
   local postgres_container
-  if ! postgres_container="$(docker compose --env-file "$SEMPREC_ROOT/shared/.env" -f "$SCRIPT_DIR/docker-compose.yml" ps --quiet postgres)" || [[ -z "$postgres_container" ]]; then
+  if ! postgres_container="$(docker compose --env-file "$SEMPREC_ROOT/shared/env/postgres.env" -f "$SCRIPT_DIR/docker-compose.yml" ps --quiet postgres)" || [[ -z "$postgres_container" ]]; then
     echo "Cannot install Czech Hunspell assets: the PostgreSQL container is not active" >&2
     exit 1
   fi
@@ -200,9 +217,97 @@ ensure_release_tree() {
   ensure_directory "$SEMPREC_ROOT/data/files" 0750 semprec
   ensure_directory "$SEMPREC_ROOT/data/mail-attachments" 0750 semprec
 
-  local shared_env="$SEMPREC_ROOT/shared/.env"
-  if [[ ! -e "$shared_env" && ! -L "$shared_env" ]]; then
-    install -o root -g root -m 0600 "$SCRIPT_DIR/shared/.env.example" "$shared_env"
+  ensure_directory "$SEMPREC_ROOT/shared/env" 0700
+  install_secret_groups
+}
+
+# Prints the template's own `KEY=` lines, each replaced by the legacy file's last `KEY=` line
+# verbatim when it has one. The legacy path is read as a file, never through argv, so no value
+# reaches a process listing.
+render_group_from_legacy() {
+  local legacy_env="$1"
+  local template="$2"
+
+  awk '
+    FILENAME == ARGV[1] {
+      if (match($0, /^[A-Za-z_][A-Za-z0-9_]*=/)) {
+        legacy[substr($0, 1, RLENGTH - 1)] = $0
+      }
+      next
+    }
+    {
+      if (match($0, /^[A-Za-z_][A-Za-z0-9_]*=/) && (substr($0, 1, RLENGTH - 1) in legacy)) {
+        print legacy[substr($0, 1, RLENGTH - 1)]
+      } else {
+        print
+      }
+    }
+  ' "$legacy_env" "$template"
+}
+
+# Prints the names (never values) of legacy keys that no group template declares.
+report_unclaimed_legacy_keys() {
+  local legacy_env="$1"
+  local group
+  local -a templates=()
+  for group in "${SECRET_GROUPS[@]}"; do
+    templates+=("$SCRIPT_DIR/shared/env/$group.env.example")
+  done
+
+  local unclaimed
+  unclaimed="$(awk '
+    FNR == NR {
+      if (match($0, /^[A-Za-z_][A-Za-z0-9_]*=/)) {
+        claimed[substr($0, 1, RLENGTH - 1)] = 1
+      }
+      next
+    }
+    FILENAME == ARGV[ARGC - 1] {
+      if (match($0, /^[A-Za-z_][A-Za-z0-9_]*=/)) {
+        name = substr($0, 1, RLENGTH - 1)
+        if (!(name in claimed) && !(name in reported)) {
+          reported[name] = 1
+          print name
+        }
+      }
+    }
+  ' <(cat "${templates[@]}") "$legacy_env")"
+
+  echo "$legacy_env is no longer read by any unit or script; the values now live in $SEMPREC_ROOT/shared/env/*.env. Verify them, then delete it by hand." >&2
+  if [[ -n "$unclaimed" ]]; then
+    echo "Legacy keys that no group claims (not copied): $(tr '\n' ' ' <<<"$unclaimed")" >&2
+  fi
+}
+
+# Installs a group file for every template whose file does not exist yet — an existing group
+# file is an operator's and is never overwritten. When the legacy single file is present its
+# values seed the new files; it is never modified or removed. Never prints a value.
+install_secret_groups() {
+  local legacy_env="$SEMPREC_ROOT/shared/.env"
+  local has_legacy=0
+  if [[ -e "$legacy_env" ]]; then
+    has_legacy=1
+  fi
+
+  local group template destination tmp_group
+  for group in "${SECRET_GROUPS[@]}"; do
+    template="$SCRIPT_DIR/shared/env/$group.env.example"
+    destination="$SEMPREC_ROOT/shared/env/$group.env"
+    if [[ -e "$destination" || -L "$destination" ]]; then
+      continue
+    fi
+    if (( has_legacy )); then
+      tmp_group="$(mktemp)"
+      render_group_from_legacy "$legacy_env" "$template" > "$tmp_group"
+      install -o root -g root -m 0600 "$tmp_group" "$destination"
+      rm -f "$tmp_group"
+    else
+      install -o root -g root -m 0600 "$template" "$destination"
+    fi
+  done
+
+  if (( has_legacy )); then
+    report_unclaimed_legacy_keys "$legacy_env"
   fi
 }
 
@@ -257,10 +362,11 @@ install_caddy_config() {
 
 render_caddy_environment() {
   local domain
-  domain="$(sed -n 's/^SEMPREC_DOMAIN=//p' "$SEMPREC_ROOT/shared/.env")"
+  local monitor_env="$SEMPREC_ROOT/shared/env/monitor.env"
+  domain="$(sed -n 's/^SEMPREC_DOMAIN=//p' "$monitor_env" | tail -n 1)"
 
   if [[ -z "$domain" ]]; then
-    echo "SEMPREC_DOMAIN is not set in $SEMPREC_ROOT/shared/.env; Caddy stays unconfigured until it is set and provision.sh is rerun" >&2
+    echo "SEMPREC_DOMAIN is not set in $monitor_env; Caddy stays unconfigured until it is set and provision.sh is rerun" >&2
     return 0
   fi
 
@@ -292,7 +398,8 @@ apply_nftables() {
 ensure_shared_permissions() {
   local shared_dir="$SEMPREC_ROOT/shared"
   local bin_dir="$shared_dir/bin"
-  local env_file="$shared_dir/.env"
+  local env_dir="$shared_dir/env"
+  local legacy_env="$shared_dir/.env"
   local apns_key="$shared_dir/apns-key.p8"
 
   chown root:semprec "$shared_dir"
@@ -301,9 +408,20 @@ ensure_shared_permissions() {
   chmod 0750 "$bin_dir"
 
   # systemd reads EnvironmentFile= as root before dropping privileges, so no service user
-  # needs this file; a hand-edited mode is healed back on every rerun.
-  chown root:root "$env_file"
-  chmod 0600 "$env_file"
+  # needs these files; a hand-edited mode is healed back on every rerun. The legacy file is
+  # only healed when it still exists.
+  chown root:root "$env_dir"
+  chmod 0700 "$env_dir"
+  local group_file
+  for group_file in "$env_dir"/*.env; do
+    [[ -e "$group_file" ]] || continue
+    chown root:root "$group_file"
+    chmod 0600 "$group_file"
+  done
+  if [[ -e "$legacy_env" ]]; then
+    chown root:root "$legacy_env"
+    chmod 0600 "$legacy_env"
+  fi
 
   if [[ -e "$apns_key" ]]; then
     chown root:semprec "$apns_key"
@@ -311,13 +429,14 @@ ensure_shared_permissions() {
   fi
 }
 
-# Warns, never fails: an operator's .env is never edited, and the settings below are only
+# Warns, never fails: an operator's group files are never edited, and the settings below are only
 # consequential once semprec-api sends mail. Prints key names and the two non-secret URL values only.
 check_outbound_link_settings() {
-  local env_file="$SEMPREC_ROOT/shared/.env"
+  local env_file="$SEMPREC_ROOT/shared/env/api.env"
+  local monitor_env="$SEMPREC_ROOT/shared/env/monitor.env"
   local app_base_url domain smtp_host smtp_from
   app_base_url="$(sed -n 's/^APP_BASE_URL=//p' "$env_file" | tail -n 1)"
-  domain="$(sed -n 's/^SEMPREC_DOMAIN=//p' "$env_file" | tail -n 1)"
+  domain="$(sed -n 's/^SEMPREC_DOMAIN=//p' "$monitor_env" | tail -n 1)"
   smtp_host="$(sed -n 's/^SMTP_HOST=//p' "$env_file" | tail -n 1)"
   smtp_from="$(sed -n 's/^SMTP_FROM_ADDRESS=//p' "$env_file" | tail -n 1)"
 
@@ -338,9 +457,9 @@ main() {
   require_root
   require_supported_distribution
   install_host_packages
-  install_postgresql_hunspell_assets
   ensure_service_user
   ensure_release_tree
+  install_postgresql_hunspell_assets
   ensure_backup_directory
   install_systemd_units
   install_timer_scripts

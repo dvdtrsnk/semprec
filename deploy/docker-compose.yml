@@ -4,8 +4,8 @@
 # systemd units against the `current` release symlink, see issue #176); their own loopback
 # binding lives in their `server.listen(port, "127.0.0.1", ...)` call. This container receives
 # exactly POSTGRES_USER, POSTGRES_PASSWORD and POSTGRES_DB, interpolated from
-# /opt/semprec/shared/.env by `docker compose --env-file /opt/semprec/shared/.env -f
-# deploy/docker-compose.yml up -d` — never the file itself.
+# /opt/semprec/shared/env/postgres.env by `docker compose --env-file
+# /opt/semprec/shared/env/postgres.env -f deploy/docker-compose.yml up -d` — never the file itself.
 services:
   postgres:
     image: postgres:16-alpine

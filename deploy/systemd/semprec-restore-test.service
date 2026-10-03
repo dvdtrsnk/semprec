@@ -6,7 +6,9 @@ After=network-online.target docker.service
 [Service]
 Type=oneshot
 # Root, like semprec-backup.service: the test drives Docker and restic directly.
-EnvironmentFile=/opt/semprec/shared/.env
+EnvironmentFile=/opt/semprec/shared/env/side-role.env
+EnvironmentFile=/opt/semprec/shared/env/settings.env
+EnvironmentFile=/opt/semprec/shared/env/backup.env
 SyslogIdentifier=semprec-restore-test
 TimeoutStartSec=6h
 ExecStart=/bin/bash /opt/semprec/shared/bin/semprec-restore-test.sh

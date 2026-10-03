@@ -33,11 +33,14 @@ Issue #243. Two roles, created by migration `0040_least_privilege_roles.sql`
 Only `semprec-api`, `semprec-transcribe` and `semprec-agents` are configured with the
 `semprec_data` connection string (`docs/adr/2026-10-03-agents-worker-choke-point-access.md`). Each service's `.env.example` documents which role its `DATABASE_URL` must
 authenticate as, for local development. In production, the actual per-environment connection
-strings (with real passwords) come from issue #175's `deploy/shared/.env.example` —
-`SEMPREC_API_DATABASE_URL` (`semprec_data`) and `SEMPREC_SIDE_DATABASE_URL` (`semprec_side`,
-shared by every side-table-only process) — never committed here. The roles created by this
-migration have no password until an operator sets one with `ALTER ROLE ... WITH PASSWORD`, using
-the distinct `SEMPREC_DATA_DB_PASSWORD` / `SEMPREC_SIDE_DB_PASSWORD` values from that same file.
+strings (with real passwords) live in the secret group files under `/opt/semprec/shared/env/`
+(templates in `deploy/shared/env/`) — never committed here. `SEMPREC_API_DATABASE_URL`
+(`semprec_data`) is in `data-role.env`, loaded by `semprec-api`, `semprec-agents` and
+`semprec-transcribe`. `SEMPREC_SIDE_DATABASE_URL` (`semprec_side`, shared by every
+side-table-only process) is in `side-role.env`, loaded by `semprec-ai-gateway` and
+`semprec-restore-test`. The roles created by this migration have no password until an operator
+sets one with `ALTER ROLE ... WITH PASSWORD`, using the distinct `SEMPREC_DATA_DB_PASSWORD` (in
+`data-role.env`) / `SEMPREC_SIDE_DB_PASSWORD` (in `side-role.env`) values.
 
 ## Extending the grants
 
