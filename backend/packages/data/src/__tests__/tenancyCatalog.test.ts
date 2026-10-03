@@ -200,4 +200,90 @@ describe("tenancy classification catalog", () => {
       }
     }
   });
+
+  /** Issue #973: RLS enabled and not forced, with exactly the restrictive and the permissive policy. */
+  it("enables row-level security without forcing it on every tenant table", async () => {
+    const { rows } = await pool.query<{ relname: string; relrowsecurity: boolean; relforcerowsecurity: boolean }>(
+      `SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class
+        WHERE relnamespace = 'public'::regnamespace AND relname = ANY($1::text[])`,
+      [TENANT_TABLES],
+    );
+    expect(rows.map((row) => row.relname).sort()).toEqual([...TENANT_TABLES].sort());
+    for (const row of rows) {
+      expect(row.relrowsecurity, `${row.relname} relrowsecurity`).toBe(true);
+      expect(row.relforcerowsecurity, `${row.relname} relforcerowsecurity`).toBe(false);
+    }
+  });
+
+  it("gives every tenant table exactly the tenant_isolation and tenant_rows policies", async () => {
+    const { rows } = await pool.query<{
+      tablename: string;
+      policyname: string;
+      permissive: string;
+      roles: string[];
+      cmd: string;
+      qual: string | null;
+      with_check: string | null;
+    }>(
+      `SELECT tablename::text, policyname::text, permissive, roles::text[] AS roles, cmd, qual, with_check
+         FROM pg_policies
+        WHERE schemaname = 'public'
+        ORDER BY tablename, policyname`,
+    );
+    const byTable = new Map<string, typeof rows>();
+    for (const row of rows) byTable.set(row.tablename, [...(byTable.get(row.tablename) ?? []), row]);
+    expect([...byTable.keys()].sort(), "tables carrying policies").toEqual([...TENANT_TABLES].sort());
+    for (const table of TENANT_TABLES) {
+      const policies = byTable.get(table) ?? [];
+      expect(
+        policies.map((policy) => policy.policyname),
+        `${table} policy names`,
+      ).toEqual(["tenant_isolation", "tenant_rows"]);
+      const [isolation, permissiveRows] = policies;
+      expect(isolation?.permissive, `${table} tenant_isolation`).toBe("RESTRICTIVE");
+      expect(isolation?.cmd).toBe("ALL");
+      expect(isolation?.roles).toEqual(["public"]);
+      expect(isolation?.qual).not.toBeNull();
+      expect(isolation?.with_check, `${table} qual and with_check`).toBe(isolation?.qual);
+      expect(isolation?.qual).toContain("tenant_id");
+      expect(isolation?.qual).toContain("app_tenant_default()");
+      expect(permissiveRows?.permissive, `${table} tenant_rows`).toBe("PERMISSIVE");
+      expect(permissiveRows?.cmd).toBe("ALL");
+      expect(permissiveRows?.roles).toEqual(["public"]);
+      expect(permissiveRows?.qual).toBe("true");
+      expect(permissiveRows?.with_check).toBe("true");
+    }
+  });
+
+  it("keeps the runtime roles non-privileged, table-less owners with no grant on any items partition", async () => {
+    await resetDatabase(pool);
+    await createChokePoint(pool).createDatabase({ name: "Tenancy catalog runtime roles" });
+    for (const role of ["semprec_data", "semprec_side"]) {
+      const attrs = await pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = $1`,
+        [role],
+      );
+      expect(attrs.rows, role).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+
+      const owned = await pool.query<{ relname: string }>(
+        `SELECT c.relname FROM pg_class c
+          WHERE c.relnamespace = 'public'::regnamespace AND c.relowner = (SELECT oid FROM pg_roles WHERE rolname = $1)`,
+        [role],
+      );
+      expect(owned.rows, `${role} owned relations`).toEqual([]);
+
+      const partitions = await pool.query<{ relname: string; granted: boolean }>(
+        `SELECT c.relname,
+                has_table_privilege($1, c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') AS granted
+           FROM pg_class c
+          WHERE c.relnamespace = 'public'::regnamespace AND c.relispartition AND c.relname LIKE 'items\\_p\\_%'`,
+        [role],
+      );
+      expect(partitions.rows.length, "items partitions exist").toBeGreaterThan(0);
+      expect(
+        partitions.rows.filter((row) => row.granted).map((row) => row.relname),
+        `${role} privileges on items partitions`,
+      ).toEqual([]);
+    }
+  });
 });
