@@ -78,8 +78,8 @@ a table also classifies it. Why: `docs/adr/2026-10-03-tenant-isolation-through-r
 ```sql
 CREATE TABLE widgets (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id uuid NOT NULL DEFAULT app_tenant_default() REFERENCES tenants(id)
-  -- ...
+  tenant_id uuid NOT NULL DEFAULT app_tenant_default() REFERENCES tenants(id),
+  -- ... application columns follow, so the comma above is required
 );
 COMMENT ON TABLE widgets IS 'semprec:tenancy=tenant';
 ALTER TABLE widgets ENABLE ROW LEVEL SECURITY;

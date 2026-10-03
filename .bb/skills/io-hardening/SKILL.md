@@ -26,23 +26,26 @@ add one soon add the other.
   and anything that sends mail or costs money are the obvious cases.
 - **Compare secrets in constant time.** `===` on a token leaks its prefix to a
   patient attacker; use a timing-safe comparison.
-- **The tenant comes from the authenticated identity, never from the request.**
-  A tenant id in a body, query string, path segment or caller-settable header
-  is a claim by the caller. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`.
+- **A tenant id claimed by the caller is untrusted.** A tenant id in a body,
+  query string, path segment or caller-settable header is a claim by the
+  caller. Resolve the tenant from the authenticated session, or from a
+  server-side lookup keyed by an external identifier the request carries (a
+  webhook subscription id, a mailbox address) — never from a tenant id the
+  request supplies. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`.
 - **A foreign resource id answers exactly like a random id.** Same status, body
   and headers. Resolve the resource inside the tenant before any conditional
   branch (ETag/304, cache headers, early returns), so no branch distinguishes
   "exists in another tenant" from "does not exist".
+- **A log line or error message, anywhere in the handler, carries ids and counts, never user content.**
+  Item properties, mail subjects or addresses, file names, prompts and model
+  output stay out: logs are not tenant-scoped
+  (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`).
 - **Never put a secret in a URL.** Query parameters end up in logs, proxies and
   referrers — a token belongs in an `Authorization` header. On the web side, a
   secret in a `VITE_*` variable is baked into the bundle and is public.
 
 ## Outbound: any call to something you do not control
 
-- **A log line or error message carries ids and counts, never user content.**
-  Item properties, mail subjects or addresses, file names, prompts and model
-  output stay out: logs are not tenant-scoped
-  (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`).
 - **Always a timeout.** A remote endpoint that accepts the connection and then
   says nothing will otherwise hold the owning process forever. This includes
   the handshake, not just the request: an MCP server that connects and never
