@@ -144,15 +144,15 @@ Related checks worth doing in the same pass:
 Each user's data lives in that user's own tenant; a write must never reach
 another's. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`.
 
-- The tenant comes only from a trusted source: the authenticated session, a
-  tenant stamped onto the queue job at enqueue from the producer's scope (the
-  stamping mechanism is not implemented yet; until it exists, do not accept a
-  tenant from a job payload field), a NOTIFY payload stamped by its publisher, an internal
+- The tenant comes only from a trusted source. Today those are: the
+  authenticated session, a NOTIFY payload stamped by its publisher, an internal
   caller verified against a row visible in that tenant, an MCP run credential,
   or a router function resolving an external identifier to its tenant. It never
-  comes from a request body, a model's output, or a job payload field filled in
-  by the job's originator (as opposed to a tenant stamped at enqueue by the
-  producing code, once that mechanism exists).
+  comes from a request body or a model's output.
+- Until the enqueue-stamp mechanism exists, do not read the tenant from any
+  job payload field. Once it is implemented, a tenant stamped onto the job at
+  enqueue by the producing code (from the producer's scope, not filled in by
+  the job's originator) will also be a trusted source.
 - Run the write inside the tenant scope (`app.tenant_id`) established from one
   of those sources.
 - Let the `tenant_id` column default stamp the row; do not pass it. RLS
@@ -177,7 +177,8 @@ another's. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security
 - [ ] Every guard the "add"/"create"/"lock" side of a pair enforces is enforced
       by its "remove"/"delete"/"unlock" counterpart too.
 - [ ] The tenant of every write comes from a trusted source, never from a
-      request body, model output or originator-supplied job payload field.
+      request body, model output or any job payload field (until the enqueue-stamp
+      mechanism exists).
 - [ ] No write sets `tenant_id` explicitly; the column default stamps it.
 - [ ] Existence and uniqueness checks are per tenant, and another tenant's id
       gets the same outcome as a missing id.
