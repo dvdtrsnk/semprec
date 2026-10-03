@@ -156,4 +156,48 @@ describe("tenancy classification catalog", () => {
       expect(comments.get(table), table).toBe("semprec:tenancy=tenant");
     }
   });
+
+  /** Issue #972: `tenant_id uuid NOT NULL DEFAULT app_tenant_default()` referencing tenants(id). */
+  it("gives every tenant table and items partition a defaulted, foreign-keyed tenant_id", async () => {
+    await resetDatabase(pool);
+    await createChokePoint(pool).createDatabase({ name: "Tenancy catalog tenant_id" });
+    const { rows } = await pool.query<{
+      relname: string;
+      typname: string | null;
+      attnotnull: boolean | null;
+      default_expr: string | null;
+      fk_targets: string[];
+    }>(
+      `SELECT c.relname, t.typname, a.attnotnull, pg_get_expr(d.adbin, d.adrelid) AS default_expr,
+              COALESCE((SELECT array_agg(cf.relname::text)
+                          FROM pg_constraint k
+                          JOIN pg_class cf ON cf.oid = k.confrelid
+                         WHERE k.conrelid = c.oid AND k.contype = 'f'
+                           AND k.conkey = ARRAY[a.attnum] AND k.confkey = (
+                             SELECT ARRAY[ta.attnum] FROM pg_attribute ta
+                              WHERE ta.attrelid = cf.oid AND ta.attname = 'id')), '{}') AS fk_targets
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped
+         LEFT JOIN pg_type t ON t.oid = a.atttypid
+         LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
+        WHERE n.nspname = 'public'
+          AND (obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'
+               OR (c.relkind = 'r' AND c.relispartition AND c.relname LIKE 'items\\_p\\_%'))
+        ORDER BY c.relname`,
+    );
+    const byTable = new Map(rows.map((row) => [row.relname, row]));
+    for (const table of TENANT_TABLES) {
+      expect(byTable.has(table), `${table} is missing from the catalog`).toBe(true);
+    }
+    expect(rows.filter((row) => row.relname.startsWith("items_p_")).length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.typname, `${row.relname}.tenant_id type`).toBe("uuid");
+      expect(row.attnotnull, `${row.relname}.tenant_id NOT NULL`).toBe(true);
+      expect(row.default_expr, `${row.relname}.tenant_id default`).toBe("app_tenant_default()");
+      if (!row.relname.startsWith("items_p_")) {
+        expect(row.fk_targets, `${row.relname}.tenant_id foreign key`).toEqual(["tenants"]);
+      }
+    }
+  });
 });
