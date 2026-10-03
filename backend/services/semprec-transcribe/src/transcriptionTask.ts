@@ -205,14 +205,12 @@ function readAsrCheckpoint(source: ItemRow): AsrCheckpoint {
 /**
  * `withTransaction` at `repeatable read`, the isolation both transactions of
  * `docs/adr/2026-09-10-bracket-non-transactional-calls-with-staleness-checked-transactions.md` use.
+ * The isolation level is set by `withTransaction`'s `isolation` option on the `BEGIN` itself.
  * Built on `withTransaction` rather than `createPoolClientTransactionRunner` because only the
  * former fires the `runAfterCommit` invalidations `updateItemWithClient` registers.
  */
 function withRepeatableReadTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T> {
-  return withTransaction(pool, async (client) => {
-    await client.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
-    return fn(client);
-  });
+  return withTransaction(pool, fn, { isolation: "repeatable_read" });
 }
 
 /**
