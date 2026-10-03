@@ -1,5 +1,6 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import type { Pool, PoolClient } from "pg";
 import { runOnce } from "@semprec/queue";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
@@ -20,7 +21,8 @@ import {
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
-import { JOURNAL_INBOX_COMPUTED_KEY } from "../inbox/journalInboxCompute.js";
+import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
+import { JOURNAL_INBOX_COMPUTED_KEY, recomputeJournalInboxDay } from "../inbox/journalInboxCompute.js";
 import { JOURNAL_INBOX_VIEW_TYPE } from "../views/journalInboxViewType.js";
 import type { JournalInboxItemSummary } from "../inbox/journalInboxCompute.js";
 
@@ -56,6 +58,10 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     typesId = await databaseIdFor("inboxItemTypes");
     proposalsId = await databaseIdFor("processingProposals");
     journalId = await databaseIdFor("journal");
+  });
+
+  afterEach(() => {
+    setInvalidationHook(() => undefined);
   });
 
   afterAll(async () => {
@@ -285,5 +291,68 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
 
     const items = await computedInboxItems(dayId);
     expect(items).toEqual([]);
+  });
+
+  describe("recomputeJournalInboxDay publication", () => {
+    function captureEvents(): InvalidationEvent[] {
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => {
+        events.push(event);
+      });
+      return events;
+    }
+
+    it("publishes exactly one item invalidation carrying the committed updatedAt", async () => {
+      const item = await captureItem("Buy milk");
+      const dayId = await journalDayIdFor(item.id);
+      const events = captureEvents();
+
+      await recomputeJournalInboxDay(pool, dayId);
+
+      const day = await chokePoint.getItem(journalId, dayId);
+      expect(events).toEqual([
+        { scope: "item", databaseId: journalId, itemId: dayId, op: "update", updatedAt: day!.updatedAt },
+      ]);
+      expect((await computedInboxItems(dayId))?.map((entry) => entry.id)).toEqual([item.id]);
+    });
+
+    it("rejects and publishes nothing when the COMMIT fails, then or from a later transaction", async () => {
+      const item = await captureItem("Buy milk");
+      const dayId = await journalDayIdFor(item.id);
+      const before = await computedInboxItems(dayId);
+      const events = captureEvents();
+
+      const commitFailingPool: Pool = {
+        connect: async () => {
+          const client = await pool.connect();
+          const originalQuery = client.query.bind(client);
+          const originalRelease = client.release.bind(client);
+          client.query = ((...args: Parameters<PoolClient["query"]>) => {
+            if (args[0] === "COMMIT") return Promise.reject(new Error("commit failed"));
+            return originalQuery(...args);
+          }) as PoolClient["query"];
+          // Force pg to discard the client so the intercepted COMMIT never reaches the idle queue.
+          client.release = (err?: Error | boolean) => {
+            originalRelease(err instanceof Error ? err : new Error("discard client contaminated by commitFailingPool"));
+          };
+          return client;
+        },
+      } as unknown as Pool;
+
+      await expect(recomputeJournalInboxDay(commitFailingPool, dayId)).rejects.toThrow("commit failed");
+      expect(events).toEqual([]);
+      expect(await computedInboxItems(dayId)).toEqual(before);
+
+      await withTransaction(pool, async () => undefined);
+      expect(events).toEqual([]);
+    });
+
+    it("resolves without publishing when the day item does not exist", async () => {
+      const events = captureEvents();
+
+      await expect(recomputeJournalInboxDay(pool, randomUUID())).resolves.toBeUndefined();
+
+      expect(events).toEqual([]);
+    });
   });
 });

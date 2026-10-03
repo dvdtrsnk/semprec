@@ -5,6 +5,7 @@ import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { writeComputed } from "../chokePoint/itemsStore.js";
+import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import {
   INBOX_MODULE_ID,
@@ -205,30 +206,33 @@ export async function enqueueJournalInboxRecomputeForProposal(client: PoolClient
   await enqueueJournalInboxRecompute(client, journalDayItemId);
 }
 
-/** The actual recompute: one query for the day's Inbox items, written to `items.computed` (issue #106), always a full recompute of one day's cell — mirrors rollup/recompute.ts's `recomputeRollupCell`. */
+/**
+ * The actual recompute: one query for the day's Inbox items, written to `items.computed` (issue #106), always a full recompute of one day's cell. Mirrors rollup/recompute.ts's `recomputeRollupCell`: one transaction holding `FOR UPDATE` on the day item so overlapping recomputes serialise and the list written is computed from the latest committed state, with the invalidation announced only after the commit.
+ */
 export async function recomputeJournalInboxDay(pool: Pool, journalDayItemId: string): Promise<void> {
-  const client = await pool.connect();
-  try {
+  await withTransaction(pool, async (client) => {
     const databases = await resolveInboxPipelineDatabases(client);
     if (!databases) return;
+    const day = await itemsStore.lockItemById(client, databases.journal.id, journalDayItemId);
+    if (!day) return; // day item was purged since the job was enqueued
     const items = await computeJournalInboxItems(client, databases, journalDayItemId);
-    await writeComputed(client, databases.journal.id, journalDayItemId, JOURNAL_INBOX_COMPUTED_KEY, items);
-    // No `withTransaction`/`runAfterCommit` here (mirrors rollup/recompute.ts's
-    // `recomputeRollupCell`) — each statement above auto-commits on its own plain-connection
-    // client, so reading `updatedAt` back after the write above is already safe to announce.
-    const item = await itemsStore.getItemById(client, databases.journal.id, journalDayItemId);
-    if (item) {
+    const updatedAt = await writeComputed(
+      client,
+      databases.journal.id,
+      journalDayItemId,
+      JOURNAL_INBOX_COMPUTED_KEY,
+      items,
+    );
+    runAfterCommit(client, () =>
       notifyInvalidation({
         scope: "item",
         databaseId: databases.journal.id,
         itemId: journalDayItemId,
         op: "update",
-        updatedAt: item.updatedAt,
-      });
-    }
-  } finally {
-    client.release();
-  }
+        updatedAt,
+      }),
+    );
+  });
 }
 
 export async function handleJournalInboxRecomputeTask(
