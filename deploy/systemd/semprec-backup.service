@@ -3,6 +3,8 @@ Description=Semprec backup
 
 [Service]
 Type=oneshot
-EnvironmentFile=/opt/semprec/shared/.env
+EnvironmentFile=/opt/semprec/shared/env/postgres.env
+EnvironmentFile=/opt/semprec/shared/env/settings.env
+EnvironmentFile=/opt/semprec/shared/env/backup.env
 SyslogIdentifier=semprec-backup
 ExecStart=/bin/bash /opt/semprec/shared/bin/semprec-backup.sh

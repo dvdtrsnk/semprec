@@ -5,6 +5,6 @@ Description=Semprec dead-man health check
 Type=oneshot
 User=semprec
 Group=semprec
-EnvironmentFile=/opt/semprec/shared/.env
+EnvironmentFile=/opt/semprec/shared/env/monitor.env
 SyslogIdentifier=semprec-dead-man
 ExecStart=/bin/bash /opt/semprec/shared/bin/semprec-dead-man.sh

@@ -18,7 +18,7 @@ set -euo pipefail
 readonly SEMPREC_ROOT=/opt/semprec
 readonly RELEASES_DIR="$SEMPREC_ROOT/releases"
 readonly CURRENT_LINK="$SEMPREC_ROOT/current"
-readonly SHARED_ENV="$SEMPREC_ROOT/shared/.env"
+readonly MIGRATE_ENV="$SEMPREC_ROOT/shared/env/migrate.env"
 readonly LOCK_FILE="$SEMPREC_ROOT/.deploy.lock"
 readonly PROC_ROOT=/proc
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,7 +61,7 @@ validate_tag_format() {
 
 require_release_tree() {
   [[ -d "$RELEASES_DIR" ]] || fail "$RELEASES_DIR is missing; run provision.sh first"
-  [[ -f "$SHARED_ENV" ]] || fail "$SHARED_ENV is missing; run provision.sh first"
+  [[ -f "$MIGRATE_ENV" ]] || fail "$MIGRATE_ENV is missing; run provision.sh first"
   if [[ -e "$CURRENT_LINK" && ! -L "$CURRENT_LINK" ]]; then
     fail "$CURRENT_LINK exists and is not a symlink; refusing to replace it"
   fi
@@ -128,13 +128,13 @@ write_release_env() {
   chmod 0644 "$staging_dir/release.env"
 }
 
-# systemd reads the shared `.env` itself, exactly as it does for the units, so this script never
-# reads or copies a secret. Migrations are forward-only and backward-compatible, so the release
+# systemd reads the `migrate` group file itself, the only file that holds the superuser migrate
+# URL and one no unit loads, so this script never reads or copies a secret. Migrations are forward-only and backward-compatible, so the release
 # still serving traffic keeps working against the migrated schema.
 run_migrations() {
   systemd-run --quiet --wait --pipe --collect \
     --uid=semprec --gid=semprec \
-    --property=EnvironmentFile="$SHARED_ENV" \
+    --property=EnvironmentFile="$MIGRATE_ENV" \
     --working-directory="$staging_dir/backend" \
     /bin/sh -c 'DATABASE_URL="$SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runMigrationsCli.js' \
     || fail "migrations failed"
@@ -145,7 +145,7 @@ run_migrations() {
 run_seed() {
   systemd-run --quiet --wait --pipe --collect \
     --uid=semprec --gid=semprec \
-    --property=EnvironmentFile="$SHARED_ENV" \
+    --property=EnvironmentFile="$MIGRATE_ENV" \
     --working-directory="$staging_dir/backend" \
     /bin/sh -c 'DATABASE_URL="$SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runSeedCli.js' \
     || fail "seed failed"

@@ -5,6 +5,6 @@ Description=Ping the external monitor after %i restart exhaustion
 Type=oneshot
 User=semprec
 Group=semprec
-EnvironmentFile=/opt/semprec/shared/.env
+EnvironmentFile=/opt/semprec/shared/env/monitor.env
 SyslogIdentifier=semprec-failping
 ExecStart=/bin/bash /opt/semprec/shared/bin/semprec-failping.sh %i

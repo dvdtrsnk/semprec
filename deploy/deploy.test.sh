@@ -19,9 +19,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$TEST_BIN" "$TEST_STATE/proc" "$TEST_STATE/pids" "$TEST_SEMPREC_ROOT/releases" "$TEST_SEMPREC_ROOT/shared"
-printf 'CREDENTIALS_MASTER_KEY=shared-secret-value\n' > "$TEST_SEMPREC_ROOT/shared/.env"
-readonly SHARED_ENV_CHECKSUM="$(sha256sum "$TEST_SEMPREC_ROOT/shared/.env" | awk '{print $1}')"
+mkdir -p "$TEST_BIN" "$TEST_STATE/proc" "$TEST_STATE/pids" "$TEST_SEMPREC_ROOT/releases" "$TEST_SEMPREC_ROOT/shared/env"
+printf 'SEMPREC_MIGRATE_DATABASE_URL=postgres://migrate-secret-value\n' > "$TEST_SEMPREC_ROOT/shared/env/migrate.env"
+printf 'SEMPREC_API_DATABASE_URL=postgres://data-role-value\n' > "$TEST_SEMPREC_ROOT/shared/env/data-role.env"
+readonly MIGRATE_ENV_CHECKSUM="$(sha256sum "$TEST_SEMPREC_ROOT/shared/env/migrate.env" | awk '{print $1}')"
 
 # ---- Repositories: origin holds main and the tags; the operator checkout runs deploy.sh. ----
 
@@ -90,7 +91,7 @@ grep -qx "APP_VERSION=v[0-9.]*" "$(dirname "$working_directory")/release.env"
 echo "systemd-run $*" >> "$TEST_STATE/commands"
 if [[ -f "$TEST_STATE/fail-migrate" ]]; then exit 1; fi
 if [[ -f "$TEST_STATE/fail-seed" && "$*" == *runSeedCli.js* ]]; then exit 1; fi'
-# `restart` simulates systemd: the new process gets the shared .env plus current/release.env.
+# `restart` simulates systemd: the new process gets a service group file (never migrate.env) plus current/release.env.
 write_mock systemctl '
 case "$1" in
   restart)
@@ -98,7 +99,7 @@ case "$1" in
     pid=$(( $(cat "$TEST_STATE/next-pid" 2>/dev/null || echo 100) + 1 ))
     echo "$pid" > "$TEST_STATE/next-pid"
     mkdir -p "$TEST_STATE/proc/$pid"
-    cat "$TEST_SEMPREC_ROOT/shared/.env" "$TEST_SEMPREC_ROOT/current/release.env" | tr "\n" "\0" > "$TEST_STATE/proc/$pid/environ"
+    cat "$TEST_SEMPREC_ROOT/shared/env/data-role.env" "$TEST_SEMPREC_ROOT/current/release.env" | tr "\n" "\0" > "$TEST_STATE/proc/$pid/environ"
     echo "$pid" > "$TEST_STATE/pids/$2"
     ;;
   show)
@@ -152,7 +153,9 @@ for unit in semprec-ai-gateway semprec-api semprec-agents semprec-transcribe; do
 done
 test "$(grep -c '^systemctl restart ' "$TEST_STATE/commands")" -eq 4
 grep -q 'pnpm install --frozen-lockfile' "$TEST_STATE/commands"
-grep -q "EnvironmentFile=$TEST_SEMPREC_ROOT/shared/.env" "$TEST_STATE/commands"
+test "$(grep -c '^systemd-run ' "$TEST_STATE/commands")" -eq 2
+test "$(grep -c "EnvironmentFile=$TEST_SEMPREC_ROOT/shared/env/migrate.env " "$TEST_STATE/commands")" -eq 2
+test "$(grep -c 'EnvironmentFile=' "$TEST_STATE/commands")" -eq 2
 # The seed runs after the migrations, under the same migrate URL.
 grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runMigrationsCli.js' "$TEST_STATE/commands" \
   | cut -d: -f1 > "$TEST_STATE/migrate.line"
@@ -163,8 +166,8 @@ test "$(wc -l < "$TEST_STATE/seed.line")" -eq 1
 test "$(cat "$TEST_STATE/migrate.line")" -lt "$(cat "$TEST_STATE/seed.line")"
 test -f "$TEST_SEMPREC_ROOT/releases/v1.0.0/web/dist/index.html"
 grep -qx 'pnpm run build' "$TEST_STATE/commands"
-if grep -q 'shared-secret-value' "$TEST_STATE/deploy.out"; then
-  echo 'deploy output exposed a shared secret' >&2
+if grep -q 'migrate-secret-value' "$TEST_STATE/deploy.out"; then
+  echo 'deploy output exposed the migrate secret' >&2
   exit 1
 fi
 test -z "$(find "$TEST_SEMPREC_ROOT/releases" -name .env)"
@@ -262,7 +265,14 @@ expect_refused 'can only roll back to v1.1.0' --rollback v1.0.0
 assert_current v1.1.0
 test ! -e "$TEST_STATE/commands"
 
-test "$(sha256sum "$TEST_SEMPREC_ROOT/shared/.env" | awk '{print $1}')" == "$SHARED_ENV_CHECKSUM"
+# Without the migrate group file deploy.sh stops before building anything.
+mv "$TEST_SEMPREC_ROOT/shared/env/migrate.env" "$TEST_STATE/migrate.env.moved"
+rm -f "$TEST_STATE/commands"
+expect_refused 'run provision.sh first' v1.4.0
+test ! -e "$TEST_STATE/commands"
+mv "$TEST_STATE/migrate.env.moved" "$TEST_SEMPREC_ROOT/shared/env/migrate.env"
+
+test "$(sha256sum "$TEST_SEMPREC_ROOT/shared/env/migrate.env" | awk '{print $1}')" == "$MIGRATE_ENV_CHECKSUM"
 test ! -e "$TEST_STATE/violations"
 
 echo 'deploy.sh behavior test passed'

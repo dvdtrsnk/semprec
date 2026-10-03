@@ -18,18 +18,20 @@ and host provisioning (#244, #176):
   filter`/`ip nat` tables are left alone.
 - `docker-compose.yml` — PostgreSQL only, bound to `127.0.0.1`. Its container receives exactly
   `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB`, interpolated from
-  `/opt/semprec/shared/.env` by `docker compose --env-file /opt/semprec/shared/.env -f
-  deploy/docker-compose.yml up -d` — no other variable in that file reaches the container. A host
+  `/opt/semprec/shared/env/postgres.env` by `docker compose --env-file
+  /opt/semprec/shared/env/postgres.env -f deploy/docker-compose.yml up -d` — no other variable in that file reaches the container. A host
   provisioned before this file dropped MinIO can remove its now-unused volume by hand (check its
   name with `docker volume ls`, typically `<project>_minio_data`) with `docker volume rm
   <volume-name>` — optional, not scripted.
-- `shared/.env.example` — the values-free template for `/opt/semprec/shared/.env`, the one
-  production secrets file every service and both Docker Compose services read. See its header
-  comment for the full contract (ownership/mode, distribution, backup exclusion). `provision.sh`
-  (#244) copies this template into place only when no `.env` already exists there.
+- `shared/env/<group>.env.example` — twelve values-free templates, one per secret group
+  (`postgres`, `migrate`, `data-role`, `side-role`, `master-key`, `gateway-token`, `ai-gateway`,
+  `api`, `agents`, `settings`, `backup`, `monitor`), for `/opt/semprec/shared/env/<group>.env`. Each
+  key is in exactly one group and each template's header names the units that load it
+  (`docs/adr/2026-10-03-per-service-secret-groups.md`). `provision.sh` installs a template only
+  when its group file does not exist yet.
 - `provision.sh` — idempotently installs the host packages/tree from #244 plus the systemd units,
   timer skeletons, shared timer scripts, and journald retention configuration from #176. Run it as
-  root from this directory's checked-out copy. It never overwrites an existing shared `.env` or a
+  root from this directory's checked-out copy. It never overwrites an existing group file or a
   release.
 - `systemd/` — source units installed into `/etc/systemd/system`, a journald drop-in installed at
   `/etc/systemd/journald.conf.d/semprec.conf`, and timer-script skeletons installed under
@@ -39,11 +41,23 @@ and host provisioning (#244, #176):
 `semprec-api`, `semprec-agents`, `semprec-transcribe`, and `semprec-ai-gateway` run as systemd
 units; mail live-sync runs inside `semprec-api`, not as a unit of its own. The internal HTTP listeners bind to loopback in their
 own `server.listen(port, "127.0.0.1", ...)` call, so that binding lives in
-`backend/services/*/src/serve.ts`, not in a unit file. Each unit loads the same
-`/opt/semprec/shared/.env` via `EnvironmentFile=` — the systemd half of the same distribution
-contract `docker-compose.yml`'s `env_file:` already uses. A service that needs a value no other
-process needs (e.g. `PORT`) still reads it out of this one file; nothing service-specific is ever
-shipped inside a release directory, so a release contains no secret of any kind.
+`backend/services/*/src/serve.ts`, not in a unit file. Each unit's
+`EnvironmentFile=` lines are its allowlist of secret groups; nothing service-specific is ever
+shipped inside a release directory, so a release contains no secret of any kind:
+
+| unit | groups (in `/opt/semprec/shared/env/`) |
+|---|---|
+| `semprec-api` | `data-role`, `master-key`, `gateway-token`, `api`, `settings` |
+| `semprec-agents` | `data-role`, `master-key`, `gateway-token`, `agents`, `settings` |
+| `semprec-transcribe` | `data-role`, `gateway-token`, `settings` |
+| `semprec-ai-gateway` | `side-role`, `gateway-token`, `ai-gateway` |
+| `semprec-backup` | `postgres`, `settings`, `backup` |
+| `semprec-restore-test` | `side-role`, `settings`, `backup` |
+| `semprec-dead-man`, `semprec-failping@` | `monitor` |
+| `semprec-trash-purge` | none |
+
+The four long-running units load `current/release.env` last. `migrate` is loaded by no unit: only
+`deploy.sh` hands it to its transient migration and seed units.
 
 `semprec-agents` has no HTTP listener: it is the second graphile-worker composition root (issue
 #91), owning the agent-affinity task catalog over the same Postgres-backed queue `semprec-api`
@@ -69,7 +83,8 @@ In order, it:
    `pnpm install --frozen-lockfile` + `pnpm run build` in its `web/`, producing `web/dist`, and
    writes `release.env` (`APP_VERSION=<tag>`, not a secret);
 3. runs the release's migrations CLI in a transient `systemd-run` unit that loads
-   `/opt/semprec/shared/.env` and connects with its `SEMPREC_MIGRATE_DATABASE_URL`, then runs the
+   `/opt/semprec/shared/env/migrate.env` — and nothing else — and connects with its
+   `SEMPREC_MIGRATE_DATABASE_URL`, then runs the
    seed CLI (`runSeedCli.js`) right after it the same way, under the same URL — it creates the
    system databases on a fresh install and is a no-op once they exist (see
    [`docs/operations/seeding.md`](../docs/operations/seeding.md));
@@ -82,11 +97,11 @@ A failure in steps 1–3 removes the staging directory and exits non-zero with `
 service untouched. A failure in step 5 exits non-zero too, but `current` already names the new
 release. Only one deploy runs at a time (`/opt/semprec/.deploy.lock`).
 
-Every unit loads `current/release.env` after the shared `.env`, so the version a process reports
-comes from the release it runs. The script never reads, copies or prints the shared `.env`; a
-release directory contains no secret. A host provisioned before this issue needs `provision.sh`
-rerun (for the updated units) and `SEMPREC_MIGRATE_DATABASE_URL` added to its shared `.env` by
-hand. `deploy.test.sh` is the hermetic behavior test.
+Every long-running unit loads `current/release.env` after its group files, so the version a
+process reports comes from the release it runs. The script never reads, copies or prints
+`migrate.env`; a release directory contains no secret. `deploy.sh` stops with "run provision.sh
+first" when `migrate.env` is missing, so a host still on the legacy single file needs `provision.sh`
+rerun first (see "Bootstrap secrets"). `deploy.test.sh` is the hermetic behavior test.
 
 ## Rolling back (issue #191)
 
@@ -137,7 +152,7 @@ restic repository is S3-compatible and encrypted by restic. Only after `restic b
 does the job run `restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 12 --prune`.
 
 The backup input inventory is intentionally narrow: the custom PostgreSQL dump and the two blob
-storage directories only. It excludes `/opt/semprec/shared/.env`, `apns-key.p8`, all credentials
+storage directories only. It excludes `/opt/semprec/shared/env/`, the legacy `/opt/semprec/shared/.env`, `apns-key.p8`, all credentials
 including `CREDENTIALS_MASTER_KEY` (the deployment's secrets master key), `/var/log/journal`,
 certificates, and reproducible release or deployment configuration. No restic invocation traverses a parent
 directory that could include those paths. The daily schedule gives a maximum data-loss window
@@ -170,33 +185,46 @@ pings the monitor's `/fail` endpoint, and exits non-zero. It never sends the suc
 
 ## Bootstrap secrets (issue #175)
 
-- **Two files, one contract.** `/opt/semprec/shared/.env` (this directory's `shared/.env.example`
-  is its template) and `/opt/semprec/shared/apns-key.p8` (Apple's `.p8` APNs auth key — no
-  template committed, since there is no values-free form of a private key; see the `.env.example`
-  header for why it's a separate file instead of an inlined value). `.env` is `root:root 0600`,
-  since systemd reads `EnvironmentFile=` as root before dropping privileges; `apns-key.p8` is
-  `root:semprec 0640` inside `/opt/semprec/shared` (itself `root:semprec 0750`), since the
-  `semprec` service user reads the key directly by path. `provision.sh` corrects both files' and
-  `shared`'s ownership and mode on every run.
-- **Distribution.** Every systemd unit (#176) loads `.env` via `EnvironmentFile=`; `apns-key.p8`
-  is read directly by path (`APNS_PRIVATE_KEY_PATH`, `backend/packages/data/src/push/apnsAdapter.ts`).
-  `docker-compose.yml`'s `postgres` service (#174) receives three of its values —
-  `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` — interpolated by `docker compose
-  --env-file`, never the file itself. No process ever receives a secret through a command-line
-  argument, a file inside `releases/`, or a hardcoded default.
+- **Twelve group files plus the key file.** `/opt/semprec/shared/env/<group>.env` (the templates
+  are `shared/env/<group>.env.example`) and `/opt/semprec/shared/apns-key.p8` (Apple's `.p8` APNs
+  auth key — no template committed, since there is no values-free form of a private key; see
+  `shared/env/api.env.example` for why it's a separate file instead of an inlined value). `shared/env`
+  is `root:root 0700` and each group file `root:root 0600`, since systemd reads `EnvironmentFile=` as
+  root before dropping privileges; `apns-key.p8` is `root:semprec 0640` inside `/opt/semprec/shared`
+  (itself `root:semprec 0750`), since the `semprec` service user reads the key directly by path.
+  `provision.sh` corrects all of these ownerships and modes on every run.
+- **Distribution.** A unit loads only the groups listed for it in the table above (#176);
+  `apns-key.p8` is read directly by path (`APNS_PRIVATE_KEY_PATH`,
+  `backend/packages/data/src/push/apnsAdapter.ts`). `docker-compose.yml`'s `postgres` service
+  (#174) receives three values of `postgres.env` — `POSTGRES_USER`, `POSTGRES_PASSWORD`,
+  `POSTGRES_DB` — interpolated by `docker compose --env-file`, never the file itself. No process
+  ever receives a secret through a command-line argument, a file inside `releases/`, or a
+  hardcoded default.
 - **`external_credentials` stays separate.** A user's own IMAP/OAuth/MCP secrets
   (`packages/credentials`, `packages/data/src/credentials/externalCredentialsStore.ts`) are
-  encrypted at rest under `CREDENTIALS_MASTER_KEY` (itself provisioned here) and live in their own
-  table — this file never holds a per-user secret, only the deployment's own bootstrap secrets.
+  encrypted at rest under `CREDENTIALS_MASTER_KEY` (provisioned in `master-key.env`) and live in
+  their own table — these files never hold a per-user secret, only the deployment's own bootstrap
+  secrets.
 - **Nothing leaks sideways.** `deploy.sh` (#190) only ever writes `releases/`, never `shared/`, so
-  redeploys and rollbacks can't touch these two files or copy their contents into a release.
-  Neither file is ever logged (every reader treats its value as opaque, never echoes it — see
-  `apnsAdapter.ts`'s and `packages/credentials/src/index.ts`'s own comments) and both are excluded
-  from the restic backup (#177).
-- **Idempotent preservation.** `provision.sh` (#244) places this template at `.env` only when no
-  `.env` already exists there; `apns-key.p8` is never generated (Apple issues it, an operator
-  uploads it manually) and provisioning never touches it once present. Rerunning provisioning
-  never overwrites either an operator-configured `.env` value or an already-uploaded key.
+  redeploys and rollbacks can't touch these files or copy their contents into a release. No file is
+  ever logged (every reader treats its value as opaque, never echoes it — see `apnsAdapter.ts`'s
+  and `packages/credentials/src/index.ts`'s own comments) and all are excluded from the restic
+  backup (#177).
+- **Idempotent preservation.** `provision.sh` (#244) installs a template as `<group>.env` only when
+  that file does not exist; it never overwrites an existing group file, so an operator's values
+  survive every rerun, and a deleted group file is re-created from its template. `apns-key.p8` is
+  never generated (Apple issues it, an operator uploads it manually) and provisioning never
+  touches it once present.
+- **Adding a key.** A new key picks exactly one group and is added to that group's template. On an
+  existing host the template is not re-applied to an existing group file, so the line is added to
+  `/opt/semprec/shared/env/<group>.env` by hand, followed by a restart of the units that load it.
+- **Upgrading from the single `.env`.** Rerun `provision.sh`. For every group file that does not
+  exist yet it takes each template line `KEY=…` and replaces it with the legacy
+  `/opt/semprec/shared/.env`'s last `KEY=` line, verbatim; keys no group claims are not copied, and
+  their names (never their values) are printed to stderr together with a note that the legacy file
+  is no longer read. It never modifies or deletes the legacy file. Verify the group files, restart
+  the units (`systemctl restart semprec-api semprec-agents semprec-transcribe semprec-ai-gateway`),
+  and only then delete `/opt/semprec/shared/.env` by hand.
 
 ## Czech full-text search (issues #206, #207)
 
@@ -220,25 +248,25 @@ PostgreSQL needs them to index or search any message, so rerun `provision.sh` wh
 `provision.sh` installs `Caddyfile` to `/etc/caddy/Caddyfile` and a systemd drop-in
 (`systemd/caddy-semprec.conf`) to `/etc/systemd/system/caddy.service.d/semprec.conf` that points
 `caddy.service` at an `EnvironmentFile=/etc/caddy/semprec.env`. It then reads `SEMPREC_DOMAIN` out
-of `/opt/semprec/shared/.env` and renders that one value into `/etc/caddy/semprec.env`
-(`root:root 0600`) — Caddy never reads the shared `.env` itself, only the one value it needs.
+of `/opt/semprec/shared/env/monitor.env` and renders that one value into `/etc/caddy/semprec.env`
+(`root:root 0600`) — Caddy never reads the group file itself, only the one value it needs.
 
-On a first run against a freshly copied `shared/.env` template, `SEMPREC_DOMAIN` is still empty:
+On a first run against a freshly installed `monitor.env` template, `SEMPREC_DOMAIN` is still empty:
 provisioning prints a warning to stderr and leaves Caddy unconfigured rather than failing, so the
 rest of provisioning still completes. Once an operator sets `SEMPREC_DOMAIN` and reruns
 `provision.sh`, it writes `/etc/caddy/semprec.env`, enables and (re)loads `caddy.service`, and
 validates the rendered config. Rerunning with an unchanged domain is a no-op on the rendered file.
 
-`PORT=8080` must also be set in the shared `.env` — `Caddyfile`'s `reverse_proxy` targets
+`PORT=8080` must also be set in `api.env` — `Caddyfile`'s `reverse_proxy` targets
 `127.0.0.1:8080` and `semprec-api` listens on `PORT`, so the two values have to agree.
 
-`APP_BASE_URL` in the shared `.env` must equal `https://$SEMPREC_DOMAIN`: it is the origin every
+`APP_BASE_URL` in `api.env` must equal `https://$SEMPREC_DOMAIN`: it is the origin every
 emailed link is built against, and semprec-api falls back to `http://localhost:3000` without it.
 Without both `SMTP_HOST` and `SMTP_FROM_ADDRESS` no password-reset mail is sent, although the
 request still answers `200`. `provision.sh` warns about both on every run without failing or editing
-the file. A host provisioned before these keys existed needs the seven lines (`APP_BASE_URL`,
+the file. A host whose `api.env` predates these keys needs the seven lines (`APP_BASE_URL`,
 `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_FROM_ADDRESS`, `SMTP_USER`, `SMTP_PASSWORD`) from
-`shared/.env.example` added to its `.env` by hand, then `systemctl restart semprec-api`.
+`shared/env/api.env.example` added to it by hand, then `systemctl restart semprec-api`.
 
 ## Web client
 
