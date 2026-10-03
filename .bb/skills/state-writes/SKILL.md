@@ -146,10 +146,13 @@ another's. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security
 
 - The tenant comes only from a trusted source. Today those are: the
   authenticated session, a NOTIFY payload stamped by its publisher, an internal
-  caller verified against a row visible in that tenant, an MCP run credential,
-  or a router function resolving an external identifier to its tenant. It never
-  comes from a request body, query string, path segment, caller-settable
-  header or a model's output.
+  caller whose identity was verified by reading a row (for example the agent's
+  Projects item) while the tenant scope was already set on the connection from
+  another trusted source, an MCP run credential, or a router function resolving
+  an external identifier to its tenant. Reading a row does not make the row's
+  tenant trusted: never derive the tenant for later writes from a row you
+  happened to read. The tenant never comes from a request body, query string,
+  path segment, caller-settable header or a model's output.
 - Until the enqueue-stamp mechanism exists, do not read the tenant from any
   job payload field. Once it is implemented, a tenant stamped onto the job at
   enqueue by the producing code (from the producer's scope, not filled in by
