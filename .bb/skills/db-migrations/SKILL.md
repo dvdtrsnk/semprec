@@ -1,6 +1,6 @@
 ---
 name: db-migrations
-description: "Expand/contract discipline for every Postgres schema change. Load this BEFORE writing the migration file, because the ordering constraints decide what the migration is allowed to contain at all. Triggers on: backend/packages/data/src/db/migrations/, a new NNNN_name.sql file, ALTER TABLE, CREATE TABLE, DROP COLUMN, ADD COLUMN, NOT NULL, DEFAULT, CREATE INDEX, CONSTRAINT, a column type change, a rename, and any data backfill - including one that looks trivially safe. Skip only when the change touches no schema and no stored data shape."
+description: "Expand/contract discipline for every Postgres schema change. Load this BEFORE writing the migration file, because the ordering constraints decide what the migration is allowed to contain at all. Triggers on: backend/packages/data/src/db/migrations/, a new NNNN_name.sql file, ALTER TABLE, CREATE TABLE, DROP COLUMN, ADD COLUMN, NOT NULL, DEFAULT, CREATE INDEX, CREATE UNIQUE INDEX, CONSTRAINT, COMMENT ON TABLE, tenant_id, ROW LEVEL SECURITY, CREATE POLICY, a column type change, a rename, and any data backfill - including one that looks trivially safe. Skip only when the change touches no schema and no stored data shape."
 ---
 
 # Migrations: expand/contract, forward-only
@@ -62,6 +62,40 @@ collision — caught locally by `pnpm --filter @semprec/data run
 check-migration-numbering` or by CI after a rebase — renumber only your own
 branch's migration file to the next free ordinal; never renumber a migration
 that already merged into the base branch.
+
+## Every new table declares its tenancy
+
+Each user's data lives in that user's own tenant, so the migration that creates
+a table also classifies it. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`.
+
+- State `COMMENT ON TABLE <t> IS 'semprec:tenancy=tenant'` or
+  `'semprec:tenancy=global'` in the same migration that creates the table.
+  Global is only for identity-plane, admin-plane and operator tables that hold
+  no user content.
+- A tenant table also gets, in that same migration, the `tenant_id` column,
+  row-level security and both policies:
+
+```sql
+CREATE TABLE widgets (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL DEFAULT app_tenant_default() REFERENCES tenants(id),
+  -- ... application columns follow, so the comma above is required
+);
+COMMENT ON TABLE widgets IS 'semprec:tenancy=tenant';
+ALTER TABLE widgets ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON widgets AS RESTRICTIVE
+  USING (tenant_id = (SELECT app_tenant_default()))
+  WITH CHECK (tenant_id = (SELECT app_tenant_default()));
+CREATE POLICY tenant_rows ON widgets AS PERMISSIVE
+  USING (true) WITH CHECK (true);
+```
+
+- Every unique index, unique constraint or primary key on a tenant table leads
+  with `tenant_id`. The exceptions are a server-generated surrogate key, and a
+  key scoped by the server-generated id of a parent row in the same tenant
+  (such as `properties (database_id, key)`). Unique and foreign-key checks
+  ignore RLS, so a key without `tenant_id` is an existence oracle across tenants.
+- Grants follow `docs/operations/database-roles.md`.
 
 ## Escape hatch
 

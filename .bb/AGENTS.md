@@ -88,6 +88,11 @@ all:
    boundary.
 7. Agent-originated changes are proposals that go through approval/`confirm`,
    never direct writes.
+8. Each user's data and agents live in that user's own tenant; nothing may let
+   one user see, infer or be notified about another's. Isolation is enforced by
+   row-level security plus an explicit tenant scope, and fails closed. Load
+   `db-migrations`, `state-writes` and `io-hardening` for the rules
+   (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`).
 
 ## Tests
 

@@ -1,6 +1,6 @@
 ---
 name: state-writes
-description: "How every write to persisted Semprec state must be built - through the choke point, by the single owner, with side effects after the commit, and an affected-row check on every targeted write. Load this BEFORE writing the first line of a function that mutates data, not while reviewing it afterwards. Triggers on: DELETE FROM, UPDATE ... SET, INSERT INTO, rowCount, requireAffectedRows, withTransaction, runAfterCommit, chokePoint., createItem, patchItem, addViewItem, removeViewItem, notifyInvalidation, pg_notify, NOTIFY, any *Store.ts file, a seed or backfill, an agent tool that writes, any handler whose verb is POST, PATCH, PUT or DELETE, registerItemUpdateHook, registerRelationEdgeWriteHook, and domainWriteHooks. Skip only when nothing in the change can reach the database."
+description: "How every write to persisted Semprec state must be built - through the choke point, by the single owner, with side effects after the commit, and an affected-row check on every targeted write. Load this BEFORE writing the first line of a function that mutates data, not while reviewing it afterwards. Triggers on: DELETE FROM, UPDATE ... SET, INSERT INTO, rowCount, requireAffectedRows, withTransaction, runAfterCommit, chokePoint., createItem, patchItem, addViewItem, removeViewItem, notifyInvalidation, pg_notify, NOTIFY, any *Store.ts file, a seed or backfill, an agent tool that writes, any handler whose verb is POST, PATCH, PUT or DELETE, registerItemUpdateHook, registerRelationEdgeWriteHook, domainWriteHooks, tenant_id, and app.tenant_id. Skip only when nothing in the change can reach the database."
 ---
 
 # State writes: choke-point, ownership, approval
@@ -13,7 +13,8 @@ Recorded as ADRs: `docs/adr/2026-09-10-choke-point-api-for-state-writes.md`,
 `docs/adr/2026-09-10-single-writer-ownership-model.md`,
 `docs/adr/2026-09-10-agent-writes-are-proposals-not-direct-writes.md`,
 `docs/adr/2026-09-10-side-effects-follow-the-commit.md`,
-`docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md`.
+`docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md`,
+`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`.
 
 ## 1. All writes go through the choke-point
 
@@ -138,6 +139,29 @@ Related checks worth doing in the same pass:
   `remove`/`delete`/`unlock` needs the same check — a rule found on one side of
   a pair is exactly where a reviewer looks for it on the other.
 
+## 5. Every write stays inside the caller's tenant
+
+Each user's data lives in that user's own tenant; a write must never reach
+another's. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`.
+
+- The tenant comes only from a trusted source: the authenticated session, a
+  tenant stamped onto the queue job at enqueue from the producer's scope (the
+  stamping mechanism is not implemented yet; until it exists, do not accept a
+  tenant from a job payload field), a NOTIFY payload stamped by its publisher, an internal
+  caller verified against a row visible in that tenant, an MCP run credential,
+  or a router function resolving an external identifier to its tenant. It never
+  comes from a request body, a model's output, or a job payload field filled in
+  by the job's originator (as opposed to a tenant stamped at enqueue by the
+  producing code, once that mechanism exists).
+- Run the write inside the tenant scope (`app.tenant_id`) established from one
+  of those sources.
+- Let the `tenant_id` column default stamp the row; do not pass it. RLS
+  `WITH CHECK` refuses a row for another tenant anyway.
+- Existence and uniqueness checks are per tenant, and another tenant's id is
+  handled exactly like a missing id.
+- Cross-tenant system work runs tenant by tenant, each tenant's work inside
+  that tenant — never as one query over every tenant.
+
 ## Before committing, check
 
 - [ ] No raw SQL mutation of item tables outside the data layer's write path.
@@ -152,3 +176,10 @@ Related checks worth doing in the same pass:
       legitimate outcome) rather than trusting a pre-fetch that ran before it.
 - [ ] Every guard the "add"/"create"/"lock" side of a pair enforces is enforced
       by its "remove"/"delete"/"unlock" counterpart too.
+- [ ] The tenant of every write comes from a trusted source, never from a
+      request body, model output or originator-supplied job payload field.
+- [ ] No write sets `tenant_id` explicitly; the column default stamps it.
+- [ ] Existence and uniqueness checks are per tenant, and another tenant's id
+      gets the same outcome as a missing id.
+- [ ] Cross-tenant system work runs inside each tenant in turn, not as one
+      query over all tenants.
