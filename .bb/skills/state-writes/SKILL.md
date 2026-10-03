@@ -150,7 +150,9 @@ another's. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security
   tenant from a job payload field), a NOTIFY payload stamped by its publisher, an internal
   caller verified against a row visible in that tenant, an MCP run credential,
   or a router function resolving an external identifier to its tenant. It never
-  comes from a request body, a model's output or a job payload field.
+  comes from a request body, a model's output, or a job payload field filled in
+  by the job's originator (as opposed to a tenant stamped at enqueue by the
+  producing code, once that mechanism exists).
 - Run the write inside the tenant scope (`app.tenant_id`) established from one
   of those sources.
 - Let the `tenant_id` column default stamp the row; do not pass it. RLS
@@ -175,7 +177,7 @@ another's. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security
 - [ ] Every guard the "add"/"create"/"lock" side of a pair enforces is enforced
       by its "remove"/"delete"/"unlock" counterpart too.
 - [ ] The tenant of every write comes from a trusted source, never from a
-      request body, model output or job payload field.
+      request body, model output or originator-supplied job payload field.
 - [ ] No write sets `tenant_id` explicitly; the column default stamps it.
 - [ ] Existence and uniqueness checks are per tenant, and another tenant's id
       gets the same outcome as a missing id.
