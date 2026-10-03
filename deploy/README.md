@@ -12,10 +12,11 @@ and host provisioning (#244, #176):
   `/opt/semprec/current/web/dist` with an `index.html` fallback. Installed to
   `/etc/caddy/Caddyfile` by `provision.sh`, which also enables `caddy.service` and hands it
   `SEMPREC_DOMAIN` through `/etc/caddy/semprec.env`.
-- `nftables.conf` — the host firewall: only 22/80/443 reachable from outside the host. Installed
-  to `/etc/nftables.conf` and enabled by `provision.sh`, which also reloads `nftables.service`. It
-  owns only its own `table inet semprec` and never flushes the ruleset, so Docker's own `ip
-  filter`/`ip nat` tables are left alone.
+- `nftables.conf` — the host firewall: only 22/80/443 reachable from outside the host, and uid
+  `semprec` may not connect to loopback, private, link-local or metadata addresses (DNS and the
+  Postgres/gateway loopback ports excepted). Installed to `/etc/nftables.conf` and enabled by
+  `provision.sh`, which also reloads `nftables.service`. It owns only its own `table inet semprec`
+  and never flushes the ruleset, so Docker's own `ip filter`/`ip nat` tables are left alone.
 - `docker-compose.yml` — PostgreSQL only, bound to `127.0.0.1`. Its container receives exactly
   `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB`, interpolated from
   `/opt/semprec/shared/env/postgres.env` by `docker compose --env-file
@@ -284,3 +285,39 @@ reloads it. The ruleset owns only its own `table inet semprec` and never flushes
 Docker's own `ip filter`/`ip nat` tables — and the port mappings and masquerading they provide —
 are left alone. Container-to-container traffic is governed entirely by Docker's own chains; this
 ruleset has no `forward` chain of its own.
+
+### Egress of uid `semprec`
+
+The `output` chain sends only traffic of uid `semprec` (the four services, their timer scripts and
+`deploy.sh`'s migration and seed runs) through the `semprec_egress` chain; root, Caddy, Docker and
+apt are untouched. That uid can reach:
+
+- replies on connections already admitted (so Caddy still reaches the api on `127.0.0.1:8080`);
+- DNS (tcp/udp port 53) to any resolver;
+- Postgres `127.0.0.1:5432` and the gateway `127.0.0.1:3002`, matched on the conntrack original
+  destination so it holds with or without Docker's userland proxy;
+- every address outside the blocked sets.
+
+It can no longer reach the blocked sets: `0.0.0.0/8`, RFC 1918, `100.64.0.0/10` (CGNAT),
+`127.0.0.0/8`, `169.254.0.0/16` (metadata), `192.0.0.0/24`, `198.18.0.0/15`, multicast and
+reserved IPv4, and the IPv6 unspecified, loopback, IPv4-mapped, NAT64, discard, ULA, link-local and
+multicast ranges. Such connections are rejected at once (`admin-prohibited`) and logged, at most
+10 per minute, with the prefix `semprec-egress-deny `.
+
+Consequences for operators:
+
+- An SMTP relay, IMAP server or MCP server on a private or loopback address is unreachable.
+- `AI_GATEWAY_PORT` must stay `3002`.
+- `SEMPREC_DOMAIN` must resolve to a public address, or the dead-man probe is rejected.
+- Other loopback ports of the services are not reachable from each other except through the
+  rules above.
+
+Host check after provisioning:
+
+```sh
+sudo -u semprec curl -m 5 http://169.254.169.254/        # fails immediately
+sudo -u semprec curl -m 5 http://10.0.0.1/               # fails immediately
+sudo -u semprec timeout 5 bash -c '</dev/tcp/127.0.0.1/5432'  # succeeds (no pg_isready on the host)
+sudo -u semprec curl -sS -o /dev/null https://example.com     # succeeds
+journalctl -k | grep semprec-egress-deny                 # shows the denials
+```
