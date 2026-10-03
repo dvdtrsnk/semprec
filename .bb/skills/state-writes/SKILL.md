@@ -144,8 +144,10 @@ Related checks worth doing in the same pass:
 Each user's data lives in that user's own tenant; a write must never reach
 another's. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`.
 
-- The tenant comes only from a trusted source: the authenticated session, the
-  queue job envelope, a NOTIFY payload stamped by its publisher, an internal
+- The tenant comes only from a trusted source: the authenticated session, a
+  tenant stamped onto the queue job at enqueue from the producer's scope (the
+  stamping mechanism is not implemented yet; until it exists, do not accept a
+  tenant from a job payload field), a NOTIFY payload stamped by its publisher, an internal
   caller verified against a row visible in that tenant, an MCP run credential,
   or a router function resolving an external identifier to its tenant. It never
   comes from a request body, a model's output or a job payload field.
