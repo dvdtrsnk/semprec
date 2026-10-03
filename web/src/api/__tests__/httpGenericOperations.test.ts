@@ -24,10 +24,42 @@ describe("http generic operations", () => {
       filter: { type: "relation_contains", property: "folder", value: "f1" },
     });
 
-    expect(calls[0]?.url).toBe("/api/databases/db/items/query");
+    expect(calls[0]?.url).toBe("/api/databases/db/query");
     expect(calls[0]?.body).toEqual({ filter: { type: "relation_contains", property: "folder", value: "f1" } });
     expect(page.items[0]?.properties.name).toBe("Hi");
     expect(page.items[0]?.computed).toEqual({});
+  });
+
+  const itemBody = (overrides: Record<string, unknown> = {}) => ({
+    id: "e1",
+    databaseId: "db",
+    properties: { read: false },
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  });
+
+  it("counts by following nextCursor across pages and summing the items", async () => {
+    const calls: unknown[] = [];
+    const operations = createHttpGenericOperations({
+      baseUrl: "/api",
+      fetchImpl: async (input, init) => {
+        const body = JSON.parse(String(init?.body));
+        calls.push({ url: String(input), body });
+        const first = body.cursor === undefined;
+        const count = first ? 200 : 3;
+        return jsonResponse({
+          items: Array.from({ length: count }, (_, n) => itemBody({ id: `e${n}` })),
+          nextCursor: first ? "c1" : null,
+        });
+      },
+    });
+
+    const filter = { type: "relation_contains", property: "folder", value: "f1" } as const;
+    await expect(operations.countItems("db", { filter })).resolves.toBe(203);
+    expect(calls).toEqual([
+      { url: "/api/databases/db/query", body: { filter, limit: 200 } },
+      { url: "/api/databases/db/query", body: { filter, limit: 200, cursor: "c1" } },
+    ]);
   });
 
   it("classifies a forbidden or missing resource as unavailable and a server error as retryable", async () => {
@@ -38,6 +70,15 @@ describe("http generic operations", () => {
 
     await expect(withStatus(403)).rejects.toMatchObject({ kind: "unavailable" });
     await expect(withStatus(500)).rejects.toMatchObject({ kind: "retryable" });
+  });
+
+  it("rejects the whole count when a later page fails", async () => {
+    let n = 0;
+    const operations = createHttpGenericOperations({
+      baseUrl: "/api",
+      fetchImpl: async () => (n++ === 0 ? jsonResponse({ items: [], nextCursor: "c1" }) : jsonResponse({}, 500)),
+    });
+    await expect(operations.countItems("db")).rejects.toMatchObject({ kind: "retryable" });
   });
 
   it("classifies a transport failure as retryable", async () => {
@@ -52,7 +93,7 @@ describe("http generic operations", () => {
     await expect(operations.getView("v1")).rejects.toMatchObject({ kind: "retryable" });
   });
 
-  it("posts a named module operation to the operations endpoint, input and all", async () => {
+  it("posts a named module operation to the operations endpoint (no backend route currently serves it)", async () => {
     const calls: Array<{ url: string; method?: string; body: unknown }> = [];
     const operations = createHttpGenericOperations({
       baseUrl: "/api",
@@ -68,32 +109,7 @@ describe("http generic operations", () => {
     expect(result).toEqual({ itemId: "e1", messageId: "<m1@example.com>" });
   });
 
-  it("patches an item's properties and validates the item it gets back", async () => {
-    const calls: Array<{ url: string; method?: string; body: unknown }> = [];
-    const operations = createHttpGenericOperations({
-      baseUrl: "/api",
-      fetchImpl: async (input, init) => {
-        calls.push({ url: String(input), method: init?.method, body: JSON.parse(String(init?.body)) });
-        return jsonResponse({
-          id: "e1",
-          databaseId: "db",
-          properties: { read: true },
-          updatedAt: "2026-01-01T00:00:00.000Z",
-        });
-      },
-    });
-
-    const item = await operations.updateItem("db", "e1", { read: true });
-
-    expect(calls[0]).toMatchObject({
-      url: "/api/databases/db/items/e1",
-      method: "PATCH",
-      body: { properties: { read: true } },
-    });
-    expect(item.properties.read).toBe(true);
-  });
-
-  it("links and unlinks a relation edge by property key, accepting an empty response body", async () => {
+  it("reads the item, then patches it with the version it read", async () => {
     const calls: Array<{ url: string; method?: string; body?: unknown }> = [];
     const operations = createHttpGenericOperations({
       baseUrl: "/api",
@@ -103,27 +119,144 @@ describe("http generic operations", () => {
           method: init?.method,
           body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
         });
-        return new Response(null, { status: 204 });
+        return init?.method === "PATCH"
+          ? jsonResponse(itemBody({ properties: { read: true }, updatedAt: "2026-02-02T00:00:00.000Z" }))
+          : jsonResponse(itemBody());
       },
     });
 
-    await operations.linkItem("db", "e1", "folder", "f2");
-    await operations.unlinkItem("db", "e1", "folder", "f1");
+    const item = await operations.updateItem("db", "e1", { read: true });
 
-    expect(calls[0]).toMatchObject({
-      url: "/api/databases/db/items/e1/relations/folder",
-      method: "POST",
-      body: { targetItemId: "f2" },
-    });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.url).toBe("/api/items/e1");
+    expect(calls[0]?.method ?? "GET").toBe("GET");
     expect(calls[1]).toMatchObject({
-      url: "/api/databases/db/items/e1/relations/folder/f1",
-      method: "DELETE",
+      url: "/api/items/e1",
+      method: "PATCH",
+      body: { properties: { read: true }, ifVersion: "2026-01-01T00:00:00.000Z" },
     });
-    expect(calls[1]?.body).toBeUndefined();
+    expect(item.properties.read).toBe(true);
   });
 
-  it("reads a missing item as null rather than as a failed pane", async () => {
-    const operations = createHttpGenericOperations({ baseUrl: "/api", fetchImpl: async () => jsonResponse({}, 404) });
-    await expect(operations.getItem("db", "gone")).resolves.toBeNull();
+  it("rejects an update as unavailable, without a PATCH, when the item is missing or in another database", async () => {
+    for (const read of [jsonResponse({}, 404), jsonResponse(itemBody({ databaseId: "other" }))]) {
+      const methods: Array<string | undefined> = [];
+      const operations = createHttpGenericOperations({
+        baseUrl: "/api",
+        fetchImpl: async (_input, init) => {
+          methods.push(init?.method);
+          return read.clone();
+        },
+      });
+      await expect(operations.updateItem("db", "e1", { read: true })).rejects.toMatchObject({
+        kind: "unavailable",
+        status: 404,
+      });
+      expect(methods).not.toContain("PATCH");
+    }
+  });
+
+  it("surfaces a version conflict on the patch as retryable", async () => {
+    const operations = createHttpGenericOperations({
+      baseUrl: "/api",
+      fetchImpl: async (_input, init) =>
+        init?.method === "PATCH"
+          ? jsonResponse({ error: { code: "version_conflict" } }, 409)
+          : jsonResponse(itemBody()),
+    });
+    await expect(operations.updateItem("db", "e1", { read: true })).rejects.toMatchObject({ kind: "retryable" });
+  });
+
+  it("links with a body-less PUT, accepting a JSON answer or a 204", async () => {
+    for (const answer of [() => jsonResponse({ ok: true }), () => new Response(null, { status: 204 })]) {
+      const calls: Array<{ url: string; method?: string; body?: unknown }> = [];
+      const operations = createHttpGenericOperations({
+        baseUrl: "/api",
+        fetchImpl: async (input, init) => {
+          calls.push({ url: String(input), method: init?.method, body: init?.body });
+          return answer();
+        },
+      });
+      await operations.linkItem("db", "e1", "folder", "f2");
+      expect(calls).toEqual([{ url: "/api/items/e1/relations/folder/f2", method: "PUT", body: undefined }]);
+    }
+  });
+
+  describe("unlinkItem", () => {
+    const unlinkWith = (response: () => Response, calls: Array<{ url: string; method?: string }> = []) =>
+      createHttpGenericOperations({
+        baseUrl: "/api",
+        fetchImpl: async (input, init) => {
+          calls.push({ url: String(input), method: init?.method });
+          return response();
+        },
+      }).unlinkItem("db", "e1", "folder", "f1");
+    const notFound = (resource: string) => jsonResponse({ error: { code: "not_found", details: { resource } } }, 404);
+
+    it("deletes the edge and resolves on 200", async () => {
+      const calls: Array<{ url: string; method?: string }> = [];
+      await expect(unlinkWith(() => jsonResponse({ ok: true }), calls)).resolves.toBeUndefined();
+      expect(calls).toEqual([{ url: "/api/items/e1/relations/folder/f1", method: "DELETE" }]);
+    });
+
+    it("treats an absent edge as a no-op", async () => {
+      await expect(unlinkWith(() => notFound("relationEdge"))).resolves.toBeUndefined();
+    });
+
+    it("rejects as unavailable on any other 404", async () => {
+      await expect(unlinkWith(() => notFound("relationProperty"))).rejects.toMatchObject({
+        kind: "unavailable",
+        status: 404,
+      });
+      await expect(unlinkWith(() => notFound("item"))).rejects.toMatchObject({ kind: "unavailable" });
+      await expect(unlinkWith(() => new Response("<html>", { status: 404 }))).rejects.toMatchObject({
+        kind: "unavailable",
+        status: 404,
+      });
+      await expect(unlinkWith(() => new Response(null, { status: 404 }))).rejects.toMatchObject({
+        kind: "unavailable",
+      });
+    });
+
+    it("keeps the ordinary classification for other statuses", async () => {
+      await expect(unlinkWith(() => jsonResponse({}, 500))).rejects.toMatchObject({ kind: "retryable" });
+    });
+  });
+
+  it("reads an item by id alone and returns it", async () => {
+    const urls: string[] = [];
+    const operations = createHttpGenericOperations({
+      baseUrl: "/api",
+      fetchImpl: async (input) => {
+        urls.push(String(input));
+        return jsonResponse(itemBody());
+      },
+    });
+    await expect(operations.getItem("db", "e1")).resolves.toMatchObject({ id: "e1", databaseId: "db" });
+    expect(urls).toEqual(["/api/items/e1"]);
+  });
+
+  it("reads a missing item, or one from another database, as null rather than as a failed pane", async () => {
+    const missing = createHttpGenericOperations({ baseUrl: "/api", fetchImpl: async () => jsonResponse({}, 404) });
+    await expect(missing.getItem("db", "gone")).resolves.toBeNull();
+    const foreign = createHttpGenericOperations({
+      baseUrl: "/api",
+      fetchImpl: async () => jsonResponse(itemBody({ databaseId: "other" })),
+    });
+    await expect(foreign.getItem("db", "e1")).resolves.toBeNull();
+  });
+
+  it("percent-encodes every path segment", async () => {
+    const urls: string[] = [];
+    const operations = createHttpGenericOperations({
+      baseUrl: "/api",
+      fetchImpl: async (input) => {
+        urls.push(String(input));
+        return new Response(null, { status: 204 });
+      },
+    });
+    await operations.linkItem("db", "a/b", "k?x", "t/1");
+    await operations.unlinkItem("db", "a/b", "k?x", "t?1");
+    expect(urls).toEqual(["/api/items/a%2Fb/relations/k%3Fx/t%2F1", "/api/items/a%2Fb/relations/k%3Fx/t%3F1"]);
   });
 });
