@@ -232,6 +232,14 @@ validates the rendered config. Rerunning with an unchanged domain is a no-op on 
 `PORT=8080` must also be set in the shared `.env` — `Caddyfile`'s `reverse_proxy` targets
 `127.0.0.1:8080` and `semprec-api` listens on `PORT`, so the two values have to agree.
 
+`APP_BASE_URL` in the shared `.env` must equal `https://$SEMPREC_DOMAIN`: it is the origin every
+emailed link is built against, and semprec-api falls back to `http://localhost:3000` without it.
+Without both `SMTP_HOST` and `SMTP_FROM_ADDRESS` no password-reset mail is sent, although the
+request still answers `200`. `provision.sh` warns about both on every run without failing or editing
+the file. A host provisioned before these keys existed needs the seven lines (`APP_BASE_URL`,
+`SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_FROM_ADDRESS`, `SMTP_USER`, `SMTP_PASSWORD`) from
+`shared/.env.example` added to its `.env` by hand, then `systemctl restart semprec-api`.
+
 ## Web client
 
 `deploy.sh` builds `web/` (`pnpm install --frozen-lockfile` and `pnpm run build`) into the staged

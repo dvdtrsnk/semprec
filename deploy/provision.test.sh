@@ -95,7 +95,7 @@ run_provision() {
   PATH="$TEST_BIN:$PATH" bash "$TEST_DEPLOY/provision.sh"
 }
 
-run_provision
+run_provision 2> "$TEST_STATE/first-run.err" || { cat "$TEST_STATE/first-run.err" >&2; exit 1; }
 test -d "$TEST_ROOT/opt/semprec/releases"
 test -d "$TEST_ROOT/opt/semprec/shared"
 for blob_dir in files mail-attachments; do
@@ -134,6 +134,12 @@ grep -qx 'TimeoutStopSec=660' "$TEST_ROOT/systemd/system/semprec-ai-gateway.serv
 for unit in semprec-api semprec-agents semprec-transcribe semprec-ai-gateway; do
   grep -qx 'EnvironmentFile=/opt/semprec/current/release.env' "$TEST_ROOT/systemd/system/$unit.service"
 done
+
+for line in APP_BASE_URL= SMTP_HOST= SMTP_PORT=587 SMTP_SECURE=false SMTP_FROM_ADDRESS= SMTP_USER= SMTP_PASSWORD=; do
+  test "$(grep -cx "$line" "$TEST_ROOT/opt/semprec/shared/.env")" -eq 1
+done
+grep -q 'APP_BASE_URL is not set' "$TEST_STATE/first-run.err"
+grep -q 'Outbound mail is not configured' "$TEST_STATE/first-run.err"
 
 printf 'OPERATOR_CONFIGURED_SECRET=preserved\n' > "$TEST_ROOT/opt/semprec/shared/.env"
 mkdir "$TEST_ROOT/opt/semprec/releases/release-one"
@@ -179,6 +185,31 @@ run_provision
 test "$(cat "$TEST_ROOT/caddy/semprec.env")" = "$semprec_env_before"
 test "$(grep -c '^caddy validate ' "$TEST_STATE/commands")" -eq 2
 test "$(grep -c '^systemctl reload-or-restart caddy$' "$TEST_STATE/commands")" -eq 2
+
+readonly SECRET_SENTINEL='smtp-password-sentinel-7f3a'
+printf 'APP_BASE_URL=https://example.test\nSMTP_HOST=smtp.example.test\nSMTP_FROM_ADDRESS=no-reply@example.test\nSMTP_PASSWORD=%s\n' \
+  "$SECRET_SENTINEL" >> "$TEST_ROOT/opt/semprec/shared/.env"
+env_before="$(sha256sum "$TEST_ROOT/opt/semprec/shared/.env")"
+run_provision >"$TEST_STATE/consistent.out" 2>"$TEST_STATE/consistent.err"
+if grep -Eq 'APP_BASE_URL|Outbound mail' "$TEST_STATE/consistent.err"; then
+  echo 'provision warned although the outbound link settings are consistent' >&2
+  exit 1
+fi
+if grep -rq "$SECRET_SENTINEL" "$TEST_STATE/consistent.out" "$TEST_STATE/consistent.err"; then
+  echo 'provision printed SMTP_PASSWORD' >&2
+  exit 1
+fi
+test "$(sha256sum "$TEST_ROOT/opt/semprec/shared/.env")" = "$env_before"
+
+printf 'APP_BASE_URL=https://other.test\n' >> "$TEST_ROOT/opt/semprec/shared/.env"
+run_provision >/dev/null 2>"$TEST_STATE/mismatch.err"
+grep -q 'https://other.test' "$TEST_STATE/mismatch.err"
+grep -q 'example.test' "$TEST_STATE/mismatch.err"
+if grep -q "$SECRET_SENTINEL" "$TEST_STATE/mismatch.err"; then
+  echo 'provision printed SMTP_PASSWORD' >&2
+  exit 1
+fi
+sed -i '/^APP_BASE_URL=https:\/\/other.test$/d' "$TEST_ROOT/opt/semprec/shared/.env"
 
 test -f "$TEST_ROOT/nftables.conf"
 grep -qx 'table inet semprec' "$TEST_ROOT/nftables.conf"
