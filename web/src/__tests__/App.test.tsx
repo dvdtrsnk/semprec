@@ -98,7 +98,9 @@ describe("App session lifecycle", () => {
     expect(await screen.findByText(CONTENT_MARKER)).toBeInTheDocument();
   });
 
-  it("switches to the login page when an unauthorized event fires mid-session", async () => {
+  it("reloads to a clean URL when an unauthorized event fires mid-session", async () => {
+    const replace = vi.fn();
+    vi.stubGlobal("location", { ...window.location, replace });
     const { sessionEvents } = renderApp({ auth: stubAuth() });
     await screen.findByText(CONTENT_MARKER);
 
@@ -106,23 +108,43 @@ describe("App session lifecycle", () => {
       sessionEvents.dispatchEvent(new Event("unauthorized"));
     });
 
-    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    await vi.waitFor(() => expect(replace).toHaveBeenCalledWith("/"));
     expect(screen.queryByText(CONTENT_MARKER)).not.toBeInTheDocument();
     expect(screen.queryByText("Signed in as operator@example.com")).not.toBeInTheDocument();
   });
 
-  it("logs out once and switches to the login page", async () => {
+  it("does not navigate when an unauthorized event fires on the login page", async () => {
+    const replace = vi.fn();
+    vi.stubGlobal("location", { ...window.location, replace });
+    const { sessionEvents } = renderApp({ auth: stubAuth({ getSession: vi.fn(async () => null) }) });
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+
+    act(() => {
+      sessionEvents.dispatchEvent(new Event("unauthorized"));
+    });
+
+    expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("logs out once and reloads to a clean URL", async () => {
+    const replace = vi.fn();
+    vi.stubGlobal("location", { ...window.location, replace });
     const logout = vi.fn(async () => undefined);
     renderApp({ auth: stubAuth({ logout }) });
 
     await userEvent.click(await screen.findByRole("button", { name: "Sign out" }));
 
-    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    await vi.waitFor(() => expect(replace).toHaveBeenCalledWith("/"));
+    expect(replace).toHaveBeenCalledTimes(1);
     expect(logout).toHaveBeenCalledTimes(1);
     expect(screen.queryByText(CONTENT_MARKER)).not.toBeInTheDocument();
+    expect(screen.queryByRole("banner")).not.toBeInTheDocument();
   });
 
   it("keeps the session and shows the failure when logout is rejected", async () => {
+    const replace = vi.fn();
+    vi.stubGlobal("location", { ...window.location, replace });
     const logout = vi.fn(async () => {
       throw new OperationError("retryable", "Request to /auth/logout failed with 500", 500);
     });
@@ -136,6 +158,7 @@ describe("App session lifecycle", () => {
     );
     expect(screen.getByText("Signed in as operator@example.com")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Sign in" })).not.toBeInTheDocument();
+    expect(replace).not.toHaveBeenCalled();
   });
 
   it("renders a failed bootstrap as an error with a retry that re-runs it", async () => {
@@ -173,14 +196,20 @@ describe("App session lifecycle", () => {
   });
 
   it("renders the setup wizard without a header and never asks for the session", async () => {
+    const replace = vi.fn();
+    vi.stubGlobal("location", { ...window.location, replace });
     const getSession = vi.fn(async () => USER);
-    renderApp({
+    const { sessionEvents } = renderApp({
       auth: stubAuth({ getSession }),
       setup: { token: "bootstrap-token", operations: { setupAccount: vi.fn(async () => USER) } },
     });
 
     expect(await screen.findByRole("heading", { name: "Set up your account" })).toBeInTheDocument();
     expect(screen.queryByRole("banner")).not.toBeInTheDocument();
+    act(() => {
+      sessionEvents.dispatchEvent(new Event("unauthorized"));
+    });
+    expect(replace).not.toHaveBeenCalled();
     expect(getSession).not.toHaveBeenCalled();
   });
 });
