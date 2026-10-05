@@ -9,7 +9,8 @@ import { createPool, withTransaction } from "../db/pool.js";
  * - Isolation assertions use a runtime-role pool (`createRuntimeRolePool`), never the superuser
  *   pool: superusers and table owners bypass row-level security, so such a test proves nothing.
  * - While a second tenant exists, `app_sole_tenant()` is NULL, so a scope-less read under a runtime
- *   role sees nothing and a scope-less insert fails on `NOT NULL`. That is the intended fail-closed
+ *   role sees nothing and a scope-less insert is refused by the RLS `WITH CHECK` (SQLSTATE 42501, which Postgres
+ *   evaluates before the `NOT NULL` constraint, 23502). That is the intended fail-closed
  *   behaviour; every write to a tenant table therefore runs inside a tenant (`withTenantTransaction`)
  *   or names `tenant_id`.
  * - `resetDatabase` removes every tenant except tenant zero, which keeps its id for the whole run.
