@@ -1,5 +1,10 @@
-import { Pool, type PoolClient } from "pg";
-import type { TransactionIsolationLevel } from "@semprec/shared";
+import { Client, Pool, type ClientConfig, type PoolClient } from "pg";
+import {
+  enforceTenantScope,
+  runDetachedAsSystem,
+  type TenantScope,
+  type TransactionIsolationLevel,
+} from "@semprec/shared";
 import { logger } from "./logger.js";
 
 /** Anything a query can run against: a pool, or a client already inside a transaction. */
@@ -16,11 +21,51 @@ export interface CreatePoolOptions {
   statementTimeoutMs?: number;
 }
 
+/**
+ * Opens every physical connection in a detached system scope. A socket's event callbacks (a LISTEN
+ * `notification`, an `error`) run in the async context that opened it, so a connection first opened
+ * inside one request's tenant would otherwise deliver events in that tenant for the rest of its life.
+ */
+class DetachedScopeClient extends Client {
+  constructor(config?: ClientConfig) {
+    super(config);
+    const connect = this.connect.bind(this) as (...args: unknown[]) => unknown;
+    this.connect = ((...args: unknown[]) =>
+      runDetachedAsSystem("database-connection", () => connect(...args))) as Client["connect"];
+  }
+}
+
+/** Value of the `app.tenant_id` GUC for a scope: the tenant id, or `''` (reads as NULL) for system. */
+function scopeGucValue(scope: TenantScope): string {
+  return scope.kind === "tenant" ? scope.tenantId : "";
+}
+
+const SET_TENANT_SQL = "SELECT set_config('app.tenant_id', $1, $2)";
+
+function toError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
+}
+
+/** Acquires a client from a `createPool` pool without the session-level tenant hook; plain pools connect normally. */
+const rawConnectors = new WeakMap<Pool, () => Promise<PoolClient>>();
+
+function connectWithoutScopeHook(pool: Pool): Promise<PoolClient> {
+  return rawConnectors.get(pool)?.() ?? pool.connect();
+}
+
+/**
+ * Returns a pool that applies the active tenant scope (`app.tenant_id`) to every checkout, see
+ * `docs/adr/2026-10-05-tenant-scope-propagation.md`:
+ * - `connect()` sets the GUC for the session and resets it on `release()`;
+ * - a scoped `query()` runs as a one-statement transaction with a transaction-local GUC;
+ * - connections are opened detached from the caller's scope.
+ */
 export function createPool(connectionString: string, options: CreatePoolOptions = {}): Pool {
   const statementTimeoutMs = options.statementTimeoutMs ?? STATEMENT_TIMEOUT_MS;
   const pool = new Pool({
     connectionString,
     connectionTimeoutMillis: CONNECTION_TIMEOUT_MS,
+    Client: DetachedScopeClient,
     ...(statementTimeoutMs > 0 ? { statement_timeout: statementTimeoutMs } : {}),
   });
   // pg's Pool emits 'error' when an idle client is dropped by the server (restart,
@@ -31,7 +76,125 @@ export function createPool(connectionString: string, options: CreatePoolOptions 
   pool.on("error", (err) => {
     logger.error({ err }, "Idle pool client errored; the client was discarded");
   });
+  installTenantScope(pool);
   return pool;
+}
+
+function installTenantScope(pool: Pool): void {
+  type ConnectCallback = (
+    err: Error | undefined,
+    client?: PoolClient,
+    done?: (release?: Error | boolean) => void,
+  ) => void;
+  const proto = Pool.prototype as unknown as {
+    connect: (this: Pool, cb?: ConnectCallback) => Promise<PoolClient> | void;
+    query: (this: Pool, ...args: unknown[]) => unknown;
+  };
+  const protoConnect = proto.connect;
+  const protoQuery = proto.query;
+  const rawConnect = (cb?: ConnectCallback): Promise<PoolClient> | void => protoConnect.call(pool, cb);
+  rawConnectors.set(pool, () => protoConnect.call(pool) as Promise<PoolClient>);
+
+  // pg-pool's own `query` acquires through `this.connect`, which is overridden below. A
+  // pass-through query sets this for the synchronous `this.connect` call it makes, so that call
+  // does not enforce a second time.
+  let skipNextConnectEnforcement = false;
+
+  async function checkoutWithSession(scope: TenantScope): Promise<PoolClient> {
+    const client = (await rawConnect()) as PoolClient;
+    try {
+      await client.query(SET_TENANT_SQL, [scopeGucValue(scope), false]);
+    } catch (err) {
+      client.release(toError(err));
+      throw err;
+    }
+    const poolRelease = (client as { release: (err?: Error | boolean) => void }).release;
+    let released = false;
+    // The caller's `release()` returns immediately and never throws; the GUC is reset first so a
+    // connection never returns to the pool carrying this checkout's tenant.
+    client.release = (err?: Error | boolean): void => {
+      if (released) return;
+      released = true;
+      if (err) {
+        poolRelease(err);
+        return;
+      }
+      client.query("RESET app.tenant_id").then(
+        () => poolRelease(),
+        (resetErr: unknown) => {
+          logger.error({ err: resetErr }, "Resetting app.tenant_id failed; the connection was discarded");
+          poolRelease(toError(resetErr));
+        },
+      );
+    };
+    return client;
+  }
+
+  async function scopedQuery(scope: TenantScope, args: unknown[]): Promise<unknown> {
+    const client = await connectWithoutScopeHook(pool);
+    let releaseError: Error | undefined;
+    try {
+      await client.query("BEGIN");
+      await client.query(SET_TENANT_SQL, [scopeGucValue(scope), true]);
+      const result = await (client.query as (...a: unknown[]) => Promise<unknown>).apply(client, args);
+      await client.query("COMMIT");
+      return result;
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackErr) {
+        releaseError = toError(rollbackErr);
+        logger.error({ err: rollbackErr }, "Scoped pool.query: ROLLBACK failed; discarding the connection");
+      }
+      throw err;
+    } finally {
+      client.release(releaseError);
+    }
+  }
+
+  (pool as unknown as { connect: unknown }).connect = (cb?: ConnectCallback): Promise<PoolClient> | void => {
+    if (skipNextConnectEnforcement) {
+      skipNextConnectEnforcement = false;
+      return rawConnect(cb);
+    }
+    let scope: TenantScope | undefined;
+    try {
+      scope = enforceTenantScope("pool.connect");
+    } catch (err) {
+      return cb ? cb(toError(err)) : Promise.reject(toError(err));
+    }
+    if (!scope) return rawConnect(cb);
+    const checkout = checkoutWithSession(scope);
+    if (!cb) return checkout;
+    checkout.then(
+      (client) => cb(undefined, client, (err) => client.release(err)),
+      (err: unknown) => cb(toError(err), undefined, () => {}),
+    );
+  };
+
+  (pool as unknown as { query: unknown }).query = (...args: unknown[]): unknown => {
+    const isCallbackForm = args.some((arg) => typeof arg === "function");
+    if (isCallbackForm) {
+      // Callback forms are not scoped per statement; their checkout goes through `connect` above,
+      // which enforces and applies the scope for the session.
+      return protoQuery.apply(pool, args);
+    }
+    let scope: TenantScope | undefined;
+    try {
+      scope = enforceTenantScope("pool.query");
+    } catch (err) {
+      return Promise.reject(toError(err));
+    }
+    if (!scope) {
+      skipNextConnectEnforcement = true;
+      try {
+        return protoQuery.apply(pool, args);
+      } finally {
+        skipNextConnectEnforcement = false;
+      }
+    }
+    return scopedQuery(scope, args);
+  };
 }
 
 const afterCommitCallbacks = new WeakMap<PoolClient, Array<() => void>>();
@@ -68,6 +231,9 @@ export interface WithTransactionOptions {
  * the same client from the pool fires or discards them instead — attached to an unrelated
  * transaction.
  *
+ * With a tenant scope active (`runInTenant`/`runAsSystem`) it sets the transaction-local
+ * `app.tenant_id` right after `BEGIN`; see `docs/adr/2026-10-05-tenant-scope-propagation.md`.
+ *
  * On failure (from `fn` or from `COMMIT`) the original error is what propagates, even when the
  * `ROLLBACK` itself fails. A connection whose `ROLLBACK` failed is in an unknown state, so it is
  * released with that error — which makes `pg` destroy it — and never goes back into the pool.
@@ -77,7 +243,8 @@ export async function withTransaction<T>(
   fn: (client: PoolClient) => Promise<T>,
   options: WithTransactionOptions = {},
 ): Promise<T> {
-  const client = await pool.connect();
+  const scope = enforceTenantScope("withTransaction");
+  const client = await connectWithoutScopeHook(pool);
   let releaseError: Error | undefined;
   try {
     if (options.isolation === "serializable") {
@@ -88,6 +255,7 @@ export async function withTransaction<T>(
       await client.query("BEGIN");
     }
     try {
+      if (scope) await client.query(SET_TENANT_SQL, [scopeGucValue(scope), true]);
       const result = await fn(client);
       await client.query("COMMIT");
       const callbacks = afterCommitCallbacks.get(client);
