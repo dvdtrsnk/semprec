@@ -1,57 +1,11 @@
 import { Pool } from "pg";
+import { getTenantZeroId } from "./tenantFixtures.js";
 
 // Test-only: lets a composition-root test outside this package make a Mailbox syncable (a stored
 // credential plus its sync-state row) without adding either writer to the production entry point.
 export { storeCredential } from "../credentials/externalCredentialsStore.js";
 export { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
-
-const TABLES = [
-  "observability_checks",
-  "process_heartbeats",
-  "module_migrations",
-  "module_migration_progress",
-  "idempotency_keys",
-  "login_attempts",
-  "push_subscriptions",
-  "sessions",
-  "notifications",
-  "manifest_drift_findings",
-  "rollup_dependencies",
-  "resource_grants",
-  "project_agent_guidance",
-  "project_mcp_grants",
-  "mcp_tool_registrations",
-  "approval_requests",
-  "agent_run_events",
-  "agent_runs",
-  "project_heartbeats",
-  "view_items",
-  "views",
-  "task_recurrence",
-  "item_automation",
-  "mail_attachments",
-  "mail_message_flag_sync_state",
-  "mail_message_meta",
-  "mail_threads",
-  "mail_folder_sync_state",
-  "mail_account_sync_state",
-  "credential_access_log",
-  "external_credentials",
-  "person_email_index",
-  "item_search_index",
-  "item_relations",
-  "items",
-  "relation_definitions",
-  "properties",
-  "doc_snapshot_history",
-  "doc_history_updates",
-  "doc_updates",
-  "doc_snapshots",
-  "docs",
-  "blobs",
-  "databases",
-  "users",
-];
+export { createRuntimeRolePool, createTestTenant, getTenantZeroId, withTenantTransaction } from "./tenantFixtures.js";
 
 export function getTestPool(): Pool {
   const connectionString = process.env.TEST_DATABASE_URL;
@@ -61,9 +15,28 @@ export function getTestPool(): Pool {
   return new Pool({ connectionString });
 }
 
-/** Test-only: wipes all rows between tests. `items` is partitioned but TRUNCATE cascades through all partitions. */
+/**
+ * Test-only: wipes all rows between tests. Truncates every table in `public` except
+ * `schema_migrations` (found in the catalog, so a new table is covered without editing a list), then
+ * re-creates tenant zero under its original id — any other tenant is gone. `items` is partitioned
+ * but TRUNCATE cascades through all partitions.
+ */
 export async function resetDatabase(pool: Pool): Promise<void> {
-  await pool.query(`TRUNCATE ${TABLES.join(", ")} RESTART IDENTITY CASCADE`);
+  await pool.query(`
+    DO $$
+    DECLARE tables text;
+    BEGIN
+      SELECT string_agg(format('%I.%I', n.nspname, c.relname), ', ') INTO tables
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public'
+         AND c.relkind IN ('r', 'p')
+         AND NOT c.relispartition
+         AND c.relname <> 'schema_migrations';
+      EXECUTE 'TRUNCATE ' || tables || ' RESTART IDENTITY CASCADE';
+    END $$;
+  `);
+  await pool.query("INSERT INTO tenants (id, status) VALUES ($1, 'active')", [getTenantZeroId()]);
   await pool.query(`TRUNCATE graphile_worker._private_jobs RESTART IDENTITY CASCADE`);
   // `databasesStore.createDatabase` creates one `items_p_<id>` partition per database and
   // there is no DEFAULT partition (see migration 0001's header note), so the TRUNCATE above
