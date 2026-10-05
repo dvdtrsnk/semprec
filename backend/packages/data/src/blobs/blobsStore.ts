@@ -62,21 +62,20 @@ export async function getBlobByContentHash(client: Queryable, contentHash: strin
  * Content-addressed dedup (issue #26: "the same invoice forwarded three times is stored
  * once") — `createBlob` itself stays a bare insert (issue #24 left dedup enforcement out of
  * its scope on purpose), so this is the one caller-facing entry point that actually dedupes,
- * via the existing partial unique index on `content_hash`. Without `contentHash` there is
+ * via the partial unique indexes on `content_hash`. Without `contentHash` there is
  * nothing to dedupe against, so it falls back to a plain insert.
  */
 export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput): Promise<BlobRow> {
   if (!input.contentHash) return createBlob(client, input);
 
   const inserted = await client.query<BlobDbRow>(
-    // The conflict target must repeat blobs_content_hash_uq's own partial predicate
-    // (0004_ten_databases.sql) — Postgres only infers a partial unique index as an ON
-    // CONFLICT arbiter when the clause's WHERE matches the index's WHERE verbatim; without
-    // it, Postgres reports no matching unique constraint at all (not merely "doesn't apply
-    // here"), so this insert would fail outright, not just skip the dedup fast path.
+    // No conflict target on purpose: `content_hash` is now guarded by both the legacy global
+    // partial index and its tenant-leading successor (0061), and a targeted ON CONFLICT only
+    // arbitrates the named index — a concurrent identical insert would trip the other one with
+    // a unique_violation instead of being skipped. A bare DO NOTHING covers every unique index.
     `INSERT INTO blobs (mime_type, byte_size, storage_key, source_url, content_hash)
      VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (content_hash) WHERE content_hash IS NOT NULL DO NOTHING
+     ON CONFLICT DO NOTHING
      RETURNING ${BLOB_COLUMNS}`,
     [input.mimeType, String(input.byteSize), input.storageKey, input.sourceUrl ?? null, input.contentHash],
   );
