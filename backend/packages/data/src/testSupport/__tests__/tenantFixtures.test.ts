@@ -76,7 +76,9 @@ describe("two-tenant runtime-role harness", () => {
           AND c.relname NOT IN ('schema_migrations', 'tenants')`,
     );
     for (const { relname } of tables.rows) {
-      const count = await adminPool.query<{ n: string }>(`SELECT count(*)::text AS n FROM "${relname.replaceAll('"', '""')}"`);
+      const count = await adminPool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM "${relname.replaceAll('"', '""')}"`,
+      );
       expect(`${relname}:${count.rows[0]?.n}`).toBe(`${relname}:0`);
     }
   });
