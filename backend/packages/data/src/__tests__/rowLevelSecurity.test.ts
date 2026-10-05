@@ -28,8 +28,13 @@ async function sqlState(client: PoolClient, text: string, values: unknown[] = []
   return undefined;
 }
 
-async function count(client: PoolClient, table: string): Promise<number> {
-  const { rows } = await client.query<{ n: string }>(`SELECT count(*)::text AS n FROM ${table}`);
+/** Quote a catalog name as a SQL identifier so it cannot break out of the identifier position. */
+function quoteIdent(name: string): string {
+  return `"${name.replaceAll('"', '""')}"`;
+}
+
+async function count(client: Pick<PoolClient, "query">, table: string): Promise<number> {
+  const { rows } = await client.query<{ n: string }>(`SELECT count(*)::text AS n FROM ${quoteIdent(table)}`);
   return Number(rows[0]?.n);
 }
 
@@ -105,8 +110,7 @@ describe("row-level security as the runtime roles", () => {
         }
       });
       for (const table of tenantTables) {
-        const { rows } = await pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM ${table}`);
-        const expected = Number(rows[0]?.n);
+        const expected = await count(pool, table);
         await asRole(role, {}, async (client) => {
           expect(await count(client, table), table).toBe(expected);
         });
