@@ -239,6 +239,12 @@ const NEW_UNIQUE_INDEXES: { name: string; table: string; columns: string[]; pred
     predicate: null,
   },
   { name: "docs_tenant_item_id_uq", table: "docs", columns: ["tenant_id", "item_id"], predicate: null },
+  {
+    name: "resource_grants_tenant_uq",
+    table: "resource_grants",
+    columns: ["tenant_id", "resource_type", "resource_id", "grantee_user_id"],
+    predicate: null,
+  },
   ...[
     "databases",
     "properties",
@@ -535,7 +541,7 @@ describe("tenancy classification catalog", () => {
       // pg_get_expr parenthesizes a compound predicate but not a bare column, so compare without parentheses.
       expect(row?.predicate?.replaceAll(/[()]/g, "") ?? null, `${expected.name} predicate`).toBe(expected.predicate);
     }
-    expect(NEW_UNIQUE_INDEXES).toHaveLength(22);
+    expect(NEW_UNIQUE_INDEXES).toHaveLength(23);
   });
 
   it("keeps the legacy global keys beside the new ones", async () => {
