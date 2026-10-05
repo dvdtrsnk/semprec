@@ -8,13 +8,14 @@ import sodium from "libsodium-wrappers";
  * used by `packages/data/src/credentials/externalCredentialsStore.ts` for any `items` row
  * that needs a secret (Mailboxes here; MCP servers in issue #31).
  *
- * `crypto_secretbox_easy` (XSalsa20-Poly1305) is libsodium's own recommended
- * authenticated-encryption primitive for this shape (secret key + random nonce) — the
- * issue text names it "XChaCha20-Poly1305," but libsodium's `crypto_secretbox_*` family is
- * XSalsa20-Poly1305; XChaCha20-Poly1305 lives under `crypto_aead_xchacha20poly1305_ietf`
- * instead. `crypto_secretbox_easy` is the function this module's design explicitly names,
- * so that's what is implemented — both are modern, unbroken AEAD constructions with no
- * practical difference to this use case (one key, one random nonce, small plaintext).
+ * Two schemes live here:
+ * - `encryptSecret`/`decryptSecret` use `crypto_secretbox_easy` (XSalsa20-Poly1305) directly
+ *   under the deployment master key. They carry no associated data, so a ciphertext copied onto
+ *   another row decrypts there. They remain only until the sealed scheme has replaced them.
+ * - `sealSecret`/`openSecret` use XChaCha20-Poly1305 (IETF AEAD) with caller-supplied associated
+ *   data that binds a ciphertext to its owner. New data uses this scheme, under a per-tenant data
+ *   key that `wrapDataKey`/`unwrapDataKey` protect with the master key
+ *   (docs/adr/2026-10-05-per-tenant-envelope-encryption.md).
  */
 
 let readyPromise: Promise<typeof sodium> | null = null;
@@ -71,4 +72,60 @@ export function resolveMasterKeyFromEnv(keyVersion: number, env: NodeJS.ProcessE
     throw new Error(`${varName} must decode to ${MASTER_KEY_BYTES} bytes (got ${key.length})`);
   }
   return key;
+}
+
+export const DATA_KEY_BYTES = 32;
+
+/** A fresh random tenant data key. */
+export async function generateDataKey(): Promise<Buffer> {
+  const s = await ready();
+  return Buffer.from(s.crypto_aead_xchacha20poly1305_ietf_keygen());
+}
+
+/** Seals `plaintext` under `key` with a fresh random nonce, binding it to `associatedData`. */
+export async function sealSecret(
+  plaintext: string | Uint8Array,
+  key: Buffer,
+  associatedData: Uint8Array,
+): Promise<EncryptedSecret> {
+  const s = await ready();
+  if (key.length !== DATA_KEY_BYTES) {
+    throw new Error(`Data key must be ${DATA_KEY_BYTES} bytes, got ${key.length}`);
+  }
+  const nonce = s.randombytes_buf(s.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
+  const ciphertext = s.crypto_aead_xchacha20poly1305_ietf_encrypt(plaintext, associatedData, null, nonce, key);
+  return { ciphertext: Buffer.from(ciphertext), nonce: Buffer.from(nonce) };
+}
+
+/**
+ * Inverse of `sealSecret`. Throws one plain error — deliberately without a `code` property, which
+ * database-failure detection would misread — when the key, associated data or ciphertext do not match.
+ */
+export async function openSecret(encrypted: EncryptedSecret, key: Buffer, associatedData: Uint8Array): Promise<Buffer> {
+  const s = await ready();
+  try {
+    return Buffer.from(
+      s.crypto_aead_xchacha20poly1305_ietf_decrypt(null, encrypted.ciphertext, associatedData, encrypted.nonce, key),
+    );
+  } catch {
+    throw new Error("Failed to open sealed secret: wrong key, associated data or corrupted ciphertext");
+  }
+}
+
+function dataKeyWrapAssociatedData(tenantId: string): Uint8Array {
+  return new TextEncoder().encode(`semprec:tenant-key:v1:${tenantId}`);
+}
+
+/** Wraps a tenant's data key under the master key, bound to `tenantId` (lowercase canonical UUID text). */
+export async function wrapDataKey(dataKey: Buffer, masterKey: Buffer, tenantId: string): Promise<EncryptedSecret> {
+  return sealSecret(dataKey, masterKey, dataKeyWrapAssociatedData(tenantId));
+}
+
+/** Inverse of `wrapDataKey`; also rejects a result that is not a 32-byte key. */
+export async function unwrapDataKey(wrapped: EncryptedSecret, masterKey: Buffer, tenantId: string): Promise<Buffer> {
+  const dataKey = await openSecret(wrapped, masterKey, dataKeyWrapAssociatedData(tenantId));
+  if (dataKey.length !== DATA_KEY_BYTES) {
+    throw new Error(`Unwrapped data key must be ${DATA_KEY_BYTES} bytes, got ${dataKey.length}`);
+  }
+  return dataKey;
 }
