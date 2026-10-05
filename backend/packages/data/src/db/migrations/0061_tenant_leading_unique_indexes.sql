@@ -10,6 +10,10 @@
 
 -- Tenant-leading keys beside the legacy ones.
 CREATE UNIQUE INDEX databases_tenant_key_uq ON databases (tenant_id, key);
+-- databases_tenant_system_module_uq is the one index with no legacy global counterpart: it is a new
+-- rule (one system database per module per tenant), named in issue #974's Task. It formalizes what
+-- getDatabaseByModuleId (databasesStore.ts) already assumes and what the seeds already produce, so
+-- it cannot fail on existing data.
 CREATE UNIQUE INDEX databases_tenant_system_module_uq ON databases (tenant_id, owner_module_id) WHERE system;
 CREATE UNIQUE INDEX idempotency_keys_tenant_key_uq ON idempotency_keys (tenant_id, key);
 CREATE UNIQUE INDEX person_email_index_tenant_email_uq ON person_email_index (tenant_id, email);
