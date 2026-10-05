@@ -118,6 +118,17 @@ export default async function setup(): Promise<() => Promise<void>> {
     await ensureQueueSchema(pool);
     await grantQueueSchemaPrivileges(pool);
     await runHeartbeatFireQueueSplitMigration(pool);
+
+    // Tenant zero's id is the stable anchor of every test: `resetDatabase` re-creates it with this id.
+    const sole = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
+    const tenantZeroId = sole.rows[0]?.id;
+    if (!tenantZeroId) {
+      throw new Error("globalSetup: app_sole_tenant() returned NULL after the migrations — tenant zero is missing");
+    }
+    process.env.TEST_TENANT_ZERO_ID = tenantZeroId;
+    // Test database only: the guard makes a second tenant impossible, and the two-tenant harness
+    // needs one. IF EXISTS keeps this working once the go-live migration removes the guard itself.
+    await pool.query("DROP INDEX IF EXISTS tenants_single_tenant_guard");
     await pool.end();
   } catch (err) {
     if (onSignal) {
