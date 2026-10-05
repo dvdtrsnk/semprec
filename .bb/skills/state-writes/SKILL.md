@@ -183,7 +183,7 @@ another's. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security
 - [ ] The tenant of every write comes from a trusted source, never from a
       request body, query string, path segment, caller-settable header, model
       output or any job payload field (until the enqueue-stamp mechanism
-      exists).
+      exists), and never derived from a row you happened to read.
 - [ ] No write sets `tenant_id` explicitly; the column default stamps it.
 - [ ] Existence and uniqueness checks are per tenant, and another tenant's id
       gets the same outcome as a missing id.
