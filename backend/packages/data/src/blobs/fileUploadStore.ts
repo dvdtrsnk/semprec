@@ -40,7 +40,7 @@ export interface IngestUploadedFileResult {
  * uses, minus the relation link (an upload through this route isn't attached to a source item).
  *
  * Concurrent identical uploads converge on one row deterministically without any extra locking:
- * `findOrCreateBlob`'s `INSERT ... ON CONFLICT (content_hash)` blocks a second transaction
+ * `findOrCreateBlob`'s `INSERT ... ON CONFLICT DO NOTHING` blocks a second transaction
  * inserting the same hash until the first commits, so by the time a second caller's
  * `findFileItemByBlobId` runs, either it's racing to create the very first Files item for that
  * blob (no conflict possible — the blob row itself didn't exist for anyone else to have already
