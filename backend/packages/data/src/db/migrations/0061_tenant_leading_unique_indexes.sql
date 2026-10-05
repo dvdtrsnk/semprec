@@ -25,6 +25,8 @@ CREATE UNIQUE INDEX module_migrations_tenant_uq
 CREATE UNIQUE INDEX module_migration_progress_tenant_uq
   ON module_migration_progress (tenant_id, module_id, database_key, from_version, to_version);
 CREATE UNIQUE INDEX docs_tenant_item_id_uq ON docs (tenant_id, item_id);
+CREATE UNIQUE INDEX resource_grants_tenant_uq
+  ON resource_grants (tenant_id, resource_type, resource_id, grantee_user_id);
 
 -- Parent keys for the composite foreign keys (tenant_id, x_id) -> parent (tenant_id, id).
 CREATE UNIQUE INDEX databases_tenant_id_id_uq ON databases (tenant_id, id);
