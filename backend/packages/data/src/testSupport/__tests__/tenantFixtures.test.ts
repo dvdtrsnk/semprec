@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import { DatabaseError, type Pool } from "pg";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -138,13 +138,13 @@ describe("two-tenant runtime-role harness", () => {
 
       const read = await dataPool.query("SELECT id FROM databases");
       expect(read.rows).toEqual([]);
-      // Postgres evaluates the RLS WITH CHECK (42501) before the NOT NULL constraint (23502); a
-      // scope-less insert has a NULL default tenant_id, and either one refuses the row.
+      // Postgres evaluates the RLS WITH CHECK (42501) before the NOT NULL constraint (23502), so
+      // the scope-less insert (NULL default tenant_id) is refused by the policy first.
       const refusal = await dataPool.query("INSERT INTO databases (name) VALUES ('scope-less')").then(
         () => undefined,
-        (error: unknown) => (error as { code?: string }).code,
+        (error: unknown) => (error instanceof DatabaseError ? error.code : error),
       );
-      expect(["42501", "23502"]).toContain(refusal);
+      expect(refusal).toBe("42501");
       const after = await adminPool.query("SELECT 1 FROM databases WHERE name = 'scope-less'");
       expect(after.rowCount).toBe(0);
     });

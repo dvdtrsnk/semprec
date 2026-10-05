@@ -33,6 +33,9 @@ export async function resetDatabase(pool: Pool): Promise<void> {
          AND c.relkind IN ('r', 'p')
          AND NOT c.relispartition
          AND c.relname <> 'schema_migrations';
+      IF tables IS NULL THEN
+        RAISE EXCEPTION 'resetDatabase: no tables found in the public schema';
+      END IF;
       EXECUTE 'TRUNCATE ' || tables || ' RESTART IDENTITY CASCADE';
     END $$;
   `);
