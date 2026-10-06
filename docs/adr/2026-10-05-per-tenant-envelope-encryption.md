@@ -27,7 +27,7 @@ Associated data binds every ciphertext to its owner:
 
 - the wrap uses `semprec:tenant-key:v1:<tenantId>` (UTF-8, `tenantId` the lowercase canonical UUID
   text), so a key row copied to another tenant does not unwrap;
-- credentials will be sealed under the DEK with associated data `tenant_id‖item_id`.
+- credentials will be sealed under the DEK with associated data `tenant_id‖item_id`, encoded as UTF-8 lowercase canonical UUID text for both, separated by a colon: `"${tenant_id}:${item_id}"`.
 
 The credential rollout is ordered so that a one-release rollback always finds readable data:
 
