@@ -4,8 +4,16 @@ import { enqueueJob, queueJobEnvelopeSchema, registerTask } from "../index.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function fakeHelpers(jobId: string | number): { job: { id: string | number } } {
-  return { job: { id: jobId } };
+const SOLE_TENANT = "6f1d2c3e-1a2b-4c5d-8e9f-0a1b2c3d4e5f";
+
+/** Answers the tenant task wrapper's sole-tenant and status lookups with one active tenant. */
+function fakeHelpers(jobId: string | number): { job: { id: string | number }; query: unknown } {
+  return {
+    job: { id: jobId },
+    query: async (sql: string) => ({
+      rows: sql.includes("app_sole_tenant") ? [{ app_sole_tenant: SOLE_TENANT }] : [{ status: "active" }],
+    }),
+  };
 }
 
 describe("queueJobEnvelopeSchema", () => {
@@ -66,7 +74,7 @@ describe("registerTask", () => {
       jobId = getTraceContext()?.jobId;
     });
 
-    await handler({}, {} as never);
+    await handler({}, { query: fakeHelpers("0").query } as never);
 
     expect(jobId).toBeUndefined();
   });
@@ -99,6 +107,7 @@ describe("enqueueJob", () => {
     const sentEnvelope = JSON.parse(params[1] as string);
     expect(sentEnvelope).toEqual({
       traceId: "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      tenantId: null,
       payload: { traceId: "attacker-supplied", itemId: "abc" },
     });
   });
