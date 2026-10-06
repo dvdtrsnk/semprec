@@ -74,10 +74,13 @@ export async function insertItemWithReplay(client: Queryable, input: InsertItemI
   if (input.idempotencyKey) {
     const reserve = await client.query<{ item_id: string }>(
       `INSERT INTO idempotency_keys (key, database_id, item_id) VALUES ($1, $2, $3)
-       ON CONFLICT (key) DO NOTHING
+       ON CONFLICT DO NOTHING
        RETURNING item_id`,
       [input.idempotencyKey, input.databaseId, generatedId],
     );
+    // No conflict target on purpose: the table has both a global and a tenant-leading unique
+    // index on the key, and a target naming only one lets a racing insert raise a violation on
+    // the other instead of being skipped.
     if (reserve.rowCount === 0) {
       const { rows } = await client.query<{ item_id: string; database_id: string }>(
         `SELECT item_id, database_id FROM idempotency_keys WHERE key = $1 FOR UPDATE`,
@@ -115,7 +118,7 @@ export async function insertItemWithReplay(client: Queryable, input: InsertItemI
       );
       const reReserve = await client.query<{ item_id: string }>(
         `INSERT INTO idempotency_keys (key, database_id, item_id) VALUES ($1, $2, $3)
-         ON CONFLICT (key) DO NOTHING
+         ON CONFLICT DO NOTHING
          RETURNING item_id`,
         [input.idempotencyKey, input.databaseId, generatedId],
       );
