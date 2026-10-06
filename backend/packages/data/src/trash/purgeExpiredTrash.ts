@@ -2,13 +2,14 @@ import type { Pool } from "pg";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
+import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 
 const DEFAULT_RETENTION_DAYS = 30;
 const CANDIDATE_PAGE_SIZE = 500;
 
 /**
- * The 30-day trash purge (issue #156): permanently deletes every item whose `deleted_at` is older
- * than `retentionDays`, together with its cascade subtree and every row that depends on it, one
+ * The 30-day trash purge (issue #156) for the trash visible in the current scope: permanently
+ * deletes every item whose `deleted_at` is older than `retentionDays`, together with its cascade subtree and every row that depends on it, one
  * root at a time through `chokePoint.purgeExpiredTrashSubtree` — its own transaction,
  * archived-database rejection, and eligibility re-check, so one oversized or
  * already-partially-purged subtree can't fail the whole sweep and a database archived after a
@@ -22,6 +23,10 @@ const CANDIDATE_PAGE_SIZE = 500;
  * failure is logged and skipped, leaving the unreferenced bytes behind rather than failing the
  * sweep. Only ids a subtree call actually committed are counted. Returns the number of items
  * permanently removed.
+ *
+ * Row-level security narrows every read and write to the scope the caller runs in, so call it inside
+ * a tenant scope to purge that tenant's trash; `handleItemTrashPurgeSweepTask` does so once per
+ * active tenant.
  */
 export async function purgeExpiredTrash(
   pool: Pool,
@@ -64,7 +69,14 @@ export async function purgeExpiredTrash(
   return purgedCount;
 }
 
-/** The graphile-worker task handler wired into `createCoreTaskList` (`worker.ts`) and `CORE_CRONTAB`. */
+/**
+ * The graphile-worker task handler wired into `createCoreTaskList` (`worker.ts`) and `CORE_CRONTAB`.
+ * Runs `purgeExpiredTrash` once per active tenant, each inside that tenant's scope. A failure that
+ * escapes one tenant's pass fails only that tenant; `forEachActiveTenant` rethrows the failures
+ * together after every tenant was attempted, so the job is retried.
+ */
 export async function handleItemTrashPurgeSweepTask(pool: Pool, storage: BlobStorageWriter): Promise<void> {
-  await purgeExpiredTrash(pool, storage);
+  await forEachActiveTenant(pool, async () => {
+    await purgeExpiredTrash(pool, storage);
+  });
 }
