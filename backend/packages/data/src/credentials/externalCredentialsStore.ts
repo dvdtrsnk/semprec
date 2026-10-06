@@ -1,13 +1,16 @@
-import { encryptSecret, decryptSecret, resolveMasterKeyFromEnv } from "@semprec/credentials";
+import { encryptSecret, decryptSecret, openSecret, resolveMasterKeyFromEnv } from "@semprec/credentials";
 import type { Queryable } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
+import { getTenantDataKey } from "./tenantKeysStore.js";
 
 /**
  * Generic reversible-secret storage (issue #26): `item_id` references any `items` row that
  * needs a secret handed back later — a Mailbox here, an MCP server in issue #31 — never the
  * `users` login table (issue #34, hashed, not encrypted, no `items` row at all). One table,
  * one encryption module (`@semprec/credentials`), several narrow accessors over it — this
- * file is the only place in the codebase allowed to call `decryptSecret`.
+ * file is still the only place in the codebase allowed to decrypt a credential, and it reads both
+ * schemes: `master` (secretbox under `CREDENTIALS_MASTER_KEY`) and `tenant` (AEAD under the tenant's
+ * data key, bound to the tenant and item).
  */
 export const CREDENTIAL_TYPES = [
   "oauth2_refresh_token",
@@ -17,6 +20,16 @@ export const CREDENTIAL_TYPES = [
   "bearer_token",
 ] as const;
 export type CredentialType = (typeof CREDENTIAL_TYPES)[number];
+
+const CREDENTIAL_SCHEMES = ["master", "tenant"] as const;
+
+/**
+ * The associated data a `tenant` credential is sealed with, binding the ciphertext to its tenant and
+ * item so it cannot be copied onto another row. Both ids are lowercase canonical UUID text.
+ */
+function credentialAssociatedData(tenantId: string, itemId: string): Buffer {
+  return Buffer.from(`semprec:external-credential:v1:${tenantId.toLowerCase()}:${itemId.toLowerCase()}`, "utf8");
+}
 
 export const CREDENTIAL_ACTOR_TYPES = [
   "user",
@@ -35,15 +48,15 @@ export interface StoreCredentialInput {
   keyVersion?: number;
 }
 
-/** Encrypts and stores/replaces the one credential this item holds (`item_id` is the table's PK — one credential per item, see the migration's header note). */
+/** Encrypts under the master key, marks the row `master` and stores/replaces the one credential this item holds (`item_id` is the table's PK — one credential per item, see the migration's header note). */
 export async function storeCredential(client: Queryable, input: StoreCredentialInput): Promise<void> {
   const keyVersion = input.keyVersion ?? 1;
   const key = resolveMasterKeyFromEnv(keyVersion);
   const { ciphertext, nonce } = await encryptSecret(input.plaintext, key);
   await client.query(
-    `INSERT INTO external_credentials (item_id, credential_type, ciphertext, nonce, key_version)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (item_id) DO UPDATE SET credential_type = EXCLUDED.credential_type, ciphertext = EXCLUDED.ciphertext, nonce = EXCLUDED.nonce, key_version = EXCLUDED.key_version`,
+    `INSERT INTO external_credentials (item_id, credential_type, ciphertext, nonce, key_version, scheme)
+     VALUES ($1, $2, $3, $4, $5, 'master')
+     ON CONFLICT (item_id) DO UPDATE SET credential_type = EXCLUDED.credential_type, ciphertext = EXCLUDED.ciphertext, nonce = EXCLUDED.nonce, key_version = EXCLUDED.key_version, scheme = 'master'`,
     [input.itemId, input.credentialType, ciphertext, nonce, keyVersion],
   );
 }
@@ -69,8 +82,10 @@ export interface DecryptCredentialInput {
 }
 
 /**
- * The narrow decryption accessor — the only function in this codebase that ever calls
- * `decryptSecret`. Logs every decryption *attempt* to `credential_access_log` — the log
+ * The narrow decryption accessor — the only function in this codebase that decrypts a credential,
+ * under either scheme. The `tenant` branch reads rows that no code writes yet: sealing under the
+ * tenant key arrives in a later release, and this reader ships first so that a rollback from that
+ * release can still open them. It is not dead code. Logs every decryption *attempt* to `credential_access_log` — the log
  * insert runs before `decryptSecret` itself (see mailSyncJob.ts's caller-side note: this is
  * intentional, so a decrypt failure downstream of a real key/ciphertext still leaves the
  * access attempt on record) — and returns `null` (no log entry) only when there is nothing to
@@ -79,10 +94,15 @@ export interface DecryptCredentialInput {
  * transport) — never an agent tool.
  */
 export async function getDecryptedCredential(client: Queryable, input: DecryptCredentialInput): Promise<string | null> {
-  const { rows } = await client.query<{ ciphertext: Buffer; nonce: Buffer; key_version: number }>(
-    `SELECT ciphertext, nonce, key_version FROM external_credentials WHERE item_id = $1`,
-    [input.itemId],
-  );
+  const { rows } = await client.query<{
+    ciphertext: Buffer;
+    nonce: Buffer;
+    key_version: number;
+    tenant_id: string;
+    scheme: string;
+  }>(`SELECT ciphertext, nonce, key_version, tenant_id, scheme FROM external_credentials WHERE item_id = $1`, [
+    input.itemId,
+  ]);
   const row = rows[0];
   if (!row) return null;
 
@@ -96,6 +116,20 @@ export async function getDecryptedCredential(client: Queryable, input: DecryptCr
     ],
   );
 
-  const key = resolveMasterKeyFromEnv(row.key_version);
-  return decryptSecret({ ciphertext: row.ciphertext, nonce: row.nonce }, key);
+  const scheme = assertKnownValue(CREDENTIAL_SCHEMES, row.scheme, "credential scheme");
+  if (scheme === "master") {
+    const key = resolveMasterKeyFromEnv(row.key_version);
+    return decryptSecret({ ciphertext: row.ciphertext, nonce: row.nonce }, key);
+  }
+
+  const tenantKey = await getTenantDataKey(client);
+  if (!tenantKey || tenantKey.tenantId !== row.tenant_id) {
+    throw new Error("No data key for this credential's tenant");
+  }
+  const plaintext = await openSecret(
+    { ciphertext: row.ciphertext, nonce: row.nonce },
+    tenantKey.dataKey,
+    credentialAssociatedData(row.tenant_id, input.itemId),
+  );
+  return plaintext.toString("utf8");
 }
