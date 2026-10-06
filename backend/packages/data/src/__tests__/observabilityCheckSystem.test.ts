@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { enqueueJob } from "@semprec/queue";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { runAsSystem } from "@semprec/shared";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { upsertProcessHeartbeat } from "../health/processHeartbeats.js";
@@ -31,6 +32,14 @@ async function getCheck(checkKey: string): Promise<ObservabilityCheckRow | undef
   return rows[0];
 }
 
+async function getTenantCheck(checkKey: string): Promise<(ObservabilityCheckRow & { tenant_id: string }) | undefined> {
+  const { rows } = await pool.query<ObservabilityCheckRow & { tenant_id: string }>(
+    `SELECT id, tenant_id, status, changed_at FROM tenant_observability_checks WHERE check_key = $1`,
+    [checkKey],
+  );
+  return rows[0];
+}
+
 async function notificationsFor(sourceId: string): Promise<Array<{ kind: string; source_table: string }>> {
   const { rows } = await pool.query<{ kind: string; source_table: string }>(
     `SELECT kind, source_table FROM notifications WHERE source_id = $1 ORDER BY created_at`,
@@ -47,13 +56,14 @@ async function markAllProcessesFresh(): Promise<void> {
 }
 
 async function runCheck(jobId = randomUUID()): Promise<void> {
-  await handleObservabilityCheckSystemTask(pool, { job: { id: jobId } });
+  await runAsSystem("test", () => handleObservabilityCheckSystemTask(pool, { job: { id: jobId } }));
 }
 
 describe("observability.checkSystem (issue #169)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    await pool.query("DELETE FROM tenant_observability_checks");
   });
 
   afterAll(async () => {
@@ -202,15 +212,49 @@ describe("observability.checkSystem (issue #169)", () => {
 
     await runCheck();
 
-    const overdueCheck = await getCheck(`mail:${overdueMailbox}`);
+    const overdueCheck = await getTenantCheck(`mail:${overdueMailbox}`);
     expect(overdueCheck?.status).toBe("alerting");
-    expect(await notificationsFor(overdueCheck!.id)).toMatchObject([{ kind: "mail_sync_stalled" }]);
+    expect(overdueCheck?.tenant_id).toBe(getTenantZeroId());
+    const notifications = await pool.query<{ kind: string; source_table: string }>(
+      `SELECT kind, source_table FROM notifications WHERE source_id = $1`,
+      [overdueCheck!.id],
+    );
+    expect(notifications.rows).toEqual([{ kind: "mail_sync_stalled", source_table: "tenant_observability_checks" }]);
 
-    const erroredCheck = await getCheck(`mail:${erroredMailbox}`);
+    const erroredCheck = await getTenantCheck(`mail:${erroredMailbox}`);
     expect(erroredCheck?.status).toBe("alerting");
+    expect(erroredCheck?.tenant_id).toBe(getTenantZeroId());
 
-    const healthyCheck = await getCheck(`mail:${healthyMailbox}`);
+    const healthyCheck = await getTenantCheck(`mail:${healthyMailbox}`);
     expect(healthyCheck?.status).toBe("ok");
+    expect(healthyCheck?.tenant_id).toBe(getTenantZeroId());
+
+    const globalRows = await pool.query<{ check_key: string; detail: string }>(
+      `SELECT check_key, detail::text AS detail FROM observability_checks`,
+    );
+    expect(globalRows.rows.filter((row) => row.check_key.startsWith("mail:"))).toEqual([]);
+    expect(globalRows.rows.some((row) => row.detail.includes("boom"))).toBe(false);
+  });
+
+  it("keeps hysteresis: a second run writes no notification and leaves changed_at, recovery flips to ok", async () => {
+    await createTestUser();
+    await markAllProcessesFresh();
+    const mailboxItemId = randomUUID();
+    await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
+    await recordSyncError(pool, mailboxItemId, "boom");
+
+    await runCheck();
+    const first = await getTenantCheck(`mail:${mailboxItemId}`);
+    expect(first?.status).toBe("alerting");
+
+    await runCheck();
+    const second = await getTenantCheck(`mail:${mailboxItemId}`);
+    expect(second?.changed_at).toEqual(first!.changed_at);
+    expect(await notificationsFor(first!.id)).toHaveLength(1);
+
+    await pool.query(`UPDATE mail_account_sync_state SET last_error = NULL WHERE item_id = $1`, [mailboxItemId]);
+    await runCheck();
+    expect((await getTenantCheck(`mail:${mailboxItemId}`))?.status).toBe("ok");
   });
 
   it("drops an orphaned mail check once its account is deleted, instead of leaving it alerting forever", async () => {
@@ -221,11 +265,23 @@ describe("observability.checkSystem (issue #169)", () => {
     await recordSyncError(pool, mailboxItemId, "boom");
 
     await runCheck();
-    expect((await getCheck(`mail:${mailboxItemId}`))?.status).toBe("alerting");
+    expect((await getTenantCheck(`mail:${mailboxItemId}`))?.status).toBe("alerting");
 
     await pool.query(`DELETE FROM mail_account_sync_state WHERE item_id = $1`, [mailboxItemId]);
     await runCheck();
-    expect(await getCheck(`mail:${mailboxItemId}`)).toBeUndefined();
+    expect(await getTenantCheck(`mail:${mailboxItemId}`)).toBeUndefined();
+  });
+
+  it("purges a legacy global mail: row that still carries a lastError", async () => {
+    await markAllProcessesFresh();
+    const legacyKey = `mail:${randomUUID()}`;
+    await pool.query(
+      `INSERT INTO observability_checks (check_key, status, detail) VALUES ($1, 'alerting', $2::jsonb)`,
+      [legacyKey, JSON.stringify({ lastError: "boom" })],
+    );
+
+    await runCheck();
+    expect(await getCheck(legacyKey)).toBeUndefined();
   });
 
   it("references the specific check row that transitioned as the notification's source", async () => {

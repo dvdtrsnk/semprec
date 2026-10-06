@@ -7,9 +7,12 @@ import { getExpectedProcessHeartbeatStatuses } from "../health/processHeartbeats
 import { listAllMailAccountSyncStates } from "../mail/mailAccountSyncStateStore.js";
 import {
   transitionObservabilityCheck,
+  transitionTenantObservabilityCheck,
   deleteOrphanedObservabilityChecks,
+  deleteOrphanedTenantObservabilityChecks,
   type ObservabilityCheckStatus,
 } from "./observabilityChecksStore.js";
+import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { FAILED_JOB_RETENTION_MS } from "./queueFailedJobsPrune.js";
 
 export interface ObservabilityCheckSystemHelpers {
@@ -25,6 +28,7 @@ async function notifyObservabilityAlert(
   checkId: string,
   kind: NotificationKind,
   detail: Record<string, unknown>,
+  sourceTable: "observability_checks" | "tenant_observability_checks" = "observability_checks",
 ): Promise<void> {
   const userId = await getEarliestUserId(client);
   if (!userId) return;
@@ -32,7 +36,7 @@ async function notifyObservabilityAlert(
     userId,
     kind,
     linkHref: null,
-    sourceTable: "observability_checks",
+    sourceTable,
     sourceId: checkId,
     transitionInstance: `${helpers.job.id}:${checkKey}`,
     payload: detail,
@@ -158,21 +162,26 @@ async function checkPermanentlyFailedJobs(pool: Pool, helpers: ObservabilityChec
 const MAIL_CHECK_KEY_PREFIX = "mail:";
 
 /**
- * One `mail:<mailboxItemId>` check per mailbox, folding both adapter-owned inputs into the single
- * uniform predicate `mail_account_sync_state`'s own migration comment already documents: overdue
- * `next_expected_activity_at` (set identically by the imap/gmail_api/graph_api adapters, so this
- * check has no provider-specific branch) OR a non-null `last_error`.
+ * One `mail:<mailboxItemId>` check per mailbox of the *current tenant*, folding both adapter-owned
+ * inputs into the single uniform predicate `mail_account_sync_state`'s own migration comment already
+ * documents: overdue `next_expected_activity_at` (set identically by the imap/gmail_api/graph_api
+ * adapters, so this check has no provider-specific branch) OR a non-null `last_error`.
  *
- * `mail_account_sync_state` has no FK to `observability_checks`, so a deleted mail account simply
- * stops appearing in `listAllMailAccountSyncStates` — its `mail:<itemId>` row would otherwise never
- * be re-evaluated again and could sit `alerting` forever. `deleteOrphanedObservabilityChecks` drops
- * any `mail:` row whose account is no longer present before this tick's checks run.
+ * Must run inside a tenant scope (`forEachActiveTenant`): the sync-state read, the check rows and
+ * their `tenant_id` all come from RLS and the column default. The rows live in
+ * `tenant_observability_checks`, so `detail` may carry the provider's `lastError`.
+ *
+ * `mail_account_sync_state` has no FK to `tenant_observability_checks`, so a deleted mail account
+ * simply stops appearing in `listAllMailAccountSyncStates` — its `mail:<itemId>` row would otherwise
+ * never be re-evaluated again and could sit `alerting` forever.
+ * `deleteOrphanedTenantObservabilityChecks` drops any `mail:` row of this tenant whose account is
+ * no longer present before this tick's checks run.
  */
 async function checkMailSync(pool: Pool, helpers: ObservabilityCheckSystemHelpers): Promise<void> {
   const accounts = await withTransaction(pool, (client) => listAllMailAccountSyncStates(client));
   const currentCheckKeys = accounts.map((account) => `${MAIL_CHECK_KEY_PREFIX}${account.itemId}`);
   await withTransaction(pool, (client) =>
-    deleteOrphanedObservabilityChecks(client, MAIL_CHECK_KEY_PREFIX, currentCheckKeys),
+    deleteOrphanedTenantObservabilityChecks(client, MAIL_CHECK_KEY_PREFIX, currentCheckKeys),
   );
   for (const account of accounts) {
     const checkKey = `${MAIL_CHECK_KEY_PREFIX}${account.itemId}`;
@@ -180,7 +189,7 @@ async function checkMailSync(pool: Pool, helpers: ObservabilityCheckSystemHelper
       const overdue =
         account.nextExpectedActivityAt !== null && new Date(account.nextExpectedActivityAt).getTime() < Date.now();
       const alerting = overdue || account.lastError !== null;
-      const transition = await transitionObservabilityCheck(client, checkKey, () => ({
+      const transition = await transitionTenantObservabilityCheck(client, checkKey, () => ({
         status: alerting ? "alerting" : "ok",
         detail: {
           mailboxItemId: account.itemId,
@@ -189,10 +198,15 @@ async function checkMailSync(pool: Pool, helpers: ObservabilityCheckSystemHelper
         },
       }));
       if (transition.transitionedToAlerting) {
-        await notifyObservabilityAlert(client, helpers, checkKey, transition.id, "mail_sync_stalled", {
-          mailboxItemId: account.itemId,
-          lastError: account.lastError,
-        });
+        await notifyObservabilityAlert(
+          client,
+          helpers,
+          checkKey,
+          transition.id,
+          "mail_sync_stalled",
+          { mailboxItemId: account.itemId, lastError: account.lastError },
+          "tenant_observability_checks",
+        );
       }
     });
   }
@@ -201,8 +215,12 @@ async function checkMailSync(pool: Pool, helpers: ObservabilityCheckSystemHelper
 /**
  * `observability.checkSystem` (issue #169), registered against the queue's cron table at a
  * static "every minute" entry (`CORE_CRONTAB` in worker.ts), same shape as `HEARTBEAT_SWEEP`.
- * Each of the four check families upserts its own `observability_checks` row(s) and notifies
- * only on a genuine ok/missing -> alerting transition, so a sustained fault across many ticks —
+ * The process, backlog and failed-job families upsert content-free `observability_checks` rows from
+ * the system scope the task runner provides. The per-mailbox family runs once per active tenant
+ * (`forEachActiveTenant`) against `tenant_observability_checks`; any legacy global `mail:` rows are
+ * purged first so a rollback-and-forward cannot leave a stale `lastError` in the global table. If any
+ * tenant's pass fails the handler rejects, but only after every tenant was attempted. Each family
+ * notifies only on a genuine ok/missing -> alerting transition, so a sustained fault across many ticks —
  * or across a restart of whatever process runs this crontab, since the state lives in Postgres,
  * not memory — notifies exactly once until it recovers.
  */
@@ -213,5 +231,6 @@ export async function handleObservabilityCheckSystemTask(
   await checkProcessHeartbeats(pool, helpers);
   await checkQueueBacklog(pool, helpers);
   await checkPermanentlyFailedJobs(pool, helpers);
-  await checkMailSync(pool, helpers);
+  await withTransaction(pool, (client) => deleteOrphanedObservabilityChecks(client, MAIL_CHECK_KEY_PREFIX, []));
+  await forEachActiveTenant(pool, () => checkMailSync(pool, helpers));
 }
