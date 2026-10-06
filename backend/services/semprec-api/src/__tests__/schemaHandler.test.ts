@@ -2,9 +2,8 @@ import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPool, resetDatabase, getTenantZeroId } from "@semprec/data/testSupport";
+import { getTestPool, resetDatabase, upsertTenantZeroUser } from "@semprec/data/testSupport";
 import {
-  createUser,
   createViewTypeRegistry,
   hashPassword,
   loadFullModuleRegistry,
@@ -20,8 +19,7 @@ let pool: Pool;
 const moduleRegistry = await loadFullModuleRegistry();
 
 async function authHeader(locale?: string): Promise<{ Authorization: string }> {
-  const user = await createUser(pool, {
-    tenantId: getTenantZeroId(),
+  const user = await upsertTenantZeroUser(pool, {
     email: `${randomUUID()}@example.com`,
     passwordHash: await hashPassword(PASSWORD),
     ...(locale !== undefined ? { locale } : {}),

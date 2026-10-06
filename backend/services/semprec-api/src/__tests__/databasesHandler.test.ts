@@ -4,10 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPool, resetDatabase, getTenantZeroId } from "@semprec/data/testSupport";
+import { getTestPool, resetDatabase, upsertTenantZeroUser } from "@semprec/data/testSupport";
 import {
   createChokePoint,
-  createUser,
   createViewTypeRegistry,
   hashPassword,
   loadFullModuleRegistry,
@@ -34,8 +33,7 @@ let chokePoint: ChokePoint;
 const moduleRegistry = await loadFullModuleRegistry();
 
 async function authHeader(locale = "en"): Promise<{ Authorization: string }> {
-  const user = await createUser(pool, {
-    tenantId: getTenantZeroId(),
+  const user = await upsertTenantZeroUser(pool, {
     email: `${randomUUID()}@example.com`,
     passwordHash: await hashPassword(PASSWORD),
     locale,
