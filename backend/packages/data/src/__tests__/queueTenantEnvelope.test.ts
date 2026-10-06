@@ -54,8 +54,7 @@ describe("queue tenant envelope", () => {
     await runInTenant(tenantZero, () => enqueueJob(pool, TASK, { a: 1 }));
 
     const { rows } = await pool.query<{ payload: { tenantId?: string } }>(
-      `SELECT j.payload FROM graphile_worker._private_jobs j
-       JOIN graphile_worker._private_tasks t ON t.id = j.task_id WHERE t.identifier = $1`,
+      "SELECT payload FROM graphile_worker.jobs WHERE task_identifier = $1",
       [TASK],
     );
     expect(rows).toHaveLength(1);
