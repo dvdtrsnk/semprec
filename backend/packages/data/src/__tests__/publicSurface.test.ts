@@ -279,6 +279,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "getTaskRecurrence",
   "getUserByEmail",
   "getUserById",
+  "getUserTenantBinding",
   "guidanceDriftHeartbeatStore",
   "guidanceReferenceStore",
   "handleAgentRunEventsRetentionTask",

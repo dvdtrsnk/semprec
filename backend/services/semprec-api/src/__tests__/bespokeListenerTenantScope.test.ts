@@ -260,7 +260,7 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
   });
 
   describe("POST /mcp with a restricted run credential", () => {
-    it("answers as before and looks the credential up in a system scope", async () => {
+    it("answers as before, looking the credential up in a system scope and serving in its owner's tenant", async () => {
       const user = await createUser(pool, {
         email: `${randomUUID()}@example.com`,
         passwordHash: await hashPassword(PASSWORD),
@@ -284,7 +284,13 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
       expect(strict).toEqual(warn);
       expect(strict.status).toBe(200);
       expect(recorded.length).toBeGreaterThan(0);
-      expect(recorded.every((scope) => scope?.kind === "system")).toBe(true);
+      expect(recorded.every((scope) => scope?.kind === "system" || scope?.kind === "tenant")).toBe(true);
+      expect(recorded.some((scope) => scope?.kind === "system")).toBe(true);
+      // The request body is read and served inside the credential owner's tenant scope.
+      expect(recorded.filter((scope) => scope?.kind === "tenant")).toContainEqual({
+        kind: "tenant",
+        tenantId: getTenantZeroId(),
+      });
     });
   });
 });
