@@ -31,8 +31,13 @@ write_mock() {
 write_mock docker '
 printf "docker %s\\n" "$*" >> "$TEST_STATE/commands"
 if [[ "$1" == "compose" && " $* " == *" exec -T postgres "* ]]; then
-  if [[ -e "$TEST_STATE/fail-pg-dump" ]]; then exit 23; fi
-  printf "custom PostgreSQL dump"
+  if [[ " $* " == *" --table=public.tenant_keys "* ]]; then
+    if [[ -e "$TEST_STATE/fail-key-dump" ]]; then printf "partial"; exit 27; fi
+    printf "tenant keys dump"
+  else
+    if [[ -e "$TEST_STATE/fail-pg-dump" ]]; then exit 23; fi
+    printf "custom PostgreSQL dump"
+  fi
 else
   exit 24
 fi'
@@ -40,6 +45,8 @@ write_mock install 'mkdir -p "${!#}"'
 write_mock restic '
 printf "restic %s\\n" "$*" >> "$TEST_STATE/commands"
 if [[ "$1" == "backup" && -e "$TEST_STATE/fail-restic-backup" ]]; then exit 25; fi
+if [[ "$1" == "backup" && " $* " == *"/tenant-keys.dump "* && -e "$TEST_STATE/fail-key-backup" ]]; then exit 28; fi
+if [[ "$1" == "prune" && -e "$TEST_STATE/fail-restic-prune" ]]; then exit 29; fi
 if [[ "$1" == "forget" && -e "$TEST_STATE/fail-restic-forget" ]]; then exit 26; fi'
 
 run_backup() {
@@ -59,11 +66,20 @@ run_backup env
 test -f "$TEST_BACKUP_DIRECTORY/postgres.dump"
 grep -qx 'custom PostgreSQL dump' "$TEST_BACKUP_DIRECTORY/postgres.dump"
 grep -qx "restic backup $TEST_BACKUP_DIRECTORY/postgres.dump $TEST_FILES_DIRECTORY $TEST_MAIL_ATTACHMENTS_DIRECTORY" "$TEST_STATE/commands"
-# The dump is the only container the backup touches; the blob directories are read from the host.
-test "$(grep -c '^docker ' "$TEST_STATE/commands")" -eq 1
-grep -q '^docker compose .* exec -T postgres ' "$TEST_STATE/commands"
-grep -qx 'restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 12 --prune' "$TEST_STATE/commands"
-test "$(grep -n '^restic backup ' "$TEST_STATE/commands" | cut -d: -f1)" -lt "$(grep -n '^restic forget ' "$TEST_STATE/commands" | cut -d: -f1)"
+grep -qx 'tenant keys dump' "$TEST_BACKUP_DIRECTORY/tenant-keys.dump"
+! test -e "$TEST_BACKUP_DIRECTORY/tenant-keys.dump.tmp"
+# The two dumps are the only containers the backup touches; the blob directories are read from the host.
+test "$(grep -c '^docker ' "$TEST_STATE/commands")" -eq 2
+grep -q '^docker compose .* exec -T postgres pg_dump .* --format=custom --exclude-table-data=public.tenant_keys$' "$TEST_STATE/commands"
+grep -q '^docker compose .* exec -T postgres pg_dump .* --format=custom --data-only --table=public.tenant_keys$' "$TEST_STATE/commands"
+grep -qx "restic backup $TEST_BACKUP_DIRECTORY/tenant-keys.dump" "$TEST_STATE/commands"
+! grep "^restic backup $TEST_BACKUP_DIRECTORY/postgres.dump" "$TEST_STATE/commands" | grep -q 'tenant-keys'
+grep -qx "restic forget --path $TEST_BACKUP_DIRECTORY/postgres.dump --keep-daily 14 --keep-weekly 8 --keep-monthly 12" "$TEST_STATE/commands"
+grep -qx "restic forget --path $TEST_BACKUP_DIRECTORY/tenant-keys.dump --keep-within 7d" "$TEST_STATE/commands"
+test "$(grep -c '^restic prune$' "$TEST_STATE/commands")" -eq 1
+test "$(grep -c '^restic ' "$TEST_STATE/commands")" -eq 5
+# Order: both backups, then both forgets, then the single prune.
+test "$(grep '^restic ' "$TEST_STATE/commands" | cut -d' ' -f2 | tr '\n' ' ')" = 'backup backup forget forget prune '
 ! rg -q '/opt/semprec/shared|/var/log/journal|/etc/caddy|/opt/semprec/releases|CREDENTIALS_MASTER_KEY|SECRETS_MASTER_KEY' "$TEST_STATE/commands"
 
 rm -f "$TEST_STATE/commands"
@@ -75,6 +91,23 @@ fi
 ! test -e "$TEST_BACKUP_DIRECTORY/postgres.dump.tmp"
 ! test -e "$TEST_STATE/commands" || ! grep -q '^restic ' "$TEST_STATE/commands"
 rm "$TEST_STATE/fail-pg-dump" "$TEST_STATE/commands"
+
+touch "$TEST_STATE/fail-key-dump"
+if run_backup env; then
+  echo 'key dump failure unexpectedly succeeded' >&2
+  exit 1
+fi
+! test -e "$TEST_BACKUP_DIRECTORY/tenant-keys.dump.tmp"
+! test -e "$TEST_STATE/commands" || ! grep -q '^restic ' "$TEST_STATE/commands"
+rm "$TEST_STATE/fail-key-dump" "$TEST_STATE/commands"
+
+touch "$TEST_STATE/fail-key-backup"
+if run_backup env; then
+  echo 'key snapshot failure unexpectedly succeeded' >&2
+  exit 1
+fi
+! grep -q '^restic forget ' "$TEST_STATE/commands"
+rm "$TEST_STATE/fail-key-backup" "$TEST_STATE/commands"
 
 touch "$TEST_STATE/fail-restic-backup"
 if run_backup env; then

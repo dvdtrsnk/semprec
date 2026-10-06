@@ -61,7 +61,9 @@ case "$1" in
   exec)
     arguments=" $* "
     if [[ "$arguments" == *" pg_isready "* ]]; then ! fail postgres-ready
+    elif [[ "$arguments" == *" pg_restore "* && "$arguments" == *" --data-only "* ]]; then cat > /dev/null; ! fail key-restore
     elif [[ "$arguments" == *" pg_restore "* ]]; then cat > /dev/null; ! fail pg-restore
+    elif [[ "$arguments" == *"count(*) FROM tenant_keys"* ]]; then if fail tenant-keys-present; then echo 2; else echo 0; fi
     elif [[ "$arguments" == *"FROM blobs"* ]]; then cat "$TEST_STATE/blob-rows"
     elif [[ "$arguments" == *"octet_length(state) = 0"* ]]; then if fail empty-doc-state; then echo 1; else echo 0; fi
     elif [[ "$arguments" == *"FROM doc_snapshots"* ]]; then if fail no-doc-snapshots; then echo 0; else echo 4; fi
@@ -75,7 +77,15 @@ write_mock restic '
 printf "restic %s\\n" "$*" >> "$TEST_STATE/commands"
 if [[ -e "$TEST_STATE/fail-restic-restore" ]]; then exit 35; fi
 target="${!#}"
+snapshot_path=
+for ((i = 1; i < $#; i++)); do
+  if [[ "${!i}" == --path ]]; then j=$((i + 1)); snapshot_path="${!j}"; fi
+done
 mkdir -p "$target/var/backups/semprec"
+if [[ "$snapshot_path" == /var/backups/semprec/tenant-keys.dump ]]; then
+  if [[ ! -e "$TEST_STATE/fail-key-dump-missing" ]]; then printf "tenant keys dump" > "$target/var/backups/semprec/tenant-keys.dump"; fi
+  exit 0
+fi
 printf "custom PostgreSQL dump" > "$target/var/backups/semprec/postgres.dump"
 cp -R "$TEST_BLOBS/." "$target/"
 if [[ -e "$TEST_STATE/fail-blob-missing-files" ]]; then rm "$target/opt/semprec/data/files/cd/file-b"; fi
@@ -148,6 +158,11 @@ grep -qx "$PING_URL" "$TEST_STATE/pings"
 test "$(count_lines . "$TEST_STATE/results")" -eq 1
 grep -Eq '^passed [0-9]{8}T[0-9]{6}Z-[0-9]+ DATABASE_URL=postgres://semprec_side@' "$TEST_STATE/results"
 grep -q -- '--exit-on-error' "$TEST_STATE/commands"
+# Each restore names its snapshot kind, and the key dump is restored data-only.
+test "$(count_lines '^restic restore latest ' "$TEST_STATE/commands")" -eq 2
+grep -q '^restic restore latest --path /var/backups/semprec/postgres.dump --target ' "$TEST_STATE/commands"
+grep -q '^restic restore latest --path /var/backups/semprec/tenant-keys.dump --target ' "$TEST_STATE/commands"
+test "$(count_lines '^docker exec .* pg_restore .* --data-only ' "$TEST_STATE/commands")" -eq 1
 test "$(count_lines '^docker run ' "$TEST_STATE/commands")" -eq 1
 # The disposable server runs with the same lock-table size as production's compose file.
 production_max_locks="$(sed -n 's/^ *command: \["postgres", "-c", "max_locks_per_transaction=\([0-9]*\)"\]$/\1/p' \
@@ -189,6 +204,9 @@ assert_failure itemsCount no-items
 assert_failure itemsFreshness stale-items
 assert_failure docSnapshotsCount no-doc-snapshots
 assert_failure docSnapshotsState empty-doc-state
+assert_failure tenantKeysExcluded tenant-keys-present
+assert_failure tenantKeysRestore key-dump-missing
+assert_failure tenantKeysRestore key-restore
 assert_failure blobObjects blob-missing-files
 assert_failure blobObjects blob-missing-mail
 assert_failure blobObjects blob-size-mismatch

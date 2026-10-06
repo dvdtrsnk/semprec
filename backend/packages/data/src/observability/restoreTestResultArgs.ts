@@ -12,6 +12,8 @@ export const RESTORE_TEST_FAILED_CHECKS = [
   "itemsFreshness",
   "docSnapshotsCount",
   "docSnapshotsState",
+  "tenantKeysExcluded",
+  "tenantKeysRestore",
   "minioStart",
   "blobObjects",
   "cleanup",

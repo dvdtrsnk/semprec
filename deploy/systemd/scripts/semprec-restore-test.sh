@@ -9,6 +9,7 @@ readonly RESTORE_ROOT=/var/tmp
 readonly RESULT_CLI=/opt/semprec/current/backend/packages/data/dist/observability/restoreTestResultCli.js
 readonly POSTGRES_IMAGE=postgres:16-alpine
 readonly RESTORED_DUMP_PATH=var/backups/semprec/postgres.dump
+readonly RESTORED_TENANT_KEYS_DUMP_PATH=var/backups/semprec/tenant-keys.dump
 readonly RESTORE_DATABASE=semprec_restore
 readonly ITEMS_MAX_AGE_HOURS=48
 readonly BLOB_SAMPLE_SIZE=20
@@ -124,7 +125,8 @@ wait_until_ready() {
 restore_snapshot() {
   CURRENT_CHECK=snapshotRestore
   WORK_DIRECTORY="$(mktemp -d "$RESTORE_ROOT/semprec-restore-test.XXXXXX")"
-  restic restore latest --target "$WORK_DIRECTORY"
+  # Main and key snapshots interleave; a bare `latest` would pick whichever kind ran last.
+  restic restore latest --path "/$RESTORED_DUMP_PATH" --target "$WORK_DIRECTORY"
   [[ -s "$WORK_DIRECTORY/$RESTORED_DUMP_PATH" ]] || fail_check "restored snapshot has no PostgreSQL dump"
 }
 
@@ -170,6 +172,25 @@ check_postgres_contents() {
   local empty_snapshots
   empty_snapshots="$(pg_query 'SELECT count(*) FROM doc_snapshots WHERE octet_length(state) = 0')"
   [[ "$empty_snapshots" == 0 ]] || fail_check "restored doc_snapshots has empty state"
+}
+
+# Every backup writes the key dump after the main dump, and the main dump holds no tenant_keys data.
+check_tenant_keys_excluded() {
+  CURRENT_CHECK=tenantKeysExcluded
+  local key_rows
+  key_rows="$(pg_query 'SELECT count(*) FROM tenant_keys')"
+  [[ "$key_rows" == 0 ]] || fail_check "restored main dump contains tenant_keys rows"
+}
+
+# The key snapshot is restored data-only on top of the main dump: the foreign key to tenants proves
+# every key belongs to a restored tenant. Nothing is decrypted, so no master key is involved.
+check_tenant_keys_restore() {
+  CURRENT_CHECK=tenantKeysRestore
+  restic restore latest --path "/$RESTORED_TENANT_KEYS_DUMP_PATH" --target "$WORK_DIRECTORY"
+  [[ -s "$WORK_DIRECTORY/$RESTORED_TENANT_KEYS_DUMP_PATH" ]] || fail_check "restored key snapshot has no tenant keys dump"
+  docker exec --interactive "$POSTGRES_CONTAINER" \
+    pg_restore --host=127.0.0.1 --username=postgres --dbname="$RESTORE_DATABASE" \
+    --data-only --exit-on-error --no-owner --no-privileges < "$WORK_DIRECTORY/$RESTORED_TENANT_KEYS_DUMP_PATH"
 }
 
 # restic restores absolute paths under the work directory. A `blobs.storage_key` is relative to
@@ -221,6 +242,8 @@ main() {
   start_postgres
   restore_postgres
   check_postgres_contents
+  check_tenant_keys_excluded
+  check_tenant_keys_restore
   check_blob_objects
 
   CURRENT_CHECK=cleanup
