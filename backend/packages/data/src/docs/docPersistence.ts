@@ -6,6 +6,7 @@ import { notifyDocUpdate } from "../realtimeHook.js";
 import { resolveDocHistoryRetentionDays, retentionHours } from "./docHistoryConfig.js";
 import { logger } from "./logger.js";
 import { assertSweepNotFailedEntirely, type SweepOutcome } from "./sweepOutcome.js";
+import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 
 /** y-leveldb uses 500, y-postgresql uses 200 — the issue asks for "the same shape", 200-500. */
 export const DEFAULT_COMPACTION_THRESHOLD = 200;
@@ -236,7 +237,9 @@ export async function mutateDoc<T>(
 
 /**
  * Periodic sweep (issue #23, point 5): catches up documents that are rarely opened, so
- * their log doesn't grow unboundedly just because nobody reads them. One doc failing
+ * their log doesn't grow unboundedly just because nobody reads them. Compacts the
+ * over-threshold docs visible in the current scope, i.e. one tenant's docs when called per
+ * tenant (see `handleDocCompactionSweepTask`). One doc failing
  * (a transient DB error, a corrupted update row) must not abort the sweep before it
  * reaches the rest of the over-threshold docs, so each is isolated and logged.
  */
@@ -264,6 +267,8 @@ export async function runCompactionSweep(
 }
 
 export async function handleDocCompactionSweepTask(pool: Pool): Promise<void> {
-  const outcome = await runCompactionSweep(pool);
-  assertSweepNotFailedEntirely("docCompactionSweep", outcome);
+  await forEachActiveTenant(pool, async () => {
+    const outcome = await runCompactionSweep(pool);
+    assertSweepNotFailedEntirely("docCompactionSweep", outcome);
+  });
 }
