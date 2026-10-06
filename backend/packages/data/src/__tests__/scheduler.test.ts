@@ -1477,7 +1477,12 @@ describe("scheduler", () => {
       const ids = await insertDueDailyHeartbeats(150);
       const failingPool = poolWithFailingConnectAt(2, new Error("simulated outage"));
 
-      await expect(handleHeartbeatSweepTask(failingPool)).rejects.toThrow("simulated outage");
+      const err: unknown = await handleHeartbeatSweepTask(failingPool).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(AggregateError);
+      expect((err as AggregateError).errors[0]).toEqual(expect.objectContaining({ message: "simulated outage" }));
 
       const { rows: firedRows } = await pool.query<{ count: number }>(
         `SELECT count(*)::int AS count FROM project_heartbeats WHERE id = ANY($1) AND next_fire_at > now()`,

@@ -3,6 +3,7 @@ import { AGENT_TASK_NAMES, type Task, type TaskAffinity } from "@semprec/queue";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
+import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { getEarliestUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
 import {
@@ -59,25 +60,37 @@ async function resolveModuleRuleKinds(moduleRegistry?: ModuleRegistry): Promise<
 }
 
 /**
- * One transaction per `sweepDueHeartbeats` chunk, looping until a short chunk reports the sweep
- * exhausted. A chunk that throws propagates as-is — the task fails, the remaining due rows are
- * picked up by next minute's tick — but the chunks already committed stay committed, unlike the
- * old single whole-sweep transaction where one bad row rolled back every row's advance.
+ * Runs once per active tenant (`forEachActiveTenant`), each tenant inside its own scope, so its
+ * heartbeats are scheduled in its own settings timezone and its occurrences and fire jobs carry its
+ * `tenant_id`. Per tenant: one transaction per `sweepDueHeartbeats` chunk, looping until a short chunk
+ * reports the pass exhausted. A chunk that throws ends only that tenant's pass — the chunks already
+ * committed stay committed, the other tenants are still swept, and the helper rethrows the failures
+ * together afterwards so the task fails and the remaining due rows are picked up by the retry or next
+ * minute's tick.
  *
- * `MAX_SWEEP_CHUNKS` bounds a single tick to `MAX_SWEEP_CHUNKS * SWEEP_CHUNK_SIZE` (5 000) rows;
- * anything beyond that waits for the next minute's tick rather than one tick running unbounded.
+ * `MAX_SWEEP_CHUNKS_PER_TENANT` bounds one tenant's pass to `MAX_SWEEP_CHUNKS_PER_TENANT *
+ * SWEEP_CHUNK_SIZE` (5 000) rows; anything beyond that waits for the next minute's tick, so a tick
+ * handles at most active tenants × 5 000 rows and one tenant's backlog cannot use up another's tick.
+ * See `docs/adr/2026-10-06-system-work-fans-out-per-tenant.md`.
  */
-const MAX_SWEEP_CHUNKS = 50;
+const MAX_SWEEP_CHUNKS_PER_TENANT = 50;
 
 /** Registered against the queue's cron table at a static "every minute" entry — no in-process setInterval. */
-export async function handleHeartbeatSweepTask(pool: Pool, moduleRegistry?: ModuleRegistry): Promise<void> {
+export async function handleHeartbeatSweepTask(
+  pool: Pool,
+  moduleRegistry?: ModuleRegistry,
+  options: { maxChunksPerTenant?: number } = {},
+): Promise<void> {
+  const maxChunksPerTenant = options.maxChunksPerTenant ?? MAX_SWEEP_CHUNKS_PER_TENANT;
   const moduleRuleKinds = await resolveModuleRuleKinds(moduleRegistry);
-  let afterId: string | null = null;
-  for (let chunk = 0; chunk < MAX_SWEEP_CHUNKS; chunk++) {
-    const result = await withTransaction(pool, (client) => sweepDueHeartbeats(client, moduleRuleKinds, afterId));
-    if (result.exhausted) return;
-    afterId = result.lastId;
-  }
+  await forEachActiveTenant(pool, async () => {
+    let afterId: string | null = null;
+    for (let chunk = 0; chunk < maxChunksPerTenant; chunk++) {
+      const result = await withTransaction(pool, (client) => sweepDueHeartbeats(client, moduleRuleKinds, afterId));
+      if (result.exhausted) return;
+      afterId = result.lastId;
+    }
+  });
 }
 
 /**
