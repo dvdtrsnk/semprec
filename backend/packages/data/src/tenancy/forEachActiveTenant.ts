@@ -5,12 +5,19 @@ import { logger } from "./logger.js";
 // Process-local; only used to rotate which tenant a call starts with.
 let callCounter = 0;
 
+function errorName(err: unknown): string {
+  return err instanceof Error ? err.name : typeof err;
+}
+
 /**
  * Runs `work` once for every active tenant, each inside that tenant's own scope, sequentially.
  * Call number `n` of this process starts at index `n mod k` of the id-ordered tenants and wraps
  * around, so no tenant is always first. A tenant whose `work` throws is logged and collected and the
  * loop continues; afterwards the original errors are rethrown as one `AggregateError` so the calling
- * job fails and is retried. Suspended, provisioning and deleting tenants are skipped.
+ * job fails and is retried. Only the error's class name reaches the log: a `work` error's message,
+ * stack and cause can embed one tenant's content (mail subjects, property values, prompts), and the
+ * `tenancy` logger is not tenant-scoped. The `AggregateError.errors` carry the raw errors, so callers
+ * must not log them. Suspended, provisioning and deleting tenants are skipped.
  *
  * Runs in a system scope, so it may be called with no scope or from a system scope; called from a
  * tenant scope it throws `TenantScopeConflictError` before doing anything.
@@ -33,7 +40,7 @@ export async function forEachActiveTenant(pool: Pool, work: (tenantId: string) =
       try {
         await runInTenant(tenantId, () => work(tenantId));
       } catch (err) {
-        logger.error({ err, tenantId }, "Per-tenant work failed");
+        logger.error({ errorName: errorName(err), tenantId }, "Per-tenant work failed");
         errors.push(err);
       }
     }
