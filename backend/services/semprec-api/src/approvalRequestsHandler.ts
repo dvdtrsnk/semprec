@@ -11,6 +11,7 @@ import type { Pool } from "pg";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { assertUuid } from "./adapter/requestValidation.js";
 import { PayloadTooLargeError, readJsonBody, sendJson } from "./adapter/http.js";
+import { runInTenant } from "@semprec/shared";
 import { authenticateRequest } from "./authHandler.js";
 import { logger } from "./logger.js";
 
@@ -48,47 +49,49 @@ export function createApprovalRequestsRequestListener(pool: Pool) {
     try {
       const identity = await authenticateRequest(pool, req);
 
-      if (req.method === "GET" && url.pathname === "/api/approval-requests") {
-        const rows = await withTransaction(pool, (client) => listApprovalRequestsQueue(client));
-        sendJson(res, 200, { rows });
-        return;
-      }
+      await runInTenant(identity.tenantId, async () => {
+        if (req.method === "GET" && url.pathname === "/api/approval-requests") {
+          const rows = await withTransaction(pool, (client) => listApprovalRequestsQueue(client));
+          sendJson(res, 200, { rows });
+          return;
+        }
 
-      const match = url.pathname.match(APPROVAL_REQUEST_PATH);
-      if (!match || req.method !== "PATCH") {
-        sendJson(res, 404, { error: "Not found" });
-        return;
-      }
+        const match = url.pathname.match(APPROVAL_REQUEST_PATH);
+        if (!match || req.method !== "PATCH") {
+          sendJson(res, 404, { error: "Not found" });
+          return;
+        }
 
-      // Group 1 of the route pattern above is not optional, so a successful match always
-      // captured it; a runtime check here would be unreachable code.
-      const approvalRequestId = assertUuid(match[1]!, "id");
-      const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as { decision?: unknown };
-      if (body.decision !== "approved" && body.decision !== "rejected") {
-        sendJson(res, 400, { error: "'decision' must be 'approved' or 'rejected'" });
-        return;
-      }
-      const decision = body.decision;
+        // Group 1 of the route pattern above is not optional, so a successful match always
+        // captured it; a runtime check here would be unreachable code.
+        const approvalRequestId = assertUuid(match[1]!, "id");
+        const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as { decision?: unknown };
+        if (body.decision !== "approved" && body.decision !== "rejected") {
+          sendJson(res, 400, { error: "'decision' must be 'approved' or 'rejected'" });
+          return;
+        }
+        const decision = body.decision;
 
-      const decided = await withTransaction(pool, (client) =>
-        decideAndEnqueueApprovalRequest(client, {
-          approvalRequestId,
-          decision,
-          decidedByUserId: identity.user.id,
-        }),
-      );
+        const decided = await withTransaction(pool, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId,
+            decision,
+            decidedByUserId: identity.user.id,
+          }),
+        );
 
-      if (decided) {
-        sendJson(res, 200, toApprovalRequestDecisionView(decided));
-        return;
-      }
+        if (decided) {
+          sendJson(res, 200, toApprovalRequestDecisionView(decided));
+          return;
+        }
 
-      const existing = await withTransaction(pool, (client) => getApprovalRequest(client, approvalRequestId));
-      if (!existing) {
-        sendJson(res, 404, { error: "Not found" });
-        return;
-      }
-      sendJson(res, 200, toApprovalRequestDecisionView(existing));
+        const existing = await withTransaction(pool, (client) => getApprovalRequest(client, approvalRequestId));
+        if (!existing) {
+          sendJson(res, 404, { error: "Not found" });
+          return;
+        }
+        sendJson(res, 200, toApprovalRequestDecisionView(existing));
+      });
     } catch (err) {
       if (err instanceof PayloadTooLargeError) {
         sendJson(res, 413, { error: err.message });

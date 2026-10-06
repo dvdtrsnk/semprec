@@ -10,6 +10,7 @@ import {
   ingestUploadedFile,
   type BlobStorageWriter,
 } from "@semprec/data";
+import { runInTenant } from "@semprec/shared";
 import { authenticateRequest } from "./authHandler.js";
 import { requireHeader } from "./adapter/requestValidation.js";
 import { toItemEnvelope } from "./adapter/itemEnvelope.js";
@@ -48,38 +49,42 @@ export interface FilesRequestListenerOptions {
 export function createFilesRequestListener(pool: Pool, options: FilesRequestListenerOptions) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
-      await authenticateRequest(pool, req);
+      const identity = await authenticateRequest(pool, req);
 
-      const contentLengthHeader = req.headers["content-length"];
-      if (typeof contentLengthHeader === "string") {
-        const contentLength = Number(contentLengthHeader);
-        if (Number.isFinite(contentLength) && contentLength > options.maxFileSizeBytes) {
-          req.resume();
-          sendJson(res, 413, { error: { code: "payload_too_large" } });
-          return;
+      await runInTenant(identity.tenantId, async () => {
+        const contentLengthHeader = req.headers["content-length"];
+        if (typeof contentLengthHeader === "string") {
+          const contentLength = Number(contentLengthHeader);
+          if (Number.isFinite(contentLength) && contentLength > options.maxFileSizeBytes) {
+            req.resume();
+            sendJson(res, 413, { error: { code: "payload_too_large" } });
+            return;
+          }
         }
-      }
 
-      const contentType = requireHeader(req, "Content-Type");
-      const filename = requireHeader(req, "X-Filename");
-      if (Buffer.byteLength(filename, "utf8") > MAX_FILENAME_BYTES) {
-        throw new ValidationError(`'X-Filename' must be at most ${MAX_FILENAME_BYTES} bytes`, { field: "X-Filename" });
-      }
+        const contentType = requireHeader(req, "Content-Type");
+        const filename = requireHeader(req, "X-Filename");
+        if (Buffer.byteLength(filename, "utf8") > MAX_FILENAME_BYTES) {
+          throw new ValidationError(`'X-Filename' must be at most ${MAX_FILENAME_BYTES} bytes`, {
+            field: "X-Filename",
+          });
+        }
 
-      const filesDatabase = await withTransaction(pool, (client) => getDatabaseByModuleId(client, FILES_MODULE_ID));
-      if (!filesDatabase) throw new Error("The 'files' system database is missing");
+        const filesDatabase = await withTransaction(pool, (client) => getDatabaseByModuleId(client, FILES_MODULE_ID));
+        if (!filesDatabase) throw new Error("The 'files' system database is missing");
 
-      const { item, created } = await ingestUploadedFile(pool, {
-        filesDatabaseId: filesDatabase.id,
-        filename,
-        contentType,
-        source: req,
-        storageKeyPrefix: "files",
-        maxBytes: options.maxFileSizeBytes,
-        storage: options.storage,
+        const { item, created } = await ingestUploadedFile(pool, {
+          filesDatabaseId: filesDatabase.id,
+          filename,
+          contentType,
+          source: req,
+          storageKeyPrefix: "files",
+          maxBytes: options.maxFileSizeBytes,
+          storage: options.storage,
+        });
+
+        sendJson(res, created ? 201 : 200, toItemEnvelope(item));
       });
-
-      sendJson(res, created ? 201 : 200, toItemEnvelope(item));
     } catch (err) {
       if (err instanceof MaxBytesExceededError) {
         req.resume();

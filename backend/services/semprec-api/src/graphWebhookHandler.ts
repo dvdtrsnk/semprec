@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { handleGraphChangeNotification } from "@semprec/data";
+import { runAsSystem } from "@semprec/shared";
 import { PayloadTooLargeError, readRawBody, sendJson } from "./adapter/http.js";
 import { logger } from "./logger.js";
 
@@ -71,12 +72,17 @@ export function createGraphWebhookRequestListener(pool: Pool) {
         ? rawValue.map(parseNotification).filter((n): n is RawNotification => n !== undefined)
         : [];
 
-      for (const notification of notifications) {
-        const outcome = await handleGraphChangeNotification(pool, notification);
-        if (outcome !== "accepted") {
-          logger.warn({ subscriptionId: notification.subscriptionId, outcome }, "Graph webhook notification rejected");
+      await runAsSystem("graph-webhook", async () => {
+        for (const notification of notifications) {
+          const outcome = await handleGraphChangeNotification(pool, notification);
+          if (outcome !== "accepted") {
+            logger.warn(
+              { subscriptionId: notification.subscriptionId, outcome },
+              "Graph webhook notification rejected",
+            );
+          }
         }
-      }
+      });
 
       // 202 regardless of individual notification outcomes: Graph disables (and eventually stops
       // retrying) a subscription whose endpoint doesn't answer promptly with a 2xx — a rejected

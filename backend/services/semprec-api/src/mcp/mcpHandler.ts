@@ -13,6 +13,8 @@ import {
   CAPABILITY_IDS,
   GENERIC_OPERATION_NAMES,
   operationInputJsonSchema,
+  runAsSystem,
+  runInTenant,
   type AuthenticatedActor,
   type CapabilityId,
   type GenericOperationName,
@@ -87,11 +89,15 @@ export function createMcpRequestListener(
 ) {
   async function resolveActor(
     req: IncomingMessage,
-  ): Promise<{ actor: AuthenticatedActor; capabilities: ReadonlySet<CapabilityId> }> {
+  ): Promise<{ actor: AuthenticatedActor; capabilities: ReadonlySet<CapabilityId>; tenantId?: string }> {
     const bearerToken = extractBearerToken(req);
     if (bearerToken === null) throw new UnauthorizedError();
 
-    const credential = await withTransaction(pool, (client) => resolveMcpRunCredential(client, bearerToken));
+    // `agent_run_mcp_credentials` is a global table without row-level security until #994 reworks
+    // this path, so the lookup runs as system.
+    const credential = await runAsSystem("mcp-run-credential-lookup", () =>
+      withTransaction(pool, (client) => resolveMcpRunCredential(client, bearerToken)),
+    );
     if (credential) {
       const capabilities = new Set(
         (CAPABILITY_IDS as readonly CapabilityId[]).filter(
@@ -109,7 +115,7 @@ export function createMcpRequestListener(
     }
 
     const identity = await authenticateRequest(pool, req);
-    return { actor: { userId: identity.user.id }, capabilities: grantedCapabilities };
+    return { actor: { userId: identity.user.id }, capabilities: grantedCapabilities, tenantId: identity.tenantId };
   }
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -120,77 +126,81 @@ export function createMcpRequestListener(
 
     let rpcId: unknown;
     try {
-      const { actor, capabilities: effectiveCapabilities } = await resolveActor(req);
-
-      let body: unknown;
-      try {
-        body = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
-      } catch (err) {
-        if (err instanceof PayloadTooLargeError) {
-          sendJson(res, 413, { error: err.message });
-          return;
-        }
-        if (err instanceof ValidationError) {
-          sendJson(res, 200, rpcError(null, -32700, "Parse error"));
-          return;
-        }
-        throw err;
-      }
-
-      const rpc = body as JsonRpcRequestBody;
-      rpcId = rpc.id ?? null;
-      if (rpc.jsonrpc !== "2.0" || typeof rpc.method !== "string") {
-        sendJson(res, 200, rpcError(rpcId, -32600, "Invalid Request"));
-        return;
-      }
-
-      if (rpc.method === "tools/list") {
-        const tools = gateway.listOperations(effectiveCapabilities).map((operation) => ({
-          name: toMcpToolName(operation),
-          inputSchema: operationInputJsonSchema(operation),
-        }));
-        sendJson(res, 200, rpcResult(rpcId, { tools }));
-        return;
-      }
-
-      if (rpc.method === "tools/call") {
-        const params = rpc.params as { name?: unknown; arguments?: unknown } | undefined;
-        const toolName = typeof params?.name === "string" ? params.name : undefined;
-        const operation = toolName !== undefined ? fromMcpToolName(toolName) : null;
-        if (operation === null) {
-          sendJson(res, 200, rpcError(rpcId, -32601, `Unknown tool '${toolName ?? ""}'`));
-          return;
-        }
+      const { actor, capabilities: effectiveCapabilities, tenantId } = await resolveActor(req);
+      const serve = async (): Promise<void> => {
+        let body: unknown;
         try {
-          const output = await gateway.invoke(operation, actor, effectiveCapabilities, params?.arguments ?? {});
-          sendJson(res, 200, rpcResult(rpcId, { content: [{ type: "text", text: JSON.stringify(output) }] }));
+          body = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
         } catch (err) {
-          if (err instanceof NotFoundError) {
-            sendJson(res, 200, rpcError(rpcId, -32601, `Unknown tool '${toolName}'`));
-            return;
-          }
-          if (err instanceof ApprovalRequiredError) {
-            sendJson(res, 200, rpcError(rpcId, -32001, err.message, toPublicErrorBody(err).details));
+          if (err instanceof PayloadTooLargeError) {
+            sendJson(res, 413, { error: err.message });
             return;
           }
           if (err instanceof ValidationError) {
-            sendJson(res, 200, rpcError(rpcId, -32602, err.message, toPublicErrorBody(err).details));
-            return;
-          }
-          if (err instanceof ChokePointError) {
-            sendJson(
-              res,
-              200,
-              rpcError(rpcId, -32000, err.message, { code: err.code, details: toPublicErrorBody(err).details }),
-            );
+            sendJson(res, 200, rpcError(null, -32700, "Parse error"));
             return;
           }
           throw err;
         }
-        return;
-      }
 
-      sendJson(res, 200, rpcError(rpcId, -32601, `Unknown method '${rpc.method}'`));
+        const rpc = body as JsonRpcRequestBody;
+        rpcId = rpc.id ?? null;
+        if (rpc.jsonrpc !== "2.0" || typeof rpc.method !== "string") {
+          sendJson(res, 200, rpcError(rpcId, -32600, "Invalid Request"));
+          return;
+        }
+
+        if (rpc.method === "tools/list") {
+          const tools = gateway.listOperations(effectiveCapabilities).map((operation) => ({
+            name: toMcpToolName(operation),
+            inputSchema: operationInputJsonSchema(operation),
+          }));
+          sendJson(res, 200, rpcResult(rpcId, { tools }));
+          return;
+        }
+
+        if (rpc.method === "tools/call") {
+          const params = rpc.params as { name?: unknown; arguments?: unknown } | undefined;
+          const toolName = typeof params?.name === "string" ? params.name : undefined;
+          const operation = toolName !== undefined ? fromMcpToolName(toolName) : null;
+          if (operation === null) {
+            sendJson(res, 200, rpcError(rpcId, -32601, `Unknown tool '${toolName ?? ""}'`));
+            return;
+          }
+          try {
+            const output = await gateway.invoke(operation, actor, effectiveCapabilities, params?.arguments ?? {});
+            sendJson(res, 200, rpcResult(rpcId, { content: [{ type: "text", text: JSON.stringify(output) }] }));
+          } catch (err) {
+            if (err instanceof NotFoundError) {
+              sendJson(res, 200, rpcError(rpcId, -32601, `Unknown tool '${toolName}'`));
+              return;
+            }
+            if (err instanceof ApprovalRequiredError) {
+              sendJson(res, 200, rpcError(rpcId, -32001, err.message, toPublicErrorBody(err).details));
+              return;
+            }
+            if (err instanceof ValidationError) {
+              sendJson(res, 200, rpcError(rpcId, -32602, err.message, toPublicErrorBody(err).details));
+              return;
+            }
+            if (err instanceof ChokePointError) {
+              sendJson(
+                res,
+                200,
+                rpcError(rpcId, -32000, err.message, { code: err.code, details: toPublicErrorBody(err).details }),
+              );
+              return;
+            }
+            throw err;
+          }
+          return;
+        }
+
+        sendJson(res, 200, rpcError(rpcId, -32601, `Unknown method '${rpc.method}'`));
+      };
+      // A session-derived actor runs in its caller's tenant; a run-credential actor is left
+      // unscoped here (its tenant is #994's).
+      await (tenantId === undefined ? serve() : runInTenant(tenantId, serve));
     } catch (err) {
       if (err instanceof ChokePointError) {
         sendJson(res, err.status, toPublicErrorBody(err));
