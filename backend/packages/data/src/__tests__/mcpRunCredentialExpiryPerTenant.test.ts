@@ -92,10 +92,15 @@ describe("handleMcpRunCredentialExpirySweepTask runs per tenant (issue #987)", (
   it("commits tenant zero's run and rejects when tenant B's event insert fails", async () => {
     const expiredZero = await mint(tenantZero, true);
     const expiredB = await mint(tenantB, true);
+    // The run id lives in a table, not in the DDL body: DDL cannot take bind parameters.
+    await adminPool.query("CREATE TABLE test_reject_run_ids (id uuid PRIMARY KEY)");
+    await adminPool.query("INSERT INTO test_reject_run_ids (id) VALUES ($1)", [expiredB]);
     await adminPool.query(`
-      CREATE FUNCTION test_reject_run_events() RETURNS trigger LANGUAGE plpgsql AS $$
+      CREATE FUNCTION test_reject_run_events() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
       BEGIN
-        IF NEW.agent_run_id = '${expiredB}' THEN RAISE EXCEPTION 'test-only failure'; END IF;
+        IF EXISTS (SELECT 1 FROM test_reject_run_ids WHERE id = NEW.agent_run_id) THEN
+          RAISE EXCEPTION 'test-only failure';
+        END IF;
         RETURN NEW;
       END $$`);
     await adminPool.query(
@@ -115,6 +120,7 @@ describe("handleMcpRunCredentialExpirySweepTask runs per tenant (issue #987)", (
     } finally {
       await adminPool.query("DROP TRIGGER test_reject_run_events ON agent_run_events");
       await adminPool.query("DROP FUNCTION test_reject_run_events()");
+      await adminPool.query("DROP TABLE test_reject_run_ids");
     }
   });
 
