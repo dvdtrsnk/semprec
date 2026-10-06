@@ -97,6 +97,7 @@ describe("repairInterruptedRuns across tenants", () => {
     const zero = await seedTenant(tenantZero);
     const b = await seedTenant(tenantB);
     await adminPool.query("CREATE TABLE fail_events_target (run_id uuid NOT NULL)");
+    await adminPool.query("GRANT SELECT ON fail_events_target TO PUBLIC");
     await adminPool.query("INSERT INTO fail_events_target (run_id) VALUES ($1)", [b.orphanId]);
     await adminPool.query(`
       CREATE FUNCTION fail_events_insert() RETURNS trigger LANGUAGE plpgsql AS $$
