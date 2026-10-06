@@ -3,7 +3,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { enqueueJob } from "@semprec/queue";
 import { runAsSystem } from "@semprec/shared";
-import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createTestTenant, withTenantTransaction } from "../testSupport/tenantFixtures.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
@@ -56,8 +56,8 @@ async function markAllProcessesFresh(): Promise<void> {
   }
 }
 
-async function runCheck(jobId = randomUUID()): Promise<void> {
-  await runAsSystem("test", () => handleObservabilityCheckSystemTask(pool, { job: { id: jobId } }));
+async function runCheck(jobId = randomUUID(), onPool: Pool = pool): Promise<void> {
+  await runAsSystem("test", () => handleObservabilityCheckSystemTask(onPool, { job: { id: jobId } }));
 }
 
 describe("observability.checkSystem (issue #169)", () => {
@@ -310,10 +310,20 @@ describe("observability.checkSystem (issue #169)", () => {
       await recordSyncError(client, mailboxItemId, "boom");
     });
 
-    await runCheck();
+    // The superuser pool bypasses RLS and would show the one mailbox row to both tenants; the runtime role scopes it.
+    const dataPool = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      await runCheck(randomUUID(), dataPool);
+    } finally {
+      await dataPool.end();
+    }
 
-    const check = await getTenantCheck(`mail:${mailboxItemId}`);
-    expect(check?.tenant_id).toBe(otherTenantId);
+    const { rows: checks } = await pool.query<{ id: string; tenant_id: string }>(
+      `SELECT id, tenant_id FROM tenant_observability_checks WHERE check_key = $1`,
+      [`mail:${mailboxItemId}`],
+    );
+    expect(checks).toMatchObject([{ tenant_id: otherTenantId }]);
+    const check = checks[0];
     const { rows } = await pool.query<{ user_id: string }>(`SELECT user_id FROM notifications WHERE source_id = $1`, [
       check!.id,
     ]);
