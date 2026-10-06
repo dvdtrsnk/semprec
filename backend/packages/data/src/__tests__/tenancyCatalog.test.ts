@@ -68,6 +68,7 @@ const TENANT_TABLES = [
   "module_migration_progress",
   "resource_grants",
   "tenant_keys",
+  "tenant_observability_checks",
 ];
 
 type Queryable = Pick<Pool | PoolClient, "query">;
