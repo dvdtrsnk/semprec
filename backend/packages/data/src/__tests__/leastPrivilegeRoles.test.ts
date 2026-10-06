@@ -190,6 +190,10 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
     // Written only by semprec_data (migration 0057); covered by identityTablePrivileges.test.ts.
     const IDENTITY_TABLES = new Set(["users", "sessions", "password_reset_tokens", "login_attempts", "tenants"]);
 
+    // Deliberately without UPDATE for both runtime roles (migration 0061): rewriting a key row would
+    // orphan every credential sealed under it, so a key is only ever inserted or deleted (crypto-shred).
+    const NO_UPDATE_TABLES = new Set(["tenant_keys"]);
+
     async function listTables(): Promise<{ name: string; oid: string }[]> {
       const { rows } = await adminPool.query<{ name: string; oid: string }>(
         `SELECT c.relname AS name, c.oid::text AS oid
@@ -225,12 +229,15 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
         if (!(await hasPrivilege("semprec_side", table.oid, "SELECT"))) {
           offenders.push(`${table.name}:semprec_side:SELECT`);
         }
+        const noUpdate = NO_UPDATE_TABLES.has(table.name);
         for (const privilege of WRITE_PRIVILEGES) {
+          const expectedForSide = !sideReadOnly && !(noUpdate && privilege === "UPDATE");
           const sideHas = await hasPrivilege("semprec_side", table.oid, privilege);
-          if (sideHas === sideReadOnly) offenders.push(`${table.name}:semprec_side:${privilege}`);
+          if (sideHas !== expectedForSide) offenders.push(`${table.name}:semprec_side:${privilege}`);
         }
         for (const privilege of ["SELECT", ...WRITE_PRIVILEGES]) {
-          if (!(await hasPrivilege("semprec_data", table.oid, privilege))) {
+          const expectedForData = !(noUpdate && privilege === "UPDATE");
+          if ((await hasPrivilege("semprec_data", table.oid, privilege)) !== expectedForData) {
             offenders.push(`${table.name}:semprec_data:${privilege}`);
           }
         }
