@@ -8,6 +8,7 @@ import {
   ValidationError,
   withTransaction,
   resolveMcpRunCredential,
+  getUserTenantBinding,
 } from "@semprec/data";
 import {
   CAPABILITY_IDS,
@@ -89,16 +90,26 @@ export function createMcpRequestListener(
 ) {
   async function resolveActor(
     req: IncomingMessage,
-  ): Promise<{ actor: AuthenticatedActor; capabilities: ReadonlySet<CapabilityId>; tenantId?: string }> {
+  ): Promise<{ actor: AuthenticatedActor; capabilities: ReadonlySet<CapabilityId>; tenantId: string }> {
     const bearerToken = extractBearerToken(req);
     if (bearerToken === null) throw new UnauthorizedError();
 
     // `agent_run_mcp_credentials` is a global table without row-level security until #994 reworks
     // this path, so the lookup runs as system.
-    const credential = await runAsSystem("mcp-run-credential-lookup", () =>
-      withTransaction(pool, (client) => resolveMcpRunCredential(client, bearerToken)),
+    // The credential's owning user's tenant is resolved in the same system scope, so the call
+    // below runs in that tenant exactly like a session-derived actor does.
+    const resolved = await runAsSystem("mcp-run-credential-lookup", () =>
+      withTransaction(pool, async (client) => {
+        const found = await resolveMcpRunCredential(client, bearerToken);
+        if (!found) return null;
+        const binding = await getUserTenantBinding(client, found.actorUserId);
+        return { credential: found, binding };
+      }),
     );
-    if (credential) {
+    if (resolved) {
+      const { credential, binding } = resolved;
+      // A credential whose owner has no active tenant fails like an unknown token.
+      if (!binding || binding.status !== "active") throw new UnauthorizedError();
       const capabilities = new Set(
         (CAPABILITY_IDS as readonly CapabilityId[]).filter(
           (id) => credential.capabilities.includes(id) && grantedCapabilities.has(id),
@@ -111,6 +122,7 @@ export function createMcpRequestListener(
           agentProjectItemId: credential.agentProjectItemId,
         },
         capabilities,
+        tenantId: binding.tenantId,
       };
     }
 
@@ -198,9 +210,7 @@ export function createMcpRequestListener(
 
         sendJson(res, 200, rpcError(rpcId, -32601, `Unknown method '${rpc.method}'`));
       };
-      // A session-derived actor runs in its caller's tenant; a run-credential actor is left
-      // unscoped here (its tenant is #994's).
-      await (tenantId === undefined ? serve() : runInTenant(tenantId, serve));
+      await runInTenant(tenantId, serve);
     } catch (err) {
       if (err instanceof ChokePointError) {
         sendJson(res, err.status, toPublicErrorBody(err));
