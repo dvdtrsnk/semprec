@@ -1,4 +1,5 @@
 import pino, { type Logger } from "pino";
+import { currentTenantScope } from "./tenantScope.js";
 import { getTraceContext } from "./traceContext.js";
 
 export type { Logger } from "pino";
@@ -103,9 +104,16 @@ export function createLogger(name: string): Logger {
     serializers: { err: serializeError },
     // Issue #167: every record picks up the active trace context (traceId and whichever of
     // agentRunId/jobName/jobId/mailboxId are bound) without every call site passing it explicitly.
-    // A field a call site also passes explicitly (e.g. gateway.ts's own `agentRunId`) wins, since
-    // pino merges the log object over the mixin result.
-    mixin: () => getTraceContext() ?? {},
+    // Every record written inside a tenant scope also carries `tenantId`, read from the tenant scope
+    // (`currentTenantScope()` in tenantScope.ts) — the single source of truth for the tenant, so it is
+    // deliberately not a trace binding. System scope and no scope add no tenant field.
+    // A field a call site also passes explicitly (e.g. gateway.ts's own `agentRunId` or `tenantId`) wins,
+    // since pino merges the log object over the mixin result.
+    mixin: () => {
+      const trace = getTraceContext() ?? {};
+      const scope = currentTenantScope();
+      return scope?.kind === "tenant" ? { ...trace, tenantId: scope.tenantId } : trace;
+    },
   });
 }
 
