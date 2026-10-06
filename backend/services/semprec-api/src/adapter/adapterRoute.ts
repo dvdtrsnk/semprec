@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
+import { runInTenant } from "@semprec/shared";
 import { ChokePointError, type AuthenticatedIdentity, type ItemRow } from "@semprec/data";
 import { authenticateRequest } from "../authHandler.js";
 import { toErrorResponseBody, statusForError } from "./errorContract.js";
@@ -83,9 +84,13 @@ export function createAdapterRequestListener(
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const identity = await requireAuthenticatedIdentity(pool, req);
-      const body = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
-      const params = options.extractParams?.(req) ?? {};
-      const result = await handler({ req, identity, params, body });
+      // The tenant comes from the authenticated session only; the handler and everything it
+      // awaits runs inside it.
+      const result = await runInTenant(identity.tenantId, async () => {
+        const body = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
+        const params = options.extractParams?.(req) ?? {};
+        return handler({ req, identity, params, body });
+      });
       if ("item" in result) {
         sendItemResponse(res, result.status, result.item);
       } else {

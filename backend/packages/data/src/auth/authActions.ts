@@ -16,7 +16,7 @@ import { recordLoginAttempt, getFailureStreak } from "./loginAttemptsStore.js";
 import { normalizeEmail } from "./emailNormalization.js";
 import { lockoutDurationSeconds } from "./loginLockout.js";
 import type { SessionPlatform, SessionRow, UserRole, UserRow } from "./types.js";
-import { getSoleTenantId } from "../tenancy/tenantsStore.js";
+import { getSoleTenantId, getUserTenantBinding } from "../tenancy/tenantsStore.js";
 import { revokePushSubscriptionsForSession } from "../push/pushSubscriptionsStore.js";
 
 /** How long a freshly-issued session stays valid without further activity. */
@@ -198,12 +198,14 @@ export async function bootstrapFirstAccount(
 export interface AuthenticatedIdentity {
   session: SessionRow;
   user: PublicUser;
+  tenantId: string;
+  role: UserRole;
 }
 
 /**
  * The one path shared by every request-authentication surface (web cookie, native `Authorization:
  * Bearer`): hashes the presented opaque token, requires a session that is neither expired nor
- * revoked, and bumps `last_seen_at`. Throws `UnauthorizedError` — same message as `login`'s
+ * revoked and whose user belongs to an `active` tenant, and bumps `last_seen_at`. Throws `UnauthorizedError` — same message as `login`'s
  * failure — for a missing, invalid, expired, or revoked token alike.
  */
 export async function verifySessionToken(client: Pool | PoolClient, token: string): Promise<AuthenticatedIdentity> {
@@ -213,8 +215,12 @@ export async function verifySessionToken(client: Pool | PoolClient, token: strin
   const user = await getUserById(client, session.userId);
   if (!user) throw new UnauthorizedError();
 
+  // A user without an active tenant fails exactly like a bad token, before `last_seen_at` is bumped.
+  const binding = await getUserTenantBinding(client, user.id);
+  if (!binding || binding.status !== "active") throw new UnauthorizedError();
+
   await touchSessionLastSeen(client, session.id);
-  return { session, user: toPublicUser(user) };
+  return { session, user: toPublicUser(user), tenantId: binding.tenantId, role: binding.role };
 }
 
 /**

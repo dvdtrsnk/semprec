@@ -1,7 +1,8 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { currentTenantScope, type TenantScope } from "@semprec/shared";
 import { ConflictError, NotFoundError, createUser, hashPassword, login, type ItemRow } from "@semprec/data";
 import { createAdapterRequestListener, type AdapterHandler } from "../adapterRoute.js";
 import { requireJsonObjectBody, requireStringField } from "../requestValidation.js";
@@ -76,6 +77,59 @@ describe("adapter route (issue #238)", () => {
     expect(res.status).toBe(401);
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("unauthorized");
+  });
+
+  it("runs the handler inside the caller's tenant scope, and never runs it without credentials", async () => {
+    const scopes: Array<TenantScope | undefined> = [];
+    const scopedServer = createServer(
+      createAdapterRequestListener(pool, async () => {
+        scopes.push(currentTenantScope());
+        return { status: 200, body: { ok: true } };
+      }),
+    );
+    await new Promise<void>((resolve) => scopedServer.listen(0, resolve));
+    const address = scopedServer.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    const url = `http://127.0.0.1:${address.port}`;
+    try {
+      const anonymous = await fetch(url, { method: "POST", body: "{}" });
+      expect(anonymous.status).toBe(401);
+      expect(scopes).toEqual([]);
+
+      const token = await tokenFor("scoped@example.com");
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(200);
+      expect(scopes).toEqual([{ kind: "tenant", tenantId: getTenantZeroId() }]);
+    } finally {
+      await new Promise<void>((resolve) => scopedServer.close(() => resolve()));
+    }
+  });
+
+  it("answers an unexpected handler error with the generic 500", async () => {
+    const failing = createServer(
+      createAdapterRequestListener(pool, async () => {
+        throw new Error("boom");
+      }),
+    );
+    await new Promise<void>((resolve) => failing.listen(0, resolve));
+    const address = failing.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    try {
+      const token = await tokenFor("failing@example.com");
+      const res = await fetch(`http://127.0.0.1:${address.port}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: { code: "internal_error" } });
+    } finally {
+      await new Promise<void>((resolve) => failing.close(() => resolve()));
+    }
   });
 
   it("returns the full item envelope on a successful write, never an empty 204", async () => {

@@ -18,6 +18,7 @@ import {
   type AuthenticatedIdentity,
   type PasswordResetMailer,
 } from "@semprec/data";
+import { runAsSystem } from "@semprec/shared";
 import type { Pool } from "pg";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { assertUuid } from "./adapter/requestValidation.js";
@@ -79,7 +80,11 @@ const CLEAR_SESSION_COOKIE = `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; Secure;
 export async function authenticateRequest(pool: Pool, req: IncomingMessage): Promise<AuthenticatedIdentity> {
   const presented = extractToken(req);
   if (!presented) throw new UnauthorizedError();
-  const identity = await withTransaction(pool, (client) => verifySessionToken(client, presented.token));
+  // Authentication resolves the tenant, so it cannot run inside one: `runAsSystem` throws
+  // `TenantScopeConflictError` from within a tenant scope.
+  const identity = await runAsSystem("authenticate", () =>
+    withTransaction(pool, (client) => verifySessionToken(client, presented.token)),
+  );
   if (SESSION_DELIVERY_CHANNEL_BY_PLATFORM[identity.session.platform] !== presented.channel) {
     throw new UnauthorizedError();
   }
@@ -227,7 +232,7 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
       if (req.method === "GET" && url.pathname === "/api/auth/session") {
         const identity = await authenticateRequest(pool, req);
         sendJson(res, 200, {
-          user: identity.user,
+          user: { ...identity.user, role: identity.role },
           session: { id: identity.session.id, platform: identity.session.platform },
         });
         return;
@@ -255,7 +260,8 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
    * request. Same shape as `setupHandler.ts`.
    */
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
-    handleRequest(req, res).catch((err: unknown) => {
+    // Every auth route touches only global identity tables, so the whole request runs as system work.
+    runAsSystem("auth", () => handleRequest(req, res)).catch((err: unknown) => {
       logger.error({ err }, "Unhandled error in the request listener");
       if (res.headersSent) {
         res.end();

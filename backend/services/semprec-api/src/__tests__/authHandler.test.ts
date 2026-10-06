@@ -224,6 +224,24 @@ describe("createAuthRequestListener", () => {
       expect(body.user.email).toBe(user.email);
     });
 
+    it("returns the user's role", async () => {
+      const user = await createUser(pool, {
+        email: "admin@example.com",
+        passwordHash: await hashPassword(PASSWORD),
+        role: "admin",
+      });
+      const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "ios" }),
+      });
+      const { token } = (await loginRes.json()) as { token: string };
+
+      const res = await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } });
+      const body = (await res.json()) as { user: { role: string } };
+      expect(body.user.role).toBe("admin");
+    });
+
     it("authenticates with the session cookie set by login", async () => {
       const user = await makeUser();
       const loginRes = await fetch(`${baseUrl}/api/auth/login`, {

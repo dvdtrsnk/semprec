@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { createUser } from "../auth/usersStore.js";
 import { getActiveSessionByTokenHash, isSessionActive, listSessionsForUser } from "../auth/sessionsStore.js";
@@ -235,6 +235,56 @@ describe("auth actions (issue #140)", () => {
       const active = await getActiveSessionByTokenHash(pool, session.tokenHash);
       expect(active?.lastSeenAt).not.toBe(before);
     });
+  });
+
+  describe("verifySessionToken tenant binding", () => {
+    afterEach(async () => {
+      await pool.query("UPDATE tenants SET status = 'active'");
+    });
+
+    async function loginAs(user: { email: string }) {
+      return login(pool, { email: user.email, password: "s3cret-password", platform: "web", ip: "1.1.1.1" });
+    }
+
+    it("returns the bound tenant and role of a user bound to an active tenant", async () => {
+      const user = await createUser(pool, {
+        email: "bound@example.com",
+        passwordHash: await hashPassword("s3cret-password"),
+        tenantId: getTenantZeroId(),
+        role: "admin",
+      });
+      const { token } = await loginAs(user);
+
+      const identity = await verifySessionToken(pool, token);
+      expect(identity.tenantId).toBe(getTenantZeroId());
+      expect(identity.role).toBe("admin");
+    });
+
+    it("resolves a user with no tenant to the sole tenant", async () => {
+      const user = await makeUser();
+      const { token } = await loginAs(user);
+
+      const identity = await verifySessionToken(pool, token);
+      expect(identity.tenantId).toBe(getTenantZeroId());
+      expect(identity.role).toBe("member");
+    });
+
+    it.each(["suspended", "provisioning", "deleting"])(
+      "rejects a user in a %s tenant without bumping last_seen_at",
+      async (status) => {
+        const user = await makeUser();
+        const { token, session } = await loginAs(user);
+        await pool.query("UPDATE tenants SET status = $1", [status]);
+
+        await expect(verifySessionToken(pool, token)).rejects.toThrow(UnauthorizedError);
+
+        const { rows } = await pool.query<{ lastSeenAt: Date }>(
+          'SELECT last_seen_at AS "lastSeenAt" FROM sessions WHERE id = $1',
+          [session.id],
+        );
+        expect(rows[0]!.lastSeenAt.toISOString()).toBe(new Date(session.lastSeenAt).toISOString());
+      },
+    );
   });
 
   describe("logout", () => {
