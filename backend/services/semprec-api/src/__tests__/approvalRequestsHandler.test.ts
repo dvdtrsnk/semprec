@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   createViewTypeRegistry,
   seedSystem,
@@ -28,12 +28,8 @@ async function createUser(): Promise<string> {
 }
 
 async function authSession(): Promise<{ headers: { Authorization: string }; userId: string }> {
-  // One tenant holds one user, so every session in a test belongs to the same bound user.
-  const email = "session-user@example.com";
-  await pool.query(
-    `INSERT INTO users (email, password_hash, tenant_id) VALUES ($1, $2, $3) ON CONFLICT (email) DO NOTHING`,
-    [email, await hashPassword(PASSWORD), getTenantZeroId()],
-  );
+  const email = `${randomUUID()}@example.com`;
+  await pool.query(`INSERT INTO users (email, password_hash) VALUES ($1, $2)`, [email, await hashPassword(PASSWORD)]);
   const { token, user } = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
   return { headers: { Authorization: `Bearer ${token}` }, userId: user.id };
 }

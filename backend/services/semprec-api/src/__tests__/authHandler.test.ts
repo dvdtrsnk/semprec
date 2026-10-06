@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createTestTenant, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createUser, hashPassword, LOCKOUT_THRESHOLD, type PasswordResetMailer, type UserRow } from "@semprec/data";
 import { createAuthRequestListener, SESSION_COOKIE_NAME } from "../authHandler.js";
 
@@ -10,9 +10,8 @@ let pool: Pool;
 const PASSWORD = "s3cret-password";
 const APP_BASE_URL = "https://app.example.test";
 
-/** Bound to tenant zero by default, since authentication requires an explicit binding; pass `null` for an unbound user. */
-async function makeUser(email = "person@example.com", tenantId: string | null = getTenantZeroId()): Promise<UserRow> {
-  return createUser(pool, { email, passwordHash: await hashPassword(PASSWORD), ...(tenantId ? { tenantId } : {}) });
+async function makeUser(email = "person@example.com"): Promise<UserRow> {
+  return createUser(pool, { email, passwordHash: await hashPassword(PASSWORD) });
 }
 
 function sessionCookieFrom(res: Response): string {
@@ -230,7 +229,6 @@ describe("createAuthRequestListener", () => {
         email: "admin@example.com",
         passwordHash: await hashPassword(PASSWORD),
         role: "admin",
-        tenantId: getTenantZeroId(),
       });
       const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
         method: "POST",
@@ -391,7 +389,7 @@ describe("createAuthRequestListener", () => {
 
     it("refuses to revoke another user's session", async () => {
       const owner = await makeUser("owner@example.com");
-      const attacker = await makeUser("attacker@example.com", await createTestTenant(pool));
+      const attacker = await makeUser("attacker@example.com");
       const ownerLogin = await fetch(`${baseUrl}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
