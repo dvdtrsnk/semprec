@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getTraceContext, withTraceContext } from "@semprec/shared";
 import { enqueueJob, queueJobEnvelopeSchema, registerTask } from "../index.js";
 
@@ -37,6 +37,13 @@ describe("queueJobEnvelopeSchema", () => {
 });
 
 describe("registerTask", () => {
+  beforeEach(() => {
+    vi.stubEnv("SEMPREC_LEGACY_ENVELOPE_FALLBACK", "1");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("restores the producer's traceId and unwraps the business payload for the handler", async () => {
     let observed: { payload: unknown; context: unknown } | undefined;
     const handler = registerTask("someTask", async (payload) => {

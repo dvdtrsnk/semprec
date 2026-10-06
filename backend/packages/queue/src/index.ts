@@ -310,13 +310,20 @@ async function jobKeyWasCleared(helpers: JobHelpers): Promise<boolean> {
 }
 
 const tenantStatusRowSchema = z.object({ status: z.enum(["provisioning", "active", "suspended", "deleting"]) });
+/** Opt-in (`1`) to run envelope-less tenant tasks in the sole tenant; read on every call. Removed by #1061. */
+export const LEGACY_ENVELOPE_FALLBACK_ENV = "SEMPREC_LEGACY_ENVELOPE_FALLBACK";
 const soleTenantRowSchema = z.object({ app_sole_tenant: z.string().uuid().nullable() });
 
 /**
  * Runs `handler` in the scope its task's tenancy calls for. A system task runs as system whatever
- * the envelope says. A tenant task runs in the envelope's tenant — or, until #1061, in the sole
- * tenant when the envelope has none — and is a completed no-op when that tenant is missing,
- * suspended or deleting. No sole tenant is a thrown error, so the job fails and is retried.
+ * the envelope says. A tenant task runs in the envelope's tenant and is a completed no-op when
+ * that tenant is missing, suspended or deleting.
+ *
+ * An envelope with no tenant (enqueued before the tenant stamp existed) is a thrown error — the job
+ * fails and is retried — unless `LEGACY_ENVELOPE_FALLBACK_ENV` is `1`. Then it runs in the sole
+ * tenant, which is only correct while exactly one tenant exists; with none or several the job
+ * still throws. The opt-in, the lookup and the `tenant_task_without_tenant` warning are removed
+ * together with the single-tenant window by #1061.
  */
 async function runInTaskScope(
   name: string,
@@ -336,6 +343,11 @@ async function runInTaskScope(
   if (typeof envelopeTenantId === "string") {
     tenantId = envelopeTenantId;
   } else {
+    if (process.env[LEGACY_ENVELOPE_FALLBACK_ENV] !== "1") {
+      throw new Error(
+        `Tenant task ${name} has no tenant and ${LEGACY_ENVELOPE_FALLBACK_ENV}=1 is not set to run it in the sole tenant`,
+      );
+    }
     const { rows } = await helpers.query<Record<string, unknown>>("SELECT app_sole_tenant()");
     const sole = soleTenantRowSchema.parse(rows[0]).app_sole_tenant;
     logger.warn({ jobName: name, jobId }, "tenant_task_without_tenant");

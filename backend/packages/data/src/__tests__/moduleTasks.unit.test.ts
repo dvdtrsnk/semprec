@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModuleRegistry, ModuleTaskDefinition, ModuleTaskProjection } from "@semprec/module-registry";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, type TaskList } from "@semprec/queue";
 import {
@@ -95,6 +95,13 @@ describe("resolveTaskAffinitySets", () => {
 });
 
 describe("mergeModuleTaskList", () => {
+  beforeEach(() => {
+    vi.stubEnv("SEMPREC_LEGACY_ENVELOPE_FALLBACK", "1");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   const coreTaskList: TaskList = {
     [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {},
   };
