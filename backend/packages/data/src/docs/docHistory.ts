@@ -5,6 +5,7 @@ import { HistoryNotRetainedError, NotFoundError, ValidationError } from "../erro
 import { resolveDocHistoryRetentionDays, retentionHours } from "./docHistoryConfig.js";
 import { logger } from "./logger.js";
 import { assertSweepNotFailedEntirely, type SweepOutcome } from "./sweepOutcome.js";
+import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 
 /**
  * Re-baselines one document's history at the retention cutoff (issue #86). Issue #216
@@ -126,8 +127,8 @@ export async function rebaselineDocHistory(
 }
 
 /**
- * Runs the retention re-baseline for every existing doc — acceptable at the "1-2 users"
- * scale this system targets; see the compaction sweep for the pattern this mirrors. One doc
+ * Runs the retention re-baseline for every doc visible in the current scope — one tenant's
+ * docs when called per tenant; see the compaction sweep for the pattern this mirrors. One doc
  * failing must not abort the sweep for every doc after it in the list, so each is isolated
  * and logged rather than thrown.
  */
@@ -151,7 +152,7 @@ export async function runDocHistoryRetentionSweep(
   return { succeeded, failed, rebaselined };
 }
 
-/** Deletes expired checkpoints past their retention window — a cleanup job, not a business/tiering layer.
+/** Deletes the current scope's expired checkpoints (one tenant's, when called per tenant) past their retention window — a cleanup job, not a business/tiering layer.
  *  Never touches a NULL-expiry rolling baseline: `expires_at < now()` is NULL (falsy) for those rows.
  *  Subordinate to `rebaselineDocHistory`/`runDocHistoryRetentionSweep`: an expiring compaction
  *  checkpoint is always safe to delete regardless of order, since an earlier NULL-expiry
@@ -164,9 +165,11 @@ export async function cleanupExpiredDocHistory(pool: Pool): Promise<number> {
 }
 
 export async function handleDocHistoryCleanupTask(pool: Pool): Promise<void> {
-  const outcome = await runDocHistoryRetentionSweep(pool);
-  await cleanupExpiredDocHistory(pool);
-  assertSweepNotFailedEntirely("docHistoryCleanup", outcome);
+  await forEachActiveTenant(pool, async () => {
+    const outcome = await runDocHistoryRetentionSweep(pool);
+    await cleanupExpiredDocHistory(pool);
+    assertSweepNotFailedEntirely("docHistoryCleanup", outcome);
+  });
 }
 
 /**

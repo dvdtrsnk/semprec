@@ -447,8 +447,15 @@ describe("docs (CRDT layer)", () => {
         [doc.id, Buffer.from([0x00, 0xff]), DEFAULT_COMPACTION_THRESHOLD],
       );
 
-      await expect(handleDocCompactionSweepTask(pool)).rejects.toThrow(
-        "docCompactionSweep: all 1 attempted doc(s) failed",
+      const err: unknown = await handleDocCompactionSweepTask(pool).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(AggregateError);
+      expect((err as AggregateError).errors[0]).toEqual(
+        expect.objectContaining({
+          message: expect.stringContaining("docCompactionSweep: all 1 attempted doc(s) failed"),
+        }),
       );
     });
 
