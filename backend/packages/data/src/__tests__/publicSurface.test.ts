@@ -235,6 +235,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "finishAgentRunWithErrorNotification",
   "fixedRecurrenceRuleSchema",
   "floatingRecurrenceRuleSchema",
+  "forEachActiveTenant",
   "generateOpaqueToken",
   "generatePermissionManifest",
   "generateSchemaProjection",
