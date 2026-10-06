@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
+import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 
 /**
  * Rows older than this that precede their conversation's latest `compaction` checkpoint are
@@ -22,7 +23,7 @@ type CompactedConversationRow = {
 };
 
 /**
- * The `agentRunEventsRetention` daily core task (issue #692): deletes `agent_run_events` rows
+ * Deletes `agent_run_events` rows
  * that are (1) older than `AGENT_RUN_EVENTS_RETENTION_DAYS`, (2) attached to a finished
  * (`status <> 'running'`) `unit = 'session'` run, and (3) precede their conversation's latest
  * `compaction` checkpoint (`e.id < compaction_id`). A `compaction` row itself is never deleted
@@ -36,8 +37,11 @@ type CompactedConversationRow = {
  * Deletes in batches of `RETENTION_DELETE_BATCH_SIZE`, each in its own transaction — the same
  * per-unit chunking `docHistoryCleanup` uses to keep every transaction's lock footprint small —
  * looping per conversation until a batch deletes fewer than the batch size.
+ *
+ * Runs in whatever tenant scope the caller established: row-level security narrows the grouping
+ * and every delete to that tenant.
  */
-export async function handleAgentRunEventsRetentionTask(pool: Pool): Promise<{ deleted: number }> {
+async function deleteExpiredRunEventsInScope(pool: Pool): Promise<number> {
   const { rows: conversations } = await pool.query<CompactedConversationRow>(
     `SELECT r.project_item_id, r.triggered_by, r.parent_run_id, max(e.id) AS compaction_id
      FROM agent_run_events e
@@ -79,5 +83,21 @@ export async function handleAgentRunEventsRetentionTask(pool: Pool): Promise<{ d
       if (batchDeleted < RETENTION_DELETE_BATCH_SIZE) break;
     }
   }
+  return deleted;
+}
+
+/**
+ * The `agentRunEventsRetention` daily core task (issue #692): for every active tenant, deletes
+ * the tenant's expired run events (see `deleteExpiredRunEventsInScope` for the rules). The
+ * conversation grouping, its latest `compaction` checkpoint and the deletion are all per tenant, so
+ * one tenant's checkpoint never decides what another tenant keeps even when their conversation
+ * keys are equal. Returns the total deleted across tenants; when any tenant fails, rejects after
+ * every tenant was attempted (see `forEachActiveTenant`).
+ */
+export async function handleAgentRunEventsRetentionTask(pool: Pool): Promise<{ deleted: number }> {
+  let deleted = 0;
+  await forEachActiveTenant(pool, async () => {
+    deleted += await deleteExpiredRunEventsInScope(pool);
+  });
   return { deleted };
 }

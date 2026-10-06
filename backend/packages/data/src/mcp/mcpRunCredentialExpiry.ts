@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
+import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { finishAgentRun } from "../agentRuns/agentRunsStore.js";
 import { insertAndNotifyAgentRunEvent } from "../agentRuns/agentRunEventsStore.js";
 
@@ -16,8 +17,22 @@ type ExpiredMcpRunCredentialDbRow = { agent_run_id: string; expires_at: Date };
  * `FOR UPDATE OF r SKIP LOCKED` lets an overlapping tick skip a run another sweep is already
  * closing instead of waiting on it; the expired credential row itself is left in place as the
  * audit trail of which run its token authenticated.
+ *
+ * Runs once per active tenant, each in its own transaction inside that tenant's scope, so only that
+ * tenant's runs are selected and the `run_status` event is written in the run's own tenant. The
+ * credentials table is global; row-level security on `agent_runs` narrows the join. Returns the
+ * finished run ids of all tenants; when any tenant fails, rejects after every tenant was attempted
+ * (see `forEachActiveTenant`), with the other tenants' runs already committed.
  */
 export async function handleMcpRunCredentialExpirySweepTask(pool: Pool): Promise<{ finishedRunIds: string[] }> {
+  const finishedRunIds: string[] = [];
+  await forEachActiveTenant(pool, async () => {
+    finishedRunIds.push(...(await finishExpiredRunsInScope(pool)));
+  });
+  return { finishedRunIds };
+}
+
+async function finishExpiredRunsInScope(pool: Pool): Promise<string[]> {
   return withTransaction(pool, async (client) => {
     const { rows } = await client.query<ExpiredMcpRunCredentialDbRow>(
       `SELECT c.agent_run_id, c.expires_at
@@ -41,6 +56,6 @@ export async function handleMcpRunCredentialExpirySweepTask(pool: Pool): Promise
       });
       finishedRunIds.push(row.agent_run_id);
     }
-    return { finishedRunIds };
+    return finishedRunIds;
   });
 }
