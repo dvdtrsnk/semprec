@@ -14,6 +14,14 @@ describe("parseRestoreTestResultArgs (issue #178)", () => {
     });
   });
 
+  it.each(["tenantKeysExcluded", "tenantKeysRestore"])("parses a failure at the %s check", (failedCheck) => {
+    expect(parseRestoreTestResultArgs(["failed", "run-1", failedCheck])).toEqual({
+      status: "failed",
+      runId: "run-1",
+      failedCheck,
+    });
+  });
+
   it("rejects an unknown failed check", () => {
     expect(() => parseRestoreTestResultArgs(["failed", "run-1", "somethingElse"])).toThrow(
       'unknown restore-test check "somethingElse"',

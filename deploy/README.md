@@ -143,16 +143,44 @@ failed unit name to the monitor's `/fail` endpoint. A crash recovered by a resta
 
 ## Encrypted off-site backups (issue #177)
 
-`semprec-backup.timer` runs daily at 03:30. Its root-owned service first writes a PostgreSQL
-custom-format dump to `/var/backups/semprec/postgres.dump`; only a completed dump is included in
-the following restic snapshot. The same snapshot includes the two blob storage directories the
-`blobs` rows point into, `FILES_STORAGE_DIR` (`/opt/semprec/data/files`) and
-`MAIL_ATTACHMENTS_DIR` (`/opt/semprec/data/mail-attachments`); a missing directory fails the
-backup before restic runs. MinIO is not used by the application and is not backed up. The
-restic repository is S3-compatible and encrypted by restic. Only after `restic backup` succeeds
-does the job run `restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 12 --prune`.
+`semprec-backup.timer` runs daily at 03:30. Its root-owned service writes two PostgreSQL
+custom-format dumps, each to a temporary file that is moved into place only when complete:
 
-The backup input inventory is intentionally narrow: the custom PostgreSQL dump and the two blob
+- `/var/backups/semprec/postgres.dump`, the whole database except the data of `tenant_keys`
+  (`--exclude-table-data=public.tenant_keys`; the table's schema stays);
+- `/var/backups/semprec/tenant-keys.dump`, a `--data-only` dump of `public.tenant_keys` alone,
+  taken after the main dump. Keys are only ever created or deleted, so every credential in the main
+  dump has its key in the key dump. A failing dump fails the run before any restic call.
+
+It then runs two `restic backup` commands: the main snapshot (the main dump plus the two blob
+storage directories the `blobs` rows point into, `FILES_STORAGE_DIR` (`/opt/semprec/data/files`)
+and `MAIL_ATTACHMENTS_DIR` (`/opt/semprec/data/mail-attachments`); a missing directory fails the
+backup before restic runs), and a separate snapshot of the key dump alone. MinIO is not used by
+the application and is not backed up. The restic repository is S3-compatible and encrypted by
+restic. Only after both backups succeed does the job apply retention per kind, then prune once:
+
+- `restic forget --path /var/backups/semprec/postgres.dump --keep-daily 14 --keep-weekly 8 --keep-monthly 12`
+  for main snapshots (this also matches the older ones taken before the key dump existed);
+- `restic forget --path /var/backups/semprec/tenant-keys.dump --keep-within 7d` for key snapshots;
+- `restic prune`.
+
+**Crypto-shred bound.** Deleting a tenant's `tenant_keys` row makes its secrets unrecoverable only
+if no backup still holds the wrapped key. Main snapshots no longer contain keys, so the key leaves
+the repository within 7 days, measured from the last backup that still held the deleted key.
+`--keep-within` is relative to the newest key snapshot, not to the clock, so this bound stops
+advancing while backups do not run.
+
+**Disaster recovery needs both halves.** Restore a main snapshot with
+`restic restore latest --path /var/backups/semprec/postgres.dump`, run `pg_restore` of the main
+dump, then restore the newest key snapshot with
+`restic restore latest --path /var/backups/semprec/tenant-keys.dump` and run
+`pg_restore --data-only` of the key dump into the restored database. A main snapshot older than
+the oldest key snapshot cannot open its tenants' credentials; those users reconnect their mailboxes
+and MCP servers. Main snapshots taken between the introduction of per-tenant keys and this change
+still contain tenant zero's wrapped key inside the dump until they age out; no other tenant
+existed at that time.
+
+The backup input inventory is intentionally narrow: the two custom PostgreSQL dumps and the two blob
 storage directories only. It excludes `/opt/semprec/shared/env/`, the legacy `/opt/semprec/shared/.env`, `apns-key.p8`, all credentials
 including `CREDENTIALS_MASTER_KEY` (the deployment's secrets master key), `/var/log/journal`,
 certificates, and reproducible release or deployment configuration. No restic invocation traverses a parent
@@ -164,14 +192,21 @@ application (`services/semprec-api`), by design.
 
 ## Monthly restore test (issue #178)
 
-`semprec-restore-test.timer` runs monthly. Its root-owned service restores the newest restic
-snapshot into a temporary directory under `/var/tmp`, then starts a disposable PostgreSQL
+`semprec-restore-test.timer` runs monthly. Its root-owned service restores the newest main restic
+snapshot (`restic restore latest --path /var/backups/semprec/postgres.dump`, since a bare `latest`
+could pick a key snapshot) into a temporary directory under `/var/tmp`, then starts a disposable PostgreSQL
 container on a new `--internal` Docker network. It never addresses the production Compose
 containers or volumes. The run passes only if all of these hold:
 
 - `pg_restore --exit-on-error` of the restored custom dump succeeds;
 - `items` is non-empty and its newest `updated_at` is at most 48 hours old;
 - `doc_snapshots` is non-empty and no row has an empty `state`;
+- `tenantKeysExcluded`: the restored main database has no `tenant_keys` rows;
+- `tenantKeysRestore`: the newest key snapshot (`--path /var/backups/semprec/tenant-keys.dump`)
+  restores into the same work directory, is non-empty, and `pg_restore --data-only --exit-on-error
+  --no-owner --no-privileges` of it succeeds in the disposable database; its foreign key to
+  `tenants` proves every key belongs to a restored tenant. The test never needs the master key and
+  never decrypts anything;
 - 20 random hashed `blobs` rows (all of them, when fewer exist) each have a restored file with
   exactly the recorded size and SHA-256 hash — looked up by `storage_key` under the restored
   `FILES_STORAGE_DIR` first, then under the restored `MAIL_ATTACHMENTS_DIR`.
