@@ -445,8 +445,9 @@ async function insertHeartbeatOccurrence(
  * bug). `last_fired_at` is no longer touched here either — the first attempt sets it, for both
  * fixed and floating rules, to `first_started_at`.
  *
- * One chunk of at most `SWEEP_CHUNK_SIZE` rows, keyset-paginated by `id` via `afterId` — the
- * caller (`handleHeartbeatSweepTask`) runs each chunk in its own transaction and loops until
+ * One chunk of at most `SWEEP_CHUNK_SIZE` due rows of the current scope (row-level security narrows
+ * the query to the current tenant), keyset-paginated by `id` via `afterId` — the caller
+ * (`handleHeartbeatSweepTask`) runs it once per tenant, each chunk in its own transaction, looping until
  * `exhausted`, so a failure partway through a sweep leaves earlier chunks committed instead of
  * rolling back the whole tick. Pagination is by `id`, not by `next_fire_at`: a row this sweep
  * deliberately leaves due (an unparseable rule, or a non-reactivatable occurrence conflict —
