@@ -174,7 +174,6 @@ const PERMANENT_EXCEPTIONS: { table: string; columns: string[]; reason: string }
 
 /** Legacy global keys kept beside their tenant-leading successors until #1065 drops them; #1065 empties this list. */
 const LEGACY_GLOBAL_UNIQUES: { table: string; columns: string[] }[] = [
-  { table: "databases", columns: ["key"] },
   { table: "idempotency_keys", columns: ["key"] },
   { table: "person_email_index", columns: ["email"] },
   { table: "mail_message_meta", columns: ["provider_message_id"] },
@@ -188,7 +187,7 @@ const LEGACY_GLOBAL_UNIQUES: { table: string; columns: string[] }[] = [
 ];
 
 const NEW_UNIQUE_INDEXES: { name: string; table: string; columns: string[]; predicate: string | null }[] = [
-  { name: "databases_tenant_key_uq", table: "databases", columns: ["tenant_id", "key"], predicate: null },
+  { name: "databases_key_unique", table: "databases", columns: ["tenant_id", "key"], predicate: null },
   {
     name: "databases_tenant_system_module_uq",
     table: "databases",

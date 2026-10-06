@@ -117,12 +117,20 @@ export async function getDatabase(client: PoolClient, id: string): Promise<Datab
   return rows[0] ? mapDatabaseRow(rows[0]) : null;
 }
 
-/** Looks up a system database by its canonical `owner_module_id` (e.g. 'tasks', 'events') — see the `canonical-keys` skill's established vocabulary. */
+/**
+ * Looks up a system database by its canonical `owner_module_id` (e.g. 'tasks', 'events') — see the `canonical-keys` skill's established vocabulary.
+ * Under row-level security the lookup is per tenant. A caller that sees several tenants (an
+ * RLS-bypassing role) fails instead of picking one: more than one match is an invariant violation,
+ * thrown as a plain `Error`, not a client error.
+ */
 export async function getDatabaseByModuleId(client: PoolClient, ownerModuleId: string): Promise<DatabaseRow | null> {
   const { rows } = await client.query<DatabaseDbRow>(
-    `SELECT ${DATABASE_COLUMNS} FROM databases WHERE owner_module_id = $1`,
+    `SELECT ${DATABASE_COLUMNS} FROM databases WHERE owner_module_id = $1 AND system`,
     [ownerModuleId],
   );
+  if (rows.length > 1) {
+    throw new Error(`Module id '${ownerModuleId}' resolves to ${rows.length} system databases, expected at most one`);
+  }
   return rows[0] ? mapDatabaseRow(rows[0]) : null;
 }
 

@@ -106,8 +106,8 @@ describe("e2e: cross-module scenario (module-contract issue #114)", () => {
 
   it("runs one module's declared data migration without touching the other module's database", async () => {
     const registry = await loadRegistry();
-    const alphaDb = await chokePoint.createDatabase({ name: "Alpha", ownerModuleId: "e2eAlphaItems" });
-    const betaDb = await chokePoint.createDatabase({ name: "Beta", ownerModuleId: "e2eBetaItems" });
+    const alphaDb = await chokePoint.createDatabase({ name: "Alpha", ownerModuleId: "e2eAlphaItems", system: true });
+    const betaDb = await chokePoint.createDatabase({ name: "Beta", ownerModuleId: "e2eBetaItems", system: true });
     await chokePoint.createProperty({ databaseId: alphaDb.id, key: "value", name: "Value", type: "text" });
     await chokePoint.createProperty({ databaseId: betaDb.id, key: "sourceItemId", name: "Source item", type: "text" });
     const alphaItem = await chokePoint.createItem({ databaseId: alphaDb.id, properties: { value: "unmigrated" } });
