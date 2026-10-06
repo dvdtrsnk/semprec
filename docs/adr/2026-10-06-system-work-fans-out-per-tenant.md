@@ -32,7 +32,7 @@ graphile-worker retries it.
 ## Consequences
 
 - Each sweep keeps its own per-tenant chunk cap, so one tenant's backlog delays the others by at most
-  one chunk. Each sweep's conversion owns that cap.
+  one chunk.
 - Suspended, provisioning and deleting tenants are skipped.
 - Calling the helper from inside a tenant scope throws `TenantScopeConflictError`.
 - Cross-tenant identifiers and operator aggregates do not fan out; they go through router functions.

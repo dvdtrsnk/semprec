@@ -71,7 +71,7 @@ describe("forEachActiveTenant (issue #983)", () => {
   it("logs, continues past a failing tenant and rejects with an AggregateError of the original error", async () => {
     await threeActiveTenants();
     const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
-    const boom = new Error("boom");
+    const boom = new Error("secret mail subject");
     const visited: string[] = [];
 
     const failure = await forEachActiveTenant(pool, async (id) => {
@@ -89,10 +89,8 @@ describe("forEachActiveTenant (issue #983)", () => {
     expect(aggregate.errors[0]).toBe(boom);
     expect(aggregate.message).toContain("1 of 3");
     expect(errorSpy).toHaveBeenCalledTimes(1);
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ err: boom, tenantId: visited[1] }),
-      expect.any(String),
-    );
+    expect(errorSpy).toHaveBeenCalledWith({ errorName: "Error", tenantId: visited[1] }, expect.any(String));
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("secret mail subject");
     errorSpy.mockRestore();
   });
 
