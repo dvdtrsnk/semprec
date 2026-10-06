@@ -269,9 +269,10 @@ export interface SessionAgentRunsFilter {
 }
 
 /**
- * Every run still marked `running` — orphaned after a process restart, since the
- * in-memory session registry that would otherwise be driving them is gone. Startup
- * repair (`@semprec/agent-runtime`'s `repairInterruptedRuns`) is the only caller.
+ * Every run still marked `running` that is visible in the current tenant scope — orphaned after a
+ * process restart, since the in-memory session registry that would otherwise be driving them is
+ * gone. Startup repair (`@semprec/agent-runtime`'s `repairInterruptedRuns`) is the only caller and
+ * calls it once per active tenant.
  */
 export async function listRunningAgentRuns(client: Pool | PoolClient): Promise<AgentRunRow[]> {
   const { rows } = await client.query<AgentRunDbRow>(

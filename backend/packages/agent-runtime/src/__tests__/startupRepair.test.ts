@@ -192,6 +192,7 @@ describe("repairInterruptedRuns", () => {
     });
 
     const commitFailingPool: Pool = {
+      query: ((...args: Parameters<Pool["query"]>) => pool.query(...args)) as Pool["query"],
       connect: async () => {
         const client = await pool.connect();
         const originalQuery = client.query.bind(client);
@@ -213,7 +214,12 @@ describe("repairInterruptedRuns", () => {
       },
     } as unknown as Pool;
 
-    await expect(repairInterruptedRuns(commitFailingPool)).rejects.toThrow("commit failed");
+    const failure = await repairInterruptedRuns(commitFailingPool).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors[0]).toMatchObject({ message: "commit failed" });
     expect(events).toEqual([]);
 
     await withTransaction(pool, async () => undefined);
