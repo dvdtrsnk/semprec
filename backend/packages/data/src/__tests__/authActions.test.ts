@@ -269,6 +269,28 @@ describe("auth actions (issue #140)", () => {
       expect(identity.role).toBe("member");
     });
 
+    it("rejects an unbound user with a 401 once a second tenant exists, while a bound user still authenticates", async () => {
+      const unbound = await makeUser();
+      const bound = await createUser(pool, {
+        email: "bound@example.com",
+        passwordHash: await hashPassword("s3cret-password"),
+        tenantId: getTenantZeroId(),
+      });
+      const unboundLogin = await loginAs(unbound);
+      const boundLogin = await loginAs(bound);
+      const { rows } = await pool.query<{ id: string }>("INSERT INTO tenants DEFAULT VALUES RETURNING id");
+      const secondId = rows[0]?.id;
+      if (!secondId) throw new Error("second tenant insert returned no row");
+      try {
+        await expect(verifySessionToken(pool, unboundLogin.token)).rejects.toThrow(UnauthorizedError);
+
+        const identity = await verifySessionToken(pool, boundLogin.token);
+        expect(identity.tenantId).toBe(getTenantZeroId());
+      } finally {
+        await pool.query("DELETE FROM tenants WHERE id = $1", [secondId]);
+      }
+    });
+
     it.each(["suspended", "provisioning", "deleting"])(
       "rejects a user in a %s tenant without bumping last_seen_at",
       async (status) => {
