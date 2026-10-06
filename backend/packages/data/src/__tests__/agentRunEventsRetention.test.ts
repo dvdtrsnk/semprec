@@ -179,9 +179,10 @@ describe("handleAgentRunEventsRetentionTask", () => {
     const result = await handleAgentRunEventsRetentionTask(countedPool);
 
     expect(result.deleted).toBe(DELETABLE_ROW_COUNT);
-    // pg-pool's own `pool.query()` connects internally, so the count is the conversation-listing
-    // query's one connection plus one per delete batch: 2500 rows in batches of 1000 is 3 batches.
-    expect(connectCalls()).toBe(4);
+    // pg-pool's own `pool.query()` connects internally, so the count is the tenant enumeration's one
+    // connection, the conversation-listing query's one connection plus one per delete batch: 2500
+    // rows in batches of 1000 is 3 batches.
+    expect(connectCalls()).toBe(5);
     expect(await eventIdsFor(run.id)).toEqual([compactionEvent.id]);
   });
 });
