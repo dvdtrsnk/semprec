@@ -26,9 +26,9 @@ export async function getSoleTenantId(client: Pool | PoolClient): Promise<string
 }
 
 /**
- * The tenant a user belongs to, with that tenant's status and the user's role. Only an explicit
- * `users.tenant_id` binds a user: there is no sole-tenant fallback, so a user with a NULL
- * `tenant_id` is unbound. Returns `null` when the user is unbound or does not exist. An unknown `status` or `role`
+ * The tenant a user belongs to, with that tenant's status and the user's role. A user with no
+ * `tenant_id` resolves to the sole tenant while exactly one exists. Returns `null` when the user
+ * is unbound and no sole tenant exists, or the user does not exist. An unknown `status` or `role`
  * is a data-integrity failure and throws a plain `Error` (a 500), never a 401.
  */
 export async function getUserTenantBinding(
@@ -36,7 +36,7 @@ export async function getUserTenantBinding(
   userId: string,
 ): Promise<{ tenantId: string; status: TenantStatus; role: UserRole } | null> {
   const { rows } = await client.query<{ id: string; status: unknown; role: unknown }>(
-    "SELECT t.id, t.status, u.role FROM users u JOIN tenants t ON t.id = u.tenant_id WHERE u.id = $1",
+    "SELECT t.id, t.status, u.role FROM users u JOIN tenants t ON t.id = COALESCE(u.tenant_id, app_sole_tenant()) WHERE u.id = $1",
     [userId],
   );
   const row = rows[0];
