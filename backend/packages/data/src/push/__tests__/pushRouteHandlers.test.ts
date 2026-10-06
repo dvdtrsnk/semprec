@@ -12,8 +12,12 @@ import { ValidationError } from "../../errors.js";
 
 let pool: Pool;
 
-async function makeIdentity(email = "person@example.com") {
-  await createUser(pool, { tenantId: getTenantZeroId(), email, passwordHash: await hashPassword("s3cret-password") });
+async function makeIdentity(email = "person@example.com", bound = true) {
+  await createUser(pool, {
+    ...(bound ? { tenantId: getTenantZeroId() } : {}),
+    email,
+    passwordHash: await hashPassword("s3cret-password"),
+  });
   const session = await login(pool, { email, password: "s3cret-password", platform: "web", ip: "1.2.3.4" });
   return { user: { id: session.user.id }, session: { id: session.session.id } };
 }
@@ -94,7 +98,7 @@ describe("push subscription custom route handlers (issue #239)", () => {
     });
     const subscriptionId = (registered.body as { subscription: { id: string } }).subscription.id;
 
-    const attacker = await makeIdentity("attacker@example.com");
+    const attacker = await makeIdentity("attacker@example.com", false);
     const revokeHandler = createRevokePushSubscriptionRouteHandler(pool);
     const result = await revokeHandler({ params: { id: subscriptionId }, identity: attacker, body: {} });
 
