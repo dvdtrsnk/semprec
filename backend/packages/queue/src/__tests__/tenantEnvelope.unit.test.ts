@@ -73,6 +73,7 @@ describe("enqueueJob tenant stamping", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     if (original === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
     else process.env.SEMPREC_TENANT_SCOPE = original;
   });
@@ -90,8 +91,11 @@ describe("enqueueJob tenant stamping", () => {
   });
 
   it("stamps null and logs tenant_scope_missing once with no scope in warn mode", async () => {
+    // Warn mode dedupes by stack in module state; a fresh module graph makes "once" deterministic.
+    vi.resetModules();
+    const fresh = await import("../index.js");
     const client = fakeClient();
-    await enqueueJob(client as never, "someTask", {});
+    await fresh.enqueueJob(client as never, "someTask", {});
     expect(sentEnvelope(client).tenantId).toBeNull();
     const missing = log.warn.mock.calls.filter((call) => call[1] === "tenant_scope_missing");
     expect(missing).toHaveLength(1);
@@ -115,6 +119,10 @@ describe("registerTask tenant tasks", () => {
   beforeEach(() => {
     log.warn.mockClear();
     log.info.mockClear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   function observingTask(name: string) {
@@ -150,7 +158,8 @@ describe("registerTask tenant tasks", () => {
     ["a legacy envelope", { traceId: TRACE_ID, payload: { a: 1 } }, { a: 1 }],
     ["a null tenantId", { traceId: TRACE_ID, tenantId: null, payload: { a: 1 } }, { a: 1 }],
     ["a raw payload", { raw: true }, { raw: true }],
-  ])("falls back to the sole tenant for %s", async (_label, raw, expectedPayload) => {
+  ])("falls back to the sole tenant for %s when opted in", async (_label, raw, expectedPayload) => {
+    vi.stubEnv("SEMPREC_LEGACY_ENVELOPE_FALLBACK", "1");
     const { task, seen } = observingTask("someTask");
     await task(raw, fakeHelpers({ soleTenant: T }) as never);
     expect(seen).toEqual([{ scope: { kind: "tenant", tenantId: T }, payload: expectedPayload }]);
@@ -159,7 +168,20 @@ describe("registerTask tenant tasks", () => {
     expect(warned[0]?.[0]).toEqual({ jobName: "someTask", jobId: "9" });
   });
 
-  it("rejects when there is no tenant and no sole tenant", async () => {
+  it.each([[undefined], ["0"], [""]])(
+    "rejects an envelope without a tenant and never looks up the sole tenant when the opt-in is %j",
+    async (value) => {
+      if (value !== undefined) vi.stubEnv("SEMPREC_LEGACY_ENVELOPE_FALLBACK", value);
+      const { task, seen } = observingTask("someTask");
+      const helpers = fakeHelpers({ soleTenant: T });
+      await expect(task({ traceId: TRACE_ID, payload: {} }, helpers as never)).rejects.toThrow(/no tenant/);
+      expect(seen).toEqual([]);
+      expect(helpers.query).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects when opted in but there is no sole tenant", async () => {
+    vi.stubEnv("SEMPREC_LEGACY_ENVELOPE_FALLBACK", "1");
     const { task, seen } = observingTask("someTask");
     await expect(task({ traceId: TRACE_ID, payload: {} }, fakeHelpers({ soleTenant: null }) as never)).rejects.toThrow(
       /no tenant/,
