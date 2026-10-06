@@ -7,6 +7,30 @@ export { storeCredential } from "../credentials/externalCredentialsStore.js";
 export { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 export { createRuntimeRolePool, createTestTenant, getTenantZeroId, withTenantTransaction } from "./tenantFixtures.js";
 
+/**
+ * Test-only: the user bound to tenant zero, created on first use and reused afterwards (a tenant holds
+ * one user), so a helper that authenticates once per request can call it repeatedly. A `locale` is
+ * applied to the reused row too; `email` and `passwordHash` are kept from the first call.
+ */
+export async function upsertTenantZeroUser(
+  pool: Pool,
+  input: { email: string; passwordHash: string; locale?: string },
+): Promise<{ id: string; email: string }> {
+  const { rows } =
+    input.locale === undefined
+      ? await pool.query<{ id: string; email: string }>(
+          `INSERT INTO users (email, password_hash, tenant_id) VALUES ($1, $2, $3)
+           ON CONFLICT (tenant_id) DO UPDATE SET tenant_id = EXCLUDED.tenant_id RETURNING id, email`,
+          [input.email, input.passwordHash, getTenantZeroId()],
+        )
+      : await pool.query<{ id: string; email: string }>(
+          `INSERT INTO users (email, password_hash, tenant_id, locale) VALUES ($1, $2, $3, $4)
+           ON CONFLICT (tenant_id) DO UPDATE SET locale = EXCLUDED.locale RETURNING id, email`,
+          [input.email, input.passwordHash, getTenantZeroId(), input.locale],
+        );
+  return rows[0]!;
+}
+
 export function getTestPool(): Pool {
   const connectionString = process.env.TEST_DATABASE_URL;
   if (!connectionString) {

@@ -2,7 +2,7 @@ import { createServer, type ClientRequest, type IncomingMessage, type Server } f
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { WebSocket } from "ws";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createUser, hashPassword, type PasswordResetMailer, type UserRow } from "@semprec/data";
 import { wireRealtimeHooks, type SyncServer } from "@semprec/realtime";
 import { createAuthRequestListener, SESSION_COOKIE_NAME } from "../authHandler.js";
@@ -17,7 +17,7 @@ const noopMailer: PasswordResetMailer = {
 };
 
 async function makeUser(email = "person@example.com"): Promise<UserRow> {
-  return createUser(pool, { email, passwordHash: await hashPassword(PASSWORD) });
+  return createUser(pool, { email, passwordHash: await hashPassword(PASSWORD), tenantId: getTenantZeroId() });
 }
 
 function sessionCookieFrom(res: Response): string {
