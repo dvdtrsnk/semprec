@@ -1,6 +1,8 @@
 import type { Pool } from "pg";
+import { runAsSystem } from "@semprec/shared";
 import {
   finishAgentRunWithErrorNotification,
+  forEachActiveTenant,
   insertAgentRunEvent,
   listAgentRunEvents,
   listRunningAgentRuns,
@@ -34,11 +36,27 @@ const INTERRUPTED_REASON = "interrupted_by_restart";
  *  2. Close it out as `error` with reason `interrupted_by_restart`, writing the
  *     `agent_run_error` notification (issue #149) in the same transaction.
  *
- * Runs in one transaction: a crash partway through must not leave some rows closed
- * and others still `running`, which the next startup would repair again anyway, but a
- * partial synthetic-event write is worse than repeating the whole sweep.
+ * Runs once per active tenant (`forEachActiveTenant`, inside a system scope this function enters
+ * itself), each tenant's repair in its own transaction: the runs visible there are exactly that
+ * tenant's. Atomicity is per tenant — a crash between tenants leaves the later tenants for the next
+ * startup, whose repair is idempotent, and a partial synthetic-event write within one tenant is still
+ * rolled back with that tenant's transaction. A tenant whose repair fails does not stop the others;
+ * once every tenant was attempted the call rejects (an `AggregateError`), so the caller still refuses
+ * to start rather than run a queue over unrepaired runs, and the ids of tenants that did commit are
+ * not returned. Runs of tenants that are not active are left untouched.
  */
 export async function repairInterruptedRuns(pool: Pool): Promise<{ repairedRunIds: string[] }> {
+  return runAsSystem("agents:startupRepair", async () => {
+    const repairedRunIds: string[] = [];
+    await forEachActiveTenant(pool, async () => {
+      const tenantRunIds = await repairCurrentTenant(pool);
+      repairedRunIds.push(...tenantRunIds);
+    });
+    return { repairedRunIds };
+  });
+}
+
+async function repairCurrentTenant(pool: Pool): Promise<string[]> {
   return withTransaction(pool, async (client) => {
     const orphaned = (await listRunningAgentRuns(client)).filter((run) => run.triggeredBy !== "mcp");
     for (const run of orphaned) {
@@ -62,6 +80,6 @@ export async function repairInterruptedRuns(pool: Pool): Promise<{ repairedRunId
       await finishAgentRunWithErrorNotification(client, run.id, INTERRUPTED_REASON);
     }
 
-    return { repairedRunIds: orphaned.map((run) => run.id) };
+    return orphaned.map((run) => run.id);
   });
 }
