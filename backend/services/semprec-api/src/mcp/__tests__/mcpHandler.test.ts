@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTestPool, resetDatabase, getTenantZeroId } from "@semprec/data/testSupport";
 import {
   createChokePoint,
   createUser,
@@ -28,7 +28,11 @@ let gateway: GenericOperationGateway;
 
 async function authHeader(): Promise<{ Authorization: string }> {
   const email = `${randomUUID()}@example.com`;
-  const user = await createUser(pool, { email, passwordHash: await hashPassword(PASSWORD) });
+  const user = await createUser(pool, {
+    tenantId: getTenantZeroId(),
+    email,
+    passwordHash: await hashPassword(PASSWORD),
+  });
   const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
   return { Authorization: `Bearer ${token}` };
 }
@@ -105,7 +109,11 @@ describe("createMcpRequestListener (issue #220)", () => {
     servers.push(server);
 
     const email = `${randomUUID()}@example.com`;
-    const user = await createUser(pool, { email, passwordHash: await hashPassword(PASSWORD) });
+    const user = await createUser(pool, {
+      tenantId: getTenantZeroId(),
+      email,
+      passwordHash: await hashPassword(PASSWORD),
+    });
     const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "web", ip: "127.0.0.1" });
 
     const res = await fetch(`${baseUrl}/mcp`, {

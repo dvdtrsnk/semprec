@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTestPool, resetDatabase, getTenantZeroId } from "@semprec/data/testSupport";
 import { createUser, hashPassword, login } from "@semprec/data";
 import type { ModuleCustomRouteDefinition } from "@semprec/module-registry";
 import { mountCustomRoutes, type CustomRouteHandlerFactory } from "../customRouteMount.js";
@@ -11,7 +11,7 @@ let pool: Pool;
 const PASSWORD = "s3cret-password";
 
 async function tokenFor(email: string): Promise<string> {
-  await createUser(pool, { email, passwordHash: await hashPassword(PASSWORD) });
+  await createUser(pool, { tenantId: getTenantZeroId(), email, passwordHash: await hashPassword(PASSWORD) });
   const result = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "1.2.3.4" });
   return result.token;
 }

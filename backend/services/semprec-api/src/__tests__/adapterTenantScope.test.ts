@@ -89,6 +89,7 @@ describe("tenant scope on the real dispatcher", () => {
 
   async function newSession(): Promise<{ token: string; sessionId: string }> {
     const user = await createUser(pool, {
+      tenantId: getTenantZeroId(),
       email: `${randomUUID()}@example.com`,
       passwordHash: await hashPassword(PASSWORD),
     });
@@ -158,6 +159,7 @@ describe("tenant scope on the real dispatcher", () => {
     async function responses(mode: "warn" | "strict"): Promise<Array<[number, string]>> {
       await resetDatabase(pool);
       const user = await createUser(pool, {
+        tenantId: getTenantZeroId(),
         email: "auth-strict@example.com",
         passwordHash: await hashPassword(PASSWORD),
       });
