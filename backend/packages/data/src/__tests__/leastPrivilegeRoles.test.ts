@@ -190,7 +190,7 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
     // Written only by semprec_data (migration 0057); covered by identityTablePrivileges.test.ts.
     const IDENTITY_TABLES = new Set(["users", "sessions", "password_reset_tokens", "login_attempts", "tenants"]);
 
-    // Deliberately without UPDATE for both runtime roles (migration 0061): rewriting a key row would
+    // Deliberately without UPDATE for both runtime roles (migration 0062): rewriting a key row would
     // orphan every credential sealed under it, so a key is only ever inserted or deleted (crypto-shred).
     const NO_UPDATE_TABLES = new Set(["tenant_keys"]);
 
