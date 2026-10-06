@@ -3,7 +3,7 @@ import { performance } from "node:perf_hooks";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { WebSocket } from "ws";
-import { getTestPool, resetDatabase, getTenantZeroId } from "@semprec/data/testSupport";
+import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createUser, hashPassword, login } from "@semprec/data";
 import type { SyncServer } from "@semprec/realtime";
 import type { Logger } from "@semprec/shared";
@@ -54,11 +54,7 @@ async function startServer(pool: Pool): Promise<{ server: Server; syncServer: Sy
 }
 
 async function openAuthenticatedClient(pool: Pool, wsBaseUrl: string): Promise<WebSocket> {
-  const user = await createUser(pool, {
-    tenantId: getTenantZeroId(),
-    email: "person@example.com",
-    passwordHash: await hashPassword(PASSWORD),
-  });
+  const user = await createUser(pool, { email: "person@example.com", passwordHash: await hashPassword(PASSWORD) });
   const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
   const client = new WebSocket(`${wsBaseUrl}/api/sync`, { headers: { Authorization: `Bearer ${token}` } });
   await new Promise<void>((resolve, reject) => {

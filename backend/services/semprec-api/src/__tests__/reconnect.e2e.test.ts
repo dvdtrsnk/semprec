@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { Pool, type PoolClient } from "pg";
 import { WebSocket } from "ws";
 import * as Y from "yjs";
-import { getTestPool, resetDatabase, getTenantZeroId } from "@semprec/data/testSupport";
+import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   createAgentRun,
   createChokePoint,
@@ -145,7 +145,6 @@ interface Fixture {
 
 async function buildFixture(): Promise<Fixture> {
   const user = await createUser(pool, {
-    tenantId: getTenantZeroId(),
     email: `${randomUUID()}@example.com`,
     passwordHash: await hashPassword(PASSWORD),
   });
