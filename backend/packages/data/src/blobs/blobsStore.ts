@@ -70,7 +70,7 @@ export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput
 
   const inserted = await client.query<BlobDbRow>(
     // No conflict target on purpose: `content_hash` is now guarded by both the legacy global
-    // partial index and its tenant-leading successor (0061), and a targeted ON CONFLICT only
+    // partial index and its tenant-leading successor (0062), and a targeted ON CONFLICT only
     // arbitrates the named index — a concurrent identical insert would trip the other one with
     // a unique_violation instead of being skipped. A bare DO NOTHING covers every unique index.
     `INSERT INTO blobs (mime_type, byte_size, storage_key, source_url, content_hash)
