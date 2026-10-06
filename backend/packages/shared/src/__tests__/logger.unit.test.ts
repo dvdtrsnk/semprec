@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import pino from "pino";
 import { createLogger, installFatalHandlers } from "../logger.js";
+import { runAsSystem, runInTenant } from "../tenantScope.js";
+import { withTraceContext } from "../traceContext.js";
 
 /** Captures every JSON line a pino logger writes, decoded, in write order. */
 function captureLines(): { stream: NodeJS.WritableStream; lines: () => Record<string, unknown>[] } {
@@ -224,6 +226,72 @@ describe("createLogger", () => {
     const record = JSON.parse(String(output)) as { err: string };
     expect(JSON.stringify(record)).not.toContain("provider-access-secret");
     expect(record.err).toContain("[REDACTED]");
+  });
+});
+
+describe("createLogger tenant binding", () => {
+  const TENANT_A = "11111111-1111-4111-8111-111111111111";
+  const TENANT_B = "22222222-2222-4222-8222-222222222222";
+
+  /** Runs `fn` with stdout spied and returns the decoded record of the single line it wrote. */
+  function emit(fn: (logger: ReturnType<typeof createLogger>) => void): Record<string, unknown> {
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      fn(createLogger("semprec-api"));
+      expect(writeSpy).toHaveBeenCalledTimes(1);
+      return JSON.parse(String(writeSpy.mock.calls[0]![0])) as Record<string, unknown>;
+    } finally {
+      writeSpy.mockRestore();
+    }
+  }
+
+  it("stamps tenantId on a record inside runInTenant", () => {
+    const record = emit((logger) => runInTenant(TENANT_A, () => logger.info("m")));
+    expect(record.tenantId).toBe(TENANT_A);
+  });
+
+  it("adds no tenantId inside runAsSystem", () => {
+    const record = emit((logger) => runAsSystem("x", () => logger.info("m")));
+    expect("tenantId" in record).toBe(false);
+    expect("reason" in record).toBe(false);
+  });
+
+  it("adds no tenantId outside any scope and keeps the original record shape", () => {
+    const record = emit((logger) => logger.info("m"));
+    expect(Object.keys(record).sort()).toEqual(["level", "msg", "name", "pid", "hostname", "time"].sort());
+  });
+
+  it("lets an explicit call-site tenantId win over the scope", () => {
+    const record = emit((logger) => runInTenant(TENANT_A, () => logger.info({ tenantId: TENANT_B }, "m")));
+    expect(record.tenantId).toBe(TENANT_B);
+  });
+
+  it("carries both trace bindings and tenantId inside withTraceContext nested in runInTenant", () => {
+    const record = emit((logger) =>
+      runInTenant(TENANT_A, () => withTraceContext({ jobName: "j" }, () => logger.info("m"))),
+    );
+    expect(typeof record.traceId).toBe("string");
+    expect(record.jobName).toBe("j");
+    expect(record.tenantId).toBe(TENANT_A);
+  });
+
+  it("adds no tenantId once runInTenant has returned", () => {
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const logger = createLogger("semprec-api");
+      runInTenant(TENANT_A, () => logger.info("inside"));
+      logger.info("after");
+      const records = writeSpy.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>);
+      expect(records[0]!.tenantId).toBe(TENANT_A);
+      expect("tenantId" in records[1]!).toBe(false);
+    } finally {
+      writeSpy.mockRestore();
+    }
+  });
+
+  it("loads the package index in a fresh module context without an import cycle", async () => {
+    vi.resetModules();
+    await expect(import("../index.js")).resolves.toBeDefined();
   });
 });
 
