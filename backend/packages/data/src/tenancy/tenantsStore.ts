@@ -30,6 +30,9 @@ export async function getSoleTenantId(client: Pool | PoolClient): Promise<string
  * `tenant_id` resolves to the sole tenant while exactly one exists. Returns `null` when the user
  * is unbound and no sole tenant exists, or the user does not exist. An unknown `status` or `role`
  * is a data-integrity failure and throws a plain `Error` (a 500), never a 401.
+ *
+ * The `app_sole_tenant()` fallback is the transitional contract of the tenancy rollout: it is
+ * required by the issue and ends when `users.tenant_id` becomes NOT NULL (#1067).
  */
 export async function getUserTenantBinding(
   client: Pool | PoolClient,
