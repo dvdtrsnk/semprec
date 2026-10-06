@@ -97,6 +97,18 @@ export async function getEarliestUserId(client: Pool | PoolClient): Promise<stri
   return rows[0] ? rows[0].id : null;
 }
 
+/**
+ * The tenant-scoped counterpart of `getEarliestUserId`: the earliest user bound to the tenant of the
+ * active scope (`app.tenant_id`), so a per-tenant producer never notifies another tenant's user.
+ * Returns `null` outside a tenant scope or when the tenant has no user.
+ */
+export async function getEarliestUserIdForCurrentTenant(client: Pool | PoolClient): Promise<string | null> {
+  const { rows } = await client.query<{ id: string }>(
+    `SELECT id FROM users WHERE tenant_id = app_current_tenant() ORDER BY created_at ASC, id ASC LIMIT 1`,
+  );
+  return rows[0] ? rows[0].id : null;
+}
+
 /** Used by `resetPassword` (auth/passwordResetActions.ts) to replace a user's password hash after a reset token is consumed. */
 export async function updateUserPasswordHash(
   client: Pool | PoolClient,

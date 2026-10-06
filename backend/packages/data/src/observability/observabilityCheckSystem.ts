@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
-import { getEarliestUserId } from "../auth/usersStore.js";
+import { getEarliestUserId, getEarliestUserIdForCurrentTenant } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
 import type { NotificationKind } from "../notifications/notificationKinds.js";
 import { getExpectedProcessHeartbeatStatuses } from "../health/processHeartbeats.js";
@@ -30,7 +30,11 @@ async function notifyObservabilityAlert(
   detail: Record<string, unknown>,
   sourceTable: "observability_checks" | "tenant_observability_checks" = "observability_checks",
 ): Promise<void> {
-  const userId = await getEarliestUserId(client);
+  // Tenant-scoped checks notify a user of the active tenant, never the globally earliest one.
+  const userId =
+    sourceTable === "tenant_observability_checks"
+      ? await getEarliestUserIdForCurrentTenant(client)
+      : await getEarliestUserId(client);
   if (!userId) return;
   await writeNotification(client, {
     userId,
