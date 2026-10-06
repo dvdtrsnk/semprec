@@ -12,8 +12,13 @@ import { NotFoundError, UnauthorizedError, ValidationError } from "../errors.js"
 
 let pool: Pool;
 
-async function makeUser(email = "person@example.com", password = "s3cret-password") {
-  return createUser(pool, { email, passwordHash: await hashPassword(password) });
+/** Bound to tenant zero by default, since authentication requires an explicit binding; pass `null` for an unbound user. */
+async function makeUser(
+  email = "person@example.com",
+  password = "s3cret-password",
+  tenantId: string | null = getTenantZeroId(),
+) {
+  return createUser(pool, { email, passwordHash: await hashPassword(password), ...(tenantId ? { tenantId } : {}) });
 }
 
 describe("auth actions (issue #140)", () => {
@@ -260,13 +265,17 @@ describe("auth actions (issue #140)", () => {
       expect(identity.role).toBe("admin");
     });
 
-    it("resolves a user with no tenant to the sole tenant", async () => {
-      const user = await makeUser();
-      const { token } = await loginAs(user);
+    it("rejects a user with no tenant binding even while exactly one tenant exists", async () => {
+      const user = await makeUser("unbound@example.com", "s3cret-password", null);
+      const { token, session } = await loginAs(user);
 
-      const identity = await verifySessionToken(pool, token);
-      expect(identity.tenantId).toBe(getTenantZeroId());
-      expect(identity.role).toBe("member");
+      await expect(verifySessionToken(pool, token)).rejects.toThrow(UnauthorizedError);
+
+      const { rows } = await pool.query<{ lastSeenAt: Date }>(
+        'SELECT last_seen_at AS "lastSeenAt" FROM sessions WHERE id = $1',
+        [session.id],
+      );
+      expect(rows[0]!.lastSeenAt.toISOString()).toBe(new Date(session.lastSeenAt).toISOString());
     });
 
     it.each(["suspended", "provisioning", "deleting"])(
@@ -360,7 +369,7 @@ describe("auth actions (issue #140)", () => {
 
     it("refuses to revoke a session belonging to a different user", async () => {
       const owner = await makeUser("owner@example.com");
-      const attacker = await makeUser("attacker@example.com");
+      const attacker = await makeUser("attacker@example.com", "s3cret-password", null);
       const ownerSession = await login(pool, {
         email: owner.email,
         password: "s3cret-password",

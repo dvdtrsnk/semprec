@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTestPool, resetDatabase, getTenantZeroId } from "@semprec/data/testSupport";
 import {
   createChokePoint,
   createUser,
@@ -33,6 +33,7 @@ const moduleRegistry = await loadFullModuleRegistry();
 
 async function authHeader(): Promise<{ Authorization: string }> {
   const user = await createUser(pool, {
+    tenantId: getTenantZeroId(),
     email: `${randomUUID()}@example.com`,
     passwordHash: await hashPassword(PASSWORD),
   });

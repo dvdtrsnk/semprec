@@ -21,7 +21,7 @@ const SAMPLE_ITEM: ItemRow = {
 };
 
 async function tokenFor(email: string): Promise<string> {
-  await createUser(pool, { email, passwordHash: await hashPassword(PASSWORD) });
+  await createUser(pool, { tenantId: getTenantZeroId(), email, passwordHash: await hashPassword(PASSWORD) });
   const result = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "1.2.3.4" });
   return result.token;
 }

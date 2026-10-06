@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { hashPassword } from "../../auth/passwordHash.js";
 import { createUser } from "../../auth/usersStore.js";
 import { login } from "../../auth/authActions.js";
@@ -13,7 +13,7 @@ import { ValidationError } from "../../errors.js";
 let pool: Pool;
 
 async function makeIdentity(email = "person@example.com") {
-  await createUser(pool, { email, passwordHash: await hashPassword("s3cret-password") });
+  await createUser(pool, { tenantId: getTenantZeroId(), email, passwordHash: await hashPassword("s3cret-password") });
   const session = await login(pool, { email, password: "s3cret-password", platform: "web", ip: "1.2.3.4" });
   return { user: { id: session.user.id }, session: { id: session.session.id } };
 }

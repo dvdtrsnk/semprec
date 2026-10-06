@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTestPool, resetDatabase, getTenantZeroId } from "@semprec/data/testSupport";
 import {
   createViewTypeRegistry,
   seedSystem,
@@ -22,6 +22,7 @@ let mcpServersId: string;
 
 async function authHeader(): Promise<{ Authorization: string }> {
   const user = await createUser(pool, {
+    tenantId: getTenantZeroId(),
     email: `${randomUUID()}@example.com`,
     passwordHash: await hashPassword(PASSWORD),
   });
