@@ -32,7 +32,7 @@ describe("module data migration", () => {
   });
 
   async function seedDatabaseWithItems(count: number): Promise<{ databaseId: string; itemIds: string[] }> {
-    const db = await chokePoint.createDatabase({ name: "Fixture Items", ownerModuleId: DATABASE_KEY });
+    const db = await chokePoint.createDatabase({ name: "Fixture Items", ownerModuleId: DATABASE_KEY, system: true });
     const itemIds: string[] = [];
     for (let i = 0; i < count; i++) {
       const item = await itemsStore.insertItem(pool, { databaseId: db.id, properties: { n: i } });
