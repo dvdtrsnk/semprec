@@ -67,6 +67,7 @@ describe("repairInterruptedRuns across tenants", () => {
   afterEach(async () => {
     await adminPool.query("DROP TRIGGER IF EXISTS fail_events_insert ON agent_run_events");
     await adminPool.query("DROP FUNCTION IF EXISTS fail_events_insert()");
+    await adminPool.query("DROP TABLE IF EXISTS fail_events_target");
     await runtimePool?.end();
   });
 
@@ -95,10 +96,14 @@ describe("repairInterruptedRuns across tenants", () => {
   it("repairs the other tenants when one tenant's repair fails, then rejects", async () => {
     const zero = await seedTenant(tenantZero);
     const b = await seedTenant(tenantB);
+    await adminPool.query("CREATE TABLE fail_events_target (run_id uuid NOT NULL)");
+    await adminPool.query("INSERT INTO fail_events_target (run_id) VALUES ($1)", [b.orphanId]);
     await adminPool.query(`
       CREATE FUNCTION fail_events_insert() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
-        IF NEW.agent_run_id = '${b.orphanId}' THEN RAISE EXCEPTION 'boom'; END IF;
+        IF EXISTS (SELECT 1 FROM fail_events_target WHERE run_id = NEW.agent_run_id) THEN
+          RAISE EXCEPTION 'boom';
+        END IF;
         RETURN NEW;
       END $$`);
     await adminPool.query(
