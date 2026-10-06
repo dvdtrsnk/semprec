@@ -67,12 +67,11 @@ describe("createApiQueueRuntime mail module ids (issue #648)", () => {
     await pool.end();
   });
 
-  it("rejects at startup on an unseeded database, naming the missing module ids and the seed CLI", async () => {
+  it("starts on a database without the mail module seeded (no boot-time id capture)", async () => {
     await resetDatabase(pool);
 
-    await expect(createApiQueueRuntime(pool, await loadFullModuleRegistry())).rejects.toThrow(
-      "Mail module databases are not seeded (missing: emails, files, folders, mailboxes) — run packages/data/dist/db/runSeedCli.js",
-    );
+    runtime = await createApiQueueRuntime(pool, await loadFullModuleRegistry());
+    expect(runtime).toBeDefined();
   });
 
   it("completes mailSearchReindexSweep on its first attempt", async () => {

@@ -641,7 +641,6 @@ describe("createGenericOperationGateway (issue #220)", () => {
         undefined,
         undefined,
         undefined,
-        undefined,
         genericOperationApprovalReplay,
       );
     }

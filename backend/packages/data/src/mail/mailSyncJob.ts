@@ -29,6 +29,8 @@ import {
 } from "./imapConnectionLimiter.js";
 import { findEmailsMissingSearchIndex, reindexItemSearch } from "./search.js";
 import { logger } from "./logger.js";
+import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
+import { resolveMailModuleIds } from "./mailModuleIds.js";
 
 /**
  * Real transport connections (imapflow / Gmail REST / Graph REST) are out of `@semprec/data`
@@ -76,10 +78,12 @@ export async function enqueueMailAccountSync(client: Queryable, mailboxItemId: s
 
 /** Periodic sweep (crontab, `CORE_CRONTAB` in worker.ts): enqueues a sync job for every account whose `next_expected_activity_at` is due — the safety-net reconcile that runs regardless of push-notification reliability. */
 export async function handleMailAccountSyncSweepTask(pool: Pool): Promise<void> {
-  const due = await withTransaction(pool, (client) => listAccountsDueForSync(client));
-  for (const account of due) {
-    await enqueueMailAccountSync(pool, account.itemId);
-  }
+  await forEachActiveTenant(pool, async () => {
+    const due = await withTransaction(pool, (client) => listAccountsDueForSync(client));
+    for (const account of due) {
+      await enqueueMailAccountSync(pool, account.itemId);
+    }
+  });
 }
 
 /**
@@ -91,17 +95,21 @@ export async function handleMailAccountSyncSweepTask(pool: Pool): Promise<void> 
  * current `name`/`body` properties — a backfilled item has no `mail_attachments` rows to pull
  * PDF/DOCX text from, so this is a plain-text reindex, not a full re-run of ingest.
  */
-export async function handleMailSearchReindexSweepTask(pool: Pool, emailsDatabaseId: string): Promise<void> {
-  await withTransaction(pool, async (client) => {
-    const missing = await findEmailsMissingSearchIndex(client, emailsDatabaseId);
-    for (const item of missing) {
-      await reindexItemSearch(client, {
-        itemId: item.itemId,
-        databaseId: emailsDatabaseId,
-        text: [item.name ?? "", item.body ?? ""].join("\n\n"),
-      });
-    }
-  });
+export async function handleMailSearchReindexSweepTask(pool: Pool): Promise<void> {
+  await forEachActiveTenant(pool, () =>
+    withTransaction(pool, async (client) => {
+      // Resolved per tenant pass: a tenant without mail databases fails only its own pass.
+      const { emailsDatabaseId } = await resolveMailModuleIds(client);
+      const missing = await findEmailsMissingSearchIndex(client, emailsDatabaseId);
+      for (const item of missing) {
+        await reindexItemSearch(client, {
+          itemId: item.itemId,
+          databaseId: emailsDatabaseId,
+          text: [item.name ?? "", item.body ?? ""].join("\n\n"),
+        });
+      }
+    }),
+  );
 }
 
 export interface SyncMailAccountPayload {

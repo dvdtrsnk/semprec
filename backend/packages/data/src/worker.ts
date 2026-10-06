@@ -1,5 +1,7 @@
 import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
+import { withTransaction } from "./db/pool.js";
+import { resolveMailModuleIds } from "./mail/mailModuleIds.js";
 import { withTraceContext } from "@semprec/shared";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import {
@@ -27,7 +29,6 @@ import {
   handleMailSearchReindexSweepTask,
   handleSyncMailAccountTask,
   noopMailSyncAdapterFactory,
-  type MailModuleIds,
   type MailSyncAdapterFactory,
 } from "./mail/mailSyncJob.js";
 import { LocalFsBlobStorageWriter, resolveBlobStorageDir, type BlobStorageWriter } from "./mail/blobStorage.js";
@@ -103,7 +104,6 @@ export function createCoreTaskList(
   actionRegistry: ActionRegistry,
   libraryMetadataFetcher: LibraryMetadataFetcher = noopLibraryMetadataFetcher,
   mailSyncAdapters: MailSyncAdapterFactory = noopMailSyncAdapterFactory,
-  mailModuleIds?: MailModuleIds,
   mailBlobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR")),
   legacyRawMimeFetcher: LegacyRawMimeFetcher = noopLegacyRawMimeFetcher,
   moduleRegistry?: ModuleRegistry,
@@ -162,8 +162,8 @@ export function createCoreTaskList(
       await handleMailAccountSyncSweepTask(pool);
     },
     [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: async (payload, helpers) => {
-      if (!mailModuleIds)
-        throw new Error("mailAccountSync job requires createCoreTaskList's mailModuleIds argument to be configured");
+      // Resolved per job, inside the job's tenant scope: database ids differ per tenant.
+      const mailModuleIds = await withTransaction(pool, (client) => resolveMailModuleIds(client));
       const mailboxItemId = requireString(payload, "mailboxItemId");
       await withTraceContext({ mailboxId: mailboxItemId }, () =>
         handleSyncMailAccountTask(pool, { mailboxItemId }, mailSyncAdapters, mailModuleIds, mailBlobStorage, {
@@ -172,11 +172,7 @@ export function createCoreTaskList(
       );
     },
     [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: async () => {
-      if (!mailModuleIds)
-        throw new Error(
-          "mailSearchReindexSweep job requires createCoreTaskList's mailModuleIds argument to be configured",
-        );
-      await handleMailSearchReindexSweepTask(pool, mailModuleIds.emailsDatabaseId);
+      await handleMailSearchReindexSweepTask(pool);
     },
     [CORE_TASK_NAMES.MAIL_LEGACY_EMAIL_MIGRATION]: async (payload) => {
       await handleMailLegacyEmailMigrationTask(

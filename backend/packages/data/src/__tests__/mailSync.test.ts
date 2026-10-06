@@ -1331,7 +1331,7 @@ describe("periodic search reindex sweep (issue #26)", () => {
     const beforeSweep = await searchItems(pool, { databaseId: emailsId, query: "UnindexedBackfillKeyword" });
     expect(beforeSweep.map((r) => r.itemId)).not.toContain(item.id);
 
-    await handleMailSearchReindexSweepTask(pool, emailsId);
+    await handleMailSearchReindexSweepTask(pool);
 
     const afterSweep = await searchItems(pool, { databaseId: emailsId, query: "UnindexedBackfillKeyword" });
     expect(afterSweep.map((r) => r.itemId)).toContain(item.id);
