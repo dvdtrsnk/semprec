@@ -94,10 +94,17 @@ async function getProcessHealthStatuses(client: Queryable): Promise<ProcessHealt
   });
 }
 
-/** Every currently-`alerting` row of issue #169's `observability_checks` — the one signal this report treats as authoritative for "is a component degraded." */
+/**
+ * Every currently-`alerting` row of issue #169's `observability_checks` plus the alerting
+ * `tenant_observability_checks` rows visible in the caller's scope (RLS) — the signal this report
+ * treats as authoritative for "is a component degraded."
+ */
 async function getAlertingChecks(client: Queryable): Promise<AlertingCheck[]> {
   const { rows } = await client.query<{ check_key: string; detail: Record<string, unknown>; changed_at: Date }>(
-    `SELECT check_key, detail, changed_at FROM observability_checks WHERE status = 'alerting' ORDER BY changed_at`,
+    `SELECT check_key, detail, changed_at FROM observability_checks WHERE status = 'alerting'
+     UNION ALL
+     SELECT check_key, detail, changed_at FROM tenant_observability_checks WHERE status = 'alerting'
+     ORDER BY changed_at`,
   );
   return rows.map((row) => ({ checkKey: row.check_key, detail: row.detail, changedAt: row.changed_at.toISOString() }));
 }
