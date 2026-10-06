@@ -15,6 +15,15 @@ function fakeRegistry(definitions: ModuleTaskDefinition[]): ModuleRegistry {
   return { getTaskDefinitions: async () => definitions } as unknown as ModuleRegistry;
 }
 
+/** Answers the tenant task wrapper's sole-tenant and status lookups with one active tenant. */
+const fakeHelpers = {
+  query: async (sql: string) => ({
+    rows: sql.includes("app_sole_tenant")
+      ? [{ app_sole_tenant: "6f1d2c3e-1a2b-4c5d-8e9f-0a1b2c3d4e5f" }]
+      : [{ status: "active" }],
+  }),
+} as never;
+
 function fakeTaskRegistry(tasks: ModuleTaskProjection[]): ModuleRegistry {
   return { getTasks: async () => tasks } as unknown as ModuleRegistry;
 }
@@ -107,7 +116,7 @@ describe("mergeModuleTaskList", () => {
     const merged = await mergeModuleTaskList(coreTaskList, registry);
     expect(Object.keys(merged).sort()).toEqual([CORE_TASK_NAMES.HEARTBEAT_SWEEP, "fixtureModule.processThing"].sort());
 
-    await merged["fixtureModule.processThing"]!({ itemId: "abc" }, {} as never);
+    await merged["fixtureModule.processThing"]!({ itemId: "abc" }, fakeHelpers);
     expect(calls).toEqual([{ itemId: "abc", validated: true }]);
   });
 
@@ -136,7 +145,7 @@ describe("mergeModuleTaskList", () => {
     ]);
 
     const merged = await mergeModuleTaskList(coreTaskList, registry);
-    await expect(merged["fixtureModule.processThing"]!({}, {} as never)).rejects.toThrow("invalid payload");
+    await expect(merged["fixtureModule.processThing"]!({}, fakeHelpers)).rejects.toThrow("invalid payload");
     expect(ran).toBe(false);
   });
 

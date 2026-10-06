@@ -2,7 +2,15 @@ import type { Pool, PoolClient } from "pg";
 import { runMigrations, runOnce as graphileRunOnce, run as graphileRun } from "graphile-worker";
 import type { RunnerOptions, TaskList, Runner, Task, JobHelpers } from "graphile-worker";
 import { z } from "zod";
-import { getTraceId, mintTraceId, withTraceContext } from "@semprec/shared";
+import {
+  currentTenantScope,
+  enforceTenantScope,
+  getTraceId,
+  mintTraceId,
+  runAsSystem,
+  runInTenant,
+  withTraceContext,
+} from "@semprec/shared";
 import { logger } from "./logger.js";
 
 export type { TaskList, Task, Runner } from "graphile-worker";
@@ -15,9 +23,15 @@ type Queryable = Pool | PoolClient;
  * way to set the top-level `traceId` itself, so it can neither omit nor spoof the queue trace.
  * `payload` stays `unknown` here (validated against each task's own shape once `registerTask`
  * unwraps it), matching how `mergeModuleTaskList` already re-validates module task payloads.
+ *
+ * `tenantId` is stamped the same way, from the producer's tenant scope: the tenant id for work
+ * enqueued inside a tenant, `null` for system work or an unscoped producer. `.optional()` lets a
+ * legacy envelope without the key parse, and the schema stays non-strict so the previous release
+ * ignores the extra key (rollback safety).
  */
 export const queueJobEnvelopeSchema = z.object({
   traceId: z.string().uuid(),
+  tenantId: z.string().uuid().nullable().optional(),
   payload: z.unknown(),
 });
 export type QueueJobEnvelope = z.infer<typeof queueJobEnvelopeSchema>;
@@ -131,9 +145,46 @@ export const AGENT_TASK_NAMES = {
 } as const;
 export type AgentTaskName = (typeof AGENT_TASK_NAMES)[keyof typeof AGENT_TASK_NAMES];
 
+/** Whether a task runs for one tenant (the envelope's) or for no tenant at all. */
+export type TaskTenancy = "tenant" | "system";
+
+/**
+ * Every core and agent task's tenancy, keyed like `CORE_TASK_AFFINITY`. The `system` tasks are the
+ * periodic sweeps and retention jobs that belong to no tenant; every other task, and any task name
+ * outside this catalog (a module task), is a `tenant` task.
+ */
+export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
+  [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: "system",
+  [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: "tenant",
+  [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: "tenant",
+  [CORE_TASK_NAMES.ROLLUP_RECOMPUTE_FULL]: "tenant",
+  [CORE_TASK_NAMES.PROPERTY_TYPE_MIGRATION]: "tenant",
+  [CORE_TASK_NAMES.DOC_COMPACTION_SWEEP]: "system",
+  [CORE_TASK_NAMES.DOC_HISTORY_SQUASH]: "tenant",
+  [CORE_TASK_NAMES.DOC_HISTORY_CLEANUP]: "system",
+  [CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS]: "tenant",
+  [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: "tenant",
+  [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: "system",
+  [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: "system",
+  [CORE_TASK_NAMES.MAIL_LEGACY_EMAIL_MIGRATION]: "tenant",
+  [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE]: "tenant",
+  [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: "tenant",
+  [CORE_TASK_NAMES.NOTIFICATION_FANOUT]: "tenant",
+  [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: "system",
+  [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: "system",
+  [CORE_TASK_NAMES.TRASH_PURGE]: "system",
+  [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: "tenant",
+  [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "system",
+  [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "system",
+  [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: "system",
+  [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: "tenant",
+  [AGENT_TASK_NAMES.AGENT_RUN]: "tenant",
+  [AGENT_TASK_NAMES.DELEGATED_AGENT_RUN]: "tenant",
+};
+
 /** Creates/updates graphile-worker's own schema. Call once at startup, before enqueueJob/runWorker. */
 export async function ensureQueueSchema(pool: Pool): Promise<void> {
-  await runMigrations({ pgPool: pool });
+  await runAsSystem("queue-schema", () => runMigrations({ pgPool: pool }));
 }
 
 /**
@@ -156,7 +207,10 @@ export async function ensureQueueSchema(pool: Pool): Promise<void> {
  * renames or adds an RLS-enabled table.
  */
 export async function grantQueueSchemaPrivileges(pool: Pool): Promise<void> {
-  await pool.query(`
+  await runAsSystem("queue-schema", () => pool.query(GRANT_QUEUE_SCHEMA_PRIVILEGES_SQL));
+}
+
+const GRANT_QUEUE_SCHEMA_PRIVILEGES_SQL = `
     GRANT USAGE ON SCHEMA graphile_worker TO semprec_side;
     GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA graphile_worker TO semprec_side;
     GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA graphile_worker TO semprec_side;
@@ -187,8 +241,7 @@ export async function grantQueueSchemaPrivileges(pool: Pool): Promise<void> {
         END IF;
       END LOOP;
     END $$;
-  `);
-}
+  `;
 
 export interface EnqueueJobOptions {
   /** Deduplicates: a repeat enqueue with the same key updates/collapses onto the existing job instead of adding a second one. */
@@ -212,7 +265,14 @@ export async function enqueueJob(
   payload: Record<string, unknown>,
   options: EnqueueJobOptions = {},
 ): Promise<void> {
-  const envelope: QueueJobEnvelope = { traceId: getTraceId() ?? mintTraceId(), payload };
+  // The tenant comes only from the producer's own scope — never from `payload`, which is business
+  // data. Resolved before any SQL, so strict mode rejects an unscoped producer without a query.
+  const scope = currentTenantScope() ?? enforceTenantScope("enqueueJob");
+  const envelope: QueueJobEnvelope = {
+    traceId: getTraceId() ?? mintTraceId(),
+    tenantId: scope?.kind === "tenant" ? scope.tenantId : null,
+    payload,
+  };
   await client.query(
     `SELECT graphile_worker.add_job(
        identifier => $1,
@@ -249,6 +309,54 @@ async function jobKeyWasCleared(helpers: JobHelpers): Promise<boolean> {
   return rows[0] !== undefined && rows[0].key === null;
 }
 
+const tenantStatusRowSchema = z.object({ status: z.enum(["provisioning", "active", "suspended", "deleting"]) });
+const soleTenantRowSchema = z.object({ app_sole_tenant: z.string().uuid().nullable() });
+
+/**
+ * Runs `handler` in the scope its task's tenancy calls for. A system task runs as system whatever
+ * the envelope says. A tenant task runs in the envelope's tenant — or, until #1061, in the sole
+ * tenant when the envelope has none — and is a completed no-op when that tenant is missing,
+ * suspended or deleting. No sole tenant is a thrown error, so the job fails and is retried.
+ */
+async function runInTaskScope(
+  name: string,
+  jobId: string | undefined,
+  envelopeTenantId: string | null | undefined,
+  payload: unknown,
+  handler: Task,
+  helpers: JobHelpers,
+): Promise<void> {
+  const tenancy = Object.hasOwn(TASK_TENANCY, name) ? TASK_TENANCY[name as keyof typeof TASK_TENANCY] : "tenant";
+  if (tenancy === "system") {
+    await runAsSystem(`task:${name}`, () => handler(payload, helpers));
+    return;
+  }
+
+  let tenantId: string;
+  if (typeof envelopeTenantId === "string") {
+    tenantId = envelopeTenantId;
+  } else {
+    const { rows } = await helpers.query<Record<string, unknown>>("SELECT app_sole_tenant()");
+    const sole = soleTenantRowSchema.parse(rows[0]).app_sole_tenant;
+    logger.warn({ jobName: name, jobId }, "tenant_task_without_tenant");
+    if (sole === null) {
+      throw new Error(`Tenant task ${name} has no tenant and there is not exactly one tenant to fall back to`);
+    }
+    tenantId = sole;
+  }
+
+  const { rows } = await helpers.query<Record<string, unknown>>("SELECT status FROM tenants WHERE id = $1", [tenantId]);
+  const status = rows[0] === undefined ? undefined : tenantStatusRowSchema.parse(rows[0]).status;
+  if (status === undefined || status === "suspended" || status === "deleting") {
+    logger.info(
+      { jobName: name, jobId, tenantId, status: status ?? "missing" },
+      "Skipping a task of an inactive tenant",
+    );
+    return;
+  }
+  await runInTenant(tenantId, () => handler(payload, helpers));
+}
+
 /**
  * Wraps a task handler so it restores the trace context its `enqueueJob` producer stamped,
  * instead of the handler seeing that envelope shape directly. A payload that isn't a valid
@@ -276,12 +384,13 @@ export function registerTask(name: string, handler: Task): Task {
   return async (rawPayload, helpers) => {
     const jobId = helpers.job?.id !== undefined ? String(helpers.job.id) : undefined;
     const envelope = queueJobEnvelopeSchema.safeParse(rawPayload);
+    const payload = envelope.success ? envelope.data.payload : rawPayload;
     const run = () =>
-      envelope.success
-        ? withTraceContext({ traceId: envelope.data.traceId, jobName: name, jobId }, () =>
-            handler(envelope.data.payload, helpers),
-          )
-        : withTraceContext({ jobName: name, jobId }, () => handler(rawPayload, helpers));
+      withTraceContext(
+        envelope.success ? { traceId: envelope.data.traceId, jobName: name, jobId } : { jobName: name, jobId },
+        () =>
+          runInTaskScope(name, jobId, envelope.success ? envelope.data.tenantId : undefined, payload, handler, helpers),
+      );
     try {
       return await run();
     } catch (err) {
@@ -329,7 +438,11 @@ export function resolveQueueConcurrency(env: NodeJS.ProcessEnv): number {
 
 /** Runs the worker loop; resolves a `Runner` whose `.stop()` shuts it down. */
 export async function runWorker(options: RunnerOptions): Promise<Runner> {
-  return graphileRun({ concurrency: resolveQueueConcurrency(process.env), ...options });
+  const runner = await runAsSystem("queue-worker", () =>
+    graphileRun({ concurrency: resolveQueueConcurrency(process.env), ...options }),
+  );
+  // `stop()` may be called from a signal handler with no scope; its release queries still need one.
+  return { ...runner, stop: (reason) => runAsSystem("queue-worker", () => runner.stop(reason)) };
 }
 
 /**
@@ -342,14 +455,16 @@ export async function runWorker(options: RunnerOptions): Promise<Runner> {
  * (a delay of `0` flushes on the next tick) makes the pool's shutdown await them first.
  */
 export async function runOnce(options: RunnerOptions, overrideTaskList?: TaskList): Promise<void> {
-  await graphileRunOnce(
-    {
-      ...options,
-      preset: {
-        extends: options.preset ? [options.preset] : [],
-        worker: { completeJobBatchDelay: 0, failJobBatchDelay: 0 },
+  await runAsSystem("queue-worker", () =>
+    graphileRunOnce(
+      {
+        ...options,
+        preset: {
+          extends: options.preset ? [options.preset] : [],
+          worker: { completeJobBatchDelay: 0, failJobBatchDelay: 0 },
+        },
       },
-    },
-    overrideTaskList,
+      overrideTaskList,
+    ),
   );
 }
