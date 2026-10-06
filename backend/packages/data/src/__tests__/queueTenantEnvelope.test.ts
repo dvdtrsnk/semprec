@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { ensureQueueSchema, enqueueJob, registerTask, runOnce, runWorker, type TaskList } from "@semprec/queue";
+import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
 import { createPool, withTransaction } from "../db/pool.js";
 import { getTenantZeroId, resetDatabase } from "../testSupport/testDb.js";
 
@@ -53,12 +54,9 @@ describe("queue tenant envelope", () => {
     const tenantZero = getTenantZeroId();
     await runInTenant(tenantZero, () => enqueueJob(pool, TASK, { a: 1 }));
 
-    const { rows } = await pool.query<{ payload: { tenantId?: string } }>(
-      "SELECT payload FROM graphile_worker.jobs WHERE task_identifier = $1",
-      [TASK],
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.payload.tenantId).toBe(tenantZero);
+    const payloads = await readJobPayloadsByIdentifier(pool, TASK);
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]).toMatchObject({ tenantId: tenantZero });
 
     const observed: Array<string | null> = [];
     await runOnce({ pgPool: pool }, probeTaskList(observed));
