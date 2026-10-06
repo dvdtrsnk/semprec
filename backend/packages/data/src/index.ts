@@ -385,3 +385,4 @@ export { agentGuidanceDriftFindingsStore } from "./guidanceDrift/agentGuidanceDr
 export { createGuidanceManifestPort } from "./guidanceDrift/guidanceManifestPort.js";
 
 export { purgeExpiredTrash, handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
+export { forEachActiveTenant } from "./tenancy/forEachActiveTenant.js";
