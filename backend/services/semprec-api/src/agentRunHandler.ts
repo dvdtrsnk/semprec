@@ -4,6 +4,7 @@ import type { Pool } from "pg";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { assertUuid } from "./adapter/requestValidation.js";
 import { PayloadTooLargeError, readJsonBody, sendJson } from "./adapter/http.js";
+import { runInTenant } from "@semprec/shared";
 import { authenticateRequest } from "./authHandler.js";
 import { logger } from "./logger.js";
 
@@ -57,52 +58,54 @@ export function createAgentRunRequestListener(pool: Pool) {
     try {
       const identity = await authenticateRequest(pool, req);
 
-      if (url.pathname === MCP_CREDENTIALS_PATH) {
-        if (req.method !== "POST") {
+      await runInTenant(identity.tenantId, async () => {
+        if (url.pathname === MCP_CREDENTIALS_PATH) {
+          if (req.method !== "POST") {
+            sendJson(res, 404, { error: "Not found" });
+            return;
+          }
+
+          let body: unknown;
+          try {
+            body = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
+          } catch (err) {
+            if (err instanceof PayloadTooLargeError) {
+              sendJson(res, 413, { error: err.message });
+              return;
+            }
+            throw err;
+          }
+
+          const input = parseMintMcpCredentialBody(body);
+          const minted = await withTransaction(pool, (client) =>
+            mintMcpRunCredential(client, { ...input, userId: identity.user.id }),
+          );
+          sendJson(res, 201, {
+            runId: minted.run.id,
+            agentProjectItemId: input.projectItemId,
+            token: minted.token,
+            capabilities: minted.capabilities,
+            expiresAt: minted.expiresAt,
+          });
+          return;
+        }
+
+        const match = url.pathname.match(AGENT_RUN_PATH);
+        if (!match || req.method !== "GET") {
           sendJson(res, 404, { error: "Not found" });
           return;
         }
 
-        let body: unknown;
-        try {
-          body = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
-        } catch (err) {
-          if (err instanceof PayloadTooLargeError) {
-            sendJson(res, 413, { error: err.message });
-            return;
-          }
-          throw err;
+        // Group 1 of the route pattern above is not optional, so a successful match always
+        // captured it; a runtime check here would be unreachable code.
+        const agentRunId = assertUuid(match[1]!, "id");
+        const run = await withTransaction(pool, (client) => getAgentRun(client, agentRunId));
+        if (!run) {
+          sendJson(res, 404, { error: "Not found" });
+          return;
         }
-
-        const input = parseMintMcpCredentialBody(body);
-        const minted = await withTransaction(pool, (client) =>
-          mintMcpRunCredential(client, { ...input, userId: identity.user.id }),
-        );
-        sendJson(res, 201, {
-          runId: minted.run.id,
-          agentProjectItemId: input.projectItemId,
-          token: minted.token,
-          capabilities: minted.capabilities,
-          expiresAt: minted.expiresAt,
-        });
-        return;
-      }
-
-      const match = url.pathname.match(AGENT_RUN_PATH);
-      if (!match || req.method !== "GET") {
-        sendJson(res, 404, { error: "Not found" });
-        return;
-      }
-
-      // Group 1 of the route pattern above is not optional, so a successful match always
-      // captured it; a runtime check here would be unreachable code.
-      const agentRunId = assertUuid(match[1]!, "id");
-      const run = await withTransaction(pool, (client) => getAgentRun(client, agentRunId));
-      if (!run) {
-        sendJson(res, 404, { error: "Not found" });
-        return;
-      }
-      sendJson(res, 200, run);
+        sendJson(res, 200, run);
+      });
     } catch (err) {
       if (err instanceof ChokePointError) {
         sendJson(res, err.status, toPublicErrorBody(err));

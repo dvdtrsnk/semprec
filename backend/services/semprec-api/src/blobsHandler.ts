@@ -12,6 +12,7 @@ import {
   type BlobRow,
   type BlobStorageWriter,
 } from "@semprec/data";
+import { runInTenant } from "@semprec/shared";
 import { authenticateRequest } from "./authHandler.js";
 import { statusForError, toErrorResponseBody } from "./adapter/errorContract.js";
 import { sendJson } from "./adapter/http.js";
@@ -116,71 +117,73 @@ export function createBlobsRequestListener(pool: Pool, options: BlobsRequestList
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
     try {
-      await authenticateRequest(pool, req);
+      const identity = await authenticateRequest(pool, req);
 
-      const match = BLOB_PATH.exec(url.pathname);
-      if (!match) {
-        sendJson(res, 404, { error: { code: "not_found" } });
-        return;
-      }
-      // Group 1 of BLOB_PATH is not optional, so a successful match always captured it.
-      const blobId = assertUuid(match[1]!, "id");
-
-      const blob = await withTransaction(pool, (client) => getBlob(client, blobId));
-      if (!blob) throw new NotFoundError(`Blob ${blobId} not found`);
-
-      const byteSize = Number(blob.byteSize);
-      const etag = blob.contentHash ? `"${blob.contentHash}"` : undefined;
-
-      const ifNoneMatch = req.headers["if-none-match"];
-      if (etag && ifNoneMatchMatches(typeof ifNoneMatch === "string" ? ifNoneMatch : undefined, etag)) {
-        res.writeHead(304, { ETag: etag });
-        res.end();
-        return;
-      }
-
-      const rangeHeader = req.headers.range;
-      const range = parseRange(typeof rangeHeader === "string" ? rangeHeader : undefined, byteSize);
-      if (range === "unsatisfiable") {
-        res.writeHead(416, { "Content-Range": `bytes */${byteSize}` });
-        res.end();
-        return;
-      }
-
-      const wantsInline = url.searchParams.get("disposition") === "inline";
-      const disposition = wantsInline && INLINE_SAFE_MIME_TYPES.has(blob.mimeType) ? "inline" : "attachment";
-      const filename = await resolveDownloadFilename(pool, blob);
-
-      const headers: Record<string, string> = {
-        "Content-Type": blob.mimeType,
-        "Accept-Ranges": "bytes",
-        "X-Content-Type-Options": "nosniff",
-        "Content-Disposition": contentDispositionHeader(disposition, filename),
-      };
-      if (etag) headers.ETag = etag;
-
-      const stream = options.storage.readStream(blob.storageKey, range);
-
-      if (range) {
-        headers["Content-Range"] = `bytes ${range.start}-${range.end}/${byteSize}`;
-        headers["Content-Length"] = String(range.end - range.start + 1);
-        res.writeHead(206, headers);
-      } else {
-        headers["Content-Length"] = String(byteSize);
-        res.writeHead(200, headers);
-      }
-
-      // Not awaited: handleRequest returns once headers are written, and handleRequestSafely
-      // only guards the pre-stream phase. pipeline (unlike pipe) destroys the other side on
-      // premature close of either stream, so an aborted client releases the read stream's fd.
-      pipeline(stream, res, (err) => {
-        if (!err) return;
-        if (err.code === "ERR_STREAM_PREMATURE_CLOSE") {
-          logger.debug({ blobId }, "Client aborted blob download");
+      await runInTenant(identity.tenantId, async () => {
+        const match = BLOB_PATH.exec(url.pathname);
+        if (!match) {
+          sendJson(res, 404, { error: { code: "not_found" } });
           return;
         }
-        logger.error({ err, blobId }, "Error streaming blob");
-        res.destroy();
+        // Group 1 of BLOB_PATH is not optional, so a successful match always captured it.
+        const blobId = assertUuid(match[1]!, "id");
+
+        const blob = await withTransaction(pool, (client) => getBlob(client, blobId));
+        if (!blob) throw new NotFoundError(`Blob ${blobId} not found`);
+
+        const byteSize = Number(blob.byteSize);
+        const etag = blob.contentHash ? `"${blob.contentHash}"` : undefined;
+
+        const ifNoneMatch = req.headers["if-none-match"];
+        if (etag && ifNoneMatchMatches(typeof ifNoneMatch === "string" ? ifNoneMatch : undefined, etag)) {
+          res.writeHead(304, { ETag: etag });
+          res.end();
+          return;
+        }
+
+        const rangeHeader = req.headers.range;
+        const range = parseRange(typeof rangeHeader === "string" ? rangeHeader : undefined, byteSize);
+        if (range === "unsatisfiable") {
+          res.writeHead(416, { "Content-Range": `bytes */${byteSize}` });
+          res.end();
+          return;
+        }
+
+        const wantsInline = url.searchParams.get("disposition") === "inline";
+        const disposition = wantsInline && INLINE_SAFE_MIME_TYPES.has(blob.mimeType) ? "inline" : "attachment";
+        const filename = await resolveDownloadFilename(pool, blob);
+
+        const headers: Record<string, string> = {
+          "Content-Type": blob.mimeType,
+          "Accept-Ranges": "bytes",
+          "X-Content-Type-Options": "nosniff",
+          "Content-Disposition": contentDispositionHeader(disposition, filename),
+        };
+        if (etag) headers.ETag = etag;
+
+        const stream = options.storage.readStream(blob.storageKey, range);
+
+        if (range) {
+          headers["Content-Range"] = `bytes ${range.start}-${range.end}/${byteSize}`;
+          headers["Content-Length"] = String(range.end - range.start + 1);
+          res.writeHead(206, headers);
+        } else {
+          headers["Content-Length"] = String(byteSize);
+          res.writeHead(200, headers);
+        }
+
+        // Not awaited: handleRequest returns once headers are written, and handleRequestSafely
+        // only guards the pre-stream phase. pipeline (unlike pipe) destroys the other side on
+        // premature close of either stream, so an aborted client releases the read stream's fd.
+        pipeline(stream, res, (err) => {
+          if (!err) return;
+          if (err.code === "ERR_STREAM_PREMATURE_CLOSE") {
+            logger.debug({ blobId }, "Client aborted blob download");
+            return;
+          }
+          logger.error({ err, blobId }, "Error streaming blob");
+          res.destroy();
+        });
       });
     } catch (err) {
       if (err instanceof ChokePointError) {

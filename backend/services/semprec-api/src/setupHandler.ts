@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ChokePointError, ValidationError, bootstrapFirstAccount } from "@semprec/data";
 import type { Pool } from "pg";
+import { runAsSystem } from "@semprec/shared";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { extractBearerToken, PayloadTooLargeError, readJsonBody, sendJson } from "./adapter/http.js";
 import { logger } from "./logger.js";
@@ -38,10 +39,10 @@ export function createSetupRequestListener(pool: Pool, options: SetupHandlerOpti
           throw new ValidationError("'password' must be a non-empty string");
         }
 
-        const user = await bootstrapFirstAccount(pool, options.setupToken, extractBearerToken(req) ?? "", {
-          email: body.email,
-          password: body.password,
-        });
+        const { email, password } = body;
+        const user = await runAsSystem("setup", () =>
+          bootstrapFirstAccount(pool, options.setupToken, extractBearerToken(req) ?? "", { email, password }),
+        );
 
         sendJson(res, 200, { user });
         return;

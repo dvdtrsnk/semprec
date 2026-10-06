@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { isProcessHeartbeatFresh, withClient } from "@semprec/data";
+import { runAsSystem } from "@semprec/shared";
 import { sendJson } from "./adapter/http.js";
 import { logger } from "./logger.js";
 
@@ -22,10 +23,12 @@ export function createHealthzRequestListener(pool: Pool) {
     }
 
     try {
-      const healthy = await withClient(pool, async (client) => {
-        await client.query("SELECT 1");
-        return isProcessHeartbeatFresh(client, "api");
-      });
+      const healthy = await runAsSystem("healthz", () =>
+        withClient(pool, async (client) => {
+          await client.query("SELECT 1");
+          return isProcessHeartbeatFresh(client, "api");
+        }),
+      );
       sendJson(res, healthy ? 200 : 503, { status: healthy ? "ok" : "error" });
     } catch (err) {
       logger.error({ err }, "GET /healthz check failed");

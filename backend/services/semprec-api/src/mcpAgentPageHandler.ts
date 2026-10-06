@@ -10,6 +10,7 @@ import type { Pool } from "pg";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { assertUuid } from "./adapter/requestValidation.js";
 import { PayloadTooLargeError, readJsonBody, sendJson } from "./adapter/http.js";
+import { runInTenant } from "@semprec/shared";
 import { authenticateRequest } from "./authHandler.js";
 import { logger } from "./logger.js";
 
@@ -38,71 +39,73 @@ export function createMcpAgentPageRequestListener(pool: Pool) {
     const url = new URL(req.url ?? "/", "http://localhost");
 
     try {
-      await authenticateRequest(pool, req);
+      const identity = await authenticateRequest(pool, req);
 
-      const grantsMatch = url.pathname.match(MCP_GRANTS_PATH);
-      if (grantsMatch) {
-        // Group 1 of MCP_GRANTS_PATH is mandatory; group 2 is genuinely optional and the
-        // branches below distinguish on it, so it keeps its `string | undefined` type.
-        const projectItemId = assertUuid(grantsMatch[1]!, "id");
-        const mcpToolRegistrationId =
-          grantsMatch[2] === undefined ? undefined : assertUuid(grantsMatch[2], "mcpToolRegistrationId");
+      await runInTenant(identity.tenantId, async () => {
+        const grantsMatch = url.pathname.match(MCP_GRANTS_PATH);
+        if (grantsMatch) {
+          // Group 1 of MCP_GRANTS_PATH is mandatory; group 2 is genuinely optional and the
+          // branches below distinguish on it, so it keeps its `string | undefined` type.
+          const projectItemId = assertUuid(grantsMatch[1]!, "id");
+          const mcpToolRegistrationId =
+            grantsMatch[2] === undefined ? undefined : assertUuid(grantsMatch[2], "mcpToolRegistrationId");
 
-        if (req.method === "GET" && !mcpToolRegistrationId) {
-          const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, projectItemId));
-          sendJson(res, 200, { rows });
+          if (req.method === "GET" && !mcpToolRegistrationId) {
+            const rows = await withTransaction(pool, (client) => listMcpToolGrantsForProject(client, projectItemId));
+            sendJson(res, 200, { rows });
+            return;
+          }
+
+          if (req.method === "PATCH" && mcpToolRegistrationId) {
+            const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as { granted?: unknown };
+            if (typeof body.granted !== "boolean") {
+              sendJson(res, 400, { error: "'granted' must be a boolean" });
+              return;
+            }
+            const grant = await withTransaction(pool, (client) =>
+              setProjectMcpGrantForAgentPage(client, {
+                projectItemId,
+                mcpToolRegistrationId,
+                granted: body.granted as boolean,
+              }),
+            );
+            sendJson(res, 200, grant);
+            return;
+          }
+
+          sendJson(res, 404, { error: "Not found" });
           return;
         }
 
-        if (req.method === "PATCH" && mcpToolRegistrationId) {
-          const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as { granted?: unknown };
-          if (typeof body.granted !== "boolean") {
-            sendJson(res, 400, { error: "'granted' must be a boolean" });
+        const registrationMatch = url.pathname.match(MCP_TOOL_REGISTRATION_PATH);
+        if (registrationMatch && req.method === "PATCH") {
+          // Group 1 of MCP_TOOL_REGISTRATION_PATH is not optional — see above.
+          const mcpToolRegistrationId = assertUuid(registrationMatch[1]!, "mcpToolRegistrationId");
+          const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as {
+            riskClass?: unknown;
+            requiresApproval?: unknown;
+          };
+          if (body.riskClass !== undefined && typeof body.riskClass !== "string") {
+            sendJson(res, 400, { error: "'riskClass' must be a string" });
             return;
           }
-          const grant = await withTransaction(pool, (client) =>
-            setProjectMcpGrantForAgentPage(client, {
-              projectItemId,
+          if (body.requiresApproval !== undefined && typeof body.requiresApproval !== "boolean") {
+            sendJson(res, 400, { error: "'requiresApproval' must be a boolean" });
+            return;
+          }
+          const registration = await withTransaction(pool, (client) =>
+            reclassifyMcpTool(client, {
               mcpToolRegistrationId,
-              granted: body.granted as boolean,
+              riskClass: body.riskClass as string | undefined,
+              requiresApproval: body.requiresApproval as boolean | undefined,
             }),
           );
-          sendJson(res, 200, grant);
+          sendJson(res, 200, registration);
           return;
         }
 
         sendJson(res, 404, { error: "Not found" });
-        return;
-      }
-
-      const registrationMatch = url.pathname.match(MCP_TOOL_REGISTRATION_PATH);
-      if (registrationMatch && req.method === "PATCH") {
-        // Group 1 of MCP_TOOL_REGISTRATION_PATH is not optional — see above.
-        const mcpToolRegistrationId = assertUuid(registrationMatch[1]!, "mcpToolRegistrationId");
-        const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as {
-          riskClass?: unknown;
-          requiresApproval?: unknown;
-        };
-        if (body.riskClass !== undefined && typeof body.riskClass !== "string") {
-          sendJson(res, 400, { error: "'riskClass' must be a string" });
-          return;
-        }
-        if (body.requiresApproval !== undefined && typeof body.requiresApproval !== "boolean") {
-          sendJson(res, 400, { error: "'requiresApproval' must be a boolean" });
-          return;
-        }
-        const registration = await withTransaction(pool, (client) =>
-          reclassifyMcpTool(client, {
-            mcpToolRegistrationId,
-            riskClass: body.riskClass as string | undefined,
-            requiresApproval: body.requiresApproval as boolean | undefined,
-          }),
-        );
-        sendJson(res, 200, registration);
-        return;
-      }
-
-      sendJson(res, 404, { error: "Not found" });
+      });
     } catch (err) {
       if (err instanceof PayloadTooLargeError) {
         sendJson(res, 413, { error: err.message });

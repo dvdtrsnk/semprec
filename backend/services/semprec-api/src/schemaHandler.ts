@@ -3,6 +3,7 @@ import { withTransaction, ChokePointError, generateSchemaProjection, toManifestL
 import type { Pool } from "pg";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { sendJson } from "./adapter/http.js";
+import { runInTenant } from "@semprec/shared";
 import { authenticateRequest } from "./authHandler.js";
 import { logger } from "./logger.js";
 
@@ -32,19 +33,21 @@ export function createSchemaRequestListener(
 
       const identity = await authenticateRequest(pool, req);
 
-      if (req.method !== "GET") {
-        // RFC 7231 §6.5.5: a 405 response MUST include an Allow header listing the permitted methods.
-        res.setHeader("Allow", "GET");
-        sendJson(res, 405, { error: "Method not allowed" });
-        return;
-      }
+      await runInTenant(identity.tenantId, async () => {
+        if (req.method !== "GET") {
+          // RFC 7231 §6.5.5: a 405 response MUST include an Allow header listing the permitted methods.
+          res.setHeader("Allow", "GET");
+          sendJson(res, 405, { error: "Method not allowed" });
+          return;
+        }
 
-      const locale = toManifestLocale(identity.user.locale);
+        const locale = toManifestLocale(identity.user.locale);
 
-      const projection = await withTransaction(pool, (client) =>
-        generateSchemaProjection(client, moduleRegistry, { locale }),
-      );
-      sendJson(res, 200, projection);
+        const projection = await withTransaction(pool, (client) =>
+          generateSchemaProjection(client, moduleRegistry, { locale }),
+        );
+        sendJson(res, 200, projection);
+      });
     } catch (err) {
       if (err instanceof ChokePointError) {
         sendJson(res, err.status, toPublicErrorBody(err));

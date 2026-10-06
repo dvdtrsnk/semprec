@@ -8,6 +8,7 @@ import {
   visitNotification,
   markAllNotificationsRead,
 } from "@semprec/data";
+import { runInTenant } from "@semprec/shared";
 import { authenticateRequest } from "./authHandler.js";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { sendJson } from "./adapter/http.js";
@@ -35,38 +36,40 @@ export function createNotificationsRequestListener(pool: Pool) {
     try {
       const identity = await authenticateRequest(pool, req);
 
-      if (req.method === "GET" && url.pathname === "/api/notifications/unread") {
-        const notifications = await withTransaction(pool, (client) =>
-          listUnreadNotificationsForUser(client, identity.user.id),
-        );
-        sendJson(res, 200, { notifications });
-        return;
-      }
-
-      if (req.method === "POST" && url.pathname === "/api/notifications/mark-all-read") {
-        const notifications = await withTransaction(pool, (client) =>
-          markAllNotificationsRead(client, identity.user.id),
-        );
-        sendJson(res, 200, { notifications });
-        return;
-      }
-
-      const visitMatch = url.pathname.match(VISIT_NOTIFICATION_PATH);
-      if (req.method === "POST" && visitMatch) {
-        // Group 1 of VISIT_NOTIFICATION_PATH is not optional, so a successful match always
-        // captured it; a runtime check here would be unreachable code.
-        const notificationId = assertUuid(visitMatch[1]!, "id");
-        const notification = await withTransaction(pool, (client) =>
-          visitNotification(client, identity.user.id, notificationId),
-        );
-        if (!notification) {
-          throw new NotFoundError("Not found");
+      await runInTenant(identity.tenantId, async () => {
+        if (req.method === "GET" && url.pathname === "/api/notifications/unread") {
+          const notifications = await withTransaction(pool, (client) =>
+            listUnreadNotificationsForUser(client, identity.user.id),
+          );
+          sendJson(res, 200, { notifications });
+          return;
         }
-        sendJson(res, 200, { notification });
-        return;
-      }
 
-      sendJson(res, 404, { error: "Not found" });
+        if (req.method === "POST" && url.pathname === "/api/notifications/mark-all-read") {
+          const notifications = await withTransaction(pool, (client) =>
+            markAllNotificationsRead(client, identity.user.id),
+          );
+          sendJson(res, 200, { notifications });
+          return;
+        }
+
+        const visitMatch = url.pathname.match(VISIT_NOTIFICATION_PATH);
+        if (req.method === "POST" && visitMatch) {
+          // Group 1 of VISIT_NOTIFICATION_PATH is not optional, so a successful match always
+          // captured it; a runtime check here would be unreachable code.
+          const notificationId = assertUuid(visitMatch[1]!, "id");
+          const notification = await withTransaction(pool, (client) =>
+            visitNotification(client, identity.user.id, notificationId),
+          );
+          if (!notification) {
+            throw new NotFoundError("Not found");
+          }
+          sendJson(res, 200, { notification });
+          return;
+        }
+
+        sendJson(res, 404, { error: "Not found" });
+      });
     } catch (err) {
       if (err instanceof ChokePointError) {
         sendJson(res, err.status, toPublicErrorBody(err));
