@@ -173,7 +173,7 @@ describe("connection scope", () => {
         client.on("notification", () => resolve(currentTenantScope()));
       });
       await client.query(`LISTEN ${channel}`);
-      await pool.query(`SELECT pg_notify('${channel}', 'x')`);
+      await pool.query("SELECT pg_notify($1, 'x')", [channel]);
       expect(await seen).toMatchObject({ kind: "system" });
     } finally {
       client.release();

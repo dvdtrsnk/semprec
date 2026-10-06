@@ -39,8 +39,9 @@ regardless of the current one; it exists only for opening shared I/O resources (
 - `pool.connect()` sets the GUC for the session, and the client's `release` resets it before
   returning to the pool. A failed reset destroys the connection.
 
-Both transaction paths acquire their client without the session-level hook, so they pay one extra
-statement. Without a scope, all three paths behave as before.
+Without a scope, all three paths behave as before. `withTransaction` already has `BEGIN`/`COMMIT`,
+so it pays one extra statement (`set_config`); `pool.query` wraps the statement in a transaction
+solely to make the GUC transaction-local, so it pays three (`BEGIN`, `set_config`, `COMMIT`).
 
 **Modes.** `enforceTenantScope(site)` runs at every access site. `SEMPREC_TENANT_SCOPE` is read on
 each call: unset, empty or `warn` logs `tenant_scope_missing` (`site`, `stack`) once per distinct
@@ -51,7 +52,9 @@ default moves to `strict` once every entry point enters a scope.
 - Long-lived loops, listeners and registries start inside `runAsSystem` and re-enter a tenant
   explicitly per message or job.
 - Tenant identity never comes from request bodies, model output, or headers set by untrusted callers.
-- `AsyncLocalStorage.enterWith` is never used; only `run`.
+- `AsyncLocalStorage.enterWith` is never used; only `run`. `enterWith` mutates the current execution
+  context in place, so the scope would leak back into the surrounding async context instead of
+  being confined to the callback, letting one request's tenant bleed into unrelated continuations.
 - Physical connections are opened inside `runDetachedAsSystem`. A socket's callbacks run in the
   async context that opened it, so a pooled connection first opened inside one request's tenant
   would otherwise deliver its `LISTEN` notifications and errors in that tenant for its whole life.
