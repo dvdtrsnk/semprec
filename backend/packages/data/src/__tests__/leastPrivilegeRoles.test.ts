@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createTestProjectItem, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { createUser } from "../auth/usersStore.js";
@@ -255,11 +255,10 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
         locale: "en",
       });
 
-      const minted = await mintMcpRunCredential(dataPool, {
-        projectItemId: randomUUID(),
-        capabilities: ["core.item.read"],
-        userId: user.id,
-      });
+      const projectItemId = await createTestProjectItem(adminPool);
+      const minted = await withTransaction(dataPool, (client) =>
+        mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.read"], userId: user.id }),
+      );
       const resolved = await resolveMcpRunCredential(dataPool, minted.token);
 
       expect(resolved?.runId).toBe(minted.run.id);
@@ -284,11 +283,10 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
         passwordHash,
         locale: "en",
       });
-      const minted = await mintMcpRunCredential(adminPool, {
-        projectItemId: randomUUID(),
-        capabilities: ["core.item.read"],
-        userId: user.id,
-      });
+      const projectItemId = await createTestProjectItem(adminPool);
+      const minted = await withTransaction(adminPool, (client) =>
+        mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.read"], userId: user.id }),
+      );
       const messageItemId = randomUUID();
       await withTransaction(adminPool, (client) =>
         recordDesiredMailMessageFlags(client, messageItemId, { read: true }),

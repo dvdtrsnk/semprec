@@ -11,6 +11,7 @@ import {
   login,
   mintMcpRunCredential,
   seedSystem,
+  withTransaction,
   type ChokePoint,
   type ItemRow,
   type PropertyRow,
@@ -52,7 +53,9 @@ async function credentialHeader(
     email: `${randomUUID()}@example.com`,
     passwordHash: await hashPassword(PASSWORD),
   });
-  const minted = await mintMcpRunCredential(pool, { projectItemId, capabilities, userId: user.id });
+  const minted = await withTransaction(pool, (client) =>
+    mintMcpRunCredential(client, { projectItemId, capabilities, userId: user.id }),
+  );
   return { Authorization: `Bearer ${minted.token}` };
 }
 

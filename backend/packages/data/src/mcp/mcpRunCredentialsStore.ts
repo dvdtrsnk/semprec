@@ -37,14 +37,18 @@ function mapRow(row: McpRunCredentialDbRow): McpRunCredentialRow {
   };
 }
 
-/** Throws (unique violation) if `agentRunId` already has a credential — one credential per run, by design. */
+/**
+ * Throws (unique violation) if `agentRunId` already has a credential — one credential per run, by design.
+ * The credential's tenant is copied from its run in the same statement; a run invisible to the caller
+ * inserts nothing and fails `requireSingleRow`.
+ */
 export async function createMcpRunCredential(
   client: Pool | PoolClient,
   input: CreateMcpRunCredentialInput,
 ): Promise<McpRunCredentialRow> {
   const { rows } = await client.query<McpRunCredentialDbRow>(
-    `INSERT INTO agent_run_mcp_credentials (agent_run_id, token_hash, capabilities, expires_at)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO agent_run_mcp_credentials (tenant_id, agent_run_id, token_hash, capabilities, expires_at)
+     SELECT r.tenant_id, r.id, $2, $3, $4 FROM agent_runs r WHERE r.id = $1
      RETURNING id, agent_run_id, capabilities, expires_at`,
     [input.agentRunId, input.tokenHash, [...input.capabilities], input.expiresAt],
   );
@@ -52,6 +56,7 @@ export async function createMcpRunCredential(
 }
 
 export interface ActiveMcpRunCredential {
+  tenantId: string;
   runId: string;
   agentProjectItemId: string;
   actorUserId: string;
@@ -59,7 +64,8 @@ export interface ActiveMcpRunCredential {
 }
 
 /**
- * Resolves a presented token to the run it authenticates, or `null` if the token is unknown,
+ * Must run inside the tenant `getMcpRunCredentialTenantByTokenHash` returned, so `agent_runs` is read
+ * under RLS. Resolves a presented token to the run it authenticates, or `null` if the token is unknown,
  * expired, or its run is no longer `running` — the same "credential still live" bar
  * `getActiveSessionByTokenHash` applies to a session, plus the owning run's own status.
  * `agent_runs.project_item_id` is nullable in general, but the mint action always supplies one for
@@ -72,22 +78,43 @@ export async function getActiveMcpRunCredentialByTokenHash(
 ): Promise<ActiveMcpRunCredential | null> {
   const { rows } = await client.query<{
     run_id: string;
+    tenant_id: string;
     project_item_id: string | null;
     actor_user_id: string;
     capabilities: string[];
   }>(
-    `SELECT r.id AS run_id, r.project_item_id, r.actor_user_id, c.capabilities
+    `SELECT r.id AS run_id, r.tenant_id, r.project_item_id, r.actor_user_id, c.capabilities
      FROM agent_run_mcp_credentials c
      JOIN agent_runs r ON r.id = c.agent_run_id
-     WHERE c.token_hash = $1 AND c.expires_at > now() AND r.status = 'running'`,
+     WHERE c.token_hash = $1 AND c.tenant_id = r.tenant_id AND c.expires_at > now() AND r.status = 'running'`,
     [tokenHash],
   );
   const row = rows[0];
   if (!row || row.project_item_id === null) return null;
   return {
+    tenantId: row.tenant_id,
     runId: row.run_id,
     agentProjectItemId: row.project_item_id,
     actorUserId: row.actor_user_id,
     capabilities: toCapabilityIds(row.capabilities),
   };
+}
+
+/**
+ * Global-plane read: the tenant a presented token belongs to, or `null` if the token is unknown,
+ * expired, or its tenant is not `active`. Runs before any tenant is known, so it must be called
+ * from system scope; it reads only the global `agent_run_mcp_credentials` and `tenants` tables.
+ */
+export async function getMcpRunCredentialTenantByTokenHash(
+  client: Pool | PoolClient,
+  tokenHash: string,
+): Promise<string | null> {
+  const { rows } = await client.query<{ tenant_id: string }>(
+    `SELECT c.tenant_id
+     FROM agent_run_mcp_credentials c
+     JOIN tenants t ON t.id = c.tenant_id
+     WHERE c.token_hash = $1 AND c.expires_at > now() AND t.status = 'active'`,
+    [tokenHash],
+  );
+  return rows[0]?.tenant_id ?? null;
 }

@@ -1,8 +1,8 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createTestProjectItem, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   createChokePoint,
   createUser,
@@ -11,10 +11,11 @@ import {
   login,
   mintMcpRunCredential,
   seedSystem,
+  withTransaction,
   type ChokePoint,
 } from "@semprec/data";
 import { createGenericOperationGateway, type GenericOperationGateway } from "@semprec/application";
-import { CAPABILITY_IDS, type CapabilityId } from "@semprec/shared";
+import { CAPABILITY_IDS, currentTenantScope, type CapabilityId } from "@semprec/shared";
 import { createMcpRequestListener } from "../mcpHandler.js";
 import { SESSION_COOKIE_NAME } from "../../authHandler.js";
 
@@ -250,7 +251,10 @@ describe("createMcpRequestListener (issue #220)", () => {
         email: `${randomUUID()}@example.com`,
         passwordHash: await hashPassword(PASSWORD),
       });
-      const minted = await mintMcpRunCredential(pool, { projectItemId: randomUUID(), capabilities, userId: user.id });
+      const projectItemId = await createTestProjectItem(pool);
+      const minted = await withTransaction(pool, (client) =>
+        mintMcpRunCredential(client, { projectItemId, capabilities, userId: user.id }),
+      );
       return { Authorization: `Bearer ${minted.token}` };
     }
 
@@ -323,6 +327,86 @@ describe("createMcpRequestListener (issue #220)", () => {
       const content = (body.result as { content: { type: string; text: string }[] }).content;
       const created = JSON.parse(content[0]!.text) as { id: string };
       expect(await chokePoint.findItem(created.id)).not.toBeNull();
+    });
+
+    describe("tenant resolution", () => {
+      /** Mints a credential for a fresh user and returns the token plus its run id. */
+      async function mintCredential(): Promise<{ token: string; runId: string }> {
+        const user = await createUser(pool, {
+          email: `${randomUUID()}@example.com`,
+          passwordHash: await hashPassword(PASSWORD),
+        });
+        const projectItemId = await createTestProjectItem(pool);
+        const minted = await withTransaction(pool, (client) =>
+          mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.read"], userId: user.id }),
+        );
+        return { token: minted.token, runId: minted.run.id };
+      }
+
+      async function listTools(baseUrl: string, token: string): Promise<{ status: number; body: unknown }> {
+        const res = await rpc(
+          baseUrl,
+          { Authorization: `Bearer ${token}` },
+          { jsonrpc: "2.0", id: 1, method: "tools/list" },
+        );
+        return { status: res.status, body: await res.json() };
+      }
+
+      it("executes a tools/call inside the credential's tenant scope", async () => {
+        const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+        servers.push(server);
+        const { token } = await mintCredential();
+        const { rows } = await pool.query<{ tenant_id: string }>(`SELECT tenant_id FROM agent_run_mcp_credentials`);
+        const scopes: unknown[] = [];
+        const invoke = gateway.invoke.bind(gateway);
+        vi.spyOn(gateway, "invoke").mockImplementation((...args) => {
+          scopes.push(currentTenantScope());
+          return invoke(...args);
+        });
+
+        const res = await rpc(
+          baseUrl,
+          { Authorization: `Bearer ${token}` },
+          {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name: "semprec.database.list", arguments: {} },
+          },
+        );
+
+        expect(res.status).toBe(200);
+        expect(scopes).toEqual([{ kind: "tenant", tenantId: rows[0]!.tenant_id }]);
+      });
+
+      it("answers the unknown-token 401 for an expired credential, a finished run and a suspended tenant", async () => {
+        const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+        servers.push(server);
+        const unknown = await listTools(baseUrl, "not-a-real-token");
+        expect(unknown.status).toBe(401);
+
+        const expired = await mintCredential();
+        await pool.query(
+          `UPDATE agent_run_mcp_credentials SET expires_at = now() - interval '1 minute' WHERE agent_run_id = $1`,
+          [expired.runId],
+        );
+        const finished = await mintCredential();
+        await pool.query(`UPDATE agent_runs SET status = 'done', finished_at = now() WHERE id = $1`, [finished.runId]);
+        const suspended = await mintCredential();
+        const live = await mintCredential();
+        expect((await listTools(baseUrl, live.token)).status).toBe(200);
+
+        expect(await listTools(baseUrl, expired.token)).toEqual(unknown);
+        expect(await listTools(baseUrl, finished.token)).toEqual(unknown);
+
+        await pool.query(`UPDATE tenants SET status = 'suspended'`);
+        try {
+          expect(await listTools(baseUrl, suspended.token)).toEqual(unknown);
+        } finally {
+          await pool.query(`UPDATE tenants SET status = 'active'`);
+        }
+        expect((await listTools(baseUrl, suspended.token)).status).toBe(200);
+      });
     });
   });
 });

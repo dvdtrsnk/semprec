@@ -24,16 +24,17 @@ function parseMintMcpCredentialBody(body: unknown): { projectItemId: string; cap
     throw new ValidationError("Request body must be a JSON object");
   }
   const parsed = body as MintMcpCredentialRequestBody;
-  if (typeof parsed.projectItemId !== "string" || parsed.projectItemId.length === 0) {
-    throw new ValidationError("'projectItemId' must be a non-empty string");
+  if (typeof parsed.projectItemId !== "string") {
+    throw new ValidationError("'projectItemId' must be a string");
   }
+  const projectItemId = assertUuid(parsed.projectItemId, "projectItemId");
   if (!Array.isArray(parsed.capabilities) || !parsed.capabilities.every((c): c is string => typeof c === "string")) {
     throw new ValidationError("'capabilities' must be an array of strings");
   }
   if (parsed.task !== undefined && typeof parsed.task !== "string") {
     throw new ValidationError("'task' must be a string when present");
   }
-  return { projectItemId: parsed.projectItemId, capabilities: parsed.capabilities, task: parsed.task };
+  return { projectItemId, capabilities: parsed.capabilities, task: parsed.task };
 }
 
 /**

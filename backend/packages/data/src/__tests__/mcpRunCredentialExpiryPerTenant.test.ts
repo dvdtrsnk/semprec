@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
+import { withTransaction } from "../db/pool.js";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { handleMcpRunCredentialExpirySweepTask } from "../mcp/mcpRunCredentialExpiry.js";
 import { mintMcpRunCredential } from "../mcp/mcpRunCredentialAction.js";
 import { logger } from "../tenancy/logger.js";
 import {
   createRuntimeRolePool,
+  createTestProjectItem,
   createTestTenant,
   getTenantZeroId,
   getTestPool,
@@ -46,11 +48,10 @@ describe("handleMcpRunCredentialExpirySweepTask runs per tenant (issue #987)", (
   /** Mints a run + credential in `tenantId`; expired credentials are backdated. Returns the run id. */
   async function mint(tenantId: string, expired: boolean): Promise<string> {
     return runInTenant(tenantId, async () => {
-      const minted = await mintMcpRunCredential(pool, {
-        projectItemId: randomUUID(),
-        capabilities: ["core.item.read"],
-        userId,
-      });
+      const projectItemId = await createTestProjectItem(pool);
+      const minted = await withTransaction(pool, (client) =>
+        mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.read"], userId }),
+      );
       if (expired) {
         await pool.query(
           "UPDATE agent_run_mcp_credentials SET expires_at = now() - interval '1 minute' WHERE agent_run_id = $1",

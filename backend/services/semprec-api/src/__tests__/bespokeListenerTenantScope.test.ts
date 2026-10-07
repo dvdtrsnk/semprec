@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import pg, { type Pool } from "pg";
-import { getTenantZeroId, resetDatabase } from "@semprec/data/testSupport";
+import { createTestProjectItem, getTenantZeroId, resetDatabase } from "@semprec/data/testSupport";
 import {
   createPool,
   createUser,
@@ -14,6 +14,7 @@ import {
   login,
   mintMcpRunCredential,
   seedSystem,
+  withTransaction,
   type PasswordResetMailer,
 } from "@semprec/data";
 import { currentTenantScope, type TenantScope } from "@semprec/shared";
@@ -265,11 +266,10 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
         email: `${randomUUID()}@example.com`,
         passwordHash: await hashPassword(PASSWORD),
       });
-      const minted = await mintMcpRunCredential(pool, {
-        projectItemId: randomUUID(),
-        capabilities: ["core.database.read"],
-        userId: user.id,
-      });
+      const projectItemId = await createTestProjectItem(pool);
+      const minted = await withTransaction(pool, (client) =>
+        mintMcpRunCredential(client, { projectItemId, capabilities: ["core.database.read"], userId: user.id }),
+      );
       const call = (): Promise<{ status: number; body: unknown }> =>
         fetch(`${baseUrl}/mcp`, {
           method: "POST",
