@@ -66,6 +66,12 @@ export interface InsertItemResult {
  * A reservation whose item has since been purged (row gone) or trashed (soft-deleted)
  * is treated as free: it is released and the key is reserved again for a freshly
  * generated item, which this call then creates and returns as `created: true`.
+ *
+ * A reservation is per tenant: row-level security confines every read and write of
+ * `idempotency_keys` to the caller's tenant, so the same key in another tenant is a
+ * different reservation. The reservation insert names no conflict target, so every
+ * unique index on `idempotency_keys` is an arbiter — the legacy `key` primary key and the
+ * tenant-leading `(tenant_id, key)` index today, only the latter once the legacy key is dropped.
  */
 export async function insertItemWithReplay(client: Queryable, input: InsertItemInput): Promise<InsertItemResult> {
   const generatedId = randomUUID();
@@ -74,7 +80,7 @@ export async function insertItemWithReplay(client: Queryable, input: InsertItemI
   if (input.idempotencyKey) {
     const reserve = await client.query<{ item_id: string }>(
       `INSERT INTO idempotency_keys (key, database_id, item_id) VALUES ($1, $2, $3)
-       ON CONFLICT (key) DO NOTHING
+       ON CONFLICT DO NOTHING
        RETURNING item_id`,
       [input.idempotencyKey, input.databaseId, generatedId],
     );
@@ -97,7 +103,6 @@ export async function insertItemWithReplay(client: Queryable, input: InsertItemI
       if (reserved.database_id !== input.databaseId) {
         throw new ConflictError(`Idempotency key '${input.idempotencyKey}' was already used for a different database`, {
           key: input.idempotencyKey,
-          reservedDatabaseId: reserved.database_id,
         });
       }
       const existing = await getItemById(client, input.databaseId, reserved.item_id);
@@ -115,7 +120,7 @@ export async function insertItemWithReplay(client: Queryable, input: InsertItemI
       );
       const reReserve = await client.query<{ item_id: string }>(
         `INSERT INTO idempotency_keys (key, database_id, item_id) VALUES ($1, $2, $3)
-         ON CONFLICT (key) DO NOTHING
+         ON CONFLICT DO NOTHING
          RETURNING item_id`,
         [input.idempotencyKey, input.databaseId, generatedId],
       );
@@ -154,6 +159,9 @@ export async function insertItem(client: Queryable, input: InsertItemInput): Pro
  * satisfied replay. Other callers (a suggestion/proposal card's own idempotency key) default to
  * `false`: a trashed card there is still the earlier run's completed work and must not be
  * recreated, regardless of the user having since deleted it.
+ *
+ * The lookup is per tenant: row-level security confines the read to the caller's tenant, so
+ * a key reserved in another tenant is invisible here and yields null.
  */
 export async function findIdempotentReplay(
   client: Queryable,
