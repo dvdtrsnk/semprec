@@ -148,10 +148,10 @@ describe("mail live-sync root across tenants (issue #990)", () => {
   it("installs the discovery interval from inside the mail:liveSync system scope", async () => {
     const realSetInterval = globalThis.setInterval;
     let scopeAtSchedule: TenantScope | undefined;
-    const spy = vi.spyOn(globalThis, "setInterval").mockImplementation(((...args: Parameters<typeof setInterval>) => {
+    const spy = vi.spyOn(globalThis, "setInterval").mockImplementation((...args: Parameters<typeof setInterval>) => {
       scopeAtSchedule = currentTenantScope();
       return realSetInterval(...args);
-    }) as typeof setInterval);
+    });
 
     const { factory } = spyFactory();
     const root = createMailLiveSyncRoot(dataPool!, factory);
