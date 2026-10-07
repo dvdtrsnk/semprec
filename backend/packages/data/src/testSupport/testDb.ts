@@ -6,6 +6,7 @@ import { getTenantZeroId } from "./tenantFixtures.js";
 export { storeCredential } from "../credentials/externalCredentialsStore.js";
 export { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 export { createRuntimeRolePool, createTestTenant, getTenantZeroId, withTenantTransaction } from "./tenantFixtures.js";
+export { createTestProjectItem } from "./projectFixtures.js";
 
 export function getTestPool(): Pool {
   const connectionString = process.env.TEST_DATABASE_URL;

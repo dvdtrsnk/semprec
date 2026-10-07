@@ -2,8 +2,9 @@ import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createTestProjectItem, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
+  createChokePoint,
   createViewTypeRegistry,
   seedSystem,
   createAgentRun,
@@ -167,7 +168,7 @@ describe("createAgentRunRequestListener", () => {
     });
 
     it("mints a restricted run credential for the given project item and capabilities", async () => {
-      const projectItemId = randomUUID();
+      const projectItemId = await createTestProjectItem(pool);
       const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
         method: "POST",
         headers: { ...(await authHeader()), "Content-Type": "application/json" },
@@ -205,7 +206,7 @@ describe("createAgentRunRequestListener", () => {
         platform: "ios",
         ip: "127.0.0.1",
       });
-      const projectItemId = randomUUID();
+      const projectItemId = await createTestProjectItem(pool);
 
       const res = await fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
         method: "POST",
@@ -217,6 +218,63 @@ describe("createAgentRunRequestListener", () => {
       const body = (await res.json()) as { runId: string };
       const run = await withTransaction(pool, (client) => getAgentRun(client, body.runId));
       expect(run?.actorUserId).toBe(sessionUser.id);
+    });
+
+    describe("project guard", () => {
+      async function mint(projectItemId: string): Promise<Response> {
+        return fetch(`${baseUrl}/api/agent-runs/mcp-credentials`, {
+          method: "POST",
+          headers: { ...(await authHeader()), "Content-Type": "application/json" },
+          body: JSON.stringify({ projectItemId, capabilities: ["core.item.read"] }),
+        });
+      }
+
+      async function mintedRowCounts(): Promise<{ runs: number; credentials: number }> {
+        const { rows } = await pool.query<{ runs: string; credentials: string }>(
+          `SELECT (SELECT count(*) FROM agent_runs)::text AS runs,
+                  (SELECT count(*) FROM agent_run_mcp_credentials)::text AS credentials`,
+        );
+        return { runs: Number(rows[0]!.runs), credentials: Number(rows[0]!.credentials) };
+      }
+
+      async function expectNotFound(res: Response): Promise<void> {
+        expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({ error: "Project not found", code: "not_found" });
+        expect(await mintedRowCounts()).toEqual({ runs: 0, credentials: 0 });
+      }
+
+      it("rejects a non-UUID projectItemId as validation_failed", async () => {
+        const res = await mint("not-a-uuid");
+
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { code: string }).code).toBe("validation_failed");
+        expect(await mintedRowCounts()).toEqual({ runs: 0, credentials: 0 });
+      });
+
+      it("answers 404 for a random UUID and creates no run or credential", async () => {
+        await expectNotFound(await mint(randomUUID()));
+      });
+
+      it("answers 404 for an item of a database other than Projects", async () => {
+        const { rows } = await pool.query<{ id: string }>(`SELECT id FROM databases WHERE owner_module_id = 'tasks'`);
+        const item = await createChokePoint(pool).createItem({ databaseId: rows[0]!.id, properties: {} });
+
+        await expectNotFound(await mint(item.id));
+      });
+
+      it("answers 404 for a soft-deleted Projects item", async () => {
+        const projectItemId = await createTestProjectItem(pool);
+        await pool.query(`UPDATE items SET deleted_at = now() WHERE id = $1`, [projectItemId]);
+
+        await expectNotFound(await mint(projectItemId));
+      });
+
+      it("answers 201 for a live Projects item", async () => {
+        const res = await mint(await createTestProjectItem(pool));
+
+        expect(res.status).toBe(201);
+        expect(await mintedRowCounts()).toEqual({ runs: 1, credentials: 1 });
+      });
     });
   });
 });

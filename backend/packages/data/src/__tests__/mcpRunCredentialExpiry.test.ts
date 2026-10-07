@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createTestProjectItem, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { withTransaction } from "../db/pool.js";
 import { createAgentRun, getAgentRun } from "../agentRuns/agentRunsStore.js";
 import { listAgentRunEvents } from "../agentRuns/agentRunEventsStore.js";
 import { createUser } from "../auth/usersStore.js";
@@ -24,11 +25,10 @@ describe("handleMcpRunCredentialExpirySweepTask (issue #643)", () => {
   async function mintCredential() {
     const passwordHash = await hashPassword("s3cret-password");
     const user = await createUser(pool, { email: `owner-${randomUUID()}@example.test`, passwordHash, locale: "en" });
-    return mintMcpRunCredential(pool, {
-      projectItemId: randomUUID(),
-      capabilities: ["core.item.read"],
-      userId: user.id,
-    });
+    const projectItemId = await createTestProjectItem(pool);
+    return withTransaction(pool, (client) =>
+      mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.read"], userId: user.id }),
+    );
   }
 
   async function expireCredential(agentRunId: string): Promise<void> {

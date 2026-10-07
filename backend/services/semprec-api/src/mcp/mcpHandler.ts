@@ -6,9 +6,7 @@ import {
   NotFoundError,
   UnauthorizedError,
   ValidationError,
-  withTransaction,
   resolveMcpRunCredential,
-  getUserTenantBinding,
 } from "@semprec/data";
 import {
   CAPABILITY_IDS,
@@ -94,22 +92,10 @@ export function createMcpRequestListener(
     const bearerToken = extractBearerToken(req);
     if (bearerToken === null) throw new UnauthorizedError();
 
-    // `agent_run_mcp_credentials` is a global table without row-level security until #994 reworks
-    // this path, so the lookup runs as system.
-    // The credential's owning user's tenant is resolved in the same system scope, so the call
-    // below runs in that tenant exactly like a session-derived actor does.
-    const resolved = await runAsSystem("mcp-run-credential-lookup", () =>
-      withTransaction(pool, async (client) => {
-        const found = await resolveMcpRunCredential(client, bearerToken);
-        if (!found) return null;
-        const binding = await getUserTenantBinding(client, found.actorUserId);
-        return { credential: found, binding };
-      }),
-    );
-    if (resolved) {
-      const { credential, binding } = resolved;
-      // A credential whose owner has no active tenant fails like an unknown token.
-      if (!binding || binding.status !== "active") throw new UnauthorizedError();
+    // The token is resolved to its tenant in the global plane before any tenant is known; the
+    // credential itself is then read under RLS inside that tenant (`resolveMcpRunCredential`).
+    const credential = await runAsSystem("mcp-run-credential-lookup", () => resolveMcpRunCredential(pool, bearerToken));
+    if (credential) {
       const capabilities = new Set(
         (CAPABILITY_IDS as readonly CapabilityId[]).filter(
           (id) => credential.capabilities.includes(id) && grantedCapabilities.has(id),
@@ -122,7 +108,7 @@ export function createMcpRequestListener(
           agentProjectItemId: credential.agentProjectItemId,
         },
         capabilities,
-        tenantId: binding.tenantId,
+        tenantId: credential.tenantId,
       };
     }
 

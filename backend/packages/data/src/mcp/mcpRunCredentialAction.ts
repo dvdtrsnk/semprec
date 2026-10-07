@@ -1,11 +1,17 @@
 import type { Pool, PoolClient } from "pg";
 import { CAPABILITY_IDS, type CapabilityId } from "@semprec/shared";
-import { ValidationError } from "../errors.js";
+import { runAsSystem, runInTenant } from "@semprec/shared";
+import { NotFoundError, ValidationError } from "../errors.js";
+import { withTransaction } from "../db/pool.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import { getItemById } from "../chokePoint/itemsStore.js";
+import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { generateOpaqueToken, hashToken } from "../auth/token.js";
 import { createAgentRun, type AgentRunRow } from "../agentRuns/agentRunsStore.js";
 import {
   createMcpRunCredential,
   getActiveMcpRunCredentialByTokenHash,
+  getMcpRunCredentialTenantByTokenHash,
   type ActiveMcpRunCredential,
 } from "./mcpRunCredentialsStore.js";
 
@@ -59,12 +65,21 @@ function assertCapabilityIds(values: readonly string[]): CapabilityId[] {
  * authenticate anyone itself; it is the write a route handler performs once it already knows who
  * is asking (mirrors `login`'s split: token generation and expiry computation happen here, only
  * the hash is ever persisted, and the plaintext token is returned exactly once).
+ *
+ * `input.projectItemId` must name a live item of the Projects database in the caller's tenant
+ * (checked on `client`, so under RLS a foreign item is invisible); anything else throws a
+ * `NotFoundError("Project not found")` before any row is written.
  */
 export async function mintMcpRunCredential(
-  client: Pool | PoolClient,
+  client: PoolClient,
   input: MintMcpRunCredentialInput,
 ): Promise<MintMcpRunCredentialResult> {
   const capabilities = assertCapabilityIds(input.capabilities);
+
+  const projectsDatabase = await getDatabaseByModuleId(client, PROJECTS_MODULE_ID);
+  if (!projectsDatabase) throw new Error("The Projects system database does not exist");
+  const project = await getItemById(client, projectsDatabase.id, input.projectItemId);
+  if (!project || project.deletedAt !== null) throw new NotFoundError("Project not found");
 
   const run = await createAgentRun(client, {
     projectItemId: input.projectItemId,
@@ -84,12 +99,21 @@ export async function mintMcpRunCredential(
  * Resolves a presented MCP run-credential token to the run it authenticates — the credential
  * counterpart to `verifySessionToken`, hashing internally so a composition root only ever handles
  * the raw bearer token, never its hash. Returns `null` for an unknown, expired, or no-longer-
- * `running` credential; `POST /mcp` falls back to the ordinary human-session path in that case
- * rather than rejecting outright, since the same bearer value could simply be a session token.
+ * `running` credential, or one whose tenant is not `active`; `POST /mcp` falls back to the ordinary
+ * human-session path in that case rather than rejecting outright, since the same bearer value could
+ * simply be a session token.
+ *
+ * Two steps: the token's tenant is read in the global plane (system scope), then the credential and
+ * its run are read under RLS inside that tenant. Must be called with no scope or from a system
+ * scope — `runAsSystem` throws inside a tenant scope.
  */
-export async function resolveMcpRunCredential(
-  client: Pool | PoolClient,
-  token: string,
-): Promise<ActiveMcpRunCredential | null> {
-  return getActiveMcpRunCredentialByTokenHash(client, hashToken(token));
+export async function resolveMcpRunCredential(pool: Pool, token: string): Promise<ActiveMcpRunCredential | null> {
+  const tokenHash = hashToken(token);
+  const tenantId = await runAsSystem("mcp:runCredentialTenant", () =>
+    withTransaction(pool, (client) => getMcpRunCredentialTenantByTokenHash(client, tokenHash)),
+  );
+  if (tenantId === null) return null;
+  return runInTenant(tenantId, () =>
+    withTransaction(pool, (client) => getActiveMcpRunCredentialByTokenHash(client, tokenHash)),
+  );
 }
