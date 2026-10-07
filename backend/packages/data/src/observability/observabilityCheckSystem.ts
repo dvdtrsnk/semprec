@@ -3,7 +3,11 @@ import { withTransaction } from "../db/pool.js";
 import { getEarliestUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
 import type { NotificationKind } from "../notifications/notificationKinds.js";
-import { getExpectedProcessHeartbeatStatuses } from "../health/processHeartbeats.js";
+import {
+  FIXED_PROCESS_NAMES,
+  getExpectedProcessHeartbeatStatuses,
+  type ProcessHeartbeatStatus,
+} from "../health/processHeartbeats.js";
 import { listAllMailAccountSyncStates } from "../mail/mailAccountSyncStateStore.js";
 import {
   transitionObservabilityCheck,
@@ -43,10 +47,21 @@ async function notifyObservabilityAlert(
   });
 }
 
-/** One `process:<name>` check per currently-expected process (`getExpectedProcessHeartbeatStatuses`) — stale beyond `process_heartbeats.ts`'s own 60s threshold is the fault, no further hysteresis needed on top of that. */
+const FIXED_PROCESS_NAME_SET: ReadonlySet<string> = new Set(FIXED_PROCESS_NAMES);
+
+function isFixedProcessStatus(processStatus: ProcessHeartbeatStatus): boolean {
+  return FIXED_PROCESS_NAME_SET.has(processStatus.process);
+}
+
+/**
+ * One global `process:<name>` check per fixed process (`FIXED_PROCESS_NAMES`) — stale beyond
+ * `process_heartbeats.ts`'s own 60s threshold is the fault, no further hysteresis needed on top of
+ * that. Process liveness is global only for these four; each mailbox's `mailsync:<id>` liveness is a
+ * per-tenant check (`checkMailSyncLiveness`), so no mailbox id reaches the global plane.
+ */
 async function checkProcessHeartbeats(pool: Pool, helpers: ObservabilityCheckSystemHelpers): Promise<void> {
   const statuses = await withTransaction(pool, (client) => getExpectedProcessHeartbeatStatuses(client));
-  for (const processStatus of statuses) {
+  for (const processStatus of statuses.filter(isFixedProcessStatus)) {
     const checkKey = `process:${processStatus.process}`;
     await withTransaction(pool, async (client) => {
       const transition = await transitionObservabilityCheck(client, checkKey, () => ({
@@ -58,6 +73,54 @@ async function checkProcessHeartbeats(pool: Pool, helpers: ObservabilityCheckSys
           process: processStatus.process,
           beatAt: processStatus.beatAt,
         });
+      }
+    });
+  }
+}
+
+const MAIL_SYNC_PROCESS_CHECK_PREFIX = "process:mailsync:";
+const MAIL_SYNC_PROCESS_PREFIX = "mailsync:";
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * One `process:mailsync:<id>` check per active mailbox of the *current tenant*: under RLS
+ * `getExpectedProcessHeartbeatStatuses` yields exactly this tenant's `mailsync:<id>` processes
+ * beside the fixed ones (filtered out here); the heartbeat rows are read by name from the global
+ * `process_heartbeats` table. Must run inside a tenant scope (`forEachActiveTenant`). Rows of
+ * mailboxes that are no longer active are removed first, so none can sit `alerting` forever.
+ */
+async function checkMailSyncLiveness(pool: Pool, helpers: ObservabilityCheckSystemHelpers): Promise<void> {
+  const statuses = (await withTransaction(pool, (client) => getExpectedProcessHeartbeatStatuses(client))).filter(
+    (processStatus) => !isFixedProcessStatus(processStatus),
+  );
+  await withTransaction(pool, (client) =>
+    deleteOrphanedTenantObservabilityChecks(
+      client,
+      MAIL_SYNC_PROCESS_CHECK_PREFIX,
+      statuses.map((processStatus) => `process:${processStatus.process}`),
+    ),
+  );
+  for (const processStatus of statuses) {
+    const checkKey = `process:${processStatus.process}`;
+    const mailboxItemId = processStatus.process.slice(MAIL_SYNC_PROCESS_PREFIX.length);
+    if (!processStatus.process.startsWith(MAIL_SYNC_PROCESS_PREFIX) || !UUID_RE.test(mailboxItemId)) {
+      throw new Error(`Unexpected non-mailbox process in the tenant liveness pass: ${processStatus.process}`);
+    }
+    await withTransaction(pool, async (client) => {
+      const transition = await transitionTenantObservabilityCheck(client, checkKey, () => ({
+        status: processStatus.stale ? "alerting" : "ok",
+        detail: { process: processStatus.process, present: processStatus.present, beatAt: processStatus.beatAt },
+      }));
+      if (transition.transitionedToAlerting) {
+        await notifyObservabilityAlert(
+          client,
+          helpers,
+          checkKey,
+          transition.id,
+          "mail_sync_stalled",
+          { mailboxItemId, beatAt: processStatus.beatAt },
+          "tenant_observability_checks",
+        );
       }
     });
   }
@@ -216,9 +279,11 @@ async function checkMailSync(pool: Pool, helpers: ObservabilityCheckSystemHelper
  * `observability.checkSystem` (issue #169), registered against the queue's cron table at a
  * static "every minute" entry (`CORE_CRONTAB` in worker.ts), same shape as `HEARTBEAT_SWEEP`.
  * The process, backlog and failed-job families upsert content-free `observability_checks` rows from
- * the system scope the task runner provides. The per-mailbox family runs once per active tenant
- * (`forEachActiveTenant`) against `tenant_observability_checks`; any legacy global `mail:` rows are
- * purged first so a rollback-and-forward cannot leave a stale `lastError` in the global table. If any
+ * the system scope the task runner provides. Process liveness is global only for the four fixed
+ * processes; each mailbox's `mailsync:<id>` liveness, like its sync-stall check, runs once per active
+ * tenant (`forEachActiveTenant`) against `tenant_observability_checks`. Any legacy global `mail:` and
+ * `process:mailsync:` rows are purged first so a rollback-and-forward cannot leave a stale
+ * `lastError` or a mailbox id in the global table. If any
  * tenant's pass fails the handler rejects, but only after every tenant was attempted. Each family
  * notifies only on a genuine ok/missing -> alerting transition, so a sustained fault across many ticks —
  * or across a restart of whatever process runs this crontab, since the state lives in Postgres,
@@ -232,5 +297,11 @@ export async function handleObservabilityCheckSystemTask(
   await checkQueueBacklog(pool, helpers);
   await checkPermanentlyFailedJobs(pool, helpers);
   await withTransaction(pool, (client) => deleteOrphanedObservabilityChecks(client, MAIL_CHECK_KEY_PREFIX, []));
-  await forEachActiveTenant(pool, () => checkMailSync(pool, helpers));
+  await withTransaction(pool, (client) =>
+    deleteOrphanedObservabilityChecks(client, MAIL_SYNC_PROCESS_CHECK_PREFIX, []),
+  );
+  await forEachActiveTenant(pool, async () => {
+    await checkMailSync(pool, helpers);
+    await checkMailSyncLiveness(pool, helpers);
+  });
 }

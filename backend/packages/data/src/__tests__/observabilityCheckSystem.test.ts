@@ -2,11 +2,17 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { enqueueJob } from "@semprec/queue";
-import { runAsSystem } from "@semprec/shared";
+import "../domainWriteHooks.js";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
-import { upsertProcessHeartbeat } from "../health/processHeartbeats.js";
+import { withTransaction } from "../db/pool.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { mailSyncProcessName, upsertProcessHeartbeat } from "../health/processHeartbeats.js";
 import { ensureMailAccountSyncState, recordSyncError } from "../mail/mailAccountSyncStateStore.js";
 import { handleObservabilityCheckSystemTask } from "../observability/observabilityCheckSystem.js";
 
@@ -53,6 +59,30 @@ async function markAllProcessesFresh(): Promise<void> {
   for (const process of ["api", "agents", "transcribe", "ai-gateway"]) {
     await upsertProcessHeartbeat(pool, { process, pid: 1, version: "1.0.0" }, new Date());
   }
+}
+
+/** A real Mailbox item (the liveness list joins `items`) plus its sync-state row, in tenant zero. */
+async function createActiveMailbox(): Promise<string> {
+  return runInTenant(getTenantZeroId(), () =>
+    withTransaction(pool, async (client) => {
+      const database = await getDatabaseByModuleId(client, MAILBOXES_MODULE_ID);
+      if (!database) throw new Error("fixture: no mailboxes database");
+      const item = await createItemWithClient(client, {
+        databaseId: database.id,
+        properties: { name: "Liveness", provider: "generic" },
+      });
+      await ensureMailAccountSyncState(client, { itemId: item.id, syncMode: "imap" });
+      return item.id;
+    }),
+  );
+}
+
+async function beatMailbox(mailboxId: string, ageMs: number): Promise<void> {
+  await upsertProcessHeartbeat(pool, { process: mailSyncProcessName(mailboxId), pid: 1, version: "1.0.0" }, new Date());
+  await pool.query(
+    "UPDATE process_heartbeats SET beat_at = now() - ($2::bigint * interval '1 millisecond') WHERE process = $1",
+    [mailSyncProcessName(mailboxId), ageMs],
+  );
 }
 
 async function runCheck(jobId = randomUUID()): Promise<void> {
@@ -295,5 +325,104 @@ describe("observability.checkSystem (issue #169)", () => {
       `SELECT source_table, source_id FROM notifications WHERE kind = 'process_stale'`,
     );
     expect(rows).toMatchObject([{ source_table: "observability_checks", source_id: check!.id }]);
+  });
+
+  describe("per-mailbox process liveness (issue #1000)", () => {
+    beforeEach(async () => {
+      await seedSystem(pool);
+    });
+
+    it("keeps the mailbox out of the global plane and alerts once in the tenant table", async () => {
+      await createTestUser();
+      await markAllProcessesFresh();
+      const mailboxId = await createActiveMailbox();
+      await beatMailbox(mailboxId, 5 * 60_000);
+
+      await runCheck();
+      await runCheck();
+
+      const globalRows = await pool.query<{ check_key: string; status: string }>(
+        `SELECT check_key, status FROM observability_checks
+         WHERE check_key LIKE 'process:%' OR check_key LIKE '%' || $1 || '%' OR detail::text LIKE '%' || $1 || '%'
+         ORDER BY check_key`,
+        [mailboxId],
+      );
+      expect(globalRows.rows).toEqual([
+        { check_key: "process:agents", status: "ok" },
+        { check_key: "process:ai-gateway", status: "ok" },
+        { check_key: "process:api", status: "ok" },
+        { check_key: "process:transcribe", status: "ok" },
+      ]);
+      const stale = await pool.query(`SELECT 1 FROM notifications WHERE kind = 'process_stale'`);
+      expect(stale.rows).toEqual([]);
+
+      const row = await getTenantCheck(`process:mailsync:${mailboxId}`);
+      expect(row?.status).toBe("alerting");
+      expect(row?.tenant_id).toBe(getTenantZeroId());
+      const detail = await pool.query<{ detail: { process: string; present: boolean; beatAt: string } }>(
+        `SELECT detail FROM tenant_observability_checks WHERE id = $1`,
+        [row!.id],
+      );
+      expect(detail.rows[0]?.detail).toEqual({
+        process: `mailsync:${mailboxId}`,
+        present: true,
+        beatAt: expect.any(String),
+      });
+      const notifications = await pool.query<{
+        kind: string;
+        source_table: string;
+        payload: { mailboxItemId: string; beatAt: string };
+      }>(`SELECT kind, source_table, payload FROM notifications WHERE source_id = $1`, [row!.id]);
+      expect(notifications.rows).toEqual([
+        {
+          kind: "mail_sync_stalled",
+          source_table: "tenant_observability_checks",
+          payload: { mailboxItemId: mailboxId, beatAt: detail.rows[0]!.detail.beatAt },
+        },
+      ]);
+    });
+
+    it("alerts on a missing heartbeat, recovers on a fresh one and notifies again on a later fault", async () => {
+      await createTestUser();
+      await markAllProcessesFresh();
+      const mailboxId = await createActiveMailbox();
+      const checkKey = `process:mailsync:${mailboxId}`;
+
+      await runCheck();
+      const alerting = await getTenantCheck(checkKey);
+      expect(alerting?.status).toBe("alerting");
+      const missing = await pool.query<{ detail: { present: boolean } }>(
+        `SELECT detail FROM tenant_observability_checks WHERE id = $1`,
+        [alerting!.id],
+      );
+      expect(missing.rows[0]?.detail.present).toBe(false);
+      expect(await notificationsFor(alerting!.id)).toHaveLength(1);
+
+      await beatMailbox(mailboxId, 0);
+      await runCheck();
+      expect((await getTenantCheck(checkKey))?.status).toBe("ok");
+
+      await beatMailbox(mailboxId, 5 * 60_000);
+      await runCheck();
+      expect((await getTenantCheck(checkKey))?.status).toBe("alerting");
+      expect(await notificationsFor(alerting!.id)).toHaveLength(2);
+    });
+
+    it("removes the tenant row of a soft-deleted mailbox and purges legacy global mailsync rows", async () => {
+      await createTestUser();
+      await markAllProcessesFresh();
+      const mailboxId = await createActiveMailbox();
+      await runCheck();
+      expect(await getTenantCheck(`process:mailsync:${mailboxId}`)).toBeDefined();
+
+      await pool.query("UPDATE items SET deleted_at = now() WHERE id = $1", [mailboxId]);
+      const legacyKey = `process:mailsync:${randomUUID()}`;
+      await pool.query(`INSERT INTO observability_checks (check_key, status) VALUES ($1, 'alerting')`, [legacyKey]);
+
+      await runCheck();
+
+      expect(await getTenantCheck(`process:mailsync:${mailboxId}`)).toBeUndefined();
+      expect(await getCheck(legacyKey)).toBeUndefined();
+    });
   });
 });
