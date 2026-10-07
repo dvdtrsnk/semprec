@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { runAsSystem } from "@semprec/shared";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { ensureMailAccountSyncState, getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
-import { handleGraphChangeNotification } from "../mail/graphWebhookNotifications.js";
+import { handleGraphChangeNotification, type GraphChangeNotification } from "../mail/graphWebhookNotifications.js";
 import { logger } from "../mail/logger.js";
 import {
   createGraphWebhookLifecycleFactory,
@@ -13,6 +14,22 @@ import {
   type GraphSubscriptionRegistration,
   type GraphSubscriptionTransport,
 } from "../mail/graphWebhookLifecycle.js";
+
+const timingSafeEqualCalls = vi.hoisted(() => ({ count: 0 }));
+
+vi.mock("node:crypto", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:crypto")>();
+  return {
+    ...original,
+    timingSafeEqual: (
+      a: Parameters<typeof original.timingSafeEqual>[0],
+      b: Parameters<typeof original.timingSafeEqual>[1],
+    ) => {
+      timingSafeEqualCalls.count += 1;
+      return original.timingSafeEqual(a, b);
+    },
+  };
+});
 
 let pool: Pool;
 
@@ -285,6 +302,18 @@ describe("handleGraphChangeNotification (issue #198)", () => {
     await seedSystem(pool);
   });
 
+  function notify(notification: GraphChangeNotification) {
+    return runAsSystem("test", () => handleGraphChangeNotification(pool, notification));
+  }
+
+  async function jobEnvelopeTenants(mailboxItemId: string): Promise<Array<string | null>> {
+    const { rows } = await pool.query<{ tenant_id: string | null }>(
+      `SELECT j.payload->>'tenantId' AS tenant_id FROM graphile_worker._private_jobs j WHERE j.key = $1`,
+      [`mail-account-sync:${mailboxItemId}`],
+    );
+    return rows.map((row) => row.tenant_id);
+  }
+
   /** Registers a subscription directly with plain SQL: `graphWebhookLifecycle.test.ts`'s own describe block above already covers registration through the real factory — this block only needs a row in place to exercise `handleGraphChangeNotification`'s own dedup/rejection behavior. */
   async function createRegisteredMailbox(subscriptionId: string, clientState: string): Promise<string> {
     const mailboxItemId = await createMailboxItem(`mbx-${subscriptionId}`);
@@ -298,39 +327,63 @@ describe("handleGraphChangeNotification (issue #198)", () => {
 
   it("accepts a matching notification and durably hands it off to the idempotent sync job", async () => {
     const mailboxItemId = await createRegisteredMailbox("sub-accept", "sub-accept".repeat(8));
-    const outcome = await handleGraphChangeNotification(pool, {
+    const outcome = await notify({
       subscriptionId: "sub-accept",
       clientState: "sub-accept".repeat(8),
     });
     expect(outcome).toBe("accepted");
     expect(await pendingMailSyncJobCount(mailboxItemId)).toBe(1);
+    expect(await jobEnvelopeTenants(mailboxItemId)).toEqual([getTenantZeroId()]);
   });
 
   it("deduplicates repeated notifications for the same account through the job's own jobKey", async () => {
     const mailboxItemId = await createRegisteredMailbox("sub-dup", "sub-dup".repeat(8));
-    await handleGraphChangeNotification(pool, { subscriptionId: "sub-dup", clientState: "sub-dup".repeat(8) });
-    await handleGraphChangeNotification(pool, { subscriptionId: "sub-dup", clientState: "sub-dup".repeat(8) });
+    await notify({ subscriptionId: "sub-dup", clientState: "sub-dup".repeat(8) });
+    await notify({ subscriptionId: "sub-dup", clientState: "sub-dup".repeat(8) });
     expect(await pendingMailSyncJobCount(mailboxItemId)).toBe(1);
   });
 
   it("rejects a notification whose clientState doesn't match, and enqueues nothing", async () => {
     const mailboxItemId = await createRegisteredMailbox("sub-bad", "sub-bad".repeat(8));
-    const outcome = await handleGraphChangeNotification(pool, { subscriptionId: "sub-bad", clientState: "wrong" });
+    const outcome = await notify({ subscriptionId: "sub-bad", clientState: "wrong" });
     expect(outcome).toBe("invalidClientState");
     expect(await pendingMailSyncJobCount(mailboxItemId)).toBe(0);
   });
 
   it("rejects a notification with no clientState at all", async () => {
     await createRegisteredMailbox("sub-missing", "sub-missing".repeat(8));
-    const outcome = await handleGraphChangeNotification(pool, { subscriptionId: "sub-missing" });
+    const outcome = await notify({ subscriptionId: "sub-missing" });
     expect(outcome).toBe("invalidClientState");
   });
 
   it("rejects a notification for a subscriptionId this deployment never registered", async () => {
-    const outcome = await handleGraphChangeNotification(pool, {
+    const outcome = await notify({
       subscriptionId: "never-registered",
       clientState: "anything",
     });
     expect(outcome).toBe("unknownSubscription");
+  });
+
+  describe("constant-time compare", () => {
+    async function compareCount(notification: GraphChangeNotification): Promise<number> {
+      timingSafeEqualCalls.count = 0;
+      await notify(notification);
+      return timingSafeEqualCalls.count;
+    }
+
+    it("performs exactly one compare on every path", async () => {
+      await createRegisteredMailbox("sub-ct", "sub-ct".repeat(8));
+      const bare = await createMailboxItem("mbx-bare");
+      await ensureMailAccountSyncState(pool, { itemId: bare, syncMode: "graph_api" });
+      await pool.query("UPDATE mail_account_sync_state SET graph_subscription_id = 'sub-bare' WHERE item_id = $1", [
+        bare,
+      ]);
+
+      expect(await compareCount({ subscriptionId: "sub-nope", clientState: "x" })).toBe(1);
+      expect(await compareCount({ subscriptionId: "sub-bare", clientState: "x" })).toBe(1);
+      expect(await compareCount({ subscriptionId: "sub-ct" })).toBe(1);
+      expect(await compareCount({ subscriptionId: "sub-ct", clientState: "wrong" })).toBe(1);
+      expect(await compareCount({ subscriptionId: "sub-ct", clientState: "sub-ct".repeat(8) })).toBe(1);
+    });
   });
 });

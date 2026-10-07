@@ -1,7 +1,8 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Pool } from "pg";
+import { runInTenant } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
-import { getMailAccountSyncStateByGraphSubscriptionId } from "./mailAccountSyncStateStore.js";
+import { getMailAccountSyncStateByGraphSubscriptionId, routeGraphSubscription } from "./mailAccountSyncStateStore.js";
 import { enqueueMailAccountSync } from "./mailSyncJob.js";
 
 export interface GraphChangeNotification {
@@ -24,6 +25,9 @@ function clientStateMatches(expected: string, actual: string): boolean {
   return timingSafeEqual(expectedDigest, actualDigest);
 }
 
+/** Compared against whenever there is no real stored state, so every path costs one compare. */
+const DUMMY_CLIENT_STATE = randomBytes(32).toString("hex");
+
 /**
  * Handles one inbound Microsoft Graph change notification (issue #198's webhook receiver,
  * `graphWebhookHandler.ts` in `semprec-api`) — turns a valid notification into the same
@@ -33,27 +37,39 @@ function clientStateMatches(expected: string, actual: string): boolean {
  * for the same account collapses into that job's own `jobKey` dedup, so calling this twice for
  * the same change is always safe.
  *
- * `subscriptionId` unknown to this deployment, or a `clientState` that doesn't match what was
- * persisted when the subscription was registered (`graphWebhookLifecycle.ts`), is rejected
- * without enqueueing anything — the caller decides what a rejection means for its own response
- * to Graph (issue #198's "invalid state rejected").
+ * The caller has no tenant (the webhook is public), so the owning tenant comes from
+ * `routeGraphSubscription` in its own transaction in the caller's scope. The account re-read, the
+ * `clientState` check and the enqueue then run inside `runInTenant(<that tenant>)`, so the job
+ * envelope carries the tenant. A `subscriptionId` no tenant registered, or a `clientState` that
+ * doesn't match what was persisted when the subscription was registered
+ * (`graphWebhookLifecycle.ts`), is rejected without enqueueing anything — the caller decides what a
+ * rejection means for its own response to Graph (issue #198's "invalid state rejected").
+ *
+ * Every path performs exactly one `clientStateMatches` call — against a fixed dummy secret when
+ * the subscription is unknown, the row vanished or no state is stored, against `""` when the
+ * notification has none — so the outcome is not observable from timing. Only a real match on a
+ * stored state is accepted.
  */
 export async function handleGraphChangeNotification(
   pool: Pool,
   notification: GraphChangeNotification,
 ): Promise<GraphNotificationOutcome> {
-  return withTransaction(pool, async (client) => {
-    const state = await getMailAccountSyncStateByGraphSubscriptionId(client, notification.subscriptionId);
-    if (!state) return "unknownSubscription";
-    if (
-      !state.graphClientState ||
-      !notification.clientState ||
-      !clientStateMatches(state.graphClientState, notification.clientState)
-    ) {
-      return "invalidClientState";
-    }
+  const tenantId = await withTransaction(pool, (client) => routeGraphSubscription(client, notification.subscriptionId));
+  if (tenantId === null) {
+    clientStateMatches(DUMMY_CLIENT_STATE, notification.clientState ?? "");
+    return "unknownSubscription";
+  }
 
-    await enqueueMailAccountSync(client, state.itemId);
-    return "accepted";
-  });
+  return runInTenant(tenantId, () =>
+    withTransaction(pool, async (client) => {
+      const state = await getMailAccountSyncStateByGraphSubscriptionId(client, notification.subscriptionId);
+      const storedState = state?.graphClientState || null;
+      const matches = clientStateMatches(storedState ?? DUMMY_CLIENT_STATE, notification.clientState ?? "");
+      if (!state) return "unknownSubscription";
+      if (!storedState || !notification.clientState || !matches) return "invalidClientState";
+
+      await enqueueMailAccountSync(client, state.itemId);
+      return "accepted";
+    }),
+  );
 }

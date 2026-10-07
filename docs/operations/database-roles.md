@@ -89,3 +89,19 @@ created by migration `0048_create_items_partition_function.sql`:
 this shape — owned by the migrating role, `EXECUTE` revoked from `PUBLIC` and granted only to the
 role that needs it — never through a schema-level `CREATE` grant or a change of table ownership
 (decision record: `docs/adr/2026-09-27-runtime-ddl-through-security-definer-functions.md`).
+
+## Cross-tenant router functions (semprec_router)
+
+`semprec_router` is `NOLOGIN` and `BYPASSRLS`, and holds only column-level `SELECT` on the columns
+its functions read (no table-level privilege). It owns the router functions below, which are
+`SECURITY DEFINER` with a pinned `search_path` and schema-qualified objects.
+
+**Rule:** an external identifier that must be mapped to a tenant before any tenant is known goes
+through such a function. `EXECUTE` is revoked from `PUBLIC` and granted to exactly one runtime role,
+and the function returns only ids or numbers, never content. The caller then enters
+`runInTenant(<returned tenant>)` and re-reads everything else under RLS. No runtime role ever gets
+`BYPASSRLS` (decision record: `docs/adr/2026-10-07-cross-tenant-router-functions.md`).
+
+| Function | Executing role | Returned value | Columns read |
+| --- | --- | --- | --- |
+| `route_graph_subscription(text)` | `semprec_data` | a tenant id, or `NULL` | `mail_account_sync_state(graph_subscription_id, tenant_id)` |
