@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
+import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
 import { createDatabase } from "../chokePoint/databasesStore.js";
@@ -86,6 +87,11 @@ function sweep(maxChunksPerTenant?: number): Promise<void> {
   );
 }
 
+const fireJobEnvelope = z.object({
+  tenantId: z.string().nullable(),
+  payload: z.object({ occurrenceId: z.string() }),
+});
+
 describe("heartbeat sweep runs per tenant (issue #984)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
@@ -133,10 +139,7 @@ describe("heartbeat sweep runs per tenant (issue #984)", () => {
     expect(occurrences.find((o) => o.heartbeat_id === idZero)!.tenant_id).toBe(tenantZero);
     expect(occurrences.find((o) => o.heartbeat_id === idB)!.tenant_id).toBe(tenantB);
 
-    const jobs = (await readJobPayloadsByIdentifier(adminPool, "heartbeatFireCore")) as Array<{
-      tenantId: string | null;
-      payload: { occurrenceId: string };
-    }>;
+    const jobs = z.array(fireJobEnvelope).parse(await readJobPayloadsByIdentifier(adminPool, "heartbeatFireCore"));
     expect(jobs).toHaveLength(2);
     for (const occurrence of occurrences) {
       const job = jobs.find((j) => j.payload.occurrenceId === occurrence.id);
