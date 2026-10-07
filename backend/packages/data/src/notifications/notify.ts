@@ -36,9 +36,9 @@ export interface WriteNotificationInput {
   sourceTable: string;
   sourceId: string;
   /**
-   * Identifies *this* state transition of `(sourceTable, sourceId, kind)` — replaying the same
-   * transition (a redelivered/retried queue job re-running the same failure) must not duplicate
-   * the notification, while a later, independent transition on the same source must still insert
+   * Identifies *this* state transition of `(sourceTable, sourceId, kind)` for *this recipient* —
+   * replaying the same transition for the same recipient (a redelivered/retried queue job
+   * re-running the same failure) must not duplicate the notification, while a later, independent transition on the same source must still insert
    * a new row. `scheduler/sweep.ts`'s `heartbeat_error` producer uses the firing queue job's own
    * `id`, which is stable across that job's retries and distinct for every new fire.
    */
@@ -54,8 +54,15 @@ export interface WriteNotificationInput {
 /**
  * Runs on the caller's transaction client (never opens its own transaction): rolling back the
  * caller's transaction rolls this insert back with it, and committing it exposes both together.
- * Deduplicates on `(sourceTable, sourceId, kind, transitionInstance)` via the unique index from
- * migration 0030 — a replay is a silent no-op, never a second row.
+ * Deduplicates per tenant and recipient on `(tenant_id, userId, sourceTable, sourceId, kind,
+ * transitionInstance)` via `notifications_tenant_dedupe_idx` (migration 0064) — a replay is a
+ * silent no-op, never a second row, and returns that recipient's own notification id. Two
+ * recipients of the same source transition each get their own row.
+ *
+ * Transitional: the legacy `notifications_dedupe_idx` (migration 0030, no recipient or tenant in
+ * its key) still exists until it is dropped. A write that collides only with it — the same source
+ * transition for a different recipient — raises `unique_violation` (23505), which propagates
+ * unchanged and rolls back the caller's transaction; it is never mapped onto another recipient's id.
  *
  * On an actual (non-replay) insert, also enqueues issue #151's `notificationFanout` job in the
  * same transaction — "this notification exists" and "delivery will be attempted" land together,
@@ -87,7 +94,7 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
   const { rows } = await client.query<{ id: string; created_at: Date; inserted: boolean }>(
     `INSERT INTO notifications (user_id, kind, title, link_href, source_table, source_id, transition_instance, payload)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-     ON CONFLICT (source_table, source_id, kind, transition_instance)
+     ON CONFLICT (tenant_id, user_id, source_table, source_id, kind, transition_instance)
        DO UPDATE SET source_table = notifications.source_table
      RETURNING id, created_at, (xmax = 0) AS inserted`,
     [
