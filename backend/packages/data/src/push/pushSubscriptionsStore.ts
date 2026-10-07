@@ -79,7 +79,9 @@ async function displaceAndUpsert(
  * `endpoint` owned by another user is revoked first, so the previous owner's row is kept (keys
  * unchanged) but no longer active, and the caller cannot tell whether one existed. The caller's own
  * active row is refreshed in place (same `id`; new session, refreshed keys) through `ON CONFLICT`
- * on the partial unique index from migration 0031. The displacement and the upsert run in one
+ * on the partial unique index from migration 0031. `push_subscriptions` is classified
+ * `semprec:tenancy=global` (migration 0058): an endpoint or device token names one physical
+ * device, so it is unique across tenants and displacement deliberately ignores the tenant. The displacement and the upsert run in one
  * transaction (opened here for a bare `Pool`), so a failed insert never leaves the previous owner
  * revoked. If a concurrent registration by another account wins the gap between the two statements,
  * both are repeated once before a plain `Error` is thrown.
