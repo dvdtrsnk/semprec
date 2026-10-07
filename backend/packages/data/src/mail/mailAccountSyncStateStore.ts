@@ -200,7 +200,10 @@ export async function recordGraphActivity(client: Queryable, input: RecordGraphA
   );
 }
 
-/** The webhook receiver's account lookup (graphWebhookNotifications.ts, issue #198) — maps an inbound notification's `subscriptionId` back to the account it belongs to, or `null` for one this app never registered (a stale/foreign subscription id). */
+/**
+ * The in-tenant re-read of the webhook receiver's account lookup (graphWebhookNotifications.ts, issue #198): once `routeGraphSubscription` has named the owning tenant and the caller
+ * entered it, this maps the `subscriptionId` back to the account under row-level security, or `null` when the row is not visible in that tenant.
+ */
 export async function getMailAccountSyncStateByGraphSubscriptionId(
   client: Queryable,
   subscriptionId: string,
@@ -210,6 +213,19 @@ export async function getMailAccountSyncStateByGraphSubscriptionId(
     [subscriptionId],
   );
   return rows[0] ? mapRow(rows[0]) : null;
+}
+
+/**
+ * Resolves a Graph `subscriptionId` to its owning tenant through the `semprec_router`-owned
+ * `route_graph_subscription` function, which reads past row-level security (docs/adr/2026-10-07-cross-tenant-router-functions.md).
+ * Returns `null` for an id no tenant registered. Only the tenant id leaves the function; the caller enters that tenant and re-reads the row with `getMailAccountSyncStateByGraphSubscriptionId`.
+ */
+export async function routeGraphSubscription(client: Queryable, subscriptionId: string): Promise<string | null> {
+  const { rows } = await client.query<{ tenant_id: string | null }>(
+    "SELECT route_graph_subscription($1) AS tenant_id",
+    [subscriptionId],
+  );
+  return rows[0]?.tenant_id ?? null;
 }
 
 export interface RecordGraphSubscriptionRegistrationInput {
