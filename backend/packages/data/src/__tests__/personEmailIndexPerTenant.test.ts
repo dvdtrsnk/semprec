@@ -122,6 +122,9 @@ describe("person_email_index is keyed per tenant", () => {
     try {
       await first.query("BEGIN");
       await second.query("BEGIN");
+      const tenantId = await currentTenant(first);
+      await scopeTo(first, tenantId);
+      await scopeTo(second, tenantId);
       // The first claim is uncommitted, so the second one reads nothing and its insert
       // blocks on the first writer's row until that commits.
       await reindexPersonEmails(first, p1, ["a@example.com"]);
@@ -131,10 +134,15 @@ describe("person_email_index is keyed per tenant", () => {
       await expect(secondResult).resolves.toEqual({ conflicts: [] });
       await second.query("COMMIT");
 
-      const { rows } = await pool.query<{ item_id: string }>(
-        "SELECT item_id FROM person_email_index WHERE email = 'a@example.com'",
-      );
-      expect(rows).toEqual([{ item_id: p1 }]);
+      // The scope is transaction-local, so the post-commit check re-establishes it explicitly.
+      await inRolledBackTransaction(async (client) => {
+        await scopeTo(client, tenantId);
+        const { rows } = await client.query<{ item_id: string }>(
+          "SELECT item_id FROM person_email_index WHERE tenant_id = $1 AND email = 'a@example.com'",
+          [tenantId],
+        );
+        expect(rows).toEqual([{ item_id: p1 }]);
+      });
     } finally {
       first.release();
       second.release();
