@@ -267,14 +267,19 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
       });
       const minted = await mintMcpRunCredential(pool, {
         projectItemId: randomUUID(),
-        capabilities: ["core.item.write"],
+        capabilities: ["core.database.read"],
         userId: user.id,
       });
       const call = (): Promise<{ status: number; body: unknown }> =>
         fetch(`${baseUrl}/mcp`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${minted.token}` },
-          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name: "semprec.database.list" },
+          }),
         }).then(async (res) => ({ status: res.status, body: await res.json() }));
 
       const warn = await withScopeMode("warn", call);
