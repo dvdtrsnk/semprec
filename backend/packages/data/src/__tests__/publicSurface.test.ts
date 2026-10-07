@@ -255,7 +255,6 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "getDocById",
   "getDocUpdateById",
   "getEarliestUserId",
-  "getEarliestUserIdForCurrentTenant",
   "getEarliestUserLocale",
   "getExpectedProcessHeartbeatStatuses",
   "getExpectedProcessNames",

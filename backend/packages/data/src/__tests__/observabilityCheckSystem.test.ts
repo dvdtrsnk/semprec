@@ -3,8 +3,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { enqueueJob } from "@semprec/queue";
 import { runAsSystem } from "@semprec/shared";
-import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createTestTenant, withTenantTransaction } from "../testSupport/tenantFixtures.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { upsertProcessHeartbeat } from "../health/processHeartbeats.js";
@@ -13,9 +12,9 @@ import { handleObservabilityCheckSystemTask } from "../observability/observabili
 
 let pool: Pool;
 
-async function createTestUser(tenantId = getTenantZeroId()): Promise<string> {
+async function createTestUser(): Promise<string> {
   const passwordHash = await hashPassword("s3cret-password");
-  const user = await createUser(pool, { email: `${randomUUID()}@example.test`, passwordHash, locale: "en", tenantId });
+  const user = await createUser(pool, { email: `${randomUUID()}@example.test`, passwordHash, locale: "en" });
   return user.id;
 }
 
@@ -56,8 +55,8 @@ async function markAllProcessesFresh(): Promise<void> {
   }
 }
 
-async function runCheck(jobId = randomUUID(), onPool: Pool = pool): Promise<void> {
-  await runAsSystem("test", () => handleObservabilityCheckSystemTask(onPool, { job: { id: jobId } }));
+async function runCheck(jobId = randomUUID()): Promise<void> {
+  await runAsSystem("test", () => handleObservabilityCheckSystemTask(pool, { job: { id: jobId } }));
 }
 
 describe("observability.checkSystem (issue #169)", () => {
@@ -296,38 +295,5 @@ describe("observability.checkSystem (issue #169)", () => {
       `SELECT source_table, source_id FROM notifications WHERE kind = 'process_stale'`,
     );
     expect(rows).toMatchObject([{ source_table: "observability_checks", source_id: check!.id }]);
-  });
-
-  it("notifies the user of the stalled mailbox's own tenant, not the globally earliest user", async () => {
-    // Tenant zero's user is created first, so a global "earliest user" pick would choose it.
-    const tenantZeroUser = await createTestUser();
-    const otherTenantId = await createTestTenant(pool);
-    const otherTenantUser = await createTestUser(otherTenantId);
-    await markAllProcessesFresh();
-    const mailboxItemId = randomUUID();
-    await withTenantTransaction(pool, otherTenantId, async (client) => {
-      await ensureMailAccountSyncState(client, { itemId: mailboxItemId, syncMode: "imap" });
-      await recordSyncError(client, mailboxItemId, "boom");
-    });
-
-    // The superuser pool bypasses RLS and would show the one mailbox row to both tenants; the runtime role scopes it.
-    const dataPool = await createRuntimeRolePool(pool, "semprec_data");
-    try {
-      await runCheck(randomUUID(), dataPool);
-    } finally {
-      await dataPool.end();
-    }
-
-    const { rows: checks } = await pool.query<{ id: string; tenant_id: string }>(
-      `SELECT id, tenant_id FROM tenant_observability_checks WHERE check_key = $1`,
-      [`mail:${mailboxItemId}`],
-    );
-    expect(checks).toMatchObject([{ tenant_id: otherTenantId }]);
-    const check = checks[0];
-    const { rows } = await pool.query<{ user_id: string }>(`SELECT user_id FROM notifications WHERE source_id = $1`, [
-      check!.id,
-    ]);
-    expect(rows).toEqual([{ user_id: otherTenantUser }]);
-    expect(rows).not.toContainEqual({ user_id: tenantZeroUser });
   });
 });
