@@ -124,6 +124,7 @@ export {
 } from "./agentRuns/agentRunEventsRetention.js";
 export * from "./aiGateway/aiGatewayCallsStore.js";
 export * from "./aiGateway/aiUsageReport.js";
+export * from "./aiGateway/tenantAiBudgetsStore.js";
 export * from "./health/processHeartbeats.js";
 export * from "./observability/observabilityChecksStore.js";
 export * from "./observability/observabilityCheckSystem.js";

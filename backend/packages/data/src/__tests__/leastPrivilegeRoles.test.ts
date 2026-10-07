@@ -194,6 +194,11 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
     // orphan every credential sealed under it, so a key is only ever inserted or deleted (crypto-shred).
     const NO_UPDATE_TABLES = new Set(["tenant_keys"]);
 
+    // Operator configuration written only by semprec-api (migration 0069): the gateway's semprec_side
+    // may read it but never raise its own caps, and nobody deletes a row (it goes with its tenant).
+    const READ_ONLY_FOR_SIDE_TABLES = new Set(["tenant_ai_budgets"]);
+    const NO_DELETE_TABLES = new Set(["tenant_ai_budgets"]);
+
     async function listTables(): Promise<{ name: string; oid: string }[]> {
       const { rows } = await adminPool.query<{ name: string; oid: string }>(
         `SELECT c.relname AS name, c.oid::text AS oid
@@ -225,7 +230,10 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
       const chokePointNames = new Set(CHOKE_POINT_TABLES);
       const offenders: string[] = [];
       for (const table of await listTables()) {
-        const sideReadOnly = chokePointNames.has(table.name) || IDENTITY_TABLES.has(table.name);
+        const sideReadOnly =
+          chokePointNames.has(table.name) ||
+          IDENTITY_TABLES.has(table.name) ||
+          READ_ONLY_FOR_SIDE_TABLES.has(table.name);
         if (!(await hasPrivilege("semprec_side", table.oid, "SELECT"))) {
           offenders.push(`${table.name}:semprec_side:SELECT`);
         }
@@ -236,7 +244,8 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
           if (sideHas !== expectedForSide) offenders.push(`${table.name}:semprec_side:${privilege}`);
         }
         for (const privilege of ["SELECT", ...WRITE_PRIVILEGES]) {
-          const expectedForData = !(noUpdate && privilege === "UPDATE");
+          const expectedForData =
+            !(noUpdate && privilege === "UPDATE") && !(NO_DELETE_TABLES.has(table.name) && privilege === "DELETE");
           if ((await hasPrivilege("semprec_data", table.oid, privilege)) !== expectedForData) {
             offenders.push(`${table.name}:semprec_data:${privilege}`);
           }

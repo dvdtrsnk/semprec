@@ -251,6 +251,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "getApprovalRequest",
   "getBlob",
   "getBlobByContentHash",
+  "getCurrentTenantAiBudget",
   "getDatabaseByModuleId",
   "getDocById",
   "getDocUpdateById",
