@@ -44,7 +44,7 @@ export interface CreateModuleRegistryDriftCheckOptions {
  * (AGENT.md) guidance to permissions; that semantic half belongs to a separate, later check.
  *
  * Idempotent under concurrent runs: `publishFinding` dedupes new findings on
- * `(kind, dedupeKey)` via a partial unique index, and `resolveFindingsNotIn` only updates
+ * `(tenant, kind, dedupeKey)` via a partial unique index, and `resolveFindingsNotIn` only updates
  * rows that are still unresolved, so two overlapping runs never duplicate or double-resolve
  * a finding.
  */
