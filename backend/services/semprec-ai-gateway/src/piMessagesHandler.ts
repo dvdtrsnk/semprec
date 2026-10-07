@@ -17,6 +17,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { ProviderCallError } from "./structuredProviders/types.js";
 import { logger } from "./logger.js";
+import { readCallerTenantId, runForCallerTenant } from "./callerTenant.js";
 
 const ROUTE = "/internal/pi/messages";
 
@@ -333,51 +334,56 @@ export function createPiMessagesRequestListener(pool: Pool, options: PiMessagesH
         return;
       }
 
-      const agentRunId = extractAgentRunId(req);
-      const body = parseBody(await readJsonBody(req));
+      const callerTenantId = readCallerTenantId(req);
+      await runForCallerTenant(callerTenantId, async () => {
+        const agentRunId = extractAgentRunId(req);
+        const body = parseBody(await readJsonBody(req));
 
-      const model = options.models.getModel(PROVIDER, body.model);
-      if (!model) {
-        sendJson(res, 400, { error: `Unknown ${PROVIDER} model '${body.model}'`, code: "unknown_model" });
-        return;
-      }
-
-      // #620: a rough upper bound (about 4 characters per token for the whole context, the output
-      // cap or a default one) reserved before the call and replaced by the real cost on settle.
-      // pi's `ModelCost` is USD per million tokens.
-      const estimatedInputTokens = Math.ceil(JSON.stringify(body.context).length / 4);
-      const reservedOutputTokens = body.options?.maxTokens ?? Math.min(model.maxTokens, DEFAULT_RESERVED_OUTPUT_TOKENS);
-      const estimatedCostUsd =
-        (estimatedInputTokens / 1_000_000) * model.cost.input + (reservedOutputTokens / 1_000_000) * model.cost.output;
-
-      try {
-        await complete(
-          pool,
-          {
-            provider: PROVIDER,
-            model: model.id,
-            agentRunId,
-            projectItemId: null,
-            operation: "agent_turn",
-            estimatedCostUsd,
-          },
-          () => streamTurn(res, model, body),
-        );
-      } catch (err) {
-        if (err instanceof BudgetExceededError) {
-          // Raised by the reservation, before `streamTurn` wrote the head; the pi client surfaces
-          // the status as its own `error` event.
-          sendJson(res, 403, { error: err.message, code: "budget_exceeded" });
+        const model = options.models.getModel(PROVIDER, body.model);
+        if (!model) {
+          sendJson(res, 400, { error: `Unknown ${PROVIDER} model '${body.model}'`, code: "unknown_model" });
           return;
         }
-        // Anything else that escaped before the head was written (the reservation itself failing)
-        // is not a provider failure; the outer handler answers it as a 500.
-        if (!res.headersSent) throw err;
-        // Standard failed-call observability event: the row is `failed` with no usage, so this log
-        // carries the cause. The context and the key are deliberately never logged.
-        logger.error({ err, provider: PROVIDER, model: model.id, agentRunId }, "Streamed provider call failed");
-        if (isOpen(res)) res.end();
-      }
+
+        // #620: a rough upper bound (about 4 characters per token for the whole context, the output
+        // cap or a default one) reserved before the call and replaced by the real cost on settle.
+        // pi's `ModelCost` is USD per million tokens.
+        const estimatedInputTokens = Math.ceil(JSON.stringify(body.context).length / 4);
+        const reservedOutputTokens =
+          body.options?.maxTokens ?? Math.min(model.maxTokens, DEFAULT_RESERVED_OUTPUT_TOKENS);
+        const estimatedCostUsd =
+          (estimatedInputTokens / 1_000_000) * model.cost.input +
+          (reservedOutputTokens / 1_000_000) * model.cost.output;
+
+        try {
+          await complete(
+            pool,
+            {
+              provider: PROVIDER,
+              model: model.id,
+              agentRunId,
+              projectItemId: null,
+              operation: "agent_turn",
+              estimatedCostUsd,
+            },
+            () => streamTurn(res, model, body),
+          );
+        } catch (err) {
+          if (err instanceof BudgetExceededError) {
+            // Raised by the reservation, before `streamTurn` wrote the head; the pi client surfaces
+            // the status as its own `error` event.
+            sendJson(res, 403, { error: err.message, code: "budget_exceeded" });
+            return;
+          }
+          // Anything else that escaped before the head was written (the reservation itself failing)
+          // is not a provider failure; the outer handler answers it as a 500.
+          if (!res.headersSent) throw err;
+          // Standard failed-call observability event: the row is `failed` with no usage, so this log
+          // carries the cause. The context and the key are deliberately never logged.
+          logger.error({ err, provider: PROVIDER, model: model.id, agentRunId }, "Streamed provider call failed");
+          if (isOpen(res)) res.end();
+        }
+      });
     } catch (err) {
       if (err instanceof PayloadTooLargeError) {
         sendJson(res, 413, { error: err.message });

@@ -11,6 +11,7 @@ import {
   type StructuredCompletionProvider,
 } from "./structuredProviders/types.js";
 import { logger } from "./logger.js";
+import { readCallerTenantId, runForCallerTenant } from "./callerTenant.js";
 
 /**
  * Every `operation` `POST /internal/complete` accepts, mapped to whether the call is attributed to
@@ -196,112 +197,115 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
         return;
       }
 
-      const rawBody = await readJsonBody(req);
-      const body = validateBody(rawBody);
+      const tenantId = readCallerTenantId(req);
+      await runForCallerTenant(tenantId, async () => {
+        const rawBody = await readJsonBody(req);
+        const body = validateBody(rawBody);
 
-      let validateResponse;
-      try {
-        validateResponse = compileResponseSchema(body.responseSchema);
-      } catch (err) {
-        if (err instanceof InvalidResponseSchemaError) {
-          throw new ValidationError(err.message, { field: "responseSchema" });
+        let validateResponse;
+        try {
+          validateResponse = compileResponseSchema(body.responseSchema);
+        } catch (err) {
+          if (err instanceof InvalidResponseSchemaError) {
+            throw new ValidationError(err.message, { field: "responseSchema" });
+          }
+          throw err;
         }
-        throw err;
-      }
 
-      // #620: a rough upper bound (about 4 characters per token for the input, the full output
-      // cap) reserved against the budget before the call and replaced by the real cost on settle.
-      const estimatedInputTokens = Math.ceil(
-        (body.system.length +
-          body.messages.reduce((sum, message) => sum + message.content.length, 0) +
-          JSON.stringify(body.responseSchema).length) /
-          4,
-      );
-      const estimatedCostUsd =
-        (estimatedInputTokens / 1_000_000) * options.pricePerMillionInputTokens +
-        (RESERVED_OUTPUT_TOKENS / 1_000_000) * options.pricePerMillionOutputTokens;
-
-      // A `ServerResponse` emits `close` both after a normal `end()` and on a premature connection
-      // loss; `writableFinished` is only true for the former, so only a disconnect aborts.
-      const abort = new AbortController();
-      res.on("close", () => {
-        if (!res.writableFinished) abort.abort();
-      });
-      // The connection may already have dropped while the body was being validated.
-      if (res.destroyed) abort.abort();
-
-      let result;
-      try {
-        result = await complete(
-          pool,
-          {
-            provider: options.provider.id,
-            model: options.model,
-            agentRunId: null,
-            projectItemId: body.projectItemId,
-            operation: body.operation,
-            estimatedCostUsd,
-          },
-          async () => {
-            // A transport failure throws here, so `complete()` marks its reservation `failed` at
-            // cost 0 instead of settling it — #215's "no fabricated token/cost" for a call that
-            // never produced a response.
-            const providerResult = await options.provider.complete({
-              model: options.model,
-              temperature: body.temperature,
-              system: body.system,
-              messages: body.messages,
-              responseSchema: body.responseSchema,
-              signal: abort.signal,
-            });
-
-            // A schema-invalid response, unlike a transport failure, is still "a provider
-            // response" — the call happened and cost money, so the audit row below must still
-            // be written with its real usage. `valid` decides the client-facing status.
-            const valid = validateResponse(providerResult.content);
-            return {
-              content: providerResult.content,
-              valid,
-              inputTokens: providerResult.inputTokens,
-              outputTokens: providerResult.outputTokens,
-              costUsd:
-                (providerResult.inputTokens / 1_000_000) * options.pricePerMillionInputTokens +
-                (providerResult.outputTokens / 1_000_000) * options.pricePerMillionOutputTokens,
-            };
-          },
+        // #620: a rough upper bound (about 4 characters per token for the input, the full output
+        // cap) reserved against the budget before the call and replaced by the real cost on settle.
+        const estimatedInputTokens = Math.ceil(
+          (body.system.length +
+            body.messages.reduce((sum, message) => sum + message.content.length, 0) +
+            JSON.stringify(body.responseSchema).length) /
+            4,
         );
-      } catch (err) {
-        if (abort.signal.aborted) {
-          // The socket is gone, so there is no one to answer; `complete()` has already marked the
-          // reservation `failed`.
-          logger.info(
-            { provider: options.provider.id, model: options.model, path: url.pathname },
-            "Client disconnected before the provider call finished",
+        const estimatedCostUsd =
+          (estimatedInputTokens / 1_000_000) * options.pricePerMillionInputTokens +
+          (RESERVED_OUTPUT_TOKENS / 1_000_000) * options.pricePerMillionOutputTokens;
+
+        // A `ServerResponse` emits `close` both after a normal `end()` and on a premature connection
+        // loss; `writableFinished` is only true for the former, so only a disconnect aborts.
+        const abort = new AbortController();
+        res.on("close", () => {
+          if (!res.writableFinished) abort.abort();
+        });
+        // The connection may already have dropped while the body was being validated.
+        if (res.destroyed) abort.abort();
+
+        let result;
+        try {
+          result = await complete(
+            pool,
+            {
+              provider: options.provider.id,
+              model: options.model,
+              agentRunId: null,
+              projectItemId: body.projectItemId,
+              operation: body.operation,
+              estimatedCostUsd,
+            },
+            async () => {
+              // A transport failure throws here, so `complete()` marks its reservation `failed` at
+              // cost 0 instead of settling it — #215's "no fabricated token/cost" for a call that
+              // never produced a response.
+              const providerResult = await options.provider.complete({
+                model: options.model,
+                temperature: body.temperature,
+                system: body.system,
+                messages: body.messages,
+                responseSchema: body.responseSchema,
+                signal: abort.signal,
+              });
+
+              // A schema-invalid response, unlike a transport failure, is still "a provider
+              // response" — the call happened and cost money, so the audit row below must still
+              // be written with its real usage. `valid` decides the client-facing status.
+              const valid = validateResponse(providerResult.content);
+              return {
+                content: providerResult.content,
+                valid,
+                inputTokens: providerResult.inputTokens,
+                outputTokens: providerResult.outputTokens,
+                costUsd:
+                  (providerResult.inputTokens / 1_000_000) * options.pricePerMillionInputTokens +
+                  (providerResult.outputTokens / 1_000_000) * options.pricePerMillionOutputTokens,
+              };
+            },
           );
-          return;
+        } catch (err) {
+          if (abort.signal.aborted) {
+            // The socket is gone, so there is no one to answer; `complete()` has already marked the
+            // reservation `failed`.
+            logger.info(
+              { provider: options.provider.id, model: options.model, path: url.pathname },
+              "Client disconnected before the provider call finished",
+            );
+            return;
+          }
+          if (err instanceof BudgetExceededError) {
+            sendJson(res, 403, { error: err.message, code: "budget_exceeded" });
+            return;
+          }
+          if (err instanceof ProviderCallError) {
+            // Standard failed-call observability event: a transport failure leaves only a `failed`
+            // ai_gateway_calls row with no usage (see the comment above), so this log carries the cause.
+            logger.error({ err, provider: options.provider.id, model: options.model }, "Provider call failed");
+            sendJson(res, 502, { error: "Provider call failed", code: "provider_failed" });
+            return;
+          }
+          throw err;
         }
-        if (err instanceof BudgetExceededError) {
-          sendJson(res, 403, { error: err.message, code: "budget_exceeded" });
-          return;
-        }
-        if (err instanceof ProviderCallError) {
-          // Standard failed-call observability event: a transport failure leaves only a `failed`
-          // ai_gateway_calls row with no usage (see the comment above), so this log carries the cause.
-          logger.error({ err, provider: options.provider.id, model: options.model }, "Provider call failed");
-          sendJson(res, 502, { error: "Provider call failed", code: "provider_failed" });
-          return;
-        }
-        throw err;
-      }
 
-      if (!result.valid) {
-        sendJson(res, 502, { error: "Provider response failed schema validation", code: "invalid_response" });
-        return;
-      }
+        if (!result.valid) {
+          sendJson(res, 502, { error: "Provider response failed schema validation", code: "invalid_response" });
+          return;
+        }
 
-      sendJson(res, 200, {
-        content: result.content,
-        usage: { inputTokens: result.inputTokens, outputTokens: result.outputTokens },
+        sendJson(res, 200, {
+          content: result.content,
+          usage: { inputTokens: result.inputTokens, outputTokens: result.outputTokens },
+        });
       });
     } catch (err) {
       if (err instanceof PayloadTooLargeError) {
