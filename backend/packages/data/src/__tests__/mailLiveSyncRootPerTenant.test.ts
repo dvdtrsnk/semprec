@@ -145,6 +145,27 @@ describe("mail live-sync root across tenants (issue #990)", () => {
     expect(forMb[0]).toMatchObject({ tenantId: tenantB });
   });
 
+  it("installs the discovery interval from inside the mail:liveSync system scope", async () => {
+    const realSetInterval = globalThis.setInterval;
+    let scopeAtSchedule: TenantScope | undefined;
+    const spy = vi.spyOn(globalThis, "setInterval").mockImplementation(((...args: Parameters<typeof setInterval>) => {
+      scopeAtSchedule = currentTenantScope();
+      return realSetInterval(...args);
+    }) as typeof setInterval);
+
+    const { factory } = spyFactory();
+    const root = createMailLiveSyncRoot(dataPool!, factory);
+    try {
+      expect(currentTenantScope()).toBeUndefined();
+      await root.start();
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(scopeAtSchedule).toEqual({ kind: "system", reason: "mail:liveSync" });
+    } finally {
+      spy.mockRestore();
+      await root.stop();
+    }
+  });
+
   it("isolates a tenant without mail databases: reports once, still hosts tenant zero", async () => {
     await createTestTenant(pool);
     const m0 = await addMailboxToTenantZero(dataPool!);
