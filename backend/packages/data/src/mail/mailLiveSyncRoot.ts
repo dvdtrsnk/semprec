@@ -1,8 +1,11 @@
 import type { Pool } from "pg";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import { listItems } from "../chokePoint/itemsStore.js";
 import { defaultSyncModeForProvider, ensureMailAccountSyncState, type SyncMode } from "./mailAccountSyncStateStore.js";
 import { enqueueMailAccountSync } from "./mailSyncJob.js";
+import { resolveMailModuleIds } from "./mailModuleIds.js";
+import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import {
   mailSyncProcessName,
   startProcessHeartbeat,
@@ -73,19 +76,28 @@ export interface MailLiveSyncRoot {
 }
 
 interface HostedEntry {
+  tenantId: string;
   lifecycle: MailAccountLifecycle;
   syncMode: SyncMode;
   heartbeat: ProcessHeartbeatHandle | null;
 }
 
 /**
- * The mailsync composition root (issue #195): discovers active (non-deleted) rows in the
- * Mailboxes database and hosts exactly one lifecycle per account for as long as it stays
+ * The mailsync composition root (issue #195): discovers, once per active tenant, the active
+ * (non-deleted) rows in that tenant's Mailboxes database and hosts exactly one lifecycle per account for as long as it stays
  * active — deactivation (a soft-deleted Mailbox item, `deleted_at` set, the same signal
  * `listItems` already filters on by default) stops that account's lifecycle and nothing else.
  * Each hosted account also beats its own `mailsync:<id>` process heartbeat (`processHeartbeats.ts`)
  * for as long as it stays hosted, so `checkProcessHeartbeats` sees it as a live process rather
  * than a permanent `process_stale` alert.
+ *
+ * Discovery runs in a system scope and re-enters each active tenant in turn
+ * (`forEachActiveTenant`); a tenant whose discovery fails is reported as `("*", "discover", err)`
+ * and keeps its currently hosted lifecycles until a later pass succeeds for it. A lifecycle's
+ * `start()` and `stop()` run inside its mailbox's tenant scope, so whatever it does later from
+ * its own timers and sockets stays in that tenant; the per-account heartbeat beats in the
+ * root's system scope. A tenant that is no longer active is not enumerated, so its lifecycles
+ * stop on the next pass.
  *
  * Restart-safe by construction rather than by any explicit "am I already running" check: a
  * fresh process starts with an empty `hosted` map, and the only account state it ever reads is
@@ -100,7 +112,6 @@ interface HostedEntry {
  */
 export function createMailLiveSyncRoot(
   pool: Pool,
-  mailboxesDatabaseId: string,
   lifecycleFactory: MailLiveSyncLifecycleFactory,
   options: MailLiveSyncRootOptions = {},
 ): MailLiveSyncRoot {
@@ -122,88 +133,117 @@ export function createMailLiveSyncRoot(
   // set), so two un-awaited `start()` calls can't both observe it unset.
   let started = false;
 
-  async function discoverActiveAccounts(): Promise<Map<string, SyncMode>> {
-    const active = new Map<string, SyncMode>();
-    let cursor: string | null = null;
-    do {
-      const nextCursor = cursor;
-      cursor = await withTransaction(pool, async (client) => {
-        const page = await listItems(client, mailboxesDatabaseId, { cursor: nextCursor ?? undefined });
-        for (const item of page.items) {
-          // Each account's seed runs under its own SAVEPOINT: a failed statement aborts the
-          // whole surrounding transaction in Postgres, so without this, one bad account would
-          // poison the page's shared transaction and take every other account on it down too.
-          await client.query("SAVEPOINT discover_account");
-          try {
-            const provider = typeof item.properties.provider === "string" ? item.properties.provider : "generic";
-            // Never overwrites an existing row's `syncMode` (mailAccountSyncStateStore.ts) — this
-            // only seeds state for an account discovered here for the first time; a user's
-            // subsequent manual `setSyncMode` switch is picked up below because we read it back
-            // from the row itself, not from `defaultSyncModeForProvider` again.
-            const state = await ensureMailAccountSyncState(client, {
-              itemId: item.id,
-              syncMode: defaultSyncModeForProvider(provider),
-            });
-            active.set(item.id, state.syncMode);
-            await client.query("RELEASE SAVEPOINT discover_account");
-          } catch (err) {
-            // One account's state failing to read/seed must not drop every other account on this
-            // page from the active set, and must not throw out of discovery entirely. Reported
-            // before the rollback so the original error still surfaces even if the rollback itself throws.
-            options.onLifecycleError?.(item.id, "discover", err);
-            await client.query("ROLLBACK TO SAVEPOINT discover_account");
-          }
-        }
-        return page.nextCursor;
-      });
-    } while (cursor);
-    return active;
+  interface DiscoveredAccount {
+    tenantId: string;
+    syncMode: SyncMode;
+  }
+
+  async function discoverActiveAccounts(): Promise<{
+    active: Map<string, DiscoveredAccount>;
+    failedTenants: Set<string>;
+  }> {
+    const active = new Map<string, DiscoveredAccount>();
+    const failedTenants = new Set<string>();
+    await forEachActiveTenant(pool, async (tenantId) => {
+      // Collected per tenant and merged only on success, so a tenant failing half-way never
+      // contributes a partial account list.
+      const found = new Map<string, DiscoveredAccount>();
+      try {
+        // Resolved inside the first page's transaction, so a tenant costs one connection per page.
+        let mailboxesDatabaseId: string | undefined;
+        let cursor: string | null = null;
+        do {
+          const nextCursor = cursor;
+          cursor = await withTransaction(pool, async (client) => {
+            mailboxesDatabaseId ??= (await resolveMailModuleIds(client)).mailboxesDatabaseId;
+            const page = await listItems(client, mailboxesDatabaseId, { cursor: nextCursor ?? undefined });
+            for (const item of page.items) {
+              // Each account's seed runs under its own SAVEPOINT: a failed statement aborts the
+              // whole surrounding transaction in Postgres, so without this, one bad account would
+              // poison the page's shared transaction and take every other account on it down too.
+              await client.query("SAVEPOINT discover_account");
+              try {
+                const provider = typeof item.properties.provider === "string" ? item.properties.provider : "generic";
+                // Never overwrites an existing row's `syncMode` (mailAccountSyncStateStore.ts) — this
+                // only seeds state for an account discovered here for the first time; a user's
+                // subsequent manual `setSyncMode` switch is picked up below because we read it back
+                // from the row itself, not from `defaultSyncModeForProvider` again.
+                const state = await ensureMailAccountSyncState(client, {
+                  itemId: item.id,
+                  syncMode: defaultSyncModeForProvider(provider),
+                });
+                found.set(item.id, { tenantId, syncMode: state.syncMode });
+                await client.query("RELEASE SAVEPOINT discover_account");
+              } catch (err) {
+                // One account's state failing to read/seed must not drop every other account on this
+                // page from the active set, and must not throw out of discovery entirely. Reported
+                // before the rollback so the original error still surfaces even if the rollback itself throws.
+                options.onLifecycleError?.(item.id, "discover", err);
+                await client.query("ROLLBACK TO SAVEPOINT discover_account");
+              }
+            }
+            return page.nextCursor;
+          });
+        } while (cursor);
+      } catch (err) {
+        // This tenant's failure is isolated: reported once, and the tenant is marked failed so its
+        // hosted lifecycles survive this pass. Swallowing here is what keeps the other tenants
+        // running and stops the helper from rethrowing.
+        options.onLifecycleError?.("*", "discover", err);
+        failedTenants.add(tenantId);
+        return;
+      }
+      for (const [id, account] of found) active.set(id, account);
+    });
+    return { active, failedTenants };
   }
 
   async function stopHosted(mailboxItemId: string, entry: HostedEntry): Promise<void> {
     hosted.delete(mailboxItemId);
     entry.heartbeat?.stop();
     try {
-      await entry.lifecycle.stop();
+      await runInTenant(entry.tenantId, () => entry.lifecycle.stop());
     } catch (err) {
       options.onLifecycleError?.(mailboxItemId, "stop", err);
     }
   }
 
   async function reconcileOnce(): Promise<void> {
-    const active = await discoverActiveAccounts();
+    await runAsSystem("mail:liveSync", async () => {
+      const { active, failedTenants } = await discoverActiveAccounts();
 
-    for (const [mailboxItemId, syncMode] of active) {
-      const existing = hosted.get(mailboxItemId);
-      if (existing && existing.syncMode === syncMode) continue;
-      // Either newly active, or the user switched `syncMode` since the last pass — either way
-      // the previous lifecycle (if any) no longer matches and is retired before the new one
-      // starts, so an account never has two lifecycles hosted for it at once.
-      if (existing) await stopHosted(mailboxItemId, existing);
+      for (const [mailboxItemId, { tenantId, syncMode }] of active) {
+        const existing = hosted.get(mailboxItemId);
+        if (existing && existing.syncMode === syncMode) continue;
+        // Either newly active, or the user switched `syncMode` since the last pass — either way
+        // the previous lifecycle (if any) no longer matches and is retired before the new one
+        // starts, so an account never has two lifecycles hosted for it at once.
+        if (existing) await stopHosted(mailboxItemId, existing);
 
-      const lifecycle = lifecycleFactory({ mailboxItemId, syncMode });
-      const entry: HostedEntry = { lifecycle, syncMode, heartbeat: null };
-      hosted.set(mailboxItemId, entry);
-      try {
-        await lifecycle.start();
-        entry.heartbeat = startProcessHeartbeat(
-          pool,
-          {
-            process: mailSyncProcessName(mailboxItemId),
-            pid: process.pid,
-            version: process.env.APP_VERSION ?? "0.0.0",
-          },
-          { onError: (err) => options.onLifecycleError?.(mailboxItemId, "heartbeat", err) },
-        );
-      } catch (err) {
-        options.onLifecycleError?.(mailboxItemId, "start", err);
+        const lifecycle = lifecycleFactory({ mailboxItemId, syncMode });
+        const entry: HostedEntry = { tenantId, lifecycle, syncMode, heartbeat: null };
+        hosted.set(mailboxItemId, entry);
+        try {
+          await runInTenant(tenantId, () => lifecycle.start());
+          entry.heartbeat = startProcessHeartbeat(
+            pool,
+            {
+              process: mailSyncProcessName(mailboxItemId),
+              pid: process.pid,
+              version: process.env.APP_VERSION ?? "0.0.0",
+            },
+            { onError: (err) => options.onLifecycleError?.(mailboxItemId, "heartbeat", err) },
+          );
+        } catch (err) {
+          options.onLifecycleError?.(mailboxItemId, "start", err);
+        }
       }
-    }
 
-    for (const [mailboxItemId, entry] of [...hosted]) {
-      if (active.has(mailboxItemId)) continue;
-      await stopHosted(mailboxItemId, entry);
-    }
+      for (const [mailboxItemId, entry] of [...hosted]) {
+        if (active.has(mailboxItemId) || failedTenants.has(entry.tenantId)) continue;
+        await stopHosted(mailboxItemId, entry);
+      }
+    });
   }
 
   return {

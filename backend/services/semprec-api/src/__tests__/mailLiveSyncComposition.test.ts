@@ -54,7 +54,7 @@ async function insertMailbox(pool: Pool, mailboxesDatabaseId: string, name: stri
 /** Composes the live-sync root exactly as `serve.ts` does, with a shortened discovery interval. */
 async function composeLikeServe(pool: Pool): Promise<{ root: MailLiveSyncRoot; mailboxesDatabaseId: string }> {
   const { mailboxesDatabaseId } = await withTransaction(pool, (client) => resolveMailModuleIds(client));
-  const root = createMailLiveSyncRoot(pool, mailboxesDatabaseId, createNoopMailLiveSyncLifecycleFactory(pool), {
+  const root = createMailLiveSyncRoot(pool, createNoopMailLiveSyncLifecycleFactory(pool), {
     discoveryIntervalMs: DISCOVERY_INTERVAL_MS,
   });
   return { root, mailboxesDatabaseId };
