@@ -38,9 +38,10 @@ export interface WriteNotificationInput {
   /**
    * Identifies *this* state transition of `(sourceTable, sourceId, kind)` for *this recipient* —
    * replaying the same transition for the same recipient (a redelivered/retried queue job
-   * re-running the same failure) must not duplicate the notification, while a later, independent transition on the same source must still insert
-   * a new row. `scheduler/sweep.ts`'s `heartbeat_error` producer uses the firing queue job's own
-   * `id`, which is stable across that job's retries and distinct for every new fire.
+   * re-running the same failure) must not duplicate the notification, while a later, independent
+   * transition on the same source must still insert a new row. `scheduler/sweep.ts`'s
+   * `heartbeat_error` producer uses the firing queue job's own `id`, which is stable across that
+   * job's retries and distinct for every new fire.
    */
   transitionInstance: string;
   /**
