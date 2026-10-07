@@ -119,6 +119,7 @@ describe("person_email_index is keyed per tenant", () => {
     const second = await pool.connect();
     const p1 = randomUUID();
     const p2 = randomUUID();
+    let secondResult: Promise<unknown> | undefined;
     try {
       await first.query("BEGIN");
       await second.query("BEGIN");
@@ -128,7 +129,7 @@ describe("person_email_index is keyed per tenant", () => {
       // The first claim is uncommitted, so the second one reads nothing and its insert
       // blocks on the first writer's row until that commits.
       await reindexPersonEmails(first, p1, ["a@example.com"]);
-      const secondResult = reindexPersonEmails(second, p2, ["a@example.com"]);
+      secondResult = reindexPersonEmails(second, p2, ["a@example.com"]);
       await new Promise((resolve) => setTimeout(resolve, 200));
       await first.query("COMMIT");
       await expect(secondResult).resolves.toEqual({ conflicts: [] });
@@ -144,6 +145,19 @@ describe("person_email_index is keyed per tenant", () => {
         expect(rows).toEqual([{ item_id: p1 }]);
       });
     } finally {
+      // Roll the first connection back before settling the second: it holds the row lock the
+      // second insert may still be blocked on. Neither connection is released while a query is
+      // in flight, and a failure here must not replace the test's own error.
+      const rollbackQuietly = async (client: typeof first): Promise<void> => {
+        try {
+          await client.query("ROLLBACK");
+        } catch {
+          // The transaction is already committed or the connection is broken; release proceeds.
+        }
+      };
+      await rollbackQuietly(first);
+      await secondResult?.catch(() => undefined);
+      await rollbackQuietly(second);
       first.release();
       second.release();
     }
