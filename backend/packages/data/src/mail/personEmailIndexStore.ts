@@ -4,6 +4,11 @@ export function normalizeEmailAddress(address: string): string {
   return address.trim().toLowerCase();
 }
 
+/**
+ * Resolves a normalized address to the Person that owns it. Reads are confined to the
+ * caller's tenant by row-level security, so the same address can belong to different
+ * Persons in different tenants; within one tenant an address never belongs to two people.
+ */
 export async function lookupPersonIdByEmail(client: Queryable, address: string): Promise<string | null> {
   const { rows } = await client.query<{ item_id: string }>(`SELECT item_id FROM person_email_index WHERE email = $1`, [
     normalizeEmailAddress(address),
@@ -20,8 +25,12 @@ export interface ReindexPersonEmailsResult {
  * Full reindex for one Person from their current `People.emails` value: releases every
  * address this Person no longer claims (frees it for someone else), claims every new one
  * that isn't already owned by a different Person, and reports the ones it couldn't claim.
- * `email PRIMARY KEY` on `person_email_index` is what makes "owned by a different Person" a
- * real, enforced fact here rather than a race-prone read-then-write.
+ * "One address never belongs to two people" holds within a tenant (row-level security
+ * confines the reads and the release to the caller's tenant). It is enforced by the
+ * tenant-leading unique index `person_email_index_tenant_email_uq`, not by the global primary
+ * key, which makes it a real fact rather than a race-prone read-then-write. The claim uses
+ * `ON CONFLICT DO NOTHING` with no target so every unique index arbitrates: two concurrent
+ * claims of one address leave the first writer's row and neither rejects.
  */
 export async function reindexPersonEmails(
   client: Queryable,
@@ -44,7 +53,7 @@ export async function reindexPersonEmails(
 
   if (toClaim.length > 0) {
     await client.query(
-      `INSERT INTO person_email_index (email, item_id) SELECT unnest($1::text[]), $2 ON CONFLICT (email) DO NOTHING`,
+      `INSERT INTO person_email_index (email, item_id) SELECT unnest($1::text[]), $2 ON CONFLICT DO NOTHING`,
       [toClaim, personItemId],
     );
   }
