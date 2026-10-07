@@ -103,6 +103,16 @@ describe("mail sweeps run per tenant (issue #989)", () => {
     await adminPool?.end();
   });
 
+  function parseMailSyncEnvelope(raw: unknown): { tenantId: string; mailboxItemId: string } {
+    const envelope = raw as { tenantId?: unknown; payload?: { mailboxItemId?: unknown } } | null;
+    const tenantId = envelope?.tenantId;
+    const mailboxItemId = envelope?.payload?.mailboxItemId;
+    if (typeof tenantId !== "string" || typeof mailboxItemId !== "string") {
+      throw new Error(`Unexpected mailAccountSync job envelope: ${JSON.stringify(raw)}`);
+    }
+    return { tenantId, mailboxItemId };
+  }
+
   beforeEach(async () => {
     await resetDatabase(adminPool);
     // Seeded while tenant zero is the only tenant, then tenant B joins without mail databases.
@@ -121,16 +131,11 @@ describe("mail sweeps run per tenant (issue #989)", () => {
 
     await runAsSystem("test", () => handleMailAccountSyncSweepTask(pool));
 
-    const envelopes = (await readJobPayloadsByIdentifier(adminPool, CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC)) as Array<{
-      tenantId: string;
-      payload: { mailboxItemId: string };
-    }>;
+    const envelopes = (await readJobPayloadsByIdentifier(adminPool, CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC)).map(
+      parseMailSyncEnvelope,
+    );
     expect(envelopes).toHaveLength(2);
-    expect(
-      envelopes
-        .map((e) => ({ tenantId: e.tenantId, mailboxItemId: e.payload.mailboxItemId }))
-        .sort((a, b) => a.mailboxItemId.localeCompare(b.mailboxItemId)),
-    ).toEqual(
+    expect(envelopes.sort((a, b) => a.mailboxItemId.localeCompare(b.mailboxItemId))).toEqual(
       [
         { tenantId: tenantZero, mailboxItemId: mailboxZero },
         { tenantId: tenantB, mailboxItemId: mailboxB },
