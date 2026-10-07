@@ -55,6 +55,33 @@ describe("push subscription custom route handlers (issue #239)", () => {
     expect(body.subscription.sessionId).toBe(identity.session.id);
   });
 
+  it("answers a registration of an endpoint another account holds exactly like a fresh endpoint", async () => {
+    const owner = await makeIdentity("owner@example.com");
+    const newcomer = await makeIdentity("newcomer@example.com");
+    const handler = createRegisterPushSubscriptionRouteHandler(pool);
+    const register = (identity: typeof owner, endpoint: string) =>
+      handler({
+        params: {},
+        identity,
+        body: { channel: "web_push", platform: "web", endpoint, p256dh: "key", authSecret: "secret" },
+      });
+    const held = await register(owner, "https://push.example/held");
+
+    const taken = await register(newcomer, "https://push.example/held");
+    const fresh = await register(newcomer, "https://push.example/fresh");
+
+    expect(taken.status).toBe(200);
+    expect(fresh.status).toBe(200);
+    const takenBody = taken.body as { subscription: Record<string, unknown> };
+    const freshBody = fresh.body as { subscription: Record<string, unknown> };
+    expect(Object.keys(takenBody)).toEqual(Object.keys(freshBody));
+    expect(Object.keys(takenBody.subscription)).toEqual(Object.keys(freshBody.subscription));
+    expect(takenBody.subscription.userId).toBe(newcomer.user.id);
+    const serialized = JSON.stringify(taken.body);
+    expect(serialized).not.toContain((held.body as { subscription: { id: string } }).subscription.id);
+    expect(serialized).not.toContain(owner.user.id);
+  });
+
   it("revokes the caller's own subscription", async () => {
     const identity = await makeIdentity();
     const registerHandler = createRegisterPushSubscriptionRouteHandler(pool);

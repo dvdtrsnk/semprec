@@ -4,12 +4,15 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { createUser } from "../auth/usersStore.js";
 import { login, logout, revokeUserSession } from "../auth/authActions.js";
-import { ConflictError, ValidationError } from "../errors.js";
+import { ValidationError } from "../errors.js";
 import { registerPushSubscription, revokePushSubscription } from "../push/pushSubscriptionActions.js";
 import {
   revokePushSubscriptionByProviderInvalidation,
   listPushSubscriptionsForUser,
+  upsertApnsSubscription,
+  upsertWebPushSubscription,
 } from "../push/pushSubscriptionsStore.js";
+import { withTransaction } from "../db/pool.js";
 
 let pool: Pool;
 
@@ -231,7 +234,7 @@ describe("push subscriptions (issue #150)", () => {
       expect(rows.filter((r) => r.revokedAt === null)).toHaveLength(1);
     });
 
-    it("rejects another user's registration of an active web_push endpoint and leaves the owner's row unchanged", async () => {
+    it("rebinds an active web_push endpoint to the account registering it and revokes the previous owner's row", async () => {
       const a = await makeUser("a@example.com");
       const b = await makeUser("b@example.com");
       const { session: sessionA } = await makeSession(a.email);
@@ -246,7 +249,7 @@ describe("push subscriptions (issue #150)", () => {
         authSecret: "secret-a",
       });
 
-      const attempt = registerPushSubscription(pool, {
+      const registered = await registerPushSubscription(pool, {
         userId: b.id,
         sessionId: sessionB.id,
         channel: "web_push",
@@ -255,15 +258,61 @@ describe("push subscriptions (issue #150)", () => {
         p256dh: "key-b",
         authSecret: "secret-b",
       });
-      await expect(attempt).rejects.toThrow(ConflictError);
-      await expect(attempt).rejects.toMatchObject({ status: 409, details: { field: "endpoint" } });
+
+      expect(registered.id).not.toBe(original.id);
+      expect(registered.userId).toBe(b.id);
+      expect(registered.p256dh).toBe("key-b");
+      expect(registered.revokedAt).toBeNull();
+      const rowsA = await listPushSubscriptionsForUser(pool, a.id);
+      expect(rowsA).toHaveLength(1);
+      expect(rowsA[0]!.id).toBe(original.id);
+      expect(rowsA[0]!.revokedAt).not.toBeNull();
+      expect(rowsA[0]!.p256dh).toBe("key-a");
+      expect(rowsA[0]!.authSecret).toBe("secret-a");
+      const { rows } = await pool.query(
+        "SELECT id FROM push_subscriptions WHERE endpoint = $1 AND revoked_at IS NULL",
+        ["https://push.example/shared"],
+      );
+      expect(rows).toHaveLength(1);
+    });
+
+    it("keeps the previous web_push owner active when the new owner's insert fails, for a client and a bare pool", async () => {
+      const a = await makeUser("a@example.com");
+      const b = await makeUser("b@example.com");
+      const original = await upsertWebPushSubscription(pool, {
+        userId: a.id,
+        sessionId: null,
+        endpoint: "https://push.example/atomic",
+        p256dh: "key-a",
+        authSecret: "secret-a",
+      });
+      await pool.query(`
+        CREATE FUNCTION push_test_reject_b() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.user_id = '${b.id}' THEN RAISE EXCEPTION 'forced failure'; END IF;
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER push_test_reject_b BEFORE INSERT ON push_subscriptions
+          FOR EACH ROW EXECUTE FUNCTION push_test_reject_b();`);
+      try {
+        const input = {
+          userId: b.id,
+          sessionId: null,
+          endpoint: "https://push.example/atomic",
+          p256dh: "key-b",
+          authSecret: "secret-b",
+        };
+        await expect(upsertWebPushSubscription(pool, input)).rejects.toThrow("forced failure");
+        await expect(withTransaction(pool, (c) => upsertWebPushSubscription(c, input))).rejects.toThrow(
+          "forced failure",
+        );
+      } finally {
+        await pool.query("DROP TRIGGER push_test_reject_b ON push_subscriptions; DROP FUNCTION push_test_reject_b()");
+      }
 
       const rowsA = await listPushSubscriptionsForUser(pool, a.id);
       expect(rowsA).toEqual([original]);
-      expect(rowsA[0]!.userId).toBe(a.id);
-      expect(rowsA[0]!.p256dh).toBe("key-a");
-      expect(rowsA[0]!.sessionId).toBe(sessionA.id);
-      expect(await listPushSubscriptionsForUser(pool, b.id)).toEqual([]);
+      expect(rowsA[0]!.revokedAt).toBeNull();
     });
 
     it("lets another user register a web_push endpoint once its owner has revoked it", async () => {
@@ -301,7 +350,7 @@ describe("push subscriptions (issue #150)", () => {
       expect(rowsA[0]!.revokedAt).not.toBeNull();
     });
 
-    it("rejects another user's registration of an active apns device token and leaves the owner's row unchanged", async () => {
+    it("rebinds an active apns device token to the account registering it and revokes the previous owner's row", async () => {
       const a = await makeUser("a@example.com");
       const b = await makeUser("b@example.com");
       const { session: sessionA } = await makeSession(a.email, "ios");
@@ -315,7 +364,7 @@ describe("push subscriptions (issue #150)", () => {
         apnsEnvironment: "sandbox",
       });
 
-      const attempt = registerPushSubscription(pool, {
+      const registered = await registerPushSubscription(pool, {
         userId: b.id,
         sessionId: sessionB.id,
         channel: "apns",
@@ -323,15 +372,58 @@ describe("push subscriptions (issue #150)", () => {
         deviceToken: "shared-device-token",
         apnsEnvironment: "production",
       });
-      await expect(attempt).rejects.toThrow(ConflictError);
-      await expect(attempt).rejects.toMatchObject({ status: 409, details: { field: "deviceToken" } });
+
+      expect(registered.id).not.toBe(original.id);
+      expect(registered.userId).toBe(b.id);
+      expect(registered.apnsEnvironment).toBe("production");
+      expect(registered.revokedAt).toBeNull();
+      const rowsA = await listPushSubscriptionsForUser(pool, a.id);
+      expect(rowsA).toHaveLength(1);
+      expect(rowsA[0]!.id).toBe(original.id);
+      expect(rowsA[0]!.revokedAt).not.toBeNull();
+      expect(rowsA[0]!.apnsEnvironment).toBe("sandbox");
+      const { rows } = await pool.query(
+        "SELECT id FROM push_subscriptions WHERE device_token = $1 AND revoked_at IS NULL",
+        ["shared-device-token"],
+      );
+      expect(rows).toHaveLength(1);
+    });
+
+    it("keeps the previous apns owner active when the new owner's insert fails, for a client and a bare pool", async () => {
+      const a = await makeUser("a@example.com");
+      const b = await makeUser("b@example.com");
+      const original = await upsertApnsSubscription(pool, {
+        userId: a.id,
+        sessionId: null,
+        platform: "ios",
+        deviceToken: "atomic-token",
+        apnsEnvironment: "sandbox",
+      });
+      await pool.query(`
+        CREATE FUNCTION push_test_reject_b() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.user_id = '${b.id}' THEN RAISE EXCEPTION 'forced failure'; END IF;
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER push_test_reject_b BEFORE INSERT ON push_subscriptions
+          FOR EACH ROW EXECUTE FUNCTION push_test_reject_b();`);
+      try {
+        const input = {
+          userId: b.id,
+          sessionId: null,
+          platform: "ios" as const,
+          deviceToken: "atomic-token",
+          apnsEnvironment: "production" as const,
+        };
+        await expect(upsertApnsSubscription(pool, input)).rejects.toThrow("forced failure");
+        await expect(withTransaction(pool, (c) => upsertApnsSubscription(c, input))).rejects.toThrow("forced failure");
+      } finally {
+        await pool.query("DROP TRIGGER push_test_reject_b ON push_subscriptions; DROP FUNCTION push_test_reject_b()");
+      }
 
       const rowsA = await listPushSubscriptionsForUser(pool, a.id);
       expect(rowsA).toEqual([original]);
-      expect(rowsA[0]!.userId).toBe(a.id);
-      expect(rowsA[0]!.apnsEnvironment).toBe("sandbox");
-      expect(rowsA[0]!.sessionId).toBe(sessionA.id);
-      expect(await listPushSubscriptionsForUser(pool, b.id)).toEqual([]);
+      expect(rowsA[0]!.revokedAt).toBeNull();
     });
 
     it("lets another user register an apns device token once its owner has revoked it", async () => {
