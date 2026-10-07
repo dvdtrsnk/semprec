@@ -3,7 +3,7 @@ import type { Pool, PoolClient } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { createDatabase } from "../chokePoint/databasesStore.js";
-import { findIdempotentReplay, insertItemWithReplay } from "../chokePoint/itemsStore.js";
+import { findIdempotentReplay, insertItemWithReplay, softDeleteItem } from "../chokePoint/itemsStore.js";
 import { ConflictError } from "../errors.js";
 
 let pool: Pool;
@@ -11,16 +11,28 @@ let pool: Pool;
 /** Runs `fn` in a transaction on the owner role that is always rolled back. */
 async function inRolledBackTransaction(fn: (client: PoolClient) => Promise<void>): Promise<void> {
   const client = await pool.connect();
+  let primary: unknown;
+  let failed = false;
   try {
     await client.query("BEGIN");
     await fn(client);
-  } finally {
-    try {
-      await client.query("ROLLBACK");
-    } finally {
-      client.release();
-    }
+  } catch (err) {
+    failed = true;
+    primary = err;
   }
+  let rollbackError: unknown;
+  let rollbackFailed = false;
+  try {
+    await client.query("ROLLBACK");
+  } catch (err) {
+    rollbackFailed = true;
+    rollbackError = err;
+  } finally {
+    client.release();
+  }
+  // The test's own failure is the real one; a rollback failure only surfaces when nothing else failed.
+  if (failed) throw primary;
+  if (rollbackFailed) throw rollbackError;
 }
 
 async function dropLegacyKey(client: PoolClient): Promise<void> {
@@ -141,10 +153,7 @@ describe("idempotency reservations are per tenant", () => {
       await scopeTo(client, tenantB);
       await client.query("SET LOCAL ROLE semprec_data");
       const firstB = await insertItemWithReplay(client, { databaseId: dbB.id, properties: {}, idempotencyKey: "k" });
-      await client.query("UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2", [
-        dbB.id,
-        firstB.item.id,
-      ]);
+      await softDeleteItem(client, dbB.id, firstB.item.id);
       const secondB = await insertItemWithReplay(client, { databaseId: dbB.id, properties: {}, idempotencyKey: "k" });
       expect(secondB.created).toBe(true);
       expect(secondB.item.id).not.toBe(firstB.item.id);
