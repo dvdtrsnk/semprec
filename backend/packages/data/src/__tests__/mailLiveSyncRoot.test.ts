@@ -243,7 +243,7 @@ describe("mail live-sync composition root (issue #195)", () => {
     );
 
     const { factory, byAccount } = recordingFactory();
-    const root = createMailLiveSyncRoot(pool, mailboxesId, factory);
+    const root = createMailLiveSyncRoot(pool, factory);
 
     await root.reconcileOnce();
 
@@ -274,7 +274,7 @@ describe("mail live-sync composition root (issue #195)", () => {
     );
 
     const { factory, byAccount } = recordingFactory();
-    const root = createMailLiveSyncRoot(pool, mailboxesId, factory);
+    const root = createMailLiveSyncRoot(pool, factory);
     await root.reconcileOnce();
     expect(byAccount.get(a.id)?.starts).toBe(1);
     expect(byAccount.get(b.id)?.starts).toBe(1);
@@ -298,7 +298,7 @@ describe("mail live-sync composition root (issue #195)", () => {
     );
 
     const first = recordingFactory();
-    const rootOne = createMailLiveSyncRoot(pool, mailboxesId, first.factory);
+    const rootOne = createMailLiveSyncRoot(pool, first.factory);
     await rootOne.reconcileOnce();
     expect(first.byAccount.get(a.id)?.starts).toBe(1);
 
@@ -308,7 +308,7 @@ describe("mail live-sync composition root (issue #195)", () => {
     const stateBeforeRestart = await withTransaction(pool, (client) => getMailAccountSyncState(client, a.id));
 
     const second = recordingFactory();
-    const rootTwo = createMailLiveSyncRoot(pool, mailboxesId, second.factory);
+    const rootTwo = createMailLiveSyncRoot(pool, second.factory);
     await rootTwo.reconcileOnce();
     expect(second.byAccount.get(a.id)?.starts).toBe(1);
 
@@ -336,7 +336,7 @@ describe("mail live-sync composition root (issue #195)", () => {
           }
         : {},
     );
-    const root = createMailLiveSyncRoot(pool, mailboxesId, factory, {
+    const root = createMailLiveSyncRoot(pool, factory, {
       onLifecycleError: (mailboxItemId, phase) => errors.push({ mailboxItemId, phase }),
     });
 
@@ -360,7 +360,7 @@ describe("mail live-sync composition root (issue #195)", () => {
     );
 
     const { factory, byAccount } = recordingFactory();
-    const root = createMailLiveSyncRoot(pool, mailboxesId, factory);
+    const root = createMailLiveSyncRoot(pool, factory);
     await root.reconcileOnce();
     expect(byAccount.get(a.id)?.starts).toBe(1);
     const firstLifecycle = byAccount.get(a.id)!;
@@ -399,17 +399,17 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     const { pool: countingPool, connectCount } = countingConnectPool(pool);
 
     vi.useFakeTimers();
-    const root = createMailLiveSyncRoot(countingPool, mailboxesId, factory, { discoveryIntervalMs: 1000 });
+    const root = createMailLiveSyncRoot(countingPool, factory, { discoveryIntervalMs: 1000 });
 
     await root.start();
     await root.start(); // second call must be a no-op: no second initial reconcile, no second interval
 
     const beforeTick = connectCount();
     await vi.advanceTimersByTimeAsync(1000);
-    // Exactly one interval firing means exactly one discovery pass (one `pool.connect()`) per tick.
-    expect(connectCount() - beforeTick).toBe(1);
-
+    // Exactly one interval firing means exactly one discovery pass: the tenant enumeration plus one page transaction.
+    // `stop()` awaits the pass the tick started, so every connection it opens is counted by then.
     await root.stop();
+    expect(connectCount() - beforeTick).toBe(2);
     const afterStop = connectCount();
     await vi.advanceTimersByTimeAsync(5000);
     expect(connectCount()).toBe(afterStop);
@@ -425,7 +425,7 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     const { pool: countingPool, connectCount } = countingConnectPool(pool);
 
     vi.useFakeTimers();
-    const root = createMailLiveSyncRoot(countingPool, mailboxesId, factory, { discoveryIntervalMs: 1000 });
+    const root = createMailLiveSyncRoot(countingPool, factory, { discoveryIntervalMs: 1000 });
 
     const first = root.start();
     const second = root.start(); // fired before `first`'s initial reconcile has resolved
@@ -433,9 +433,9 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
 
     const beforeTick = connectCount();
     await vi.advanceTimersByTimeAsync(1000);
-    expect(connectCount() - beforeTick).toBe(1);
-
+    // `stop()` awaits the pass the tick started, so every connection it opens is counted by then.
     await root.stop();
+    expect(connectCount() - beforeTick).toBe(2);
     const afterStop = connectCount();
     await vi.advanceTimersByTimeAsync(5000);
     expect(connectCount()).toBe(afterStop);
@@ -463,7 +463,7 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     const { pool: countingPool, connectCount } = countingConnectPool(pool);
 
     vi.useFakeTimers();
-    const root = createMailLiveSyncRoot(countingPool, mailboxesId, factory, { discoveryIntervalMs: 1000 });
+    const root = createMailLiveSyncRoot(countingPool, factory, { discoveryIntervalMs: 1000 });
 
     const firstStart = root.start(); // still awaiting its initial reconcileOnce (gated above)
     await root.stop(); // bumps the generation and clears `started` while firstStart is in flight
@@ -476,9 +476,9 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     // first call's resumed continuation must have skipped scheduling as superseded.
     const beforeTick = connectCount();
     await vi.advanceTimersByTimeAsync(1000);
-    expect(connectCount() - beforeTick).toBe(1);
-
+    // `stop()` awaits the pass the tick started, so every connection it opens is counted by then.
     await root.stop();
+    expect(connectCount() - beforeTick).toBe(2);
     const afterStop = connectCount();
     await vi.advanceTimersByTimeAsync(5000);
     expect(connectCount()).toBe(afterStop);
@@ -503,7 +503,7 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     }));
 
     vi.useFakeTimers();
-    const root = createMailLiveSyncRoot(pool, mailboxesId, factory, { discoveryIntervalMs: 1000 });
+    const root = createMailLiveSyncRoot(pool, factory, { discoveryIntervalMs: 1000 });
     await root.start();
 
     intervalPassStarted = true;
@@ -546,7 +546,7 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
 
     const errors: Array<{ mailboxItemId: string; phase: string }> = [];
     const { factory, byAccount } = recordingFactory();
-    const root = createMailLiveSyncRoot(trackingPool, mailboxesId, factory, {
+    const root = createMailLiveSyncRoot(trackingPool, factory, {
       onLifecycleError: (mailboxItemId, phase) => errors.push({ mailboxItemId, phase }),
     });
 
@@ -558,7 +558,7 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     // transaction for the whole page's read-and-seed, not one per account — plus one more
     // `pool.connect()` per account that actually got hosted (A and C; B never enters the active
     // set), since each one's first heartbeat tick fires its own `pool.query()` immediately.
-    expect(connectCount() - before).toBe(3);
+    expect(connectCount() - before).toBe(4);
 
     expect(errors).toEqual([{ mailboxItemId: b.id, phase: "discover" }]);
     // The failing account never enters the active set, so it never gets a hosted lifecycle...
@@ -590,19 +590,21 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
 
     const errors: Array<{ mailboxItemId: string; phase: string; err: unknown }> = [];
     const { factory, byAccount } = recordingFactory();
-    const root = createMailLiveSyncRoot(trackingPool, mailboxesId, factory, {
+    const root = createMailLiveSyncRoot(trackingPool, factory, {
       onLifecycleError: (mailboxItemId, phase, err) => errors.push({ mailboxItemId, phase, err }),
     });
 
-    // The rollback's own failure still aborts the page's transaction and propagates out of
-    // reconcileOnce() — this test only asserts that onLifecycleError already ran with the
-    // original seed error before that happens.
-    await expect(root.reconcileOnce()).rejects.toBe(rollbackErr);
+    // The rollback's own failure aborts the page's transaction; the per-tenant discovery catches it
+    // and reports it as `("*", "discover", rollbackErr)`, so the pass itself resolves.
+    await expect(root.reconcileOnce()).resolves.toBeUndefined();
     await drain();
 
-    expect(errors).toHaveLength(1);
-    const [reported] = errors;
-    if (!reported) throw new Error("expected one lifecycle error");
+    expect(errors).toHaveLength(2);
+    const [reported, tenantReport] = errors;
+    if (!reported || !tenantReport) throw new Error("expected two lifecycle errors");
+    expect(tenantReport.mailboxItemId).toBe("*");
+    expect(tenantReport.phase).toBe("discover");
+    expect(tenantReport.err).toBe(rollbackErr);
     expect(reported.mailboxItemId).toBe(a.id);
     expect(reported.phase).toBe("discover");
     // The seed statement's own error must surface, not the rollback error that followed it.
@@ -626,7 +628,12 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
         if (prop === "connect") {
           return (...args: unknown[]) => {
             connectCalls++;
-            if (connectCalls === 1) return Promise.reject(new Error("boom: simulated transient connection failure"));
+            if (connectCalls === 1) {
+              const err = new Error("boom: simulated transient connection failure");
+              // The first connect is the tenant enumeration's `pool.query()`, which connects callback-style.
+              if (typeof args[0] === "function") return (args[0] as (e: Error) => void)(err);
+              return Promise.reject(err);
+            }
             return (t.connect as (...a: unknown[]) => unknown)(...args);
           };
         }
@@ -635,7 +642,7 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     });
 
     const { factory, byAccount } = recordingFactory();
-    const root = createMailLiveSyncRoot(flakyPool, mailboxesId, factory);
+    const root = createMailLiveSyncRoot(flakyPool, factory);
 
     await expect(root.start()).rejects.toThrow(/boom/);
 
@@ -668,7 +675,7 @@ describe("mail live-sync root: per-account process heartbeat (issue #707)", () =
 
     const { factory } = recordingFactory();
     const { pool: trackingPool, drain } = heartbeatTrackingPool(pool);
-    const root = createMailLiveSyncRoot(trackingPool, mailboxesId, factory);
+    const root = createMailLiveSyncRoot(trackingPool, factory);
 
     await root.reconcileOnce();
     await drain();
@@ -696,7 +703,7 @@ describe("mail live-sync root: per-account process heartbeat (issue #707)", () =
 
     const { factory } = recordingFactory();
     const { pool: trackingPool, drain } = heartbeatTrackingPool(pool);
-    const root = createMailLiveSyncRoot(trackingPool, mailboxesId, factory);
+    const root = createMailLiveSyncRoot(trackingPool, factory);
 
     await root.reconcileOnce();
     await drain();
@@ -746,7 +753,7 @@ describe("mail live-sync root: per-account process heartbeat (issue #707)", () =
       },
     }));
     const { pool: trackingPool, drain } = heartbeatTrackingPool(pool);
-    const root = createMailLiveSyncRoot(trackingPool, mailboxesId, factory, {
+    const root = createMailLiveSyncRoot(trackingPool, factory, {
       onLifecycleError: (mailboxItemId, phase) => errors.push({ mailboxItemId, phase }),
     });
 
@@ -773,7 +780,7 @@ describe("mail live-sync root: per-account process heartbeat (issue #707)", () =
     rejectNextUpsert(new Error("boom: simulated heartbeat UPSERT failure"));
 
     const errors: Array<{ mailboxItemId: string; phase: string }> = [];
-    const root = createMailLiveSyncRoot(trackingPool, mailboxesId, factory, {
+    const root = createMailLiveSyncRoot(trackingPool, factory, {
       onLifecycleError: (mailboxItemId, phase) => errors.push({ mailboxItemId, phase }),
     });
 

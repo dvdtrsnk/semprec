@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { runAsSystem } from "@semprec/shared";
 import type { Queryable } from "../db/pool.js";
 
 /** How often a running process re-UPSERTs its own identity row (issue #168's Task). */
@@ -73,9 +74,15 @@ export function startProcessHeartbeat(
   const startedAt = new Date();
 
   function tick(): void {
-    upsertProcessHeartbeat(pool, identity, startedAt).catch((err: unknown) => {
+    // `process_heartbeats` is a global table, so the UPSERT runs in a system scope. Entering the
+    // scope can throw synchronously; that must reach `onError`, never escape the timer callback.
+    try {
+      runAsSystem("processHeartbeat", () => upsertProcessHeartbeat(pool, identity, startedAt)).catch((err: unknown) => {
+        options.onError?.(err);
+      });
+    } catch (err) {
       options.onError?.(err);
-    });
+    }
   }
 
   tick();
