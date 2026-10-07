@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AiGatewayFailedError, withTraceContext } from "@semprec/shared";
+import { AiGatewayFailedError, runAsSystem, runInTenant, withTraceContext } from "@semprec/shared";
 import { createHttpAiGatewayClient } from "../httpAiGatewayClient.js";
 
 const INPUT = {
@@ -165,5 +165,39 @@ describe("createHttpAiGatewayClient", () => {
 
     expect(error).toBeInstanceOf(AiGatewayFailedError);
     expect((error as InstanceType<typeof AiGatewayFailedError>).reason).toBe("invalid_response");
+  });
+
+  describe("x-semprec-tenant-id", () => {
+    const TENANT_ID = "6f1c0a52-9d1e-4b7e-8c53-2f0e5c1a7b11";
+
+    async function sentHeaders(
+      run: (call: () => Promise<unknown>) => Promise<unknown>,
+    ): Promise<Record<string, string>> {
+      const fetchMock = vi.fn(
+        async (_url: string, _init: RequestInit) =>
+          new Response(JSON.stringify({ content: { ok: true }, usage: { inputTokens: 1, outputTokens: 1 } }), {
+            status: 200,
+          }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const client = createHttpAiGatewayClient({ port: 4100, token: "secret-token" });
+      await run(() => client.complete(INPUT));
+      return fetchMock.mock.calls[0]![1].headers as Record<string, string>;
+    }
+
+    it("carries the ambient tenant scope", async () => {
+      const headers = await sentHeaders((call) => runInTenant(TENANT_ID, call));
+      expect(headers["x-semprec-tenant-id"]).toBe(TENANT_ID);
+    });
+
+    it("is absent outside any scope", async () => {
+      const headers = await sentHeaders((call) => call());
+      expect(headers).not.toHaveProperty("x-semprec-tenant-id");
+    });
+
+    it("is absent in system scope", async () => {
+      const headers = await sentHeaders((call) => runAsSystem("unit test: system scope has no tenant", call));
+      expect(headers).not.toHaveProperty("x-semprec-tenant-id");
+    });
   });
 });
