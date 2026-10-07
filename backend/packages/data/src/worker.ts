@@ -98,6 +98,9 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
  * an external metadata source (TMDb/OMDB/...) is out of issue #25's scope — a real server
  * composition root supplies its own fetcher the same way it would supply `runAgent` to
  * `coreAgentRunAction`.
+ *
+ * It takes no mail module ids: the mail jobs resolve them per job inside the job's own tenant
+ * scope (`resolveMailModuleIds`), so nothing tenant-specific is captured when the list is built.
  */
 export function createCoreTaskList(
   pool: Pool,
