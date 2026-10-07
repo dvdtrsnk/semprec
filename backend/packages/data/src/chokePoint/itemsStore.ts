@@ -72,12 +72,9 @@ export async function insertItemWithReplay(client: Queryable, input: InsertItemI
   const itemId: string = generatedId;
 
   if (input.idempotencyKey) {
-    // ON CONFLICT without a target: while both the legacy (key) and the tenant-leading
-    // (tenant_id, key) unique indexes exist, a target naming only one lets a concurrent
-    // reservation of the same key fail on the other index instead of doing nothing.
     const reserve = await client.query<{ item_id: string }>(
       `INSERT INTO idempotency_keys (key, database_id, item_id) VALUES ($1, $2, $3)
-       ON CONFLICT DO NOTHING
+       ON CONFLICT (key) DO NOTHING
        RETURNING item_id`,
       [input.idempotencyKey, input.databaseId, generatedId],
     );
@@ -118,7 +115,7 @@ export async function insertItemWithReplay(client: Queryable, input: InsertItemI
       );
       const reReserve = await client.query<{ item_id: string }>(
         `INSERT INTO idempotency_keys (key, database_id, item_id) VALUES ($1, $2, $3)
-         ON CONFLICT DO NOTHING
+         ON CONFLICT (key) DO NOTHING
          RETURNING item_id`,
         [input.idempotencyKey, input.databaseId, generatedId],
       );
