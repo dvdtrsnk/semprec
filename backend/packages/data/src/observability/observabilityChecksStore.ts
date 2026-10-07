@@ -40,11 +40,7 @@ export function transitionObservabilityCheck(
   return transitionCheckIn(client, "observability_checks", checkKey, compute);
 }
 
-/**
- * `transitionObservabilityCheck`'s contract on the tenant table: the tenant comes from RLS (the
- * read sees only the caller's rows) and the `tenant_id` column default (the insert), never from an
- * argument, so it must run inside a tenant scope.
- */
+/** `transitionObservabilityCheck` on the tenant table; the tenant comes from RLS and the column default, so it must run in a tenant scope. */
 export function transitionTenantObservabilityCheck(
   client: PoolClient,
   checkKey: string,
