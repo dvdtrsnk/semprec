@@ -15,6 +15,7 @@ import {
 } from "../structuredProviders/types.js";
 import { createModels } from "@earendil-works/pi-ai";
 import type { PiMessagesHandlerOptions } from "../piMessagesHandler.js";
+import { createProjectItem } from "./projectItemFixture.js";
 /** This suite never reaches `/internal/pi/messages`; the dispatcher only needs the options to exist. */
 const FAKE_PI_OPTIONS: PiMessagesHandlerOptions = {
   internalToken: "test-internal-token",
@@ -41,8 +42,9 @@ let pool: Pool;
 let server: Server;
 let baseUrl: string;
 
+/** `projectItemId` is a real Projects item, seeded in `beforeEach`: the reservation refuses an id it cannot see. */
 const VALID_BODY = {
-  projectItemId: "11111111-1111-1111-1111-111111111111",
+  projectItemId: "",
   operation: "agent_guidance_drift",
   temperature: 0.2,
   system: "Find contradictions between guidance and permissions.",
@@ -148,6 +150,7 @@ describe("POST /internal/complete", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    VALID_BODY.projectItemId = await createProjectItem(pool, { seed: true });
   });
 
   afterEach(async () => {

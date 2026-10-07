@@ -6,6 +6,7 @@ import { BudgetExceededError, diarize, transcribe } from "@semprec/ai-gateway";
 import type { DiarizationProvider, TranscriptionProvider } from "./audioProviders/types.js";
 import { AudioProviderCallError } from "./audioProviders/types.js";
 import { logger } from "./logger.js";
+import { readCallerTenantId, runForCallerTenant } from "./callerTenant.js";
 
 /**
  * Loopback-only route (never internet-facing — see `serve.ts`'s bind-to-127.0.0.1 comment), so
@@ -229,11 +230,13 @@ export function createAudioRequestListener(pool: Pool, options: AudioHandlerOpti
         }
 
         if (req.method === "POST" && url.pathname === "/internal/diarize") {
-          await handleDiarize(req, res);
+          const tenantId = readCallerTenantId(req);
+          await runForCallerTenant(tenantId, () => handleDiarize(req, res));
           return;
         }
         if (req.method === "POST" && url.pathname === "/internal/transcribe") {
-          await handleTranscribe(req, res);
+          const tenantId = readCallerTenantId(req);
+          await runForCallerTenant(tenantId, () => handleTranscribe(req, res));
           return;
         }
         sendJson(res, 404, { error: "Not found" });

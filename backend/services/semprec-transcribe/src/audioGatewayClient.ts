@@ -8,6 +8,11 @@
  * or holds a provider API key itself.
  */
 
+import { currentTenantScope } from "@semprec/shared";
+
+/** Carries the caller's own tenant scope across the loopback hop; the gateway validates it and enters that tenant. */
+const TENANT_ID_HEADER = "x-semprec-tenant-id";
+
 export interface DiarizationTurn {
   speaker: string;
   start: number;
@@ -139,11 +144,17 @@ function parseTranscription(value: unknown): TranscriptionResult {
 }
 
 async function post(config: HttpAudioGatewayClientConfig, path: string, body: unknown): Promise<unknown> {
+  const scope = currentTenantScope();
   let res: Response;
   try {
     res = await fetch(`http://127.0.0.1:${config.port}${path}`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${config.token}`,
+        // Taken only from the ambient scope; no header outside a tenant scope.
+        ...(scope?.kind === "tenant" ? { [TENANT_ID_HEADER]: scope.tenantId } : {}),
+      },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
