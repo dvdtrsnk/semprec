@@ -16,7 +16,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 export function readCallerTenantId(req: IncomingMessage): string | null {
   const value = req.headers[TENANT_ID_HEADER];
   if (value === undefined) return null;
-  if (!UUID_PATTERN.test(value)) {
+  if (typeof value !== "string" || !UUID_PATTERN.test(value)) {
     throw new ValidationError(`'${TENANT_ID_HEADER}' must be a UUID`, { field: TENANT_ID_HEADER });
   }
   return value;
