@@ -161,7 +161,10 @@ export async function insertItem(client: Queryable, input: InsertItemInput): Pro
  * recreated, regardless of the user having since deleted it.
  *
  * The lookup is per tenant: row-level security confines the read to the caller's tenant, so
- * a key reserved in another tenant is invisible here and yields null.
+ * a key reserved in another tenant is invisible here and yields null. The reservation itself is
+ * per tenant for the same reason on the write side: every unique index on `idempotency_keys`
+ * acts as the arbiter of `insertItemWithReplay`'s `ON CONFLICT DO NOTHING`, so a key collides
+ * only within the tenant that reserved it.
  */
 export async function findIdempotentReplay(
   client: Queryable,
