@@ -188,14 +188,29 @@ export async function getMailMessageMetaByProviderMessageId(
 }
 
 /**
- * True when a Postgres error is `mail_message_meta_provider_msg_uq`'s partial-unique
- * violation (the concurrency-safe arbiter for distinct `message_id`s racing to the same
- * non-null `provider_message_id` — see ingest.ts's SAVEPOINT-guarded catch of this). Mirrors
- * chokePoint/viewsStore.ts's own `isUniqueViolation` helper.
+ * The partial-unique indexes that arbitrate distinct `message_id`s racing to the same non-null
+ * `provider_message_id`. During the tenant-scoping transition both exist and a same-tenant
+ * conflict reports whichever Postgres checks first; the legacy global one leaves with #1065,
+ * after which only the tenant-leading one remains.
+ */
+const PROVIDER_MESSAGE_ID_CONFLICT_CONSTRAINTS: readonly string[] = [
+  "mail_message_meta_provider_msg_uq",
+  "mail_message_meta_tenant_provider_msg_uq",
+];
+
+/**
+ * True when a Postgres error is a `23505` raised by either provider-message-id arbiter (see
+ * `PROVIDER_MESSAGE_ID_CONFLICT_CONSTRAINTS`) — the concurrency-safe signal that ingest.ts's
+ * SAVEPOINT-guarded catch converges on. Mirrors chokePoint/viewsStore.ts's own
+ * `isUniqueViolation` helper.
  */
 export function isProviderMessageIdConflict(err: unknown): boolean {
   const pgErr = err as { code?: string; constraint?: string };
-  return pgErr?.code === "23505" && pgErr?.constraint === "mail_message_meta_provider_msg_uq";
+  return (
+    pgErr?.code === "23505" &&
+    pgErr.constraint !== undefined &&
+    PROVIDER_MESSAGE_ID_CONFLICT_CONSTRAINTS.includes(pgErr.constraint)
+  );
 }
 
 /**
