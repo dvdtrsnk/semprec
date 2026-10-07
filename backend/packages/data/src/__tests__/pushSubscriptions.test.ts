@@ -289,7 +289,7 @@ describe("push subscriptions (issue #150)", () => {
       await pool.query(`
         CREATE FUNCTION push_test_reject_b() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN
-          IF NEW.user_id = '${b.id}' THEN RAISE EXCEPTION 'forced failure'; END IF;
+          IF NEW.p256dh = 'force-failure' THEN RAISE EXCEPTION 'forced failure'; END IF;
           RETURN NEW;
         END $$;
         CREATE TRIGGER push_test_reject_b BEFORE INSERT ON push_subscriptions
@@ -299,7 +299,7 @@ describe("push subscriptions (issue #150)", () => {
           userId: b.id,
           sessionId: null,
           endpoint: "https://push.example/atomic",
-          p256dh: "key-b",
+          p256dh: "force-failure",
           authSecret: "secret-b",
         };
         await expect(upsertWebPushSubscription(pool, input)).rejects.toThrow("forced failure");
@@ -402,7 +402,7 @@ describe("push subscriptions (issue #150)", () => {
       await pool.query(`
         CREATE FUNCTION push_test_reject_b() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN
-          IF NEW.user_id = '${b.id}' THEN RAISE EXCEPTION 'forced failure'; END IF;
+          IF NEW.apns_environment = 'production' THEN RAISE EXCEPTION 'forced failure'; END IF;
           RETURN NEW;
         END $$;
         CREATE TRIGGER push_test_reject_b BEFORE INSERT ON push_subscriptions
