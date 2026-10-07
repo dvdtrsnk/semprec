@@ -5,6 +5,8 @@ import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
 import { createDatabase } from "../chokePoint/databasesStore.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { createProperty } from "../chokePoint/propertiesStore.js";
 import { withTransaction } from "../db/pool.js";
 import { handleHeartbeatSweepTask } from "../scheduler/sweep.js";
 import { computeNextFireAt } from "../scheduler/nextFireAt.js";
@@ -34,10 +36,8 @@ async function seedTimezone(tenantId: string, timezone: string): Promise<void> {
         system: true,
         ownerModuleId: "systemSettings",
       });
-      await client.query("INSERT INTO items (database_id, properties) VALUES ($1, $2::jsonb)", [
-        db.id,
-        JSON.stringify({ timezone }),
-      ]);
+      await createProperty(client, { databaseId: db.id, key: "timezone", name: null, type: "text" });
+      await createItemWithClient(client, { databaseId: db.id, properties: { timezone } });
     }),
   );
 }
