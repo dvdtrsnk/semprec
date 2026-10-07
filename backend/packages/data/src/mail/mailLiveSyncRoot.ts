@@ -252,29 +252,33 @@ export function createMailLiveSyncRoot(
       if (started) return;
       started = true;
       const myGeneration = generation;
-      try {
-        await reconcileOnce();
-      } catch (err) {
-        // A failed initial reconcile must not leave `started` stuck `true` forever — that would
-        // make every later `start()` call silently no-op at the guard check above. Only reset it
-        // if nothing superseded this call in the meantime (a `stop()` already reset it itself,
-        // and a `start()` after that `stop()` may have already set it back to `true`).
-        if (generation === myGeneration) started = false;
-        throw err;
-      }
-      // `stop()` bumped `generation` while this call was awaiting its initial reconcile —
-      // scheduling here would install an interval nothing holds a reference to (the same leak
-      // one step over), so skip it once superseded.
-      if (generation !== myGeneration) return;
-      timer = setInterval(() => {
-        // Kept so `stop()` can await it: `clearInterval` cancels the *next* tick but has no
-        // effect on a pass already running, and a discovery pass holds a pooled connection and
-        // writes `mail_account_sync_state`. Without this, `stop()` resolves while that write is
-        // still in flight — the caller believes the root is idle, then a shutdown closes the
-        // pool underneath it, and a test's `resetDatabase()` TRUNCATE deadlocks against it.
-        inFlightDiscovery = reconcileOnce().catch((err) => options.onLifecycleError?.("*", "discover", err));
-      }, discoveryIntervalMs);
-      timer.unref?.();
+      // The whole of `start()` runs in the system scope, so the interval callback it installs
+      // inherits that scope through async context and every later discovery pass is system work too.
+      await runAsSystem("mail:liveSync", async () => {
+        try {
+          await reconcileOnce();
+        } catch (err) {
+          // A failed initial reconcile must not leave `started` stuck `true` forever — that would
+          // make every later `start()` call silently no-op at the guard check above. Only reset it
+          // if nothing superseded this call in the meantime (a `stop()` already reset it itself,
+          // and a `start()` after that `stop()` may have already set it back to `true`).
+          if (generation === myGeneration) started = false;
+          throw err;
+        }
+        // `stop()` bumped `generation` while this call was awaiting its initial reconcile —
+        // scheduling here would install an interval nothing holds a reference to (the same leak
+        // one step over), so skip it once superseded.
+        if (generation !== myGeneration) return;
+        timer = setInterval(() => {
+          // Kept so `stop()` can await it: `clearInterval` cancels the *next* tick but has no
+          // effect on a pass already running, and a discovery pass holds a pooled connection and
+          // writes `mail_account_sync_state`. Without this, `stop()` resolves while that write is
+          // still in flight — the caller believes the root is idle, then a shutdown closes the
+          // pool underneath it, and a test's `resetDatabase()` TRUNCATE deadlocks against it.
+          inFlightDiscovery = reconcileOnce().catch((err) => options.onLifecycleError?.("*", "discover", err));
+        }, discoveryIntervalMs);
+        timer.unref?.();
+      });
     },
     async stop() {
       generation++;
