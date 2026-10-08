@@ -214,17 +214,21 @@ export function createGmailPubSubDispatcher(
     }
     let handedOff = true;
     for (const target of targets) {
+      let reported = false;
       try {
         await runInTenant(target.tenantId, async () => {
           try {
             await enqueueMailAccountSync(pool, target.mailboxItemId);
           } catch (err) {
+            reported = true;
             options.onError?.(target, "enqueue", err);
             throw err;
           }
         });
-      } catch {
-        // Reported by onError above, inside the target's tenant scope; the other targets still run.
+      } catch (err) {
+        // An enqueue failure was already reported inside the target's tenant scope; anything else
+        // (the tenant scope itself failing to open) was not. The other targets still run.
+        if (!reported) options.onError?.(target, "enqueue", err);
         handedOff = false;
       }
     }
