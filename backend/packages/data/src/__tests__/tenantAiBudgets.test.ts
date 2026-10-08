@@ -8,7 +8,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { getCurrentTenantAiBudget } from "../aiGateway/tenantAiBudgetsStore.js";
 
 const MIGRATION_SQL = await readFile(
-  path.join(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations/0069_tenant_ai_budgets.sql"),
+  path.join(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations/0070_tenant_ai_budgets.sql"),
   "utf8",
 );
 

@@ -194,7 +194,7 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
     // orphan every credential sealed under it, so a key is only ever inserted or deleted (crypto-shred).
     const NO_UPDATE_TABLES = new Set(["tenant_keys"]);
 
-    // Operator configuration written only by semprec-api (migration 0069): the gateway's semprec_side
+    // Operator configuration written only by semprec-api (migration 0070): the gateway's semprec_side
     // may read it but never raise its own caps, and nobody deletes a row (it goes with its tenant).
     const READ_ONLY_FOR_SIDE_TABLES = new Set(["tenant_ai_budgets"]);
     const NO_DELETE_TABLES = new Set(["tenant_ai_budgets"]);
