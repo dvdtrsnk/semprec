@@ -2,6 +2,7 @@ version: 1
 protected-paths: [".relay/**", ".github/workflows/**", ".github/scripts/check-protected-paths.mjs"]
 defaults:
   worker: any                 # any preset in project.workerIds, or a preset name
+  model-tier: medium          # provider-neutral ability class; workflow overrides below
   max-concurrent: 3           # per workflow (runs of this one workflow), unless it overrides it;
                               # the cross-workflow cap on issues in flight is the project's
                               # maxConcurrent in the plugin
@@ -26,7 +27,10 @@ review:
   # 967a0c8472d2b9144a88635c5d5a9c1336a18aeb: a `**/` in a scope glob matches
   # zero directories too, so `**/*.json` and `dir/**/*.ts` no longer silently
   # skip files such as backend/package.json or top-level web/*.ts.
-  bot: { repo: dvdtrsnk/code-review-bot, ref: 967a0c8472d2b9144a88635c5d5a9c1336a18aeb }
+  # dvdtrsnk/code-review-bot#31 binds model calls and review cache identity to
+  # the admitted execution snapshot and preserves three first-review angles.
+  # Keep the Actions fallback pin identical.
+  bot: { repo: dvdtrsnk/code-review-bot, ref: 109ee5332d958227f2e8c5758f2f15349fe92709 }
   check-name: code-review
   env: { REVIEW_BLOCK_SEVERITY: medium, PROMOTION_SOURCE: develop, PROMOTION_TARGET: main }
 merge:

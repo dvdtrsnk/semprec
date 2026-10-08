@@ -54,7 +54,11 @@ in a class is not reported.
   eligible at the same time (neither transitively `Blocked by:` the other) whose
   `## Touches` sections name overlapping files or areas with no dependency added
   and no shared change extracted into an earlier issue.
-- **C6 — Format violation.** Title pattern, section order, a missing mandatory
+- **C6 — Format violation.** Missing/invalid/duplicate or misplaced physical
+  second-line model-tier metadata on an implementation issue, or missing English
+  Context rationale, against `.github/ISSUE_FORMAT.md`. A difficulty estimate
+  disagreement without a format violation is advisory and cannot block.
+  Title pattern, section order, a missing mandatory
   section, non-English text, a canonical stored key that is not English camelCase
   (view types kebab-case), or a reference to a document outside the issue graph.
 - **C7 — Batch coverage gap.** A behavior in the epic's approved specification

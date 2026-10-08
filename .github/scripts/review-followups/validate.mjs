@@ -39,6 +39,8 @@
  *   `#<H>`, not checked against GitHub) or `{{draft:<id>}}` for a draft earlier in the
  *   array. `publish` replaces every
  *   `{{draft:<id>}}` with the real `#N` once that draft is created.
+ * - The physical second line is `**Model tier:** low`, `medium` or `high`.
+ *   Context includes an English `Model tier rationale:` following ISSUE_FORMAT.md.
  * - A draft body contains the lines `## Context`, `## Task`, `## Touches`, `## Scope`,
  *   `### In scope`, `### Out of scope` and `## Acceptance criteria`, each exactly once,
  *   in that order. Every `{{draft:<id>}}` in it names another existing draft.
@@ -66,6 +68,7 @@
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+import { validateIssueModelMetadata } from "../model-tier.mjs";
 import { parseInputFile } from "./input-file.mjs";
 
 export const VERDICTS = Object.freeze(["already-fixed", "invalid", "not-worth", "already-tracked"]);
@@ -250,6 +253,10 @@ function checkDraftBody(body, label, id, index, draftIndexById, harvestIssue, vi
   checkCommonBody(body, label, violations);
   const lines = bodyLines(body);
   checkBlockedBy(lines[0], label, index, draftIndexById, harvestIssue, violations);
+  if (body.length <= MAX_BODY) {
+    const modelTier = validateIssueModelMetadata(body);
+    if (!modelTier.ok) violations.push(`${label} model tier metadata is ${modelTier.error}`);
+  }
   checkHeadings(lines, label, violations);
   checkPlaceholders(lines.slice(1).join("\n"), label, id, draftIndexById, violations);
   if (

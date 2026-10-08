@@ -42,24 +42,13 @@ jobs:
     # payload, so it always runs.
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     # A Relay-managed pull request answers every agent through the Relay broker.
-    # Relay derives the client's budget for one `execute` call and reports it as
-    # `executeBudgetSeconds` on the broker lookup; today that is a 5-minute
-    # queue-wait bound plus a 60-minute turn deadline plus a 2-minute margin =
-    # 67 minutes. A review makes two sequential rounds of broker calls (the
-    # platform and acceptance-criteria agents run concurrently, then the summary
-    # agent runs after them), so the floor is 134 minutes of agent time alone.
-    # This value is that floor plus room for checkout, dependency install and
-    # artifact upload. The derivation is pinned by a test in bb-plugin-relay
-    # (REVIEW_SEQUENTIAL_BROKER_CALLS) and recorded in its
-    # docs/reviews/2026-09-18-deadline-for-a-three-angle-first-review.md — if
-    # that deadline moves, that test goes red and this number has to move with it.
-    #
-    # The turn deadline went from 30 to 60 minutes because this bot revision runs
-    # a pull request's FIRST review over three independently-angled passes of
-    # every task. They share one concurrency bound, so three angles cost three
-    # waves rather than three times the load — and one turn has to outlive all
-    # three. Single-wave agent turns here measured 351s, 907s and 935s, so three
-    # waves of the worst is about 47 minutes.
+    # First-review platform angles use three independent admitted broker turns,
+    # each with one third of the configured platform deadline. Acceptance
+    # criteria runs concurrently; summary follows. The model budget remains
+    # two 60-minute phases. Four independent calls each retain a 5-minute queue
+    # bound and 2-minute margin: 120 + 4 * 7 = 148 minutes. The 150-minute
+    # ceiling is unchanged. bb-plugin-relay's firstReviewCiTimeoutMinutes test
+    # pins this derivation; session expiry also covers the full pipeline.
     #
     # This is a ceiling, not a duration: a review that finds nothing still
     # returns in minutes, and a non-Relay review finishes well inside it.
@@ -122,7 +111,7 @@ jobs:
           repository: dvdtrsnk/code-review-bot
           # The code-review Check Run is required on `develop`; keep its producer
           # stable so a bot default-branch change cannot rename that context.
-          ref: 967a0c8472d2b9144a88635c5d5a9c1336a18aeb
+          ref: 109ee5332d958227f2e8c5758f2f15349fe92709
           token: ${{ secrets.CODE_REVIEW_BOT_TOKEN }}
           path: .code-review-bot
 

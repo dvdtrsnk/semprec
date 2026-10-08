@@ -34,6 +34,20 @@ Converse with the user in the language they use. Everything written to GitHub is
 English. The issue structure contract is `.github/ISSUE_FORMAT.md` — read it
 before Phase 4 and follow it exactly.
 
+## Model-tier contract
+
+Read `.github/ISSUE_FORMAT.md` for the canonical metadata grammar and difficulty
+rubric. Every implementation issue/draft has physical first-line Blocked by,
+physical second-line `**Model tier:** low|medium|high` and an English Context
+`Model tier rationale:`. Epics and harvest payloads are exempt.
+
+Estimate from the full Task/criteria and repository code. Validate every body
+with `.github/scripts/validate-issue-model-tier.mjs` before creation/publication
+and immediately before adding `spec:approved` or `agent:ready`. Triage proposal
+validation applies the same rule before publishing. Auditors treat malformed
+metadata as C6; a different difficulty estimate alone is advisory, not a blocking
+finding. Preserve the protected-path and proposed-follow-up label contracts.
+
 ## Phase 1 — Recon (subagents, keep it cheap)
 
 Before asking the user anything, learn what already exists. Spawn 1–3 `Explore`
