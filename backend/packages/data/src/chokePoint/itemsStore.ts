@@ -24,6 +24,16 @@ function mapItemRow(row: ItemDbRow): ItemRow {
   };
 }
 
+/**
+ * The ids of every database visible to the current connection. Under row-level security that is
+ * exactly the current tenant's databases, archived ones included. Bound as an array parameter it
+ * lets the planner prune `items` partitions, which a `= ANY(ARRAY(SELECT ...))` sub-plan does not.
+ */
+async function visibleDatabaseIds(client: Queryable): Promise<string[]> {
+  const { rows } = await client.query<{ ids: string[] }>(`SELECT coalesce(array_agg(id), '{}') AS ids FROM databases`);
+  return requireSingleRow(rows, "visible databases").ids;
+}
+
 export async function getItemById(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {
   const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, updated_at, deleted_at
@@ -265,10 +275,11 @@ export async function findFileItemByBlobId(
 }
 
 /**
- * One page of items, across every database's partition, trashed longer ago than `olderThan` — the
- * 30-day purge sweep's entry point into the subtree roots it must consider. Queried against the
- * partitioned parent table directly (same pattern as `getItemsByIds`), so it isn't scoped to one
- * database the way most of this module's reads are. Keyset-paged on the composite primary key
+ * One page of items, across every database of the current tenant, trashed longer ago than
+ * `olderThan` — the 30-day purge sweep's entry point into the subtree roots it must consider.
+ * Queried against the partitioned parent table directly (same pattern as `getItemsByIds`), so it
+ * isn't scoped to one database the way most of this module's reads are; it is confined to the
+ * current tenant's partitions by a database-id list resolved under RLS. Keyset-paged on the composite primary key
  * (issue #675): `after` is the last row of the previous page, and at most `limit` rows come back,
  * so the sweep never holds more than one page of candidates in memory.
  */
@@ -278,14 +289,16 @@ export async function findItemsDeletedBefore(
   after?: { databaseId: string; id: string },
   limit = 500,
 ): Promise<ItemRow[]> {
+  const databaseIds = await visibleDatabaseIds(client);
   const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, updated_at, deleted_at
      FROM items
      WHERE deleted_at IS NOT NULL AND deleted_at < $1
+       AND database_id = ANY($5::uuid[])
        AND ($2::uuid IS NULL OR (database_id, id) > ($2::uuid, $3::uuid))
      ORDER BY database_id, id
      LIMIT $4`,
-    [olderThan, after?.databaseId ?? null, after?.id ?? null, limit],
+    [olderThan, after?.databaseId ?? null, after?.id ?? null, limit, databaseIds],
   );
   return rows.map(mapItemRow);
 }
@@ -393,17 +406,16 @@ export async function countItems(
 /**
  * Looks up items by id alone, with no `database_id` predicate — needed for curated
  * views (`view_items`), which can mix items from multiple databases and therefore
- * cannot supply the partition key. Scans every partition of `items` (see the
- * `view_items` migration's header note on why `item_id` carries no Postgres FK to
- * pin down a single partition); acceptable for the small, explicitly-curated
- * membership lists this serves.
+ * cannot supply the partition key (see the `view_items` migration's header note on why
+ * `item_id` carries no Postgres FK to pin down a single partition). The read is confined to the
+ * current tenant's partitions by a database-id list resolved under RLS.
  */
 export async function getItemsByIds(client: Queryable, itemIds: string[]): Promise<ItemRow[]> {
   if (itemIds.length === 0) return [];
   const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, updated_at, deleted_at
-     FROM items WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL`,
-    [itemIds],
+     FROM items WHERE id = ANY($1::uuid[]) AND database_id = ANY($2::uuid[]) AND deleted_at IS NULL`,
+    [itemIds, await visibleDatabaseIds(client)],
   );
   return rows.map(mapItemRow);
 }
@@ -414,13 +426,15 @@ export async function getItemsByIds(client: Queryable, itemIds: string[]): Promi
  * being soft-deleted is an expected, not exceptional, case: `DELETE /api/items/:id` (idempotent
  * replay against an already-trashed item) and `POST /api/items/:id/restore` (issue #156), both of
  * which must resolve the item's `databaseId` before calling into `softDeleteItem`/`restoreItem`.
+ * Like `getItemsByIds`, it is confined to the current tenant's partitions by a database-id list
+ * resolved under RLS.
  */
 export async function getItemsByIdsIncludingDeleted(client: Queryable, itemIds: string[]): Promise<ItemRow[]> {
   if (itemIds.length === 0) return [];
   const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, updated_at, deleted_at
-     FROM items WHERE id = ANY($1::uuid[])`,
-    [itemIds],
+     FROM items WHERE id = ANY($1::uuid[]) AND database_id = ANY($2::uuid[])`,
+    [itemIds, await visibleDatabaseIds(client)],
   );
   return rows.map(mapItemRow);
 }
