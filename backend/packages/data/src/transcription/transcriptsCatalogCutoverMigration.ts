@@ -16,6 +16,9 @@ import { TRANSCRIPTION_OWNER_PROCESS } from "./transcriptionJob.js";
  * change it", which is exactly what this is) and nothing re-runs the seed itself. No-ops
  * entirely when the Transcripts database doesn't exist yet (a genuinely fresh install, where
  * `seedTenDatabasesInTransaction` will create it with both pieces already in place).
+ *
+ * Runs once per tenant, in that tenant's scope and under row-level security, via
+ * `runTenantCutoverMigrations`; it resolves that tenant's own Transcripts and People databases.
  */
 export async function runTranscriptsCatalogCutoverMigration(pool: Pool): Promise<void> {
   await withTransaction(pool, async (client) => {
