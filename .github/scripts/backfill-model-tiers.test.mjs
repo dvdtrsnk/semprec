@@ -72,6 +72,17 @@ test("dry run reads current state and performs zero writes", async () => {
   assert.deepEqual(state.events, ["read"]);
   assert.equal(state.body(), before);
 });
+test("dry run of an already migrated issue remains read-only and preserves the ledger", async () => {
+  for (const previous of [undefined, "applying", "applied"]) {
+    const state = fake(after);
+    if (previous) state.ledger[9] = previous;
+    const originalLedger = { ...state.ledger };
+    assert.equal(await migrateEntry(entry, state.api, "dry-run", state.ledger, state.save), "already-target");
+    assert.deepEqual(state.events, ["read"]);
+    assert.deepEqual(state.ledger, originalLedger);
+    assert.equal(state.body(), after);
+  }
+});
 test("an issue closed after assessment is skipped without a write or ledger change", async () => {
   const state = fake();
   state.api.read = async () => { state.events.push("read"); return { body: before, state: "closed" }; };
@@ -79,6 +90,14 @@ test("an issue closed after assessment is skipped without a write or ledger chan
   assert.equal(await migrateEntry(entry, state.api, "dry-run", state.ledger, state.save), "closed");
   assert.deepEqual(state.events, ["read", "read"]);
   assert.deepEqual(state.ledger, {});
+});
+test("rollback restores an owned migration even after the issue is closed", async () => {
+  const state = fake(after); state.ledger[9] = "applied";
+  state.api.read = async () => { state.events.push("read"); return { body: state.body(), state: "closed" }; };
+  assert.equal(await migrateEntry(entry, state.api, "rollback", state.ledger, state.save), "rolled-back");
+  assert.deepEqual(state.events, ["read", "save:rolling-back", "write", "read", "save:rolled-back"]);
+  assert.equal(state.body(), before);
+  assert.equal(state.ledger[9], "rolled-back");
 });
 test("apply persists intent, writes only body, verifies and resumes idempotently", async () => {
   const state = fake();
