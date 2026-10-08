@@ -123,7 +123,13 @@ export default async function setup(): Promise<() => Promise<void>> {
         await runHeartbeatFireQueueSplitMigration(pool);
       });
     } finally {
-      await tenantPool.end();
+      // Logged and swallowed, as runMigrationsCli's endPool does: a throw here would replace the
+      // setup or cutover error that is actually worth reporting.
+      try {
+        await tenantPool.end();
+      } catch (err) {
+        console.error("globalSetup: failed to end the tenant migration pool", err);
+      }
     }
 
     // Tenant zero's id is the stable anchor of every test: `resetDatabase` re-creates it with this id.
