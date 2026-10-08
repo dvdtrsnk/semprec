@@ -46,10 +46,10 @@ export async function getDocById(client: Queryable, docId: string): Promise<DocR
  * already-existing doc is still returned regardless of the item's current state, so a
  * trashed page's content stays reachable for restore.
  *
- * A concurrent first-write race (two callers creating a doc for the same item at the
- * same moment) is resolved by `ON CONFLICT DO NOTHING` plus a re-read of the winner's
- * row; given this is a single/two-user system this is accepted as a rare, low-stakes
- * race rather than solved with a lock on a row that doesn't exist yet.
+ * An item has at most one doc within a tenant, enforced by `docs_tenant_item_id_uq`. The
+ * insert uses `ON CONFLICT DO NOTHING` with no conflict target, so every unique index on
+ * `docs` is an arbiter. A concurrent first write to the same item therefore converges on
+ * the winner: the loser's insert is skipped and it re-reads the winner's row.
  */
 export async function getOrCreateDoc(client: Queryable, itemId: string, kind: DocKind): Promise<DocRow> {
   const existing = await getDocByItemId(client, itemId);
@@ -68,7 +68,7 @@ export async function getOrCreateDoc(client: Queryable, itemId: string, kind: Do
 
   const { rows } = await client.query<DocDbRow & { history_available_from: Date }>(
     `INSERT INTO docs (item_id, kind, history_available_from) VALUES ($1, $2, now())
-     ON CONFLICT (item_id) DO NOTHING RETURNING id, item_id, kind, created_at, history_available_from`,
+     ON CONFLICT DO NOTHING RETURNING id, item_id, kind, created_at, history_available_from`,
     [itemId, kind],
   );
   if (rows[0]) {
