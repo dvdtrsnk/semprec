@@ -253,7 +253,7 @@ function checkDraftBody(body, label, id, index, draftIndexById, harvestIssue, vi
   checkCommonBody(body, label, violations);
   const lines = bodyLines(body);
   checkBlockedBy(lines[0], label, index, draftIndexById, harvestIssue, violations);
-  if (body.length <= 60000) {
+  if (body.length <= MAX_BODY) {
     const modelTier = validateIssueModelMetadata(body);
     if (!modelTier.ok) violations.push(`${label} model tier metadata is ${modelTier.error}`);
   }

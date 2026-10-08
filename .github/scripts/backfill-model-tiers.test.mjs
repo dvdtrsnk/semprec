@@ -26,6 +26,15 @@ test("preparation checks complete snapshot and exact assessed body hashes", () =
   assert.throws(() => validateManifest({ ...manifest, entries: [{ ...entry, afterBodySha256: "wrong" }] }), /body\/hash/);
 });
 
+test("malformed existing tier headers require explicit repair before backfill", () => {
+  const bodies = [
+    after.replace("**Model tier:** high", "**Model tier:** high\n**Model tier:** low"),
+    before.replace("## Context", "**Model tier:** high\n\n## Context"),
+    after.replace("**Model tier:** high", "**Model tier:** unknown"),
+  ];
+  for (const body of bodies) assert.throws(() => renderMetadata(body, "high", rationale), /repair it explicitly/);
+});
+
 function fake(body = before) {
   const events = []; const ledger = {};
   let current = body;
@@ -33,6 +42,18 @@ function fake(body = before) {
   const save = async () => { events.push(`save:${ledger[9]}`); };
   return { api, events, ledger, save, body: () => current };
 }
+test("exempt entries remain unchanged in every mode without API or ledger access", async () => {
+  for (const mode of ["dry-run", "apply", "rollback"]) {
+    for (const kind of ["epic", "manual"]) {
+      const state = fake();
+      const exempt = { ...entry, kind, afterBody: before, afterBodySha256: bodyHash(before) };
+      assert.equal(await migrateEntry(exempt, state.api, mode, state.ledger, state.save), "unchanged");
+      assert.deepEqual(state.events, []);
+      assert.deepEqual(state.ledger, {});
+      assert.equal(state.body(), before);
+    }
+  }
+});
 test("dry run reads current state and performs zero writes", async () => {
   const state = fake();
   assert.equal(await migrateEntry(entry, state.api, "dry-run", state.ledger, state.save), "would-change");
