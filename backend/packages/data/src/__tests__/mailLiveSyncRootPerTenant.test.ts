@@ -235,14 +235,22 @@ describe("mail live-sync root across tenants (issue #990)", () => {
     expect(byAccount.get(mb)?.stops).toEqual([{ kind: "tenant", tenantId: tenantB }]);
     expect(byAccount.get(m0)?.stops).toHaveLength(0);
 
-    const beat = async (id: string): Promise<number> => {
+    const beat = async (id: string): Promise<number | undefined> => {
       const { rows } = await pool.query<{ beat_at: Date }>(
         "SELECT beat_at FROM process_heartbeats WHERE process = $1",
         [mailSyncProcessName(id)],
       );
-      return rows[0]!.beat_at.getTime();
+      return rows[0]?.beat_at.getTime();
     };
-    const before = { mb: await beat(mb), m0: await beat(m0) };
+    // Each hosted account's first beat is a fire-and-forget write, so wait for both rows to exist.
+    await vi.waitFor(
+      async () => {
+        expect(await beat(mb)).toBeDefined();
+        expect(await beat(m0)).toBeDefined();
+      },
+      { timeout: 5000 },
+    );
+    const before = { mb: (await beat(mb))!, m0: (await beat(m0))! };
     await vi.advanceTimersByTimeAsync(PROCESS_HEARTBEAT_INTERVAL_MS);
     // M0's heartbeat ticks (a real write, awaited by polling); MB's was stopped with its lifecycle.
     await vi.waitFor(async () => expect(await beat(m0)).toBeGreaterThan(before.m0), { timeout: 5000 });
