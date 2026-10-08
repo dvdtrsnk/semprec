@@ -15,6 +15,11 @@
 -- Concurrent partition creations still serialize: SHARE UPDATE EXCLUSIVE conflicts with itself, so
 -- a second creation waits for the first transaction to finish. Item reads and writes do not wait.
 --
+-- This removes the cross-tenant wait on `items` only. Cloning the `database_id` foreign key onto
+-- the partition takes SHARE ROW EXCLUSIVE on `databases` until the caller commits, as `PARTITION OF`
+-- did. It conflicts with ROW EXCLUSIVE, so every other tenant's INSERT, UPDATE and DELETE on
+-- `databases`, including creating a database, still waits for a partition creation to commit.
+--
 -- The tenant guard of 0061 is copied verbatim and stays the first statement of the body. The
 -- signature, RETURNS, LANGUAGE, SECURITY DEFINER, the pinned search_path, the partition name and
 -- the owner are unchanged, and the REVOKE and GRANT of 0048 are restated below.
