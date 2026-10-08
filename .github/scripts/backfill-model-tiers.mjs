@@ -79,6 +79,7 @@ export async function migrateEntry(entry, api, mode, ledger, saveLedger) {
   const targetBody = mode === "rollback" ? entry.beforeBody : entry.afterBody;
   const state = mode === "rollback" ? "rolled-back" : "applied";
   if (currentHash === targetHash) {
+    if (mode === "rollback" && !["applied", "applying", "rolling-back", "rolled-back"].includes(ledger[entry.number])) return "not-applied";
     if (mode !== "dry-run") { ledger[entry.number] = state; await saveLedger(); }
     return "already-target";
   }

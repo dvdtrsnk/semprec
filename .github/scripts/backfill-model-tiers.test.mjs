@@ -91,6 +91,21 @@ test("a crash after PATCH can recover from intent without repeating the write", 
   assert.equal(await migrateEntry(entry, state.api, "apply", state.ledger, state.save), "already-target");
   assert.deepEqual(state.events, ["read", "save:applied"]);
 });
+test("rollback never records ownership of an entry that was never applied", async () => {
+  for (const body of [before, after]) {
+    const state = fake(body);
+    assert.equal(await migrateEntry(entry, state.api, "rollback", state.ledger, state.save), "not-applied");
+    assert.deepEqual(state.events, ["read"]);
+    assert.deepEqual(state.ledger, {});
+    assert.equal(state.body(), body);
+  }
+});
+test("rollback can finish a recorded intent after the original body was restored", async () => {
+  const state = fake(before); state.ledger[9] = "rolling-back";
+  assert.equal(await migrateEntry(entry, state.api, "rollback", state.ledger, state.save), "already-target");
+  assert.deepEqual(state.events, ["read", "save:rolled-back"]);
+  assert.equal(state.ledger[9], "rolled-back");
+});
 test("unknown write failure is not retried and the saved intent is retained", async () => {
   const state = fake(); state.api.write = async () => { throw new Error("connection lost after request"); };
   await assert.rejects(migrateEntry(entry, state.api, "apply", state.ledger, state.save), /connection lost/);
