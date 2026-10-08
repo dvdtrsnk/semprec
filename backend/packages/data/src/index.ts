@@ -387,4 +387,5 @@ export { createGuidanceManifestPort } from "./guidanceDrift/guidanceManifestPort
 
 export { purgeExpiredTrash, handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
 export { forEachActiveTenant } from "./tenancy/forEachActiveTenant.js";
+export { provisionTenant } from "./tenancy/provisionTenant.js";
 export { getUserTenantBinding } from "./tenancy/tenantsStore.js";
