@@ -1,6 +1,9 @@
 import type { Pool } from "pg";
+import { runAsSystem, runInTenant } from "@semprec/shared";
+import { withTransaction } from "../db/pool.js";
 import { enqueueMailAccountSync } from "./mailSyncJob.js";
-import { recordGmailWatchRegistration } from "./mailAccountSyncStateStore.js";
+import { recordGmailWatchRegistration, routeGmailAddress, type GmailRouteTarget } from "./mailAccountSyncStateStore.js";
+import { normalizeEmailAddress } from "./personEmailIndexStore.js";
 import type { MailAccountLifecycle, MailLiveSyncAccount, MailLiveSyncLifecycleFactory } from "./mailLiveSyncRoot.js";
 
 export interface GmailWatchRegistration {
@@ -31,16 +34,14 @@ export interface GmailWatchTransport {
    */
   registerWatch(mailboxItemId: string, credential: string): Promise<GmailWatchRegistration>;
   /**
-   * One pull request against the account's Cloud Pub/Sub subscription — an empty array is an
-   * ordinary empty poll, not an error. A subscription may be shared by more than one watched
-   * account (Google: typically one topic per GCP project, with `emailAddress` in each
-   * notification's payload disambiguating which account it belongs to), so a returned
-   * notification is not guaranteed to belong to this account; the caller filters, and never
-   * acknowledges a notification it has not durably handed off.
+   * One pull request against the deployment's shared Cloud Pub/Sub subscription — an empty array is
+   * an ordinary empty poll, not an error. The subscription belongs to the deployment, not to a
+   * mailbox: it carries every watched account's notifications, with `emailAddress` in each payload
+   * naming the account, and the one `createGmailPubSubDispatcher` routes each to its mailboxes.
    */
-  pull(mailboxItemId: string): Promise<GmailPubSubNotification[]>;
-  /** Acknowledges exactly the notifications this account's caller has durably handed off to `enqueueMailAccountSync` — never called for one still in flight or belonging to another account. */
-  acknowledge(mailboxItemId: string, ackIds: string[]): Promise<void>;
+  pull(): Promise<GmailPubSubNotification[]>;
+  /** Acknowledges exactly the notifications the dispatcher has durably handed off to `enqueueMailAccountSync` for every matching mailbox — never one still in flight or partly handed off. */
+  acknowledge(ackIds: string[]): Promise<void>;
 }
 
 /** Renewed daily (issue #197's Task), well inside Google's up-to-seven-day watch validity — not tied to the actual remaining validity so a missed renewal never has to race the expiry itself. */
@@ -62,38 +63,28 @@ function sleep(ms: number): Promise<void> {
 export interface CreateGmailWatchLifecycleFactoryOptions {
   /** Decrypted per-account Gmail OAuth credential, fetched fresh on every `start()` — never cached across a stop/restart, same discipline as imapIdleLifecycle.ts's `getCredential`. */
   getCredential: (mailboxItemId: string) => Promise<string>;
-  /** This account's own Gmail address — the account-validation check a shared subscription's notification is matched against before it is ever allowed to trigger a reconcile or be acknowledged. */
+  /**
+   * The address of the Google account the credential authenticates — the address Gmail puts in
+   * each notification for this watch, and what the dispatcher routes on. Never `Mailboxes.addresses`:
+   * that property is user-editable, so routing on it would let one tenant claim another's pushes.
+   */
   getAccountEmailAddress: (mailboxItemId: string) => Promise<string>;
   renewalIntervalMs?: number;
-  pullEmptyBackoffMs?: number;
-  pullErrorBaseDelayMs?: number;
-  pullErrorMaxDelayMs?: number;
-  onError?: (mailboxItemId: string, phase: "watch" | "pull", err: unknown) => void;
+  onError?: (mailboxItemId: string, phase: "watch", err: unknown) => void;
 }
 
 /**
  * Builds the Gmail Pub/Sub `MailAccountLifecycle` for one account (issue #197) — the Gmail-mode
- * analogue of `createBoundedImapIdleLifecycleFactory` (issue #196). `start()` hosts two
- * independent long-lived loops:
+ * analogue of `createBoundedImapIdleLifecycleFactory` (issue #196). `start()` enqueues an immediate
+ * reconcile and hosts one long-lived renewal loop that registers/renews the `users.watch`
+ * subscription daily and persists its expiry, the watched account's normalized address
+ * (`gmail_watch_email_address`, the routing key) and — only when the account had no cursor yet —
+ * its history cursor via `recordGmailWatchRegistration`. Renewal survives a restart by
+ * construction: a fresh `start()` always re-registers immediately rather than trusting an
+ * in-memory timer that a restart would lose.
  *
- * - a renewal loop that registers/renews the `users.watch` subscription daily and persists its
- *   expiry via `recordGmailWatchRegistration` (`gmail_watch_expires_at` unconditionally;
- *   `gmail_history_id` only when the account had no cursor yet — a later renewal's own
- *   `historyId` is never used to overwrite one the reconcile pass has since advanced). Renewal
- *   survives a restart by construction, not by any explicit "is it due yet" check: a fresh
- *   `start()` always re-registers immediately rather than trusting an in-memory timer that a
- *   restart would lose.
- * - a pull loop that turns each notification into a call to the existing idempotent
- *   `enqueueMailAccountSync` job — never a direct `history.list` call or message mutation of its
- *   own (that happens inside `reconcileGmailAccount`, driven by the job this only enqueues), and
- *   never acknowledges a notification until that call has resolved: the job row's insert is the
- *   durable handoff, so a crash between the two leaves the notification unacked and safely
- *   redelivered rather than lost. Because every notification — first delivery or a Pub/Sub
- *   redelivery of the same one — only ever re-enqueues through `enqueueMailAccountSync`'s own
- *   `jobKey` dedup, and the reconcile pass itself always resumes from whatever `gmailHistoryId`
- *   is already persisted (never from a value carried on the notification), a duplicate or
- *   out-of-order notification can trigger an extra no-op reconcile but can never regress or
- *   duplicate the account's synced state.
+ * Pulling the shared subscription is not done here: `createGmailPubSubDispatcher` runs one puller
+ * for the whole deployment and routes each notification to every mailbox watching its address.
  */
 export function createGmailWatchLifecycleFactory(
   pool: Pool,
@@ -101,9 +92,6 @@ export function createGmailWatchLifecycleFactory(
   options: CreateGmailWatchLifecycleFactoryOptions,
 ): MailLiveSyncLifecycleFactory {
   const renewalIntervalMs = options.renewalIntervalMs ?? DEFAULT_RENEWAL_INTERVAL_MS;
-  const pullEmptyBackoffMs = options.pullEmptyBackoffMs ?? DEFAULT_PULL_EMPTY_BACKOFF_MS;
-  const pullErrorBaseDelayMs = options.pullErrorBaseDelayMs ?? DEFAULT_PULL_ERROR_BASE_DELAY_MS;
-  const pullErrorMaxDelayMs = options.pullErrorMaxDelayMs ?? DEFAULT_PULL_ERROR_MAX_DELAY_MS;
 
   return (account: MailLiveSyncAccount): MailAccountLifecycle => {
     let stopped = false;
@@ -114,7 +102,6 @@ export function createGmailWatchLifecycleFactory(
       stopResolve = resolve;
     });
     let renewalLoop: Promise<void> = Promise.resolve();
-    let pullLoop: Promise<void> = Promise.resolve();
 
     function waitForStop(): Promise<"stop"> {
       return stopPromise;
@@ -125,56 +112,15 @@ export function createGmailWatchLifecycleFactory(
       return outcome === "stop";
     }
 
-    async function runRenewalLoop(credential: string): Promise<void> {
+    async function runRenewalLoop(credential: string, emailAddress: string): Promise<void> {
       while (!stopped) {
         try {
           const registration = await transport.registerWatch(account.mailboxItemId, credential);
-          await recordGmailWatchRegistration(pool, account.mailboxItemId, registration);
+          await recordGmailWatchRegistration(pool, account.mailboxItemId, { ...registration, emailAddress });
         } catch (err) {
           options.onError?.(account.mailboxItemId, "watch", err);
         }
         if (await sleepOrStop(renewalIntervalMs)) return;
-      }
-    }
-
-    async function runPullLoop(expectedEmailAddress: string): Promise<void> {
-      let attempt = 0;
-      while (!stopped) {
-        let notifications: GmailPubSubNotification[];
-        try {
-          notifications = await transport.pull(account.mailboxItemId);
-        } catch (err) {
-          options.onError?.(account.mailboxItemId, "pull", err);
-          attempt++;
-          if (await sleepOrStop(pullErrorBackoffDelayMs(attempt, pullErrorBaseDelayMs, pullErrorMaxDelayMs))) return;
-          continue;
-        }
-        attempt = 0;
-
-        if (notifications.length === 0) {
-          if (await sleepOrStop(pullEmptyBackoffMs)) return;
-          continue;
-        }
-
-        const ackIds: string[] = [];
-        for (const notification of notifications) {
-          // A subscription shared by more than one watched account (transport.pull's own doc
-          // comment) must never let one account's puller reconcile — or acknowledge — a
-          // notification meant for another; left unacknowledged, Pub/Sub redelivers it (to
-          // whichever puller's `expectedEmailAddress` actually matches) instead of losing it.
-          if (notification.emailAddress !== expectedEmailAddress) continue;
-          try {
-            await enqueueMailAccountSync(pool, account.mailboxItemId);
-            ackIds.push(notification.ackId);
-          } catch (err) {
-            options.onError?.(account.mailboxItemId, "pull", err);
-          }
-        }
-        if (ackIds.length > 0) {
-          await transport
-            .acknowledge(account.mailboxItemId, ackIds)
-            .catch((err) => options.onError?.(account.mailboxItemId, "pull", err));
-        }
       }
     }
 
@@ -189,18 +135,144 @@ export function createGmailWatchLifecycleFactory(
         // (mailLiveSyncRoot.ts) and the bounded IMAP IDLE lifecycle (imapIdleLifecycle.ts).
         await enqueueMailAccountSync(pool, account.mailboxItemId);
 
-        const [credential, expectedEmailAddress] = await Promise.all([
+        const [credential, accountEmailAddress] = await Promise.all([
           options.getCredential(account.mailboxItemId),
           options.getAccountEmailAddress(account.mailboxItemId),
         ]);
-        renewalLoop = runRenewalLoop(credential);
-        pullLoop = runPullLoop(expectedEmailAddress);
+        renewalLoop = runRenewalLoop(credential, normalizeEmailAddress(accountEmailAddress));
       },
       async stop() {
         stopped = true;
         stopResolve("stop");
-        await Promise.all([renewalLoop, pullLoop]);
+        await renewalLoop;
       },
     };
+  };
+}
+
+export interface CreateGmailPubSubDispatcherOptions {
+  pullEmptyBackoffMs?: number;
+  pullErrorBaseDelayMs?: number;
+  pullErrorMaxDelayMs?: number;
+  /** `target` is `null` for a failure that belongs to no one mailbox (the pull, the routing lookup, the acknowledge). */
+  onError?: (
+    target: GmailRouteTarget | null,
+    phase: "pull" | "route" | "enqueue" | "acknowledge",
+    err: unknown,
+  ) => void;
+}
+
+export interface GmailPubSubDispatcher {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+/**
+ * The one process-wide puller of the deployment's shared Gmail Pub/Sub subscription
+ * (docs/adr/2026-10-07-cross-tenant-router-functions.md). `start()` launches the loop in system
+ * scope (`runAsSystem`, so it must be called with no scope or from a system scope) and returns;
+ * `stop()` ends the wait the loop is in and awaits it.
+ *
+ * For each notification the address goes through `routeGmailAddress` (its own transaction) to every
+ * `(tenant, mailbox)` watching it, and each target's `enqueueMailAccountSync` runs inside that
+ * target's tenant, so the job envelope carries it. The enqueue is the durable hand-off: a
+ * notification is acknowledged only once every target was handed off, so a failed routing lookup or
+ * enqueue leaves it for Pub/Sub to redeliver (the job's own `jobKey` dedup makes the repeat for
+ * the targets that already succeeded harmless). A notification no mailbox watches is acknowledged
+ * too — redelivering it forever helps no one. All ack ids of one pull go out in one `acknowledge`
+ * call. A failing pull backs off with a capped exponential delay that resets after a success.
+ */
+export function createGmailPubSubDispatcher(
+  pool: Pool,
+  transport: GmailWatchTransport,
+  options: CreateGmailPubSubDispatcherOptions = {},
+): GmailPubSubDispatcher {
+  const pullEmptyBackoffMs = options.pullEmptyBackoffMs ?? DEFAULT_PULL_EMPTY_BACKOFF_MS;
+  const pullErrorBaseDelayMs = options.pullErrorBaseDelayMs ?? DEFAULT_PULL_ERROR_BASE_DELAY_MS;
+  const pullErrorMaxDelayMs = options.pullErrorMaxDelayMs ?? DEFAULT_PULL_ERROR_MAX_DELAY_MS;
+
+  let stopped = false;
+  let stopResolve: (value: "stop") => void = () => {};
+  let stopPromise = new Promise<"stop">((resolve) => {
+    stopResolve = resolve;
+  });
+  let loop: Promise<void> = Promise.resolve();
+
+  async function sleepOrStop(ms: number): Promise<boolean> {
+    const outcome = await Promise.race([sleep(ms).then(() => "slept" as const), stopPromise]);
+    return outcome === "stop";
+  }
+
+  /** True when the notification was handed off to every target it routes to (vacuously so for none). */
+  async function dispatch(notification: GmailPubSubNotification): Promise<boolean> {
+    let targets: GmailRouteTarget[];
+    try {
+      targets = await withTransaction(pool, (client) => routeGmailAddress(client, notification.emailAddress));
+    } catch (err) {
+      options.onError?.(null, "route", err);
+      return false;
+    }
+    let handedOff = true;
+    for (const target of targets) {
+      try {
+        await runInTenant(target.tenantId, async () => {
+          try {
+            await enqueueMailAccountSync(pool, target.mailboxItemId);
+          } catch (err) {
+            options.onError?.(target, "enqueue", err);
+            throw err;
+          }
+        });
+      } catch {
+        // Reported by onError above, inside the target's tenant scope; the other targets still run.
+        handedOff = false;
+      }
+    }
+    return handedOff;
+  }
+
+  async function runLoop(): Promise<void> {
+    let attempt = 0;
+    while (!stopped) {
+      let notifications: GmailPubSubNotification[];
+      try {
+        notifications = await transport.pull();
+      } catch (err) {
+        options.onError?.(null, "pull", err);
+        attempt++;
+        if (await sleepOrStop(pullErrorBackoffDelayMs(attempt, pullErrorBaseDelayMs, pullErrorMaxDelayMs))) return;
+        continue;
+      }
+      attempt = 0;
+
+      if (notifications.length === 0) {
+        if (await sleepOrStop(pullEmptyBackoffMs)) return;
+        continue;
+      }
+
+      const ackIds: string[] = [];
+      for (const notification of notifications) {
+        if (stopped) return;
+        if (await dispatch(notification)) ackIds.push(notification.ackId);
+      }
+      if (ackIds.length > 0) {
+        await transport.acknowledge(ackIds).catch((err) => options.onError?.(null, "acknowledge", err));
+      }
+    }
+  }
+
+  return {
+    async start() {
+      stopped = false;
+      stopPromise = new Promise((resolve) => {
+        stopResolve = resolve;
+      });
+      loop = runAsSystem("mail:gmailPubSubDispatcher", runLoop);
+    },
+    async stop() {
+      stopped = true;
+      stopResolve("stop");
+      await loop;
+    },
   };
 }
