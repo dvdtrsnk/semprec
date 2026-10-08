@@ -130,6 +130,9 @@ describe("person_email_index is keyed per tenant", () => {
       // blocks on the first writer's row until that commits.
       await reindexPersonEmails(first, p1, ["a@example.com"]);
       secondResult = reindexPersonEmails(second, p2, ["a@example.com"]);
+      // Mark the rejection as handled up front so a failure before the assertion below cannot
+      // surface as an unhandled rejection; the assertion still observes the original promise.
+      secondResult.catch(() => undefined);
       await new Promise((resolve) => setTimeout(resolve, 200));
       await first.query("COMMIT");
       await expect(secondResult).resolves.toEqual({ conflicts: [] });
