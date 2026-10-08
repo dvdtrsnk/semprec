@@ -25,7 +25,9 @@ timing signal across them.
 `ALTER TABLE public.items ATTACH PARTITION ... FOR VALUES IN (<id>)`. The attach takes
 `SHARE UPDATE EXCLUSIVE` on `items`, which conflicts with neither `ACCESS SHARE` nor
 `ROW EXCLUSIVE`, and `ACCESS EXCLUSIVE` only on the new empty table, so it needs no scan. Indexes
-and foreign keys come from the attach, as with `PARTITION OF`. Signature, owner, `search_path`,
+and foreign keys come from the attach, as with `PARTITION OF`. Cloning the `database_id` foreign key
+onto the partition takes `SHARE ROW EXCLUSIVE` on `databases` until the caller commits, exactly as
+`PARTITION OF` did; this decision does not change that lock. Signature, owner, `search_path`,
 partition name, tenant guard and grants are unchanged.
 
 This narrows only the lock consequence of the earlier decision; the delegation of runtime DDL to
@@ -33,7 +35,14 @@ This narrows only the lock consequence of the earlier decision; the delegation o
 
 ## Consequences
 
-- Item reads and writes of other tenants no longer wait on partition creation.
+- Item reads and writes of other tenants no longer wait on partition creation. This holds for
+  `items` only.
+- Writes to `databases` still couple tenants. `databases` is shared by every tenant, and the
+  `SHARE ROW EXCLUSIVE` lock taken by the cloned `database_id` foreign key conflicts with
+  `ROW EXCLUSIVE`, so every other tenant's `INSERT`, `UPDATE` and `DELETE` on `databases` —
+  including creating a database of their own — waits until a partition creation commits. The
+  availability coupling and timing signal from the Context therefore remain on `databases`; reads
+  of `databases` are unaffected.
 - Concurrent partition creations still serialize: `SHARE UPDATE EXCLUSIVE` conflicts with itself,
   so a second creation waits for the first transaction to finish.
 - The partition must stay catalog-equivalent to a `PARTITION OF` one; a test compares the two.
