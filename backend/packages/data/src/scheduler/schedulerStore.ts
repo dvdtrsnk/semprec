@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { enqueueJob } from "@semprec/queue";
+import { tenantLane } from "../tenancy/tenantLane.js";
 import { NotFoundError } from "../errors.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { requireAffectedRows, requireSingleRow, withTransaction } from "../db/pool.js";
@@ -317,11 +318,16 @@ export async function triggerOnItemEventHeartbeats(
     [databaseId, event],
   );
   for (const row of rows) {
+    const baseLane = queueAffinity.get(row.action_id);
     await enqueueJob(
       client,
       resolveHeartbeatFireTaskName(row.action_id),
       { heartbeatId: row.id, itemId },
-      { jobKey: heartbeatFireJobKey(row.id, itemId), maxAttempts: 3, queueName: queueAffinity.get(row.action_id) },
+      {
+        jobKey: heartbeatFireJobKey(row.id, itemId),
+        maxAttempts: 3,
+        queueName: baseLane === undefined ? undefined : (tenantLane(baseLane) ?? baseLane),
+      },
     );
   }
 }

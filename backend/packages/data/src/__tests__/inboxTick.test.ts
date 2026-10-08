@@ -1,7 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -198,6 +199,18 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
     const jobs = await pendingTickJobs();
     expect(jobs).toHaveLength(0);
+  });
+
+  it("inside a tenant scope the tick job lands on the tenant's semprec-tick lane", async () => {
+    const inboxId = await databaseIdFor("inbox");
+    const journalId = await databaseIdFor("journal");
+    const tenantZero = getTenantZeroId();
+
+    await runInTenant(tenantZero, () => createItem(inboxId, journalId));
+
+    const jobs = await pendingTickJobs();
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]!.queue_name).toBe(`${SEMPREC_TICK_QUEUE_NAME}:${tenantZero}`);
   });
 
   it("routes the heartbeat-fire job to the queue affinity registered for the semprec.tick handler", async () => {

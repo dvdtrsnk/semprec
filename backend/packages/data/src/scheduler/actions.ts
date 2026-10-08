@@ -32,8 +32,9 @@ export function createActionRegistry(): ActionRegistry {
 }
 
 /**
- * Graphile-worker queue affinity (`queue_name`) per action id: jobs sharing a queue name
- * serialize against each other, never running concurrently. An action with no entry here
+ * Graphile-worker base lane name per action id: enqueue appends the tenant (`<lane>:<tenantId>`)
+ * inside a tenant scope, and jobs sharing the resulting queue name serialize against each other,
+ * never running concurrently. An action with no entry here
  * enqueues on the default, unaffinitized queue. Same "temporary stand-in" caveat as
  * `ActionRegistry` above — issue #29's module registry is the eventual real home for this.
  */
@@ -43,7 +44,7 @@ export type ActionQueueAffinity = Map<string, string>;
  * This is the production routing table: every call site that does not pass an explicit
  * `ActionQueueAffinity` gets this one, not an empty map. A caller only ever supplies its own map
  * to override it (tests exercising the unaffinitized case, or a narrower affinity). Today it
- * routes exactly `semprec.tick` to `semprec-tick`, closing the race where two ticks for the same
+ * routes exactly `semprec.tick` to the base lane `semprec-tick`, closing the race where two ticks for the same
  * Inbox item run concurrently and both create a Processing-proposal card.
  */
 export function createActionQueueAffinity(): ActionQueueAffinity {
