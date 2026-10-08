@@ -155,11 +155,12 @@ describe("heartbeat.list / heartbeat.history / heartbeat.trigger agent tools", (
   });
 
   it("event-started agent runs appear in history", async () => {
+    const watched = await createChokePoint(pool).createDatabase({ name: "Watched by event heartbeat" });
     const heartbeat = await withTransaction(pool, (client) =>
       createHeartbeat(client, {
         projectItemId: PROJECT_A,
         name: "Inbox tick (create)",
-        rule: { kind: "onItemEvent", databaseId: "33333333-3333-4333-8333-333333333333", event: "create" },
+        rule: { kind: "onItemEvent", databaseId: watched.id, event: "create" },
         actionId: "semprec.tick",
       }),
     );

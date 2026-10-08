@@ -5,6 +5,7 @@ import type { CreatedBy, ViewRow } from "../types.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { parseViewConfig, type ViewConfig } from "../views/viewConfig.js";
 import { getDatabase } from "./databasesStore.js";
+import { getItemsByIds } from "./itemsStore.js";
 import { isBuiltinViewType, isKnownViewType, type ViewTypeRegistry } from "./viewTypeRegistry.js";
 
 const CREATED_BY_VALUES: readonly CreatedBy[] = ["user", "ai_agent", "system"];
@@ -45,7 +46,12 @@ function isUniqueViolation(err: unknown, constraint: string): boolean {
 }
 
 /** Runs a view type's registered `configSchema` (data shape) and `service.validateConfig` (issue #22, point 4) against a config, on both create and patch. */
-function validateViewTypeConfig(type: string, config: ViewConfig, viewTypeRegistry: ViewTypeRegistry): void {
+async function validateViewTypeConfig(
+  client: PoolClient,
+  type: string,
+  config: ViewConfig,
+  viewTypeRegistry: ViewTypeRegistry,
+): Promise<void> {
   const definition = viewTypeRegistry.get(type);
   if (definition?.configSchema) {
     const result = definition.configSchema.safeParse(config);
@@ -57,6 +63,28 @@ function validateViewTypeConfig(type: string, config: ViewConfig, viewTypeRegist
     }
   }
   definition?.service?.validateConfig?.(config);
+
+  // Lookups run inside the caller's tenant, so a foreign id fails exactly like a missing one; the
+  // message names the field, never the id.
+  const fields = config as Record<string, unknown>;
+  for (const field of definition?.referenceFields?.databaseIds ?? []) {
+    const value = fields[field];
+    if (typeof value === "string" && !(await getDatabase(client, value))) {
+      throw new ValidationError(
+        `Invalid config for view type '${type}': '${field}' does not reference an existing database`,
+        { field: `config.${field}` },
+      );
+    }
+  }
+  for (const field of definition?.referenceFields?.itemIds ?? []) {
+    const value = fields[field];
+    if (typeof value === "string" && (await getItemsByIds(client, [value])).length === 0) {
+      throw new ValidationError(
+        `Invalid config for view type '${type}': '${field}' does not reference an existing item`,
+        { field: `config.${field}` },
+      );
+    }
+  }
 }
 
 export interface CreateViewInput {
@@ -111,7 +139,7 @@ export async function createView(
     if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
   }
 
-  validateViewTypeConfig(input.type, config, viewTypeRegistry);
+  await validateViewTypeConfig(client, input.type, config, viewTypeRegistry);
 
   try {
     const { rows } = await client.query<ViewDbRow>(
@@ -194,7 +222,7 @@ export async function patchView(
         field: "config.membership",
       });
     }
-    validateViewTypeConfig(view.type, nextConfig, viewTypeRegistry);
+    await validateViewTypeConfig(client, view.type, nextConfig, viewTypeRegistry);
   }
 
   const sets: string[] = [];

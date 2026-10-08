@@ -1,7 +1,8 @@
 import type { Pool, PoolClient } from "pg";
 import { enqueueJob } from "@semprec/queue";
 import { tenantLane } from "../tenancy/tenantLane.js";
-import { NotFoundError } from "../errors.js";
+import { NotFoundError, ValidationError } from "../errors.js";
+import { getDatabase } from "../chokePoint/databasesStore.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { requireAffectedRows, requireSingleRow, withTransaction } from "../db/pool.js";
 import { computeNextFireAt } from "./nextFireAt.js";
@@ -9,6 +10,7 @@ import {
   isFloatingRuleKind,
   isOnItemEventRule,
   parseHeartbeatRule,
+  type OnItemEventRule,
   type AnyHeartbeatRule,
   type HeartbeatRuleKindRegistry,
 } from "./rule.js";
@@ -81,12 +83,23 @@ export interface CreateHeartbeatInput {
   enabled?: boolean;
 }
 
+/** An `onItemEvent` rule must name a database visible in the caller's tenant; a foreign id fails like a missing one. */
+async function assertOnItemEventDatabaseExists(client: PoolClient, rule: AnyHeartbeatRule): Promise<void> {
+  if (!isOnItemEventRule(rule)) return;
+  if (!(await getDatabase(client, (rule as OnItemEventRule).databaseId))) {
+    throw new ValidationError("'rule.databaseId' does not reference an existing database", {
+      field: "rule.databaseId",
+    });
+  }
+}
+
 export async function createHeartbeat(
   client: PoolClient,
   input: CreateHeartbeatInput,
   moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
 ): Promise<HeartbeatRow> {
   const rule = parseHeartbeatRule(input.rule, moduleRuleKinds);
+  await assertOnItemEventDatabaseExists(client, rule);
   const enabled = input.enabled ?? true;
   const nextFireAt =
     enabled && !isOnItemEventRule(rule) ? await computeNextFireAtNow(client, rule, moduleRuleKinds) : null;
@@ -190,6 +203,7 @@ export async function updateHeartbeatRule(
   );
   if (!existingRows[0]) throw new NotFoundError(`Heartbeat ${id} not found`);
   const rule = parseHeartbeatRule(rawRule, moduleRuleKinds);
+  await assertOnItemEventDatabaseExists(client, rule);
   const nextFireAt =
     existingRows[0].enabled && !isOnItemEventRule(rule)
       ? await computeNextFireAtNow(client, rule, moduleRuleKinds)

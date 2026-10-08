@@ -3,6 +3,7 @@ import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import type { DatabaseRow } from "../types.js";
 import { deleteRollupDependenciesBySourceDatabase } from "../rollup/dependencies.js";
+import { getItemsByIds } from "./itemsStore.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -71,6 +72,16 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
     // fallback (db.name ?? db.key ?? db.id) has to fall back to before it resorts to
     // surfacing the raw database id.
     throw new ValidationError("key is required for a system database with a null name", { field: "key" });
+  }
+
+  if (input.parentItemId !== undefined) {
+    // Foreign, soft-deleted, missing and malformed ids all fail identically (no id in the message),
+    // so the error cannot serve as an existence oracle across tenants.
+    const parentExists =
+      UUID_RE.test(input.parentItemId) && (await getItemsByIds(client, [input.parentItemId])).length > 0;
+    if (!parentExists) {
+      throw new ValidationError("'parentItemId' does not reference an existing item", { field: "parentItemId" });
+    }
   }
 
   let database: DatabaseRow;
