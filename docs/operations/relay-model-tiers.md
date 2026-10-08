@@ -55,7 +55,9 @@ concurrent write between read and PATCH cannot be made atomic: stop on an
 unexpected result and inspect the issue. Never retry an uncertain write blindly.
 After a crash, the exact target hash permits idempotent recovery. Rollback only
 restores the original body while the current body matches the recorded target;
-a later manual edit is a conflict. Run one migration operator at a time.
+a later manual edit is a conflict. An existing target without this operator's
+recorded write intent is never added to rollback ownership. Run one migration
+operator at a time.
 
 ## Deployment and pilot
 

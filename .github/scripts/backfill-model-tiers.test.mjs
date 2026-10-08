@@ -34,6 +34,18 @@ test("malformed existing tier headers require explicit repair before backfill", 
   ];
   for (const body of bodies) assert.throws(() => renderMetadata(body, "high", rationale), /repair it explicitly/);
 });
+test("a matching header with missing Context rationale requires explicit reassessment", () => {
+  const partial = after.replace(`Model tier rationale: ${rationale}\n`, "");
+  assert.throws(() => renderMetadata(partial, "high", rationale), /reassessment/);
+});
+test("rendering rejects invalid assessments, noncanonical bodies and oversized output", () => {
+  for (const args of [[null, "high", rationale], [before + "x".repeat(60000), "high", rationale], [before, "unknown", rationale], [before, "high", null], [before, "high", " "], [before, "high", "two\nlines"]]) {
+    assert.throws(() => renderMetadata(...args), /Invalid metadata assessment/);
+  }
+  assert.throws(() => renderMetadata(before.replace("**Blocked by:** #7, #8", "Other header"), "high", rationale), /canonical first-line/);
+  assert.throws(() => renderMetadata(before.replace("## Context", "## Background"), "high", rationale), /no Context/);
+  assert.throws(() => renderMetadata(before + "x".repeat(60000 - before.length), "high", rationale), /invalid or too large/);
+});
 
 function fake(body = before) {
   const events = []; const ledger = {};
@@ -90,6 +102,19 @@ test("a crash after PATCH can recover from intent without repeating the write", 
   const state = fake(after); state.ledger[9] = "applying";
   assert.equal(await migrateEntry(entry, state.api, "apply", state.ledger, state.save), "already-target");
   assert.deepEqual(state.events, ["read", "save:applied"]);
+});
+test("already-target apply never takes ownership of metadata written by another operator", async () => {
+  for (const previous of [undefined, "rolled-back"]) {
+    const state = fake(after);
+    if (previous) state.ledger[9] = previous;
+    const originalLedger = { ...state.ledger };
+    assert.equal(await migrateEntry(entry, state.api, "apply", state.ledger, state.save), "already-target");
+    assert.deepEqual(state.events, ["read"]);
+    assert.deepEqual(state.ledger, originalLedger);
+    assert.equal(state.body(), after);
+    assert.equal(await migrateEntry(entry, state.api, "rollback", state.ledger, state.save), "not-applied");
+    assert.equal(state.body(), after);
+  }
 });
 test("rollback never records ownership of an entry that was never applied", async () => {
   for (const body of [before, after]) {
