@@ -367,7 +367,7 @@ describe("Gmail Pub/Sub dispatcher (issue #998)", () => {
     expect(await pendingMailSyncJobCount(mailbox)).toBe(0);
   });
 
-  it("reports a failed acknowledge and a failed route without acknowledging", async () => {
+  it("reports a failed acknowledge", async () => {
     await watchedMailbox("R1", "user@example.com");
     const errors: string[] = [];
     const { transport } = createFakeTransport({ pullQueue: [[notification("ack-r")]] });
@@ -384,6 +384,37 @@ describe("Gmail Pub/Sub dispatcher (issue #998)", () => {
     await dispatcher.start();
     await vi.waitFor(() => expect(errors).toEqual(["acknowledge"]));
     await dispatcher.stop();
+  });
+
+  it("reports a failed route without acknowledging, then carries on to the next pull", async () => {
+    await watchedMailbox("R2", "user@example.com");
+    const errors: Array<{ target: unknown; phase: string; message: string }> = [];
+    const { transport, ackCalls, pullCallCount } = createFakeTransport({
+      pullQueue: [[notification("ack-route")], [notification("ack-after")]],
+    });
+    let connectCalls = 0;
+    const flakyPool = new Proxy(pool, {
+      get(target, prop, receiver) {
+        if (prop === "connect") {
+          return (...args: unknown[]) => {
+            if (connectCalls++ === 0) return Promise.reject(new Error("simulated routing failure"));
+            return (target.connect as (...a: unknown[]) => unknown)(...args);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const dispatcher = createGmailPubSubDispatcher(flakyPool, transport, {
+      pullEmptyBackoffMs: 1,
+      onError: (target, phase, err) =>
+        errors.push({ target, phase, message: err instanceof Error ? err.message : String(err) }),
+    });
+    await dispatcher.start();
+    await vi.waitFor(() => expect(ackCalls).toEqual([["ack-after"]]));
+    await dispatcher.stop();
+    expect(errors).toEqual([{ target: null, phase: "route", message: "simulated routing failure" }]);
+    expect(pullCallCount.value).toBeGreaterThanOrEqual(2);
   });
 
   it("backs off with a capped, growing delay after repeated pull failures, then resets after a success", async () => {
