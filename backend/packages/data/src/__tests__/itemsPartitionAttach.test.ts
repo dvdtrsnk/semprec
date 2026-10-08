@@ -46,9 +46,7 @@ describe("items partitions are attached, not created as partitions (issue #1036)
     const existing = await withTenantTransaction(dataPool, tenantId, (client) =>
       createDatabase(client, { name: "existing" }),
     );
-    const existingItemId = await withTenantTransaction(dataPool, tenantId, (client) =>
-      insertItem(client, existing.id),
-    );
+    const existingItemId = await withTenantTransaction(dataPool, tenantId, (client) => insertItem(client, existing.id));
 
     const a = await dataPool.connect();
     try {
