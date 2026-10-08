@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { tenantLane } from "../tenancy/tenantLane.js";
 
 /** The sole process allowed to write Transcriptions' system-owned fields. */
 export const TRANSCRIPTION_OWNER_PROCESS = "transcribe";
@@ -31,6 +32,8 @@ export function readTranscriptionSourceFileItemId(link: unknown): string | null 
 export const transcriptionJobPayloadSchema = z.object({ fileItemId: z.string().uuid() });
 export type TranscriptionJobPayload = z.infer<typeof transcriptionJobPayloadSchema>;
 
+const TRANSCRIPTION_LANE = "transcription";
+
 export interface EnqueueTranscriptionJobInput {
   fileItemId: string;
 }
@@ -51,7 +54,7 @@ export async function enqueueTranscriptionJob(client: PoolClient, input: Enqueue
     client,
     CORE_TASK_NAMES.TRANSCRIPTION_JOB,
     { fileItemId: input.fileItemId },
-    { jobKey: transcriptionJobKey(input.fileItemId), maxAttempts: 3 },
+    { jobKey: transcriptionJobKey(input.fileItemId), maxAttempts: 3, queueName: tenantLane(TRANSCRIPTION_LANE) },
   );
 }
 

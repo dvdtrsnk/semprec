@@ -12,7 +12,11 @@ import * as relationsStore from "../chokePoint/relationsStore.js";
 import { lockItemById, writeComputed } from "../chokePoint/itemsStore.js";
 import { findDependenciesByRelationDefinition, getRollupDependency } from "./dependencies.js";
 import { parseRollupConfig, type RollupAggregation } from "./config.js";
+import { tenantLane } from "../tenancy/tenantLane.js";
 import { notifyInvalidation } from "../realtimeHook.js";
+
+const ROLLUP_RECOMPUTE_LANE = "rollup-recompute";
+const ROLLUP_BACKFILL_LANE = "rollup-backfill";
 
 export function rollupRecomputeJobKey(rollupPropertyId: string, itemId: string): string {
   return `rollup-recompute:${rollupPropertyId}:${itemId}`;
@@ -32,7 +36,11 @@ export async function enqueueRollupRecompute(
     client,
     CORE_TASK_NAMES.ROLLUP_RECOMPUTE,
     { rollupPropertyId, itemId },
-    { jobKey: rollupRecomputeJobKey(rollupPropertyId, itemId), maxAttempts: 3 },
+    {
+      jobKey: rollupRecomputeJobKey(rollupPropertyId, itemId),
+      maxAttempts: 3,
+      queueName: tenantLane(ROLLUP_RECOMPUTE_LANE),
+    },
   );
 }
 
@@ -42,7 +50,11 @@ export async function enqueueRollupBackfill(client: Queryable, rollupPropertyId:
     client,
     CORE_TASK_NAMES.ROLLUP_RECOMPUTE_FULL,
     { rollupPropertyId },
-    { jobKey: rollupRecomputeFullJobKey(rollupPropertyId), maxAttempts: 3 },
+    {
+      jobKey: rollupRecomputeFullJobKey(rollupPropertyId),
+      maxAttempts: 3,
+      queueName: tenantLane(ROLLUP_BACKFILL_LANE),
+    },
   );
 }
 

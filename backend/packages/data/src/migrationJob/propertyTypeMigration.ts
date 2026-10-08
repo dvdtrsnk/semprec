@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { tenantLane } from "../tenancy/tenantLane.js";
 import type { Queryable } from "../db/pool.js";
 import { requireAffectedRows, withTransaction } from "../db/pool.js";
 import {
@@ -97,6 +98,8 @@ function isAlreadyTargetType(type: PropertyType, value: unknown): boolean {
   }
 }
 
+const PROPERTY_TYPE_MIGRATION_LANE = "property-type-migration";
+
 export function propertyTypeMigrationJobKey(propertyId: string): string {
   return `property-type-migration:${propertyId}`;
 }
@@ -111,7 +114,11 @@ export async function enqueuePropertyTypeMigration(
     client,
     CORE_TASK_NAMES.PROPERTY_TYPE_MIGRATION,
     { propertyId, fromType },
-    { jobKey: propertyTypeMigrationJobKey(propertyId), maxAttempts: 3 },
+    {
+      jobKey: propertyTypeMigrationJobKey(propertyId),
+      maxAttempts: 3,
+      queueName: tenantLane(PROPERTY_TYPE_MIGRATION_LANE),
+    },
   );
 }
 
