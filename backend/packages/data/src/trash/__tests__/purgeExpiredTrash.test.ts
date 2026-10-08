@@ -122,7 +122,9 @@ describe("purgeExpiredTrash (issue #156)", () => {
 
     // Added under the already-trashed root after the fact, so it was never part of the delete
     // cascade and is still live — the purge sweep must not treat it as part of the old root's subtree.
-    const midDb = await chokePoint.createInlineDatabase({ name: "Mid", parentItemId: rootItem.id });
+    // createDatabase refuses a trashed parent, so the link is written straight to the row.
+    const midDb = await chokePoint.createDatabase({ name: "Mid" });
+    await pool.query("UPDATE databases SET parent_item_id = $1 WHERE id = $2", [rootItem.id, midDb.id]);
     const midItem = await chokePoint.createItem({ databaseId: midDb.id, properties: {} });
     const leafDb = await chokePoint.createInlineDatabase({ name: "Leaf", parentItemId: midItem.id });
     const leafItem = await chokePoint.createItem({ databaseId: leafDb.id, properties: {} });

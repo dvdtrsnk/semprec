@@ -28,6 +28,7 @@ const journalInboxConfigSchema = z.object({
 export function registerJournalInboxViewType(registry: ViewTypeRegistry): void {
   registerViewType(registry, JOURNAL_INBOX_VIEW_TYPE, {
     configSchema: journalInboxConfigSchema,
+    referenceFields: { databaseIds: ["inboxDatabaseId"], itemIds: ["journalDayItemId"] },
     // Opaque to the backend; the client resolves this to its renderer component.
     clientComponent: "journalInboxList",
   });

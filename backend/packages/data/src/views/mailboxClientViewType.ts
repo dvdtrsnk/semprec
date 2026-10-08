@@ -44,6 +44,7 @@ export type MailboxClientConfig = z.infer<typeof mailboxClientConfigSchema>;
 export function registerMailboxClientViewType(registry: ViewTypeRegistry): void {
   registerViewType(registry, MAILBOX_CLIENT_VIEW_TYPE, {
     configSchema: mailboxClientConfigSchema,
+    referenceFields: { databaseIds: ["foldersDatabaseId", "mailboxesDatabaseId"], itemIds: ["mailboxItemId"] },
     service: {
       validateConfig(config) {
         // Scoping the sidebar to one account needs the database the item lives in as well;

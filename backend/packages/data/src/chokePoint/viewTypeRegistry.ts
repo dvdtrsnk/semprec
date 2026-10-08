@@ -19,6 +19,8 @@ export interface ViewTypeDefinition {
   /** Optional zod schema for this view type's own config shape, beyond the common fields in viewConfig.ts. */
   configSchema?: ZodType<unknown>;
   service?: ViewTypeService;
+  /** Config fields holding database / item ids; each present string must resolve inside the caller's tenant. */
+  referenceFields?: { databaseIds?: readonly string[]; itemIds?: readonly string[] };
   /** Opaque identifier the client resolves to its renderer component; the backend never interprets it. */
   clientComponent?: string;
 }
