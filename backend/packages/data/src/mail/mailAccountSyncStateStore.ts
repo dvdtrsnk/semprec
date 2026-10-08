@@ -1,5 +1,6 @@
 import { requireAffectedRows, type Queryable } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
+import { normalizeEmailAddress } from "./personEmailIndexStore.js";
 
 export const SYNC_MODES = ["imap", "gmail_api", "graph_api"] as const;
 export type SyncMode = (typeof SYNC_MODES)[number];
@@ -140,6 +141,8 @@ export async function recordGmailActivity(client: Queryable, input: RecordGmailA
 export interface RecordGmailWatchRegistrationInput {
   historyId: string;
   expiresAt: Date;
+  /** The already-normalized address of the Google account the watch was registered for — what `route_gmail_address` matches a Pub/Sub notification against. */
+  emailAddress: string;
 }
 
 /**
@@ -151,19 +154,53 @@ export interface RecordGmailWatchRegistrationInput {
  * `historyId` is silently ignored once a cursor already exists — overwriting it there would let a
  * renewal race ahead of whatever the reconcile pass (`recordGmailActivity`/`invalidateGmailHistory`,
  * issue #26 — the only other writer of this column) has actually observed, skipping any change
- * that arrived in the gap between the two.
+ * that arrived in the gap between the two. `gmail_watch_email_address` is replaced on every
+ * registration: it is the routing key for the shared Pub/Sub subscription.
  */
 export async function recordGmailWatchRegistration(
   client: Queryable,
   itemId: string,
   input: RecordGmailWatchRegistrationInput,
 ): Promise<void> {
-  await client.query(
+  const result = await client.query(
     `UPDATE mail_account_sync_state
-     SET gmail_watch_expires_at = $2, gmail_history_id = COALESCE(gmail_history_id, $3)
+     SET gmail_watch_expires_at = $2, gmail_history_id = COALESCE(gmail_history_id, $3),
+         gmail_watch_email_address = $4
      WHERE item_id = $1`,
-    [itemId, input.expiresAt, input.historyId],
+    [itemId, input.expiresAt, input.historyId, input.emailAddress],
   );
+  requireAffectedRows(result, `gmail watch registration for item ${itemId}`);
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export interface GmailRouteTarget {
+  tenantId: string;
+  mailboxItemId: string;
+}
+
+/**
+ * Maps the address a Gmail Pub/Sub notification names to every `(tenant, mailbox)` watching it,
+ * through the `semprec_router`-owned `route_gmail_address` function, which reads past row-level
+ * security (docs/adr/2026-10-07-cross-tenant-router-functions.md). Only gmail_api mailboxes whose
+ * watch was registered for that address match. Returns ids only; the caller enters each tenant
+ * before touching the mailbox. An empty array means nobody watches the address.
+ */
+export async function routeGmailAddress(client: Queryable, emailAddress: string): Promise<GmailRouteTarget[]> {
+  const { rows } = await client.query<{ tenant_id: unknown; mailbox_item_id: unknown }>(
+    "SELECT tenant_id, mailbox_item_id FROM route_gmail_address($1)",
+    [normalizeEmailAddress(emailAddress)],
+  );
+  return rows.map((row) => {
+    const { tenant_id: tenantId, mailbox_item_id: mailboxItemId } = row;
+    if (typeof tenantId !== "string" || !UUID_RE.test(tenantId)) {
+      throw new Error("Malformed route_gmail_address row in database row");
+    }
+    if (typeof mailboxItemId !== "string" || !UUID_RE.test(mailboxItemId)) {
+      throw new Error("Malformed route_gmail_address row in database row");
+    }
+    return { tenantId, mailboxItemId };
+  });
 }
 
 /** The reaction to a Graph `deltaLink` 410 Gone / `resyncRequired` — analogous to `invalidateGmailHistory`, clearing `graph_delta_link` back to NULL so the next sync runs a full resync instead of resuming from a stale token. */

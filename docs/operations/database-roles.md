@@ -102,6 +102,7 @@ and the function returns only ids or numbers, never content. The caller then ent
 `runInTenant(<returned tenant>)` and re-reads everything else under RLS. No runtime role ever gets
 `BYPASSRLS` (decision record: `docs/adr/2026-10-07-cross-tenant-router-functions.md`).
 
-| Function | Executing role | Returned value | Columns read |
-| --- | --- | --- | --- |
-| `route_graph_subscription(text)` | `semprec_data` | a tenant id, or `NULL` | `mail_account_sync_state(graph_subscription_id, tenant_id)` |
+| Function                         | Executing role | Returned value                                                                  | Columns read                                                                        |
+| -------------------------------- | -------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `route_graph_subscription(text)` | `semprec_data` | a tenant id, or `NULL`                                                          | `mail_account_sync_state(graph_subscription_id, tenant_id)`                         |
+| `route_gmail_address(text)`      | `semprec_data` | `(tenant_id, mailbox_item_id)` rows, one per Gmail mailbox watching the address | `mail_account_sync_state(item_id, tenant_id, sync_mode, gmail_watch_email_address)` |

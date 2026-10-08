@@ -146,7 +146,7 @@ export function createGmailPubSubTransport(options: GmailPubSubClientOptions): G
       return { historyId: json.historyId, expiresAt: new Date(Number(json.expiration)) };
     },
 
-    async pull(_mailboxItemId): Promise<GmailPubSubNotification[]> {
+    async pull(): Promise<GmailPubSubNotification[]> {
       const accessToken = await options.getPubSubAccessToken();
       const json = await jsonRequest(`${PUBSUB_BASE_URL}/${options.subscriptionName}:pull`, accessToken, {
         method: "POST",
@@ -168,7 +168,7 @@ export function createGmailPubSubTransport(options: GmailPubSubClientOptions): G
       return notifications;
     },
 
-    async acknowledge(_mailboxItemId, ackIds): Promise<void> {
+    async acknowledge(ackIds): Promise<void> {
       if (ackIds.length === 0) return;
       const accessToken = await options.getPubSubAccessToken();
       await jsonRequest(`${PUBSUB_BASE_URL}/${options.subscriptionName}:acknowledge`, accessToken, {
