@@ -392,20 +392,9 @@ describe("Gmail Pub/Sub dispatcher (issue #998)", () => {
     const { transport, ackCalls, pullCallCount } = createFakeTransport({
       pullQueue: [[notification("ack-route")], [notification("ack-after")]],
     });
-    let connectCalls = 0;
-    const flakyPool = new Proxy(pool, {
-      get(target, prop, receiver) {
-        if (prop === "connect") {
-          return (...args: unknown[]) => {
-            if (connectCalls++ === 0) return Promise.reject(new Error("simulated routing failure"));
-            return (target.connect as (...a: unknown[]) => unknown)(...args);
-          };
-        }
-        const value = Reflect.get(target, prop, receiver);
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    });
-    const dispatcher = createGmailPubSubDispatcher(flakyPool, transport, {
+    const connectSpy = vi.spyOn(pool, "connect");
+    connectSpy.mockImplementationOnce((() => Promise.reject(new Error("simulated routing failure"))) as never);
+    const dispatcher = createGmailPubSubDispatcher(pool, transport, {
       pullEmptyBackoffMs: 1,
       onError: (target, phase, err) =>
         errors.push({ target, phase, message: err instanceof Error ? err.message : String(err) }),
@@ -413,6 +402,7 @@ describe("Gmail Pub/Sub dispatcher (issue #998)", () => {
     await dispatcher.start();
     await vi.waitFor(() => expect(ackCalls).toEqual([["ack-after"]]));
     await dispatcher.stop();
+    connectSpy.mockRestore();
     expect(errors).toEqual([{ target: null, phase: "route", message: "simulated routing failure" }]);
     expect(pullCallCount.value).toBeGreaterThanOrEqual(2);
   });
