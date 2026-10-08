@@ -11,8 +11,16 @@ import { recomputeRollupCell } from "../rollup/recompute.js";
 let pool: Pool;
 let chokePoint: ChokePoint;
 
+/**
+ * Jobs on one per-tenant lane run one at a time, and a single `runOnce` pass stops when the only
+ * jobs left are behind a lane that was busy, so pass until the queue is empty.
+ */
 async function drainQueue() {
-  await runOnce({ pgPool: pool, taskList: createCoreTaskList(pool, createActionRegistry()) });
+  for (let pass = 0; pass < 10; pass++) {
+    await runOnce({ pgPool: pool, taskList: createCoreTaskList(pool, createActionRegistry()) });
+    const { rows } = await pool.query<{ n: string }>("SELECT count(*) AS n FROM graphile_worker._private_jobs");
+    if (rows[0]?.n === "0") return;
+  }
 }
 
 describe("rollup engine", () => {
