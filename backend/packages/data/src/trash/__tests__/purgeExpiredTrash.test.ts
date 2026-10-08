@@ -117,17 +117,17 @@ describe("purgeExpiredTrash (issue #156)", () => {
   it("stops the cascade at a branch that is still live, leaving it and everything under it in place", async () => {
     const rootDb = await makeMoviesDb();
     const rootItem = await chokePoint.createItem({ databaseId: rootDb.id, properties: {} });
-    await chokePoint.softDeleteItem(rootDb.id, rootItem.id);
-    await ageDeletion(rootItem.id, 31, rootDb.id);
-
-    // Added under the already-trashed root after the fact, so it was never part of the delete
-    // cascade and is still live — the purge sweep must not treat it as part of the old root's subtree.
-    // createDatabase refuses a trashed parent, so the link is written straight to the row.
-    const midDb = await chokePoint.createDatabase({ name: "Mid" });
-    await pool.query("UPDATE databases SET parent_item_id = $1 WHERE id = $2", [rootItem.id, midDb.id]);
+    const midDb = await chokePoint.createInlineDatabase({ name: "Mid", parentItemId: rootItem.id });
     const midItem = await chokePoint.createItem({ databaseId: midDb.id, properties: {} });
     const leafDb = await chokePoint.createInlineDatabase({ name: "Leaf", parentItemId: midItem.id });
     const leafItem = await chokePoint.createItem({ databaseId: leafDb.id, properties: {} });
+
+    // Trashing the root cascades to the whole subtree; restoring the mid item brings it and its
+    // leaf back to life, leaving a live branch under an expired root. Only the root is then aged.
+    await chokePoint.softDeleteItem(rootDb.id, rootItem.id);
+    const restored = await chokePoint.restoreItem(midDb.id, midItem.id);
+    expect(restored?.deletedAt).toBeNull();
+    await ageDeletion(rootItem.id, 31, rootDb.id);
 
     const midBefore = await chokePoint.getItem(midDb.id, midItem.id);
     expect(midBefore?.deletedAt).toBeNull();
