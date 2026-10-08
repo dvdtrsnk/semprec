@@ -1,9 +1,15 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
 import { createUser, finishAgentRun, hashPassword } from "@semprec/data";
-import { getTraceContext } from "@semprec/shared";
-import { SEMP_BUSY_ERROR_MESSAGE, SempConversation } from "../sempConversation.js";
+import { currentTenantScope, getTraceContext, runAsSystem, runInTenant } from "@semprec/shared";
+import { SEMP_BUSY_ERROR_MESSAGE, SempConversation, type SempConversationOptions } from "../sempConversation.js";
 import type {
   AgentMessage,
   AgentSession,
@@ -13,6 +19,11 @@ import type {
 } from "../types.js";
 
 let pool: Pool;
+let tenantZero: string;
+
+function sendInTenantZero(conversation: SempConversation, task: string) {
+  return runInTenant(tenantZero, () => conversation.send(task));
+}
 
 const SEMPREC_PROJECT_ITEM_ID = "99999999-9999-9999-9999-999999999999";
 
@@ -65,6 +76,7 @@ describe("SempConversation", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    tenantZero = getTenantZeroId();
     const passwordHash = await hashPassword("s3cret-password");
     await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
   });
@@ -79,9 +91,12 @@ describe("SempConversation", () => {
       { kind: "message", text: "hello there" },
       { kind: "turn_end" },
     ]);
-    const conversation = new SempConversation(pool, { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID });
+    const conversation = new SempConversation(pool, {
+      createAgentSession,
+      resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+    });
 
-    const result = await conversation.send("hi");
+    const result = await sendInTenantZero(conversation, "hi");
 
     expect(result).toEqual({ ok: true, message: "hello there" });
 
@@ -107,10 +122,13 @@ describe("SempConversation", () => {
       [{ kind: "turn_start" }, { kind: "message", text: "first" }, { kind: "turn_end" }],
       [{ kind: "turn_start" }, { kind: "message", text: "second" }, { kind: "turn_end" }],
     );
-    const conversation = new SempConversation(pool, { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID });
+    const conversation = new SempConversation(pool, {
+      createAgentSession,
+      resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+    });
 
-    const first = await conversation.send("one");
-    const second = await conversation.send("two");
+    const first = await sendInTenantZero(conversation, "one");
+    const second = await sendInTenantZero(conversation, "two");
 
     expect(first).toEqual({ ok: true, message: "first" });
     expect(second).toEqual({ ok: true, message: "second" });
@@ -141,10 +159,13 @@ describe("SempConversation", () => {
         for (const message of batches[call++]!) yield message;
       },
     });
-    const conversation = new SempConversation(pool, { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID });
+    const conversation = new SempConversation(pool, {
+      createAgentSession,
+      resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+    });
 
-    await conversation.send("one");
-    await conversation.send("two");
+    await sendInTenantZero(conversation, "one");
+    await sendInTenantZero(conversation, "two");
 
     const { rows } = await pool.query<{ id: string }>(`SELECT id FROM agent_runs WHERE project_item_id = $1`, [
       SEMPREC_PROJECT_ITEM_ID,
@@ -179,18 +200,18 @@ describe("SempConversation", () => {
     const ttlMs = 40;
     const conversation = new SempConversation(
       pool,
-      { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID, reconstructHistory },
+      { createAgentSession, resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID, reconstructHistory },
       ttlMs,
     );
 
-    await conversation.send("hi");
+    await sendInTenantZero(conversation, "hi");
     expect(calls).toEqual([[SEMPREC_PROJECT_ITEM_ID]]);
     expect(tasks).toEqual(["hi"]);
     expect(initialStates).toEqual([undefined]);
 
     await new Promise((resolve) => setTimeout(resolve, ttlMs + 150));
 
-    await conversation.send("hi again");
+    await sendInTenantZero(conversation, "hi again");
 
     expect(calls).toEqual([[SEMPREC_PROJECT_ITEM_ID], [SEMPREC_PROJECT_ITEM_ID]]);
     expect(tasks).toEqual(["hi", "hi again"]);
@@ -215,11 +236,11 @@ describe("SempConversation", () => {
     ]);
     const conversation = new SempConversation(pool, {
       createAgentSession,
-      projectItemId: SEMPREC_PROJECT_ITEM_ID,
+      resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
       reconstructHistory,
     });
 
-    await conversation.send("hi");
+    await sendInTenantZero(conversation, "hi");
 
     const { rows: runs } = await pool.query<{ id: string }>(`SELECT id FROM agent_runs WHERE project_item_id = $1`, [
       SEMPREC_PROJECT_ITEM_ID,
@@ -246,11 +267,11 @@ describe("SempConversation", () => {
     );
     const conversation = new SempConversation(
       pool,
-      { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID },
+      { createAgentSession, resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID },
       ttlMs,
     );
 
-    await conversation.send("one");
+    await sendInTenantZero(conversation, "one");
 
     await new Promise((resolve) => setTimeout(resolve, ttlMs + 150));
 
@@ -262,7 +283,7 @@ describe("SempConversation", () => {
     expect(afterTtl[0]!.status).toBe("done");
     expect(afterTtl[0]!.finished_at).not.toBeNull();
 
-    const second = await conversation.send("two");
+    const second = await sendInTenantZero(conversation, "two");
     expect(second).toEqual({ ok: true, message: "second wake" });
 
     const { rows: allRuns } = await pool.query(`SELECT count(*)::int AS n FROM agent_runs WHERE project_item_id = $1`, [
@@ -282,11 +303,11 @@ describe("SempConversation", () => {
     ]);
     const conversation = new SempConversation(
       pool,
-      { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID },
+      { createAgentSession, resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID },
       ttlMs,
     );
 
-    await conversation.send("one");
+    await sendInTenantZero(conversation, "one");
     const { rows: runs } = await pool.query<{ id: string }>(`SELECT id FROM agent_runs WHERE project_item_id = $1`, [
       SEMPREC_PROJECT_ITEM_ID,
     ]);
@@ -317,13 +338,13 @@ describe("SempConversation", () => {
     );
     const conversation = new SempConversation(
       pool,
-      { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID },
+      { createAgentSession, resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID },
       ttlMs,
     );
 
-    await conversation.send("one");
+    await sendInTenantZero(conversation, "one");
     await new Promise((resolve) => setTimeout(resolve, 60));
-    await conversation.send("two");
+    await sendInTenantZero(conversation, "two");
     await new Promise((resolve) => setTimeout(resolve, 60));
 
     const { rows } = await pool.query<{ status: string }>(`SELECT status FROM agent_runs WHERE project_item_id = $1`, [
@@ -341,17 +362,22 @@ describe("SempConversation", () => {
       { kind: "message", text: "first wake" },
       { kind: "turn_end" },
     ]);
-    const conversation = new SempConversation(pool, { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID });
+    const conversation = new SempConversation(pool, {
+      createAgentSession,
+      resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+    });
 
-    await conversation.send("one");
+    await sendInTenantZero(conversation, "one");
 
     // Invoke the TTL handler's private pause() directly rather than waiting out a real TTL:
     // pause() claims the entry as busy synchronously, before its first `await` (the invariant
     // the high-severity review finding required), so by the time `send()` below runs — the
     // very next synchronous statement — it already observes `busy` and is rejected instead of
     // reusing a session whose run pause() is concurrently finishing as `done`.
-    const pausePromise = (conversation as unknown as { pause(): Promise<void> }).pause();
-    const duringPause = await conversation.send("during pause");
+    const pausePromise = runInTenant(tenantZero, () =>
+      (conversation as unknown as { pause(tenantId: string): Promise<void> }).pause(tenantZero),
+    );
+    const duringPause = await sendInTenantZero(conversation, "during pause");
     expect(duringPause).toEqual({ ok: false, error: SEMP_BUSY_ERROR_MESSAGE });
 
     await pausePromise;
@@ -367,14 +393,17 @@ describe("SempConversation", () => {
 
   it("rejects a send that arrives while another is already in flight, without blocking or overwriting it", async () => {
     const { createAgentSession, release } = blockingSession();
-    const conversation = new SempConversation(pool, { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID });
+    const conversation = new SempConversation(pool, {
+      createAgentSession,
+      resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+    });
 
-    const inFlight = conversation.send("slow");
+    const inFlight = sendInTenantZero(conversation, "slow");
 
     // Give the in-flight call's first turn_start a chance to be persisted before the second arrives.
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    const duplicate = await conversation.send("duplicate");
+    const duplicate = await sendInTenantZero(conversation, "duplicate");
     expect(duplicate).toEqual({ ok: false, error: SEMP_BUSY_ERROR_MESSAGE });
 
     release();
@@ -391,10 +420,15 @@ describe("SempConversation", () => {
 
   it("rejects two concurrent first-time wakes without opening two runs", async () => {
     const { createAgentSession, release } = blockingSession();
-    const conversation = new SempConversation(pool, { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID });
+    const conversation = new SempConversation(pool, {
+      createAgentSession,
+      resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+    });
 
-    const firstPromise = conversation.send("first");
-    const secondPromise = new Promise((resolve) => setTimeout(resolve, 5)).then(() => conversation.send("second"));
+    const firstPromise = sendInTenantZero(conversation, "first");
+    const secondPromise = new Promise((resolve) => setTimeout(resolve, 5)).then(() =>
+      sendInTenantZero(conversation, "second"),
+    );
 
     await new Promise((resolve) => setTimeout(resolve, 20));
     release();
@@ -418,9 +452,12 @@ describe("SempConversation", () => {
         throw new Error("boom");
       },
     });
-    const conversation = new SempConversation(pool, { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID });
+    const conversation = new SempConversation(pool, {
+      createAgentSession,
+      resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+    });
 
-    await expect(conversation.send("fails")).rejects.toThrow("boom");
+    await expect(sendInTenantZero(conversation, "fails")).rejects.toThrow("boom");
 
     const { rows } = await pool.query<{ status: string; result: string | null }>(
       `SELECT status, result FROM agent_runs WHERE project_item_id = $1`,
@@ -447,12 +484,15 @@ describe("SempConversation", () => {
         throw new Error("second turn boom");
       },
     });
-    const conversation = new SempConversation(pool, { createAgentSession, projectItemId: SEMPREC_PROJECT_ITEM_ID });
+    const conversation = new SempConversation(pool, {
+      createAgentSession,
+      resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+    });
 
-    const first = await conversation.send("one");
+    const first = await sendInTenantZero(conversation, "one");
     expect(first).toEqual({ ok: true, message: "first" });
 
-    await expect(conversation.send("two")).rejects.toThrow("second turn boom");
+    await expect(sendInTenantZero(conversation, "two")).rejects.toThrow("second turn boom");
     expect(call).toBe(1);
 
     const { rows } = await pool.query<{ status: string; result: string | null }>(
@@ -463,6 +503,250 @@ describe("SempConversation", () => {
     expect(rows[0]!.status).toBe("error");
     expect(rows[0]!.result).toBe("second turn boom");
 
+    conversation.clear();
+  });
+});
+
+describe("SempConversation across tenants", () => {
+  let adminPool: Pool;
+  let runtimePool: Pool;
+  let tenantA: string;
+  let tenantB: string;
+  const projectByTenant = new Map<string, string>();
+
+  interface SessionRecord {
+    tenantId: string;
+    tasks: string[];
+    initialState: AgentSessionOptions["initialState"];
+  }
+
+  /** Sessions record the tenant they were woken in and every task they receive; a task listed in `gates` blocks its turn until released. */
+  function recordingSessions(gates: Map<string, Promise<void>> = new Map()): {
+    createAgentSession: CreateAgentSession;
+    sessions: SessionRecord[];
+  } {
+    const sessions: SessionRecord[] = [];
+    const createAgentSession: CreateAgentSession = (options): AgentSession => {
+      const scope = currentTenantScope();
+      const record: SessionRecord = {
+        tenantId: scope?.kind === "tenant" ? scope.tenantId : "none",
+        tasks: [options.task],
+        initialState: options.initialState,
+      };
+      sessions.push(record);
+      async function* turn(task: string) {
+        yield { kind: "turn_start" as const };
+        const gate = gates.get(task);
+        if (gate) await gate;
+        yield { kind: "message" as const, text: `reply to ${task}` };
+        yield { kind: "turn_end" as const };
+      }
+      return {
+        messages: () => turn(options.task),
+        send: (task: string) => {
+          record.tasks.push(task);
+          return turn(task);
+        },
+      };
+    };
+    return { createAgentSession, sessions };
+  }
+
+  function conversationFor(
+    createAgentSession: CreateAgentSession,
+    extra: Partial<SempConversationOptions> = {},
+    ttlMs?: number,
+  ): SempConversation {
+    return new SempConversation(
+      runtimePool,
+      {
+        createAgentSession,
+        resolveProjectItemId: async () => {
+          const scope = currentTenantScope();
+          if (scope?.kind !== "tenant") throw new Error("resolver ran outside a tenant scope");
+          return projectByTenant.get(scope.tenantId)!;
+        },
+        ...extra,
+      },
+      ttlMs,
+    );
+  }
+
+  const sendAs = (tenantId: string, conversation: SempConversation, task: string) =>
+    runInTenant(tenantId, () => conversation.send(task));
+
+  async function runsOf(
+    tenantId: string,
+  ): Promise<Array<{ id: string; status: string; tenant_id: string; project_item_id: string }>> {
+    const { rows } = await adminPool.query<{ id: string; status: string; tenant_id: string; project_item_id: string }>(
+      `SELECT id, status, tenant_id, project_item_id FROM agent_runs WHERE tenant_id = $1 ORDER BY started_at`,
+      [tenantId],
+    );
+    return rows;
+  }
+
+  beforeEach(async () => {
+    adminPool = getTestPool();
+    await resetDatabase(adminPool);
+    runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+    tenantA = getTenantZeroId();
+    tenantB = await createTestTenant(adminPool);
+    const passwordHash = await hashPassword("s3cret-password");
+    for (const [tenantId, project, email] of [
+      [tenantA, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "a@example.test"],
+      [tenantB, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "b@example.test"],
+    ] as const) {
+      await createUser(adminPool, { email, passwordHash, locale: "en", tenantId });
+      projectByTenant.set(tenantId, project);
+    }
+  });
+
+  afterEach(async () => {
+    await runtimePool?.end();
+  });
+
+  it("rejects send() with no scope or in a system scope, creating no run and not calling the resolver", async () => {
+    const { createAgentSession } = recordingSessions();
+    let resolverCalls = 0;
+    const conversation = conversationFor(createAgentSession, {
+      resolveProjectItemId: async () => {
+        resolverCalls++;
+        return projectByTenant.get(tenantA)!;
+      },
+    });
+
+    await expect(conversation.send("hi")).rejects.toThrow("SempConversation.send must run inside a tenant scope");
+    await expect(runAsSystem("test", () => conversation.send("hi"))).rejects.toThrow(
+      "SempConversation.send must run inside a tenant scope",
+    );
+
+    expect(resolverCalls).toBe(0);
+    const { rows } = await adminPool.query(`SELECT count(*)::int AS n FROM agent_runs`);
+    expect(rows[0].n).toBe(0);
+    conversation.clear();
+  });
+
+  it("does not make tenant B busy while A's turn is in flight, but still rejects a second concurrent send in A", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { createAgentSession } = recordingSessions(new Map([["a slow", gate]]));
+    const conversation = conversationFor(createAgentSession);
+
+    const aInFlight = sendAs(tenantA, conversation, "a slow");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const bResult = await sendAs(tenantB, conversation, "b hello");
+    expect(bResult).toEqual({ ok: true, message: "reply to b hello" });
+    expect(await sendAs(tenantA, conversation, "a second")).toEqual({ ok: false, error: SEMP_BUSY_ERROR_MESSAGE });
+
+    release();
+    expect(await aInFlight).toEqual({ ok: true, message: "reply to a slow" });
+
+    const bRuns = await runsOf(tenantB);
+    expect(bRuns).toHaveLength(1);
+    expect(bRuns[0]!.project_item_id).toBe(projectByTenant.get(tenantB));
+    expect(bRuns[0]!.tenant_id).toBe(tenantB);
+    const aRuns = await runsOf(tenantA);
+    expect(aRuns).toHaveLength(1);
+    expect(aRuns[0]!.project_item_id).toBe(projectByTenant.get(tenantA));
+    conversation.clear();
+  });
+
+  it("continues each tenant's own session and run on its next send", async () => {
+    const { createAgentSession, sessions } = recordingSessions();
+    const conversation = conversationFor(createAgentSession);
+
+    await sendAs(tenantA, conversation, "a one");
+    await sendAs(tenantB, conversation, "b one");
+    await sendAs(tenantA, conversation, "a two");
+    await sendAs(tenantB, conversation, "b two");
+
+    expect(sessions).toHaveLength(2);
+    expect(sessions.find((s) => s.tenantId === tenantA)!.tasks).toEqual(["a one", "a two"]);
+    expect(sessions.find((s) => s.tenantId === tenantB)!.tasks).toEqual(["b one", "b two"]);
+    expect(await runsOf(tenantA)).toHaveLength(1);
+    expect(await runsOf(tenantB)).toHaveLength(1);
+    conversation.clear();
+  });
+
+  it("reconstructs a wake's history only from the waking tenant's prior runs", async () => {
+    const { createAgentSession, sessions } = recordingSessions();
+    const seenRuns: Array<{ tenantId: string; projectItemId: string }> = [];
+    const reconstructHistory = async (_pool: Pool, projectItemId: string) => {
+      const scope = currentTenantScope();
+      seenRuns.push({ tenantId: scope?.kind === "tenant" ? scope.tenantId : "none", projectItemId });
+      const { rows } = await runtimePool.query<{ task: string }>(
+        `SELECT task FROM agent_runs WHERE project_item_id = $1`,
+        [projectItemId],
+      );
+      const entries: ConversationEntry[] = rows.map((row, seq) => ({
+        id: String(seq),
+        parentId: null,
+        seq,
+        timestamp: 0,
+        message: { kind: "message", text: row.task },
+      }));
+      return entries.length > 0 ? { entries, compacted: false } : null;
+    };
+    const conversation = conversationFor(createAgentSession, { reconstructHistory }, 40);
+
+    await sendAs(tenantA, conversation, "a secret");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await sendAs(tenantB, conversation, "b first");
+
+    const bSession = sessions.find((s) => s.tenantId === tenantB)!;
+    expect(bSession.initialState).toBeUndefined();
+    expect(seenRuns).toEqual([
+      { tenantId: tenantA, projectItemId: projectByTenant.get(tenantA) },
+      { tenantId: tenantB, projectItemId: projectByTenant.get(tenantB) },
+    ]);
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await sendAs(tenantB, conversation, "b again");
+    const bWake = sessions.filter((s) => s.tenantId === tenantB)[1]!;
+    expect(bWake.initialState?.messages.map((m) => m.message)).toEqual([{ kind: "message", text: "b first" }]);
+    conversation.clear();
+  });
+
+  it("pauses A's run as done on A's TTL while B's entry stays live", async () => {
+    const ttlMs = 150;
+    const { createAgentSession, sessions } = recordingSessions();
+    const conversation = conversationFor(createAgentSession, {}, ttlMs);
+
+    await sendAs(tenantA, conversation, "a one");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await sendAs(tenantB, conversation, "b one");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const aRuns = await runsOf(tenantA);
+    expect(aRuns.map((r) => r.status)).toEqual(["done"]);
+    expect(aRuns[0]!.tenant_id).toBe(tenantA);
+    const bBefore = await runsOf(tenantB);
+    expect(bBefore.map((r) => r.status)).toEqual(["running"]);
+
+    await sendAs(tenantB, conversation, "b two");
+    expect(await runsOf(tenantB)).toHaveLength(1);
+    expect(sessions.filter((s) => s.tenantId === tenantB)).toHaveLength(1);
+    conversation.clear();
+  });
+
+  it("runs resolveProjectItemId inside the waking tenant's scope", async () => {
+    const { createAgentSession } = recordingSessions();
+    const observed: Array<string | undefined> = [];
+    const conversation = conversationFor(createAgentSession, {
+      resolveProjectItemId: async () => {
+        const scope = currentTenantScope();
+        observed.push(scope?.kind === "tenant" ? scope.tenantId : undefined);
+        return projectByTenant.get(scope?.kind === "tenant" ? scope.tenantId : "")!;
+      },
+    });
+
+    await sendAs(tenantA, conversation, "a");
+    await sendAs(tenantB, conversation, "b");
+
+    expect(observed).toEqual([tenantA, tenantB]);
     conversation.clear();
   });
 });
