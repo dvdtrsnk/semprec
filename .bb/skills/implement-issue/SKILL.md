@@ -12,6 +12,19 @@ the pull request that closed it, not in a comment on the issue itself:
 `gh issue view <blocker> --json closedByPullRequestsReferences`, then read that
 pull request's body.
 
+## Model-tier contract
+
+Read `.github/ISSUE_FORMAT.md` for the canonical metadata grammar and difficulty
+rubric. Every implementation issue/draft has physical first-line Blocked by,
+physical second-line `**Model tier:** low|medium|high` and an English Context
+`Model tier rationale:`. Epics and harvest payloads are exempt.
+
+Validate the issue body with `.github/scripts/validate-issue-model-tier.mjs`
+before implementation. Preserve its classification; do not change your own tier.
+If the assigned model cannot complete the specified work, explain the concrete
+reason and escalate through the existing Relay step contract for a maintainer to
+reassess and start a new run. Do not invoke another model outside Relay.
+
 ## 1. Read before you write
 
 Read the whole issue — `## Context`, `## Task`, `## Scope`, `## Acceptance

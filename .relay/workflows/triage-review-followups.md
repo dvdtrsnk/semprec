@@ -1,6 +1,7 @@
 ---
 id: triage-review-followups
 name: Triage review follow-ups
+model-tier: high
 priority: 30   # below the review/merge/fix flows, which finish work already in flight, and above implement-issue (20), so a pending harvest does not starve behind new implementations
 max-concurrent: 1
 on:

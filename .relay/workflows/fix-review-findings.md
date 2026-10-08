@@ -1,6 +1,7 @@
 ---
 id: fix-review-findings
 name: Fix review findings
+model-tier: high
 priority: 70   # work already reviewed once — finishing it is worth more than starting something new
 on:
   pull-requests:

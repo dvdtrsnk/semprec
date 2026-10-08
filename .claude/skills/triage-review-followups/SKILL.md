@@ -6,6 +6,20 @@ disable-model-invocation: true
 
 # Triage of review follow-ups
 
+## Model-tier contract
+
+Read `.github/ISSUE_FORMAT.md` for the canonical metadata grammar and difficulty
+rubric. Every implementation issue/draft has physical first-line Blocked by,
+physical second-line `**Model tier:** low|medium|high` and an English Context
+`Model tier rationale:`. Epics and harvest payloads are exempt.
+
+Estimate from the full Task/criteria and repository code. Validate every body
+with `.github/scripts/validate-issue-model-tier.mjs` before creation/publication
+and immediately before adding `spec:approved` or `agent:ready`. Triage proposal
+validation applies the same rule before publishing. Auditors treat malformed
+metadata as C6; a different difficulty estimate alone is advisory, not a blocking
+finding. Preserve the protected-path and proposed-follow-up label contracts.
+
 ## What this is
 
 You triage one harvest issue `#<H>` of the review follow-ups pipeline, in a Relay

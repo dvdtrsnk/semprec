@@ -1,6 +1,7 @@
 ---
 id: merge-pull-request
 name: Merge pull request
+model-tier: { from: linked-issue, unlinked: high }
 priority: 90   # closest to done: a pull request that has already passed review costs one rebase-and-merge and frees the slot
 max-concurrent: 1   # merges are serialized: two racing rebase-and-merges under strict branch protection just make each other retry for nothing
 on:

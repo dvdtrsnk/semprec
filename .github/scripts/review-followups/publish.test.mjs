@@ -60,8 +60,10 @@ function inputFor(findings) {
 function draftBody({ blockedBy = "none", context = "Some context." } = {}) {
   return [
     `**Blocked by:** ${blockedBy}`,
+    "**Model tier:** medium",
     "",
     "## Context",
+    "Model tier rationale: A defined local mechanism follows existing repository patterns.",
     "",
     context,
     "",

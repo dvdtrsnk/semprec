@@ -80,6 +80,42 @@ Rules:
   treated as **still** blocking. Never cite an issue you expect to be deleted,
   transferred or otherwise made unreachable.
 
+### Model-tier line (mandatory physical second line for implementation issues)
+
+```markdown
+**Blocked by:** #24, #26
+**Model tier:** high
+
+## Context
+Model tier rationale: This change introduces concurrent cross-process cancellation.
+```
+
+Use exactly `**Model tier:** ` followed by one lowercase `low`, `medium` or
+`high`. LF and CRLF plus trailing whitespace are accepted; leading indentation,
+extra text, misplaced or duplicate header metadata are invalid. Body examples,
+code fences and comments do not select a tier. Epics, harvest payloads and manual
+operational checkpoints are exempt and must not carry `agent:ready`.
+
+Run `node .github/scripts/validate-issue-model-tier.mjs <body.md>` before creating,
+publishing or arming implementation issues. The follow-up publisher repeats this
+validation. `{{draft:id}}` blockers are validated by the proposal validator and
+replaced before publication; model metadata is already canonical in drafts.
+
+Estimate from the complete Task/Acceptance criteria and actual repository seams:
+
+| Tier | Required capability |
+|---|---|
+| low | Small mechanical change, usually 1–2 files and an existing pattern; no new lifecycle, authentication, tenant, concurrency or persisted-data contract. |
+| medium | One known implementation mechanism across defined store/API/UI seams with existing verification fixtures. |
+| high | New cross-process, authorization or isolation contract; difficult concurrency/cleanup ownership; cryptography or wide destructive data changes. |
+
+Write a short English `Model tier rationale:` in Context. At uncertainty choose
+the higher tier and explain why; an ambiguous or oversized Task still needs
+clarification/decomposition. Blocker count, priority, business urgency and review
+severity do not determine difficulty. Models are configured on worker presets:
+issues never contain provider IDs or model IDs. Missing capacity waits; there is
+no automatic downgrade/upgrade. Maintain the tier as part of spec approval.
+
 ### 2. `## Context`
 
 Why this issue exists, what earlier issues it builds on, what later issues build

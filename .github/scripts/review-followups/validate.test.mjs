@@ -56,8 +56,10 @@ function input() {
 function body({ blockedBy = "none", touches = "- backend/packages/data/src/store.ts", task = "Rethrow unknown errors.", extra = "" } = {}) {
   return [
     `**Blocked by:** ${blockedBy}`,
+    "**Model tier:** medium",
     "",
     "## Context",
+    "Model tier rationale: A defined local mechanism follows existing repository patterns.",
     "",
     `Found in review.${extra}`,
     "",
@@ -227,7 +229,10 @@ describe("validateProposal", () => {
 
   describe("Blocked-by line", () => {
     it("reports a body whose first line is not the Blocked-by line", () => {
-      assertOne(validateProposal(input(), withDraftBody(0, `Intro.\n${body()}`)), 'draft "a"', "must start with");
+      const errors = validateProposal(input(), withDraftBody(0, `Intro.\n${body()}`));
+      assert.equal(errors.length, 2);
+      assert.match(errors[0], /must start with/);
+      assert.match(errors[1], /model tier metadata is invalid-position/);
     });
 
     it("reports none mixed with a reference", () => {
@@ -251,7 +256,10 @@ describe("validateProposal", () => {
     });
 
     it("reports an empty reference list", () => {
-      assertOne(validateProposal(input(), withDraftBody(0, body({ blockedBy: "" }))), 'draft "a"', "must start with");
+      const errors = validateProposal(input(), withDraftBody(0, body({ blockedBy: "" })));
+      assert.equal(errors.length, 2);
+      assert.match(errors[0], /must start with/);
+      assert.match(errors[1], /invalid-position/);
     });
   });
 
@@ -266,7 +274,10 @@ describe("validateProposal", () => {
         .replace("## Context", "@@")
         .replace("## Task", "## Context")
         .replace("@@", "## Task");
-      assertOne(validateProposal(input(), withDraftBody(0, text)), 'draft "a"', "order");
+      const errors = validateProposal(input(), withDraftBody(0, text));
+      assert.equal(errors.length, 2);
+      assert.match(errors[0], /rationale-missing/);
+      assert.match(errors[1], /headings.*order/);
     });
 
     it("reports a repeated heading", () => {
