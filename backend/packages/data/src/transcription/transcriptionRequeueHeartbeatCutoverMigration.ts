@@ -16,6 +16,9 @@ import {
  * project that already owns the Files transcription trigger (issue #180). A no-op when the
  * heartbeat already exists, and when there is no Transcripts database or trigger to anchor it to
  * yet — a fresh install, where `seedSystem` creates both.
+ *
+ * Runs once per tenant, in that tenant's scope and under row-level security, via
+ * `runTenantCutoverMigrations`; it sees only that tenant's heartbeats and project.
  */
 export async function runTranscriptionRequeueHeartbeatCutoverMigration(pool: Pool): Promise<void> {
   await withTransaction(pool, async (client) => {

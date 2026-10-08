@@ -4,14 +4,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import EmbeddedPostgres from "embedded-postgres";
 import { Pool } from "pg";
+import { runAsSystem } from "@semprec/shared";
 import { ensureQueueSchema, grantQueueSchemaPrivileges } from "@semprec/queue";
 import { runMigrations } from "../db/migrate.js";
 import { runDocHistoryCutoverMigration } from "../docs/docHistoryCutoverMigration.js";
 import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsActorUserIdCutoverMigration.js";
 import { runApprovalRequestExecutionStatusCutoverMigration } from "../mcp/approvalRequestExecutionStatusCutoverMigration.js";
 import { runHeartbeatFireQueueSplitMigration } from "../scheduler/heartbeatFireQueueSplitMigration.js";
-import { runTranscriptsCatalogCutoverMigration } from "../transcription/transcriptsCatalogCutoverMigration.js";
-import { runTranscriptionRequeueHeartbeatCutoverMigration } from "../transcription/transcriptionRequeueHeartbeatCutoverMigration.js";
+import { createPool } from "../db/pool.js";
+import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { activateCzechHunspellSearch } from "../mail/czechHunspellSearch.js";
 import { preserveFailingExitCode } from "./preserveFailingExitCode.js";
 import { sweepStalePostgresDirs } from "./stalePostgresDirs.js";
@@ -108,16 +109,22 @@ export default async function setup(): Promise<() => Promise<void>> {
     process.env.CREDENTIALS_MASTER_KEY ??= Buffer.alloc(32, 7).toString("base64");
 
     const pool = new Pool({ connectionString });
-    await runMigrations(pool);
-    await activateCzechHunspellSearch(pool);
-    await runDocHistoryCutoverMigration(pool);
-    await runAgentRunsActorUserIdCutoverMigration(pool);
-    await runApprovalRequestExecutionStatusCutoverMigration(pool);
-    await runTranscriptsCatalogCutoverMigration(pool);
-    await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
-    await ensureQueueSchema(pool);
-    await grantQueueSchemaPrivileges(pool);
-    await runHeartbeatFireQueueSplitMigration(pool);
+    const tenantPool = createPool(connectionString, { role: "semprec_data" });
+    try {
+      await runAsSystem("test database setup", async () => {
+        await runMigrations(pool);
+        await activateCzechHunspellSearch(pool);
+        await runDocHistoryCutoverMigration(pool);
+        await runAgentRunsActorUserIdCutoverMigration(pool);
+        await runApprovalRequestExecutionStatusCutoverMigration(pool);
+        await runTenantCutoverMigrations(tenantPool);
+        await ensureQueueSchema(pool);
+        await grantQueueSchemaPrivileges(pool);
+        await runHeartbeatFireQueueSplitMigration(pool);
+      });
+    } finally {
+      await tenantPool.end();
+    }
 
     // Tenant zero's id is the stable anchor of every test: `resetDatabase` re-creates it with this id.
     const sole = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
