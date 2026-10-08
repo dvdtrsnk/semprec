@@ -377,6 +377,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "propertyDeleteWithClient",
   "proposalEnvelopeSchema",
   "proposeSpeakerMappings",
+  "provisionTenant",
   "pruneQueueFailedJobs",
   "publishFinding",
   "purgeExpiredTrash",

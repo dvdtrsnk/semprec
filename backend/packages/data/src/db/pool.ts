@@ -19,6 +19,12 @@ export const STATEMENT_TIMEOUT_MS = 60_000;
 export interface CreatePoolOptions {
   /** Per-connection `statement_timeout`; defaults to STATEMENT_TIMEOUT_MS; `0` disables it (the migrations CLI, whose contract-step cutovers may run longer). */
   statementTimeoutMs?: number;
+  /**
+   * Makes every connection of the pool run as this role (pg startup option `-c role=...`), so a CLI
+   * connected as the migrating role can do tenant work under row-level security, which applies to
+   * the role but not to the table owner it logged in as.
+   */
+  role?: "semprec_data";
 }
 
 /**
@@ -66,6 +72,7 @@ export function createPool(connectionString: string, options: CreatePoolOptions 
     connectionString,
     connectionTimeoutMillis: CONNECTION_TIMEOUT_MS,
     Client: DetachedScopeClient,
+    ...(options.role ? { options: `-c role=${options.role}` } : {}),
     ...(statementTimeoutMs > 0 ? { statement_timeout: statementTimeoutMs } : {}),
   });
   // pg's Pool emits 'error' when an idle client is dropped by the server (restart,

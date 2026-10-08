@@ -39,8 +39,9 @@ import { runModuleDataMigrations } from "../migrationJob/moduleDataMigration.js"
 
 export { PROJECTS_MODULE_ID } from "./tenDatabaseKeys.js";
 
-// Serializes concurrent seeds (issue #644): distinct from auth's SETUP_ADVISORY_LOCK_KEY (2330n).
-const SEED_ADVISORY_LOCK_KEY = 2331n;
+// Serializes concurrent seeds of one tenant (issue #644): distinct from auth's SETUP_ADVISORY_LOCK_KEY (2330n).
+// Taken as the two-key form (key, hashtext(tenant id)), so seeds of different tenants do not wait on each other.
+const SEED_ADVISORY_LOCK_KEY = 2331;
 
 /**
  * Seeds the system records this issue's spec names directly, plus the ten hardcoded
@@ -55,6 +56,10 @@ const SEED_ADVISORY_LOCK_KEY = 2331n;
  * stores directly rather than the choke-point, which would otherwise reject writes to
  * a `schema_locked`/`system` database. Idempotent: safe to call on every startup, and
  * concurrently — an advisory lock serializes the structural seed transaction.
+ *
+ * Seeds the caller's tenant (`app_tenant_default()`): the advisory lock `(2331, hashtext(tenant id))`
+ * and the "already seeded" decision are both per tenant. It throws when no tenant resolves (no
+ * scope while several tenants exist) and when the tenant row is missing or `deleting`.
  *
  * `viewTypeRegistry`/`computedKeyRegistry` default to fresh, private instances for
  * standalone/test use; a real server composition root should pass its own shared instances
@@ -113,8 +118,22 @@ export async function seedSystem(
   const outcome = await withTransaction(pool, async (client): Promise<"created" | "already-seeded"> => {
     // Taken before the guard below so a concurrent seed waits here, then sees this one's rows
     // and returns early instead of seeding a second copy.
-    await client.query("SELECT pg_advisory_xact_lock($1)", [SEED_ADVISORY_LOCK_KEY]);
-    const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1`, [
+    const tenantRows = await client.query<{ tenant_id: string | null }>(
+      "SELECT app_tenant_default()::text AS tenant_id",
+    );
+    const tenantId = tenantRows.rows[0]?.tenant_id;
+    if (!tenantId) {
+      throw new Error("seedSystem: no tenant resolved; run it inside a tenant scope when several tenants exist");
+    }
+    await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [SEED_ADVISORY_LOCK_KEY, tenantId]);
+    const tenantStatus = await client.query<{ status: string }>("SELECT status FROM tenants WHERE id = $1 FOR SHARE", [
+      tenantId,
+    ]);
+    const status = tenantStatus.rows[0]?.status;
+    if (status === undefined || status === "deleting") {
+      throw new Error(`seedSystem: tenant ${tenantId} is ${status ?? "missing"}; refusing to seed it`);
+    }
+    const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1 AND system`, [
       SYSTEM_SETTINGS_MODULE_ID,
     ]);
     if ((existingSettings.rowCount ?? 0) > 0) return "already-seeded";

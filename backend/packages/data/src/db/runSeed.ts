@@ -1,19 +1,31 @@
 import type { Pool } from "pg";
-import { createComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
-import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
-import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
-import { runModuleDataMigrations } from "../migrationJob/moduleDataMigration.js";
-import { seedSystem } from "../seed/seedSystem.js";
+import { runAsSystem } from "@semprec/shared";
+import { forEachMaintainedTenant, provisionTenant } from "../tenancy/provisionTenant.js";
 
 /**
- * The seed CLI's body (issue #644): seeds the system databases, then runs the data migrations
- * every active module declares — `seedSystem` itself only loads the `systemDatabases` manifest.
+ * The seed CLI's body (issue #644, per tenant since #1005): provisions the system databases and
+ * module data migrations of every `provisioning`, `active` and `suspended` tenant, one tenant at
+ * a time. The pool must connect as a role row-level security applies to (`createPool(url, { role:
+ * "semprec_data" })`).
  *
- * The returned outcome is `seedSystem`'s own, decided inside its advisory-locked transaction, so
- * of two runs racing on an empty database exactly one reports `created`.
+ * Each outcome is `provisionTenant`'s own, decided under that tenant's advisory lock. If any tenant
+ * fails the rest are still provisioned, then an `AggregateError` naming the failed tenants is thrown.
  */
-export async function runSeed(pool: Pool): Promise<"created" | "already-seeded"> {
-  const outcome = await seedSystem(pool, createViewTypeRegistry(), createComputedKeyRegistry());
-  await runModuleDataMigrations(pool, await loadFullModuleRegistry());
-  return outcome;
+export async function runSeed(
+  pool: Pool,
+): Promise<Array<{ tenantId: string; outcome: "created" | "already-provisioned" }>> {
+  return runAsSystem("deploy seed", async () => {
+    const results: Array<{ tenantId: string; outcome: "created" | "already-provisioned" }> = [];
+    await forEachMaintainedTenant(pool, async (tenantId) => {
+      results.push({ tenantId, outcome: await provisionTenant(pool, tenantId) });
+    });
+    return results;
+  });
+}
+
+/** The seed CLI's output line for one tenant; it carries the tenant id only, never the connection string. */
+export function formatSeedLine(result: { tenantId: string; outcome: "created" | "already-provisioned" }): string {
+  return result.outcome === "created"
+    ? `seed: tenant ${result.tenantId} created system databases`
+    : `seed: tenant ${result.tenantId} already seeded`;
 }
