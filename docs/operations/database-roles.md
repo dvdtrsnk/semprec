@@ -82,8 +82,10 @@ created by migration `0048_create_items_partition_function.sql`:
   partition name the application built before the function existed.
 - `EXECUTE` is revoked from `PUBLIC` and granted to `semprec_data` only; `semprec_side` cannot
   call it, because a side-table-only process must never create a partition.
-- Like the inline DDL it replaces, it takes an `ACCESS EXCLUSIVE` lock on `items` for the rest of
-  the caller's transaction.
+- Since migration `0072_attach_items_partitions.sql` it creates the partition as a standalone table
+  and attaches it, so it holds `SHARE UPDATE EXCLUSIVE` on `items` (item reads and writes proceed)
+  and `ACCESS EXCLUSIVE` only on the new table, until the caller commits. Concurrent creations
+  still serialize on that lock.
 
 **Rule:** any further DDL the API role ever needs goes through a `SECURITY DEFINER` function of
 this shape — owned by the migrating role, `EXECUTE` revoked from `PUBLIC` and granted only to the
