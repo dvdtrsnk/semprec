@@ -6,7 +6,7 @@ import { safeStorageFilename } from "../mail/attachments.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { findFileItemByBlobId } from "../chokePoint/itemsStore.js";
-import { findOrCreateBlob } from "./blobsStore.js";
+import { findOrCreateBlob, tenantBlobStorageKey } from "./blobsStore.js";
 import type { BlobRow, ItemRow } from "../types.js";
 
 export interface IngestUploadedFileInput {
@@ -61,7 +61,11 @@ export async function ingestUploadedFile(
   pool: Pool,
   input: IngestUploadedFileInput,
 ): Promise<IngestUploadedFileResult> {
-  const storageKey = `${input.storageKeyPrefix}/${randomUUID()}-${safeStorageFilename(input.filename)}`;
+  // Resolved before streaming, so a missing tenant fails before any byte is written.
+  const storageKey = await tenantBlobStorageKey(
+    pool,
+    `${input.storageKeyPrefix}/${randomUUID()}-${safeStorageFilename(input.filename)}`,
+  );
 
   let byteSize: number;
   let contentHash: string;

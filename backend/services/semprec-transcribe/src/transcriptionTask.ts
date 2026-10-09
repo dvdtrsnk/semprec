@@ -32,6 +32,7 @@ import {
   readBlobId,
   recordItemAutomationFailure,
   startItemAutomationAttempt,
+  tenantBlobStorageKey,
   transcriptionJobPayloadSchema,
   updateItemWithClient,
   withTransaction,
@@ -276,7 +277,8 @@ async function runPrepareStep(
     if (!sourceBlobId) throw new ValidationError("Source file has no blob", { field: "file" });
     const sourceBlob = await getBlob(client, sourceBlobId);
     if (!sourceBlob) throw new NotFoundError(`Blob '${sourceBlobId}' not found`, { resource: "blob" });
-    return { sourceBlobId, storageKey: sourceBlob.storageKey, uploadedAt: sourceBlob.createdAt };
+    const normalizedStorageKey = await tenantBlobStorageKey(client, `transcriptions/${randomUUID()}.opus`);
+    return { sourceBlobId, storageKey: sourceBlob.storageKey, uploadedAt: sourceBlob.createdAt, normalizedStorageKey };
   });
   if (!snapshot) return;
 
@@ -285,7 +287,7 @@ async function runPrepareStep(
   let normalized: NormalizedAudioResult;
   try {
     probe = await probeMedia(tempPath);
-    normalized = await normalizeAudio(tempPath, blobStorage, `transcriptions/${randomUUID()}.opus`);
+    normalized = await normalizeAudio(tempPath, blobStorage, snapshot.normalizedStorageKey);
   } finally {
     await removeTempFile(tempPath);
   }
