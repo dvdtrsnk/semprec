@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
+import { ForbiddenError } from "../errors.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 
 /**
@@ -126,14 +127,26 @@ export interface ReserveGatewayCallInput {
   operation?: string | null;
 }
 
-/** Inserts a `reserved` row at the estimate, with every usage column NULL until it is settled. */
+/**
+ * Inserts a `reserved` row at the estimate, with every usage column NULL until it is settled.
+ *
+ * The insert is one conditional statement, so the check and the write cannot be separated by a
+ * concurrent change: it only produces a row when the ambient tenant (`app_tenant_default()`, so a
+ * header-less legacy call still falls to the sole tenant) is `active`, and any `agentRunId` /
+ * `projectItemId` is visible in that tenant (RLS makes both probes tenant-local). Otherwise it
+ * throws `ForbiddenError` `attribution_refused` with no details, so a foreign id and an unknown id
+ * answer identically; no row is written and the caller never reaches the provider.
+ */
 export async function reserveGatewayCall(
   client: Pool | PoolClient,
   input: ReserveGatewayCallInput,
 ): Promise<AiGatewayCallRow> {
   const { rows } = await client.query<AiGatewayCallDbRow>(
     `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status)
-     VALUES ($1, $2, NULL, NULL, NULL, $3, $4, $5, $6, 'reserved')
+     SELECT $1, $2, NULL, NULL, NULL, $3, $4::uuid, $5::uuid, $6, 'reserved'
+     WHERE EXISTS (SELECT 1 FROM tenants WHERE id = app_tenant_default() AND status = 'active')
+       AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM agent_runs WHERE id = $4::uuid))
+       AND ($5::uuid IS NULL OR EXISTS (SELECT 1 FROM items WHERE id = $5::uuid))
      RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status`,
     [
       input.provider,
@@ -144,7 +157,14 @@ export async function reserveGatewayCall(
       input.operation ?? null,
     ],
   );
-  return mapRow(requireSingleRow(rows, "ai_gateway_calls reservation"));
+  const row = rows[0];
+  if (!row)
+    throw new ForbiddenError(
+      "AI gateway call is not attributable to the caller's tenant",
+      undefined,
+      "attribution_refused",
+    );
+  return mapRow(row);
 }
 
 /**

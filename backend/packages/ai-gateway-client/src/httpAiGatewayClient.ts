@@ -1,11 +1,15 @@
 import {
   AiGatewayFailedError,
+  currentTenantScope,
   getTraceId,
   mintTraceId,
   type AiGatewayClientPort,
   type AiGatewayCompletionInput,
   type AiGatewayCompletionResult,
 } from "@semprec/shared";
+
+/** Carries the caller's own tenant scope across the loopback hop; the gateway validates it and enters that tenant. */
+const TENANT_ID_HEADER = "x-semprec-tenant-id";
 
 /** #215's 60-second budget for the whole round trip to `semprec-ai-gateway`. */
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -22,6 +26,11 @@ export interface HttpAiGatewayClientConfig {
   port: number;
   /** Compared by the gateway against its own `AI_GATEWAY_INTERNAL_TOKEN`. */
   token: string;
+}
+
+function tenantHeader(): Record<string, string> {
+  const scope = currentTenantScope();
+  return scope?.kind === "tenant" ? { [TENANT_ID_HEADER]: scope.tenantId } : {};
 }
 
 class ResponseTooLargeError extends Error {}
@@ -100,6 +109,8 @@ export function createHttpAiGatewayClient(config: HttpAiGatewayClientConfig): Ai
             // logs correlate with the caller's. Minting a fallback here (rather than requiring an
             // active trace) keeps this client usable from a caller that hasn't set one up.
             "x-trace-id": getTraceId() ?? mintTraceId(),
+            // Taken only from the ambient scope, never from input; no header outside a tenant scope.
+            ...tenantHeader(),
           },
           body: JSON.stringify(input),
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),

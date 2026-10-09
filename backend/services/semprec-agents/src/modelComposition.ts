@@ -1,8 +1,12 @@
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { createModels, createProvider, type Api, type Model } from "@earendil-works/pi-ai";
+import { currentTenantScope } from "@semprec/shared";
 import { piMessagesApi } from "@earendil-works/pi-ai/api/pi-messages.lazy";
 
 const GATEWAY_PROVIDER_ID = "semprec-ai-gateway";
+
+/** Carries the run's tenant scope to the gateway, which validates it and enters that tenant. */
+const TENANT_ID_HEADER = "x-semprec-tenant-id";
 
 /**
  * Upper bound on one model call, SSE stream included: the gateway is a local process, but one
@@ -70,7 +74,13 @@ export function createGatewayModel(env: NodeJS.ProcessEnv): GatewayModel {
     streamFn: (requestModel, context, options) => {
       const timeout = AbortSignal.timeout(GATEWAY_REQUEST_TIMEOUT_MS);
       const signal = options?.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
-      return models.streamSimple(requestModel, context, { ...options, signal });
+      // The scope read now wins over any caller-supplied value; outside a tenant scope the header is dropped.
+      const headers = Object.fromEntries(
+        Object.entries(options?.headers ?? {}).filter(([name]) => name.toLowerCase() !== TENANT_ID_HEADER),
+      );
+      const scope = currentTenantScope();
+      if (scope?.kind === "tenant") headers[TENANT_ID_HEADER] = scope.tenantId;
+      return models.streamSimple(requestModel, context, { ...options, headers, signal });
     },
   };
 }

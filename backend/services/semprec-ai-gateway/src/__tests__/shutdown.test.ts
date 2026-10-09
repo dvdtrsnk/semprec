@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { startProcessHeartbeat, type ProcessHeartbeatHandle } from "@semprec/data";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createProjectItem } from "./projectItemFixture.js";
 import type { Logger } from "@semprec/shared";
 import { createDispatcher } from "../app.js";
 import type { CompleteHandlerOptions } from "../completeHandler.js";
@@ -34,8 +35,9 @@ const FAKE_AUDIO_OPTIONS: AudioHandlerOptions = {
   deepInfraPricePerAudioHour: 1,
 };
 
+/** `projectItemId` is a real Projects item, seeded in `beforeEach`: the reservation refuses an id it cannot see. */
 const VALID_BODY = {
-  projectItemId: "11111111-1111-1111-1111-111111111111",
+  projectItemId: "",
   operation: "agent_guidance_drift",
   temperature: 0.2,
   system: "Find contradictions between guidance and permissions.",
@@ -403,6 +405,7 @@ describe("createGracefulShutdown against the ai-gateway dispatcher with a real p
   beforeEach(async () => {
     pool = getTestPool();
     await resetDatabase(pool);
+    VALID_BODY.projectItemId = await createProjectItem(pool, { seed: true });
   });
 
   afterEach(async () => {

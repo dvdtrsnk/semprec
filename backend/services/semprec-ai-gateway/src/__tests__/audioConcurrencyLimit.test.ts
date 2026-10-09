@@ -2,6 +2,7 @@ import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createProjectItem } from "./projectItemFixture.js";
 import { createDispatcher } from "../app.js";
 import type { CompleteHandlerOptions } from "../completeHandler.js";
 import type { AudioHandlerOptions } from "../audioHandler.js";
@@ -123,8 +124,9 @@ const VALID_TRANSCRIBE_BODY = {
   audioSeconds: 1200,
 };
 
+/** `projectItemId` is a real Projects item, seeded in `beforeEach`: the reservation refuses an id it cannot see. */
 const VALID_COMPLETE_BODY = {
-  projectItemId: "11111111-1111-1111-1111-111111111111",
+  projectItemId: "",
   operation: "agent_guidance_drift",
   temperature: 0.2,
   system: "Find contradictions between guidance and permissions.",
@@ -150,6 +152,7 @@ describe("audio concurrency limit in the gateway dispatcher", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    VALID_COMPLETE_BODY.projectItemId = await createProjectItem(pool, { seed: true });
     diarizationProvider = new GatedDiarizationProvider();
     transcriptionProvider = new FakeTranscriptionProvider();
     completionProvider = new FakeCompletionProvider();
