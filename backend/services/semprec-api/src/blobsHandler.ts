@@ -91,15 +91,22 @@ function contentDispositionHeader(kind: "inline" | "attachment", filename: strin
   return `${kind}; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }
 
-/** The lowest-id Files item pointing at this blob (same convergence lookup `POST /api/files` dedup uses), if any — its `name` property is the best available display filename for a download that only knows a blob id. */
-async function resolveDownloadFilename(pool: Pool, blob: BlobRow): Promise<string> {
-  const item = await withTransaction(pool, async (client) => {
+/**
+ * The blob and its download filename, read in one transaction in the caller's tenant. `null` when
+ * the blob is not visible there, so a foreign id and an unknown id take the same path. The filename
+ * is the lowest-id Files item pointing at this blob (same convergence lookup `POST /api/files` dedup
+ * uses), if any — its `name` property is the best available display filename for a download that
+ * only knows a blob id.
+ */
+async function resolveDownload(pool: Pool, blobId: string): Promise<{ blob: BlobRow; filename: string } | null> {
+  return withTransaction(pool, async (client) => {
+    const blob = await getBlob(client, blobId);
+    if (!blob) return null;
     const filesDatabase = await getDatabaseByModuleId(client, FILES_MODULE_ID);
-    if (!filesDatabase) return null;
-    return findFileItemByBlobId(client, filesDatabase.id, blob.id);
+    const item = filesDatabase ? await findFileItemByBlobId(client, filesDatabase.id, blob.id) : null;
+    const name = item && typeof item.properties.name === "string" ? item.properties.name : undefined;
+    return { blob, filename: name && name.length > 0 ? name : blob.id };
   });
-  const name = item && typeof item.properties.name === "string" ? item.properties.name : undefined;
-  return name && name.length > 0 ? name : blob.id;
 }
 
 export interface BlobsRequestListenerOptions {
@@ -112,6 +119,10 @@ export interface BlobsRequestListenerOptions {
  * download's response isn't a JSON envelope and its body is piped, not buffered — so it's a
  * bespoke listener the same way `notificationsHandler.ts` is, sharing this adapter's auth and
  * error-code contract without its JSON-specific machinery.
+ *
+ * What the caller may see is decided first, in the caller's tenant: the blob and its filename are
+ * read in one transaction before any conditional branch (`304`, `416`), so a foreign blob id
+ * answers exactly like an unknown one.
  */
 export function createBlobsRequestListener(pool: Pool, options: BlobsRequestListenerOptions) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -128,8 +139,10 @@ export function createBlobsRequestListener(pool: Pool, options: BlobsRequestList
         // Group 1 of BLOB_PATH is not optional, so a successful match always captured it.
         const blobId = assertUuid(match[1]!, "id");
 
-        const blob = await withTransaction(pool, (client) => getBlob(client, blobId));
-        if (!blob) throw new NotFoundError(`Blob ${blobId} not found`);
+        // Decided before any conditional branch: a blob this tenant cannot see never reaches the 304 or 416 answers.
+        const download = await resolveDownload(pool, blobId);
+        if (!download) throw new NotFoundError(`Blob ${blobId} not found`);
+        const { blob, filename } = download;
 
         const byteSize = Number(blob.byteSize);
         const etag = blob.contentHash ? `"${blob.contentHash}"` : undefined;
@@ -151,7 +164,6 @@ export function createBlobsRequestListener(pool: Pool, options: BlobsRequestList
 
         const wantsInline = url.searchParams.get("disposition") === "inline";
         const disposition = wantsInline && INLINE_SAFE_MIME_TYPES.has(blob.mimeType) ? "inline" : "attachment";
-        const filename = await resolveDownloadFilename(pool, blob);
 
         const headers: Record<string, string> = {
           "Content-Type": blob.mimeType,
