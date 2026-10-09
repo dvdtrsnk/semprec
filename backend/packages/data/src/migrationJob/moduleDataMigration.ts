@@ -38,33 +38,48 @@ interface Progress {
 
 const DEFAULT_PAGE_SIZE = 500;
 
-/** One advisory-lock key per (moduleId, databaseKey, fromVersion, toVersion) transition. */
-function lockKey(transition: Transition): string {
+/** One advisory-lock key per tenant and (moduleId, databaseKey, fromVersion, toVersion) transition. */
+function lockKey(tenantId: string, transition: Transition): string {
   const { moduleId, databaseKey, fromVersion, toVersion } = transition;
-  return `module-data-migration:${moduleId}:${databaseKey}:${fromVersion}:${toVersion}`;
+  return `module-data-migration:${tenantId}:${moduleId}:${databaseKey}:${fromVersion}:${toVersion}`;
 }
 
 /**
- * Runs one manifest-declared data migration (issue #111) end to end: batched, id-ordered,
- * two-pass (see `ModuleDataMigrationConverter`), resumable from the transition's
- * `module_migration_progress` row, and guarded against concurrent runners of the same
- * (moduleId, databaseKey, fromVersion, toVersion) transition via a session-level Postgres
- * advisory lock held on a single dedicated connection for the whole run — the transition's
- * batches commit one at a time (for resumability), so a plain transaction-scoped lock can't
- * span them.
+ * Runs one manifest-declared data migration (issue #111) for one tenant end to end: batched,
+ * id-ordered, two-pass (see `ModuleDataMigrationConverter`), resumable from the tenant's
+ * `module_migration_progress` row for the transition, and guarded against concurrent runners of
+ * the same tenant's (moduleId, databaseKey, fromVersion, toVersion) transition via a
+ * session-level Postgres advisory lock held on a single dedicated connection for the whole run —
+ * the transition's batches commit one at a time (for resumability), so a plain
+ * transaction-scoped lock can't span them.
  *
- * A no-op if the transition is already recorded in `module_migrations` (already done by an
- * earlier run) or another runner currently holds its advisory lock (already in progress
- * elsewhere) — the caller is expected to retry later in either case.
+ * The tenant is the one `app_tenant_default()` resolves on that connection: the caller runs this
+ * inside that tenant's scope (`runInTenant`), or with no scope while exactly one tenant exists.
+ * Row-level security confines every read and write to it. With no scope while several tenants
+ * exist it throws before taking any lock.
+ *
+ * A no-op if the tenant already recorded the transition in `module_migrations` (already done by
+ * an earlier run) or another runner currently holds the tenant's advisory lock for it (already
+ * in progress elsewhere) — the caller is expected to retry later in either case.
  */
 export async function runModuleDataMigration(pool: Pool, params: RunModuleDataMigrationParams): Promise<void> {
   const { moduleId, databaseKey, fromVersion, toVersion, converter } = params;
   const transition: Transition = { moduleId, databaseKey, fromVersion, toVersion };
   const pageSize = params.pageSize ?? DEFAULT_PAGE_SIZE;
-  const key = lockKey(transition);
 
   const client = await pool.connect();
   try {
+    const { rows: tenantRows } = await client.query<{ tenant_id: string | null }>(
+      "SELECT app_tenant_default()::text AS tenant_id",
+    );
+    const { tenant_id: tenantId } = requireSingleRow(tenantRows, "app_tenant_default");
+    if (tenantId === null) {
+      throw new Error(
+        `Module data migration ${moduleId}:${databaseKey} ${fromVersion}->${toVersion} must run inside a tenant scope`,
+      );
+    }
+    const key = lockKey(tenantId, transition);
+
     const { rows } = await client.query<{ locked: boolean }>(
       "SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked",
       [key],
@@ -88,7 +103,7 @@ export async function runModuleDataMigration(pool: Pool, params: RunModuleDataMi
         await txClient.query(
           `INSERT INTO module_migrations (module_id, database_key, from_version, to_version)
            VALUES ($1, $2, $3, $4)
-           ON CONFLICT (module_id, database_key, from_version, to_version) DO NOTHING`,
+           ON CONFLICT DO NOTHING`,
           [moduleId, databaseKey, fromVersion, toVersion],
         );
         // convertInBatches always leaves the transition's progress row behind.
@@ -183,7 +198,7 @@ async function writeProgress(client: PoolClient, transition: Transition, progres
   await client.query(
     `INSERT INTO module_migration_progress (module_id, database_key, from_version, to_version, pass, cursor)
      VALUES ($1, $2, $3, $4, $5, $6)
-     ON CONFLICT (module_id, database_key, from_version, to_version)
+     ON CONFLICT (tenant_id, module_id, database_key, from_version, to_version)
      DO UPDATE SET pass = EXCLUDED.pass, cursor = EXCLUDED.cursor`,
     [
       transition.moduleId,
@@ -197,10 +212,12 @@ async function writeProgress(client: PoolClient, transition: Transition, progres
 }
 
 /**
- * Runs every data migration the currently active modules declare (`ModuleRegistry.
- * getDataMigrationDefinitions()`) — the "manifest scripts" entry point for issue #111.
- * Each one is independently a no-op if already recorded or already in progress elsewhere,
- * so calling this repeatedly (e.g. from a heartbeat sweep) is always safe.
+ * Runs, for one tenant, every data migration the currently active modules declare
+ * (`ModuleRegistry.getDataMigrationDefinitions()`) — the "manifest scripts" entry point for
+ * issue #111. The caller runs it inside that tenant's scope (see `runModuleDataMigration`).
+ * Each one is independently a no-op if the tenant already recorded it or it is already in
+ * progress elsewhere for the tenant, so calling this repeatedly (e.g. from a heartbeat sweep)
+ * is always safe.
  */
 export async function runModuleDataMigrations(pool: Pool, moduleRegistry: ModuleRegistry): Promise<void> {
   const migrations = await moduleRegistry.getDataMigrationDefinitions();
