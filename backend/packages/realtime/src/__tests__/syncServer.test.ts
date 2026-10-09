@@ -19,7 +19,7 @@ import {
   type ChokePoint,
   type DocStore,
 } from "@semprec/data";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { publishAgentRunDelta, publishRealtimeMessage } from "../pgNotifyPublisher.js";
 import { createSyncServer, type SyncIdentity, type SyncServer } from "../syncServer.js";
 import { buildBinaryFrame, decodeDocId, parseBinaryFrame } from "../protocolV1.js";
@@ -845,12 +845,15 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
   let port: number;
   let identityByToken: Map<string, SyncIdentity>;
 
+  /** Only the first account is bound to tenant zero (`users.tenant_id` is unique): it is the tenant's user. */
   async function createTestUser(): Promise<string> {
     const passwordHash = await hashPassword("s3cret-password");
+    const { rowCount } = await pool.query("SELECT 1 FROM users WHERE tenant_id = $1", [getTenantZeroId()]);
     const user = await createUser(pool, {
       email: `agent-watch-${Math.random()}@example.test`,
       passwordHash,
       locale: "en",
+      tenantId: rowCount === 0 ? getTenantZeroId() : undefined,
     });
     return user.id;
   }
@@ -984,7 +987,7 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
     client.close();
   });
 
-  it("authorizes agent:watch against the run's actor_user_id rather than the earliest account", async () => {
+  it("authorizes agent:watch against the run's actor_user_id rather than the tenant's user", async () => {
     const earliestUser = await createTestUser();
     const actorUser = await createTestUser();
     identityByToken.set("earliest", { userId: earliestUser, sessionId: "earliest-session" });
@@ -1006,7 +1009,7 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
     earliestClient.close();
   });
 
-  it("authorizes agent:watch on a heartbeat-triggered run against the earliest account it falls back to", async () => {
+  it("authorizes agent:watch on a heartbeat-triggered run against the tenant's user it falls back to", async () => {
     const earliestUser = await createTestUser();
     const otherUser = await createTestUser();
     identityByToken.set("earliest", { userId: earliestUser, sessionId: "earliest-session" });

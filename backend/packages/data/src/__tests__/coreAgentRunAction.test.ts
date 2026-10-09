@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
@@ -40,7 +40,7 @@ describe("coreAgentRunAction", () => {
     await resetDatabase(pool);
     await seedSystem(pool);
     const passwordHash = await hashPassword("s3cret-password");
-    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en", tenantId: getTenantZeroId() });
   });
 
   afterAll(async () => {

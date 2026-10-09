@@ -1,6 +1,13 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
 import {
   createAgentRun,
@@ -25,7 +32,7 @@ describe("finishAgentRunWithErrorNotification (issue #149)", () => {
 
   async function createTestUser() {
     const passwordHash = await hashPassword("s3cret-password");
-    return createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+    return createUser(pool, { email: "owner@example.test", passwordHash, locale: "en", tenantId: getTenantZeroId() });
   }
 
   it("writes an agent_run_error notification in the same transaction as the status write, and replaying the same run never duplicates it", async () => {
@@ -104,7 +111,56 @@ describe("finishAgentRunWithErrorNotification (issue #149)", () => {
 
   it("rejects creating an agent run before any user account exists", async () => {
     await expect(createAgentRun(pool, { triggeredBy: "user", task: "do the thing" })).rejects.toThrow(
-      "Cannot create an agent run before any account exists",
+      "Cannot create an agent run: the current tenant has no user",
     );
+  });
+});
+
+describe("finishAgentRunWithErrorNotification in a tenant (issue #1018)", () => {
+  let adminPool: Pool;
+  let runtimePool: Pool;
+  let tenantB: string;
+  let userA: string;
+
+  beforeEach(async () => {
+    adminPool = getTestPool();
+    runtimePool ??= await createRuntimeRolePool(adminPool, "semprec_data");
+    await resetDatabase(adminPool);
+    tenantB = await createTestTenant(adminPool);
+    userA = (await createUser(adminPool, { email: "a@example.test", passwordHash: "x", tenantId: getTenantZeroId() }))
+      .id;
+  });
+
+  afterAll(async () => {
+    await runtimePool?.end();
+  });
+
+  it("notifies the tenant's user with the tenant's id, not the earlier-created account", async () => {
+    const userB = (await createUser(adminPool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB })).id;
+    const run = await runInTenant(tenantB, () => createAgentRun(runtimePool, { triggeredBy: "user", task: "t" }));
+
+    await expect(
+      runInTenant(tenantB, () => finishAgentRunWithErrorNotification(runtimePool, run.id, "boom")),
+    ).resolves.toBe(true);
+
+    const { rows } = await adminPool.query(`SELECT user_id, kind, tenant_id FROM notifications WHERE source_id = $1`, [
+      run.id,
+    ]);
+    expect(rows).toEqual([{ user_id: userB, kind: "agent_run_error", tenant_id: tenantB }]);
+    expect(rows[0].user_id).not.toBe(userA);
+  });
+
+  it("closes the run and writes nothing when the tenant has no user", async () => {
+    const run = await runInTenant(tenantB, () =>
+      createAgentRun(runtimePool, { triggeredBy: "user", task: "t", userId: userA }),
+    );
+
+    await expect(
+      runInTenant(tenantB, () => finishAgentRunWithErrorNotification(runtimePool, run.id, "boom")),
+    ).resolves.toBe(true);
+
+    expect(await getAgentRun(adminPool, run.id)).toMatchObject({ status: "error", result: "boom" });
+    const { rows } = await adminPool.query(`SELECT id FROM notifications WHERE source_id = $1`, [run.id]);
+    expect(rows).toHaveLength(0);
   });
 });

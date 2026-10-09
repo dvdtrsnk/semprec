@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { countJobsByIdentifier } from "@semprec/queue/testSupport";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   ApprovalRequiredError,
   createAgentRun,
@@ -39,8 +39,9 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promi
 
 async function createUser(pool: Pool): Promise<string> {
   const { rows } = await pool.query<{ id: string }>(
-    `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
-    [`${randomUUID()}@example.com`],
+    `INSERT INTO users (email, password_hash, tenant_id)
+     VALUES ($1, 'unused', (SELECT $2::uuid WHERE NOT EXISTS (SELECT 1 FROM users WHERE tenant_id = $2::uuid))) RETURNING id`,
+    [`${randomUUID()}@example.com`, getTenantZeroId()],
   );
   return rows[0]!.id;
 }

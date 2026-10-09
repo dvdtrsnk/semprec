@@ -16,7 +16,7 @@ import {
   seedSystem,
   withTransaction,
 } from "@semprec/data";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { CORE_TASK_NAMES, enqueueJob, registerTask, runOnce } from "@semprec/queue";
 import {
@@ -172,7 +172,7 @@ describe("transcribe process runs each job inside its tenant under strict enforc
     tenantZero = rows[0]!.id;
     await inTenantZero(async () => {
       await seedSystem(pool);
-      await createUser(pool, { email: "owner@example.com", passwordHash: "unused" });
+      await createUser(pool, { email: "owner@example.com", passwordHash: "unused", tenantId: getTenantZeroId() });
     });
     tmpBlobDir = join(tmpdir(), `semprec-transcribe-tenant-test-${randomUUID()}`);
     blobStorage = new LocalFsBlobStorageWriter(tmpBlobDir);

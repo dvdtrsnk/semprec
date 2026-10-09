@@ -1,6 +1,6 @@
 import { Pool, type PoolClient } from "pg";
 import { assertKnownValue } from "../dbRowValidation.js";
-import { getEarliestUserId } from "../auth/usersStore.js";
+import { getTenantUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
 import { withTransaction, requireSingleRow } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
@@ -27,8 +27,8 @@ export interface AgentRunRow {
   finishedAt: string | null;
   /**
    * The user this run's writes are attributed to (issue #220) — the authenticated session user
-   * for a user-triggered root run that supplied one (`CreateAgentRunInput.userId`), the single
-   * setup-owner user for a root run with none to capture (`getEarliestUserId` — a
+   * for a user-triggered root run that supplied one (`CreateAgentRunInput.userId`), the
+   * current tenant's user for a root run with none to capture (`getTenantUserId` — a
    * heartbeat/system-triggered run has no session), and copied from the parent run for every
    * delegated (`parentRunId` set) run. The AgentTool composition root (#220) derives an agent
    * actor's `userId` from this column alone, never from tool input.
@@ -82,8 +82,8 @@ export interface CreateAgentRunInput {
   /**
    * The authenticated session user creating this root run (issue #220, AC11). Optional for every
    * root run, including a `triggeredBy: "user"` one: when supplied, `actor_user_id` reflects who
-   * actually asked for the run; when omitted, the store falls back to the sole account
-   * (`getEarliestUserId`). Ignored for a delegated run (`parentRunId` set), which always inherits
+   * actually asked for the run; when omitted, the store falls back to the current
+   * tenant's user (`getTenantUserId`). Ignored for a delegated run (`parentRunId` set), which always inherits
    * its parent's `actorUserId` instead.
    */
   userId?: string;
@@ -92,8 +92,8 @@ export interface CreateAgentRunInput {
 /**
  * A delegated run (`parentRunId` set) inherits its supervisor's `actorUserId` unchanged. A root
  * run (no parent) uses `userId` when the caller supplied one — the authenticated session user
- * that actually triggered it (issue #220, AC11) — and falls back to the sole account
- * (`getEarliestUserId`) only when it didn't, which is correct for every root producer with no
+ * that actually triggered it (issue #220, AC11) — and falls back to the current
+ * tenant's user (`getTenantUserId`) only when it didn't, which is correct for every root producer with no
  * session to capture (a heartbeat/system-triggered run). Throws if neither resolves to a user,
  * since a run with no attributable actor can never pass #220's AgentTool actor-derivation
  * invariant.
@@ -109,9 +109,9 @@ async function resolveActorUserId(
     return parent.actorUserId;
   }
   if (userId) return userId;
-  const earliestUserId = await getEarliestUserId(client);
-  if (!earliestUserId) throw new Error("Cannot create an agent run before any account exists");
-  return earliestUserId;
+  const tenantUserId = await getTenantUserId(client);
+  if (!tenantUserId) throw new Error("Cannot create an agent run: the current tenant has no user");
+  return tenantUserId;
 }
 
 export async function createAgentRun(client: Pool | PoolClient, input: CreateAgentRunInput): Promise<AgentRunRow> {
@@ -171,7 +171,7 @@ export async function finishAgentRun(
  * Returns `finishAgentRun`'s result: when the close lost to another writer (`false`), the run's
  * outcome was already decided elsewhere and no notification is written.
  *
- * Silently skips the notification before any account exists (setup not run yet), matching
+ * Silently skips the notification when the current tenant has no user, matching
  * `notifyHeartbeatError`.
  */
 export async function finishAgentRunWithErrorNotification(
@@ -187,7 +187,7 @@ export async function finishAgentRunWithErrorNotification(
   }
   const closed = await finishAgentRun(client, agentRunId, "error", result);
   if (!closed) return false;
-  const userId = await getEarliestUserId(client);
+  const userId = await getTenantUserId(client);
   if (!userId) return true;
   await writeNotification(client, {
     userId,

@@ -1,7 +1,14 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import "../domainWriteHooks.js";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
@@ -2323,7 +2330,7 @@ describe("mail sync job error handling (issue #26)", () => {
     const filesId = await databaseIdFor("files");
     const mailboxesId = await databaseIdFor("mailboxes");
     const passwordHash = await hashPassword("s3cret-password");
-    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en", tenantId: getTenantZeroId() });
 
     const mailbox = await withTransaction(pool, (client) =>
       createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
@@ -2382,7 +2389,12 @@ describe("mail sync job error handling (issue #26)", () => {
     const filesId = await databaseIdFor("files");
     const mailboxesId = await databaseIdFor("mailboxes");
     const passwordHash = await hashPassword("s3cret-password");
-    const user = await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+    const user = await createUser(pool, {
+      email: "owner@example.test",
+      passwordHash,
+      locale: "en",
+      tenantId: getTenantZeroId(),
+    });
 
     const mailbox = await withTransaction(pool, (client) =>
       createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
@@ -2595,6 +2607,66 @@ describe("mail sync job error handling (issue #26)", () => {
     ).resolves.toBeUndefined();
 
     expect(createImapClient).not.toHaveBeenCalled();
+  });
+});
+
+describe("mail_sync_error recipient in a tenant (issue #1018)", () => {
+  let runtimePool: Pool;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    runtimePool ??= await createRuntimeRolePool(pool, "semprec_data");
+    await resetDatabase(pool);
+  });
+
+  afterAll(async () => {
+    await runtimePool?.end();
+  });
+
+  it("notifies the user of the tenant the sync fails in, never the earlier-created account", async () => {
+    const tenantB = await createTestTenant(pool);
+    const userA = await createUser(pool, { email: "a@example.test", passwordHash: "x", tenantId: getTenantZeroId() });
+    const userB = await createUser(pool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB });
+
+    const { mailboxItemId, moduleIds } = await runInTenant(tenantB, async () => {
+      await seedSystem(runtimePool);
+      const idFor = async (moduleId: string): Promise<string> => {
+        const { rows } = await runtimePool.query<{ id: string }>(
+          "SELECT id FROM databases WHERE owner_module_id = $1",
+          [moduleId],
+        );
+        if (!rows[0]) throw new Error(`Database '${moduleId}' was not seeded`);
+        return rows[0].id;
+      };
+      const ids = {
+        emailsDatabaseId: await idFor("emails"),
+        filesDatabaseId: await idFor("files"),
+        foldersDatabaseId: await idFor("folders"),
+        mailboxesDatabaseId: await idFor("mailboxes"),
+      };
+      const mailbox = await withTransaction(runtimePool, (client) =>
+        createItemWithClient(client, { databaseId: ids.mailboxesDatabaseId, properties: { name: "M" } }),
+      );
+      await withTransaction(runtimePool, (client) =>
+        ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
+      );
+      return { mailboxItemId: mailbox.id, moduleIds: ids };
+    });
+
+    // No stored credential: reaches `recordSyncError` without a real adapter failure.
+    await expect(
+      runInTenant(tenantB, () =>
+        handleSyncMailAccountTask(runtimePool, { mailboxItemId }, {}, moduleIds, noopStorage, {
+          job: { id: "job-b" },
+        }),
+      ),
+    ).rejects.toThrow("has no stored credential");
+
+    const { rows } = await pool.query(`SELECT user_id, kind, tenant_id FROM notifications WHERE source_id = $1`, [
+      mailboxItemId,
+    ]);
+    expect(rows).toEqual([{ user_id: userB.id, kind: "mail_sync_error", tenant_id: tenantB }]);
+    expect(rows[0].user_id).not.toBe(userA.id);
   });
 });
 
