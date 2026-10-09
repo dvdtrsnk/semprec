@@ -33,7 +33,7 @@ async function createFixtures(): Promise<{ runId: string; databaseId: string }> 
   await adminPool.query(
     `INSERT INTO users (email, password_hash, tenant_id)
      VALUES ($1, 'unused', (SELECT $2::uuid WHERE NOT EXISTS (SELECT 1 FROM users WHERE tenant_id = $2::uuid)))`,
-    [`${randomUUID()}@example.com`, , getTenantZeroId()],
+    [`${randomUUID()}@example.com`, getTenantZeroId()],
   );
   const chokePoint = createChokePoint(adminPool);
   const { rows } = await adminPool.query<{ id: string }>(`SELECT id FROM databases WHERE owner_module_id = 'projects'`);
