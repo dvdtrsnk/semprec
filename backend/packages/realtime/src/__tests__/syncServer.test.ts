@@ -339,10 +339,8 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
   let port: number;
   let identityByToken: Map<string, SyncIdentity>;
 
-  /** Only the first account is bound to tenant zero (`users.tenant_id` is unique): it is the tenant's user. */
   async function createTestUser(): Promise<string> {
     const passwordHash = await hashPassword("s3cret-password");
-    const { rowCount } = await pool.query("SELECT 1 FROM users WHERE tenant_id = $1", [getTenantZeroId()]);
     const user = await createUser(pool, { email: `sync-${Math.random()}@example.test`, passwordHash, locale: "en" });
     return user.id;
   }
@@ -847,6 +845,7 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
   let port: number;
   let identityByToken: Map<string, SyncIdentity>;
 
+  /** Only the first account is bound to tenant zero (`users.tenant_id` is unique): it is the tenant's user. */
   async function createTestUser(): Promise<string> {
     const passwordHash = await hashPassword("s3cret-password");
     const { rowCount } = await pool.query("SELECT 1 FROM users WHERE tenant_id = $1", [getTenantZeroId()]);
