@@ -6,7 +6,7 @@ import { withTransaction } from "../db/pool.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createBlob, type CreateBlobInput } from "../blobs/blobsStore.js";
-import { getEarliestUserId } from "../auth/usersStore.js";
+import { getTenantUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
 import {
   ensureItemAutomation,
@@ -178,7 +178,7 @@ export async function handleProcessLibraryMetadataTask(
     // replayed job (same job id, same `transitionInstance`) never duplicates it.
     await withTransaction(pool, async (client) => {
       await markItemAutomationError(client, payload.itemId, message);
-      const userId = await getEarliestUserId(client);
+      const userId = await getTenantUserId(client);
       if (userId) {
         await writeNotification(client, {
           userId,
