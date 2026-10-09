@@ -97,6 +97,31 @@ export async function getEarliestUserId(client: Pool | PoolClient): Promise<stri
   return rows[0] ? rows[0].id : null;
 }
 
+/**
+ * The recipient of a tenant event is the user of the scope's tenant: the account whose
+ * `users.tenant_id` is `app_tenant_default()` (the scope's tenant, or the sole tenant when no
+ * scope is set and only one tenant exists). Returns `null` when the tenant has no bound user,
+ * and in a system scope once more than one tenant exists — the same visibility tenant rows have.
+ */
+export async function getTenantUserId(client: Pool | PoolClient): Promise<string | null> {
+  const { rows } = await client.query<{ id: string }>(
+    `SELECT id FROM users WHERE tenant_id = (SELECT app_tenant_default())`,
+  );
+  return rows[0] ? rows[0].id : null;
+}
+
+/**
+ * Locale of the tenant's user — the recipient rule of `getTenantUserId`: the user of the scope's
+ * tenant. Returns `null` when the tenant has no bound user, and in a system scope once more
+ * than one tenant exists.
+ */
+export async function getTenantUserLocale(client: Pool | PoolClient): Promise<string | null> {
+  const { rows } = await client.query<{ locale: string }>(
+    `SELECT locale FROM users WHERE tenant_id = (SELECT app_tenant_default())`,
+  );
+  return rows[0] ? rows[0].locale : null;
+}
+
 /** Used by `resetPassword` (auth/passwordResetActions.ts) to replace a user's password hash after a reset token is consumed. */
 export async function updateUserPasswordHash(
   client: Pool | PoolClient,

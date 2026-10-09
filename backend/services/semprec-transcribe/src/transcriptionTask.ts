@@ -20,7 +20,7 @@ import {
   getBlob,
   enqueueTranscriptionJob,
   ensureItemAutomation,
-  getEarliestUserId,
+  getTenantUserId,
   getItemById,
   getDatabaseByModuleId,
   lockItemAutomation,
@@ -768,7 +768,7 @@ async function recordTranscriptionFailure(
     },
     { allowedSystemKeys: ["status"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
   );
-  const userId = await getEarliestUserId(client);
+  const userId = await getTenantUserId(client);
   if (!userId) {
     logger.warn({ transcriptId }, "No user to notify about a permanent transcription failure");
     return true;

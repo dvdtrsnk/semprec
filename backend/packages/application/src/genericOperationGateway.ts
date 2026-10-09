@@ -12,7 +12,7 @@ import {
   deleteRelationWithClient,
   getAgentRun,
   getApprovalRequest,
-  getEarliestUserId,
+  getTenantUserId,
   isGenericOperationApprovalRequestPayload,
   itemDeleteWithClient,
   markApprovalRequestExecutionSucceeded,
@@ -230,7 +230,7 @@ async function preflightDestructiveApproval(
       resourceSnapshot: snapshot,
     });
 
-    const userId = await getEarliestUserId(client);
+    const userId = await getTenantUserId(client);
     if (userId) {
       await writeNotification(client, {
         userId,

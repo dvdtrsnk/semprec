@@ -2,7 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { withTransaction } from "../db/pool.js";
 import type { ActionContext, ActionHandler } from "../scheduler/actions.js";
-import { getEarliestUserLocale } from "../auth/usersStore.js";
+import { getTenantUserLocale } from "../auth/usersStore.js";
 import { generatePermissionManifest, type ManifestLocale } from "./permissionManifest.js";
 import { toManifestLocale } from "./catalogResolution.js";
 
@@ -66,7 +66,7 @@ export function createDriftCheckAction(pool: Pool, options: CreateDriftCheckActi
       // without a `moduleRegistry` — and only when the caller hasn't pinned one explicitly.
       const locale =
         options.locale ??
-        (options.moduleRegistry ? toManifestLocale((await getEarliestUserLocale(client)) ?? "en") : undefined);
+        (options.moduleRegistry ? toManifestLocale((await getTenantUserLocale(client)) ?? "en") : undefined);
 
       // Confirms the schema this drift check reports against is actually resolvable;
       // the manifest's content is only consumed once the text comparator (above) exists.

@@ -4,7 +4,7 @@ import type { ModuleRegistry } from "@semprec/module-registry";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
-import { getEarliestUserId } from "../auth/usersStore.js";
+import { getTenantUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
 import {
   failHeartbeatOccurrence,
@@ -27,7 +27,7 @@ import { resolveHeartbeatFireTaskName, type ActionHandler, type ActionRegistry }
  * duplicate it on redelivery) but distinct for every new fire — a later, independent failure of
  * the same heartbeat is a different job and so is never deduped away.
  *
- * Silently skips before any account exists (setup, #233, not run yet): there is no `users` row
+ * Silently skips when the current tenant has no user: there is no `users` row
  * to bind the notification to, and the heartbeat failure itself is still recorded either way.
  */
 async function notifyHeartbeatError(
@@ -35,7 +35,7 @@ async function notifyHeartbeatError(
   heartbeat: { id: string; name: string },
   jobId: string,
 ): Promise<void> {
-  const userId = await getEarliestUserId(client);
+  const userId = await getTenantUserId(client);
   if (!userId) return;
   await writeNotification(client, {
     userId,
