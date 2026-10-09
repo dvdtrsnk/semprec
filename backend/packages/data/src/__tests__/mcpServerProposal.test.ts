@@ -151,6 +151,20 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
     expect(proposal.properties.status).toBe("proposed");
   });
 
+  it.each([
+    "http://mcp.example.com/mcp",
+    "https://127.0.0.1/mcp",
+    "https://localhost/mcp",
+    "https://user:pw@mcp.example.com/",
+    "https://mcp.example.com:8443/",
+  ])("rejects a proposal whose remote url %s fails the stored outbound URL baseline", async (url) => {
+    await expect(
+      createMcpProposal({ name: "Bad", connectionConfig: { transport: "http", url } }),
+    ).rejects.toMatchObject({
+      details: { field: "connectionConfig" },
+    });
+  });
+
   it("rejects an sse connectionConfig whose url query string smuggles a credential-shaped param", async () => {
     await expect(
       createMcpProposal({

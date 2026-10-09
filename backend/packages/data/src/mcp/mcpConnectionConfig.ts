@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ValidationError } from "../errors.js";
+import { isBaselineOutboundUrl } from "../net/storedOutboundUrl.js";
 
 /**
  * Strict, transport-discriminated shape for `mcpServers.connectionConfig` (issue #123).
@@ -52,4 +53,30 @@ export function assertValidMcpConnectionConfig(value: unknown): McpConnectionCon
     });
   }
   return result.data;
+}
+
+/**
+ * What may be stored: a valid shape, and for `sse`/`http` a remote URL that passes the stored
+ * outbound URL baseline (docs/adr/2026-09-27-ssrf-protection-for-stored-outbound-urls.md).
+ * `assertValidMcpConnectionConfig` stays shape-only for the connection factory.
+ */
+export function assertStorableMcpConnectionConfig(value: unknown): McpConnectionConfig {
+  let config: McpConnectionConfig;
+  try {
+    config = assertValidMcpConnectionConfig(value);
+  } catch (err) {
+    if (!(err instanceof ValidationError)) throw err;
+    // The public error body drops `details` holding non-primitive values (the zod `issues`), which
+    // would hide `field`; keep the message and expose `field` alone.
+    throw new ValidationError(err.message, { field: "connectionConfig" });
+  }
+  if (config.transport !== "stdio" && !isBaselineOutboundUrl(config.url)) {
+    throw new ValidationError(
+      "MCP server connectionConfig 'url' must be an https URL to a public DNS host, without credentials or a port",
+      {
+        field: "connectionConfig",
+      },
+    );
+  }
+  return config;
 }

@@ -8,6 +8,15 @@ import type { PoolClient } from "pg";
 import type { DatabaseRow, ItemRow } from "../types.js";
 import type { RelationEdgeContext } from "./relationEdgeContext.js";
 
+export interface ItemCreateHookContext {
+  client: PoolClient;
+  database: DatabaseRow;
+  item: ItemRow;
+  properties: Record<string, unknown>;
+}
+
+export type ItemCreateHook = (context: ItemCreateHookContext) => Promise<void>;
+
 export interface ItemUpdateHookContext {
   client: PoolClient;
   database: DatabaseRow;
@@ -34,8 +43,13 @@ export interface RelationEdgeWriteHookContext {
 
 export type RelationEdgeWriteHook = (context: RelationEdgeWriteHookContext) => Promise<void>;
 
+const itemCreateHooks = new Set<ItemCreateHook>();
 const itemUpdateHooks = new Set<ItemUpdateHook>();
 const relationEdgeWriteHooks = new Set<RelationEdgeWriteHook>();
+
+export function registerItemCreateHook(hook: ItemCreateHook): void {
+  itemCreateHooks.add(hook);
+}
 
 /** Registering the same function twice is a no-op — a hook module imported from more than one place still runs once. */
 export function registerItemUpdateHook(hook: ItemUpdateHook): void {
@@ -44,6 +58,13 @@ export function registerItemUpdateHook(hook: ItemUpdateHook): void {
 
 export function registerRelationEdgeWriteHook(hook: RelationEdgeWriteHook): void {
   relationEdgeWriteHooks.add(hook);
+}
+
+/** Awaits every registered create hook sequentially inside the caller's transaction, after a real insert (never an idempotent replay) — the first rejection propagates and rolls the insert back. */
+export async function runItemCreateHooks(context: ItemCreateHookContext): Promise<void> {
+  for (const hook of itemCreateHooks) {
+    await hook(context);
+  }
 }
 
 /** Awaits every registered hook sequentially, in registration order, inside the caller's transaction — the first rejection propagates and rolls the write back exactly as a direct call did. */
@@ -59,11 +80,12 @@ export async function runRelationEdgeWriteHooks(context: RelationEdgeWriteHookCo
   }
 }
 
-/** Test-only reset of both registries — guarded so it cannot run against a real process's hooks. */
+/** Test-only reset of every registry — guarded so it cannot run against a real process's hooks. */
 export function clearHooksForTests(): void {
   if (process.env.NODE_ENV !== "test") {
     throw new Error("clearHooksForTests() must only be called in tests");
   }
+  itemCreateHooks.clear();
   itemUpdateHooks.clear();
   relationEdgeWriteHooks.clear();
 }

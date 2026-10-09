@@ -34,7 +34,7 @@ import { assertDatabaseNotArchived } from "./databaseGuards.js";
 import { assertValidTimezone } from "../timezone.js";
 import { getSystemSettingsItemId } from "../systemSettings.js";
 import { deriveTaskTime } from "../tasks/deriveTaskTime.js";
-import { runItemUpdateHooks } from "./hooks.js";
+import { runItemCreateHooks, runItemUpdateHooks } from "./hooks.js";
 
 interface AssertWritablePropertiesOptions {
   /**
@@ -186,6 +186,9 @@ export async function createItemWithClient(
   });
   if (!created) return item;
 
+  // Domain validation/side effects of a real insert run here, in the same transaction, so a
+  // rejection rolls the row back — see docs/adr/2026-10-09-item-create-domain-hooks.md.
+  await runItemCreateHooks({ client, database, item, properties: itemProperties });
   await triggerOnItemEventHeartbeats(client, input.databaseId, "create", item.id, options.queueAffinity);
   runAfterCommit(client, () =>
     notifyInvalidation({
