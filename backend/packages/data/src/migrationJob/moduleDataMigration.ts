@@ -55,8 +55,8 @@ function lockKey(tenantId: string, transition: Transition): string {
  *
  * The tenant is the one `app_tenant_default()` resolves on that connection: the caller runs this
  * inside that tenant's scope (`runInTenant`), or with no scope while exactly one tenant exists.
- * Row-level security confines every read and write to it. With no scope while several tenants
- * exist it throws before taking any lock.
+ * Under a runtime role, row-level security confines every read and write to it. With no scope
+ * while several tenants exist it throws before taking any lock.
  *
  * A no-op if the tenant already recorded the transition in `module_migrations` (already done by
  * an earlier run) or another runner currently holds the tenant's advisory lock for it (already
