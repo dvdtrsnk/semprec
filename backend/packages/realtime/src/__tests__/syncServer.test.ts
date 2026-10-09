@@ -849,6 +849,7 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
 
   async function createTestUser(): Promise<string> {
     const passwordHash = await hashPassword("s3cret-password");
+    const { rowCount } = await pool.query("SELECT 1 FROM users WHERE tenant_id = $1", [getTenantZeroId()]);
     const user = await createUser(pool, {
       email: `agent-watch-${Math.random()}@example.test`,
       passwordHash,
