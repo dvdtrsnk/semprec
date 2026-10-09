@@ -2,7 +2,14 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { Ajv } from "ajv";
-import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
+import { runInTenant } from "@semprec/shared";
 import {
   startHttpContractServer,
   startSseContractServer,
@@ -291,6 +298,78 @@ describe("MCP invoke adapter (issue #128)", () => {
       expect(allNotifications.map((r: { source_id: string }) => r.source_id).sort()).toEqual(
         [firstRequestId, secondRequestId].sort(),
       );
+    });
+
+    it("notifies the user of the tenant the request is created in, with a link naming that user (issue #1018)", async () => {
+      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const tenantB = await createTestTenant(pool);
+        const userB = await createUser(pool, {
+          email: `${randomUUID()}@example.test`,
+          passwordHash: "x",
+          tenantId: tenantB,
+        });
+        const contractServer = await startStdioContractServer([SEARCH_TOOL]);
+        servers.push(contractServer);
+
+        const requestId = await runInTenant(tenantB, async () => {
+          await seedSystem(runtimePool, createViewTypeRegistry());
+          const { rows: databases } = await runtimePool.query<{ id: string }>(
+            "SELECT id FROM databases WHERE owner_module_id = 'mcpServers'",
+          );
+          // A raw insert, for the same reason as `createGrantedTool`.
+          const { rows } = await runtimePool.query<{ id: string }>(
+            "INSERT INTO items (id, database_id, properties) VALUES ($1, $2, $3::jsonb) RETURNING id",
+            [
+              randomUUID(),
+              databases[0]!.id,
+              JSON.stringify({
+                name: "Contract server",
+                active: true,
+                connectionConfig: contractServer.connectionConfig,
+              }),
+            ],
+          );
+          const registration = await upsertMcpToolRegistration(runtimePool, {
+            mcpServerItemId: rows[0]!.id,
+            toolName: SEARCH_TOOL.name,
+            toolSchema: SEARCH_TOOL.inputSchema,
+            description: SEARCH_TOOL.description ?? null,
+          });
+          const projectItemId = randomUUID();
+          await withTransaction(runtimePool, (client) =>
+            setProjectMcpGrantForAgentPage(client, {
+              projectItemId,
+              mcpToolRegistrationId: registration.id,
+              granted: true,
+            }),
+          );
+          const run = await createAgentRun(runtimePool, { triggeredBy: "user", task: "test" });
+          const result = await createApprovalGatedMcpInvokeTool(
+            runtimePool,
+            run.id,
+            projectItemId,
+            registration.id,
+          )({ query: "semprec" });
+          return result.result.match(/Approval request ([0-9a-f-]{36})/i)![1]!;
+        });
+
+        const { rows } = await pool.query(
+          `SELECT user_id, kind, link_href, tenant_id FROM notifications WHERE source_id = $1`,
+          [requestId],
+        );
+        expect(rows).toEqual([
+          {
+            user_id: userB.id,
+            kind: "approval_pending",
+            link_href: `?page=approvals&user=${userB.id}`,
+            tenant_id: tenantB,
+          },
+        ]);
+        expect(rows[0].user_id).not.toBe(earliestUser.id);
+      } finally {
+        await runtimePool.end();
+      }
     });
 
     it("rejects an invalid call before creating any approval request", async () => {
