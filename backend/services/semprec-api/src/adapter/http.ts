@@ -4,10 +4,15 @@ import { ValidationError } from "@semprec/data";
 /** Thrown by `readRawBody`/`readJsonBody` once a request body exceeds its caller-supplied `maxBytes`; every listener in this service catches this one class rather than its own copy. */
 export class PayloadTooLargeError extends Error {}
 
-/** Writes a JSON response: `status`, `Content-Type: application/json; charset=utf-8`, and any caller-supplied `headers` merged in (e.g. `authHandler.ts`'s `Set-Cookie`). */
+/** `Cache-Control` value for every response this service writes: bodies carry one tenant's content, so no browser or proxy may keep them. */
+export const NO_STORE = "no-store";
+
+/**
+ * Writes a JSON response: `status`, `Content-Type: application/json; charset=utf-8`, and any caller-supplied `headers` merged in (e.g. `authHandler.ts`'s `Set-Cookie`). `Cache-Control: no-store` is written last, so a caller's own `Cache-Control` cannot weaken it.
+ */
 export function sendJson(res: ServerResponse, status: number, body: unknown, headers?: Record<string, string>): void {
   const payload = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", ...headers });
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", ...headers, "Cache-Control": NO_STORE });
   res.end(payload);
 }
 

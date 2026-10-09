@@ -32,15 +32,28 @@ function fakeResponse(): { res: ServerResponse; recorded: RecordedResponse } {
 }
 
 describe("sendJson", () => {
-  it("writes the status, the JSON content type and the merged extra headers", () => {
+  it("writes the status, the JSON content type, no-store and the merged extra headers", () => {
     const { res, recorded } = fakeResponse();
     sendJson(res, 201, { ok: true }, { "Set-Cookie": "a=b" });
     expect(recorded.status).toBe(201);
     expect(recorded.headers).toEqual({
       "Content-Type": "application/json; charset=utf-8",
       "Set-Cookie": "a=b",
+      "Cache-Control": "no-store",
     });
     expect(recorded.body).toBe(JSON.stringify({ ok: true }));
+  });
+
+  it("sets Cache-Control: no-store when the caller passes no headers", () => {
+    const { res, recorded } = fakeResponse();
+    sendJson(res, 200, {});
+    expect(recorded.headers?.["Cache-Control"]).toBe("no-store");
+  });
+
+  it("overrides a caller-supplied Cache-Control", () => {
+    const { res, recorded } = fakeResponse();
+    sendJson(res, 200, {}, { "Cache-Control": "max-age=60" });
+    expect(recorded.headers?.["Cache-Control"]).toBe("no-store");
   });
 });
 

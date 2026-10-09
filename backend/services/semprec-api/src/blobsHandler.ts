@@ -15,7 +15,7 @@ import {
 import { runInTenant } from "@semprec/shared";
 import { authenticateRequest } from "./authHandler.js";
 import { statusForError, toErrorResponseBody } from "./adapter/errorContract.js";
-import { sendJson } from "./adapter/http.js";
+import { NO_STORE, sendJson } from "./adapter/http.js";
 import { assertUuid } from "./adapter/requestValidation.js";
 import { logger } from "./logger.js";
 
@@ -149,7 +149,7 @@ export function createBlobsRequestListener(pool: Pool, options: BlobsRequestList
 
         const ifNoneMatch = req.headers["if-none-match"];
         if (etag && ifNoneMatchMatches(typeof ifNoneMatch === "string" ? ifNoneMatch : undefined, etag)) {
-          res.writeHead(304, { ETag: etag });
+          res.writeHead(304, { ETag: etag, "Cache-Control": NO_STORE });
           res.end();
           return;
         }
@@ -157,7 +157,7 @@ export function createBlobsRequestListener(pool: Pool, options: BlobsRequestList
         const rangeHeader = req.headers.range;
         const range = parseRange(typeof rangeHeader === "string" ? rangeHeader : undefined, byteSize);
         if (range === "unsatisfiable") {
-          res.writeHead(416, { "Content-Range": `bytes */${byteSize}` });
+          res.writeHead(416, { "Content-Range": `bytes */${byteSize}`, "Cache-Control": NO_STORE });
           res.end();
           return;
         }
@@ -172,6 +172,7 @@ export function createBlobsRequestListener(pool: Pool, options: BlobsRequestList
           "Content-Disposition": contentDispositionHeader(disposition, filename),
         };
         if (etag) headers.ETag = etag;
+        headers["Cache-Control"] = NO_STORE;
 
         const stream = options.storage.readStream(blob.storageKey, range);
 
