@@ -1,7 +1,14 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
-import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -476,5 +483,57 @@ describe("library module (issue #25)", () => {
     expect(relocked?.status).toBe("locked");
     const reunlocked = await withTransaction(pool, (client) => setItemAutomationLocked(client, item.id, false));
     expect(reunlocked.status).toBe("pending");
+  });
+});
+
+describe("library automation_error recipient in a tenant (issue #1018)", () => {
+  let runtimePool: Pool;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    runtimePool ??= await createRuntimeRolePool(pool, "semprec_data");
+    await resetDatabase(pool);
+  });
+
+  afterAll(async () => {
+    await runtimePool?.end();
+  });
+
+  it("notifies the user of the tenant the fetch fails in, never the earlier-created account", async () => {
+    const tenantB = await createTestTenant(pool);
+    const userA = await createUser(pool, { email: "a@example.test", passwordHash: "x", tenantId: getTenantZeroId() });
+    const userB = await createUser(pool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB });
+    const { itemId, moviesId } = await runInTenant(tenantB, async () => {
+      await seedSystem(runtimePool);
+      const { rows } = await runtimePool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [
+        "movies",
+      ]);
+      const databaseId = rows[0]!.id;
+      const item = await createChokePoint(runtimePool).createItem({
+        databaseId,
+        properties: { name: "Sicario", year: 2015 },
+      });
+      return { itemId: item.id, moviesId: databaseId };
+    });
+    const failingFetcher: LibraryMetadataFetcher = async () => {
+      throw new Error("source unavailable");
+    };
+
+    await expect(
+      runInTenant(tenantB, () =>
+        handleProcessLibraryMetadataTask(
+          runtimePool,
+          { itemId, databaseId: moviesId, config: { source: "test", coverKey: "cover" } },
+          failingFetcher,
+          { job: { id: "job-b" } },
+        ),
+      ),
+    ).rejects.toThrow("source unavailable");
+
+    const { rows } = await pool.query(`SELECT user_id, kind, tenant_id FROM notifications WHERE source_id = $1`, [
+      itemId,
+    ]);
+    expect(rows).toEqual([{ user_id: userB.id, kind: "automation_error", tenant_id: tenantB }]);
+    expect(rows[0].user_id).not.toBe(userA.id);
   });
 });
