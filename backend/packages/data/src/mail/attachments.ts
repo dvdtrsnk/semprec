@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import type { PoolClient } from "pg";
-import { findOrCreateBlob } from "../blobs/blobsStore.js";
+import { findOrCreateBlob, tenantBlobStorageKey } from "../blobs/blobsStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
@@ -84,7 +84,10 @@ export async function ingestAttachments(
 ): Promise<IngestAttachmentsResult> {
   const extractedTexts: string[] = [];
   for (const attachment of input.attachments) {
-    const storageKey = `${input.storageKeyPrefix}/${randomUUID()}-${safeStorageFilename(attachment.filename)}`;
+    const storageKey = await tenantBlobStorageKey(
+      client,
+      `${input.storageKeyPrefix}/${randomUUID()}-${safeStorageFilename(attachment.filename)}`,
+    );
 
     try {
       let source = await attachment.openStream();

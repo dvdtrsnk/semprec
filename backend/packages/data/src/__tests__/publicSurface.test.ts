@@ -453,6 +453,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "sweepDueHeartbeats",
   "syncMcpServerTools",
   "systemDatabasesModuleManifest",
+  "tenantBlobStorageKey",
   "terminalizeApprovalRequestAsConflict",
   "toApprovalRequestDecisionView",
   "toManifestLocale",

@@ -225,6 +225,8 @@ describe("transcription step 1 (prepare)", () => {
   let audioFixture: Buffer;
   let videoFixture: Buffer;
   let untaggedAudioFixture: Buffer;
+  /** Where step 1 stores normalized audio: under the tenant in scope (sole tenant zero here). */
+  let transcriptionsPrefix: string;
 
   beforeAll(async () => {
     [audioFixture, videoFixture, untaggedAudioFixture] = await Promise.all([
@@ -238,6 +240,10 @@ describe("transcription step 1 (prepare)", () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
     await seedSystem(pool, createViewTypeRegistry());
+    const { rows: tenantRows } = await pool.query<{ tenant_id: string }>(
+      "SELECT app_tenant_default()::text AS tenant_id",
+    );
+    transcriptionsPrefix = `${z.string().parse(tenantRows[0]?.tenant_id)}/transcriptions/`;
     tmpBlobDir = join(tmpdir(), `semprec-transcribe-test-${randomUUID()}`);
     blobStorage = new LocalFsBlobStorageWriter(tmpBlobDir);
     gatewayClient = new FakeAudioGatewayClient();
@@ -279,12 +285,12 @@ describe("transcription step 1 (prepare)", () => {
 
   /** The normalized audio left behind — neither a `blobs` row nor bytes in storage when step 1 discarded it. */
   async function readNormalizedLeftovers(): Promise<{ blobRows: number; storedFiles: string[] }> {
-    const { rows } = await pool.query<{ count: string }>(
-      "SELECT count(*) FROM blobs WHERE storage_key LIKE 'transcriptions/%'",
-    );
+    const { rows } = await pool.query<{ count: string }>("SELECT count(*) FROM blobs WHERE storage_key LIKE $1", [
+      `${transcriptionsPrefix}%`,
+    ]);
     return {
       blobRows: Number(rows[0]?.count),
-      storedFiles: await readdir(join(tmpBlobDir, "transcriptions")),
+      storedFiles: await readdir(join(tmpBlobDir, transcriptionsPrefix)),
     };
   }
 
@@ -292,7 +298,7 @@ describe("transcription step 1 (prepare)", () => {
   function storageWithMidNormalizationHook(hook: () => Promise<void>): BlobStorageWriter {
     return {
       writeStream: async (storageKey, source, options) => {
-        if (storageKey.startsWith("transcriptions/")) await hook();
+        if (storageKey.startsWith(transcriptionsPrefix)) await hook();
         return blobStorage.writeStream(storageKey, source, options);
       },
       delete: (storageKey) => blobStorage.delete(storageKey),
@@ -325,7 +331,9 @@ describe("transcription step 1 (prepare)", () => {
         "SELECT mime_type, storage_key FROM blobs WHERE id = $1",
         [prepare.normalizedBlobId],
       );
-      expect(blobRows).toEqual([{ mime_type: "audio/ogg", storage_key: expect.stringMatching(/^transcriptions\//) }]);
+      expect(blobRows).toEqual([
+        { mime_type: "audio/ogg", storage_key: expect.stringMatching(new RegExp(`^${transcriptionsPrefix}`)) },
+      ]);
       expect(await probeNormalizedAudio(join(tmpBlobDir, blobRows[0]!.storage_key))).toEqual({
         codecName: "opus",
         channels: 1,
@@ -466,7 +474,7 @@ describe("transcription step 1 (prepare)", () => {
     const { files, file } = await createSourceFile("audio/mp4", audioFixture);
     // A real blob, so the later diarize/ASR steps (which now run unconditionally after step 1) have
     // something to download — simulating the concurrent run's own normalized output, not this run's.
-    const concurrentStorageKey = `transcriptions/${randomUUID()}`;
+    const concurrentStorageKey = `${transcriptionsPrefix}${randomUUID()}`;
     await blobStorage.writeStream(concurrentStorageKey, Readable.from(audioFixture));
     const concurrentBlob = await withTransaction(pool, (client) =>
       createBlob(client, {
@@ -503,7 +511,7 @@ describe("transcription step 1 (prepare)", () => {
     expect(await readTranscriptDate(source)).toBe(concurrentDate);
     expect(await readNormalizedLeftovers()).toEqual({
       blobRows: 1,
-      storedFiles: [concurrentStorageKey.slice("transcriptions/".length)],
+      storedFiles: [concurrentStorageKey.slice(transcriptionsPrefix.length)],
     });
   });
 

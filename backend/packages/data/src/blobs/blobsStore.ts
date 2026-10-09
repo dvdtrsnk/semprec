@@ -35,6 +35,19 @@ export interface CreateBlobInput {
   contentHash?: string;
 }
 
+/**
+ * Prefixes `key` with the tenant in scope, as `<tenantId>/<key>`. The tenant comes from
+ * `app_tenant_default()`, the same function that fills `blobs.tenant_id`, so a key's prefix and
+ * its row's tenant always agree. Throws when no tenant is in scope, so a caller resolving the key
+ * before writing bytes fails before any byte is written.
+ */
+export async function tenantBlobStorageKey(client: Queryable, key: string): Promise<string> {
+  const { rows } = await client.query<{ tenant_id: string | null }>("SELECT app_tenant_default()::text AS tenant_id");
+  const tenantId = requireSingleRow(rows, "app_tenant_default() row").tenant_id;
+  if (tenantId === null) throw new Error("No tenant is in scope for a blob storage key");
+  return `${tenantId}/${key}`;
+}
+
 /** `blobs` is not item/database state (no `properties`/`owner`), so it is written directly, the same way `docs`/`doc_snapshots` are — not through the choke-point. */
 export async function createBlob(client: Queryable, input: CreateBlobInput): Promise<BlobRow> {
   const { rows } = await client.query<BlobDbRow>(
@@ -51,6 +64,11 @@ export async function getBlob(client: Queryable, id: string): Promise<BlobRow | 
   return rows[0] ? mapBlobRow(rows[0]) : null;
 }
 
+/**
+ * Looks a blob up by content hash within the tenant in scope: the `tenant_isolation` RLS policy
+ * confines the read to that tenant's rows, so identical bytes another tenant stored are invisible
+ * here and dedupe is per tenant.
+ */
 export async function getBlobByContentHash(client: Queryable, contentHash: string): Promise<BlobRow | null> {
   const { rows } = await client.query<BlobDbRow>(`SELECT ${BLOB_COLUMNS} FROM blobs WHERE content_hash = $1`, [
     contentHash,
@@ -61,18 +79,21 @@ export async function getBlobByContentHash(client: Queryable, contentHash: strin
 /**
  * Content-addressed dedup (issue #26: "the same invoice forwarded three times is stored
  * once") — `createBlob` itself stays a bare insert (issue #24 left dedup enforcement out of
- * its scope on purpose), so this is the one caller-facing entry point that actually dedupes,
- * via the partial unique indexes on `content_hash`. Without `contentHash` there is
- * nothing to dedupe against, so it falls back to a plain insert.
+ * its scope on purpose), so this is the one caller-facing entry point that actually dedupes.
+ * Dedupe is per tenant: the arbiter is every unique index on `blobs` (the tenant-leading
+ * `(tenant_id, content_hash)` index among them), and the read-back after a conflict goes through
+ * `getBlobByContentHash`, which RLS confines to the tenant in scope. Without `contentHash` there
+ * is nothing to dedupe against, so it falls back to a plain insert.
  */
 export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput): Promise<BlobRow> {
   if (!input.contentHash) return createBlob(client, input);
 
   const inserted = await client.query<BlobDbRow>(
-    // No conflict target on purpose: `content_hash` is now guarded by both the legacy global
-    // partial index and its tenant-leading successor (0064), and a targeted ON CONFLICT only
-    // arbitrates the named index — a concurrent identical insert would trip the other one with
-    // a unique_violation instead of being skipped. A bare DO NOTHING covers every unique index.
+    // No conflict target on purpose: a bare DO NOTHING makes every unique index on `blobs` an
+    // arbiter. While the legacy global `blobs_content_hash_uq` coexists with the tenant-leading
+    // `blobs_tenant_content_hash_uq`, a target naming only one would let a concurrent identical
+    // insert trip the other with a raw unique_violation instead of being skipped; once the legacy
+    // index is gone, the tenant-leading one alone arbitrates, so dedupe is per tenant.
     `INSERT INTO blobs (mime_type, byte_size, storage_key, source_url, content_hash)
      VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT DO NOTHING
