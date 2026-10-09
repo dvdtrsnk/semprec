@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createHash, randomUUID } from "node:crypto";
 import { runOnce } from "@semprec/queue";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
@@ -20,8 +20,9 @@ let chokePoint: ChokePoint;
 
 async function createUser(): Promise<string> {
   const { rows } = await pool.query<{ id: string }>(
-    `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
-    [`${randomUUID()}@example.com`],
+    `INSERT INTO users (email, password_hash, tenant_id)
+     VALUES ($1, 'unused', (SELECT $2::uuid WHERE NOT EXISTS (SELECT 1 FROM users WHERE tenant_id = $2::uuid))) RETURNING id`,
+    [`${randomUUID()}@example.com`, getTenantZeroId()],
   );
   return rows[0]!.id;
 }

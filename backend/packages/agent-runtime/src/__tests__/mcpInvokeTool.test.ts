@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { Ajv } from "ajv";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   startHttpContractServer,
   startSseContractServer,
@@ -71,7 +71,12 @@ describe("MCP invoke adapter (issue #128)", () => {
     await seedSystem(pool, viewTypeRegistry);
     mcpServersId = await databaseIdFor("mcpServers");
     const passwordHash = await hashPassword("s3cret-password");
-    earliestUser = await createUser(pool, { email: `${randomUUID()}@example.test`, passwordHash, locale: "en" });
+    earliestUser = await createUser(pool, {
+      email: `${randomUUID()}@example.test`,
+      passwordHash,
+      locale: "en",
+      tenantId: getTenantZeroId(),
+    });
   });
 
   afterEach(async () => {

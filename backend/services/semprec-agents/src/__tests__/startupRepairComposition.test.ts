@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { repairInterruptedRuns } from "@semprec/agent-runtime";
 import { createAgentRun, createUser, hashPassword, insertAgentRunEvent } from "@semprec/data";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
 
@@ -15,7 +15,7 @@ describe("semprec-agents startup repair (issue #642)", () => {
     await resetDatabase(pool);
     await pool.query("TRUNCATE graphile_worker._private_known_crontabs");
     const passwordHash = await hashPassword("s3cret-password");
-    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en", tenantId: getTenantZeroId() });
     runtime = undefined;
   });
 

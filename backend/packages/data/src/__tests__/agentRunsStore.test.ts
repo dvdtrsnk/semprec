@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createAgentRun, finishAgentRun, getAgentRun } from "../agentRuns/agentRunsStore.js";
 import { NotFoundError } from "../errors.js";
 
@@ -11,7 +11,11 @@ describe("finishAgentRun", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
-    await pool.query(`INSERT INTO users (email, password_hash) VALUES ($1, 'unused')`, [`${randomUUID()}@example.com`]);
+    await pool.query(
+      `INSERT INTO users (email, password_hash, tenant_id)
+     VALUES ($1, 'unused', (SELECT $2::uuid WHERE NOT EXISTS (SELECT 1 FROM users WHERE tenant_id = $2::uuid)))`,
+      [`${randomUUID()}@example.com`, getTenantZeroId()],
+    );
   });
 
   afterAll(async () => {

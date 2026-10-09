@@ -4,7 +4,7 @@ import type { Pool } from "pg";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxProvider, type FauxProviderHandle } from "@earendil-works/pi-ai";
 import { AGENT_TASK_NAMES, enqueueJob } from "@semprec/queue";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   CORE_AGENT_RUN_ACTION_ID,
   createAgentRun,
@@ -112,7 +112,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     registry ??= await loadFullModuleRegistry();
     await resetDatabase(pool);
     await seedSystem(pool);
-    await createUser(pool, { email: "owner@example.com", passwordHash: "unused" });
+    await createUser(pool, { email: "owner@example.com", passwordHash: "unused", tenantId: getTenantZeroId() });
     runtime = undefined;
     composition.during = undefined;
 

@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   createAgentRun,
   createUser,
@@ -19,7 +19,7 @@ describe("repairInterruptedRuns", () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
     const passwordHash = await hashPassword("s3cret-password");
-    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en", tenantId: getTenantZeroId() });
   });
 
   afterEach(() => {

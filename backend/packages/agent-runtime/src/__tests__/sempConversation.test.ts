@@ -78,7 +78,7 @@ describe("SempConversation", () => {
     await resetDatabase(pool);
     tenantZero = getTenantZeroId();
     const passwordHash = await hashPassword("s3cret-password");
-    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en", tenantId: getTenantZeroId() });
   });
 
   afterAll(async () => {
