@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
 import { runInTenant } from "@semprec/shared";
@@ -489,14 +489,19 @@ describe("library module (issue #25)", () => {
 describe("library automation_error recipient in a tenant (issue #1018)", () => {
   let runtimePool: Pool;
 
+  // The first describe's `afterAll` ended the shared pool, so this block opens and closes its own.
+  beforeAll(async () => {
+    pool = getTestPool();
+    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+  });
+
   beforeEach(async () => {
-    pool ??= getTestPool();
-    runtimePool ??= await createRuntimeRolePool(pool, "semprec_data");
     await resetDatabase(pool);
   });
 
   afterAll(async () => {
     await runtimePool?.end();
+    await pool?.end();
   });
 
   it("notifies the user of the tenant the fetch fails in, never the earlier-created account", async () => {
