@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { handleGraphChangeNotification } from "@semprec/data";
 import { runAsSystem } from "@semprec/shared";
-import { PayloadTooLargeError, readRawBody, sendJson } from "./adapter/http.js";
+import { NO_STORE, PayloadTooLargeError, readRawBody, sendJson } from "./adapter/http.js";
 import { logger } from "./logger.js";
 
 /** Generous for a real Graph delivery (Graph itself caps a single batch around 20 notifications), but bounds a misbehaving or malicious POST from buffering an unbounded body before this handler ever looks at it — same discipline as `setupHandler.ts`'s `MAX_BODY_BYTES`. */
@@ -48,7 +48,7 @@ export function createGraphWebhookRequestListener(pool: Pool) {
 
     const validationToken = url.searchParams.get("validationToken");
     if (validationToken !== null) {
-      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": NO_STORE });
       res.end(validationToken);
       return;
     }
@@ -88,7 +88,7 @@ export function createGraphWebhookRequestListener(pool: Pool) {
       // retrying) a subscription whose endpoint doesn't answer promptly with a 2xx — a rejected
       // notification is this receiver's own problem to log and drop, not something that should
       // make Graph think delivery itself failed and needs to be redelivered.
-      res.writeHead(202);
+      res.writeHead(202, { "Cache-Control": NO_STORE });
       res.end();
     } catch (err) {
       if (err instanceof PayloadTooLargeError) {
