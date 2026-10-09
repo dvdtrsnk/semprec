@@ -278,6 +278,8 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "getSystemSettingsItemId",
   "getSystemTimezone",
   "getTaskRecurrence",
+  "getTenantUserId",
+  "getTenantUserLocale",
   "getUserByEmail",
   "getUserById",
   "getUserTenantBinding",

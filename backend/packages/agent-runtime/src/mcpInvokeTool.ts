@@ -5,7 +5,7 @@ import {
   createPendingApprovalRequest,
   withTransaction,
   executeMcpInvocation,
-  getEarliestUserId,
+  getTenantUserId,
   writeNotification,
   type McpToolInvocationTarget,
   type McpInvokeResult,
@@ -220,7 +220,7 @@ export function createApprovalGatedMcpInvokeTool(
           // satisfies the column's `NOT NULL` constraint without claiming a hash that doesn't exist.
           resourceSnapshot: { kind: "mcp_invoke", resourceId: mcpToolRegistrationId, sha256: null },
         });
-        const userId = await getEarliestUserId(client);
+        const userId = await getTenantUserId(client);
         if (userId) {
           await writeNotification(client, {
             userId,
