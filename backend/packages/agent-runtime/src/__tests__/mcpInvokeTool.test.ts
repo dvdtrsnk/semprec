@@ -309,7 +309,7 @@ describe("MCP invoke adapter (issue #128)", () => {
           passwordHash: "x",
           tenantId: tenantB,
         });
-        const contractServer = await startStdioContractServer([SEARCH_TOOL]);
+        const contractServer = startStdioContractServer([SEARCH_TOOL]);
         servers.push(contractServer);
 
         const requestId = await runInTenant(tenantB, async () => {
