@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -192,7 +192,12 @@ describe("library module (issue #25)", () => {
     const moviesId = await getDatabaseIdByModule("movies");
     const item = await chokePoint.createItem({ databaseId: moviesId, properties: { name: "Sicario", year: 2015 } });
     const passwordHash = await hashPassword("s3cret-password");
-    const user = await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+    const user = await createUser(pool, {
+      email: "owner@example.test",
+      passwordHash,
+      locale: "en",
+      tenantId: getTenantZeroId(),
+    });
 
     const failingFetcher: LibraryMetadataFetcher = async () => {
       throw new Error("source unavailable");

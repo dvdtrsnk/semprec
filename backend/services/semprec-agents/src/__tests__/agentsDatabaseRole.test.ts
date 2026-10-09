@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   createAgentRun,
   createChokePoint,
@@ -30,9 +30,11 @@ function roleConnectionString(role: string): string {
 }
 
 async function createFixtures(): Promise<{ runId: string; databaseId: string }> {
-  await adminPool.query(`INSERT INTO users (email, password_hash) VALUES ($1, 'unused')`, [
-    `${randomUUID()}@example.com`,
-  ]);
+  await adminPool.query(
+    `INSERT INTO users (email, password_hash, tenant_id)
+     VALUES ($1, 'unused', (SELECT $2::uuid WHERE NOT EXISTS (SELECT 1 FROM users WHERE tenant_id = $2::uuid)))`,
+    [`${randomUUID()}@example.com`, , getTenantZeroId()],
+  );
   const chokePoint = createChokePoint(adminPool);
   const { rows } = await adminPool.query<{ id: string }>(`SELECT id FROM databases WHERE owner_module_id = 'projects'`);
   if (!rows[0]) throw new Error("Projects database was not seeded");

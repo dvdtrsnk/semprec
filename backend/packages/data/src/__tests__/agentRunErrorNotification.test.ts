@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
 import {
   createAgentRun,
@@ -25,7 +25,7 @@ describe("finishAgentRunWithErrorNotification (issue #149)", () => {
 
   async function createTestUser() {
     const passwordHash = await hashPassword("s3cret-password");
-    return createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+    return createUser(pool, { email: "owner@example.test", passwordHash, locale: "en", tenantId: getTenantZeroId() });
   }
 
   it("writes an agent_run_error notification in the same transaction as the status write, and replaying the same run never duplicates it", async () => {

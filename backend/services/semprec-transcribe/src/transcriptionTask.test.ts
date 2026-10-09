@@ -32,7 +32,7 @@ import {
   type BlobStorageWriter,
   type ItemRow,
 } from "@semprec/data";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { wireRealtimeHooks } from "@semprec/realtime";
 import type { AiGatewayClientPort, AiGatewayCompletionInput, AiGatewayCompletionResult } from "@semprec/shared";
 import { CORE_TASK_NAMES, enqueueJob, registerTask, runOnce } from "@semprec/queue";
@@ -1302,8 +1302,9 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
 
     async function createUser(): Promise<string> {
       const { rows } = await pool.query<{ id: string }>(
-        `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
-        [`owner-${randomUUID()}@example.test`],
+        `INSERT INTO users (email, password_hash, tenant_id)
+     VALUES ($1, 'unused', (SELECT $2::uuid WHERE NOT EXISTS (SELECT 1 FROM users WHERE tenant_id = $2::uuid))) RETURNING id`,
+        [`owner-${randomUUID()}@example.test`, getTenantZeroId()],
       );
       if (!rows[0]) throw new Error("expected a user row");
       return rows[0].id;

@@ -2,7 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, enqueueJob } from "@semprec/queue";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { CORE_AGENT_RUN_ACTION_ID, createAgentRun, createUser, seedSystem } from "@semprec/data";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentsActionRegistry, unwiredRunAgent } from "../actionRegistryComposition.js";
@@ -44,7 +44,7 @@ describe("createAgentsActionRegistry (issue #641)", () => {
 
   it("closes a fired core.agentRun heartbeat's run as error naming the unwired runtime", async () => {
     await seedSystem(pool);
-    await createUser(pool, { email: "owner@example.com", passwordHash: "unused" });
+    await createUser(pool, { email: "owner@example.com", passwordHash: "unused", tenantId: getTenantZeroId() });
     const { rows: heartbeats } = await pool.query<{ id: string; project_item_id: string }>(
       `SELECT id, project_item_id FROM project_heartbeats WHERE action_id = $1`,
       [CORE_AGENT_RUN_ACTION_ID],
