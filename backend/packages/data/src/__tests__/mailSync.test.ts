@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import "../domainWriteHooks.js";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
@@ -2323,7 +2323,7 @@ describe("mail sync job error handling (issue #26)", () => {
     const filesId = await databaseIdFor("files");
     const mailboxesId = await databaseIdFor("mailboxes");
     const passwordHash = await hashPassword("s3cret-password");
-    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en", tenantId: getTenantZeroId() });
 
     const mailbox = await withTransaction(pool, (client) =>
       createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),
@@ -2382,7 +2382,12 @@ describe("mail sync job error handling (issue #26)", () => {
     const filesId = await databaseIdFor("files");
     const mailboxesId = await databaseIdFor("mailboxes");
     const passwordHash = await hashPassword("s3cret-password");
-    const user = await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+    const user = await createUser(pool, {
+      email: "owner@example.test",
+      passwordHash,
+      locale: "en",
+      tenantId: getTenantZeroId(),
+    });
 
     const mailbox = await withTransaction(pool, (client) =>
       createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M" } }),

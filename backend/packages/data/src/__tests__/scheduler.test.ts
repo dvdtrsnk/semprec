@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
 import { getTraceContext } from "@semprec/shared";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
@@ -46,7 +46,12 @@ describe("scheduler", () => {
     await resetDatabase(pool);
     await seedSystem(pool);
     const passwordHash = await hashPassword("s3cret-password");
-    const owner = await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+    const owner = await createUser(pool, {
+      email: "owner@example.test",
+      passwordHash,
+      locale: "en",
+      tenantId: getTenantZeroId(),
+    });
     ownerUserId = owner.id;
   });
 

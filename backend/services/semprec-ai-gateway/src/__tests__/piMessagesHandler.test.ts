@@ -32,7 +32,7 @@ import {
   hashPassword,
   seedSystem,
 } from "@semprec/data";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createDispatcher } from "../app.js";
 import type { CompleteHandlerOptions } from "../completeHandler.js";
 import type { AudioHandlerOptions } from "../audioHandler.js";
@@ -226,6 +226,7 @@ async function createRun(task: string): Promise<{ id: string }> {
     email: "owner@example.test",
     passwordHash: await hashPassword("s3cret-password"),
     locale: "en",
+    tenantId: getTenantZeroId(),
   });
   return createAgentRun(pool, { triggeredBy: "user", task });
 }

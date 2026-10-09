@@ -5,7 +5,7 @@ import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxProvider, type FauxProviderHandle } from "@earendil-works/pi-ai";
 import { AGENT_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { currentTenantScope, runInTenant, type TenantScope } from "@semprec/shared";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   CORE_AGENT_RUN_ACTION_ID,
   createAgentRun,
@@ -124,7 +124,7 @@ describe("agents process runs each job inside its tenant under strict enforcemen
     tenantZero = rows[0]!.id;
     await inTenantZero(async () => {
       await seedSystem(pool);
-      await createUser(pool, { email: "owner@example.com", passwordHash: "unused" });
+      await createUser(pool, { email: "owner@example.com", passwordHash: "unused", tenantId: getTenantZeroId() });
     });
     process.env.SEMPREC_TENANT_SCOPE = "strict";
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createTestProjectItem, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createTestProjectItem, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   createUser,
   createAgentRun,
@@ -84,6 +84,7 @@ describe("mcpServers connectionConfig on every write path (issue #1029)", () => 
     const user = await createUser(pool, {
       email: `${randomUUID()}@example.com`,
       passwordHash: await hashPassword(PASSWORD),
+      tenantId: getTenantZeroId(),
     });
     const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
     headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };

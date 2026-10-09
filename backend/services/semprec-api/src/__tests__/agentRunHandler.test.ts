@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createTestProjectItem, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createTestProjectItem, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   createChokePoint,
   createViewTypeRegistry,
@@ -37,7 +37,11 @@ describe("createAgentRunRequestListener", () => {
     pool ??= getTestPool();
     const viewTypeRegistry = createViewTypeRegistry();
     await resetDatabase(pool);
-    await createUser(pool, { email: `${randomUUID()}@example.com`, passwordHash: await hashPassword(PASSWORD) });
+    await createUser(pool, {
+      email: `${randomUUID()}@example.com`,
+      passwordHash: await hashPassword(PASSWORD),
+      tenantId: getTenantZeroId(),
+    });
     await seedSystem(pool, viewTypeRegistry);
 
     server = createServer(createAgentRunRequestListener(pool));
@@ -192,8 +196,8 @@ describe("createAgentRunRequestListener", () => {
       expect(run).toMatchObject({ id: body.runId, projectItemId, triggeredBy: "mcp", status: "running" });
     });
 
-    it("attributes the minted run's actor_user_id to the authenticated session user, not the earliest-created account (issue #220, AC11)", async () => {
-      // `beforeEach` already created an earlier, unrelated account — `getEarliestUserId`'s
+    it("attributes the minted run's actor_user_id to the authenticated session user, not the tenant's user (issue #220, AC11)", async () => {
+      // `beforeEach` already bound a different account as the tenant's user — `getTenantUserId`'s
       // fallback would resolve to that one, not to the session below, if the session's own
       // identity weren't threaded into `mintMcpRunCredential`.
       const sessionUser = await createUser(pool, {
