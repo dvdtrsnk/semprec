@@ -1,8 +1,15 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
-import { getTraceContext } from "@semprec/shared";
-import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTraceContext, runInTenant } from "@semprec/shared";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
@@ -1613,5 +1620,57 @@ describe("scheduler", () => {
       });
       expect([...indexNames]).toEqual(["project_heartbeats_on_item_event_idx"]);
     });
+  });
+});
+
+describe("heartbeat_error recipient in a tenant (issue #1018)", () => {
+  let adminPool: Pool;
+  let runtimePool: Pool;
+
+  beforeEach(async () => {
+    adminPool = getTestPool();
+    runtimePool ??= await createRuntimeRolePool(adminPool, "semprec_data");
+    await resetDatabase(adminPool);
+  });
+
+  afterAll(async () => {
+    await runtimePool?.end();
+  });
+
+  it("notifies the user of the tenant the heartbeat fails in, never the earlier-created account", async () => {
+    const tenantB = await createTestTenant(adminPool);
+    const userA = await createUser(adminPool, {
+      email: "a@example.test",
+      passwordHash: "x",
+      tenantId: getTenantZeroId(),
+    });
+    const userB = await createUser(adminPool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB });
+    const heartbeatId = await runInTenant(tenantB, async () => {
+      const { rows } = await runtimePool.query<{ id: string }>(
+        `INSERT INTO project_heartbeats (project_item_id, name, rule, action_id, enabled, next_fire_at)
+         VALUES ($1, 'Fails in B', $2::jsonb, 'alwaysFails', true, now()) RETURNING id`,
+        [randomUUID(), JSON.stringify({ kind: "dailyTime", at: "09:00" })],
+      );
+      return rows[0]!.id;
+    });
+    const registry = createActionRegistry();
+    registry.set("alwaysFails", async () => {
+      throw new Error("boom");
+    });
+    const task = createHeartbeatFireCoreTask(runtimePool, registry);
+
+    await expect(
+      runInTenant(tenantB, () =>
+        task({ heartbeatId, itemId: "unused" }, { job: { id: "job-b", attempts: 3, max_attempts: 3 } } as Parameters<
+          typeof task
+        >[1]),
+      ),
+    ).rejects.toThrow("boom");
+
+    const { rows } = await adminPool.query(`SELECT user_id, kind, tenant_id FROM notifications WHERE source_id = $1`, [
+      heartbeatId,
+    ]);
+    expect(rows).toEqual([{ user_id: userB.id, kind: "heartbeat_error", tenant_id: tenantB }]);
+    expect(rows[0].user_id).not.toBe(userA.id);
   });
 });
