@@ -1,5 +1,5 @@
 import { ValidationError } from "../errors.js";
-import { assertValidMcpConnectionConfig } from "./mcpConnectionConfig.js";
+import { assertStorableMcpConnectionConfig } from "./mcpConnectionConfig.js";
 
 /**
  * Names a proposal for an `mcpServers` item (issue #123) could plausibly carry a secret
@@ -100,6 +100,6 @@ export function assertValidMcpServerProposalProperties(properties: Record<string
   if ("connectionConfig" in properties) {
     assertNoCredentialShapedEnvKeys(properties.connectionConfig);
     assertNoCredentialShapedUrlParams(properties.connectionConfig);
-    assertValidMcpConnectionConfig(properties.connectionConfig);
+    assertStorableMcpConnectionConfig(properties.connectionConfig);
   }
 }

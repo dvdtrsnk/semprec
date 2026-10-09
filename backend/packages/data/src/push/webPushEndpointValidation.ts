@@ -1,5 +1,5 @@
-import { isIP } from "node:net";
 import { ValidationError } from "../errors.js";
+import { isBaselineOutboundUrl } from "../net/storedOutboundUrl.js";
 
 const ENDPOINT_ERROR_MESSAGE =
   "'endpoint' must be an https URL to a public push service host on port 443, without credentials";
@@ -21,34 +21,8 @@ const ENDPOINT_ERROR_MESSAGE =
  * filtering is the deployment's job.
  */
 export function validateWebPushEndpoint(endpoint: string): string {
-  let url: URL;
-  try {
-    url = new URL(endpoint);
-  } catch {
-    // The only failure `new URL` has is an unparseable input, which is exactly this validation error.
-    throw endpointError();
-  }
-
-  // `URL` already lowercases the host and canonicalises IPv4 shorthands (`2130706433`, `127.1`,
-  // a trailing dot) to dotted-quad; a DNS name's trailing root dot survives, so drop it before the
-  // `localhost` check or `localhost.` would pass.
-  const hostname = url.hostname.endsWith(".") ? url.hostname.slice(0, -1) : url.hostname;
-  const bareHost = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
-
-  if (
-    url.protocol !== "https:" ||
-    url.username !== "" ||
-    url.password !== "" ||
-    url.port !== "" ||
-    hostname === "localhost" ||
-    hostname.endsWith(".localhost") ||
-    isIP(bareHost) !== 0
-  ) {
-    throw endpointError();
+  if (!isBaselineOutboundUrl(endpoint)) {
+    throw new ValidationError(ENDPOINT_ERROR_MESSAGE, { field: "endpoint" });
   }
   return endpoint;
-}
-
-function endpointError(): ValidationError {
-  return new ValidationError(ENDPOINT_ERROR_MESSAGE, { field: "endpoint" });
 }

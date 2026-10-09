@@ -12,7 +12,6 @@ import {
 } from "@semprec/data/testSupport/mcpContractServers";
 import {
   withTransaction,
-  createItemWithClient,
   upsertMcpToolRegistration,
   setProjectMcpGrantForAgentPage,
   seedSystem,
@@ -44,12 +43,13 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 }
 
 async function createGrantedTool(connectionConfig: McpConnectionConfig, tool: ContractServerTool = SEARCH_TOOL) {
-  const server = await withTransaction(pool, (client) =>
-    createItemWithClient(client, {
-      databaseId: mcpServersId,
-      properties: { name: "Contract server", active: true, connectionConfig },
-    }),
+  // A raw insert: the live contract servers are `http://127.0.0.1`, which the choke point's MCP
+  // connectionConfig hook refuses, and this package cannot import `itemsStore`.
+  const { rows } = await pool.query<{ id: string }>(
+    "INSERT INTO items (id, database_id, properties) VALUES ($1, $2, $3::jsonb) RETURNING id",
+    [randomUUID(), mcpServersId, JSON.stringify({ name: "Contract server", active: true, connectionConfig })],
   );
+  const server = { id: rows[0]!.id };
   const registration = await upsertMcpToolRegistration(pool, {
     mcpServerItemId: server.id,
     toolName: tool.name,
