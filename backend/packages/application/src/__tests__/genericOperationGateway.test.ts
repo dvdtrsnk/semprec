@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
 import { runOnce } from "@semprec/queue";
 import {
   ApprovalRequiredError,
@@ -11,6 +17,7 @@ import {
   createAgentRun,
   createChokePoint,
   createCoreTaskList,
+  createUser as createBoundUser,
   createViewTypeRegistry,
   decideAndEnqueueApprovalRequest,
   getApprovalRequest,
@@ -25,6 +32,7 @@ import {
   CAPABILITY_IDS,
   GENERIC_OPERATION_NAMES,
   OPERATION_METADATA,
+  runInTenant,
   type AuthenticatedActor,
   type GenericOperationName,
 } from "@semprec/shared";
@@ -700,5 +708,61 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect(finished!.executionStatus).toBe("conflict");
       expect(finished!.executionResult).toContain("No generic-operation approval replay handler is configured");
     });
+  });
+});
+
+describe("approval_pending recipient in a tenant (issue #1018)", () => {
+  let runtimePool: Pool;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    runtimePool ??= await createRuntimeRolePool(pool, "semprec_data");
+    await resetDatabase(pool);
+  });
+
+  afterAll(async () => {
+    await runtimePool?.end();
+  });
+
+  it("notifies the user of the tenant the request is created in, with a link naming that user", async () => {
+    const tenantB = await createTestTenant(pool);
+    const userA = await createBoundUser(pool, {
+      email: "a@example.test",
+      passwordHash: "x",
+      tenantId: getTenantZeroId(),
+    });
+    const userB = await createBoundUser(pool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB });
+
+    const approvalRequestId = await runInTenant(tenantB, async () => {
+      const chokePointB = createChokePoint(runtimePool);
+      const database = await chokePointB.createDatabase({ name: "Tenant B DB" });
+      const item = await chokePointB.createItem({ databaseId: database.id, properties: {} });
+      const projectItemId = randomUUID();
+      const run = await createAgentRun(runtimePool, { projectItemId, triggeredBy: "user", task: "delete it" });
+      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+      try {
+        await createGenericOperationGateway(runtimePool).invoke("item.delete", actor, ALL_CAPABILITIES, {
+          itemId: item.id,
+        });
+      } catch (err) {
+        if (err instanceof ApprovalRequiredError) return err.details.approvalRequestId;
+        throw err;
+      }
+      throw new Error("expected ApprovalRequiredError");
+    });
+
+    const { rows } = await pool.query(
+      `SELECT user_id, kind, link_href, tenant_id FROM notifications WHERE source_id = $1`,
+      [approvalRequestId],
+    );
+    expect(rows).toEqual([
+      {
+        user_id: userB.id,
+        kind: "approval_pending",
+        link_href: `?page=approvals&user=${userB.id}`,
+        tenant_id: tenantB,
+      },
+    ]);
+    expect(rows[0].user_id).not.toBe(userA.id);
   });
 });
