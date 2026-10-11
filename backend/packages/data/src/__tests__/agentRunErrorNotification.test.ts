@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import {
@@ -122,21 +122,31 @@ describe("finishAgentRunWithErrorNotification in a tenant (issue #1018)", () => 
   let tenantB: string;
   let userA: string;
 
-  beforeEach(async () => {
+  beforeAll(async () => {
     adminPool = getTestPool();
-    runtimePool ??= await createRuntimeRolePool(adminPool, "semprec_data");
-    await resetDatabase(adminPool);
-    tenantB = await createTestTenant(adminPool);
-    userA = (await createUser(adminPool, { email: "a@example.test", passwordHash: "x", tenantId: getTenantZeroId() }))
-      .id;
+    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(adminPool, "semprec_data"));
+  });
+
+  beforeEach(async () => {
+    await runInTenant(getTenantZeroId(), () => resetDatabase(adminPool));
+    tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(adminPool));
+    userA = (
+      await runInTenant(getTenantZeroId(), () =>
+        createUser(adminPool, { email: "a@example.test", passwordHash: "x", tenantId: getTenantZeroId() }),
+      )
+    ).id;
   });
 
   afterAll(async () => {
-    await runtimePool?.end();
+    await Promise.all([runtimePool?.end(), adminPool?.end()]);
   });
 
   it("notifies the tenant's user with the tenant's id, not the earlier-created account", async () => {
-    const userB = (await createUser(adminPool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB })).id;
+    const userB = (
+      await runInTenant(tenantB, () =>
+        createUser(adminPool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB }),
+      )
+    ).id;
     const run = await runInTenant(tenantB, () => createAgentRun(runtimePool, { triggeredBy: "user", task: "t" }));
 
     await expect(

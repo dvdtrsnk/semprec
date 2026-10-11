@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
@@ -1627,24 +1627,31 @@ describe("heartbeat_error recipient in a tenant (issue #1018)", () => {
   let adminPool: Pool;
   let runtimePool: Pool;
 
-  beforeEach(async () => {
+  beforeAll(async () => {
     adminPool = getTestPool();
-    runtimePool ??= await createRuntimeRolePool(adminPool, "semprec_data");
-    await resetDatabase(adminPool);
+    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(adminPool, "semprec_data"));
+  });
+
+  beforeEach(async () => {
+    await runInTenant(getTenantZeroId(), () => resetDatabase(adminPool));
   });
 
   afterAll(async () => {
-    await runtimePool?.end();
+    await Promise.all([runtimePool?.end(), adminPool?.end()]);
   });
 
   it("notifies the user of the tenant the heartbeat fails in, never the earlier-created account", async () => {
-    const tenantB = await createTestTenant(adminPool);
-    const userA = await createUser(adminPool, {
-      email: "a@example.test",
-      passwordHash: "x",
-      tenantId: getTenantZeroId(),
-    });
-    const userB = await createUser(adminPool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB });
+    const tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(adminPool));
+    const userA = await runInTenant(getTenantZeroId(), () =>
+      createUser(adminPool, {
+        email: "a@example.test",
+        passwordHash: "x",
+        tenantId: getTenantZeroId(),
+      }),
+    );
+    const userB = await runInTenant(tenantB, () =>
+      createUser(adminPool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB }),
+    );
     const heartbeatId = await runInTenant(tenantB, async () => {
       const { rows } = await runtimePool.query<{ id: string }>(
         `INSERT INTO project_heartbeats (project_item_id, name, rule, action_id, enabled, next_fire_at)

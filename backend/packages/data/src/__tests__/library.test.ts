@@ -492,11 +492,11 @@ describe("library automation_error recipient in a tenant (issue #1018)", () => {
   // The first describe's `afterAll` ended the shared pool, so this block opens and closes its own.
   beforeAll(async () => {
     pool = getTestPool();
-    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "semprec_data"));
   });
 
   beforeEach(async () => {
-    await resetDatabase(pool);
+    await runInTenant(getTenantZeroId(), () => resetDatabase(pool));
   });
 
   afterAll(async () => {
@@ -505,9 +505,13 @@ describe("library automation_error recipient in a tenant (issue #1018)", () => {
   });
 
   it("notifies the user of the tenant the fetch fails in, never the earlier-created account", async () => {
-    const tenantB = await createTestTenant(pool);
-    const userA = await createUser(pool, { email: "a@example.test", passwordHash: "x", tenantId: getTenantZeroId() });
-    const userB = await createUser(pool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB });
+    const tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(pool));
+    const userA = await runInTenant(getTenantZeroId(), () =>
+      createUser(pool, { email: "a@example.test", passwordHash: "x", tenantId: getTenantZeroId() }),
+    );
+    const userB = await runInTenant(tenantB, () =>
+      createUser(pool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB }),
+    );
     const { itemId, moviesId } = await runInTenant(tenantB, async () => {
       await seedSystem(runtimePool);
       const { rows } = await runtimePool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [

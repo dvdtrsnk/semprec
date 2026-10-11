@@ -1388,12 +1388,15 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     });
 
     it("sends the permanent-failure automation_error notification to the user of the tenant it ran in, never the earlier-created account", async () => {
-      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "semprec_data"));
       try {
-        const tenantB = await createTestTenant(pool);
-        const userA = await createUser();
-        const userB = (await dataCreateUser(pool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB }))
-          .id;
+        const tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(pool));
+        const userA = await runInTenant(getTenantZeroId(), () => createUser());
+        const userB = (
+          await runInTenant(tenantB, () =>
+            dataCreateUser(pool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB }),
+          )
+        ).id;
         const failure = new Error("simulated summary outage");
         summaryClient.failure = failure;
         const task = createTranscriptionTask(runtimePool, blobStorage, gatewayClient, summaryClient);

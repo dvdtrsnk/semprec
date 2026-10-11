@@ -2615,8 +2615,8 @@ describe("mail_sync_error recipient in a tenant (issue #1018)", () => {
 
   beforeEach(async () => {
     pool ??= getTestPool();
-    runtimePool ??= await createRuntimeRolePool(pool, "semprec_data");
-    await resetDatabase(pool);
+    runtimePool ??= await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "semprec_data"));
+    await runInTenant(getTenantZeroId(), () => resetDatabase(pool));
   });
 
   afterAll(async () => {
@@ -2624,9 +2624,13 @@ describe("mail_sync_error recipient in a tenant (issue #1018)", () => {
   });
 
   it("notifies the user of the tenant the sync fails in, never the earlier-created account", async () => {
-    const tenantB = await createTestTenant(pool);
-    const userA = await createUser(pool, { email: "a@example.test", passwordHash: "x", tenantId: getTenantZeroId() });
-    const userB = await createUser(pool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB });
+    const tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(pool));
+    const userA = await runInTenant(getTenantZeroId(), () =>
+      createUser(pool, { email: "a@example.test", passwordHash: "x", tenantId: getTenantZeroId() }),
+    );
+    const userB = await runInTenant(tenantB, () =>
+      createUser(pool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB }),
+    );
 
     const { mailboxItemId, moduleIds } = await runInTenant(tenantB, async () => {
       await seedSystem(runtimePool);
