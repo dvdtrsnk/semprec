@@ -9,7 +9,7 @@ import { createChokePoint, seedSystem } from "@semprec/data";
 export async function createProjectItem(pool: Pool, options: { seed?: boolean } = {}): Promise<string> {
   if (options.seed) await seedSystem(pool);
   const { rows } = await pool.query<{ id: string }>(
-    "SELECT id FROM databases WHERE owner_module_id = 'projects' AND system",
+    "SELECT id FROM databases WHERE owner_module_id = 'projects' AND system AND tenant_id = app_tenant_default()",
   );
   const databaseId = rows[0]?.id;
   if (!databaseId) throw new Error("Projects database was not seeded");

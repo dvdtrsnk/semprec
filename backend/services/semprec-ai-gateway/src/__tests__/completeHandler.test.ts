@@ -1,9 +1,15 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { createChokePoint, getSystemSettingsDatabaseId, getSystemSettingsItemId, seedSystem } from "@semprec/data";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { getTraceContext } from "@semprec/shared";
+import {
+  createChokePoint,
+  createPool,
+  getSystemSettingsDatabaseId,
+  getSystemSettingsItemId,
+  seedSystem,
+} from "@semprec/data";
+import { getTenantZeroId, resetDatabase } from "@semprec/data/testSupport";
+import { getTraceContext, runInTenant } from "@semprec/shared";
 import { createDispatcher } from "../app.js";
 import { logger } from "../logger.js";
 import type { CompleteHandlerOptions } from "../completeHandler.js";
@@ -148,9 +154,11 @@ const DISCONNECT_MESSAGE = "Client disconnected before the provider call finishe
 
 describe("POST /internal/complete", () => {
   beforeEach(async () => {
-    pool ??= getTestPool();
+    const url = process.env.TEST_DATABASE_URL;
+    if (!url) throw new Error("TEST_DATABASE_URL is not set");
+    pool ??= createPool(url);
     await resetDatabase(pool);
-    VALID_BODY.projectItemId = await createProjectItem(pool, { seed: true });
+    VALID_BODY.projectItemId = await runInTenant(getTenantZeroId(), () => createProjectItem(pool, { seed: true }));
   });
 
   afterEach(async () => {

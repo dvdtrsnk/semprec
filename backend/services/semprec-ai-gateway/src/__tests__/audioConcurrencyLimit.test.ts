@@ -1,7 +1,9 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createPool } from "@semprec/data";
+import { getTenantZeroId, resetDatabase } from "@semprec/data/testSupport";
+import { runInTenant } from "@semprec/shared";
 import { createProjectItem } from "./projectItemFixture.js";
 import { createDispatcher } from "../app.js";
 import type { CompleteHandlerOptions } from "../completeHandler.js";
@@ -150,9 +152,13 @@ describe("audio concurrency limit in the gateway dispatcher", () => {
   let completionProvider: FakeCompletionProvider;
 
   beforeEach(async () => {
-    pool ??= getTestPool();
+    const url = process.env.TEST_DATABASE_URL;
+    if (!url) throw new Error("TEST_DATABASE_URL is not set");
+    pool ??= createPool(url);
     await resetDatabase(pool);
-    VALID_COMPLETE_BODY.projectItemId = await createProjectItem(pool, { seed: true });
+    VALID_COMPLETE_BODY.projectItemId = await runInTenant(getTenantZeroId(), () =>
+      createProjectItem(pool, { seed: true }),
+    );
     diarizationProvider = new GatedDiarizationProvider();
     transcriptionProvider = new FakeTranscriptionProvider();
     completionProvider = new FakeCompletionProvider();
