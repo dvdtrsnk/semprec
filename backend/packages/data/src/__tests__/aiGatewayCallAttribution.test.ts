@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
-import { createPool, withTransaction } from "../db/pool.js";
+import { withTransaction } from "../db/pool.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { createUser } from "../auth/usersStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -20,7 +20,7 @@ import {
 } from "../testSupport/testDb.js";
 
 let adminPool: Pool;
-/** `createPool` applies the ambient tenant scope as `app.tenant_id`; the plain test pool does not. */
+/** The runtime-role pool applies the ambient tenant scope as `app.tenant_id` and enforces RLS. */
 let pool: Pool;
 let tenantZero: string;
 
@@ -62,11 +62,9 @@ describe("reserveGatewayCall attribution guard", () => {
   beforeEach(async () => {
     adminPool ??= getTestPool();
     await resetDatabase(adminPool);
-    await seedSystem(adminPool);
     tenantZero = getTenantZeroId();
-    const url = process.env.TEST_DATABASE_URL;
-    if (!url) throw new Error("TEST_DATABASE_URL is not set");
-    pool = createPool(url);
+    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    await runInTenant(tenantZero, () => seedSystem(pool));
   });
 
   afterEach(async () => {
@@ -139,6 +137,11 @@ describe("reserveGatewayCall attribution guard", () => {
       runB: await createRun(),
       itemB: await createProjectItem(),
     }));
+    const { rows: projectRows } = await adminPool.query<{ tenant_id: string; database_tenant_id: string }>(
+      "SELECT i.tenant_id, d.tenant_id AS database_tenant_id FROM items i JOIN databases d ON d.id = i.database_id WHERE i.id = $1",
+      [itemB],
+    );
+    expect(projectRows).toEqual([{ tenant_id: tenantB, database_tenant_id: tenantB }]);
 
     const sidePool = await createRuntimeRolePool(adminPool, "semprec_side");
     try {
