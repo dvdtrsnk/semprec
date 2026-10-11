@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { runInTenant } from "@semprec/shared";
@@ -11,6 +11,7 @@ import {
 } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
+import * as permissionManifest from "../manifest/permissionManifest.js";
 import { generatePermissionManifest } from "../manifest/permissionManifest.js";
 import { createDriftCheckAction, findOrphanedOwnerProcessProperties } from "../manifest/driftCheck.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
@@ -401,11 +402,11 @@ describe("drift check locale in a tenant (issue #1018)", () => {
   // The first describe's `afterAll` ended the shared pool, so this block opens and closes its own.
   beforeAll(async () => {
     pool = getTestPool();
-    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "semprec_data"));
   });
 
   beforeEach(async () => {
-    await resetDatabase(pool);
+    await runInTenant(getTenantZeroId(), () => resetDatabase(pool));
   });
 
   afterAll(async () => {
@@ -413,7 +414,7 @@ describe("drift check locale in a tenant (issue #1018)", () => {
     await pool?.end();
   });
 
-  async function runDriftCheckIn(tenantId: string): Promise<void> {
+  async function runDriftCheckIn(tenantId: string, expectedLocale: "en" | "cs"): Promise<void> {
     const moduleRegistry = await systemDatabasesRegistry();
     await runInTenant(tenantId, async () => {
       const chokePointB = createChokePoint(runtimePool);
@@ -421,22 +422,37 @@ describe("drift check locale in a tenant (issue #1018)", () => {
       const projectItem = await chokePointB.createItem({ databaseId: project.id, properties: {} });
       await chokePointB.createDatabase({ name: null, key: "tasks", system: true, ownerProjectItemId: projectItem.id });
       const action = createDriftCheckAction(runtimePool, { moduleRegistry });
-      await expect(action({}, { heartbeatId: "hb", projectItemId: projectItem.id })).resolves.toBeUndefined();
+      const generateManifest = vi.spyOn(permissionManifest, "generatePermissionManifest");
+      try {
+        await expect(action({}, { heartbeatId: "hb", projectItemId: projectItem.id })).resolves.toBeUndefined();
+        expect(generateManifest).toHaveBeenCalledExactlyOnceWith(expect.anything(), projectItem.id, {
+          moduleRegistry,
+          locale: expectedLocale,
+        });
+      } finally {
+        generateManifest.mockRestore();
+      }
     });
   }
 
   it("completes in a tenant whose user's locale differs from the earlier-created account's", async () => {
-    const tenantB = await createTestTenant(pool);
-    await createUser(pool, { email: "a@example.test", passwordHash: "x", locale: "en", tenantId: getTenantZeroId() });
-    await createUser(pool, { email: "b@example.test", passwordHash: "x", locale: "cs", tenantId: tenantB });
+    const tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(pool));
+    await runInTenant(getTenantZeroId(), () =>
+      createUser(pool, { email: "a@example.test", passwordHash: "x", locale: "en", tenantId: getTenantZeroId() }),
+    );
+    await runInTenant(tenantB, () =>
+      createUser(pool, { email: "b@example.test", passwordHash: "x", locale: "cs", tenantId: tenantB }),
+    );
 
-    await runDriftCheckIn(tenantB);
+    await runDriftCheckIn(tenantB, "cs");
   });
 
   it("falls back to en and completes in a tenant with no user", async () => {
-    const tenantB = await createTestTenant(pool);
-    await createUser(pool, { email: "a@example.test", passwordHash: "x", locale: "cs", tenantId: getTenantZeroId() });
+    const tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(pool));
+    await runInTenant(getTenantZeroId(), () =>
+      createUser(pool, { email: "a@example.test", passwordHash: "x", locale: "cs", tenantId: getTenantZeroId() }),
+    );
 
-    await runDriftCheckIn(tenantB);
+    await runDriftCheckIn(tenantB, "en");
   });
 });

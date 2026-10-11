@@ -16,7 +16,7 @@ let pool: Pool;
 describe("getTenantUserId / getTenantUserLocale (issue #1018)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(adminPool, "semprec_data"));
   });
 
   afterAll(async () => {
@@ -25,34 +25,40 @@ describe("getTenantUserId / getTenantUserLocale (issue #1018)", () => {
   });
 
   beforeEach(async () => {
-    await resetDatabase(adminPool);
+    await runInTenant(getTenantZeroId(), () => resetDatabase(adminPool));
   });
 
   it("returns the sole tenant's user with no scope while only tenant zero exists", async () => {
-    const user = await createUser(adminPool, {
-      email: "zero@example.com",
-      passwordHash: "x",
-      locale: "en",
-      tenantId: getTenantZeroId(),
-    });
+    const user = await runInTenant(getTenantZeroId(), () =>
+      createUser(adminPool, {
+        email: "zero@example.com",
+        passwordHash: "x",
+        locale: "en",
+        tenantId: getTenantZeroId(),
+      }),
+    );
     expect(await getTenantUserId(pool)).toBe(user.id);
     expect(await getTenantUserLocale(pool)).toBe("en");
   });
 
   it("returns each tenant's own user and locale inside its scope, and null in a system scope", async () => {
-    const tenantB = await createTestTenant(adminPool);
-    const userA = await createUser(adminPool, {
-      email: "a@example.com",
-      passwordHash: "x",
-      locale: "en",
-      tenantId: getTenantZeroId(),
-    });
-    const userB = await createUser(adminPool, {
-      email: "b@example.com",
-      passwordHash: "x",
-      locale: "cs",
-      tenantId: tenantB,
-    });
+    const tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(adminPool));
+    const userA = await runInTenant(getTenantZeroId(), () =>
+      createUser(adminPool, {
+        email: "a@example.com",
+        passwordHash: "x",
+        locale: "en",
+        tenantId: getTenantZeroId(),
+      }),
+    );
+    const userB = await runInTenant(tenantB, () =>
+      createUser(adminPool, {
+        email: "b@example.com",
+        passwordHash: "x",
+        locale: "cs",
+        tenantId: tenantB,
+      }),
+    );
 
     expect(await runInTenant(getTenantZeroId(), () => getTenantUserId(pool))).toBe(userA.id);
     expect(await runInTenant(getTenantZeroId(), () => getTenantUserLocale(pool))).toBe("en");
@@ -63,15 +69,19 @@ describe("getTenantUserId / getTenantUserLocale (issue #1018)", () => {
   });
 
   it("returns null for a tenant with no bound user, even when another tenant has one", async () => {
-    const tenantB = await createTestTenant(adminPool);
-    await createUser(adminPool, { email: "a@example.com", passwordHash: "x", tenantId: getTenantZeroId() });
+    const tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(adminPool));
+    await runInTenant(getTenantZeroId(), () =>
+      createUser(adminPool, { email: "a@example.com", passwordHash: "x", tenantId: getTenantZeroId() }),
+    );
 
     expect(await runInTenant(tenantB, () => getTenantUserId(pool))).toBeNull();
     expect(await runInTenant(tenantB, () => getTenantUserLocale(pool))).toBeNull();
   });
 
   it("returns null for an account whose tenant binding is NULL", async () => {
-    await createUser(adminPool, { email: "unbound@example.com", passwordHash: "x" });
+    await runInTenant(getTenantZeroId(), () =>
+      createUser(adminPool, { email: "unbound@example.com", passwordHash: "x" }),
+    );
     expect(await getTenantUserId(pool)).toBeNull();
     expect(await getTenantUserLocale(pool)).toBeNull();
   });

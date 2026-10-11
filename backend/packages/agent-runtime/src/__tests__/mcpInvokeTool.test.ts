@@ -301,14 +301,16 @@ describe("MCP invoke adapter (issue #128)", () => {
     });
 
     it("notifies the user of the tenant the request is created in, with a link naming that user (issue #1018)", async () => {
-      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "semprec_data"));
       try {
-        const tenantB = await createTestTenant(pool);
-        const userB = await createUser(pool, {
-          email: `${randomUUID()}@example.test`,
-          passwordHash: "x",
-          tenantId: tenantB,
-        });
+        const tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(pool));
+        const userB = await runInTenant(tenantB, () =>
+          createUser(pool, {
+            email: `${randomUUID()}@example.test`,
+            passwordHash: "x",
+            tenantId: tenantB,
+          }),
+        );
         const contractServer = startStdioContractServer([SEARCH_TOOL]);
         servers.push(contractServer);
 

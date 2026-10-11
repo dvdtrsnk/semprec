@@ -717,11 +717,11 @@ describe("approval_pending recipient in a tenant (issue #1018)", () => {
   // The first describe's `afterAll` ended the shared pool, so this block opens and closes its own.
   beforeAll(async () => {
     pool = getTestPool();
-    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "semprec_data"));
   });
 
   beforeEach(async () => {
-    await resetDatabase(pool);
+    await runInTenant(getTenantZeroId(), () => resetDatabase(pool));
   });
 
   afterAll(async () => {
@@ -730,13 +730,17 @@ describe("approval_pending recipient in a tenant (issue #1018)", () => {
   });
 
   it("notifies the user of the tenant the request is created in, with a link naming that user", async () => {
-    const tenantB = await createTestTenant(pool);
-    const userA = await createBoundUser(pool, {
-      email: "a@example.test",
-      passwordHash: "x",
-      tenantId: getTenantZeroId(),
-    });
-    const userB = await createBoundUser(pool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB });
+    const tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(pool));
+    const userA = await runInTenant(getTenantZeroId(), () =>
+      createBoundUser(pool, {
+        email: "a@example.test",
+        passwordHash: "x",
+        tenantId: getTenantZeroId(),
+      }),
+    );
+    const userB = await runInTenant(tenantB, () =>
+      createBoundUser(pool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB }),
+    );
 
     const approvalRequestId = await runInTenant(tenantB, async () => {
       const chokePointB = createChokePoint(runtimePool);
