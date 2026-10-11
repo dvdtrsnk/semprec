@@ -2,8 +2,9 @@ import { createServer, request, Agent, type Server } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { startProcessHeartbeat, type ProcessHeartbeatHandle } from "@semprec/data";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createPool, startProcessHeartbeat, type ProcessHeartbeatHandle } from "@semprec/data";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { runInTenant } from "@semprec/shared";
 import { createProjectItem } from "./projectItemFixture.js";
 import type { Logger } from "@semprec/shared";
 import { createDispatcher } from "../app.js";
@@ -403,9 +404,11 @@ describe("createGracefulShutdown against the ai-gateway dispatcher with a real p
   let server: Server;
 
   beforeEach(async () => {
-    pool = getTestPool();
+    const url = process.env.TEST_DATABASE_URL;
+    if (!url) throw new Error("TEST_DATABASE_URL is not set");
+    pool = createPool(url);
     await resetDatabase(pool);
-    VALID_BODY.projectItemId = await createProjectItem(pool, { seed: true });
+    VALID_BODY.projectItemId = await runInTenant(getTenantZeroId(), () => createProjectItem(pool, { seed: true }));
   });
 
   afterEach(async () => {

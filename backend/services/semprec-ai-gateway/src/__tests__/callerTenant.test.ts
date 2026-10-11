@@ -10,7 +10,7 @@ import {
   type FauxProviderHandle,
   type Models,
 } from "@earendil-works/pi-ai";
-import { createAgentRun, createPool, createUser, seedSystem } from "@semprec/data";
+import { createAgentRun, createUser, seedSystem } from "@semprec/data";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -65,9 +65,8 @@ let tenantZero: string;
 let projectItemId: string;
 const extraPools: Pool[] = [];
 /**
- * A `createPool` pool on the same database: it applies the ambient tenant scope as `app.tenant_id`,
- * which the plain `getTestPool()` pool does not. Everything the gateway or a seed writes under a
- * tenant scope goes through one of these.
+ * A runtime-role pool on the same database applies the ambient tenant scope as `app.tenant_id`
+ * and enforces RLS. Everything the gateway or a seed writes under a tenant scope uses this pool.
  */
 let scopedPool: Pool;
 
@@ -213,13 +212,10 @@ describe("caller tenant on the gateway routes", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
-    await seedSystem(pool);
-    const url = process.env.TEST_DATABASE_URL;
-    if (!url) throw new Error("TEST_DATABASE_URL is not set");
-    scopedPool = createPool(url);
+    scopedPool = await createRuntimeRolePool(pool, "semprec_data");
     extraPools.push(scopedPool);
     tenantZero = getTenantZeroId();
-    projectItemId = await runInTenant(tenantZero, () => createProjectItem(scopedPool));
+    projectItemId = await runInTenant(tenantZero, () => createProjectItem(scopedPool, { seed: true }));
     providerCalls = 0;
     failProviders = false;
     faux = fauxProvider({
