@@ -30,7 +30,9 @@ review:
   # dvdtrsnk/code-review-bot#31 binds model calls and review cache identity to
   # the admitted execution snapshot and preserves three first-review angles.
   # Keep the Actions fallback pin identical.
-  bot: { repo: dvdtrsnk/code-review-bot, ref: 109ee5332d958227f2e8c5758f2f15349fe92709 }
+  # dvdtrsnk/code-review-bot#34 requires platform results in the final assistant
+  # response and preserves invalid-result failures without cost-table crashes.
+  bot: { repo: dvdtrsnk/code-review-bot, ref: 06b0e1b23ee886191bd8ade8ac61118cce3cbb86 }
   check-name: code-review
   env: { REVIEW_BLOCK_SEVERITY: medium, PROMOTION_SOURCE: develop, PROMOTION_TARGET: main }
 merge:
