@@ -1,7 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createAgentRun, insertAgentRunEvent } from "@semprec/data";
 import { persistCompaction, reconstructConversationHistory } from "../conversationReconstruction.js";
 import type { CompactionAdapter } from "../compaction.js";
@@ -12,12 +11,7 @@ let pool: Pool;
 const PROJECT_ITEM_ID = "99999999-9999-9999-9999-999999999999";
 
 async function createUser(): Promise<string> {
-  const { rows } = await pool.query<{ id: string }>(
-    `INSERT INTO users (email, password_hash, tenant_id)
-     VALUES ($1, 'unused', (SELECT $2::uuid WHERE NOT EXISTS (SELECT 1 FROM users WHERE tenant_id = $2::uuid))) RETURNING id`,
-    [`${randomUUID()}@example.com`, getTenantZeroId()],
-  );
-  return rows[0]!.id;
+  return (await createTenantZeroUser(pool)).id;
 }
 
 /** Never triggers compaction — `shouldCompact` always false. */

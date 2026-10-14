@@ -153,11 +153,12 @@ describe("finishAgentRunWithErrorNotification in a tenant (issue #1018)", () => 
       runInTenant(tenantB, () => finishAgentRunWithErrorNotification(runtimePool, run.id, "boom")),
     ).resolves.toBe(true);
 
-    const { rows } = await adminPool.query(`SELECT user_id, kind, tenant_id FROM notifications WHERE source_id = $1`, [
-      run.id,
-    ]);
+    const { rows } = await adminPool.query<{ user_id: string; kind: string; tenant_id: string }>(
+      `SELECT user_id, kind, tenant_id FROM notifications WHERE source_id = $1`,
+      [run.id],
+    );
     expect(rows).toEqual([{ user_id: userB, kind: "agent_run_error", tenant_id: tenantB }]);
-    expect(rows[0].user_id).not.toBe(userA);
+    expect(rows[0]?.user_id).not.toBe(userA);
   });
 
   it("closes the run and writes nothing when the tenant has no user", async () => {
@@ -170,7 +171,9 @@ describe("finishAgentRunWithErrorNotification in a tenant (issue #1018)", () => 
     ).resolves.toBe(true);
 
     expect(await getAgentRun(adminPool, run.id)).toMatchObject({ status: "error", result: "boom" });
-    const { rows } = await adminPool.query(`SELECT id FROM notifications WHERE source_id = $1`, [run.id]);
+    const { rows } = await adminPool.query<{ id: string }>(`SELECT id FROM notifications WHERE source_id = $1`, [
+      run.id,
+    ]);
     expect(rows).toHaveLength(0);
   });
 });

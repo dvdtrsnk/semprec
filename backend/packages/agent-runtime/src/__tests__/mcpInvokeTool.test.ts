@@ -356,10 +356,12 @@ describe("MCP invoke adapter (issue #128)", () => {
           return result.result.match(/Approval request ([0-9a-f-]{36})/i)![1]!;
         });
 
-        const { rows } = await pool.query(
-          `SELECT user_id, kind, link_href, tenant_id FROM notifications WHERE source_id = $1`,
-          [requestId],
-        );
+        const { rows } = await pool.query<{
+          user_id: string;
+          kind: string;
+          link_href: string | null;
+          tenant_id: string;
+        }>(`SELECT user_id, kind, link_href, tenant_id FROM notifications WHERE source_id = $1`, [requestId]);
         expect(rows).toEqual([
           {
             user_id: userB.id,
@@ -368,7 +370,7 @@ describe("MCP invoke adapter (issue #128)", () => {
             tenant_id: tenantB,
           },
         ]);
-        expect(rows[0].user_id).not.toBe(earliestUser.id);
+        expect(rows[0]?.user_id).not.toBe(earliestUser.id);
       } finally {
         await runtimePool.end();
       }

@@ -539,10 +539,11 @@ describe("library automation_error recipient in a tenant (issue #1018)", () => {
       ),
     ).rejects.toThrow("source unavailable");
 
-    const { rows } = await pool.query(`SELECT user_id, kind, tenant_id FROM notifications WHERE source_id = $1`, [
-      itemId,
-    ]);
+    const { rows } = await pool.query<{ user_id: string; kind: string; tenant_id: string }>(
+      `SELECT user_id, kind, tenant_id FROM notifications WHERE source_id = $1`,
+      [itemId],
+    );
     expect(rows).toEqual([{ user_id: userB.id, kind: "automation_error", tenant_id: tenantB }]);
-    expect(rows[0].user_id).not.toBe(userA.id);
+    expect(rows[0]?.user_id).not.toBe(userA.id);
   });
 });

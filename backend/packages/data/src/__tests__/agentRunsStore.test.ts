@@ -4,6 +4,7 @@ import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import {
   createRuntimeRolePool,
+  createTenantZeroUser,
   createTestTenant,
   getTenantZeroId,
   getTestPool,
@@ -19,11 +20,7 @@ describe("finishAgentRun", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
-    await pool.query(
-      `INSERT INTO users (email, password_hash, tenant_id)
-     VALUES ($1, 'unused', (SELECT $2::uuid WHERE NOT EXISTS (SELECT 1 FROM users WHERE tenant_id = $2::uuid)))`,
-      [`${randomUUID()}@example.com`, getTenantZeroId()],
-    );
+    await createTenantZeroUser(pool);
   });
 
   afterAll(async () => {

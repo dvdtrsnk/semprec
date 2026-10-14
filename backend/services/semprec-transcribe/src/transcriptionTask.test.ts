@@ -35,6 +35,7 @@ import {
 } from "@semprec/data";
 import {
   createRuntimeRolePool,
+  createTenantZeroUser,
   createTestTenant,
   getTenantZeroId,
   getTestPool,
@@ -1309,13 +1310,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     const FINAL_ATTEMPT = { job: { attempts: 3, max_attempts: 3 } };
 
     async function createUser(): Promise<string> {
-      const { rows } = await pool.query<{ id: string }>(
-        `INSERT INTO users (email, password_hash, tenant_id)
-     VALUES ($1, 'unused', (SELECT $2::uuid WHERE NOT EXISTS (SELECT 1 FROM users WHERE tenant_id = $2::uuid))) RETURNING id`,
-        [`owner-${randomUUID()}@example.test`, getTenantZeroId()],
-      );
-      if (!rows[0]) throw new Error("expected a user row");
-      return rows[0].id;
+      return (await createTenantZeroUser(pool, `owner-${randomUUID()}@example.test`)).id;
     }
 
     async function readAutomation(transcriptId: string) {
@@ -1425,14 +1420,14 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
           ).rejects.toBe(failure);
         }
 
-        const { rows } = await pool.query(
+        const { rows } = await pool.query<{ user_id: string; kind: string; tenant_id: string }>(
           `SELECT n.user_id, n.kind, n.tenant_id FROM notifications n
            JOIN items f ON f.id = $1 JOIN items t ON t.id = (f.computed->>'create')::uuid
            WHERE n.source_id = t.id::text`,
           [fileId],
         );
         expect(rows).toEqual([{ user_id: userB, kind: "automation_error", tenant_id: tenantB }]);
-        expect(rows[0].user_id).not.toBe(userA);
+        expect(rows[0]?.user_id).not.toBe(userA);
       } finally {
         await runtimePool.end();
       }
