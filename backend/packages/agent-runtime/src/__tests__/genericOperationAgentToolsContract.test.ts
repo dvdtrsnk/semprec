@@ -1,7 +1,6 @@
-import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   createAgentRun,
   createChokePoint,
@@ -25,12 +24,7 @@ const DESTRUCTIVE_OPERATIONS: readonly GenericOperationName[] = GENERIC_OPERATIO
 );
 
 async function createUser(): Promise<string> {
-  const { rows } = await pool.query<{ id: string }>(
-    `INSERT INTO users (email, password_hash, tenant_id)
-     VALUES ($1, 'unused', (SELECT $2::uuid WHERE NOT EXISTS (SELECT 1 FROM users WHERE tenant_id = $2::uuid))) RETURNING id`,
-    [`${randomUUID()}@example.com`, getTenantZeroId()],
-  );
-  return rows[0]!.id;
+  return (await createTenantZeroUser(pool)).id;
 }
 
 async function projectsDatabaseId(): Promise<string> {

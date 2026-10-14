@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { enqueueJob } from "@semprec/queue";
-import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -17,12 +17,7 @@ let pool: Pool;
 let chokePoint: ChokePoint;
 
 async function createUser(): Promise<string> {
-  const { rows } = await pool.query<{ id: string }>(
-    `INSERT INTO users (email, password_hash, tenant_id)
-     VALUES ($1, 'unused', (SELECT $2::uuid WHERE NOT EXISTS (SELECT 1 FROM users WHERE tenant_id = $2::uuid))) RETURNING id`,
-    [`${randomUUID()}@example.com`, getTenantZeroId()],
-  );
-  return rows[0]!.id;
+  return (await createTenantZeroUser(pool)).id;
 }
 
 /** Fresh beats for every fixed process so this report's process list is deterministic per test. */

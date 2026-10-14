@@ -1,7 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createAgentRun } from "@semprec/data";
 import { BUSY_ERROR_MESSAGE, DelegationRegistry, type ReconstructDelegatedHistory } from "../delegationRegistry.js";
 import { createDelegateTool } from "../delegateTool.js";
@@ -10,12 +9,7 @@ import type { AgentMessage, AgentSession, ConversationEntry, CreateAgentSession 
 let pool: Pool;
 
 async function createUser(): Promise<string> {
-  const { rows } = await pool.query<{ id: string }>(
-    `INSERT INTO users (email, password_hash, tenant_id)
-     VALUES ($1, 'unused', (SELECT $2::uuid WHERE NOT EXISTS (SELECT 1 FROM users WHERE tenant_id = $2::uuid))) RETURNING id`,
-    [`${randomUUID()}@example.com`, getTenantZeroId()],
-  );
-  return rows[0]!.id;
+  return (await createTenantZeroUser(pool)).id;
 }
 
 function fakeSession(messages: AgentMessage[]): CreateAgentSession {

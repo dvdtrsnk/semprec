@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
@@ -16,12 +16,7 @@ import {
 let pool: Pool;
 
 async function createUser(): Promise<string> {
-  const { rows } = await pool.query<{ id: string }>(
-    `INSERT INTO users (email, password_hash, tenant_id)
-     VALUES ($1, 'unused', (SELECT $2::uuid WHERE NOT EXISTS (SELECT 1 FROM users WHERE tenant_id = $2::uuid))) RETURNING id`,
-    [`${randomUUID()}@example.com`, getTenantZeroId()],
-  );
-  return rows[0]!.id;
+  return (await createTenantZeroUser(pool)).id;
 }
 
 async function createPendingRequest(): Promise<string> {

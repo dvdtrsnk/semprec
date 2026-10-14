@@ -5,7 +5,13 @@ import { getTenantZeroId } from "./tenantFixtures.js";
 // credential plus its sync-state row) without adding either writer to the production entry point.
 export { storeCredential } from "../credentials/externalCredentialsStore.js";
 export { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
-export { createRuntimeRolePool, createTestTenant, getTenantZeroId, withTenantTransaction } from "./tenantFixtures.js";
+export {
+  createRuntimeRolePool,
+  createTenantZeroUser,
+  createTestTenant,
+  getTenantZeroId,
+  withTenantTransaction,
+} from "./tenantFixtures.js";
 export { createTestProjectItem } from "./projectFixtures.js";
 
 export function getTestPool(): Pool {

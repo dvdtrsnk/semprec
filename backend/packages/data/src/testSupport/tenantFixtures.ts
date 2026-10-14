@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
+import { createUser } from "../auth/usersStore.js";
+import type { UserRow } from "../auth/types.js";
 import { createPool, withTransaction } from "../db/pool.js";
 
 /**
@@ -68,5 +70,24 @@ export async function withTenantTransaction<T>(
   return withTransaction(pool, async (client) => {
     await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
     return fn(client);
+  });
+}
+
+/**
+ * Creates a test account through `createUser` with `tenantId: getTenantZeroId()`, which makes it
+ * tenant zero's user — the recipient of tenant zero's events and the actor of its root runs.
+ * `users.tenant_id` is unique, so once tenant zero has its user every later account is created
+ * unbound.
+ */
+export async function createTenantZeroUser(pool: Pool, email = `${randomUUID()}@example.com`): Promise<UserRow> {
+  const { rows } = await pool.query<{ bound: boolean }>(
+    "SELECT EXISTS (SELECT 1 FROM users WHERE tenant_id = $1) AS bound",
+    [getTenantZeroId()],
+  );
+  const bound = rows[0]?.bound ?? false;
+  return createUser(pool, {
+    email,
+    passwordHash: "unused",
+    ...(bound ? {} : { tenantId: getTenantZeroId() }),
   });
 }

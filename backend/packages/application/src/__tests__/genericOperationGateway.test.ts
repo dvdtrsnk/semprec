@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import {
   createRuntimeRolePool,
+  createTenantZeroUser,
   createTestTenant,
   getTenantZeroId,
   getTestPool,
@@ -45,12 +46,7 @@ const ALL_CAPABILITIES = new Set(CAPABILITY_IDS);
 const NO_CAPABILITIES = new Set<(typeof CAPABILITY_IDS)[number]>();
 
 async function createUser(): Promise<string> {
-  const { rows } = await pool.query<{ id: string }>(
-    `INSERT INTO users (email, password_hash, tenant_id)
-     VALUES ($1, 'unused', (SELECT $2::uuid WHERE NOT EXISTS (SELECT 1 FROM users WHERE tenant_id = $2::uuid))) RETURNING id`,
-    [`${randomUUID()}@example.com`, getTenantZeroId()],
-  );
-  return rows[0]!.id;
+  return (await createTenantZeroUser(pool)).id;
 }
 
 /** A real Projects item id (not just a random UUID) — required by `assertAuthenticatedAgentIdentity`, which `viewDeleteWithClient` enforces but the other four destructive `*WithClient` mutations do not. */
@@ -760,7 +756,7 @@ describe("approval_pending recipient in a tenant (issue #1018)", () => {
       throw new Error("expected ApprovalRequiredError");
     });
 
-    const { rows } = await pool.query(
+    const { rows } = await pool.query<{ user_id: string; kind: string; link_href: string | null; tenant_id: string }>(
       `SELECT user_id, kind, link_href, tenant_id FROM notifications WHERE source_id = $1`,
       [approvalRequestId],
     );
@@ -772,6 +768,6 @@ describe("approval_pending recipient in a tenant (issue #1018)", () => {
         tenant_id: tenantB,
       },
     ]);
-    expect(rows[0].user_id).not.toBe(userA.id);
+    expect(rows[0]?.user_id).not.toBe(userA.id);
   });
 });
