@@ -199,7 +199,12 @@ async function settledRows(): Promise<CallRow[]> {
 
 async function createRunIn(tenantId: string): Promise<string> {
   return runInTenant(tenantId, async () => {
-    await createUser(scopedPool, { email: `${randomUUID()}@example.test`, passwordHash: "hash", locale: "en", tenantId });
+    await createUser(scopedPool, {
+      email: `${randomUUID()}@example.test`,
+      passwordHash: "hash",
+      locale: "en",
+      tenantId,
+    });
     return (await createAgentRun(scopedPool, { triggeredBy: "user", task: "caller tenant" })).id;
   });
 }
