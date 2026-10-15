@@ -3,7 +3,13 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
-import { ensureMailAccountSyncState, getTestPool, resetDatabase, storeCredential } from "@semprec/data/testSupport";
+import {
+  createTenantZeroUser,
+  ensureMailAccountSyncState,
+  getTestPool,
+  resetDatabase,
+  storeCredential,
+} from "@semprec/data/testSupport";
 import {
   createChokePoint,
   createItemWithClient,
@@ -49,8 +55,8 @@ describe("createApiQueueRuntime mail module ids (issue #648)", () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
     await seedSystem(pool);
-    // The `mail_sync_error` notification the failed sync writes targets the earliest account.
-    await pool.query(`INSERT INTO users (email, password_hash) VALUES ($1, 'unused')`, [`${randomUUID()}@example.com`]);
+    // The `mail_sync_error` notification the failed sync writes targets the tenant's user, so bind one.
+    await createTenantZeroUser(pool);
     runtime = undefined;
     // `createApiActionRegistry` composes `core.agentGuidanceDrift` eagerly, which requires it.
     previousInternalToken = process.env.AI_GATEWAY_INTERNAL_TOKEN;
