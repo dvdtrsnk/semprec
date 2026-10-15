@@ -4,6 +4,9 @@ import {
   finishAgentRun,
   finishAgentRunWithErrorNotification,
   getAgentRun,
+  getDatabaseByModuleId,
+  getItemById,
+  PROJECTS_MODULE_ID,
   withTransaction,
 } from "@semprec/data";
 import type { CompactionAdapter } from "./compaction.js";
@@ -19,6 +22,13 @@ import { logger } from "./logger.js";
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const BUSY_ERROR_MESSAGE = "this project is already handling another request from this run, retry next turn";
+
+/**
+ * One answer for every refusal of a new delegated session: a random id, another tenant's
+ * project, a trashed project, a non-Projects item, or a supervisor run this tenant cannot see.
+ * Identical wording keeps the model from learning which ids exist elsewhere.
+ */
+export const UNKNOWN_DELEGATION_TARGET_MESSAGE = "targetProjectItemId does not name a project this run can delegate to";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -170,6 +180,24 @@ export class DelegationRegistry {
 
     this.pendingKeys.add(entryKey);
     try {
+      // Authorization for a new session: both the supervisor run and the target must be visible
+      // to this tenant (RLS applies inside `withTransaction`), and the target must be a live item
+      // of the Projects database. The check is in the same transaction as the lookups it relies on.
+      const targetIsDelegable = await withTransaction(this.pool, async (client) => {
+        const supervisor = await getAgentRun(client, input.supervisorRunId);
+        // A missing Projects database is a seeding/infrastructure failure, not an unknown target —
+        // throw so it is not reported to the model as a refusal.
+        const projects = await getDatabaseByModuleId(client, PROJECTS_MODULE_ID);
+        if (!projects) {
+          throw new Error(`Projects module database not found for module ${PROJECTS_MODULE_ID}`);
+        }
+        const target = await getItemById(client, projects.id, input.targetProjectItemId);
+        return supervisor !== null && target !== null && target.deletedAt === null;
+      });
+      if (!targetIsDelegable) {
+        return { ok: false, error: UNKNOWN_DELEGATION_TARGET_MESSAGE };
+      }
+
       const reconstruct = input.reconstructHistory ?? stubReconstructDelegatedHistory;
       const priorHistory = await reconstruct(this.pool, input.targetProjectItemId, input.supervisorRunId);
 

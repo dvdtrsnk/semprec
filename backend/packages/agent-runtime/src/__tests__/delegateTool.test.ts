@@ -1,8 +1,13 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createTenantZeroUser, createTestProjectItem, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createAgentRun } from "@semprec/data";
-import { BUSY_ERROR_MESSAGE, DelegationRegistry, type ReconstructDelegatedHistory } from "../delegationRegistry.js";
+import {
+  BUSY_ERROR_MESSAGE,
+  DelegationRegistry,
+  type ReconstructDelegatedHistory,
+  UNKNOWN_DELEGATION_TARGET_MESSAGE,
+} from "../delegationRegistry.js";
 import { createDelegateTool } from "../delegateTool.js";
 import type { AgentMessage, AgentSession, ConversationEntry, CreateAgentSession } from "../types.js";
 
@@ -38,20 +43,39 @@ describe("createDelegateTool", () => {
       registry,
       fakeSession([{ kind: "turn_start" }, { kind: "message", text: "handled" }, { kind: "turn_end" }]),
     );
+    const targetProjectItemId = await createTestProjectItem(pool);
+
+    const result = await delegate(supervisorRun.id, { targetProjectItemId, task: "handle it" });
+
+    expect(result).toEqual({ error: false, result: "handled" });
+    registry.clear();
+  });
+
+  it("maps an unknown delegation target to an error tool_result without creating a session", async () => {
+    const registry = new DelegationRegistry(pool);
+    const supervisorRun = await createAgentRun(pool, { triggeredBy: "user", task: "supervise" });
+    // Creates the tenant's Projects database, so the refusal below is for an unknown id rather than a missing database.
+    await createTestProjectItem(pool);
+    let sessionCreated = false;
+    const delegate = createDelegateTool(registry, () => {
+      sessionCreated = true;
+      return { messages: async function* () {} };
+    });
 
     const result = await delegate(supervisorRun.id, {
       targetProjectItemId: "88888888-8888-8888-8888-888888888888",
       task: "handle it",
     });
 
-    expect(result).toEqual({ error: false, result: "handled" });
+    expect(result).toEqual({ error: true, result: UNKNOWN_DELEGATION_TARGET_MESSAGE });
+    expect(sessionCreated).toBe(false);
     registry.clear();
   });
 
   it("surfaces the busy rejection as an error tool_result instead of throwing", async () => {
     const registry = new DelegationRegistry(pool);
     const supervisorRun = await createAgentRun(pool, { triggeredBy: "user", task: "supervise" });
-    const targetProjectItemId = "99999999-9999-9999-9999-999999999999";
+    const targetProjectItemId = await createTestProjectItem(pool);
 
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -81,7 +105,7 @@ describe("createDelegateTool", () => {
   it("threads an optional reconstructHistory through to registry.delegate", async () => {
     const registry = new DelegationRegistry(pool);
     const supervisorRun = await createAgentRun(pool, { triggeredBy: "user", task: "supervise" });
-    const targetProjectItemId = "77777777-7777-7777-7777-777777777777";
+    const targetProjectItemId = await createTestProjectItem(pool);
     const priorEntry: ConversationEntry = {
       id: "1",
       parentId: null,
