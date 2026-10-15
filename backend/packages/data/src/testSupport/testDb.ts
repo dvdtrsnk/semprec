@@ -12,7 +12,7 @@ export {
   getTenantZeroId,
   withTenantTransaction,
 } from "./tenantFixtures.js";
-export { createTestProjectItem } from "./projectFixtures.js";
+export { createTestModuleItem, createTestProjectItem } from "./projectFixtures.js";
 
 export function getTestPool(): Pool {
   const connectionString = process.env.TEST_DATABASE_URL;

@@ -1,8 +1,24 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { createAgentRun, finishAgentRun } from "@semprec/data";
-import { BUSY_ERROR_MESSAGE, DelegationRegistry, type ReconstructDelegatedHistory } from "../delegationRegistry.js";
+import {
+  createRuntimeRolePool,
+  createTenantZeroUser,
+  createTestModuleItem,
+  createTestProjectItem,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
+import { createAgentRun, finishAgentRun, TASKS_MODULE_ID } from "@semprec/data";
+import { runInTenant } from "@semprec/shared";
+import {
+  BUSY_ERROR_MESSAGE,
+  DelegationRegistry,
+  type ReconstructDelegatedHistory,
+  UNKNOWN_DELEGATION_TARGET_MESSAGE,
+} from "../delegationRegistry.js";
 import type { AgentMessage, AgentSession, ConversationEntry, CreateAgentSession } from "../types.js";
 
 /** `vi.waitFor` guards against `expire()`'s pending DB writes finishing asynchronously relative to when we check. */
@@ -105,7 +121,7 @@ describe("DelegationRegistry", () => {
   it("creates a session-unit agent_runs row on first delegation and returns the final assistant message", async () => {
     const registry = new DelegationRegistry(pool);
     const supervisorRunId = await newSupervisorRunId();
-    const targetProjectItemId = "11111111-1111-1111-1111-111111111111";
+    const targetProjectItemId = await createTestProjectItem(pool);
     const { createAgentSession } = scriptedSession([
       { kind: "turn_start" },
       { kind: "message", text: "done with task one" },
@@ -137,7 +153,7 @@ describe("DelegationRegistry", () => {
   it("reuses the same AgentSession and agent_runs row for a second delegation onto the same key", async () => {
     const registry = new DelegationRegistry(pool);
     const supervisorRunId = await newSupervisorRunId();
-    const targetProjectItemId = "22222222-2222-2222-2222-222222222222";
+    const targetProjectItemId = await createTestProjectItem(pool);
     const { createAgentSession, callCount } = scriptedSession(
       [{ kind: "turn_start" }, { kind: "message", text: "first" }, { kind: "turn_end" }],
       [{ kind: "turn_start" }, { kind: "message", text: "second" }, { kind: "turn_end" }],
@@ -162,7 +178,7 @@ describe("DelegationRegistry", () => {
     const registry = new DelegationRegistry(pool);
     const supervisorA = await newSupervisorRunId();
     const supervisorB = await newSupervisorRunId();
-    const targetProjectItemId = "33333333-3333-3333-3333-333333333333";
+    const targetProjectItemId = await createTestProjectItem(pool);
     const sessionA = scriptedSession([
       { kind: "turn_start" },
       { kind: "message", text: "for A" },
@@ -201,7 +217,7 @@ describe("DelegationRegistry", () => {
   it("rejects a concurrent delegation onto a busy key immediately, without blocking or overwriting the in-flight call", async () => {
     const registry = new DelegationRegistry(pool);
     const supervisorRunId = await newSupervisorRunId();
-    const targetProjectItemId = "44444444-4444-4444-4444-444444444444";
+    const targetProjectItemId = await createTestProjectItem(pool);
     const { createAgentSession, release } = blockingSession();
 
     const inFlight = registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: "slow" });
@@ -232,7 +248,7 @@ describe("DelegationRegistry", () => {
   it("rejects two concurrent first-time delegations onto the same brand-new key without creating two sessions", async () => {
     const registry = new DelegationRegistry(pool);
     const supervisorRunId = await newSupervisorRunId();
-    const targetProjectItemId = "55555555-5555-5555-5555-555555555555";
+    const targetProjectItemId = await createTestProjectItem(pool);
     const { createAgentSession, release } = blockingSession();
 
     const firstPromise = registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: "first" });
@@ -262,7 +278,7 @@ describe("DelegationRegistry", () => {
     const ttlMs = 60;
     const registry = new DelegationRegistry(pool, ttlMs);
     const supervisorRunId = await newSupervisorRunId();
-    const targetProjectItemId = "66666666-6666-6666-6666-666666666666";
+    const targetProjectItemId = await createTestProjectItem(pool);
     const { createAgentSession: firstSession } = scriptedSession([
       { kind: "turn_start" },
       { kind: "message", text: "first session" },
@@ -306,7 +322,7 @@ describe("DelegationRegistry", () => {
     const ttlMs = 60;
     const registry = new DelegationRegistry(pool, ttlMs);
     const supervisorRunId = await newSupervisorRunId();
-    const targetProjectItemId = "67676767-6767-6767-6767-676767676767";
+    const targetProjectItemId = await createTestProjectItem(pool);
     const { createAgentSession } = scriptedSession([
       { kind: "turn_start" },
       { kind: "message", text: "first session" },
@@ -342,7 +358,7 @@ describe("DelegationRegistry", () => {
     const ttlMs = 150;
     const registry = new DelegationRegistry(pool, ttlMs);
     const supervisorRunId = await newSupervisorRunId();
-    const targetProjectItemId = "88888888-8888-8888-8888-888888888888";
+    const targetProjectItemId = await createTestProjectItem(pool);
     let sendCalls = 0;
     const createAgentSession: CreateAgentSession = (): AgentSession => ({
       async *messages() {
@@ -429,7 +445,7 @@ describe("DelegationRegistry", () => {
     const failingPool = poolWithFailingQuery("UPDATE agent_runs", new Error("simulated outage"));
     const registry = new DelegationRegistry(failingPool, ttlMs);
     const supervisorRunId = await newSupervisorRunId();
-    const targetProjectItemId = "99999999-9999-9999-9999-999999999999";
+    const targetProjectItemId = await createTestProjectItem(pool);
     let sendCalls = 0;
     const createAgentSession: CreateAgentSession = (): AgentSession => ({
       async *messages() {
@@ -491,7 +507,7 @@ describe("DelegationRegistry", () => {
     );
     const registry = new DelegationRegistry(failingPool, ttlMs);
     const supervisorRunId = await newSupervisorRunId();
-    const targetProjectItemId = "aaaaaaaa-1111-1111-1111-111111111111";
+    const targetProjectItemId = await createTestProjectItem(pool);
     const { createAgentSession: firstSession } = scriptedSession([
       { kind: "turn_start" },
       { kind: "message", text: "first session" },
@@ -569,7 +585,7 @@ describe("DelegationRegistry", () => {
     const ttlMs = 300;
     const registry = new DelegationRegistry(controlledPool, ttlMs);
     const supervisorRunId = await newSupervisorRunId();
-    const targetProjectItemId = "bbbbbbbb-2222-2222-2222-222222222222";
+    const targetProjectItemId = await createTestProjectItem(pool);
     const { createAgentSession: firstSession } = scriptedSession([
       { kind: "turn_start" },
       { kind: "message", text: "first session" },
@@ -664,7 +680,7 @@ describe("DelegationRegistry", () => {
     );
     const registry = new DelegationRegistry(failingPool, ttlMs);
     const supervisorRunId = await newSupervisorRunId();
-    const targetProjectItemId = "cccccccc-3333-3333-3333-333333333333";
+    const targetProjectItemId = await createTestProjectItem(pool);
     const { createAgentSession: firstSession } = scriptedSession([
       { kind: "turn_start" },
       { kind: "message", text: "first session" },
@@ -720,7 +736,7 @@ describe("DelegationRegistry", () => {
     const ttlMs = 150;
     const registry = new DelegationRegistry(pool, ttlMs);
     const supervisorRunId = await newSupervisorRunId();
-    const targetProjectItemId = "77777777-7777-7777-7777-777777777777";
+    const targetProjectItemId = await createTestProjectItem(pool);
     const { createAgentSession } = scriptedSession(
       [{ kind: "turn_start" }, { kind: "message", text: "first" }, { kind: "turn_end" }],
       [{ kind: "turn_start" }, { kind: "message", text: "second" }, { kind: "turn_end" }],
@@ -743,7 +759,7 @@ describe("DelegationRegistry", () => {
   it("persists a compacted reconstruction as a 'compaction' event on the run it seeds", async () => {
     const registry = new DelegationRegistry(pool);
     const supervisorRunId = await newSupervisorRunId();
-    const targetProjectItemId = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+    const targetProjectItemId = await createTestProjectItem(pool);
     const priorEntry: ConversationEntry = {
       id: "1",
       parentId: null,
@@ -806,10 +822,80 @@ describe("DelegationRegistry", () => {
     registry.clear();
   });
 
+  it("refuses a random, trashed or non-Projects target without creating a session", async () => {
+    const registry = new DelegationRegistry(pool);
+    const supervisorRunId = await newSupervisorRunId();
+    const trashedProjectItemId = await createTestProjectItem(pool);
+    await pool.query("UPDATE items SET deleted_at = now() WHERE id = $1", [trashedProjectItemId]);
+    const tasksItemId = await createTestModuleItem(pool, TASKS_MODULE_ID);
+    const { createAgentSession: innerSession } = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "x" },
+      { kind: "turn_end" },
+    ]);
+    let sessionsCreated = 0;
+    const createAgentSession: CreateAgentSession = (...args) => {
+      sessionsCreated++;
+      return innerSession(...args);
+    };
+
+    for (const targetProjectItemId of [randomUUID(), trashedProjectItemId, tasksItemId]) {
+      const result = await registry.delegate({
+        createAgentSession,
+        supervisorRunId,
+        targetProjectItemId,
+        task: "do it",
+      });
+      expect(result).toEqual({ ok: false, error: UNKNOWN_DELEGATION_TARGET_MESSAGE });
+    }
+
+    expect(sessionsCreated).toBe(0);
+    const { rows } = await pool.query(`SELECT count(*)::int AS n FROM agent_runs WHERE parent_run_id = $1`, [
+      supervisorRunId,
+    ]);
+    expect(rows[0].n).toBe(0);
+
+    registry.clear();
+  });
+
+  it("releases the reservation after a refusal, so an immediate retry is refused again rather than reported busy", async () => {
+    const registry = new DelegationRegistry(pool);
+    const supervisorRunId = await newSupervisorRunId();
+    // Creates the tenant's Projects database, so the refusal below is for an unknown id rather than a missing database.
+    await createTestProjectItem(pool);
+    const targetProjectItemId = randomUUID();
+    const { createAgentSession } = scriptedSession([
+      { kind: "turn_start" },
+      { kind: "message", text: "x" },
+      { kind: "turn_end" },
+    ]);
+    const refusal = { ok: false, error: UNKNOWN_DELEGATION_TARGET_MESSAGE };
+
+    const first = await registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: "one" });
+    const second = await registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: "two" });
+
+    expect(first).toEqual(refusal);
+    expect(second).toEqual(refusal);
+
+    registry.clear();
+  });
+
+  it("throws, rather than refusing, when the tenant has no Projects database", async () => {
+    const registry = new DelegationRegistry(pool);
+    const supervisorRunId = await newSupervisorRunId();
+    const { createAgentSession } = scriptedSession([{ kind: "turn_start" }, { kind: "turn_end" }]);
+
+    await expect(
+      registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId: randomUUID(), task: "do it" }),
+    ).rejects.toThrow("Projects module database not found");
+
+    registry.clear();
+  });
+
   it("closes a brand-new session's agent_runs row as error and does not register it when the first turn throws", async () => {
     const registry = new DelegationRegistry(pool);
     const supervisorRunId = await newSupervisorRunId();
-    const targetProjectItemId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const targetProjectItemId = await createTestProjectItem(pool);
     const createAgentSession: CreateAgentSession = (): AgentSession => ({
       async *messages() {
         yield { kind: "turn_start" };
@@ -849,7 +935,7 @@ describe("DelegationRegistry", () => {
   it("closes a reused session's agent_runs row as error and drops the entry when a later turn throws", async () => {
     const registry = new DelegationRegistry(pool);
     const supervisorRunId = await newSupervisorRunId();
-    const targetProjectItemId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+    const targetProjectItemId = await createTestProjectItem(pool);
     let call = 0;
     const createAgentSession: CreateAgentSession = (): AgentSession => ({
       async *messages() {
@@ -886,7 +972,7 @@ describe("DelegationRegistry", () => {
   it("closes the run and drops the entry when a reuse attempt hits a session that cannot continue", async () => {
     const registry = new DelegationRegistry(pool);
     const supervisorRunId = await newSupervisorRunId();
-    const targetProjectItemId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+    const targetProjectItemId = await createTestProjectItem(pool);
     // No `send` implemented — only supports the very first turn, like every session before #229.
     const createAgentSession: CreateAgentSession = (): AgentSession => ({
       async *messages() {
@@ -926,5 +1012,93 @@ describe("DelegationRegistry", () => {
     expect(retry).toEqual({ ok: true, message: "recovered" });
 
     registry.clear();
+  });
+
+  describe("delegation targets resolve inside the run's tenant", () => {
+    // Runtime-role pool: RLS applies, unlike the superuser `pool` that bypasses it.
+    let runtimePool: Pool;
+
+    beforeAll(async () => {
+      runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    });
+
+    afterAll(async () => {
+      await runtimePool?.end();
+    });
+
+    /** Creates a supervisor run in `tenantId` and returns its id. */
+    function supervisorIn(tenantId: string): Promise<string> {
+      return runInTenant(tenantId, async () => {
+        const run = await createAgentRun(runtimePool, { triggeredBy: "user", task: "supervise" });
+        return run.id;
+      });
+    }
+
+    it("refuses another tenant's live project exactly as it refuses a random id", async () => {
+      const tenantZero = getTenantZeroId();
+      const tenantB = await createTestTenant(pool);
+      const foreignItemId = await runInTenant(tenantB, () => createTestProjectItem(runtimePool));
+      const localItemId = await runInTenant(tenantZero, () => createTestProjectItem(runtimePool));
+      const supervisorRunId = await supervisorIn(tenantZero);
+      const registry = new DelegationRegistry(runtimePool);
+      const { createAgentSession } = scriptedSession([
+        { kind: "turn_start" },
+        { kind: "message", text: "x" },
+        { kind: "turn_end" },
+      ]);
+      const delegateTo = (targetProjectItemId: string) =>
+        runInTenant(tenantZero, () =>
+          registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: "do it" }),
+        );
+
+      const foreign = await delegateTo(foreignItemId);
+      const random = await delegateTo(randomUUID());
+
+      expect(foreign).toEqual({ ok: false, error: UNKNOWN_DELEGATION_TARGET_MESSAGE });
+      expect(foreign).toEqual(random);
+      const { rows } = await pool.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM agent_runs WHERE parent_run_id = $1 OR project_item_id = ANY($2::uuid[])`,
+        [supervisorRunId, [foreignItemId, localItemId]],
+      );
+      expect(rows[0]!.n).toBe(0);
+
+      registry.clear();
+    });
+
+    it("refuses a supervisor run that is not visible in the current tenant, exactly as a random id", async () => {
+      const tenantZero = getTenantZeroId();
+      const tenantB = await createTestTenant(pool);
+      // Tenant B needs its own user: an agent run is created on behalf of its tenant's user.
+      await pool.query("INSERT INTO users (email, password_hash, tenant_id) VALUES ($1, 'unused', $2)", [
+        `${randomUUID()}@example.com`,
+        tenantB,
+      ]);
+      const foreignSupervisorRunId = await supervisorIn(tenantB);
+      const localItemId = await runInTenant(tenantZero, () => createTestProjectItem(runtimePool));
+      const registry = new DelegationRegistry(runtimePool);
+      const { createAgentSession } = scriptedSession([
+        { kind: "turn_start" },
+        { kind: "message", text: "x" },
+        { kind: "turn_end" },
+      ]);
+
+      const result = await runInTenant(tenantZero, () =>
+        registry.delegate({
+          createAgentSession,
+          supervisorRunId: foreignSupervisorRunId,
+          targetProjectItemId: localItemId,
+          task: "do it",
+        }),
+      );
+
+      expect(result).toEqual({ ok: false, error: UNKNOWN_DELEGATION_TARGET_MESSAGE });
+      const { rows } = await pool.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM agent_runs WHERE project_item_id = $1`,
+        [localItemId],
+      );
+      expect(rows[0]!.n).toBe(0);
+
+      registry.clear();
+    });
   });
 });
