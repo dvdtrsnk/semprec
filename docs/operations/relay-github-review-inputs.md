@@ -20,8 +20,9 @@ summary. The capture limit is 256,000 UTF-8 bytes and ten pages of 100 comments
 per collection. Files remain content-addressed audit inputs outside the repo.
 
 Agents use `access_hub_context`, `access_hub_schema` and `access_hub_call` for
-additional GitHub reads and review responses. `issue_closed_by_reviews_list`
-returns the authoritative merged closing PRs for a blocker. Summary replies use
+additional GitHub reads and review responses. `issue_get` reads one issue;
+`issue_closed_by_reviews_list` returns the authoritative merged closing PRs for
+a blocker. Summary replies use
 `review_summary_reply`; inline replies use `review_comment_reply`. Thread
 resolution uses `review_threads_list` and `review_thread_resolve`, with the
 current remote PR HEAD supplied as `expectedSha`. These writes require their

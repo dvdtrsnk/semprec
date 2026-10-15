@@ -17,7 +17,6 @@ global GitHub CLI login. Never infer the closing PR from a branch name or
 restore global authentication. If the scoped operation is denied, report the
 specific denial rather than substituting an account or native CLI.
 
-
 ## Model-tier contract
 
 Read `.github/ISSUE_FORMAT.md` for the canonical metadata grammar and difficulty
