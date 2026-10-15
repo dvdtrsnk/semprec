@@ -148,3 +148,17 @@ a codebase acquires defects it will never explain.
 Everything written into the repository or posted to GitHub is English: code,
 comments, commit messages, pull request descriptions, issue comments. Only
 direct conversation with the user follows the user's own language.
+
+## GitHub service access in Relay workers
+
+Service authorization lives in Access Hub. For GitHub issue, PR, review and check
+reads or review responses, discover the current repository grant with
+`access_hub_context`, inspect its named operation with `access_hub_schema`, then
+use `access_hub_call` with an explicit access ID and exact repository arguments.
+Use `issue_get` to read an issue and `issue_closed_by_reviews_list` for a
+blocker's authoritative merged closing PRs.
+Raw `gh`, direct GitHub HTTP and restoring a global CLI login are not fallbacks:
+they caused repair workers to fail after server-wide logins were removed.
+Report an unavailable or denied scoped operation instead of substituting another
+account. Local Git edits and commits remain part of the worker's task; Relay's
+own declared steps perform its fetch/push/review/merge lifecycle.
