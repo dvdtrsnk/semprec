@@ -9,8 +9,15 @@ The issue body is your source of truth. It is written to be self-contained:
 everything you need is in it, plus the hand-over context from the work this one
 builds on — for each issue named in its `Blocked by:` line, that context lives in
 the pull request that closed it, not in a comment on the issue itself:
-`gh issue view <blocker> --json closedByPullRequestsReferences`, then read that
-pull request's body.
+Access Hub: discover the repository grant with `access_hub_context` and inspect
+each operation with `access_hub_schema` before calling it through
+`access_hub_call`. Read the blocker with `issue_get`, list its merged closing
+pull requests with `issue_closed_by_reviews_list`, then read each returned pull
+request's body with `review_get` — the listing alone is not the hand-over.
+This preserves GitHub's authoritative closing references without requiring a
+global GitHub CLI login. Never infer the closing PR from a branch name or
+restore global authentication. If the scoped operation is denied, report the
+specific denial rather than substituting an account or native CLI.
 
 ## Model-tier contract
 
