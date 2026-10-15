@@ -243,7 +243,7 @@ export async function decideApprovalRequest(
   decision: ApprovalRequestDecision,
   decidedBy: string,
 ): Promise<ApprovalRequest | null> {
-  const { rows } = await client.query<ApprovalRequestRow>(
+  const { rows, rowCount } = await client.query<ApprovalRequestRow>(
     `UPDATE approval_requests
         SET status = $2, decided_at = now(), decided_by = $3,
             execution_status = CASE WHEN $2 = 'approved' THEN 'queued' ELSE execution_status END
@@ -255,7 +255,10 @@ export async function decideApprovalRequest(
       RETURNING *`,
     [id, decision, decidedBy],
   );
-  return rows[0] ? rowToApprovalRequest(rows[0]) : null;
+  // Zero rows is a legitimate outcome here (unknown, already decided, or not the run's actor), so it
+  // is read explicitly rather than requireAffectedRows-ed: the caller turns it into its own answer.
+  if (rowCount === 0) return null;
+  return rowToApprovalRequest(requireSingleRow(rows, "approval_requests decide RETURNING"));
 }
 
 /**
