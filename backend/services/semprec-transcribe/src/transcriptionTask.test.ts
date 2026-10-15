@@ -11,6 +11,7 @@ import {
   createChokePoint,
   createItemWithClient,
   createRerunTranscriptionRouteHandler,
+  createUser as dataCreateUser,
   createTranscriptionRequeueSweepAction,
   createViewTypeRegistry,
   ForbiddenError,
@@ -32,7 +33,15 @@ import {
   type BlobStorageWriter,
   type ItemRow,
 } from "@semprec/data";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTenantZeroUser,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
+import { runInTenant } from "@semprec/shared";
 import { wireRealtimeHooks } from "@semprec/realtime";
 import type { AiGatewayClientPort, AiGatewayCompletionInput, AiGatewayCompletionResult } from "@semprec/shared";
 import { CORE_TASK_NAMES, enqueueJob, registerTask, runOnce } from "@semprec/queue";
@@ -1301,12 +1310,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     const FINAL_ATTEMPT = { job: { attempts: 3, max_attempts: 3 } };
 
     async function createUser(): Promise<string> {
-      const { rows } = await pool.query<{ id: string }>(
-        `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
-        [`owner-${randomUUID()}@example.test`],
-      );
-      if (!rows[0]) throw new Error("expected a user row");
-      return rows[0].id;
+      return (await createTenantZeroUser(pool, `owner-${randomUUID()}@example.test`)).id;
     }
 
     async function readAutomation(transcriptId: string) {
@@ -1376,6 +1380,57 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       ]);
       expect(gatewayClient.diarizeCalls).toHaveLength(1);
       expect(gatewayClient.transcribeCalls).toHaveLength(1);
+    });
+
+    it("sends the permanent-failure automation_error notification to the user of the tenant it ran in, never the earlier-created account", async () => {
+      const runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "semprec_data"));
+      try {
+        const tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(pool));
+        const userA = await runInTenant(getTenantZeroId(), () => createUser());
+        const userB = (
+          await runInTenant(tenantB, () =>
+            dataCreateUser(pool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB }),
+          )
+        ).id;
+        const failure = new Error("simulated summary outage");
+        summaryClient.failure = failure;
+        const task = createTranscriptionTask(runtimePool, blobStorage, gatewayClient, summaryClient);
+
+        const fileId = await runInTenant(tenantB, async () => {
+          await seedSystem(runtimePool, createViewTypeRegistry());
+          const files = await withTransaction(runtimePool, (client) => getDatabaseByModuleId(client, "files"));
+          if (!files) throw new Error("Files database was not seeded");
+          const storageKey = `source/${randomUUID()}`;
+          await blobStorage.writeStream(storageKey, Readable.from(audioFixture));
+          const blob = await withTransaction(runtimePool, (client) =>
+            createBlob(client, { mimeType: "audio/mp4", byteSize: audioFixture.byteLength, storageKey }),
+          );
+          const file = await withTransaction(runtimePool, (client) =>
+            createItemWithClient(client, {
+              databaseId: files.id,
+              properties: { name: "recording", file: { blobId: blob.id } },
+            }),
+          );
+          return file.id;
+        });
+
+        for (const attempts of [1, 2, 3]) {
+          await expect(
+            runInTenant(tenantB, () => task({ fileItemId: fileId }, { job: { attempts, max_attempts: 3 } })),
+          ).rejects.toBe(failure);
+        }
+
+        const { rows } = await pool.query<{ user_id: string; kind: string; tenant_id: string }>(
+          `SELECT n.user_id, n.kind, n.tenant_id FROM notifications n
+           JOIN items f ON f.id = $1 JOIN items t ON t.id = (f.computed->>'create')::uuid
+           WHERE n.source_id = t.id::text`,
+          [fileId],
+        );
+        expect(rows).toEqual([{ user_id: userB, kind: "automation_error", tenant_id: tenantB }]);
+        expect(rows[0]?.user_id).not.toBe(userA);
+      } finally {
+        await runtimePool.end();
+      }
     });
 
     it("treats a gateway budget rejection as permanent on any attempt and completes the job instead of retrying", async () => {

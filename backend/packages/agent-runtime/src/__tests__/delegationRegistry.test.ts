@@ -1,7 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createAgentRun, finishAgentRun } from "@semprec/data";
 import { BUSY_ERROR_MESSAGE, DelegationRegistry, type ReconstructDelegatedHistory } from "../delegationRegistry.js";
 import type { AgentMessage, AgentSession, ConversationEntry, CreateAgentSession } from "../types.js";
@@ -48,11 +47,7 @@ function poolWithFailingQuery(sqlPrefix: string, error: Error, matchParams?: (pa
 let pool: Pool;
 
 async function createUser(): Promise<string> {
-  const { rows } = await pool.query<{ id: string }>(
-    `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
-    [`${randomUUID()}@example.com`],
-  );
-  return rows[0]!.id;
+  return (await createTenantZeroUser(pool)).id;
 }
 
 /** A session whose `messages()`/`send()` yield exactly the given batch, one call each. */

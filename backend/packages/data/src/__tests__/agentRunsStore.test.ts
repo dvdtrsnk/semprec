@@ -1,7 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
+import {
+  createRuntimeRolePool,
+  createTenantZeroUser,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
+import { createUser } from "../auth/usersStore.js";
 import { createAgentRun, finishAgentRun, getAgentRun } from "../agentRuns/agentRunsStore.js";
 import { NotFoundError } from "../errors.js";
 
@@ -11,7 +20,7 @@ describe("finishAgentRun", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
-    await pool.query(`INSERT INTO users (email, password_hash) VALUES ($1, 'unused')`, [`${randomUUID()}@example.com`]);
+    await createTenantZeroUser(pool);
   });
 
   afterAll(async () => {
@@ -44,5 +53,62 @@ describe("finishAgentRun", () => {
 
   it("throws NotFoundError for an unknown run id", async () => {
     await expect(finishAgentRun(pool, randomUUID(), "done", null)).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe("createAgentRun actor in a tenant (issue #1018)", () => {
+  let adminPool: Pool;
+  let runtimePool: Pool;
+  let tenantB: string;
+  let userA: string;
+  let userB: string;
+
+  beforeAll(async () => {
+    adminPool = getTestPool();
+    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(adminPool, "semprec_data"));
+  });
+
+  beforeEach(async () => {
+    await runInTenant(getTenantZeroId(), () => resetDatabase(adminPool));
+    tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(adminPool));
+    userA = (
+      await runInTenant(getTenantZeroId(), () =>
+        createUser(adminPool, { email: "a@example.test", passwordHash: "x", tenantId: getTenantZeroId() }),
+      )
+    ).id;
+    userB = (
+      await runInTenant(tenantB, () =>
+        createUser(adminPool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB }),
+      )
+    ).id;
+  });
+
+  afterAll(async () => {
+    await Promise.all([runtimePool?.end(), adminPool?.end()]);
+  });
+
+  it("attributes a root run without userId to the tenant's user, never to the earlier-created account", async () => {
+    const run = await runInTenant(tenantB, () => createAgentRun(runtimePool, { triggeredBy: "heartbeat", task: "t" }));
+    expect(run.actorUserId).toBe(userB);
+    expect(run.actorUserId).not.toBe(userA);
+  });
+
+  it("throws when the tenant has no bound user", async () => {
+    const tenantC = await runInTenant(getTenantZeroId(), () => createTestTenant(adminPool));
+    await expect(
+      runInTenant(tenantC, () => createAgentRun(runtimePool, { triggeredBy: "heartbeat", task: "t" })),
+    ).rejects.toThrow("Cannot create an agent run: the current tenant has no user");
+  });
+
+  it("uses an explicit userId, and a delegated run still inherits its parent's actor", async () => {
+    const explicit = await runInTenant(tenantB, () =>
+      createAgentRun(runtimePool, { triggeredBy: "user", task: "t", userId: userB }),
+    );
+    expect(explicit.actorUserId).toBe(userB);
+
+    const child = await runInTenant(tenantB, () =>
+      createAgentRun(runtimePool, { triggeredBy: "user", task: "child", parentRunId: explicit.id, userId: userA }),
+    );
+    expect(child.actorUserId).toBe(userB);
   });
 });

@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTenantZeroUser,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
 import { runOnce } from "@semprec/queue";
 import {
   ApprovalRequiredError,
@@ -11,6 +18,7 @@ import {
   createAgentRun,
   createChokePoint,
   createCoreTaskList,
+  createUser as createBoundUser,
   createViewTypeRegistry,
   decideAndEnqueueApprovalRequest,
   getApprovalRequest,
@@ -25,6 +33,7 @@ import {
   CAPABILITY_IDS,
   GENERIC_OPERATION_NAMES,
   OPERATION_METADATA,
+  runInTenant,
   type AuthenticatedActor,
   type GenericOperationName,
 } from "@semprec/shared";
@@ -37,11 +46,7 @@ const ALL_CAPABILITIES = new Set(CAPABILITY_IDS);
 const NO_CAPABILITIES = new Set<(typeof CAPABILITY_IDS)[number]>();
 
 async function createUser(): Promise<string> {
-  const { rows } = await pool.query<{ id: string }>(
-    `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
-    [`${randomUUID()}@example.com`],
-  );
-  return rows[0]!.id;
+  return (await createTenantZeroUser(pool)).id;
 }
 
 /** A real Projects item id (not just a random UUID) — required by `assertAuthenticatedAgentIdentity`, which `viewDeleteWithClient` enforces but the other four destructive `*WithClient` mutations do not. */
@@ -699,5 +704,70 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect(finished!.executionStatus).toBe("conflict");
       expect(finished!.executionResult).toContain("No generic-operation approval replay handler is configured");
     });
+  });
+});
+
+describe("approval_pending recipient in a tenant (issue #1018)", () => {
+  let runtimePool: Pool;
+
+  // The first describe's `afterAll` ended the shared pool, so this block opens and closes its own.
+  beforeAll(async () => {
+    pool = getTestPool();
+    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "semprec_data"));
+  });
+
+  beforeEach(async () => {
+    await runInTenant(getTenantZeroId(), () => resetDatabase(pool));
+  });
+
+  afterAll(async () => {
+    await runtimePool?.end();
+    await pool?.end();
+  });
+
+  it("notifies the user of the tenant the request is created in, with a link naming that user", async () => {
+    const tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(pool));
+    const userA = await runInTenant(getTenantZeroId(), () =>
+      createBoundUser(pool, {
+        email: "a@example.test",
+        passwordHash: "x",
+        tenantId: getTenantZeroId(),
+      }),
+    );
+    const userB = await runInTenant(tenantB, () =>
+      createBoundUser(pool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB }),
+    );
+
+    const approvalRequestId = await runInTenant(tenantB, async () => {
+      const chokePointB = createChokePoint(runtimePool);
+      const database = await chokePointB.createDatabase({ name: "Tenant B DB" });
+      const item = await chokePointB.createItem({ databaseId: database.id, properties: {} });
+      const projectItemId = randomUUID();
+      const run = await createAgentRun(runtimePool, { projectItemId, triggeredBy: "user", task: "delete it" });
+      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+      try {
+        await createGenericOperationGateway(runtimePool).invoke("item.delete", actor, ALL_CAPABILITIES, {
+          itemId: item.id,
+        });
+      } catch (err) {
+        if (err instanceof ApprovalRequiredError) return err.details.approvalRequestId;
+        throw err;
+      }
+      throw new Error("expected ApprovalRequiredError");
+    });
+
+    const { rows } = await pool.query<{ user_id: string; kind: string; link_href: string | null; tenant_id: string }>(
+      `SELECT user_id, kind, link_href, tenant_id FROM notifications WHERE source_id = $1`,
+      [approvalRequestId],
+    );
+    expect(rows).toEqual([
+      {
+        user_id: userB.id,
+        kind: "approval_pending",
+        link_href: `?page=approvals&user=${userB.id}`,
+        tenant_id: tenantB,
+      },
+    ]);
+    expect(rows[0]?.user_id).not.toBe(userA.id);
   });
 });

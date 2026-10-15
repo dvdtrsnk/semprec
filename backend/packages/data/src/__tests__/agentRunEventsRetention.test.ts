@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createAgentRun, finishAgentRun } from "../agentRuns/agentRunsStore.js";
 import { insertAgentRunEvent } from "../agentRuns/agentRunEventsStore.js";
 import {
@@ -14,7 +14,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 let pool: Pool;
 
 async function createUser(): Promise<void> {
-  await pool.query(`INSERT INTO users (email, password_hash) VALUES ($1, 'unused')`, [`${randomUUID()}@example.com`]);
+  await createTenantZeroUser(pool);
 }
 
 /** All ids of `agent_run_events` rows currently belonging to `agentRunId`, in id order. */

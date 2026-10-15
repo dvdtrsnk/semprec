@@ -7,7 +7,7 @@ import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
-import { getEarliestUserId } from "../auth/usersStore.js";
+import { getTenantUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
 import {
@@ -376,7 +376,7 @@ export async function handleSyncMailAccountTask(
       // state, not a system error," and its own `needsReauthorization` status already makes
       // it distinguishable from a genuine failure, so notifying with the same "Mail sync
       // failed" title would conflate the two states.
-      const userId = err instanceof MailReauthorizationRequiredError ? null : await getEarliestUserId(client);
+      const userId = err instanceof MailReauthorizationRequiredError ? null : await getTenantUserId(client);
       if (userId) {
         await writeNotification(client, {
           userId,

@@ -10,7 +10,7 @@ import {
   hashPassword,
   seedSystem,
 } from "@semprec/data";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { BudgetExceededError, complete, diarize, embed, transcribe } from "../gateway.js";
 import { logger } from "../logger.js";
 
@@ -37,7 +37,7 @@ describe("gateway", () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
     const passwordHash = await hashPassword("s3cret-password");
-    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en" });
+    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en", tenantId: getTenantZeroId() });
   });
 
   afterEach(() => {

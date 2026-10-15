@@ -26,8 +26,8 @@ let tenantZero: string;
 
 const RESERVATION = { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5 };
 
-async function createRun(): Promise<string> {
-  await createUser(pool, { email: `${randomUUID()}@example.com`, passwordHash: "hash" });
+async function createRun(tenantId: string): Promise<string> {
+  await createUser(pool, { email: `${randomUUID()}@example.com`, passwordHash: "hash", tenantId });
   return (await createAgentRun(pool, { triggeredBy: "user", task: "attribution" })).id;
 }
 
@@ -78,7 +78,7 @@ describe("reserveGatewayCall attribution guard", () => {
 
   it("reserves a row stamped with the ambient tenant, linking a visible run and project item", async () => {
     const { runId, itemId } = await runInTenant(tenantZero, async () => ({
-      runId: await createRun(),
+      runId: await createRun(tenantZero),
       itemId: await createProjectItem(),
     }));
 
@@ -134,7 +134,7 @@ describe("reserveGatewayCall attribution guard", () => {
     const tenantB = await createTestTenant(adminPool);
     await runInTenant(tenantB, () => seedSystem(pool));
     const { runB, itemB } = await runInTenant(tenantB, async () => ({
-      runB: await createRun(),
+      runB: await createRun(tenantB),
       itemB: await createProjectItem(),
     }));
     const { rows: projectRows } = await adminPool.query<{ tenant_id: string; database_tenant_id: string }>(
