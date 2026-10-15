@@ -1,6 +1,16 @@
 import type { PoolClient } from "pg";
 import { enqueueJob, CORE_TASK_NAMES } from "@semprec/queue";
-import { decideApprovalRequest, type ApprovalRequest, type ApprovalRequestDecision } from "./approvalRequestsStore.js";
+import {
+  decideApprovalRequest,
+  getApprovalRequestForOwner,
+  type ApprovalRequest,
+  type ApprovalRequestDecision,
+} from "./approvalRequestsStore.js";
+
+export interface DecideAndEnqueueResult {
+  outcome: "decided" | "unchanged";
+  request: ApprovalRequest;
+}
 
 export interface DecideApprovalRequestInput {
   approvalRequestId: string;
@@ -17,20 +27,25 @@ export interface DecideApprovalRequestInput {
  * Composes the atomic decision with enqueueing the reserved `approvalExecute` job in the same
  * transaction, so "this request is approved" and "execution will happen" land together —
  * rejection enqueues nothing, per the issue's "rejected requests never execute" criterion. The
- * `jobKey` is derived from the request id, so a retried enqueue (e.g. this function called twice
- * for the same already-approved id, which can't happen through `decideApprovalRequest`'s own
- * `WHERE status = 'pending'` guard, but could from a caller retrying after a network timeout)
- * collapses onto the same job instead of scheduling a second one.
+ * `jobKey` is derived from the request id, so a retried enqueue collapses onto the same job
+ * instead of scheduling a second one.
  *
- * Returns `null` when the row is not `pending` (unknown id, or already decided) — the caller
- * treats a repeated decision as a deterministic no-op rather than an error.
+ * Decide and re-read run in the same transaction, so the outcome cannot race another decision:
+ * - `decided`: this call made the transition (and enqueued, on approval);
+ * - `unchanged`: the request is already decided by its owner, so the update matched nothing and
+ *   the current state is returned;
+ * - `null`: the id is unknown, not owned by `decidedByUserId` (issue #1028), or in another tenant.
+ *   The caller answers all three identically.
  */
 export async function decideAndEnqueueApprovalRequest(
   client: PoolClient,
   input: DecideApprovalRequestInput,
-): Promise<ApprovalRequest | null> {
+): Promise<DecideAndEnqueueResult | null> {
   const request = await decideApprovalRequest(client, input.approvalRequestId, input.decision, input.decidedByUserId);
-  if (!request) return null;
+  if (!request) {
+    const current = await getApprovalRequestForOwner(client, input.approvalRequestId, input.decidedByUserId);
+    return current ? { outcome: "unchanged", request: current } : null;
+  }
 
   if (request.status === "approved") {
     await enqueueJob(
@@ -41,5 +56,5 @@ export async function decideAndEnqueueApprovalRequest(
     );
   }
 
-  return request;
+  return { outcome: "decided", request };
 }

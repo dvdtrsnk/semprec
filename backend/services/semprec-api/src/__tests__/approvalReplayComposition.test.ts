@@ -60,11 +60,14 @@ async function createPendingDeleteAndApprove(pool: Pool): Promise<{ requestId: s
     requestId = (err as ApprovalRequiredError).details.approvalRequestId;
   }
 
-  const decidedByUserId = await createUser(pool);
   const decided = await withTransaction(pool, (client) =>
-    decideAndEnqueueApprovalRequest(client, { approvalRequestId: requestId, decision: "approved", decidedByUserId }),
+    decideAndEnqueueApprovalRequest(client, {
+      approvalRequestId: requestId,
+      decision: "approved",
+      decidedByUserId: run.actorUserId,
+    }),
   );
-  expect(decided!.status).toBe("approved");
+  expect(decided!.request.status).toBe("approved");
   return { requestId, itemId: item.id };
 }
 

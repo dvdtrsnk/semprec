@@ -89,15 +89,18 @@ export function toApprovalRequestDecisionView(request: ApprovalRequest): Approva
 }
 
 /**
- * The global approval queue's read model (issue #132): every pending request across every
- * project, each joined with its source project's display name and agent-run id so the UI can
+ * The approval queue's read model (issue #132): every pending request of `ownerUserId`'s runs
+ * across every project, each joined with its source project's display name and agent-run id so the UI can
  * show "where this came from" without a per-project detour. `agent_runs.project_item_id` and
  * `items.id` carry no Postgres FK to each other (see `0001_core_schema.sql`'s header note on
  * partitioned `items`), so both joins are done here as two batched follow-up reads instead of
  * one SQL join.
  */
-export async function listApprovalRequestsQueue(client: Queryable): Promise<ApprovalRequestQueueEntry[]> {
-  const pending = await listPendingApprovalRequests(client);
+export async function listApprovalRequestsQueue(
+  client: Queryable,
+  ownerUserId: string,
+): Promise<ApprovalRequestQueueEntry[]> {
+  const pending = await listPendingApprovalRequests(client, ownerUserId);
   if (pending.length === 0) return [];
 
   const agentRunIds = [...new Set(pending.map((request) => request.agentRunId))];

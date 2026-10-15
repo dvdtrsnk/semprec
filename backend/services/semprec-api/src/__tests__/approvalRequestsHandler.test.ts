@@ -34,8 +34,8 @@ async function authHeader(): Promise<{ Authorization: string }> {
   return (await authSession()).headers;
 }
 
-async function createPendingRequest(): Promise<string> {
-  const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+async function createPendingRequest(ownerUserId: string): Promise<string> {
+  const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerUserId });
   const payload = { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: { query: "hi" } };
   const created = await createPendingApprovalRequest(pool, {
     agentRunId: run.id,
@@ -94,8 +94,8 @@ describe("createApprovalRequestsRequestListener", () => {
   });
 
   it("approves a pending request", async () => {
-    const id = await createPendingRequest();
     const session = await authSession();
+    const id = await createPendingRequest(session.userId);
 
     const res = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
@@ -109,13 +109,13 @@ describe("createApprovalRequestsRequestListener", () => {
   });
 
   it("rejects a pending request", async () => {
-    const id = await createPendingRequest();
-    const userId = await createUser();
+    const session = await authSession();
+    const id = await createPendingRequest(session.userId);
 
     const res = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
-      headers: { ...(await authHeader()), "Content-Type": "application/json" },
-      body: JSON.stringify({ decision: "rejected", decidedByUserId: userId }),
+      headers: { ...session.headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ decision: "rejected", decidedByUserId: session.userId }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { status: string };
@@ -123,20 +123,20 @@ describe("createApprovalRequestsRequestListener", () => {
   });
 
   it("returns 400 for an invalid decision value", async () => {
-    const id = await createPendingRequest();
-    const userId = await createUser();
+    const session = await authSession();
+    const id = await createPendingRequest(session.userId);
 
     const res = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
-      headers: { ...(await authHeader()), "Content-Type": "application/json" },
-      body: JSON.stringify({ decision: "maybe", decidedByUserId: userId }),
+      headers: { ...session.headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ decision: "maybe", decidedByUserId: session.userId }),
     });
     expect(res.status).toBe(400);
   });
 
   it("records the session user as the decider when the body carries only the decision", async () => {
-    const id = await createPendingRequest();
     const session = await authSession();
+    const id = await createPendingRequest(session.userId);
 
     const res = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
@@ -154,8 +154,8 @@ describe("createApprovalRequestsRequestListener", () => {
   });
 
   it("ignores a body decidedByUserId and records the session user as the decider", async () => {
-    const id = await createPendingRequest();
     const session = await authSession();
+    const id = await createPendingRequest(session.userId);
     const claimedDecider = randomUUID();
 
     const res = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
@@ -170,11 +170,12 @@ describe("createApprovalRequestsRequestListener", () => {
   });
 
   it("returns the decision without the payload's argument values", async () => {
-    const id = await createPendingRequest();
+    const session = await authSession();
+    const id = await createPendingRequest(session.userId);
 
     const res = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
-      headers: { ...(await authHeader()), "Content-Type": "application/json" },
+      headers: { ...session.headers, "Content-Type": "application/json" },
       body: JSON.stringify({ decision: "approved" }),
     });
     expect(res.status).toBe(200);
@@ -184,26 +185,62 @@ describe("createApprovalRequestsRequestListener", () => {
     expect(body.safeSummary.argKeys).toEqual(["query"]);
   });
 
-  it("treats a repeated decision as a deterministic no-op, returning the current state with 200", async () => {
-    const id = await createPendingRequest();
-    const firstSession = await authSession();
+  it("treats a repeated decision by the owner as a deterministic no-op, returning the current state with 200", async () => {
+    const session = await authSession();
+    const id = await createPendingRequest(session.userId);
 
     const first = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
-      headers: { ...firstSession.headers, "Content-Type": "application/json" },
+      headers: { ...session.headers, "Content-Type": "application/json" },
       body: JSON.stringify({ decision: "approved" }),
     });
     expect(first.status).toBe(200);
 
     const second = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
-      headers: { ...(await authHeader()), "Content-Type": "application/json" },
+      headers: { ...session.headers, "Content-Type": "application/json" },
       body: JSON.stringify({ decision: "rejected" }),
     });
     expect(second.status).toBe(200);
     const body = (await second.json()) as { status: string; decidedBy: string };
     expect(body.status).toBe("approved");
-    expect(body.decidedBy).toBe(firstSession.userId);
+    expect(body.decidedBy).toBe(session.userId);
+  });
+
+  it("answers a non-owner's PATCH with the same 404 as a random id, before and after the owner decides (issue #1028)", async () => {
+    const owner = await authSession();
+    const other = await authSession();
+    const id = await createPendingRequest(owner.userId);
+    const patch = (requestId: string, headers: { Authorization: string }, decision: string) =>
+      fetch(`${baseUrl}/api/approval-requests/${requestId}`, {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ decision }),
+      });
+
+    const unknown = await patch(randomUUID(), other.headers, "approved");
+    expect(unknown.status).toBe(404);
+    const unknownBody = await unknown.text();
+    const foreignBeforeDecision = await patch(id, other.headers, "approved");
+    expect(foreignBeforeDecision.status).toBe(404);
+    expect(await foreignBeforeDecision.text()).toBe(unknownBody);
+
+    const { rows: pendingRows } = await pool.query<{ status: string; decided_by: string | null }>(
+      `SELECT status, decided_by FROM approval_requests WHERE id = $1`,
+      [id],
+    );
+    expect(pendingRows[0]).toEqual({ status: "pending", decided_by: null });
+
+    await patch(id, owner.headers, "approved");
+    const foreignAfterDecision = await patch(id, other.headers, "rejected");
+    expect(foreignAfterDecision.status).toBe(404);
+    expect(await foreignAfterDecision.text()).toBe(unknownBody);
+
+    const { rows: decidedRows } = await pool.query<{ status: string; decided_by: string | null }>(
+      `SELECT status, decided_by FROM approval_requests WHERE id = $1`,
+      [id],
+    );
+    expect(decidedRows[0]).toEqual({ status: "approved", decided_by: owner.userId });
   });
 
   it("returns 404 for an unknown approval request id", async () => {
@@ -262,10 +299,16 @@ describe("createApprovalRequestsRequestListener", () => {
     });
 
     it("lists a pending request with its source project name and agent-run link", async () => {
+      const session = await authSession();
       const projects = await chokePoint.createDatabase({ name: "Projects" });
       await chokePoint.createProperty({ databaseId: projects.id, key: "name", name: "Name", type: "title" });
       const projectItem = await chokePoint.createItem({ databaseId: projects.id, properties: { name: "Kitchen" } });
-      const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", projectItemId: projectItem.id });
+      const run = await createAgentRun(pool, {
+        triggeredBy: "user",
+        task: "test",
+        projectItemId: projectItem.id,
+        userId: session.userId,
+      });
       const payload = { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: { to: "a@b.com" } };
       await createPendingApprovalRequest(pool, {
         agentRunId: run.id,
@@ -276,7 +319,7 @@ describe("createApprovalRequestsRequestListener", () => {
       });
 
       const res = await fetch(`${baseUrl}/api/approval-requests`, {
-        headers: await authHeader(),
+        headers: session.headers,
       });
       expect(res.status).toBe(200);
       const body = (await res.json()) as { rows: Array<Record<string, unknown>> };
@@ -297,18 +340,30 @@ describe("createApprovalRequestsRequestListener", () => {
     });
 
     it("does not list a decided request", async () => {
-      const id = await createPendingRequest();
-      const userId = await createUser();
+      const session = await authSession();
+      const id = await createPendingRequest(session.userId);
       await fetch(`${baseUrl}/api/approval-requests/${id}`, {
         method: "PATCH",
-        headers: { ...(await authHeader()), "Content-Type": "application/json" },
-        body: JSON.stringify({ decision: "approved", decidedByUserId: userId }),
+        headers: { ...session.headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: "approved" }),
       });
 
       const res = await fetch(`${baseUrl}/api/approval-requests`, {
-        headers: await authHeader(),
+        headers: session.headers,
       });
       expect(await res.json()).toEqual({ rows: [] });
+    });
+
+    it("lists only the caller's own pending requests (issue #1028)", async () => {
+      const owner = await authSession();
+      const other = await authSession();
+      const ownId = await createPendingRequest(owner.userId);
+      await createPendingRequest(other.userId);
+
+      const res = await fetch(`${baseUrl}/api/approval-requests`, { headers: owner.headers });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { rows: Array<{ id: string }> };
+      expect(body.rows.map((row) => row.id)).toEqual([ownId]);
     });
   });
 });

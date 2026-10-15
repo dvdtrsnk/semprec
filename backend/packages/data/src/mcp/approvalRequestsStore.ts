@@ -188,21 +188,45 @@ export async function getApprovalRequest(
 }
 
 /**
- * The global approval queue's source list (issue #132): every still-`pending` request across
- * every project, oldest first — the same FIFO order a human triage list expects. Decided
- * requests never appear here; a caller that needs one anyway (e.g. rendering the authoritative
- * outcome of a raced decision) already holds it from the decide response, not from this list.
+ * The approval queue's source list for one owner (issue #132, owner-scoped by issue #1028): every
+ * still-`pending` request whose run is owned by `ownerUserId`, oldest first — the same FIFO order a
+ * human triage list expects. Decided requests never appear here; a caller that needs one anyway
+ * (e.g. rendering the authoritative outcome of a raced decision) already holds it from the decide
+ * response, not from this list.
  */
-export async function listPendingApprovalRequests(client: Queryable): Promise<ApprovalRequest[]> {
+export async function listPendingApprovalRequests(client: Queryable, ownerUserId: string): Promise<ApprovalRequest[]> {
   const { rows } = await client.query<ApprovalRequestRow>(
-    `SELECT * FROM approval_requests WHERE status = 'pending' ORDER BY requested_at ASC`,
+    `SELECT ar.* FROM approval_requests ar
+       JOIN agent_runs r ON r.id = ar.agent_run_id
+      WHERE ar.status = 'pending' AND r.actor_user_id = $1
+      ORDER BY ar.requested_at ASC`,
+    [ownerUserId],
   );
   return rows.map(rowToApprovalRequest);
 }
 
 /**
+ * The request only when its run is owned by `ownerUserId` (issue #1028). A foreign or unknown id
+ * both return `null`, so the caller cannot tell them apart.
+ */
+export async function getApprovalRequestForOwner(
+  client: Queryable,
+  id: string,
+  ownerUserId: string,
+): Promise<ApprovalRequest | null> {
+  const { rows } = await client.query<ApprovalRequestRow>(
+    `SELECT ar.* FROM approval_requests ar
+       JOIN agent_runs r ON r.id = ar.agent_run_id
+      WHERE ar.id = $1 AND r.actor_user_id = $2`,
+    [id, ownerUserId],
+  );
+  return rows[0] ? rowToApprovalRequest(rows[0]) : null;
+}
+
+/**
  * The single atomic decision transition (issue #131): `pending` -> `approved`/`rejected`, one
- * `UPDATE ... WHERE status = 'pending'`. Returns `null` when the row doesn't exist or is no
+ * `UPDATE ... WHERE status = 'pending'`, also conditioned on `decidedBy` being the run's actor
+ * (issue #1028). Returns `null` when the row doesn't exist, is no
  * longer `pending` — a caller cannot tell those two apart from this call alone (call
  * `getApprovalRequest` if it needs to), which is exactly what makes a retried decision a
  * deterministic no-op instead of a second transition: two concurrent decisions on the same row
@@ -224,6 +248,10 @@ export async function decideApprovalRequest(
         SET status = $2, decided_at = now(), decided_by = $3,
             execution_status = CASE WHEN $2 = 'approved' THEN 'queued' ELSE execution_status END
       WHERE id = $1 AND status = 'pending'
+        AND EXISTS (
+          SELECT 1 FROM agent_runs r
+           WHERE r.id = approval_requests.agent_run_id AND r.actor_user_id = $3
+        )
       RETURNING *`,
     [id, decision, decidedBy],
   );

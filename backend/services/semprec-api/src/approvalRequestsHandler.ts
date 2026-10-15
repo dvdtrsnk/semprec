@@ -2,7 +2,6 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   withTransaction,
   ChokePointError,
-  getApprovalRequest,
   decideAndEnqueueApprovalRequest,
   listApprovalRequestsQueue,
   toApprovalRequestDecisionView,
@@ -31,13 +30,11 @@ const APPROVAL_REQUEST_PATH = /^\/api\/approval-requests\/([^/]+)$/;
  * stops sending it in a later batch.
  *
  * Delegates the actual state transition to `decideAndEnqueueApprovalRequest` — one atomic
- * `UPDATE ... WHERE status = 'pending'` plus, only on approval, enqueueing the reserved
- * `approvalExecute` job in the same transaction (see `approvalDecisionAction.ts`). A `null`
- * result there means the row was not `pending` (unknown id, or a repeat decision): this handler
- * treats that as a deterministic no-op, returning the request's current stored state with 200
- * rather than an error, and only 404s when the id doesn't exist at all — the client is expected
- * to render that returned state (possibly already decided by someone else) rather than treat the
- * no-op as a failure.
+ * `UPDATE ... WHERE status = 'pending'` conditioned on the caller being the run's actor, plus,
+ * only on approval, enqueueing the reserved `approvalExecute` job in the same transaction (see
+ * `approvalDecisionAction.ts`). A repeat decision by the owner answers 200 with the current state.
+ * An unknown, foreign or other-tenant id answers the same 404 body, so the response never reveals
+ * whether a request exists for someone else (issue #1028).
  *
  * Both 200 responses are `toApprovalRequestDecisionView`'s projection, not the stored row: the
  * payload is reduced to `safeSummary` (argument names, never values) exactly as on the queue read.
@@ -51,7 +48,7 @@ export function createApprovalRequestsRequestListener(pool: Pool) {
 
       await runInTenant(identity.tenantId, async () => {
         if (req.method === "GET" && url.pathname === "/api/approval-requests") {
-          const rows = await withTransaction(pool, (client) => listApprovalRequestsQueue(client));
+          const rows = await withTransaction(pool, (client) => listApprovalRequestsQueue(client, identity.user.id));
           sendJson(res, 200, { rows });
           return;
         }
@@ -80,17 +77,11 @@ export function createApprovalRequestsRequestListener(pool: Pool) {
           }),
         );
 
-        if (decided) {
-          sendJson(res, 200, toApprovalRequestDecisionView(decided));
-          return;
-        }
-
-        const existing = await withTransaction(pool, (client) => getApprovalRequest(client, approvalRequestId));
-        if (!existing) {
+        if (!decided) {
           sendJson(res, 404, { error: "Not found" });
           return;
         }
-        sendJson(res, 200, toApprovalRequestDecisionView(existing));
+        sendJson(res, 200, toApprovalRequestDecisionView(decided.request));
       });
     } catch (err) {
       if (err instanceof PayloadTooLargeError) {
