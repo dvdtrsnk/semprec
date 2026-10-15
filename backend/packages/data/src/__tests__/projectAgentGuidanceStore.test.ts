@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createTenantZeroUser, getTenantZeroId, withTenantTransaction } from "../testSupport/tenantFixtures.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { GuidanceReferenceNotFoundError } from "@semprec/shared";
@@ -156,19 +157,56 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
       expect(err).not.toBeInstanceOf(GuidanceReferenceNotFoundError);
     });
 
-    it("requireUser and requireUserLocale resolve for an existing user", async () => {
-      const userId = await createTestUser();
+    it("requireUser and requireUserLocale resolve for the tenant's user", async () => {
+      const tenantUser = await createTenantZeroUser(pool);
       await expect(
-        withTransaction(pool, (client) => guidanceReferenceStore.requireUser(client, userId)),
+        withTenantTransaction(pool, getTenantZeroId(), (client) =>
+          guidanceReferenceStore.requireUser(client, tenantUser.id),
+        ),
       ).resolves.toBeUndefined();
-      const locale = await withTransaction(pool, (client) => guidanceReferenceStore.requireUserLocale(client, userId));
+      const locale = await withTenantTransaction(pool, getTenantZeroId(), (client) =>
+        guidanceReferenceStore.requireUserLocale(client, tenantUser.id),
+      );
       expect(locale).toBe("cs");
     });
 
     it("requireUser rejects a user id that doesn't exist", async () => {
+      await createTenantZeroUser(pool);
       await expect(
-        withTransaction(pool, (client) => guidanceReferenceStore.requireUser(client, randomUUID())),
+        withTenantTransaction(pool, getTenantZeroId(), (client) =>
+          guidanceReferenceStore.requireUser(client, randomUUID()),
+        ),
       ).rejects.toThrow(GuidanceReferenceNotFoundError);
+    });
+
+    it("requireUser and requireUserLocale reject an existing user who is not the tenant's user", async () => {
+      await createTenantZeroUser(pool);
+      const foreignUserId = await createTestUser();
+
+      await expect(
+        withTenantTransaction(pool, getTenantZeroId(), (client) =>
+          guidanceReferenceStore.requireUser(client, foreignUserId),
+        ),
+      ).rejects.toThrow(GuidanceReferenceNotFoundError);
+      await expect(
+        withTenantTransaction(pool, getTenantZeroId(), (client) =>
+          guidanceReferenceStore.requireUserLocale(client, foreignUserId),
+        ),
+      ).rejects.toThrow(GuidanceReferenceNotFoundError);
+    });
+
+    it("requireUser surfaces a dropped connection as itself, not as not-found", async () => {
+      const connectionError = new Error("connection terminated unexpectedly");
+      const brokenClient = {
+        query: async () => {
+          throw connectionError;
+        },
+      } as unknown as PoolClient;
+
+      const err = await guidanceReferenceStore.requireUser(brokenClient, randomUUID()).catch((e: unknown) => e);
+
+      expect(err).toBe(connectionError);
+      expect(err).not.toBeInstanceOf(GuidanceReferenceNotFoundError);
     });
   });
 

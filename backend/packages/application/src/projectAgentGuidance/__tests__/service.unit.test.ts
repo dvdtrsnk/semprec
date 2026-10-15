@@ -345,4 +345,105 @@ describe("createProjectAgentGuidanceService (issue #214)", () => {
       reason: "not_found",
     });
   });
+
+  it("refuses a first write by a user who is not the tenant's user with a 403 owner_violation, writing no row and no heartbeat", async () => {
+    const store = fakeStore();
+    const heartbeats = recordingHeartbeats();
+    const references = fakeReferences({
+      requireUser: vi.fn(async (_tx: FakeTx, userId: string) => {
+        if (userId !== "tenant-user") throw new GuidanceReferenceNotFoundError(`User ${userId} not found`);
+      }),
+    });
+    const service = createProjectAgentGuidanceService({
+      store,
+      references,
+      heartbeats,
+      transactions: fakeTransactions(),
+    });
+
+    const err = await service
+      .upsertProjectAgentGuidance({ userId: "foreign-user" }, { projectItemId: "p1", markdown: "# Hi" })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ProjectAgentGuidanceOwnerViolationError);
+    expect((err as ProjectAgentGuidanceOwnerViolationError).status).toBe(403);
+    expect(store.rows.size).toBe(0);
+    expect(heartbeats.calls).toEqual([]);
+  });
+
+  it("lets the tenant's user create guidance on a first write", async () => {
+    const store = fakeStore();
+    const references = fakeReferences({
+      requireUser: vi.fn(async (_tx: FakeTx, userId: string) => {
+        if (userId !== "tenant-user") throw new GuidanceReferenceNotFoundError(`User ${userId} not found`);
+      }),
+    });
+    const service = createProjectAgentGuidanceService({
+      store,
+      references,
+      heartbeats: recordingHeartbeats(),
+      transactions: fakeTransactions(),
+    });
+
+    const saved = await service.upsertProjectAgentGuidance(
+      { userId: "tenant-user" },
+      { projectItemId: "p1", markdown: "# Hi" },
+    );
+
+    expect(saved.ownerUserId).toBe("tenant-user");
+  });
+
+  it("propagates an infrastructure error from the first-write owner check unchanged, not as an owner_violation", async () => {
+    const infraError = new Error("connection terminated unexpectedly");
+    const references = fakeReferences({
+      requireUser: vi.fn(async () => {
+        throw infraError;
+      }),
+    });
+    const service = createProjectAgentGuidanceService({
+      store: fakeStore(),
+      references,
+      heartbeats: recordingHeartbeats(),
+      transactions: fakeTransactions(),
+    });
+
+    const err = await service
+      .upsertProjectAgentGuidance({ userId: "u1" }, { projectItemId: "p1", markdown: "# Hi" })
+      .catch((e: unknown) => e);
+
+    expect(err).toBe(infraError);
+    expect(err).not.toBeInstanceOf(ProjectAgentGuidanceOwnerViolationError);
+  });
+
+  it("refuses a transfer to a user who is not the tenant's user as validation_failed not_found, leaving the owner unchanged", async () => {
+    const existing: ProjectAgentGuidance = {
+      projectItemId: "p1",
+      ownerUserId: "tenant-user",
+      markdown: "# Guidance",
+      updatedAt: new Date().toISOString(),
+    };
+    const store = fakeStore(existing);
+    const references = fakeReferences({
+      requireUser: vi.fn(async (_tx: FakeTx, userId: string) => {
+        if (userId !== "tenant-user") throw new GuidanceReferenceNotFoundError(`User ${userId} not found`);
+      }),
+    });
+    const service = createProjectAgentGuidanceService({
+      store,
+      references,
+      heartbeats: recordingHeartbeats(),
+      transactions: fakeTransactions(),
+    });
+
+    const err = await service
+      .transferProjectAgentGuidance({ userId: "tenant-user" }, { projectItemId: "p1", newOwnerUserId: "foreign-user" })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ProjectAgentGuidanceValidationError);
+    expect((err as ProjectAgentGuidanceValidationError).details).toEqual({
+      field: "newOwnerUserId",
+      reason: "not_found",
+    });
+    expect(store.rows.get("p1")?.ownerUserId).toBe("tenant-user");
+  });
 });

@@ -10,7 +10,7 @@ import { requireSingleRow, withTransaction } from "./db/pool.js";
 import { NotFoundError } from "./errors.js";
 import { getDatabaseByModuleId } from "./chokePoint/databasesStore.js";
 import { getItemById } from "./chokePoint/itemsStore.js";
-import { getUserById } from "./auth/usersStore.js";
+import { getTenantUserId, getUserById } from "./auth/usersStore.js";
 import { PROJECTS_MODULE_ID } from "./seed/tenDatabaseKeys.js";
 
 type ProjectAgentGuidanceRow = {
@@ -92,16 +92,27 @@ export const guidanceReferenceStore: GuidanceReferenceStore<PoolClient> = {
   },
 
   async requireUser(tx, userId) {
-    const user = await getUserById(tx, userId);
-    if (!user) throw new GuidanceReferenceNotFoundError(`User ${userId} not found`);
+    await requireTenantUser(tx, userId);
   },
 
   async requireUserLocale(tx, userId) {
-    const user = await getUserById(tx, userId);
-    if (!user) throw new GuidanceReferenceNotFoundError(`User ${userId} not found`);
-    return user.locale;
+    return (await requireTenantUser(tx, userId)).locale;
   },
 };
+
+/**
+ * Resolves `userId` only when it is the current tenant's user (`getTenantUserId`). Another tenant's
+ * user, a user bound to no tenant and an unknown id all fail the same way, so a caller can never
+ * name a user outside the tenant as guidance owner or drift recipient.
+ */
+async function requireTenantUser(tx: PoolClient, userId: string) {
+  if ((await getTenantUserId(tx)) !== userId) {
+    throw new GuidanceReferenceNotFoundError(`User ${userId} not found`);
+  }
+  const user = await getUserById(tx, userId);
+  if (!user) throw new GuidanceReferenceNotFoundError(`User ${userId} not found`);
+  return user;
+}
 
 /**
  * Concrete `TransactionRunner<PoolClient>`: delegates to `withTransaction` (`db/pool.ts`) at the
