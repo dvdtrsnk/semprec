@@ -226,11 +226,11 @@ export async function getApprovalRequestForOwner(
 /**
  * The single atomic decision transition (issue #131): `pending` -> `approved`/`rejected`, one
  * `UPDATE ... WHERE status = 'pending'`, also conditioned on `decidedBy` being the run's actor
- * (issue #1028). Returns `null` when the row doesn't exist, is no
- * longer `pending` — a caller cannot tell those two apart from this call alone (call
- * `getApprovalRequest` if it needs to), which is exactly what makes a retried decision a
- * deterministic no-op instead of a second transition: two concurrent decisions on the same row
- * race on this one `UPDATE`, and only one can ever see `rowCount > 0`.
+ * (issue #1028). Returns `null` when no row matches: the id is unknown, the request is no longer
+ * `pending`, or `decidedBy` is not the run's actor. This call cannot tell those apart; the caller
+ * re-reads with `getApprovalRequestForOwner` if it needs to. A retried decision is a deterministic
+ * no-op instead of a second transition: two concurrent decisions on the same row race on this one
+ * `UPDATE`, and only one can ever see `rowCount > 0`.
  *
  * Deliberately **not** re-exported from this package's `index.ts` — see
  * `mcpGrantsAdminStore.ts`'s header for the same convention. Only `approvalDecisionAction.ts`'s
