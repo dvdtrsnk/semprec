@@ -404,6 +404,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "requireAffectedRows",
   "reserveGatewayCall",
   "resetPassword",
+  "resolveAgentRunLane",
   "resolveBlobStorageDir",
   "resolveDatabaseName",
   "resolveDocHistoryRetentionDays",
