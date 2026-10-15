@@ -79,6 +79,18 @@ export function createProjectAgentGuidanceService<Tx>(
         if (existing && existing.ownerUserId !== actor.userId) {
           throw new ProjectAgentGuidanceOwnerViolationError(input.projectItemId);
         }
+        if (!existing) {
+          // The first write seeds the owner, so the actor must be a user the reference store accepts
+          // (the tenant's own user). Any other user is refused as an owner violation.
+          try {
+            await references.requireUser(tx, actor.userId);
+          } catch (err) {
+            if (err instanceof GuidanceReferenceNotFoundError) {
+              throw new ProjectAgentGuidanceOwnerViolationError(input.projectItemId);
+            }
+            throw err;
+          }
+        }
 
         const saved = await store.upsert(tx, {
           projectItemId: input.projectItemId,
