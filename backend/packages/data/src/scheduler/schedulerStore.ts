@@ -14,7 +14,12 @@ import {
   type AnyHeartbeatRule,
   type HeartbeatRuleKindRegistry,
 } from "./rule.js";
-import { createActionQueueAffinity, resolveHeartbeatFireTaskName, type ActionQueueAffinity } from "./actions.js";
+import {
+  createActionQueueAffinity,
+  resolveAgentRunLane,
+  resolveHeartbeatFireTaskName,
+  type ActionQueueAffinity,
+} from "./actions.js";
 
 export interface HeartbeatRow {
   id: string;
@@ -340,7 +345,9 @@ export async function triggerOnItemEventHeartbeats(
       {
         jobKey: heartbeatFireJobKey(row.id, itemId),
         maxAttempts: 3,
-        queueName: baseLane === undefined ? undefined : (tenantLane(baseLane) ?? baseLane),
+        queueName:
+          resolveAgentRunLane(row.action_id) ??
+          (baseLane === undefined ? undefined : (tenantLane(baseLane) ?? baseLane)),
       },
     );
   }
@@ -531,7 +538,12 @@ export async function sweepDueHeartbeats(
       client,
       resolveHeartbeatFireTaskName(row.action_id),
       { heartbeatId: row.id, occurrenceId, generation },
-      { jobKey: occurrenceFireJobKey(row.id, occurrenceId, generation), maxAttempts: 3, jobKeyMode },
+      {
+        jobKey: occurrenceFireJobKey(row.id, occurrenceId, generation),
+        maxAttempts: 3,
+        jobKeyMode,
+        queueName: resolveAgentRunLane(row.action_id),
+      },
     );
     fired.push({ id: row.id });
   }

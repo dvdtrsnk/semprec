@@ -3,6 +3,7 @@ import { AGENT_TASK_NAMES, CORE_TASK_NAMES, type AgentTaskName, type CoreTaskNam
 import { createLogger, withTraceContext } from "@semprec/shared";
 import { createAgentRun, finishAgentRun, finishAgentRunWithErrorNotification } from "../agentRuns/agentRunsStore.js";
 import { withTransaction } from "../db/pool.js";
+import { tenantLane } from "../tenancy/tenantLane.js";
 import { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "../inbox/inboxTickKeys.js";
 import { parseItemRelationFilterConfig, passesItemRelationFilter } from "./itemRelationFilter.js";
 
@@ -143,4 +144,18 @@ export function resolveHeartbeatFireTaskName(actionId: string): CoreTaskName | A
   return actionId === CORE_AGENT_RUN_ACTION_ID
     ? AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT
     : CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE;
+}
+
+const AGENT_RUN_LANE = "agent-run";
+
+/**
+ * The per-tenant queue name for a heartbeat fire that starts an agent session (issue #1047): one
+ * executing `heartbeatFireAgent` job per tenant, so one tenant's due agent heartbeats cannot hold
+ * every agents-process slot. `undefined` for every other action and outside a tenant scope, so
+ * those fires keep their existing queue name.
+ */
+export function resolveAgentRunLane(actionId: string): string | undefined {
+  return resolveHeartbeatFireTaskName(actionId) === AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT
+    ? tenantLane(AGENT_RUN_LANE)
+    : undefined;
 }
