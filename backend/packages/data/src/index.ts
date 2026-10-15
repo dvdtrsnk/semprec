@@ -358,7 +358,7 @@ export type { GenericOperationApprovalReplay } from "./mcp/approvalRequestExecut
 // that file's header comment (issue #131), same convention as `mcpGrantsAdminStore.ts`. Only
 // this wrapper (which also enqueues the reserved execution job in the same transaction) is
 // reachable from a route handler.
-export type { DecideApprovalRequestInput } from "./mcp/approvalDecisionAction.js";
+export type { DecideApprovalRequestInput, DecideAndEnqueueResult } from "./mcp/approvalDecisionAction.js";
 export { decideAndEnqueueApprovalRequest } from "./mcp/approvalDecisionAction.js";
 
 // `mcpRunCredentialsStore.ts`'s raw hash-keyed lookup is deliberately NOT exported here, mirroring

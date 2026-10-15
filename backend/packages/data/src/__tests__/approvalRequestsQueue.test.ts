@@ -9,6 +9,7 @@ import { listApprovalRequestsQueue } from "../mcp/approvalRequestsQueue.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
+let ownerId: string;
 
 async function createUser(): Promise<string> {
   return (await createTenantZeroUser(pool)).id;
@@ -19,7 +20,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
     pool ??= getTestPool();
     chokePoint ??= createChokePoint(pool);
     await resetDatabase(pool);
-    await createUser();
+    ownerId = await createUser();
   });
 
   afterAll(async () => {
@@ -48,7 +49,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
 
-    const rows = await listApprovalRequestsQueue(pool);
+    const rows = await listApprovalRequestsQueue(pool, ownerId);
 
     expect(rows).toHaveLength(1);
     expect(rows[0]).toEqual({
@@ -84,7 +85,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
 
-    const rows = await listApprovalRequestsQueue(pool);
+    const rows = await listApprovalRequestsQueue(pool, ownerId);
 
     expect(rows).toHaveLength(1);
     expect(rows[0]!.safeSummary).toEqual({
@@ -109,7 +110,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
 
-    const rows = await listApprovalRequestsQueue(pool);
+    const rows = await listApprovalRequestsQueue(pool, ownerId);
 
     expect(JSON.stringify(rows)).not.toContain("hunter2");
     expect(rows[0]!.safeSummary.argKeys).toEqual(["password"]);
@@ -126,7 +127,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
 
-    const rows = await listApprovalRequestsQueue(pool);
+    const rows = await listApprovalRequestsQueue(pool, ownerId);
 
     expect(rows[0]!.projectItemId).toBeNull();
     expect(rows[0]!.projectName).toBeNull();
@@ -156,14 +157,14 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       payload,
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
-    await decideApprovalRequest(pool, decided.id, "approved", await createUser());
+    await decideApprovalRequest(pool, decided.id, "approved", ownerId);
 
-    const rows = await listApprovalRequestsQueue(pool);
+    const rows = await listApprovalRequestsQueue(pool, ownerId);
 
     expect(rows.map((row) => row.id)).toEqual([first.id, second.id]);
   });
 
   it("returns an empty array when there are no pending requests", async () => {
-    expect(await listApprovalRequestsQueue(pool)).toEqual([]);
+    expect(await listApprovalRequestsQueue(pool, ownerId)).toEqual([]);
   });
 });

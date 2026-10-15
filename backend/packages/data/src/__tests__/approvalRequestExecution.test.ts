@@ -100,7 +100,7 @@ describe("approval request decide+execute (issue #131)", () => {
       payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
-    const userId = await createUser();
+    const userId = run.actorUserId;
 
     const decided = await withTransaction(pool, (client) =>
       decideAndEnqueueApprovalRequest(client, {
@@ -109,7 +109,7 @@ describe("approval request decide+execute (issue #131)", () => {
         decidedByUserId: userId,
       }),
     );
-    expect(decided!.status).toBe("approved");
+    expect(decided!.request.status).toBe("approved");
     expect(contractServer.getHandshakeCount()).toBe(0);
 
     await drainQueue();
@@ -137,7 +137,7 @@ describe("approval request decide+execute (issue #131)", () => {
       payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
-    const userId = await createUser();
+    const userId = run.actorUserId;
 
     await withTransaction(pool, (client) =>
       decideAndEnqueueApprovalRequest(client, {
@@ -166,7 +166,7 @@ describe("approval request decide+execute (issue #131)", () => {
       payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
-    const userId = await createUser();
+    const userId = run.actorUserId;
     const otherUser = await createUser();
 
     await withTransaction(pool, (client) =>
@@ -205,7 +205,7 @@ describe("approval request decide+execute (issue #131)", () => {
       payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
-    const userId = await createUser();
+    const userId = run.actorUserId;
 
     await withTransaction(pool, (client) =>
       decideAndEnqueueApprovalRequest(client, {
@@ -244,7 +244,7 @@ describe("approval request decide+execute (issue #131)", () => {
       payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
-    const userId = await createUser();
+    const userId = run.actorUserId;
 
     await withTransaction(pool, (client) =>
       decideAndEnqueueApprovalRequest(client, {
@@ -276,7 +276,7 @@ describe("approval request decide+execute (issue #131)", () => {
       payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
-    const userId = await createUser();
+    const userId = run.actorUserId;
 
     await withTransaction(pool, (client) =>
       decideAndEnqueueApprovalRequest(client, {
@@ -316,7 +316,7 @@ describe("approval request decide+execute (issue #131)", () => {
       payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
-    const userId = await createUser();
+    const userId = run.actorUserId;
 
     await withTransaction(pool, (client) =>
       decideAndEnqueueApprovalRequest(client, {

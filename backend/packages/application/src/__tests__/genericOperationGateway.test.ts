@@ -72,7 +72,7 @@ async function approveDestructive(
   } catch (err) {
     requestId = (err as ApprovalRequiredError).details.approvalRequestId;
   }
-  const decidedByUserId = await createUser();
+  const decidedByUserId = actor.userId;
   await withTransaction(pool, (client) =>
     decideAndEnqueueApprovalRequest(client, { approvalRequestId: requestId, decision: "approved", decidedByUserId }),
   );
@@ -275,12 +275,11 @@ describe("createGenericOperationGateway (issue #220)", () => {
       // `queued` (issue #89's locked-execution protocol), so these direct-call tests must
       // decide the request first, same as the worker-path tests below — just without also
       // running the queue job, since they call the executor themselves.
-      const decidedByUserId = await createUser();
       await withTransaction(pool, (client) =>
         decideAndEnqueueApprovalRequest(client, {
           approvalRequestId: requestId,
           decision: "approved",
-          decidedByUserId,
+          decidedByUserId: run.actorUserId,
         }),
       );
 
@@ -667,15 +666,14 @@ describe("createGenericOperationGateway (issue #220)", () => {
         requestId = (err as ApprovalRequiredError).details.approvalRequestId;
       }
 
-      const decidedByUserId = await createUser();
       const decided = await withTransaction(pool, (client) =>
         decideAndEnqueueApprovalRequest(client, {
           approvalRequestId: requestId,
           decision: "approved",
-          decidedByUserId,
+          decidedByUserId: run.actorUserId,
         }),
       );
-      expect(decided!.status).toBe("approved");
+      expect(decided!.request.status).toBe("approved");
 
       return { requestId, itemId: item.id };
     }

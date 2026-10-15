@@ -8,19 +8,22 @@ import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import {
   createPendingApprovalRequest,
   getApprovalRequest,
+  getApprovalRequestForOwner,
   decideApprovalRequest,
+  listPendingApprovalRequests,
   claimApprovalRequestExecution,
   recordApprovalRequestOutcome,
 } from "../mcp/approvalRequestsStore.js";
 
 let pool: Pool;
+let ownerId: string;
 
 async function createUser(): Promise<string> {
   return (await createTenantZeroUser(pool)).id;
 }
 
 async function createPendingRequest(): Promise<string> {
-  const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+  const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
   const payload = { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: { query: "hi" } };
   const created = await createPendingApprovalRequest(pool, {
     agentRunId: run.id,
@@ -38,7 +41,7 @@ describe("approvalRequestsStore (issue #130)", () => {
     const viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry();
     await resetDatabase(pool);
     await seedSystem(pool, viewTypeRegistry);
-    await createUser();
+    ownerId = await createUser();
   });
 
   afterAll(async () => {
@@ -117,7 +120,7 @@ describe("approvalRequestsStore (issue #130)", () => {
   describe("decideApprovalRequest (issue #131)", () => {
     it("transitions a pending request to approved and records who/when", async () => {
       const id = await createPendingRequest();
-      const userId = await createUser();
+      const userId = ownerId;
 
       const decided = await decideApprovalRequest(pool, id, "approved", userId);
 
@@ -129,7 +132,7 @@ describe("approvalRequestsStore (issue #130)", () => {
 
     it("transitions a pending request to rejected", async () => {
       const id = await createPendingRequest();
-      const userId = await createUser();
+      const userId = ownerId;
 
       const decided = await decideApprovalRequest(pool, id, "rejected", userId);
 
@@ -138,7 +141,7 @@ describe("approvalRequestsStore (issue #130)", () => {
 
     it("returns null and makes no change for a request that is already decided", async () => {
       const id = await createPendingRequest();
-      const userId = await createUser();
+      const userId = ownerId;
       await decideApprovalRequest(pool, id, "approved", userId);
 
       const otherUser = await createUser();
@@ -151,16 +154,16 @@ describe("approvalRequestsStore (issue #130)", () => {
     });
 
     it("returns null for an unknown id", async () => {
-      const userId = await createUser();
+      const userId = ownerId;
       expect(await decideApprovalRequest(pool, randomUUID(), "approved", userId)).toBeNull();
     });
 
     it("only one of two concurrent decisions wins", async () => {
       const id = await createPendingRequest();
-      const [userA, userB] = await Promise.all([createUser(), createUser()]);
+      const userB = await createUser();
 
       const [a, b] = await Promise.all([
-        decideApprovalRequest(pool, id, "approved", userA),
+        decideApprovalRequest(pool, id, "approved", ownerId),
         decideApprovalRequest(pool, id, "rejected", userB),
       ]);
 
@@ -170,12 +173,55 @@ describe("approvalRequestsStore (issue #130)", () => {
       expect(stored!.status).toBe(winners[0]!.status);
       expect(stored!.decidedBy).toBe(winners[0]!.decidedBy);
     });
+
+    it("returns null and changes nothing when the decider is not the run's actor (issue #1028)", async () => {
+      const id = await createPendingRequest();
+      const foreignUser = await createUser();
+
+      expect(await decideApprovalRequest(pool, id, "approved", foreignUser)).toBeNull();
+
+      const stored = await getApprovalRequest(pool, id);
+      expect(stored!.status).toBe("pending");
+      expect(stored!.decidedBy).toBeNull();
+    });
+
+    it("returns null for a foreign caller even after the owner decided (issue #1028)", async () => {
+      const id = await createPendingRequest();
+      await decideApprovalRequest(pool, id, "approved", ownerId);
+
+      expect(await decideApprovalRequest(pool, id, "rejected", await createUser())).toBeNull();
+      expect((await getApprovalRequest(pool, id))!.decidedBy).toBe(ownerId);
+    });
+
+    it("getApprovalRequestForOwner returns the row only for its run's actor (issue #1028)", async () => {
+      const id = await createPendingRequest();
+
+      expect((await getApprovalRequestForOwner(pool, id, ownerId))!.id).toBe(id);
+      expect(await getApprovalRequestForOwner(pool, id, await createUser())).toBeNull();
+    });
+
+    it("listPendingApprovalRequests returns only the owner's pending requests (issue #1028)", async () => {
+      const ownRequestId = await createPendingRequest();
+      const foreignUser = await createUser();
+      const foreignRun = await createAgentRun(pool, { triggeredBy: "user", task: "other", userId: foreignUser });
+      await createPendingApprovalRequest(pool, {
+        agentRunId: foreignRun.id,
+        toolName: "search_web",
+        riskClass: "unclassified",
+        payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+        resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      });
+
+      const ids = (await listPendingApprovalRequests(pool, ownerId)).map((request) => request.id);
+
+      expect(ids).toEqual([ownRequestId]);
+    });
   });
 
   describe("claimApprovalRequestExecution / recordApprovalRequestOutcome (issue #131)", () => {
     it("claims an approved, unexecuted request exactly once", async () => {
       const id = await createPendingRequest();
-      const userId = await createUser();
+      const userId = ownerId;
       await decideApprovalRequest(pool, id, "approved", userId);
 
       const first = await claimApprovalRequestExecution(pool, id);
@@ -191,14 +237,14 @@ describe("approvalRequestsStore (issue #130)", () => {
       expect(await claimApprovalRequestExecution(pool, pendingId)).toBeNull();
 
       const rejectedId = await createPendingRequest();
-      const userId = await createUser();
+      const userId = ownerId;
       await decideApprovalRequest(pool, rejectedId, "rejected", userId);
       expect(await claimApprovalRequestExecution(pool, rejectedId)).toBeNull();
     });
 
     it("records the execution outcome on the claimed row", async () => {
       const id = await createPendingRequest();
-      const userId = await createUser();
+      const userId = ownerId;
       await decideApprovalRequest(pool, id, "approved", userId);
       await claimApprovalRequestExecution(pool, id);
 
@@ -212,7 +258,7 @@ describe("approvalRequestsStore (issue #130)", () => {
 
     it("records a failed outcome as 'conflict', not 'succeeded' (issue #89)", async () => {
       const id = await createPendingRequest();
-      const userId = await createUser();
+      const userId = ownerId;
       await decideApprovalRequest(pool, id, "approved", userId);
       await claimApprovalRequestExecution(pool, id);
 
