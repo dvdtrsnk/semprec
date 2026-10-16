@@ -255,8 +255,6 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "getDatabaseByModuleId",
   "getDocById",
   "getDocUpdateById",
-  "getEarliestUserId",
-  "getEarliestUserLocale",
   "getExpectedProcessHeartbeatStatuses",
   "getExpectedProcessNames",
   "getFailureStreak",

@@ -72,32 +72,6 @@ export async function anyUserExists(client: Pool | PoolClient): Promise<boolean>
 }
 
 /**
- * Semprec is a personal, single-tenant system — `databases`/`items` carry no owning-user column
- * at all (only `owner_project_item_id`), so a background action with no per-request session
- * (e.g. the drift-check heartbeat, `manifest/driftCheck.ts`) has no other honest way to find
- * "the" user whose `users.locale` a runtime-generated manifest should resolve against. The
- * first-created account is the closest stand-in for that single owner. Returns `null` before
- * setup (#233) has created any account yet.
- */
-export async function getEarliestUserLocale(client: Pool | PoolClient): Promise<string | null> {
-  const { rows } = await client.query<{ locale: string }>(
-    `SELECT locale FROM users ORDER BY created_at ASC, id ASC LIMIT 1`,
-  );
-  return rows[0] ? rows[0].locale : null;
-}
-
-/**
- * Same "closest stand-in for the single owner" reasoning as `getEarliestUserLocale`, for a
- * background producer (e.g. the `heartbeat_error` notification writer, `scheduler/sweep.ts`)
- * that needs a `notifications.user_id` to write to rather than a locale to resolve against.
- * Returns `null` before setup (#233) has created any account yet.
- */
-export async function getEarliestUserId(client: Pool | PoolClient): Promise<string | null> {
-  const { rows } = await client.query<{ id: string }>(`SELECT id FROM users ORDER BY created_at ASC, id ASC LIMIT 1`);
-  return rows[0] ? rows[0].id : null;
-}
-
-/**
  * The recipient of a tenant event is the user of the scope's tenant: the account whose
  * `users.tenant_id` is `app_tenant_default()` (the scope's tenant, or the sole tenant when no
  * scope is set and only one tenant exists). Returns `null` when the tenant has no bound user,

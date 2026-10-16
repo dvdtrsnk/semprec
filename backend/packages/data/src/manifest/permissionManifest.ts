@@ -96,9 +96,8 @@ export interface GeneratePermissionManifestOptions {
    * Ignored unless `moduleRegistry` is also given. Defaults to `"en"`, the reference locale.
    *
    * `driftCheck.ts`'s heartbeat — the one production caller of this function — resolves this
-   * live from `users.locale` on every run rather than pinning a value here; see its own comment
-   * for why (Semprec is single-tenant with no per-project owning-user column, so the
-   * earliest-created account stands in for "the" user). A caller with a genuine per-request
+   * live from the tenant user's `users.locale` on every run rather than pinning a value here;
+   * see its own comment for why. A caller with a genuine per-request
    * authenticated user, such as `services/semprec-api/src/schemaHandler.ts`'s sibling
    * `generateSchemaProjection`, should keep passing that user's locale directly instead.
    */
