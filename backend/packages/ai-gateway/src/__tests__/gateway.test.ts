@@ -659,30 +659,89 @@ describe("gateway caps across tenants, through the semprec_side role", () => {
     expect(logWarn).toHaveBeenCalledWith({ limit: "globalMonthly" }, expect.any(String));
   });
 
-  it("does not count a row one minute before the tenant's local midnight toward its daily cap", async () => {
-    // UTC+14: its local midnight is far from UTC midnight for most of the day.
-    const zone = "Pacific/Kiritimati";
+  it("admits exactly one of two concurrent calls from different tenants whose estimates each reach the global daily cap", async () => {
+    await setTenantAiBudget(adminPool, tenantA, { dailyCapUsd: null, monthlyCapUsd: null });
+    await setTenantAiBudget(adminPool, tenantB, { dailyCapUsd: null, monthlyCapUsd: null });
+    const globalCaps = { dailyCapUsd: 0.5, monthlyCapUsd: 1_000 };
+    const callAt = (tenantId: string) =>
+      runInTenant(tenantId, () =>
+        complete(
+          sidePool,
+          { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5, globalCaps },
+          async () => ({
+            inputTokens: 1,
+            outputTokens: 1,
+            costUsd: 0.5,
+          }),
+        ),
+      );
+
+    const results = await Promise.allSettled([callAt(tenantA), callAt(tenantB)]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const refusals = results.filter((result) => result.status === "rejected");
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]?.status === "rejected" && refusals[0].reason).toBeInstanceOf(BudgetExceededError);
+    expect(await rowCount()).toBe(1);
+  });
+
+  /**
+   * A fixed-offset zone seven hours from UTC, so its local midnight is always at least five hours
+   * from both the UTC and the Europe/Prague (DEFAULT_TIMEZONE) midnight. Then, at any time of day,
+   * a row one minute before it or one minute after it sits on opposite sides of the tenant's
+   * boundary but on the same side of the UTC and Prague boundaries — so one of the two tests below
+   * fails if the tenant window were measured in UTC or the default zone. Bangkok is used unless its
+   * local time is within an hour of midnight (a row "one minute after" must lie in the past).
+   */
+  function zoneFarFromUtcAndPragueMidnight(): string {
+    const bangkokHour = (new Date().getUTCHours() + 7) % 24;
+    return bangkokHour === 23 || bangkokHour === 0 ? "America/Phoenix" : "Asia/Bangkok";
+  }
+
+  async function seedTenantTimezone(tenantId: string, zone: string): Promise<void> {
     const dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
     try {
-      await runInTenant(tenantA, () => seedSystem(dataPool));
+      await runInTenant(tenantId, () => seedSystem(dataPool));
     } finally {
       await dataPool.end();
     }
     await adminPool.query(
       `UPDATE items SET properties = properties || jsonb_build_object('timezone', $1::text)
         WHERE tenant_id = $2 AND database_id = (SELECT id FROM databases WHERE owner_module_id = 'systemSettings' AND system AND tenant_id = $2)`,
-      [zone, tenantA],
+      [zone, tenantId],
     );
-    await setTenantAiBudget(adminPool, tenantA, { dailyCapUsd: 1 });
+  }
+
+  async function spendAtTenantMidnight(tenantId: string, zone: string, offset: string): Promise<void> {
     await adminPool.query(
       `INSERT INTO ai_gateway_calls (tenant_id, provider, model, input_tokens, output_tokens, cost_usd, at)
-       VALUES ($1, 'anthropic', 'claude-sonnet-5', 1, 1, 5, date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2 - interval '1 minute')`,
-      [tenantA, zone],
+       VALUES ($1, 'anthropic', 'claude-sonnet-5', 1, 1, 5, date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2 + $3::interval)`,
+      [tenantId, zone, offset],
     );
+  }
+
+  it("does not count a row one minute before the tenant's local midnight toward its daily cap", async () => {
+    const zone = zoneFarFromUtcAndPragueMidnight();
+    await seedTenantTimezone(tenantA, zone);
+    await setTenantAiBudget(adminPool, tenantA, { dailyCapUsd: 1 });
+    await spendAtTenantMidnight(tenantA, zone, "-1 minute");
 
     await callIn(tenantA);
 
     expect(await rowCount()).toBe(2);
+  });
+
+  it("counts a row one minute after the tenant's local midnight toward its daily cap", async () => {
+    const logWarn = vi.spyOn(logger, "warn");
+    const zone = zoneFarFromUtcAndPragueMidnight();
+    await seedTenantTimezone(tenantA, zone);
+    await setTenantAiBudget(adminPool, tenantA, { dailyCapUsd: 1 });
+    await spendAtTenantMidnight(tenantA, zone, "1 minute");
+
+    await expectRefused(callIn(tenantA));
+
+    expect(await rowCount()).toBe(1);
+    expect(logWarn).toHaveBeenCalledWith({ limit: "tenantDaily" }, expect.any(String));
   });
 
   it("does not count a row one minute before UTC midnight toward the global daily cap", async () => {

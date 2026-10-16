@@ -26,6 +26,7 @@ export interface AudioHandlerOptions {
   transcriptionProvider: TranscriptionProvider;
   pyannotePricePerAudioHour: number;
   deepInfraPricePerAudioHour: number;
+  /** Operator-wide safety caps (`AI_GLOBAL_*_CAP_USD`), checked on every reservation against all tenants' spend. */
   globalCaps: GlobalAiCaps;
 }
 

@@ -226,12 +226,14 @@ export interface GatewaySpend {
 }
 
 /**
- * Calendar-day and calendar-month spend in one query, per #120's budget check. Boundaries are
- * computed in the system's configured `timezone` (not the Postgres session timezone, typically
- * UTC), so a daily budget resets at local midnight rather than UTC midnight: `now() AT TIME ZONE
- * timezone` shifts "now" onto that zone's wall clock, `date_trunc` truncates it there, and the
- * second `AT TIME ZONE timezone` converts the local midnight back into the UTC instant that
- * `ai_gateway_calls.at` (timestamptz) is compared against. Every row counts at its `cost_usd`:
+ * Calendar-day and calendar-month spend in one query, per #120's budget check. Inside a tenant
+ * scope (the gateway's `semprec_side` connection under row-level security) it returns only that
+ * tenant's spend; the all-tenant total is `getGlobalGatewaySpend`. Boundaries are computed in the
+ * given `timezone` (not the Postgres session timezone, typically UTC), so a daily budget resets
+ * at local midnight rather than UTC midnight: `now() AT TIME ZONE timezone` shifts "now" onto that
+ * zone's wall clock, `date_trunc` truncates it there, and the second `AT TIME ZONE timezone`
+ * converts the local midnight back into the UTC instant that `ai_gateway_calls.at` (timestamptz)
+ * is compared against. Every row counts at its `cost_usd`:
  * a `reserved` row at the caller's estimate (so in-flight calls count against the cap), a
  * `settled` row at its real cost, and a `failed` row at 0.
  */

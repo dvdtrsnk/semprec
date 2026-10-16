@@ -41,7 +41,6 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const AGENT_RUN_ID_HEADER = "x-semprec-agent-run-id";
 
 export interface PiMessagesHandlerOptions {
-  globalCaps: GlobalAiCaps;
   /** Compared against the caller's `Authorization: Bearer <token>` header. */
   internalToken: string;
   /** Resolves the requested model id; only `anthropic` models are ever looked up. */
@@ -51,6 +50,8 @@ export interface PiMessagesHandlerOptions {
   streamFn: StreamFunction<Api, SimpleStreamOptions>;
   /** Defaults to `STREAM_TIMEOUT_MS`; exists only so a test can shrink the bound to milliseconds. */
   streamTimeoutMs?: number;
+  /** Operator-wide safety caps (`AI_GLOBAL_*_CAP_USD`), checked on every reservation against all tenants' spend. */
+  globalCaps: GlobalAiCaps;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
