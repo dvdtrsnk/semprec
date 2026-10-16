@@ -6,6 +6,7 @@ import { hashPassword } from "./passwordHash.js";
 import { generateOpaqueToken, hashToken } from "./token.js";
 import { getUserByEmail, updateUserPasswordHash } from "./usersStore.js";
 import { revokeAllSessionsForUser } from "./sessionsStore.js";
+import { revokeAllPushSubscriptionsForUser } from "../push/pushSubscriptionsStore.js";
 import {
   consumePasswordResetToken,
   countRecentPasswordResetTokens,
@@ -103,7 +104,8 @@ export interface ResetPasswordInput {
  * Also revokes every other active session for the user, in the same transaction as the password
  * write. Password reset is the recovery path for a compromised account, so a session an attacker
  * held before the reset must not outlive it — without this, that session would keep working for
- * its full `SESSION_TTL_SECONDS` regardless of the password change.
+ * its full `SESSION_TTL_SECONDS` regardless of the password change. Push registrations are revoked
+ * with the sessions (issue #1024), including the ones that have no session.
  *
  * Takes a `PoolClient`, not `Pool | PoolClient`, on purpose: consuming the token, writing the new
  * password hash, and revoking sessions is only atomic — "consumed but the password never
@@ -135,4 +137,5 @@ export async function resetPassword(client: PoolClient, input: ResetPasswordInpu
   const passwordHash = await hashPassword(input.newPassword);
   await updateUserPasswordHash(client, consumed.userId, passwordHash);
   await revokeAllSessionsForUser(client, consumed.userId);
+  await revokeAllPushSubscriptionsForUser(client, consumed.userId);
 }

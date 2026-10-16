@@ -194,6 +194,22 @@ export async function revokePushSubscriptionsForSession(client: Pool | PoolClien
   );
 }
 
+/**
+ * The user-wide revocation (issue #1024): every registration of `userId` ends when the account's
+ * access is reset. It covers rows with a NULL `session_id` as well, which the session cascade
+ * never reaches. Password reset calls it on the same client as the password write, so it commits
+ * or rolls back with the reset. Zero is a legitimate result: the user may have no registration.
+ * Returns the number of rows it revoked.
+ */
+export async function revokeAllPushSubscriptionsForUser(client: Pool | PoolClient, userId: string): Promise<number> {
+  const result = await client.query(
+    `UPDATE push_subscriptions SET revoked_at = now(), updated_at = now()
+     WHERE user_id = $1 AND revoked_at IS NULL`,
+    [userId],
+  );
+  return result.rowCount ?? 0;
+}
+
 export type ProviderInvalidationInput =
   { channel: "web_push"; endpoint: string } | { channel: "apns"; deviceToken: string };
 

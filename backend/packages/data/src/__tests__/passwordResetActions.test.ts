@@ -14,6 +14,8 @@ import {
   resetPassword,
 } from "../auth/passwordResetActions.js";
 import { countRecentPasswordResetTokens } from "../auth/passwordResetStore.js";
+import { registerPushSubscription } from "../push/pushSubscriptionActions.js";
+import { listPushSubscriptionsForUser } from "../push/pushSubscriptionsStore.js";
 import type { PasswordResetMailer, SendPasswordResetEmailInput } from "../auth/passwordResetMail.js";
 import { PasswordResetTokenError, ValidationError } from "../errors.js";
 
@@ -304,6 +306,187 @@ describe("password reset actions (issue #142)", () => {
       } finally {
         setSessionRevokedHook(() => {});
       }
+    });
+
+    it("revokes every active push registration of the user, web push, APNs and session-less, and leaves another user's active", async () => {
+      const user = await makeUser();
+      const other = await makeUser("other@example.com");
+      const session = await createSession(pool, {
+        userId: user.id,
+        tokenHash: generateOpaqueToken().tokenHash,
+        platform: "ios",
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      const webOnSession = await registerPushSubscription(pool, {
+        userId: user.id,
+        sessionId: session.id,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/user-web",
+        p256dh: "key",
+        authSecret: "secret",
+      });
+      const apnsOnSession = await registerPushSubscription(pool, {
+        userId: user.id,
+        sessionId: session.id,
+        channel: "apns",
+        platform: "ios",
+        deviceToken: "device-token-user",
+        apnsEnvironment: "sandbox",
+      });
+      const sessionless = await registerPushSubscription(pool, {
+        userId: user.id,
+        sessionId: null,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/user-sessionless",
+        p256dh: "key",
+        authSecret: "secret",
+      });
+      const otherSessionless = await registerPushSubscription(pool, {
+        userId: other.id,
+        sessionId: null,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/other-sessionless",
+        p256dh: "key",
+        authSecret: "secret",
+      });
+
+      const token = await requestAndGetToken(user.email);
+      await resetPasswordInTransaction(pool, { token, newPassword: "a-brand-new-password" });
+
+      const userRows = await listPushSubscriptionsForUser(pool, user.id);
+      expect(userRows.map((row) => row.id).sort()).toEqual([webOnSession.id, apnsOnSession.id, sessionless.id].sort());
+      expect(userRows.every((row) => row.revokedAt !== null)).toBe(true);
+
+      const otherRows = await listPushSubscriptionsForUser(pool, other.id);
+      expect(otherRows.map((row) => row.id)).toEqual([otherSessionless.id]);
+      expect(otherRows[0]!.revokedAt).toBeNull();
+    });
+
+    it("revokes no push registration when the token is invalid", async () => {
+      const user = await makeUser();
+      const registration = await registerPushSubscription(pool, {
+        userId: user.id,
+        sessionId: null,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/invalid-token",
+        p256dh: "key",
+        authSecret: "secret",
+      });
+
+      const err = await resetPasswordInTransaction(pool, {
+        token: "not-a-real-token",
+        newPassword: "whatever-password",
+      }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(PasswordResetTokenError);
+
+      const [row] = await listPushSubscriptionsForUser(pool, user.id);
+      expect(row!.id).toBe(registration.id);
+      expect(row!.revokedAt).toBeNull();
+    });
+
+    it("revokes no push registration when the token was already consumed", async () => {
+      const user = await makeUser();
+      const token = await requestAndGetToken(user.email);
+      await resetPasswordInTransaction(pool, { token, newPassword: "first-new-password" });
+
+      // Registered after the first reset, so the second attempt's revocation would be visible.
+      const registration = await registerPushSubscription(pool, {
+        userId: user.id,
+        sessionId: null,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/consumed-token",
+        p256dh: "key",
+        authSecret: "secret",
+      });
+
+      const err = await resetPasswordInTransaction(pool, { token, newPassword: "second-new-password" }).catch(
+        (e: unknown) => e,
+      );
+      expect((err as PasswordResetTokenError).reason).toBe("consumed");
+
+      const [row] = await listPushSubscriptionsForUser(pool, user.id);
+      expect(row!.id).toBe(registration.id);
+      expect(row!.revokedAt).toBeNull();
+    });
+
+    it("revokes no push registration when the token is expired", async () => {
+      const user = await makeUser();
+      const token = await requestAndGetToken(user.email);
+      await pool.query(`UPDATE password_reset_tokens SET expires_at = now() - interval '1 second' WHERE user_id = $1`, [
+        user.id,
+      ]);
+      const registration = await registerPushSubscription(pool, {
+        userId: user.id,
+        sessionId: null,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/expired-token",
+        p256dh: "key",
+        authSecret: "secret",
+      });
+
+      const err = await resetPasswordInTransaction(pool, { token, newPassword: "whatever-password" }).catch(
+        (e: unknown) => e,
+      );
+      expect((err as PasswordResetTokenError).reason).toBe("expired");
+
+      const [row] = await listPushSubscriptionsForUser(pool, user.id);
+      expect(row!.id).toBe(registration.id);
+      expect(row!.revokedAt).toBeNull();
+    });
+
+    it("revokes no push registration when the newPassword is too short", async () => {
+      const user = await makeUser();
+      const token = await requestAndGetToken(user.email);
+      const registration = await registerPushSubscription(pool, {
+        userId: user.id,
+        sessionId: null,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/short-password",
+        p256dh: "key",
+        authSecret: "secret",
+      });
+
+      const err = await resetPasswordInTransaction(pool, { token, newPassword: "1234567" }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ValidationError);
+
+      const [row] = await listPushSubscriptionsForUser(pool, user.id);
+      expect(row!.id).toBe(registration.id);
+      expect(row!.revokedAt).toBeNull();
+    });
+
+    it("restores push registrations and the password when the reset transaction rolls back after the revocation", async () => {
+      const user = await makeUser();
+      const registration = await registerPushSubscription(pool, {
+        userId: user.id,
+        sessionId: null,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/rollback",
+        p256dh: "key",
+        authSecret: "secret",
+      });
+      const token = await requestAndGetToken(user.email);
+
+      // Throw after resetPassword, inside the test's own transaction, so the whole reset rolls back.
+      const err = await withTransaction(pool, async (client) => {
+        await resetPassword(client, { token, newPassword: "a-brand-new-password" });
+        throw new Error("forced rollback");
+      }).catch((e: unknown) => e);
+      expect((err as Error).message).toBe("forced rollback");
+
+      const [row] = await listPushSubscriptionsForUser(pool, user.id);
+      expect(row!.id).toBe(registration.id);
+      expect(row!.revokedAt).toBeNull();
+
+      const unchanged = await getUserByEmail(pool, user.email);
+      expect(await verifyPassword(unchanged!.passwordHash, OLD_PASSWORD)).toBe(true);
     });
   });
 });
