@@ -4,7 +4,8 @@ import type { Pool } from "pg";
 import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { withTransaction } from "../db/pool.js";
+import { requireSingleRow, withTransaction } from "../db/pool.js";
+import { createUser } from "../auth/usersStore.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { clearHooksForTests, registerItemCreateHook } from "../chokePoint/hooks.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
@@ -83,8 +84,15 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
   });
 
   async function createAdmin(): Promise<string> {
-    const user = await createTenantZeroUser(pool);
-    await pool.query("UPDATE users SET role = 'admin' WHERE id = $1", [user.id]);
+    const { rows } = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
+    const tenantId = requireSingleRow(rows, "sole tenant").id;
+    if (!tenantId) throw new Error("Expected a sole tenant");
+    const user = await createUser(pool, {
+      email: "admin@example.test",
+      passwordHash: "unused",
+      tenantId,
+      role: "admin",
+    });
     return user.id;
   }
 
@@ -126,7 +134,6 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
 
   it("refuses a stdio config with no human writer, or a non-admin one, and leaves no row", async () => {
     const member = await createTenantZeroUser(pool);
-    await pool.query("UPDATE users SET role = 'member' WHERE id = $1", [member.id]);
     await expect(create(mcpServersId, { name: "S", connectionConfig: STDIO })).rejects.toMatchObject({
       details: { field: "connectionConfig" },
     });

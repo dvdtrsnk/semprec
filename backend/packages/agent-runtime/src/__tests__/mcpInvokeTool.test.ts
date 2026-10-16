@@ -78,14 +78,17 @@ describe("MCP invoke adapter (issue #128)", () => {
     await seedSystem(pool, viewTypeRegistry);
     mcpServersId = await databaseIdFor("mcpServers");
     const passwordHash = await hashPassword("s3cret-password");
+    const { rows } = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
+    const tenantId = rows[0]?.id;
+    if (!tenantId) throw new Error("Expected a sole tenant");
+    // A `stdio` spawn needs an admin of the sole tenant (issue #1033).
     earliestUser = await createUser(pool, {
       email: `${randomUUID()}@example.test`,
       passwordHash,
       locale: "en",
-      tenantId: getTenantZeroId(),
+      tenantId,
+      role: "admin",
     });
-    // A `stdio` spawn needs an admin of the sole tenant (issue #1033): the tenant-zero user is one.
-    await pool.query("UPDATE users SET role = 'admin' WHERE id = $1", [earliestUser.id]);
   });
 
   afterEach(async () => {
