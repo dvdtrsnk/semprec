@@ -43,6 +43,15 @@ expensive; finding it takes seconds.
 For a large or unfamiliar area, map the relevant code before editing. A wrong
 first attempt costs more than the reading would have.
 
+Then write yourself a trace: every item of `## Task` and every Acceptance
+criterion, each mapped to the file that delivers it and the test that proves
+it. Check an exhaustive list in the issue ("every X", a table of fields) item
+by item. Trace a new behaviour into the production composition root that runs it,
+not only into the test harness. Setup wired only into `globalSetup` passes every
+test and is absent in production. Why: unmet criteria found by the review
+were usually a list item skipped or a piece wired only where the tests could see
+it.
+
 ## 2. Load the skills this Task touches
 
 Do this before you write anything, and say in one line which you loaded and why
@@ -59,6 +68,8 @@ means to "remember them as it goes" reliably does not.
 | `canonical-keys` | a stored key, option value, view type, or any string a user will see |
 | `ai-gateway` | any model call, provider SDK, or provider credential |
 | `adr-conventions` | introducing a cross-cutting pattern that no rule and no ADR covers — or adding, editing, superseding or narrowing an ADR |
+| `testing` | writing or changing any test, or claiming a change is covered |
+| `fix-review-findings` | addressing review-bot findings on a pull request |
 
 Most issues match more than one. Load all that apply — they are short, and the
 cost of reading one is far below the cost of the finding it prevents.
@@ -75,6 +86,22 @@ later", an exported helper with one caller, an interface field a future issue
 might use, a type alias anticipating a union that does not exist yet. Each of
 those is a finding, recorded as such in
 `docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md`.
+
+A bug, a flaky test or a cleanup you discover along the way does not go into
+this pull request either, even when it blocks your local verify. Describe it in
+the pull request description as a proposed follow-up and leave the code alone.
+If a flaky test unrelated to your diff blocks verify, report it with the
+failing output and do not change it on this branch; in a Relay run, end with
+`Relay-Step-Status: fail` and name the test. Why: unrelated fixes folded into an
+issue's pull request were the most frequently re-opened finding here. They collide with the issue that owns the
+code, and reverting them half-way costs another round.
+
+When the issue contradicts itself, or contradicts the code it must change,
+implement the reading closest to `## Task` and name the conflict in the pull
+request description. Do not resolve it silently, and do not deviate from an
+explicit instruction because it is hard to implement — say what made it hard.
+Why: a conflict named up front is decided once by the reviewer; a conflict
+resolved silently comes back as a review finding in either direction.
 
 The conventions are law, not suggestions: choke-point writes, single-writer
 ownership, expand/contract migrations, AI calls only through the gateway,
@@ -96,15 +123,38 @@ In this order, because each step is cheaper than the one after it:
    cause? does any new route or outbound call lack auth, a timeout, or a size
    cap? does any docstring claim something the code does not do? is there a
    branch the Acceptance criteria promises and no test covers?
-2. **Sweep for leftovers** — debug prints, commented-out code, files unrelated
+2. **Audit every claim you wrote.** Search the diff's comments, docstrings,
+   ADRs, log messages and the pull request description for absolute or
+   mechanism words, and check each against the code and configuration:
+   - absolute words: *only*, *never*, *all*, *every*, *cannot*, *guarantee*;
+   - mechanism words: *atomic*, *serialized*, *same transaction*, *locked*;
+   - concrete references: a file path, an env variable, a command;
+   - the tense of what the text describes.
+
+   Describe a planned artifact in the future tense with its issue number,
+   never as if it exists. After changing behaviour, re-read the docstrings of
+   the function and its callers. Why: a claim the code does not make true is
+   this repository's third most common finding. Agents follow these documents
+   literally, so a false sentence is executed.
+3. **Sweep for leftovers** — debug prints, commented-out code, files unrelated
    to this issue.
-3. **Run the pipeline**: `pnpm run verify` in `backend/`, then in `web/`. This
+4. **Take the migration ordinal last.** If the diff adds a migration, run
+   `git fetch origin` and compare your number against
+   `backend/packages/data/src/db/migrations/` on `origin/develop` right before
+   your final commit. Renumber only your own file if it collides. Why: parallel
+   issues pick the same next number, and the collision surfaces only after the
+   other pull request merges (see `db-migrations`).
+5. **Run the pipeline**: `pnpm run verify` in `backend/`, then in `web/`. This
    is the same sequence CI runs, in the same order. The host is shared — read
    `.bb/AGENTS.md` before you wait on, kill or log a process.
 
 Fix what each step finds and commit it before moving on.
 
 ## 5. When the review bot comes back
+
+Load the `fix-review-findings` skill before changing any code. It covers how
+to verify a finding, check it against the issue, and fix every sibling instance
+in one round.
 
 Findings at `medium` and above block the merge. Triage each one against the
 `review-rules/` of the platform it touches:

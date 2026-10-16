@@ -44,33 +44,48 @@ the failure mode that rule exists to prevent.
 | `ai-gateway` | any model call, provider SDK, or provider credential |
 | `io-hardening` | a new HTTP route, handler, WebSocket upgrade, `LISTEN` consumer, pooled-connection consumer, or any network call |
 | `error-handling` | a `catch`, an error mapping, a rollback path, or any decision about what happens on failure |
+| `testing` | writing or changing any test, or claiming a change is covered |
+| `fix-review-findings` | addressing review-bot findings on a pull request |
 
 ## What the review actually reports
 
-Four failure shapes account for most of the blocking findings on this
-repository's pull requests. They are worth knowing even if you load no skill at
-all:
+Six failure shapes account for most of the findings that implementing agents
+later agreed with and fixed on this repository's merged pull requests. They are
+worth knowing even if you load no skill at all:
 
+- **A test that cannot fail.** This is about a quarter of all fixed findings:
+  a branch, call site or not-found outcome with no test of its own; only the
+  refused side of a permission tested; an existing test that now passes
+  because of the new guard rather than the path it is named for; a harness
+  other than the one the issue named; an isolation test on the superuser
+  pool, which bypasses row-level security. (`testing`)
+- **A pattern decided in a comment instead of an ADR.** A *Rule:* or an *only X
+  may* in a docstring, a new lock, lifecycle or ownership contract, or an ADR
+  cited for a case it does not cover. (`adr-conventions`)
+- **A sentence the code does not make true.** A docstring describing the
+  intended condition, an ADR claiming "serialized" where only atomicity holds,
+  a planned file described as existing, a path that does not exist.
+  (`implement-issue` §4)
+- **A pre-check that ran outside the write's own transaction**, or inside it
+  without a row lock. A lookup confirms a row is there or a lock is free, then
+  the write acts on it. A concurrent write in the gap makes the lookup stale,
+  and nothing catches the write silently no-op'ing or racing another writer
+  for the same row. (`state-writes`)
+- **Something folded in that the issue did not ask for.** A flake or bug fixed
+  along the way, or a review fix applied against the issue's Task or Out of
+  scope. These were the most often re-opened findings. (`implement-issue` §3,
+  `fix-review-findings`)
 - **Rule 6 below, in its usual disguises.** A plain `string` cast straight to a
   narrow union (`as PropertyType`) instead of checked against the allowed
-  values — it returns the right 400 today only because a downstream layer
+  values. It returns the right 400 today only because a downstream layer
   happens to validate it too, and stops the day that layer changes. The same
   shape shows up as a `pg` row read without a type argument, `res.json() as X`,
-  or `JSON.parse(payload) as Frame` on a `NOTIFY` or socket message — that last
-  one landed in a diff that replaced safer code (`{ type?: unknown }` plus
-  `typeof` guards) with the cast. (`state-writes`)
-- **A pre-check that ran outside the write's own transaction.** A lookup
-  confirms a row is there or a lock is free, then a separate transaction acts
-  on it — a concurrent write in the gap makes the lookup stale, and nothing
-  catches the write silently no-op'ing or racing another writer for the same
-  row. (`state-writes`)
-- **A resource opened and never given back on the failure path.** A pooled
-  connection acquired and then leaked when the query after it throws, or a
-  shutdown path that waits on a handshake or in-flight async step that may
-  never complete. (`io-hardening`)
-- **A branch nobody tested.** A new data-layer method covered only by an HTTP
-  integration test, a conditional path through an update never exercised, an
-  assertion on a result's length that doesn't also check its content.
+  `JSON.parse(payload) as Frame` on a `NOTIFY` or socket message, or a caught
+  error cast to an assumed shape instead of narrowed with `instanceof`.
+  (`state-writes`)
+
+Resource leaks on the failure path (`io-hardening`) and swallowed or masked
+errors (`error-handling`) follow close behind.
 
 ## What this repository is strict about
 
@@ -85,7 +100,8 @@ all:
    open, not the examples: a DB row, a JSONB column, an API payload, a model's
    tool-call arguments, a `NOTIFY` payload you `JSON.parse`, a frame off a
    socket. If the value did not come from this codebase's own types, it is a
-   boundary.
+   boundary. Tests are no exception: test code is copied into production code,
+   so it is typed the same way.
 7. Agent-originated changes are proposals that go through approval/`confirm`,
    never direct writes.
 8. Each user's data and agents live in that user's own tenant; nothing may let
@@ -106,6 +122,10 @@ Three tiers, selected by filename, and a file belongs to exactly one:
 Write the test list from the issue's Acceptance criteria, plus every branch you
 claim exists in a docstring, plus the failure paths (no user, provider refused,
 endpoint absent) — those are where findings concentrate.
+
+Load the `testing` skill before writing one: it holds the rules for branch
+coverage, multi-tenant isolation tests, fixtures and test hygiene that the
+review keeps reporting.
 
 ## Before you open a pull request
 
@@ -137,7 +157,8 @@ at the same time, so every process you did not start belongs to someone else:
 
 ## Review findings
 
-The code-review bot blocks the merge at `medium` severity and above. Fix what it
+Load the `fix-review-findings` skill before changing code in response to a
+review. The code-review bot blocks the merge at `medium` severity and above. Fix what it
 gets right, and fix a cheap `low` finding when it is clearly correct. A finding
 that is genuinely wrong gets a reasoned reply on its thread — not a code change
 made to appease it. Changing correct code to silence a mistaken reviewer is how
