@@ -7,6 +7,7 @@ import { login, logout, revokeUserSession } from "../auth/authActions.js";
 import { ValidationError } from "../errors.js";
 import { registerPushSubscription, revokePushSubscription } from "../push/pushSubscriptionActions.js";
 import {
+  revokeAllPushSubscriptionsForUser,
   revokePushSubscriptionByProviderInvalidation,
   listPushSubscriptionsForUser,
   upsertApnsSubscription,
@@ -550,6 +551,61 @@ describe("push subscriptions (issue #150)", () => {
       const [row] = await listPushSubscriptionsForUser(pool, user.id);
       expect(row!.id).toBe(subOnSecond.id);
       expect(row!.revokedAt).not.toBeNull();
+    });
+  });
+
+  describe("user-wide revocation (issue #1024)", () => {
+    it("returns the number of rows it revoked, counting web push, APNs and session-less rows, and not another user's", async () => {
+      const user = await makeUser();
+      const other = await makeUser("other@example.com");
+      const session = await makeSession(user.email);
+      await registerPushSubscription(pool, {
+        userId: user.id,
+        sessionId: session.session.id,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/count-web",
+        p256dh: "key",
+        authSecret: "secret",
+      });
+      await registerPushSubscription(pool, {
+        userId: user.id,
+        sessionId: null,
+        channel: "apns",
+        platform: "ios",
+        deviceToken: "count-device-token",
+        apnsEnvironment: "sandbox",
+      });
+      await registerPushSubscription(pool, {
+        userId: user.id,
+        sessionId: null,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/count-sessionless",
+        p256dh: "key",
+        authSecret: "secret",
+      });
+      await registerPushSubscription(pool, {
+        userId: other.id,
+        sessionId: null,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/count-other",
+        p256dh: "key",
+        authSecret: "secret",
+      });
+
+      expect(await revokeAllPushSubscriptionsForUser(pool, user.id)).toBe(3);
+      expect(await revokeAllPushSubscriptionsForUser(pool, user.id)).toBe(0);
+
+      const [otherRow] = await listPushSubscriptionsForUser(pool, other.id);
+      expect(otherRow!.revokedAt).toBeNull();
+    });
+
+    it("returns 0 for a user with no active registration", async () => {
+      const user = await makeUser();
+
+      expect(await revokeAllPushSubscriptionsForUser(pool, user.id)).toBe(0);
     });
   });
 

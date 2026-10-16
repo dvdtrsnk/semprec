@@ -415,6 +415,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "resolveProperty",
   "resolveTaskAffinitySets",
   "retentionHours",
+  "revokeAllPushSubscriptionsForUser",
   "revokeAllSessionsForUser",
   "revokePushSubscription",
   "revokePushSubscriptionByProviderInvalidation",
