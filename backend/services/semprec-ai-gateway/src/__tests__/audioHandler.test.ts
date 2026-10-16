@@ -1,8 +1,8 @@
 import { createServer, request, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { createChokePoint, getSystemSettingsDatabaseId, getSystemSettingsItemId, seedSystem } from "@semprec/data";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { seedSystem } from "@semprec/data";
+import { getTestPool, resetDatabase, getTenantZeroId, setTenantAiBudget } from "@semprec/data/testSupport";
 import { createDispatcher } from "../app.js";
 import { logger } from "../logger.js";
 import type { CompleteHandlerOptions } from "../completeHandler.js";
@@ -16,11 +16,13 @@ import type {
 import { AudioProviderCallError } from "../audioProviders/types.js";
 import { createModels } from "@earendil-works/pi-ai";
 import type { PiMessagesHandlerOptions } from "../piMessagesHandler.js";
+import { GENEROUS_GLOBAL_CAPS } from "./globalCaps.js";
 /** This suite never reaches `/internal/pi/messages`; the dispatcher only needs the options to exist. */
 const FAKE_PI_OPTIONS: PiMessagesHandlerOptions = {
   internalToken: "test-internal-token",
   models: createModels(),
   apiKey: "unused",
+  globalCaps: GENEROUS_GLOBAL_CAPS,
   streamFn: () => {
     throw new Error("the pi-messages route is not exercised by this suite");
   },
@@ -40,6 +42,7 @@ const FAKE_COMPLETE_OPTIONS: CompleteHandlerOptions = {
   model: "fake-model",
   pricePerMillionInputTokens: 3,
   pricePerMillionOutputTokens: 15,
+  globalCaps: GENEROUS_GLOBAL_CAPS,
 };
 
 class FakeDiarizationProvider implements DiarizationProvider {
@@ -100,22 +103,6 @@ class FakeTranscriptionProvider implements TranscriptionProvider {
   }
 }
 
-async function setBudgets(
-  pool: Pool,
-  budgets: { dailyBudgetUsd?: number | null; monthlyBudgetUsd?: number | null },
-): Promise<void> {
-  const client = await pool.connect();
-  let itemId: string;
-  let databaseId: string;
-  try {
-    itemId = await getSystemSettingsItemId(client);
-    databaseId = await getSystemSettingsDatabaseId(client);
-  } finally {
-    client.release();
-  }
-  await createChokePoint(pool).updateItem({ databaseId, itemId, propertiesPatch: budgets });
-}
-
 function startServer(diarizationProvider: DiarizationProvider, transcriptionProvider: TranscriptionProvider): void {
   const audioOptions: AudioHandlerOptions = {
     internalToken: "test-internal-token",
@@ -123,6 +110,7 @@ function startServer(diarizationProvider: DiarizationProvider, transcriptionProv
     transcriptionProvider,
     pyannotePricePerAudioHour: 6,
     deepInfraPricePerAudioHour: 3,
+    globalCaps: GENEROUS_GLOBAL_CAPS,
   };
   server = createServer(createDispatcher(pool, FAKE_COMPLETE_OPTIONS, audioOptions, FAKE_PI_OPTIONS));
 }
@@ -209,6 +197,7 @@ describe("POST /internal/diarize and /internal/transcribe", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    await setTenantAiBudget(pool, getTenantZeroId());
     diarizationProvider = new FakeDiarizationProvider();
     transcriptionProvider = new FakeTranscriptionProvider();
   });
@@ -487,7 +476,7 @@ describe("POST /internal/diarize and /internal/transcribe", () => {
     });
 
     it("returns 403 budget_exceeded, never invokes the provider, and writes no row once the daily cap is reached", async () => {
-      await setBudgets(pool, { dailyBudgetUsd: 1, monthlyBudgetUsd: null });
+      await setTenantAiBudget(pool, getTenantZeroId(), { dailyCapUsd: 1, monthlyCapUsd: null });
       await pool.query(
         `INSERT INTO ai_gateway_calls (provider, model, audio_seconds, cost_usd) VALUES ('pyannoteai', 'v1', 100, 1)`,
       );
@@ -505,7 +494,7 @@ describe("POST /internal/diarize and /internal/transcribe", () => {
     });
 
     it("returns 403 budget_exceeded on the transcription route and writes no row once the daily cap is reached", async () => {
-      await setBudgets(pool, { dailyBudgetUsd: 1, monthlyBudgetUsd: null });
+      await setTenantAiBudget(pool, getTenantZeroId(), { dailyCapUsd: 1, monthlyCapUsd: null });
       await pool.query(
         `INSERT INTO ai_gateway_calls (provider, model, audio_seconds, cost_usd) VALUES ('deepinfra', 'v1', 100, 1)`,
       );

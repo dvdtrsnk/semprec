@@ -10,6 +10,7 @@ export {
   createTenantZeroUser,
   createTestTenant,
   getTenantZeroId,
+  setTenantAiBudget,
   withTenantTransaction,
 } from "./tenantFixtures.js";
 export { createTestModuleItem, createTestProjectItem } from "./projectFixtures.js";

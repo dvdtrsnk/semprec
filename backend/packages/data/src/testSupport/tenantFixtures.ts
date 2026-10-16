@@ -46,6 +46,24 @@ export async function createTestTenant(pool: Pool, options: { status?: TenantSta
   return row.id;
 }
 
+/**
+ * Upserts `tenantId`'s `tenant_ai_budgets` row; an omitted cap is `NULL` (no per-tenant cap for
+ * that window). Raw SQL on the admin pool because no production writer exists yet and the table
+ * is global, so no tenant scope applies. `resetDatabase` empties the table, and a tenant without a
+ * row is refused every gateway call.
+ */
+export async function setTenantAiBudget(
+  pool: Pool,
+  tenantId: string,
+  caps: { dailyCapUsd?: number | null; monthlyCapUsd?: number | null } = {},
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO tenant_ai_budgets (tenant_id, daily_cap_usd, monthly_cap_usd) VALUES ($1, $2, $3)
+     ON CONFLICT (tenant_id) DO UPDATE SET daily_cap_usd = EXCLUDED.daily_cap_usd, monthly_cap_usd = EXCLUDED.monthly_cap_usd`,
+    [tenantId, caps.dailyCapUsd ?? null, caps.monthlyCapUsd ?? null],
+  );
+}
+
 /** A pool logged in as a runtime role through the production pool constructor. The caller ends it. */
 export async function createRuntimeRolePool(adminPool: Pool, role: RuntimeRole): Promise<Pool> {
   const baseUrl = process.env.TEST_DATABASE_URL;

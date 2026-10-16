@@ -1,14 +1,8 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import {
-  createChokePoint,
-  createPool,
-  getSystemSettingsDatabaseId,
-  getSystemSettingsItemId,
-  seedSystem,
-} from "@semprec/data";
-import { getTenantZeroId, resetDatabase } from "@semprec/data/testSupport";
+import { createPool, seedSystem } from "@semprec/data";
+import { getTenantZeroId, resetDatabase, setTenantAiBudget } from "@semprec/data/testSupport";
 import { getTraceContext, runInTenant } from "@semprec/shared";
 import { createDispatcher } from "../app.js";
 import { logger } from "../logger.js";
@@ -22,11 +16,13 @@ import {
 import { createModels } from "@earendil-works/pi-ai";
 import type { PiMessagesHandlerOptions } from "../piMessagesHandler.js";
 import { createProjectItem } from "./projectItemFixture.js";
+import { GENEROUS_GLOBAL_CAPS } from "./globalCaps.js";
 /** This suite never reaches `/internal/pi/messages`; the dispatcher only needs the options to exist. */
 const FAKE_PI_OPTIONS: PiMessagesHandlerOptions = {
   internalToken: "test-internal-token",
   models: createModels(),
   apiKey: "unused",
+  globalCaps: GENEROUS_GLOBAL_CAPS,
   streamFn: () => {
     throw new Error("the pi-messages route is not exercised by this suite");
   },
@@ -42,6 +38,7 @@ const FAKE_AUDIO_OPTIONS: AudioHandlerOptions = {
   },
   pyannotePricePerAudioHour: 1,
   deepInfraPricePerAudioHour: 1,
+  globalCaps: GENEROUS_GLOBAL_CAPS,
 };
 
 let pool: Pool;
@@ -90,22 +87,6 @@ class FakeProvider implements StructuredCompletionProvider {
   }
 }
 
-async function setBudgets(
-  pool: Pool,
-  budgets: { dailyBudgetUsd?: number | null; monthlyBudgetUsd?: number | null },
-): Promise<void> {
-  const client = await pool.connect();
-  let itemId: string;
-  let databaseId: string;
-  try {
-    itemId = await getSystemSettingsItemId(client);
-    databaseId = await getSystemSettingsDatabaseId(client);
-  } finally {
-    client.release();
-  }
-  await createChokePoint(pool).updateItem({ databaseId, itemId, propertiesPatch: budgets });
-}
-
 function startServer(provider: StructuredCompletionProvider, overrides: Partial<CompleteHandlerOptions> = {}): void {
   const options: CompleteHandlerOptions = {
     internalToken: "test-internal-token",
@@ -113,6 +94,7 @@ function startServer(provider: StructuredCompletionProvider, overrides: Partial<
     model: "fake-model",
     pricePerMillionInputTokens: 3,
     pricePerMillionOutputTokens: 15,
+    globalCaps: GENEROUS_GLOBAL_CAPS,
     ...overrides,
   };
   server = createServer(createDispatcher(pool, options, FAKE_AUDIO_OPTIONS, FAKE_PI_OPTIONS));
@@ -158,6 +140,7 @@ describe("POST /internal/complete", () => {
     if (!url) throw new Error("TEST_DATABASE_URL is not set");
     pool ??= createPool(url);
     await resetDatabase(pool);
+    await setTenantAiBudget(pool, getTenantZeroId());
     VALID_BODY.projectItemId = await runInTenant(getTenantZeroId(), () => createProjectItem(pool, { seed: true }));
   });
 
@@ -491,7 +474,7 @@ describe("POST /internal/complete", () => {
     });
 
     it("returns 403 budget_exceeded, never invokes the provider, and writes no row once the daily cap is reached", async () => {
-      await setBudgets(pool, { dailyBudgetUsd: 1, monthlyBudgetUsd: null });
+      await setTenantAiBudget(pool, getTenantZeroId(), { dailyCapUsd: 1, monthlyCapUsd: null });
       await pool.query(
         `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, cost_usd) VALUES ('anthropic', 'claude-sonnet-5', 10, 10, 1)`,
       );

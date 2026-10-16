@@ -1,3 +1,9 @@
+/** Operator-wide safety caps over all tenants' spend, in USD (UTC day and month). */
+export interface GlobalAiCaps {
+  dailyCapUsd: number;
+  monthlyCapUsd: number;
+}
+
 export interface GatewayCallContext {
   provider: string;
   model: string;
@@ -15,6 +21,8 @@ export interface GatewayCallContext {
    * budget cap before the provider is called and replaced by the real cost on settle.
    */
   estimatedCostUsd: number;
+  /** The operator-wide safety caps, checked with the tenant's own caps before each reservation. */
+  globalCaps: GlobalAiCaps;
 }
 
 /** Native unit for complete()/embed(): tokens. */

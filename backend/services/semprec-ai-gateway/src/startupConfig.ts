@@ -1,3 +1,4 @@
+import type { GlobalAiCaps } from "@semprec/ai-gateway";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { createAnthropicStructuredProvider } from "./structuredProviders/anthropicProvider.js";
@@ -88,6 +89,13 @@ export function resolveStartupConfig(
   const pyannotePricePerAudioHour = requirePositiveFloat(env, "AI_GATEWAY_PYANNOTE_PRICE_PER_AUDIO_HOUR");
   const deepInfraPricePerAudioHour = requirePositiveFloat(env, "AI_GATEWAY_DEEPINFRA_PRICE_PER_AUDIO_HOUR");
 
+  // The operator-wide safety caps over all tenants' spend: required, so a deploy without them
+  // cannot start rather than run with no global cap.
+  const globalCaps: GlobalAiCaps = {
+    dailyCapUsd: requirePositiveFloat(env, "AI_GLOBAL_DAILY_CAP_USD"),
+    monthlyCapUsd: requirePositiveFloat(env, "AI_GLOBAL_MONTHLY_CAP_USD"),
+  };
+
   return {
     port,
     databaseUrl,
@@ -97,6 +105,7 @@ export function resolveStartupConfig(
       model,
       pricePerMillionInputTokens,
       pricePerMillionOutputTokens,
+      globalCaps,
     },
     audioHandlerOptions: {
       internalToken,
@@ -104,6 +113,7 @@ export function resolveStartupConfig(
       transcriptionProvider,
       pyannotePricePerAudioHour,
       deepInfraPricePerAudioHour,
+      globalCaps,
     },
     piHandlerOptions: {
       internalToken,
@@ -112,6 +122,7 @@ export function resolveStartupConfig(
       // `streamSimple`, not `stream`: the pi-messages `reasoning` level is a provider-neutral
       // option that only the simple entry point maps onto Anthropic's thinking parameters.
       streamFn: streamSimple,
+      globalCaps,
     },
   };
 }

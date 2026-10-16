@@ -99,14 +99,3 @@ async function readSettingsProperties(client: Queryable): Promise<SettingsProper
 export async function getAiBudgets(client: Queryable): Promise<AiBudgets> {
   return toAiBudgets((await readSettingsProperties(client)) ?? {});
 }
-
-/**
- * Budgets and timezone read from one snapshot of the settings row, in one query. The gateway's
- * budget check needs both: calling `getAiBudgets` and `getSystemTimezone` separately costs twice
- * the round-trips and can observe two different settings rows if a write lands in between,
- * evaluating a cap against a timezone that was not active when that cap was set.
- */
-export async function getAiBudgetsWithTimezone(client: Queryable): Promise<AiBudgets & { timezone: string }> {
-  const properties = (await readSettingsProperties(client)) ?? {};
-  return { ...toAiBudgets(properties), timezone: properties.timezone ?? DEFAULT_TIMEZONE };
-}

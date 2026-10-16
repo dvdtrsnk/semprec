@@ -1,9 +1,9 @@
 ---
-status: accepted
+status: superseded
 date: 2026-09-27
 area: [backend]
 supersedes: []
-superseded-by: null
+superseded-by: 2026-10-16-per-tenant-ai-budgets-with-a-global-safety-cap
 ---
 
 # AI budget reservations under a global advisory lock

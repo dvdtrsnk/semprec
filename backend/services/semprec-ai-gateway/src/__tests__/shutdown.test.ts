@@ -3,7 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { createPool, startProcessHeartbeat, type ProcessHeartbeatHandle } from "@semprec/data";
-import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase, setTenantAiBudget } from "@semprec/data/testSupport";
 import { runInTenant } from "@semprec/shared";
 import { createProjectItem } from "./projectItemFixture.js";
 import type { Logger } from "@semprec/shared";
@@ -14,11 +14,13 @@ import type { StructuredCompletionProvider, StructuredCompletionRequest } from "
 import { createGracefulShutdown, POOL_END_TIMEOUT_MS, SHUTDOWN_DRAIN_TIMEOUT_MS } from "../shutdown.js";
 import { createModels } from "@earendil-works/pi-ai";
 import type { PiMessagesHandlerOptions } from "../piMessagesHandler.js";
+import { GENEROUS_GLOBAL_CAPS } from "./globalCaps.js";
 /** This suite never reaches `/internal/pi/messages`; the dispatcher only needs the options to exist. */
 const FAKE_PI_OPTIONS: PiMessagesHandlerOptions = {
   internalToken: "test-internal-token",
   models: createModels(),
   apiKey: "unused",
+  globalCaps: GENEROUS_GLOBAL_CAPS,
   streamFn: () => {
     throw new Error("the pi-messages route is not exercised by this suite");
   },
@@ -34,6 +36,7 @@ const FAKE_AUDIO_OPTIONS: AudioHandlerOptions = {
   },
   pyannotePricePerAudioHour: 1,
   deepInfraPricePerAudioHour: 1,
+  globalCaps: GENEROUS_GLOBAL_CAPS,
 };
 
 /** `projectItemId` is a real Projects item, seeded in `beforeEach`: the reservation refuses an id it cannot see. */
@@ -408,6 +411,7 @@ describe("createGracefulShutdown against the ai-gateway dispatcher with a real p
     if (!url) throw new Error("TEST_DATABASE_URL is not set");
     pool = createPool(url);
     await resetDatabase(pool);
+    await setTenantAiBudget(pool, getTenantZeroId());
     VALID_BODY.projectItemId = await runInTenant(getTenantZeroId(), () => createProjectItem(pool, { seed: true }));
   });
 
@@ -423,6 +427,7 @@ describe("createGracefulShutdown against the ai-gateway dispatcher with a real p
       model: "fake-model",
       pricePerMillionInputTokens: 3,
       pricePerMillionOutputTokens: 15,
+      globalCaps: GENEROUS_GLOBAL_CAPS,
     };
     server = createServer(createDispatcher(pool, options, FAKE_AUDIO_OPTIONS, FAKE_PI_OPTIONS));
     return listenOn(server);

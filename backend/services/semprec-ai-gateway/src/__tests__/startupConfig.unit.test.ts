@@ -19,6 +19,8 @@ const BASE_ENV: NodeJS.ProcessEnv = {
   ANTHROPIC_API_KEY: "anthropic-key",
   AI_GATEWAY_PYANNOTE_PRICE_PER_AUDIO_HOUR: "1",
   AI_GATEWAY_DEEPINFRA_PRICE_PER_AUDIO_HOUR: "1",
+  AI_GLOBAL_DAILY_CAP_USD: "25",
+  AI_GLOBAL_MONTHLY_CAP_USD: "400.5",
 };
 
 describe("resolveStartupConfig database url resolution", () => {
@@ -54,6 +56,36 @@ describe("resolveStartupConfig pi-messages handler options", () => {
     const { ANTHROPIC_API_KEY: _omitted, ...env } = BASE_ENV;
     expect(() => resolveStartupConfig({ ...env, DATABASE_URL: "postgres://legacy" }, [FAKE_PROVIDER])).toThrow(
       /ANTHROPIC_API_KEY is not set/,
+    );
+  });
+});
+
+describe("resolveStartupConfig global caps", () => {
+  const env = { ...BASE_ENV, DATABASE_URL: "postgres://legacy" };
+
+  it("puts the parsed caps into all three handler options", () => {
+    const config = resolveStartupConfig(env, [FAKE_PROVIDER]);
+    const expected = { dailyCapUsd: 25, monthlyCapUsd: 400.5 };
+    expect(config.handlerOptions.globalCaps).toEqual(expected);
+    expect(config.audioHandlerOptions.globalCaps).toEqual(expected);
+    expect(config.piHandlerOptions.globalCaps).toEqual(expected);
+  });
+
+  it.each(["AI_GLOBAL_DAILY_CAP_USD", "AI_GLOBAL_MONTHLY_CAP_USD"])("throws naming %s when it is missing", (name) => {
+    const { [name]: _omitted, ...rest } = env;
+    expect(() => resolveStartupConfig(rest, [FAKE_PROVIDER])).toThrow(new RegExp(`${name} is not set`));
+  });
+
+  it.each([
+    ["AI_GLOBAL_DAILY_CAP_USD", "0"],
+    ["AI_GLOBAL_DAILY_CAP_USD", "-5"],
+    ["AI_GLOBAL_DAILY_CAP_USD", "lots"],
+    ["AI_GLOBAL_MONTHLY_CAP_USD", "0"],
+    ["AI_GLOBAL_MONTHLY_CAP_USD", "-5"],
+    ["AI_GLOBAL_MONTHLY_CAP_USD", "lots"],
+  ])("throws naming %s when it is %j", (name, value) => {
+    expect(() => resolveStartupConfig({ ...env, [name]: value }, [FAKE_PROVIDER])).toThrow(
+      new RegExp(`${name} must be a positive number`),
     );
   });
 });

@@ -17,6 +17,7 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
+  setTenantAiBudget,
 } from "@semprec/data/testSupport";
 import { runInTenant } from "@semprec/shared";
 import { createDispatcher } from "../app.js";
@@ -26,6 +27,8 @@ import type { PiMessagesHandlerOptions } from "../piMessagesHandler.js";
 import { ProviderCallError } from "../structuredProviders/types.js";
 import { AudioProviderCallError } from "../audioProviders/types.js";
 import { createProjectItem } from "./projectItemFixture.js";
+import { GENEROUS_GLOBAL_CAPS } from "./globalCaps.js";
+import type { GlobalAiCaps } from "@semprec/ai-gateway";
 
 const TOKEN = "test-internal-token";
 const MODEL_ID = "faux-claude";
@@ -70,7 +73,7 @@ const extraPools: Pool[] = [];
  */
 let scopedPool: Pool;
 
-function startServer(dbPool: Pool): void {
+function startServer(dbPool: Pool, globalCaps: GlobalAiCaps = GENEROUS_GLOBAL_CAPS): void {
   const complete: CompleteHandlerOptions = {
     internalToken: TOKEN,
     provider: {
@@ -85,6 +88,7 @@ function startServer(dbPool: Pool): void {
     model: "fake-model",
     pricePerMillionInputTokens: 1,
     pricePerMillionOutputTokens: 1,
+    globalCaps,
   };
   const audio: AudioHandlerOptions = {
     internalToken: TOKEN,
@@ -108,11 +112,13 @@ function startServer(dbPool: Pool): void {
     },
     pyannotePricePerAudioHour: 1,
     deepInfraPricePerAudioHour: 1,
+    globalCaps,
   };
   const pi: PiMessagesHandlerOptions = {
     internalToken: TOKEN,
     models,
     apiKey: "anthropic-key",
+    globalCaps,
     streamFn: (model, context, options) => {
       providerCalls += 1;
       if (failProviders) {
@@ -220,6 +226,7 @@ describe("caller tenant on the gateway routes", () => {
     scopedPool = await createRuntimeRolePool(pool, "semprec_data");
     extraPools.push(scopedPool);
     tenantZero = getTenantZeroId();
+    await setTenantAiBudget(pool, tenantZero);
     projectItemId = await runInTenant(tenantZero, () => createProjectItem(scopedPool, { seed: true }));
     providerCalls = 0;
     failProviders = false;
@@ -294,11 +301,11 @@ describe("caller tenant on the gateway routes", () => {
       expect(providerCalls).toBe(0);
     });
 
-    it("refuses a tenant that does not exist with 403 attribution_refused", async () => {
+    it("refuses a tenant that does not exist with 403 budget_exceeded, before attribution is checked", async () => {
       const res = await send(route, { [TENANT_HEADER]: randomUUID() });
 
       expect(res.status).toBe(403);
-      expectRefused(await res.json());
+      expect(await res.json()).toEqual({ error: "AI budget exceeded", code: "budget_exceeded" });
       expect(await callRows()).toEqual([]);
       expect(providerCalls).toBe(0);
     });
@@ -349,6 +356,7 @@ describe("caller tenant on the gateway routes", () => {
 
     beforeEach(async () => {
       tenantB = await createTestTenant(pool);
+      await setTenantAiBudget(pool, tenantB);
       await runInTenant(tenantB, () => seedSystem(scopedPool));
       runB = await createRunIn(tenantB);
       itemB = await runInTenant(tenantB, () => createProjectItem(scopedPool));
@@ -398,5 +406,39 @@ describe("caller tenant on the gateway routes", () => {
 
       expect(await settledRows()).toEqual([{ tenant_id: tenantB, status: "settled", agent_run_id: runB }]);
     });
+    it.each(ROUTES)(
+      "answers %s with a body identical for the global cap and for the tenant's own cap",
+      async (route) => {
+        const refusal = { error: "AI budget exceeded", code: "budget_exceeded" };
+        // Raw SQL: the spend must sit in tenant A with a controlled cost.
+        await pool.query(
+          `INSERT INTO ai_gateway_calls (tenant_id, provider, model, input_tokens, output_tokens, cost_usd)
+           VALUES ($1, 'anthropic', 'claude-sonnet-5', 1, 1, 1)`,
+          [tenantZero],
+        );
+
+        // The global daily cap of 1 is reached by tenant A's spend; tenant B has NULL own caps.
+        await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+        startServer(extraPools[extraPools.length - 1] as Pool, { dailyCapUsd: 1, monthlyCapUsd: 1_000 });
+        await listen();
+        const viaGlobal = await send(route, { [TENANT_HEADER]: tenantB });
+        const globalBody = await viaGlobal.text();
+
+        // Back to generous global caps; tenant A's own daily cap of 1 is now the one that trips.
+        await setTenantAiBudget(pool, tenantZero, { dailyCapUsd: 1 });
+        await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+        startServer(extraPools[extraPools.length - 1] as Pool);
+        await listen();
+        const viaOwn = await send(route, { [TENANT_HEADER]: tenantZero });
+        const ownBody = await viaOwn.text();
+
+        expect(viaGlobal.status).toBe(403);
+        expect(viaOwn.status).toBe(403);
+        expect(JSON.parse(globalBody)).toEqual(refusal);
+        expect(globalBody).toBe(ownBody);
+        expect(providerCalls).toBe(0);
+        expect(await callRows()).toHaveLength(1);
+      },
+    );
   });
 });
