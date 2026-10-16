@@ -153,6 +153,11 @@ const AGENT_RUN_LANE = "agent-run";
  * executing `heartbeatFireAgent` job per tenant, so one tenant's due agent heartbeats cannot hold
  * every agents-process slot. `undefined` for every other action and outside a tenant scope, so
  * those fires keep their existing queue name.
+ *
+ * The trade-off is head-of-line blocking within one tenant: a hung agent session holds back that
+ * tenant's scheduled, item-triggered and manual agent fires, and an agents process that dies
+ * without a graceful `Runner.stop()` leaves the lane locked until Graphile Worker treats the lock
+ * as stale (4 hours). Other tenants' lanes are unaffected either way.
  */
 export function resolveAgentRunLane(actionId: string): string | undefined {
   return resolveHeartbeatFireTaskName(actionId) === AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT
