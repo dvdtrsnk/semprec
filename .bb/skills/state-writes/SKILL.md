@@ -1,6 +1,6 @@
 ---
 name: state-writes
-description: "How every write to persisted Semprec state must be built - through the choke point, by the single owner, with side effects after the commit, and an affected-row check on every targeted write. Load this BEFORE writing the first line of a function that mutates data, not while reviewing it afterwards. Triggers on: DELETE FROM, UPDATE ... SET, INSERT INTO, rowCount, requireAffectedRows, withTransaction, runAfterCommit, chokePoint., createItem, patchItem, addViewItem, removeViewItem, notifyInvalidation, pg_notify, NOTIFY, any *Store.ts file, a seed or backfill, an agent tool that writes, any handler whose verb is POST, PATCH, PUT or DELETE, registerItemUpdateHook, registerRelationEdgeWriteHook, domainWriteHooks, tenant_id, and app.tenant_id. Skip only when nothing in the change can reach the database."
+description: "How every write to persisted Semprec state must be built - through the choke point, by the single owner, with side effects after the commit, and an affected-row check on every targeted write. Load this BEFORE writing the first line of a function that mutates data, not while reviewing it afterwards. Triggers on: DELETE FROM, UPDATE ... SET, INSERT INTO, rowCount, requireAffectedRows, withTransaction, runAfterCommit, chokePoint., createItem, patchItem, addViewItem, removeViewItem, notifyInvalidation, pg_notify, NOTIFY, any *Store.ts file, a seed or backfill, an agent tool that writes, any handler whose verb is POST, PATCH, PUT or DELETE, registerItemUpdateHook, registerRelationEdgeWriteHook, domainWriteHooks, tenant_id, app.tenant_id, runInTenant, runAsSystem, SELECT ... FOR UPDATE, a guard read before a write, another module's table, SQL text built with a template literal, format('%I'), a DO block, CREATE TRIGGER or CREATE FUNCTION in a test, and a test fixture that writes rows. Skip only when nothing in the change can reach the database."
 ---
 
 # State writes: choke-point, ownership, approval
@@ -62,6 +62,13 @@ Every piece of state has exactly one owning process (the module contract's
 
 If a feature seems to need a second writer, the answer is an explicit ownership
 handoff in the module contract, not a quiet extra `UPDATE`.
+
+The same applies to a table another module owns. Add a function to the owning
+module's store and call it. Do not write inline SQL against that table, and do
+not import the module's internals. A cleanup that deletes across several
+modules' tables asks each owner to delete its own rows. Why: a write that
+bypasses the owner bypasses whatever invariants the owner enforces, and the
+next change to the owner silently stops covering it.
 
 A derived `owner: 'system'` field that must always reflect other properties on the
 same item (e.g. Tasks' `time`, computed from `timeFrom`/`timeTo`) is computed
@@ -138,6 +145,34 @@ Related checks worth doing in the same pass:
   enforced on its counterpart. If `add`/`create`/`lock` checks a precondition,
   `remove`/`delete`/`unlock` needs the same check — a rule found on one side of
   a pair is exactly where a reviewer looks for it on the other.
+- **Being inside the transaction is not enough. Lock the row the guard reads.**
+  `withTransaction` runs at READ COMMITTED unless you pass its `isolation`
+  option, so a plain `SELECT` inside it still lets a concurrent transaction
+  change the row before your write commits. Raising the isolation level
+  instead turns the race into serialization failures that every caller must
+  then retry, so prefer the row lock unless an ADR for that path says
+  otherwise. When a read decides whether a write happens, read with
+  `SELECT … FOR UPDATE` (or `FOR SHARE` when you only need the row to stay as
+  it is) in the same `withTransaction` as the write. Every path that reaches the
+  write needs the same guard, including a cached or reused result. Never claim
+  in a comment or ADR that a check and a write are "serialized" unless a lock
+  makes them so. Without one, the honest claim is that a refused write rolls
+  back atomically.
+- **Writes that must hold together share one transaction.** Several statements
+  on a plain client, or several auto-committed calls, leave a half-written state
+  when the second one fails. Put the whole group in one `withTransaction`. This
+  matters most on a final failure path that nothing retries.
+- **Never hold a transaction open across slow external work** (a child process,
+  a network call, a model call). It pins a pooled connection and holds its
+  locks for the whole duration. Do the slow work first, then open the
+  transaction for the check and the write.
+- **A side effect reports what this call actually did.** Emit a success event
+  only when the affected-row count, or a re-read, shows that this call
+  performed the write. Build the payload from `RETURNING`, not from a snapshot
+  read before the write.
+- **Take row locks across tables in the order the existing write path uses.**
+  A new path that locks the same tables in the opposite order deadlocks
+  against it under load.
 
 ## 5. Every write stays inside the caller's tenant
 
@@ -158,13 +193,42 @@ another's. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security
   enqueue by the producing code (from the producer's scope, not filled in by
   the job's originator) will also be a trusted source.
 - Run the write inside the tenant scope (`app.tenant_id`) established from one
-  of those sources.
+  of those sources. In code that is `runInTenant(tenantId, fn)` or, for work
+  that belongs to no tenant, `runAsSystem(reason, fn)`, both from
+  `backend/packages/shared/src/tenantScope.ts`
+  (`docs/adr/2026-10-05-tenant-scope-propagation.md`). Wrap the entry point
+  itself, not only the inner function. That includes every handler branch,
+  a `start()` that installs timers or listeners, the callbacks those install,
+  and a connection you open by hand.
+- Never rely on the transitional sole-tenant fallback. `app_tenant_default()`
+  falls back to `app_sole_tenant()`, which yields a tenant only while exactly
+  one exists, so unscoped code works today and fails closed — or worse —
+  the day a second tenant is created.
+- A helper that per-tenant code calls must not read a table without row-level
+  security unless it filters by the tenant itself. Check each helper you reuse.
 - Let the `tenant_id` column default stamp the row; do not pass it. RLS
   `WITH CHECK` refuses a row for another tenant anyway.
 - Existence and uniqueness checks are per tenant, and another tenant's id is
   handled exactly like a missing id.
 - Cross-tenant system work runs tenant by tenant, each tenant's work inside
   that tenant — never as one query over every tenant.
+
+## 6. SQL text is built from constants only
+
+Values are bound as parameters (`$1`), always, and that includes tests. When a
+statement cannot take parameters (DDL, a trigger or function body, `ALTER
+ROLE`), quote inside Postgres: `format('%I', name)` for identifiers and
+`format('%L', value)` for literals, executed in a `DO` block or a function. You
+can also pass test values through a scratch table or a `set_config` setting that
+the body reads. `JSON.stringify` and other general-purpose escapers are not SQL
+quoters. When interpolation is unavoidable and the value is provably closed (a
+literal union, a generated UUID), say so in a comment next to it, as
+`createRuntimeRolePool` in
+`backend/packages/data/src/testSupport/tenantFixtures.ts` does.
+
+Why: a test helper is copied into production code more often than it is
+re-reviewed, and the reviewer cannot tell a safe interpolation from an
+injection without the invariant written down.
 
 ## Before committing, check
 
@@ -189,3 +253,14 @@ another's. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security
       gets the same outcome as a missing id.
 - [ ] Cross-tenant system work runs inside each tenant in turn, not as one
       query over all tenants.
+- [ ] Every read that decides a write runs in the write's transaction with a
+      row lock, on every path that reaches the write.
+- [ ] Writes that must hold together run in one `withTransaction`, and no
+      transaction spans a slow external call.
+- [ ] Success events depend on what this call actually wrote, and payloads
+      come from `RETURNING`.
+- [ ] Another module's tables are written only through that module's store.
+- [ ] Every entry point, timer and callback of new code runs under
+      `runInTenant`/`runAsSystem`, never through the sole-tenant fallback.
+- [ ] No value is interpolated into SQL text, tests included; any unavoidable
+      interpolation has its safety invariant in a comment.

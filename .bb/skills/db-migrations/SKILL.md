@@ -1,6 +1,6 @@
 ---
 name: db-migrations
-description: "Expand/contract discipline for every Postgres schema change. Load this BEFORE writing the migration file, because the ordering constraints decide what the migration is allowed to contain at all. Triggers on: backend/packages/data/src/db/migrations/, a new NNNN_name.sql file, ALTER TABLE, CREATE TABLE, DROP COLUMN, ADD COLUMN, NOT NULL, DEFAULT, CREATE INDEX, CREATE UNIQUE INDEX, CONSTRAINT, COMMENT ON TABLE, tenant_id, ROW LEVEL SECURITY, CREATE POLICY, a column type change, a rename, and any data backfill - including one that looks trivially safe. Skip only when the change touches no schema and no stored data shape."
+description: "Expand/contract discipline for every Postgres schema change. Load this BEFORE writing the migration file, because the ordering constraints decide what the migration is allowed to contain at all. Triggers on: backend/packages/data/src/db/migrations/, a new NNNN_name.sql file, ALTER TABLE, CREATE TABLE, DROP COLUMN, ADD COLUMN, NOT NULL, DEFAULT, CREATE INDEX, CREATE UNIQUE INDEX, CONSTRAINT, COMMENT ON TABLE, tenant_id, ROW LEVEL SECURITY, CREATE POLICY, a column type change, a rename, ON CONFLICT next to a new unique index, an index drop or column reorder, and any data backfill - including one that looks trivially safe. Skip only when the change touches no schema and no stored data shape."
 ---
 
 # Migrations: expand/contract, forward-only
@@ -41,6 +41,28 @@ NULL) NOT VALID` → `VALIDATE CONSTRAINT` → only then `SET NOT NULL`.
 
 **Backfills**: separate from DDL, idempotent (re-runnable with the same `jobKey`),
 batched so they don't hold long locks or bloat one transaction.
+
+## Indexes change what existing statements do
+
+- **A new unique index or constraint:** grep every `INSERT … ON CONFLICT` on
+  that table before you add it. An `ON CONFLICT (cols)` or `ON CONFLICT ON
+  CONSTRAINT` arbiter absorbs conflicts only on the index it names. A
+  conflict on any other unique index still raises `23505`, which reaches the
+  caller as a 500 under concurrent writes. During an expand window both the
+  new index and the legacy one it will replace exist, so check each
+  statement against both. Also check what a conflict on the surviving legacy
+  index reveals: a global unique index on a tenant table is an existence
+  oracle across tenants. Fix every affected statement in the same issue, or
+  name it in the pull request description as a required follow-up.
+- **Dropping or changing an index:** find the queries that depend on it (its
+  leading columns in a `WHERE`, `ORDER BY` or join) before you remove it or
+  reorder its columns.
+- **A static check over migrations** (a script that scans the SQL): run it over
+  every existing migration before relying on it, and look at what it flags.
+
+Why: these break code that the migration's own diff never touches. The failure
+then shows up as flaky CI in unrelated pull requests, long after the migration
+merged.
 
 ## Structural vs data migrations
 

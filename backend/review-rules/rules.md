@@ -113,6 +113,23 @@
   it answers a random id: same status, body and headers, and no branch such as an
   ETag/304 check taken before the tenant check. A difference is critical, because it
   tells the caller that the foreign row exists. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+- The SQL-injection finding of `tasks/security.md` item 2 (critical) covers test code, DDL
+  and trigger or function bodies as well as application queries. Where a statement cannot
+  take parameters, the safe forms are quoting inside Postgres (`format('%I')`,
+  `format('%L')`) or passing the value through a table or setting. A value that is provably
+  closed (a literal union, a generated UUID) with that invariant stated in a comment beside
+  the interpolation cannot inject, so it is not that finding. Test helpers are copied into
+  production code, and a reviewer cannot tell a safe interpolation from an injection
+  without the invariant written down.
+- A new unique index or unique constraint on a table that has `INSERT … ON CONFLICT`
+  statements whose arbiter names a different index, left unchanged and not named as a
+  follow-up in the pull request description, is high: a conflict on the new index raises
+  `23505` past the arbiter and surfaces as a 500 under concurrent writes. When the
+  statement's outcome also lets one tenant infer another's row (a surviving global unique
+  index on a tenant table), it is critical under `tasks/security.md` item 9.
+- A test that asserts tenant isolation through the superuser pool (`getTestPool()`), or
+  with two users of one tenant instead of two tenants, is high: superusers and table owners
+  bypass row-level security, so the test passes whether or not isolation holds.
 - A log line or error message carrying user content (item properties, mail subjects,
   bodies or addresses, file names, prompts, model output) is high: logs are not
   tenant-scoped. Log ids and counts. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
