@@ -61,7 +61,7 @@ describe("resolveStartupConfig pi-messages handler options", () => {
 });
 
 describe("resolveStartupConfig global caps", () => {
-  const env = { ...BASE_ENV, DATABASE_URL: "postgres://legacy" };
+  const env: NodeJS.ProcessEnv = { ...BASE_ENV, DATABASE_URL: "postgres://legacy" };
 
   it("puts the parsed caps into all three handler options", () => {
     const config = resolveStartupConfig(env, [FAKE_PROVIDER]);
