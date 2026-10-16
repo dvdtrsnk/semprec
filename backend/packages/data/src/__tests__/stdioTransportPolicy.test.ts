@@ -1,7 +1,12 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createTenantZeroUser, createTestTenant } from "../testSupport/tenantFixtures.js";
+import {
+  createTenantZeroUser,
+  createTestTenant,
+  getTenantZeroId,
+  withTenantTransaction,
+} from "../testSupport/tenantFixtures.js";
 import { createUser } from "../auth/usersStore.js";
 import { tenantAllowsStdio } from "../mcp/stdioTransportPolicy.js";
 
@@ -44,14 +49,25 @@ describe("tenantAllowsStdio (issue #1030)", () => {
   });
 
   it("is false for an admin bound to another tenant", async () => {
-    await createTenantZeroUser(pool);
+    // With a second tenant present `app_tenant_default()` no longer falls back to the sole tenant,
+    // so the current tenant is set explicitly; the tenant-zero admin is the positive control.
+    const tenantZeroAdmin = await createTenantZeroUser(pool);
+    await setRole(tenantZeroAdmin.id, "admin");
+    const otherTenantId = await createTestTenant(pool);
     const otherTenantAdmin = await createUser(pool, {
       email: "other-tenant-admin@example.com",
       passwordHash: "unused",
-      tenantId: await createTestTenant(pool),
+      tenantId: otherTenantId,
       role: "admin",
     });
-    expect(await tenantAllowsStdio(pool, otherTenantAdmin.id)).toBe(false);
+    await withTenantTransaction(pool, getTenantZeroId(), async (client) => {
+      expect(await tenantAllowsStdio(client, tenantZeroAdmin.id)).toBe(true);
+      expect(await tenantAllowsStdio(client, otherTenantAdmin.id)).toBe(false);
+    });
+    await withTenantTransaction(pool, otherTenantId, async (client) => {
+      expect(await tenantAllowsStdio(client, otherTenantAdmin.id)).toBe(true);
+      expect(await tenantAllowsStdio(client, tenantZeroAdmin.id)).toBe(false);
+    });
   });
 
   it("is false for an unknown user id", async () => {
