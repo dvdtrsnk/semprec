@@ -49,8 +49,30 @@ async function seedServer(connectionConfig: unknown): Promise<{ id: string; upda
 }
 
 async function storedConfig(id: string): Promise<unknown> {
-  const { rows } = await pool.query("SELECT properties FROM items WHERE id = $1", [id]);
-  return rows[0].properties.connectionConfig;
+  const { rows } = await pool.query<{ connection_config: unknown }>(
+    "SELECT properties->'connectionConfig' AS connection_config FROM items WHERE id = $1",
+    [id],
+  );
+  const row = rows[0];
+  if (!row) throw new Error(`storedConfig: no item ${id}`);
+  return row.connection_config;
+}
+
+type McpResponse = { result?: unknown; error?: { message?: unknown; data?: { field?: unknown } } };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// Narrows the JSON-RPC body instead of casting it: anything off the wire is a boundary.
+function parseMcpResponse(body: unknown): McpResponse {
+  if (!isRecord(body)) throw new Error("expected a JSON-RPC response object");
+  const { result, error } = body;
+  if (error === undefined) return { result };
+  if (!isRecord(error)) throw new Error("expected a JSON-RPC error object");
+  const data = error.data;
+  if (data !== undefined && !isRecord(data)) throw new Error("expected JSON-RPC error data to be an object");
+  return { result, error: { message: error.message, ...(data ? { data: { field: data.field } } : {}) } };
 }
 
 describe("stdio MCP servers are confined to a human admin (issue #1030)", () => {
@@ -144,13 +166,14 @@ describe("stdio MCP servers are confined to a human admin (issue #1030)", () => 
         },
       }),
     });
-    return (await res.json()) as { result?: unknown; error?: { message?: string; data?: { field?: string } } };
+    const body: unknown = await res.json();
+    return parseMcpResponse(body);
   }
 
   // The REST error body carries `{ error: { code, details } }` and no message.
   async function expectRestRefusal(res: Response): Promise<void> {
     expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: { code: string; details: { field: string } } };
+    const body: unknown = await res.json();
     expect(body).toEqual({ error: { code: "validation_failed", details: { field: "connectionConfig" } } });
   }
 
@@ -206,7 +229,8 @@ describe("stdio MCP servers are confined to a human admin (issue #1030)", () => 
     expect(mcp.error?.data?.field).toBe("connectionConfig");
 
     expect(await itemCount()).toBe(1); // only the seeded row
-    expect((agentError as Error).message).toBe(adminMessage);
+    if (!(agentError instanceof Error)) throw new Error("expected the agent write to throw an Error");
+    expect(agentError.message).toBe(adminMessage);
     expect(mcp.error?.message).toBe(adminMessage);
   });
 
