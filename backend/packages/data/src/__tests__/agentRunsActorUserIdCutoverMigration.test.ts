@@ -156,6 +156,34 @@ describe("agent_runs.actor_user_id cutover (per-tenant backfill)", () => {
     });
   });
 
+  it("does not propagate an actor from a parent run in another tenant", async () => {
+    await withNullableActorColumn(async () => {
+      const tenantB = await createTestTenant(adminPool);
+      const bUser = await createUser(adminPool, {
+        email: "b@example.test",
+        passwordHash: await hashPassword("s3cret-password"),
+        tenantId: tenantB,
+      });
+      const tenantC = await createTestTenant(adminPool);
+      const cUser = await createUser(adminPool, {
+        email: "c@example.test",
+        passwordHash: await hashPassword("s3cret-password"),
+        tenantId: tenantC,
+      });
+
+      // `parent_run_id` carries no tenant in its foreign key, so a parent in another tenant is
+      // storable; the parent-chain pass must not hand tenant C's user to tenant B's child.
+      const foreignParent = await insertRun(tenantC, cUser.id, null);
+      const child = await insertRun(tenantB, null, foreignParent);
+
+      await runAgentRunsActorUserIdCutoverMigration(adminPool);
+
+      expect(await readActor(child)).toBe(bUser.id);
+      expect(await readActor(foreignParent)).toBe(cUser.id);
+      expect(await isNullable()).toBe(false);
+    });
+  });
+
   it("returns before issuing any write when actor_user_id is already NOT NULL", async () => {
     const zeroUser = await createUser(adminPool, {
       email: "zero@example.test",

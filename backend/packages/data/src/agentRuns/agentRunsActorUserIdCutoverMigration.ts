@@ -15,9 +15,9 @@ import { withTransaction } from "../db/pool.js";
  * Every run still NULL after the parent-chain pass (a root run, or a delegated run under a root that
  * had no actor) is attributed to the user bound to its own tenant (`users.tenant_id`). This runs as
  * the table owner, so row-level security does not hide any tenant's rows, and `users` has no
- * row-level security; the explicit `tenant_id` join is what confines each row to its own tenant. It
- * runs as one owner-pool transaction rather than per tenant because it ends in the table-wide
- * `SET NOT NULL`, per `docs/adr/2026-10-16-column-tightening-cutover-backfills-as-the-owner.md`.
+ * row-level security; the explicit `tenant_id` equality in both the parent-chain self-join and the
+ * `users` join is what confines each row to its own tenant. It runs as one owner-pool transaction
+ * rather than per tenant because it ends in the table-wide `SET NOT NULL`, per `docs/adr/2026-10-16-column-tightening-cutover-backfills-as-the-owner.md`.
  * Throws when a run's tenant has no user to attribute it to; the transaction then rolls back, so no
  * row changes and the column stays nullable.
  */
@@ -34,13 +34,16 @@ export async function runAgentRunsActorUserIdCutoverMigration(pool: Pool): Promi
     if (columnRows[0]?.is_nullable === "NO") return; // already migrated
 
     // Iteratively propagate a resolved actor down the parent chain until a full pass changes
-    // nothing — a delegated run's actor is its ultimate root ancestor's.
+    // nothing — a delegated run's actor is its ultimate root ancestor's. `parent_run_id` carries no
+    // tenant in its foreign key, so the `tenant_id` equality is what keeps a parent in another tenant
+    // from handing its user to the child; such a child takes its own tenant's user below.
     for (;;) {
       const { rowCount } = await client.query(
         `UPDATE agent_runs AS child
             SET actor_user_id = parent.actor_user_id
            FROM agent_runs AS parent
           WHERE child.parent_run_id = parent.id
+            AND child.tenant_id = parent.tenant_id
             AND child.actor_user_id IS NULL
             AND parent.actor_user_id IS NOT NULL`,
       );
