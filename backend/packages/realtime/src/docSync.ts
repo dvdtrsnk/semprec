@@ -126,7 +126,8 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
    * previous to finish, so checking the cap only after `getDocById` resolves would let every
    * frame in the burst read the same stale (pre-mutation) count and all pass it. Returns `false`
    * (cap already hit) or `true` (already open, or newly reserved) — the caller must undo a fresh
-   * reservation with `releaseReservation` if the doc turns out not to exist.
+   * reservation if the doc turns out not to exist. A reservation only counts against the cap; it
+   * authorizes nothing — `handleBinaryFrame` accepts frames only once `subscribe` has run.
    */
   function reserveOpenSlot(ws: WebSocket, docId: string): boolean {
     let openDocs = openDocsByClient.get(ws);
@@ -209,8 +210,14 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
       // A socket must have opened this document before this server accepts binary frames for
       // it — mirrors the closed-catalog validation the rest of protocol-v1 already applies,
       // and is what makes "an unsubscribed client receives none" also true for what this
-      // server is willing to persist, not just what it forwards.
-      if (!openDocsByClient.get(ws)?.has(docId)) return;
+      // server is willing to persist, not just what it forwards. The gate is the subscription
+      // under `tenantId`, not the `openDocsByClient` reservation: a reservation is taken before
+      // `handleOpen`'s tenant-scoped `getDocById` resolves, so a frame sent while that lookup is
+      // still pending (e.g. right after a `doc:open` for another tenant's doc) would otherwise be
+      // accepted for a doc the socket's tenant cannot see. Such an early frame is dropped; the
+      // client's own Yjs state keeps its content, and its reply to the SyncStep1 `handleOpen`
+      // sends once the open is confirmed carries it.
+      if (!subscribersByDoc.get(subscriptionKey(tenantId, docId))?.has(ws)) return;
 
       let decoder: decoding.Decoder;
       let messageType: number;
