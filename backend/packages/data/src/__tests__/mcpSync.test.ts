@@ -1,8 +1,9 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import {
   DEFAULT_CONTRACT_TOOLS,
+  allowLoopbackOutboundForTests,
   startHttpContractServer,
   startSseContractServer,
   startStdioContractServer,
@@ -106,7 +107,14 @@ describe("MCP tool sync (issue #125)", () => {
     connectMock.impl = connectMock.actual;
   });
 
+  // The sse/http contract servers listen on loopback, which the default outbound policy refuses.
+  let restoreOutboundPolicy: () => void;
+  beforeAll(() => {
+    restoreOutboundPolicy = allowLoopbackOutboundForTests();
+  });
+
   afterAll(async () => {
+    restoreOutboundPolicy();
     await pool?.end();
   });
 

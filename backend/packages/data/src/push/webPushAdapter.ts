@@ -1,5 +1,9 @@
 import webpush, { WebPushError } from "web-push";
+import { createLogger } from "@semprec/shared";
+import { createOutboundHttp, isOutboundAddressNotAllowed } from "../net/outboundAddressPolicy.js";
 import type { NotificationPushPayload, PushSendResult, WebPushTarget } from "./pushSenders.js";
+
+const logger = createLogger("push");
 
 export interface VapidConfig {
   publicKey: string;
@@ -22,7 +26,10 @@ function getVapidConfigFromEnv(): VapidConfig {
  * The `web_push` half of issue #151's fanout adapters. A 404/410 from the push service means the
  * subscription is gone (`WebPushError.statusCode`) — the caller pairs that with #150's
  * `revokePushSubscriptionByProviderInvalidation`. Anything else (network failure, 5xx, rate
- * limiting) is treated as transient and left for the job's own retry. Missing `VAPID_*` env vars
+ * limiting) is treated as transient and left for the job's own retry. The request goes through the
+ * current outbound address policy's `https.Agent` (issue #1034): an endpoint whose host resolves to a
+ * denied address is `permanent-failure` too, so the caller revokes it exactly as for a 404/410.
+ * Missing `VAPID_*` env vars
  * (issue #703) resolve `not-configured` instead of throwing — a server-side gap, not a verdict on
  * this subscription.
  */
@@ -38,6 +45,7 @@ export async function sendWebPushNotification(
     return { outcome: "not-configured", reason: error instanceof Error ? error.message : String(error) };
   }
 
+  const outbound = createOutboundHttp();
   try {
     await webpush.sendNotification(
       { endpoint: target.endpoint, keys: { p256dh: target.p256dh, auth: target.authSecret } },
@@ -48,6 +56,7 @@ export async function sendWebPushNotification(
           publicKey: resolvedConfig.publicKey,
           privateKey: resolvedConfig.privateKey,
         },
+        agent: outbound.httpsAgent,
       },
     );
     return { outcome: "delivered" };
@@ -55,6 +64,19 @@ export async function sendWebPushNotification(
     if (error instanceof WebPushError && (error.statusCode === 404 || error.statusCode === 410)) {
       return { outcome: "permanent-failure", error };
     }
+    if (isOutboundAddressNotAllowed(error)) {
+      return { outcome: "permanent-failure", error };
+    }
     return { outcome: "transient-failure", error };
+  } finally {
+    // The send's outcome is already decided; a failure to tear down the per-send pools must not replace it.
+    try {
+      await outbound.close();
+    } catch (closeError) {
+      logger.warn(
+        { errorName: closeError instanceof Error ? closeError.name : typeof closeError },
+        "web push outbound connection pool close failed",
+      );
+    }
   }
 }
