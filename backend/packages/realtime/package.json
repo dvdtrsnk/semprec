@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@semprec/data": "workspace:*",
+    "@semprec/shared": "workspace:*",
     "lib0": "^0.2.99",
     "pg": "^8.23.0",
     "ws": "^8.18.0",

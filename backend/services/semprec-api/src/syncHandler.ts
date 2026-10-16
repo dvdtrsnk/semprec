@@ -15,7 +15,7 @@ export async function createSyncUpgradeHandler(pool: Pool): Promise<SyncServer> 
     authenticate: async (req: IncomingMessage) => {
       try {
         const identity = await authenticateRequest(pool, req);
-        return { userId: identity.user.id, sessionId: identity.session.id };
+        return { tenantId: identity.tenantId, userId: identity.user.id, sessionId: identity.session.id };
       } catch (err) {
         if (err instanceof UnauthorizedError) return null;
         throw err;

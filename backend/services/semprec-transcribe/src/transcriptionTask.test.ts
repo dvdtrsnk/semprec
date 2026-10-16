@@ -1277,7 +1277,12 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     const received: unknown[] = [];
     try {
       await listenClient.query("LISTEN semprec_events");
-      listenClient.on("notification", (message) => received.push(JSON.parse(message.payload ?? "null")));
+      listenClient.on("notification", (message) => {
+        const envelope = z
+          .object({ tenantId: z.string().uuid(), message: z.unknown() })
+          .parse(JSON.parse(message.payload ?? "null"));
+        received.push(envelope.message);
+      });
 
       await createTranscriptionTask(
         pool,
