@@ -17,6 +17,15 @@ try {
   if (result.status === "failed" && notificationIds.length === 0) {
     console.error("restore test failure recorded, but no admin exists to notify");
   }
+} catch (err) {
+  // writeOperatorAlert's AggregateError rolled the whole record back, though some admins may already
+  // hold their row; re-recording the same run id dedupes those and retries the rest.
+  if (err instanceof AggregateError) {
+    console.error(
+      `restore test result for run ${result.runId} was not recorded (${err.message}); re-run with the same run id`,
+    );
+  }
+  throw err;
 } finally {
   await pool.end();
 }
