@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import {
   startHttpContractServer,
   startSseContractServer,
@@ -77,7 +77,15 @@ describe("MCP connection factory (issue #231)", () => {
   });
 
   describe("stdio", () => {
+    // A `stdio` spawn needs an admin of the sole tenant (issue #1033). Each test that expects a
+    // spawn makes its tenant-zero user that admin; the member test below leaves its user a member.
+    async function makeSoleTenantAdmin(): Promise<void> {
+      const user = await createTenantZeroUser(pool);
+      await pool.query("UPDATE users SET role = 'admin' WHERE id = $1", [user.id]);
+    }
+
     it("connects, completes the handshake, and injects the credential into the child's env", async () => {
+      await makeSoleTenantAdmin();
       const contract = startStdioContractServer();
       const item = await createMcpServerItem(contract.connectionConfig, "sk-stdio-secret");
 
@@ -93,6 +101,7 @@ describe("MCP connection factory (issue #231)", () => {
     });
 
     it("connects with no credential when none is stored", async () => {
+      await makeSoleTenantAdmin();
       const contract = startStdioContractServer();
       const item = await createMcpServerItem(contract.connectionConfig);
 
@@ -106,7 +115,86 @@ describe("MCP connection factory (issue #231)", () => {
       await contract.waitForChildExit();
     });
 
+    it("refuses a member at spawn without starting a child or decrypting the credential", async () => {
+      // The sole tenant's user is a member (the column default), so `tenantAllowsStdio` is false.
+      await createTenantZeroUser(pool);
+      const contract = startStdioContractServer();
+      const item = await createMcpServerItem(contract.connectionConfig, "sk-stdio-secret");
+
+      let thrown: unknown;
+      try {
+        await connectMcpServer(pool, item, { purpose: "test" });
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(McpConnectionError);
+      expect((thrown as McpConnectionError).reason).toBe("transport_not_allowed");
+      expect(contract.getChildEnvironmentNames()).toBeNull();
+      expect(contract.getHandshakeCount()).toBe(0);
+      const { rows } = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM credential_access_log WHERE item_id = $1",
+        [item.id],
+      );
+      expect(rows[0]?.count).toBe("0");
+    });
+
+    it("gives the child exactly the inherited names, the config's env names and the credential name", async () => {
+      await makeSoleTenantAdmin();
+      const contract = startStdioContractServer();
+      const item = await createMcpServerItem(contract.connectionConfig, "sk-stdio-secret");
+      const parentSecretName = "SEMPREC_TEST_PARENT_SECRET";
+      const previous = process.env[parentSecretName];
+      process.env[parentSecretName] = "parent-only-value";
+      try {
+        const handle = await connectMcpServer(pool, item);
+        try {
+          await waitFor(
+            () => contract.getHandshakeCount() === 1,
+            "stdio contract server never completed the handshake",
+          );
+          const inherited = ["HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER"].filter(
+            (name) => process.env[name] !== undefined,
+          );
+          // The contract fixture's own env names (`MCP_CONTRACT_CREDENTIAL_ENV_VAR`) and the credential name it declares.
+          const expected = [...inherited, "MCP_CONTRACT_CREDENTIAL_ENV_VAR", "MCP_CONTRACT_TEST_CREDENTIAL"].sort();
+          expect(contract.getChildEnvironmentNames()?.slice().sort()).toEqual(expected);
+          expect(contract.getChildEnvironmentNames()).not.toContain(parentSecretName);
+        } finally {
+          await handle.close();
+        }
+        await contract.waitForChildExit();
+      } finally {
+        if (previous === undefined) delete process.env[parentSecretName];
+        else process.env[parentSecretName] = previous;
+      }
+    });
+
+    it.each<[string, McpConnectionConfig]>([
+      ["an env name that overrides PATH", { transport: "stdio", command: "x", env: { PATH: "/evil" } }],
+      ["an env name that is a loader hook", { transport: "stdio", command: "x", env: { LD_PRELOAD: "/evil.so" } }],
+      ["an env name that is an interpreter hook", { transport: "stdio", command: "x", env: { NODE_OPTIONS: "--x" } }],
+      ["a credentialEnvVar that is PATH", { transport: "stdio", command: "x", credentialEnvVar: "PATH" }],
+    ])("refuses %s at spawn as invalid_config before any child starts", async (_label, config) => {
+      await makeSoleTenantAdmin();
+      const item = await createMcpServerItem(config, "sk-stdio-secret");
+
+      let thrown: unknown;
+      try {
+        await connectMcpServer(pool, item);
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(McpConnectionError);
+      expect((thrown as McpConnectionError).reason).toBe("invalid_config");
+      const { rows } = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM credential_access_log WHERE item_id = $1",
+        [item.id],
+      );
+      expect(rows[0]?.count).toBe("0");
+    });
+
     it("leaves no child process running after a failed connect", async () => {
+      await makeSoleTenantAdmin();
       const item = await createMcpServerItem({ transport: "stdio", command: "definitely-not-a-real-binary-xyz" });
 
       let thrown: unknown;
@@ -235,6 +323,9 @@ describe("MCP connection factory (issue #231)", () => {
     });
 
     it("rejects a credential decryption failure before opening any connection", async () => {
+      // The `stdio` config is only the vehicle here: the spawn check needs an admin of the sole tenant (issue #1033).
+      const adminUser = await createTenantZeroUser(pool);
+      await pool.query("UPDATE users SET role = 'admin' WHERE id = $1", [adminUser.id]);
       const item = await withTransaction(pool, (client) =>
         itemsStore.insertItem(client, {
           databaseId: mcpServersId,

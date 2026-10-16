@@ -10,6 +10,7 @@ import type { ItemRow } from "../types.js";
 import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import { assertValidMcpConnectionConfig, type McpConnectionConfig } from "./mcpConnectionConfig.js";
 import { McpConnectionError } from "./mcpConnectionError.js";
+import { tenantAllowsStdio } from "./stdioTransportPolicy.js";
 
 /**
  * The single MCP client connection factory (issue #231): opens a connection for a stored
@@ -49,8 +50,9 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 /**
  * Connects to the MCP server described by `mcpServerItem.properties.connectionConfig`,
  * decrypting its `external_credentials` secret (if any) only for this connection's use.
- * Rejects a malformed/unsupported `connectionConfig` or a genuine credential decryption failure
- * with `McpConnectionError` before opening any connection; maps a transport connect/handshake
+ * Rejects a malformed/unsupported `connectionConfig`, a `stdio` config the tenant no longer allows
+ * (`transport_not_allowed`, issue #1033), or a genuine credential decryption failure with
+ * `McpConnectionError` before opening any connection; maps a transport connect/handshake
  * failure (including one that times out — see `DEFAULT_CONNECT_TIMEOUT_MS`) to the same safe
  * error shape after releasing whatever the transport had opened. A transient DB failure while
  * resolving the credential propagates as-is rather than being reported as a credential problem.
@@ -61,6 +63,12 @@ export async function connectMcpServer(
   options: ConnectMcpServerOptions = {},
 ): Promise<McpClientHandle> {
   const config = parseConnectionConfig(mcpServerItem.properties.connectionConfig);
+  // The spawn is the security boundary for `stdio`: a row can hold it without the write-time rule
+  // having checked it (written before that rule, or its tenant's admin later demoted). Refuse before
+  // the credential is decrypted, so no `credential_access_log` row is written for a refused spawn.
+  if (config.transport === "stdio" && !(await tenantAllowsStdio(client))) {
+    throw new McpConnectionError("transport_not_allowed", "MCP server transport is not allowed for this account");
+  }
   const credential = await resolveCredential(client, mcpServerItem.id, options);
   const { transport, afterConnect } = buildTransport(config, credential);
 
@@ -178,19 +186,16 @@ function buildStdioTransport(
   config: Extract<McpConnectionConfig, { transport: "stdio" }>,
   credential: string | null,
 ): BuiltTransport {
-  // `env: undefined` (not `{}`) when there's nothing to add — `StdioClientTransport` falls back
-  // to `getDefaultEnvironment()`'s safe allowlist only when `env` is omitted entirely; passing
-  // any other object (even one that only adds the injected credential) silently strips that
-  // default environment from the child process. So once we know we need a non-undefined `env`
-  // for any reason, we must seed it from `getDefaultEnvironment()` ourselves.
+  // The child gets exactly the SDK's inherited allowlist (`getDefaultEnvironment()`: HOME, LOGNAME,
+  // PATH, SHELL, TERM, USER, as present in this process), then the config's own `env`, then the
+  // injected credential. Passing the object always makes that explicit rather than relying on the
+  // SDK's handling of an omitted `env`. `mcpConnectionConfig`'s schema refuses the inherited names
+  // and the loader and interpreter hooks listed there, so the config cannot override those.
   const credentialEnvVar = config.credentialEnvVar;
   const injectsCredential = credential !== null && credentialEnvVar !== undefined;
-  let env: Record<string, string> | undefined;
-  if (config.env || injectsCredential) {
-    env = { ...getDefaultEnvironment(), ...config.env };
-    if (injectsCredential) {
-      env[credentialEnvVar] = credential;
-    }
+  const env: Record<string, string> = { ...getDefaultEnvironment(), ...config.env };
+  if (injectsCredential) {
+    env[credentialEnvVar] = credential;
   }
   const transport = new StdioClientTransport({ command: config.command, args: config.args, env });
   // `StdioClientTransport` retains this exact `env` object as `_serverParams.env`, but it only
@@ -198,7 +203,7 @@ function buildStdioTransport(
   // spawned process already has its own copy of the credential in its real environment by the
   // time `connect()` resolves. Deleting the key here afterward only removes it from this
   // JS-side record, so it can no longer be found by inspecting `handle.client`.
-  const afterConnect = injectsCredential ? () => delete env![credentialEnvVar] : undefined;
+  const afterConnect = injectsCredential ? () => delete env[credentialEnvVar] : undefined;
   return { transport, afterConnect };
 }
 

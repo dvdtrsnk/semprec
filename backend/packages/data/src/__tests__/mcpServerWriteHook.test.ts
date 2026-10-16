@@ -102,6 +102,28 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
     expect(item.properties.connectionConfig).toEqual(STDIO);
   });
 
+  it("refuses a stdio config whose env name is forbidden, even from an admin writer, and leaves no row (issue #1033)", async () => {
+    const adminId = await createAdmin();
+    const forbidden = [
+      { transport: "stdio", command: "my-server", env: { PATH: "/evil" } },
+      { transport: "stdio", command: "my-server", env: { LD_PRELOAD: "/evil.so" } },
+      { transport: "stdio", command: "my-server", env: { NODE_OPTIONS: "--x" } },
+      { transport: "stdio", command: "my-server", credentialEnvVar: "PATH" },
+    ];
+    for (const connectionConfig of forbidden) {
+      await expect(
+        withTransaction(pool, (client) =>
+          createItemWithClient(
+            client,
+            { databaseId: mcpServersId, properties: { name: "S", connectionConfig } },
+            { humanWriterUserId: adminId },
+          ),
+        ),
+      ).rejects.toMatchObject({ details: { field: "connectionConfig" } });
+    }
+    expect(await countItems(mcpServersId)).toBe(0);
+  });
+
   it("refuses a stdio config with no human writer, or a non-admin one, and leaves no row", async () => {
     const member = await createTenantZeroUser(pool);
     await pool.query("UPDATE users SET role = 'member' WHERE id = $1", [member.id]);

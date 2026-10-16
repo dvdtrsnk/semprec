@@ -99,6 +99,8 @@ function isProcessAlive(pid: number): boolean {
 export interface StdioContractServer extends McpContractServer {
   /** Waits (with a short timeout) until the spawned child process is no longer running. */
   waitForChildExit(): Promise<void>;
+  /** Names (never values) of the environment variables the last spawned child saw, or `null` before any spawn. */
+  getChildEnvironmentNames(): string[] | null;
 }
 
 /**
@@ -123,6 +125,7 @@ export function startStdioContractServer(
     handshakeCount: number;
     credential?: string | null;
     lastToolCall?: ContractToolCall | null;
+    envNames?: string[];
   } | null {
     if (!existsSync(recordFile)) return null;
     try {
@@ -143,6 +146,7 @@ export function startStdioContractServer(
     getObservedCredential: () => readRecord()?.credential ?? null,
     getHandshakeCount: () => readRecord()?.handshakeCount ?? 0,
     getLastToolCall: () => readRecord()?.lastToolCall ?? null,
+    getChildEnvironmentNames: () => readRecord()?.envNames ?? null,
     // Read fresh by each newly-spawned child at startup (see the fixture script) — there's no
     // shared memory across the process boundary to push this into an already-running child.
     setTools: (tools) => writeFileSync(toolsFile, JSON.stringify(tools)),

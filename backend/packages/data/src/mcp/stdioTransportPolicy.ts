@@ -6,8 +6,9 @@ import { requireSingleRow } from "../db/pool.js";
 /**
  * True when the current tenant (`app_tenant_default()`) has an admin user — that user specifically
  * when `userId` is given. A `userId` that is a member, or an admin of another tenant, yields false.
- * The optional `userId` is kept for #1033, which reuses this helper at spawn time. The write hooks
- * always pass the writer, and must: without it any writer in a tenant that has an admin would pass.
+ * The write hooks always pass the writer, and must: without it any writer in a tenant that has an
+ * admin would pass. The spawn check in `connectMcpServer` (issue #1033) omits `userId` on purpose:
+ * it asks whether the tenant allows `stdio` at all, not whether a particular writer may store it.
  */
 export async function tenantAllowsStdio(client: Queryable, userId?: string): Promise<boolean> {
   const result = await client.query<{ allowed: boolean }>(
