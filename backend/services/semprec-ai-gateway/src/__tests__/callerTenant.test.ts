@@ -353,6 +353,7 @@ describe("caller tenant on the gateway routes", () => {
     let tenantB: string;
     let runB: string;
     let itemB: string;
+    let sidePool: Pool;
 
     beforeEach(async () => {
       tenantB = await createTestTenant(pool);
@@ -362,7 +363,7 @@ describe("caller tenant on the gateway routes", () => {
       itemB = await runInTenant(tenantB, () => createProjectItem(scopedPool));
 
       await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
-      const sidePool = await createRuntimeRolePool(pool, "semprec_side");
+      sidePool = await createRuntimeRolePool(pool, "semprec_side");
       extraPools.push(sidePool);
       startServer(sidePool);
       await listen();
@@ -419,7 +420,7 @@ describe("caller tenant on the gateway routes", () => {
 
         // The global daily cap of 1 is reached by tenant A's spend; tenant B has NULL own caps.
         await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
-        startServer(extraPools[extraPools.length - 1] as Pool, { dailyCapUsd: 1, monthlyCapUsd: 1_000 });
+        startServer(sidePool, { dailyCapUsd: 1, monthlyCapUsd: 1_000 });
         await listen();
         const viaGlobal = await send(route, { [TENANT_HEADER]: tenantB });
         const globalBody = await viaGlobal.text();
@@ -427,7 +428,7 @@ describe("caller tenant on the gateway routes", () => {
         // Back to generous global caps; tenant A's own daily cap of 1 is now the one that trips.
         await setTenantAiBudget(pool, tenantZero, { dailyCapUsd: 1 });
         await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
-        startServer(extraPools[extraPools.length - 1] as Pool);
+        startServer(sidePool);
         await listen();
         const viaOwn = await send(route, { [TENANT_HEADER]: tenantZero });
         const ownBody = await viaOwn.text();
