@@ -642,11 +642,14 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
       ["semprec_events", { tenantId: "not-a-uuid", message: inner }],
       ["semprec_events", inner],
       ["semprec_agent_stream", { message: { type: "agent_run_delta", agentRunId: randomUUID(), delta: "x" } }],
+      // A `type` outside the catalog is not echoed into the log line.
+      ["semprec_events", { tenantId: getTenantZeroId(), message: { type: "secret-content" } }],
     ];
     for (const [channel, payload] of bad) {
       await pool.query("SELECT pg_notify($1, $2)", [channel, JSON.stringify(payload)]);
     }
-    await waitUntil(() => realtimeWarn.mock.calls.length >= bad.length);
+    await pool.query("SELECT pg_notify('semprec_events', 'not json')");
+    await waitUntil(() => realtimeWarn.mock.calls.length >= bad.length + 1);
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(received).toEqual([]);
@@ -656,6 +659,8 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
       [{ channel: "semprec_events", type: "invalidation" }, "realtime_message_without_tenant"],
       [{ channel: "semprec_events", type: "invalidation" }, "realtime_message_without_tenant"],
       [{ channel: "semprec_agent_stream", type: "agent_run_delta" }, "realtime_message_without_tenant"],
+      [{ channel: "semprec_events", type: undefined }, "realtime_message_without_tenant"],
+      [{ channel: "semprec_events", type: undefined }, "realtime_message_without_tenant"],
     ]);
     client.close();
   });

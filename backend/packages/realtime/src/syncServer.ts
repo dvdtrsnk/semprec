@@ -9,6 +9,8 @@ import {
   REALTIME_CHANNEL,
   parseAgentStreamEnvelope,
   parseRealtimeEnvelope,
+  type AgentStreamMessage,
+  type RealtimeMessage,
 } from "./pgNotifyPublisher.js";
 import { createAgentRunWatchRegistry } from "./agentRunWatch.js";
 import { createDocSyncRegistry } from "./docSync.js";
@@ -48,6 +50,17 @@ export interface SyncServer {
 }
 
 const logger = createLogger("realtime");
+
+/** Every message `type` either channel's catalog defines; the only `type` values a drop warning names. */
+const KNOWN_MESSAGE_TYPES: ReadonlySet<string> = new Set<RealtimeMessage["type"] | AgentStreamMessage["type"]>([
+  "invalidation",
+  "doc_update",
+  "agent_run_event",
+  "notification_created",
+  "notification_read_state",
+  "session_revoked",
+  "agent_run_delta",
+]);
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 
@@ -95,8 +108,10 @@ function rejectUpgrade(socket: Duplex): void {
  * for its whole lifetime. Owns this process's single dedicated Postgres LISTEN connection on
  * `REALTIME_CHANNEL` and acts on five message kinds from it. Every payload is a
  * `{ tenantId, message }` envelope built by Postgres; one that does not parse is dropped and logged,
- * and a valid one is handled inside `runInTenant(envelope.tenantId)` and delivered only to sockets
- * authenticated in that tenant.
+ * and a valid one is handled inside `runInTenant(envelope.tenantId)`. Invalidations, notifications
+ * and session revocations are delivered only to sockets authenticated in that tenant; agent-stream
+ * deltas still reach a run's authorized watchers by run id alone until watchers are checked against
+ * the message's tenant (issue #1027).
  *
  * - `session_revoked` closes every socket authenticated as that exact session with 4401, leaving
  *   every other session's sockets untouched.
@@ -298,18 +313,21 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     agentEventDeliveryTails.set(runId, entry);
   }
 
-  function dropWithoutTenant(channel: string, rawPayload: string): void {
+  /**
+   * Logs a dropped envelope naming only its channel and inner `type`. `raw` is the already-parsed
+   * payload (`undefined` when it was not JSON); the type is logged only when it is one of the
+   * catalog's own literals, so a payload that failed validation cannot put arbitrary text in the log.
+   */
+  function dropWithoutTenant(channel: string, raw: unknown): void {
     let type: unknown;
-    try {
-      const raw: unknown = JSON.parse(rawPayload);
-      if (typeof raw === "object" && raw !== null) {
-        const inner = (raw as { message?: unknown }).message ?? raw;
-        if (typeof inner === "object" && inner !== null) type = (inner as { type?: unknown }).type;
-      }
-    } catch {
-      // An unparsable payload has no readable type; it is still dropped and logged below.
+    if (typeof raw === "object" && raw !== null) {
+      const inner = (raw as { message?: unknown }).message ?? raw;
+      if (typeof inner === "object" && inner !== null) type = (inner as { type?: unknown }).type;
     }
-    logger.warn({ channel, type: typeof type === "string" ? type : undefined }, "realtime_message_without_tenant");
+    logger.warn(
+      { channel, type: typeof type === "string" && KNOWN_MESSAGE_TYPES.has(type) ? type : undefined },
+      "realtime_message_without_tenant",
+    );
   }
 
   const onNotification = (msg: { channel: string; payload?: string }) => {
@@ -321,23 +339,25 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     try {
       rawParsed = JSON.parse(msg.payload);
     } catch {
-      dropWithoutTenant(msg.channel, msg.payload);
+      dropWithoutTenant(msg.channel, undefined);
       return;
     }
 
     if (msg.channel === AGENT_STREAM_CHANNEL) {
       const envelope = parseAgentStreamEnvelope(rawParsed);
       if (!envelope) {
-        dropWithoutTenant(msg.channel, msg.payload);
+        dropWithoutTenant(msg.channel, rawParsed);
         return;
       }
+      // The scope does not narrow delivery here: `forwardDelta` reads no row and sends to every
+      // watcher of the run. Checking watchers against the envelope's tenant is issue #1027.
       runInTenant(envelope.tenantId, () => agentRunWatch.forwardDelta(envelope.message));
       return;
     }
 
     const envelope = parseRealtimeEnvelope(rawParsed);
     if (!envelope) {
-      dropWithoutTenant(msg.channel, msg.payload);
+      dropWithoutTenant(msg.channel, rawParsed);
       return;
     }
     const { tenantId, message: parsed } = envelope;

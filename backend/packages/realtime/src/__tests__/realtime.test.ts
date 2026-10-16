@@ -35,12 +35,13 @@ function resetHooks(): void {
 }
 
 describe("realtime", () => {
-  beforeEach(() => {
-    // The shared embedded-Postgres instance (vitest globalSetup, packages/data) already
-    // has migrations applied; these tests only exercise LISTEN/NOTIFY, not any of the
-    // data package's own tables, so a plain Pool is enough — no need to reach into
-    // @semprec/data's internal testSupport helpers for a table-truncating reset.
+  beforeEach(async () => {
+    // The shared embedded-Postgres instance (vitest globalSetup, packages/data) already has
+    // migrations applied, but other files leave rows behind in it. Every envelope assertion here
+    // depends on that state — `app_tenant_default()` resolves tenant zero only while it is the sole
+    // `tenants` row, and `users.tenant_id` is unique — so reset it before each test.
     pool ??= getTestPool();
+    await resetDatabase(pool);
   });
 
   afterAll(async () => {
@@ -227,9 +228,8 @@ describe("realtime", () => {
   describe("tenant envelope (issue #1025)", () => {
     let scopedPool: Pool;
 
-    beforeEach(async () => {
+    beforeEach(() => {
       resetHooks();
-      await resetDatabase(pool);
       scopedPool = createPool(process.env.TEST_DATABASE_URL ?? "");
     });
 
