@@ -400,10 +400,12 @@ describe("createProjectAgentGuidanceService (issue #214)", () => {
         throw infraError;
       }),
     });
+    const store = fakeStore();
+    const heartbeats = recordingHeartbeats();
     const service = createProjectAgentGuidanceService({
-      store: fakeStore(),
+      store,
       references,
-      heartbeats: recordingHeartbeats(),
+      heartbeats,
       transactions: fakeTransactions(),
     });
 
@@ -413,6 +415,8 @@ describe("createProjectAgentGuidanceService (issue #214)", () => {
 
     expect(err).toBe(infraError);
     expect(err).not.toBeInstanceOf(ProjectAgentGuidanceOwnerViolationError);
+    expect(store.rows.size).toBe(0);
+    expect(heartbeats.calls).toEqual([]);
   });
 
   it("refuses a transfer to a user who is not the tenant's user as validation_failed not_found, leaving the owner unchanged", async () => {

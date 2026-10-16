@@ -106,11 +106,10 @@ export const guidanceReferenceStore: GuidanceReferenceStore<PoolClient> = {
  * name a user outside the tenant as guidance owner or drift recipient.
  */
 async function requireTenantUser(tx: PoolClient, userId: string) {
-  if ((await getTenantUserId(tx)) !== userId) {
+  const user = await getUserById(tx, userId);
+  if (!user || (await getTenantUserId(tx)) !== userId) {
     throw new GuidanceReferenceNotFoundError(`User ${userId} not found`);
   }
-  const user = await getUserById(tx, userId);
-  if (!user) throw new GuidanceReferenceNotFoundError(`User ${userId} not found`);
   return user;
 }
 
