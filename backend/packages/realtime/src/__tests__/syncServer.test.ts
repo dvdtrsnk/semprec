@@ -1070,48 +1070,29 @@ describe("createSyncServer doc sync (issue #162)", () => {
   });
 });
 
-describe("createSyncServer doc_update envelope tenancy (issue #1026)", () => {
-  let chokePoint: ChokePoint;
-  let docStore: DocStore;
+describe("createSyncServer doc sync tenancy (issue #1026)", () => {
+  let runtimePool: Pool;
+  let tenantServer: SyncServer;
+  let tenantHttp: Server;
+  let port: number;
+  let identityByToken: Map<string, SyncIdentity>;
+  let tenantA: string;
+  let tenantB: string;
 
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
-    chokePoint = createChokePoint(pool);
-    docStore = createDocStore(pool);
     wireRealtimeHooks(pool);
-  });
-
-  async function createTestDoc(): Promise<string> {
-    const db = await chokePoint.createDatabase({ name: "Pages" });
-    const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
-    await docStore.putBlock(item.id, { id: "root", flavour: "page" }, "user");
-    const doc = await docStore.getDoc(item.id);
-    return doc!.id;
-  }
-
-  it("delivers a doc_update envelope only to sockets of the envelope's tenant, whatever doc it names", async () => {
-    const userA = await createUser(pool, {
-      email: `envelope-${Math.random()}@example.test`,
-      passwordHash: await hashPassword("s3cret-password"),
-      locale: "en",
-    });
-    const identityByToken = new Map<string, SyncIdentity>([
-      ["a", { tenantId: getTenantZeroId(), userId: userA.id, sessionId: "session-a" }],
-    ]);
-    const docId = await createTestDoc();
-    // Created after the doc: a second tenant makes scope-less writes through the test pool fail closed.
-    const otherTenant = await createTestTenant(pool);
-    const { rows } = await pool.query<{ id: string }>(
-      `SELECT id FROM doc_updates WHERE doc_id = $1 ORDER BY id DESC LIMIT 1`,
-      [docId],
-    );
-    const updateId = rows[0]!.id;
-
-    // Its own pool: the LISTEN connection is then created outside any tenant scope, as in production,
-    // not as a pooled connection an earlier test opened inside one (which would throw on a foreign envelope).
-    const envelopePool = createPool(process.env.TEST_DATABASE_URL ?? "");
-    const envelopeServer = await createSyncServer(envelopePool, {
+    tenantA = getTenantZeroId();
+    tenantB = await createTestTenant(pool);
+    identityByToken = new Map();
+    // Row-level security applies only to a runtime role, so the server under test reads and writes
+    // through one. The pool is also fresh, so the server's LISTEN connection is a new one opened inside
+    // `connectListenClient`'s system scope rather than a pooled connection an earlier test opened inside
+    // a tenant scope: `connectListenClient` takes any idle pooled connection, and one carrying a tenant
+    // scope throws `TenantScopeConflictError` on a foreign-tenant envelope.
+    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    tenantServer = await createSyncServer(runtimePool, {
       authenticate: async (req: IncomingMessage) => {
         const token = new URL(req.url ?? "/", "http://localhost").searchParams.get("token");
         return token ? (identityByToken.get(token) ?? null) : null;
@@ -1119,42 +1100,122 @@ describe("createSyncServer doc_update envelope tenancy (issue #1026)", () => {
       revalidateSession: async () => true,
       heartbeatIntervalMs: 30_000,
     });
-    const envelopeHttp = createServer();
-    envelopeHttp.on("upgrade", (req, socket, head) => envelopeServer.handleUpgrade(req, socket, head));
-    await new Promise<void>((resolve) => envelopeHttp.listen(0, resolve));
-    const envelopeAddress = envelopeHttp.address();
-    if (!envelopeAddress || typeof envelopeAddress === "string") throw new Error("expected a bound TCP address");
-    const wsA = new WebSocket(`ws://127.0.0.1:${envelopeAddress.port}/api/sync?token=a`);
-    await waitForOpen(wsA);
+    tenantHttp = createServer();
+    tenantHttp.on("upgrade", (req, socket, head) => tenantServer.handleUpgrade(req, socket, head));
+    await new Promise<void>((resolve) => tenantHttp.listen(0, resolve));
+    const address = tenantHttp.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    port = address.port;
+  });
+
+  afterEach(async () => {
+    await tenantServer.close();
+    await new Promise<void>((resolve) => tenantHttp.close(() => resolve()));
+    await runtimePool.end();
+  });
+
+  async function createDocIn(tenantId: string): Promise<string> {
+    return runInTenant(tenantId, async () => {
+      const db = await createChokePoint(runtimePool).createDatabase({ name: "Pages" });
+      const item = await createChokePoint(runtimePool).createItem({ databaseId: db.id, properties: {} });
+      const store = createDocStore(runtimePool);
+      await store.putBlock(item.id, { id: "root", flavour: "page" }, "user");
+      const doc = await store.getDoc(item.id);
+      return doc!.id;
+    });
+  }
+
+  async function connectAs(token: string, tenantId: string): Promise<WebSocket> {
+    // Doc sync never reads the user, only the socket's tenant, so the identity needs no users row.
+    identityByToken.set(token, { tenantId, userId: randomUUID(), sessionId: `session-${token}` });
+    const client = new WebSocket(`ws://127.0.0.1:${port}/api/sync?token=${token}`);
+    await waitForOpen(client);
+    return client;
+  }
+
+  async function updateRowsOf(docId: string): Promise<{ tenant_id: string }[]> {
+    // The superuser pool sees every tenant's rows, so a write in either tenant is counted.
+    const { rows } = await pool.query<{ tenant_id: string }>(`SELECT tenant_id FROM doc_updates WHERE doc_id = $1`, [
+      docId,
+    ]);
+    return rows;
+  }
+
+  it("answers a doc:open for another tenant's doc with nothing and persists no update frame sent right behind it", async () => {
+    const docA = await createDocIn(tenantA);
+    const rowsBefore = await updateRowsOf(docA);
+    const wsB = await connectAs("b", tenantB);
     try {
-      const clientA = new TestDocClient(wsA, docId);
+      const clientB = new TestDocClient(wsB, docA);
+      // Sent back to back, so the update frame arrives while the server's tenant-scoped lookup is pending.
+      clientB.open();
+      clientB.mutate((doc) => doc.getText("body").insert(0, "intrusion"));
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      expect(clientB.received).toHaveLength(0);
+      expect(await updateRowsOf(docA)).toEqual(rowsBefore);
+    } finally {
+      wsB.close();
+    }
+  });
+
+  it("opens and persists an update for a socket's own-tenant doc under that tenant", async () => {
+    const docA = await createDocIn(tenantA);
+    const rowsBefore = await updateRowsOf(docA);
+    const wsA = await connectAs("a", tenantA);
+    try {
+      const clientA = new TestDocClient(wsA, docA);
+      clientA.open();
+      await waitUntil(() => clientA.received.length > 0);
+      clientA.mutate((doc) => doc.getText("body").insert(0, "own tenant"));
+      let rows = await updateRowsOf(docA);
+      const deadline = Date.now() + 2000;
+      while (rows.length === rowsBefore.length && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        rows = await updateRowsOf(docA);
+      }
+
+      expect(rows).toHaveLength(rowsBefore.length + 1);
+      expect(rows.every((row) => row.tenant_id === tenantA)).toBe(true);
+    } finally {
+      wsA.close();
+    }
+  });
+
+  it("delivers a doc_update envelope only to sockets of the envelope's tenant, whatever doc it names", async () => {
+    const docA = await createDocIn(tenantA);
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM doc_updates WHERE doc_id = $1 ORDER BY id DESC LIMIT 1`,
+      [docA],
+    );
+    const updateId = rows[0]!.id;
+    const wsA = await connectAs("a", tenantA);
+    try {
+      const clientA = new TestDocClient(wsA, docA);
       clientA.open();
       await waitUntil(() => clientA.received.length > 0);
       // Let the open handshake (the client's SyncStep1/2 replies) settle so only fan-out frames remain.
       await new Promise((resolve) => setTimeout(resolve, 200));
       const receivedBefore = clientA.received.length;
 
-      await notifyEnvelope(pool, "semprec_events", otherTenant, {
+      await notifyEnvelope(pool, "semprec_events", tenantB, {
         type: "doc_update",
-        docId,
+        docId: docA,
         updateId,
         createdBy: "user",
       });
       await new Promise((resolve) => setTimeout(resolve, 150));
       expect(clientA.received).toHaveLength(receivedBefore);
 
-      await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), {
+      await notifyEnvelope(pool, "semprec_events", tenantA, {
         type: "doc_update",
-        docId,
+        docId: docA,
         updateId,
         createdBy: "user",
       });
       await waitUntil(() => clientA.received.length > receivedBefore);
     } finally {
       wsA.close();
-      await envelopeServer.close();
-      await new Promise<void>((resolve) => envelopeHttp.close(() => resolve()));
-      await envelopePool.end();
     }
   });
 });
