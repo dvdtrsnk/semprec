@@ -1,17 +1,14 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { createLogger } from "@semprec/shared";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientMetadata, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { FetchLike, Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { createLogger } from "@semprec/shared";
 import type { Queryable } from "../db/pool.js";
 import type { ItemRow } from "../types.js";
 import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
-import { assertValidMcpConnectionConfig, type McpConnectionConfig } from "./mcpConnectionConfig.js";
-import { McpConnectionError } from "./mcpConnectionError.js";
-import { tenantAllowsStdio } from "./stdioTransportPolicy.js";
 import { isBaselineOutboundUrl } from "../net/storedOutboundUrl.js";
 import {
   createOutboundHttp,
@@ -19,6 +16,9 @@ import {
   isOutboundAddressNotAllowed,
   type OutboundHttp,
 } from "../net/outboundAddressPolicy.js";
+import { assertValidMcpConnectionConfig, type McpConnectionConfig } from "./mcpConnectionConfig.js";
+import { McpConnectionError } from "./mcpConnectionError.js";
+import { tenantAllowsStdio } from "./stdioTransportPolicy.js";
 
 /**
  * The single MCP client connection factory (issue #231): opens a connection for a stored
