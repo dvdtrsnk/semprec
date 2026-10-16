@@ -113,6 +113,21 @@
   it answers a random id: same status, body and headers, and no branch such as an
   ETag/304 check taken before the tenant check. A difference is critical, because it
   tells the caller that the foreign row exists. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+- A value interpolated into SQL text instead of bound as a parameter is medium, and high
+  when the value can come from outside the process. This includes test code, DDL and
+  trigger or function bodies: there, quote inside Postgres (`format('%I')`, `format('%L')`)
+  or pass the value through a table or setting. An interpolation of a provably closed
+  value (a literal union, a generated UUID) is not reported when a comment beside it
+  states that invariant. Test helpers are copied into production code, and a reviewer
+  cannot tell a safe interpolation from an injection without the invariant written down.
+- A new unique index or unique constraint on a table that has `INSERT … ON CONFLICT`
+  statements whose arbiter names a different index, left unchanged and not named as a
+  follow-up in the pull request description, is high: a conflict on the new index raises
+  `23505` past the arbiter and surfaces as a 500 under concurrent writes, and a surviving
+  global unique index on a tenant table stays a cross-tenant existence oracle.
+- A test that asserts tenant isolation through the superuser pool (`getTestPool()`), or
+  with two users of one tenant instead of two tenants, is high: superusers and table owners
+  bypass row-level security, so the test passes whether or not isolation holds.
 - A log line or error message carrying user content (item properties, mail subjects,
   bodies or addresses, file names, prompts, model output) is high: logs are not
   tenant-scoped. Log ids and counts. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
