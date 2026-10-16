@@ -1,12 +1,14 @@
 import type { Pool } from "pg";
 import type { WebSocket } from "ws";
 import { getAgentRun, getAgentRunEventById, listAgentRunEventsAfter, type AgentRunEventRow } from "@semprec/data";
+import { runInTenant } from "@semprec/shared";
 import type { AgentStreamMessage } from "./pgNotifyPublisher.js";
 import type { AgentDeltaChunk, OutboundFrame } from "./protocolV1.js";
 import { sendWithBackpressure } from "./backpressure.js";
 
 interface Watcher {
   ws: WebSocket;
+  tenantId: string;
   runId: string;
   lastEventId: string;
   replaying: boolean;
@@ -20,11 +22,14 @@ interface Watcher {
  * not queue: their completed durable message event is the recovery copy.
  */
 export interface AgentRunWatchRegistry {
-  watch(ws: WebSocket, userId: string, runId: string, afterEventId: string): Promise<void>;
+  /** A socket of `tenantId` watches `runId`; authorization and replay resolve inside that tenant. */
+  watch(ws: WebSocket, tenantId: string, userId: string, runId: string, afterEventId: string): Promise<void>;
   unwatch(ws: WebSocket, runId: string): void;
   handleSocketClosed(ws: WebSocket): void;
-  forwardEvent(runId: string, eventId: string): Promise<void>;
-  forwardDelta(message: AgentStreamMessage): void;
+  /** Delivers one durable event reference from `tenantId`'s NOTIFY to that tenant's watchers of `runId` only. */
+  forwardEvent(tenantId: string, runId: string, eventId: string): Promise<void>;
+  /** Delivers an ephemeral delta from `tenantId`'s stream to that tenant's watchers of its run only. */
+  forwardDelta(tenantId: string, message: AgentStreamMessage): void;
 }
 
 function isLater(left: string, right: string): boolean {
@@ -126,7 +131,7 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
   }
 
   return {
-    async watch(ws, userId, runId, afterEventId) {
+    async watch(ws, tenantId, userId, runId, afterEventId) {
       const pendingToken = beginWatch(ws, runId);
 
       // agent_runs.actor_user_id is NOT NULL after migration 0042's cutover: every row carries the
@@ -136,7 +141,9 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
       // neither a replay nor a live subscription, and an unknown run is indistinguishable from it.
       let run: Awaited<ReturnType<typeof getAgentRun>>;
       try {
-        run = await getAgentRun(pool, runId);
+        // Resolved inside the socket's tenant: another tenant's run is invisible under RLS and takes
+        // the same silent path as an unknown id.
+        run = await runInTenant(tenantId, () => getAgentRun(pool, runId));
       } catch (err) {
         finishPendingWatch(ws, runId, pendingToken);
         throw err;
@@ -155,6 +162,7 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
       const watcher: Watcher = {
         ws,
         runId,
+        tenantId,
         lastEventId: afterEventId,
         replaying: true,
         queuedEventIds: new Set(),
@@ -166,7 +174,7 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
       addReplacement(watcher);
 
       try {
-        const replay = await listAgentRunEventsAfter(pool, runId, afterEventId);
+        const replay = await runInTenant(tenantId, () => listAgentRunEventsAfter(pool, runId, afterEventId));
         if (!isCurrent(watcher)) return;
         for (const event of replay) deliver(watcher, event);
         // Keep the watcher in replay mode until every reference collected during replay has
@@ -179,7 +187,7 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
           watcher.queuedEventIds.clear();
           for (const eventId of queued) {
             if (!isCurrent(watcher) || !isLater(eventId, watcher.lastEventId)) continue;
-            const event = await getAgentRunEventById(pool, runId, eventId);
+            const event = await runInTenant(tenantId, () => getAgentRunEventById(pool, runId, eventId));
             if (event) deliver(watcher, event);
           }
         }
@@ -215,31 +223,35 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
       for (const watcher of [...watchers.values()]) remove(watcher);
     },
 
-    async forwardEvent(runId, eventId) {
+    async forwardEvent(tenantId, runId, eventId) {
       const watchers = watchersByRun.get(runId);
       if (!watchers || watchers.size === 0) return;
 
-      for (const watcher of watchers) {
+      // Only the publisher's tenant's watchers may hold or receive this reference; a watcher of
+      // another tenant that shares the run id is left alone.
+      const tenantWatchers = [...watchers].filter((watcher) => watcher.tenantId === tenantId);
+      for (const watcher of tenantWatchers) {
         if (watcher.replaying) watcher.queuedEventIds.add(eventId);
       }
 
-      const liveWatchers = [...watchers].filter((watcher) => !watcher.replaying && isCurrent(watcher));
+      const liveWatchers = tenantWatchers.filter((watcher) => !watcher.replaying && isCurrent(watcher));
       if (liveWatchers.length === 0) return;
-      // The reference must resolve to this exact run; a malformed/tampered NOTIFY cannot make a
-      // watcher of another run receive a row merely because it guessed an event id.
-      const event = await getAgentRunEventById(pool, runId, eventId);
+      // The reference must resolve to this exact run inside the tenant; a malformed/tampered NOTIFY
+      // cannot make a watcher receive a row merely because it guessed an event id.
+      const event = await runInTenant(tenantId, () => getAgentRunEventById(pool, runId, eventId));
       if (!event) return;
       for (const watcher of liveWatchers) deliver(watcher, event);
     },
 
-    forwardDelta(message) {
+    forwardDelta(tenantId, message) {
       const watchers = watchersByRun.get(message.agentRunId);
       if (!watchers) return;
       const frame = deltaFrame(message);
       for (const watcher of watchers) {
         // A watcher only arrives here after authorization and its replay is complete. Deltas are
-        // deliberately not replayed, but they are never sent to a client that did not watch.
-        if (!watcher.replaying && isCurrent(watcher)) send(watcher.ws, frame);
+        // deliberately not replayed, but they are never sent to a client that did not watch, nor
+        // to a watcher of another tenant that happens to share the run id.
+        if (watcher.tenantId === tenantId && !watcher.replaying && isCurrent(watcher)) send(watcher.ws, frame);
       }
     },
   };
