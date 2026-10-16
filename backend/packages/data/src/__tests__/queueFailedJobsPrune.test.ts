@@ -56,6 +56,29 @@ describe("pruneQueueFailedJobs (issue #706)", () => {
     }
   });
 
+  it("logs identifiers and attempts but never the job's last_error text", async () => {
+    const warnSpy = vi.spyOn(logger, "warn");
+    const sentinel = "provider echoed SECRET-MESSAGE-BODY-7f3a";
+    try {
+      await enqueueFailed("staleFailedTask", 8, false);
+      await pool.query(
+        `UPDATE graphile_worker._private_jobs SET last_error = $1
+         WHERE task_id = (SELECT id FROM graphile_worker._private_tasks WHERE identifier = 'staleFailedTask')`,
+        [sentinel],
+      );
+
+      await pruneQueueFailedJobs(pool);
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const [fields] = warnSpy.mock.calls[0] as [Record<string, unknown>, string];
+      expect(fields).not.toHaveProperty("lastError");
+      expect(Object.keys(fields).sort()).toEqual(["attempts", "jobId", "jobKey", "jobName", "updatedAt"]);
+      expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(sentinel);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("returns 0 and logs nothing when no row qualifies", async () => {
     const warnSpy = vi.spyOn(logger, "warn");
     try {

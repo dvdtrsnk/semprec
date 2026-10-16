@@ -16,7 +16,6 @@ interface FailedJobRow {
   key: string | null;
   attempts: number;
   max_attempts: number;
-  last_error: string | null;
   updated_at: Date;
 }
 
@@ -27,8 +26,10 @@ interface FailedJobRow {
  * `max_attempts` while it is mid-run), and have not been updated in `FAILED_JOB_RETENTION_MS`.
  * Deletion goes through `graphile_worker.complete_jobs`, the same function `complete_job` uses on
  * success — the supported way to remove a row without a raw `DELETE` on `_private_jobs`. Logs one
- * warning per pruned row before deleting it, so the last thing known about a permanently-failed
- * job survives in the log after its row is gone.
+ * warning per pruned row before deleting it, carrying the job's identifiers (id, task name, key),
+ * attempt count and last update time, so the record of a permanently-failed job survives in the
+ * log after its row is gone. The job's `last_error` is deliberately not logged: it is arbitrary
+ * text from the task and can echo user content.
  *
  * The SELECT and the `complete_jobs` delete run in a single transaction, with the SELECT using
  * `FOR UPDATE SKIP LOCKED`: a row a concurrent transaction re-enqueues (and thus locks) between
@@ -49,7 +50,7 @@ export async function pruneQueueFailedJobs(pool: Pool, now = new Date()): Promis
   return withTransaction(pool, async (client) => {
     const { rows } = await client.query<FailedJobRow>(
       `SELECT jobs.id, tasks.identifier AS task_identifier, jobs.key, jobs.attempts, jobs.max_attempts,
-              jobs.last_error, jobs.updated_at
+              jobs.updated_at
        FROM graphile_worker._private_jobs AS jobs
        INNER JOIN graphile_worker._private_tasks AS tasks ON tasks.id = jobs.task_id
        WHERE jobs.attempts >= jobs.max_attempts AND jobs.locked_at IS NULL AND jobs.updated_at < $1
@@ -65,7 +66,6 @@ export async function pruneQueueFailedJobs(pool: Pool, now = new Date()): Promis
           jobName: row.task_identifier,
           jobKey: row.key,
           attempts: row.attempts,
-          lastError: row.last_error,
           updatedAt: row.updated_at,
         },
         "Pruning a permanently failed job",

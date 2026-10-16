@@ -970,27 +970,40 @@ describe("attachment ingest (issue #26)", () => {
       openStream: () => Readable.from(oversizedChunks()),
     };
 
-    const result = await withTransaction(pool, (client) =>
-      ingestEmailMessage(client, {
-        emailsDatabaseId: emailsId,
-        filesDatabaseId: filesId,
-        folderRelationPropertyId: folderProperty.id,
-        attachmentsRelationPropertyId: attachmentsProperty.id,
-        folderItemId: folder.id,
-        mailboxItemId: TEST_MAILBOX_ITEM_ID,
-        messageId: "<with-oversized-attachment@x>",
-        envelope: {},
-        attachments: [oversized, attachment("kept.pdf", Buffer.from("kept-bytes"))],
-        storage: noopStorage,
-        storageKeyPrefix: "test",
-      }),
-    );
+    const warnSpy = vi.spyOn(logger, "warn");
+    let result: Awaited<ReturnType<typeof ingestEmailMessage>>;
+    try {
+      result = await withTransaction(pool, (client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          folderRelationPropertyId: folderProperty.id,
+          attachmentsRelationPropertyId: attachmentsProperty.id,
+          folderItemId: folder.id,
+          mailboxItemId: TEST_MAILBOX_ITEM_ID,
+          messageId: "<with-oversized-attachment@x>",
+          envelope: {},
+          attachments: [oversized, attachment("kept.pdf", Buffer.from("kept-bytes"))],
+          storage: noopStorage,
+          storageKeyPrefix: "test",
+        }),
+      );
 
-    const { rows: attachmentRows } = await pool.query(
-      `SELECT filename FROM mail_attachments WHERE message_item_id = $1`,
-      [result.itemId],
-    );
-    expect(attachmentRows.map((r) => r.filename)).toEqual(["kept.pdf"]);
+      const { rows: attachmentRows } = await pool.query(
+        `SELECT filename FROM mail_attachments WHERE message_item_id = $1`,
+        [result.itemId],
+      );
+      expect(attachmentRows.map((r) => r.filename)).toEqual(["kept.pdf"]);
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        { messageItemId: result.itemId, contentType: "application/octet-stream" },
+        "Skipping attachment that exceeded the size cap",
+      );
+      expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("huge.bin");
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 
