@@ -37,9 +37,12 @@ A per-tenant split does not work for this step:
    (here `SET NOT NULL`) may backfill that table on the migrating (owner) pool. The backfill, the
    remaining-row check and the DDL run in one transaction that holds a lock excluding concurrent
    inserts.
-2. Every statement in that backfill that takes a value from another table joins it to the target row by
-   explicit `tenant_id` equality (`u.tenant_id = r.tenant_id`). This filter is the only thing that
-   confines the step to each row's own tenant, because row-level security does not apply to the owner.
+2. Every statement in that backfill that reads a value from any row other than the target row joins
+   that source row to the target row by explicit `tenant_id` equality. This covers joins to another
+   table (`u.tenant_id = r.tenant_id`) and the target table's own self-joins alike
+   (`child.tenant_id = parent.tenant_id`), including a self-join through a foreign key such as
+   `parent_run_id` that carries no tenant. This filter is the only thing that confines the step to each
+   row's own tenant, because row-level security does not apply to the owner.
 3. The step fails as a whole. If any row cannot be backfilled, it throws and the transaction rolls back,
    so no tenant's rows change and the column stays nullable.
 4. Cutovers that only rewrite data, with no table-wide DDL to finish, still follow
@@ -52,7 +55,8 @@ A per-tenant split does not work for this step:
 - A deploy with a NULL-actor run in a tenant that has no user fails the cutover for every tenant until
   that tenant has a user or the run is removed.
 - A missing `tenant_id` join in such a backfill is not caught by row-level security. Its test has to
-  cover at least two tenants.
+  cover at least two tenants, for every join the backfill makes, a same-table self-join included: a
+  source row in one tenant and a target row in another must not exchange a value.
 
 ## Alternatives considered
 
