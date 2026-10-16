@@ -21,6 +21,49 @@ covering it needs its ADR in the **same PR** that introduces the pattern, not
 a follow-up. `ls docs/adr/` and grep the `area` frontmatter first — a past
 decision may already cover it, for or against, before you write a new one.
 
+A missing ADR is this repository's second most common review finding. It is
+almost always a pattern decided in a code comment or docstring. You are
+introducing such a pattern when any of these is true:
+
+- you write *Rule:*, *only X may Y*, *must always* or *the only way* into a
+  comment;
+- you set a lifecycle, shutdown, retry or ordering contract that later jobs or
+  routes will follow;
+- you choose a transaction granularity, a lock, or a deliberate write outside
+  an operation's transaction;
+- you hand ownership of a table or field to another process, or give one
+  process write access to another owner's data;
+- you adopt a security stance that future features must respect (an SSRF
+  policy, a credential format);
+- you make an exception to an accepted ADR, or deliver what an ADR explicitly
+  deferred.
+
+Before you cite an existing ADR as covering the pattern, read it. Citing one
+that does not cover this case is the same finding as citing none.
+
+## What the ADR says must be true
+
+Agents follow ADRs literally, so an inaccurate one is worse than none:
+
+- Check every lock, isolation or atomicity claim against what the code does:
+  the isolation level the transaction runs at, the row locks it takes, and the
+  locks a DDL statement takes (including the locks a foreign key takes on the
+  table it references). "Same transaction" is not "serialized" (see
+  `state-writes` §4).
+- Every rule states why it exists, and every format states its exact encoding.
+- The title and the opening sentence are no looser than the policy in the body.
+  Sections do not contradict each other.
+- Do not reuse a word that already names something else in this codebase.
+- When the decision extends a mechanism another ADR introduced, reference that
+  ADR by `[[slug]]` and say what the extension adds. Name the new
+  consequences in this ADR; the old one's body stays as it is (below).
+
+When your change alters behaviour that an ADR, a skill or `.bb/AGENTS.md`
+describes, grep `docs/adr/` and `.bb/skills/` for it. A changed decision gets a
+new ADR (below). A skill you change gets its body, its checklist (where it has
+one) and its `description` triggers updated together, because the
+description is what decides whether the skill loads at all.
+
 ## The rule that's easy to get backwards: never edit an accepted ADR's body
 
 An ADR's Context/Decision/Consequences is a historical record of what was
@@ -73,3 +116,8 @@ staleness hotspot) — discovery is a flat `ls docs/adr/` plus grepping `area`.
       cross-reference — never a section inserted into the old one.
 - [ ] Filename and `date` match; `area` lists every platform the decision
       actually governs.
+- [ ] No comment in the diff states a *Rule:* or an *only X may* that no ADR
+      or review rule records.
+- [ ] Every lock, isolation and atomicity claim in the ADR matches the code.
+- [ ] Every ADR whose mechanism this one extends is cross-referenced.
+- [ ] Every skill this change makes stale was updated, triggers included.
