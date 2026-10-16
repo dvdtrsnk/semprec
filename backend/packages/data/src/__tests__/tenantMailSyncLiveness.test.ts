@@ -31,9 +31,15 @@ async function markAllProcessesFresh(): Promise<void> {
   }
 }
 
-/** A tenant with its own Mailboxes database (tenant zero's is seeded). */
+/** A tenant with its own user, the recipient of its mailbox stalls, and its own Mailboxes database (tenant zero's is seeded). */
 async function createTenantWithMailboxes(status?: "suspended"): Promise<string> {
   const tenantId = await createTestTenant(pool, status ? { status } : {});
+  await createUser(pool, {
+    email: `${randomUUID()}@example.test`,
+    passwordHash: await hashPassword("s3cret-password"),
+    locale: "en",
+    tenantId,
+  });
   await runInTenant(tenantId, () =>
     withTransaction(dataPool!, async (client) => {
       await createDatabase(client, { name: MAILBOXES_MODULE_ID, system: true, ownerModuleId: MAILBOXES_MODULE_ID });
@@ -95,6 +101,7 @@ describe("per-tenant mailbox liveness (issue #1000)", () => {
       email: `${randomUUID()}@example.test`,
       passwordHash: await hashPassword("s3cret-password"),
       locale: "en",
+      tenantId: tenantZero,
     });
   });
 
