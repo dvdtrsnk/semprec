@@ -46,41 +46,36 @@ async function loadAll(getActiveModuleIds: () => ReadonlySet<string>): Promise<M
 const alwaysActive: () => ReadonlySet<string> = () => new Set(ALL_MODULE_IDS);
 
 describe("all module manifests loaded together (module-contract issue #115)", () => {
-  // Loads every manifest from disk; takes several seconds, so it needs headroom beyond the 5s default on a loaded host.
-  it(
-    "loads every manifest from #226/#227 into one registry with no cross-manifest collisions",
-    { timeout: 30_000 },
-    async () => {
-      const registry = await loadAll(alwaysActive);
+  it("loads every manifest from #226/#227 into one registry with no cross-manifest collisions", async () => {
+    const registry = await loadAll(alwaysActive);
 
-      expect(registry.listModuleIds().sort()).toEqual([...ALL_MODULE_IDS].sort());
+    expect(registry.listModuleIds().sort()).toEqual([...ALL_MODULE_IDS].sort());
 
-      const databaseKeys = (await registry.getDatabases()).map((db) => db.key).sort();
-      expect(databaseKeys).toEqual(
-        [
-          ...TEN_DATABASE_MODULE_IDS,
-          BOOKS_MODULE_ID,
-          MOVIES_MODULE_ID,
-          EMAILS_MODULE_ID,
-          FOLDERS_MODULE_ID,
-          MAILBOXES_MODULE_ID,
-          INBOX_ITEM_TYPES_MODULE_ID,
-          INBOX_MODULE_ID,
-          PROCESSING_PROPOSALS_MODULE_ID,
-        ].sort(),
-      );
+    const databaseKeys = (await registry.getDatabases()).map((db) => db.key).sort();
+    expect(databaseKeys).toEqual(
+      [
+        ...TEN_DATABASE_MODULE_IDS,
+        BOOKS_MODULE_ID,
+        MOVIES_MODULE_ID,
+        EMAILS_MODULE_ID,
+        FOLDERS_MODULE_ID,
+        MAILBOXES_MODULE_ID,
+        INBOX_ITEM_TYPES_MODULE_ID,
+        INBOX_MODULE_ID,
+        PROCESSING_PROPOSALS_MODULE_ID,
+      ].sort(),
+    );
 
-      expect((await registry.getViewTypes()).sort()).toEqual(
-        [
-          ...BUILTIN_VIEW_TYPES,
-          TEMPORAL_SWITCHER_VIEW_TYPE,
-          LIBRARY_GRID_VIEW_TYPE,
-          MAILBOX_CLIENT_VIEW_TYPE,
-          JOURNAL_INBOX_VIEW_TYPE,
-        ].sort(),
-      );
-    },
-  );
+    expect((await registry.getViewTypes()).sort()).toEqual(
+      [
+        ...BUILTIN_VIEW_TYPES,
+        TEMPORAL_SWITCHER_VIEW_TYPE,
+        LIBRARY_GRID_VIEW_TYPE,
+        MAILBOX_CLIENT_VIEW_TYPE,
+        JOURNAL_INBOX_VIEW_TYPE,
+      ].sort(),
+    );
+  });
 
   it("excludes an inactive module from every projection while other modules stay unaffected", async () => {
     const activeExceptLibrary = new Set(ALL_MODULE_IDS.filter((id) => id !== "library"));

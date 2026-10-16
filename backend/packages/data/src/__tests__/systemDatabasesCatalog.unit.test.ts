@@ -13,8 +13,7 @@ function manifestPath(fileName: string): string {
 const SYSTEM_DATABASES_PATH = manifestPath("seed/systemDatabasesModuleManifest.js");
 
 describe("systemDatabases reference i18n catalog (issue #236)", () => {
-  // Loads a manifest from disk; takes several seconds, so it needs headroom beyond the 5s default on a loaded host.
-  it("loads the Tasks database's cs/en catalog entries", { timeout: 30_000 }, async () => {
+  it("loads the Tasks database's cs/en catalog entries", async () => {
     const registry = new ModuleRegistry(() => new Set(["systemDatabases"]));
     await registry.loadModule(SYSTEM_DATABASES_PATH);
 
