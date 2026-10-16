@@ -850,12 +850,88 @@ describe("DelegationRegistry", () => {
     }
 
     expect(sessionsCreated).toBe(0);
-    const { rows } = await pool.query(`SELECT count(*)::int AS n FROM agent_runs WHERE parent_run_id = $1`, [
-      supervisorRunId,
-    ]);
-    expect(rows[0].n).toBe(0);
+    const { rows } = await pool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM agent_runs WHERE parent_run_id = $1`,
+      [supervisorRunId],
+    );
+    expect(rows[0]!.n).toBe(0);
 
     registry.clear();
+  });
+
+  it.each(["target trashed", "target removed", "supervisor removed"])(
+    "refuses creation when history reconstruction leaves the %s",
+    async (change) => {
+      const registry = new DelegationRegistry(pool);
+      const supervisorRunId = await newSupervisorRunId();
+      const targetProjectItemId = await createTestProjectItem(pool);
+      const { createAgentSession: innerSession } = scriptedSession([
+        { kind: "turn_start" },
+        { kind: "message", text: "unexpected" },
+        { kind: "turn_end" },
+      ]);
+      const createAgentSession = vi.fn(innerSession);
+      const reconstructHistory = vi.fn<ReconstructDelegatedHistory>(async () => {
+        // A separate connection changes the state after the early check has committed.
+        const changed =
+          change === "target trashed"
+            ? await pool.query("UPDATE items SET deleted_at = now() WHERE id = $1", [targetProjectItemId])
+            : change === "target removed"
+              ? await pool.query("DELETE FROM items WHERE id = $1", [targetProjectItemId])
+              : await pool.query("DELETE FROM agent_runs WHERE id = $1", [supervisorRunId]);
+        expect(changed.rowCount).toBe(1);
+        return null;
+      });
+      const input = { createAgentSession, supervisorRunId, targetProjectItemId, task: "do it", reconstructHistory };
+
+      try {
+        expect(await registry.delegate(input)).toEqual({ ok: false, error: UNKNOWN_DELEGATION_TARGET_MESSAGE });
+        expect(reconstructHistory).toHaveBeenCalledOnce();
+        expect(createAgentSession).not.toHaveBeenCalled();
+        const { rows } = await pool.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM agent_runs WHERE parent_run_id = $1 OR project_item_id = $2",
+          [supervisorRunId, targetProjectItemId],
+        );
+        expect(rows[0]!.n).toBe(0);
+
+        // The late refusal releases the reservation too; retry reaches the early refusal.
+        expect(await registry.delegate(input)).toEqual({ ok: false, error: UNKNOWN_DELEGATION_TARGET_MESSAGE });
+        expect(reconstructHistory).toHaveBeenCalledOnce();
+        expect(createAgentSession).not.toHaveBeenCalled();
+      } finally {
+        registry.clear();
+      }
+    },
+  );
+
+  it("propagates a Projects database failure after reconstruction without creating a run or leaking the reservation", async () => {
+    const registry = new DelegationRegistry(pool);
+    const supervisorRunId = await newSupervisorRunId();
+    const targetProjectItemId = await createTestProjectItem(pool);
+    const { createAgentSession: innerSession } = scriptedSession([{ kind: "turn_start" }, { kind: "turn_end" }]);
+    const createAgentSession = vi.fn(innerSession);
+    const reconstructHistory: ReconstructDelegatedHistory = async () => {
+      const changed = await pool.query(
+        "UPDATE databases SET owner_module_id = NULL WHERE id = (SELECT database_id FROM items WHERE id = $1)",
+        [targetProjectItemId],
+      );
+      expect(changed.rowCount).toBe(1);
+      return null;
+    };
+    const input = { createAgentSession, supervisorRunId, targetProjectItemId, task: "do it", reconstructHistory };
+
+    try {
+      await expect(registry.delegate(input)).rejects.toThrow("Projects module database not found");
+      await expect(registry.delegate(input)).rejects.toThrow("Projects module database not found");
+      expect(createAgentSession).not.toHaveBeenCalled();
+      const { rows } = await pool.query<{ n: number }>(
+        "SELECT count(*)::int AS n FROM agent_runs WHERE parent_run_id = $1",
+        [supervisorRunId],
+      );
+      expect(rows[0]!.n).toBe(0);
+    } finally {
+      registry.clear();
+    }
   });
 
   it("releases the reservation after a refusal, so an immediate retry is refused again rather than reported busy", async () => {

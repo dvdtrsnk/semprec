@@ -6,6 +6,7 @@ import {
   getAgentRun,
   getDatabaseByModuleId,
   getItemById,
+  lockItemById,
   PROJECTS_MODULE_ID,
   withTransaction,
 } from "@semprec/data";
@@ -27,6 +28,8 @@ export const BUSY_ERROR_MESSAGE = "this project is already handling another requ
  * One answer for every refusal of a new delegated session: a random id, another tenant's
  * project, a trashed project, a non-Projects item, or a supervisor run this tenant cannot see.
  * Identical wording keeps the model from learning which ids exist elsewhere.
+ * Validation applies only when creating a session; an existing session is reused without
+ * rechecking project liveness, until its registry entry expires.
  */
 export const UNKNOWN_DELEGATION_TARGET_MESSAGE = "targetProjectItemId does not name a project this run can delegate to";
 
@@ -134,10 +137,9 @@ export class DelegationRegistry {
 
   async delegate(input: DelegateInput): Promise<DelegateResult> {
     // `targetProjectItemId` comes from the model's own tool-call arguments — untrusted input
-    // that must not reach `createAgentRun`'s SQL unvalidated. Full authorization (is this
-    // supervisor run actually allowed to reach this project?) belongs to the permission
-    // manifest the not-yet-built composition root (#91) resolves; this is only the format
-    // guard against a malformed/malicious id landing in `agent_runs.project_item_id`.
+    // that must not reach `createAgentRun`'s SQL unvalidated. This format guard runs first;
+    // new sessions also require a visible supervisor and a live Projects item in this tenant.
+    // Per-project permission manifests remain the future composition root's responsibility.
     if (!UUID_PATTERN.test(input.targetProjectItemId)) {
       return { ok: false, error: `targetProjectItemId "${input.targetProjectItemId}" is not a well-formed UUID` };
     }
@@ -180,9 +182,8 @@ export class DelegationRegistry {
 
     this.pendingKeys.add(entryKey);
     try {
-      // Authorization for a new session: both the supervisor run and the target must be visible
-      // to this tenant (RLS applies inside `withTransaction`), and the target must be a live item
-      // of the Projects database. The check is in the same transaction as the lookups it relies on.
+      // Refuse invalid targets before reconstructing history, which may call the model.
+      // Revalidate under row locks in the write transaction after reconstruction below.
       const targetIsDelegable = await withTransaction(this.pool, async (client) => {
         const supervisor = await getAgentRun(client, input.supervisorRunId);
         // A missing Projects database is a seeding/infrastructure failure, not an unknown target —
@@ -201,13 +202,27 @@ export class DelegationRegistry {
       const reconstruct = input.reconstructHistory ?? stubReconstructDelegatedHistory;
       const priorHistory = await reconstruct(this.pool, input.targetProjectItemId, input.supervisorRunId);
 
-      const run = await createAgentRun(this.pool, {
-        projectItemId: input.targetProjectItemId,
-        parentRunId: input.supervisorRunId,
-        triggeredBy: "supervisor",
-        unit: "session",
-        task: input.task,
+      const run = await withTransaction(this.pool, async (client) => {
+        const supervisor = await getAgentRun(client, input.supervisorRunId, true);
+        const projects = await getDatabaseByModuleId(client, PROJECTS_MODULE_ID);
+        if (!projects) {
+          throw new Error(`Projects module database not found for module ${PROJECTS_MODULE_ID}`);
+        }
+        const target = await lockItemById(client, projects.id, input.targetProjectItemId);
+        if (!supervisor || !target || target.deletedAt !== null) return null;
+
+        // Keep the supervisor and target locked until the guarded insert commits.
+        return createAgentRun(client, {
+          projectItemId: input.targetProjectItemId,
+          parentRunId: input.supervisorRunId,
+          triggeredBy: "supervisor",
+          unit: "session",
+          task: input.task,
+        });
       });
+      if (!run) {
+        return { ok: false, error: UNKNOWN_DELEGATION_TARGET_MESSAGE };
+      }
       await pushRunStatus(this.pool, run.id, "running");
 
       // The compacted continuation replaces the raw history it was derived from — persisted
