@@ -1,4 +1,5 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import net from "node:net";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import {
@@ -9,10 +10,12 @@ import {
   resetDatabase,
 } from "../testSupport/testDb.js";
 import {
+  allowLoopbackOutboundForTests,
   startHttpContractServer,
   startSseContractServer,
   startStdioContractServer,
 } from "../testSupport/mcpContractServers.js";
+import { stubDnsLookup, type DnsLookupStub } from "../testSupport/dnsLookupStub.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { requireSingleRow, withTransaction } from "../db/pool.js";
@@ -75,7 +78,52 @@ function safeStringify(value: unknown): string {
   }
 }
 
+/** A bare TCP listener on loopback that only counts the connections it accepts. */
+async function startConnectionCounter(): Promise<{ port: number; count(): number; stop(): Promise<void> }> {
+  let connections = 0;
+  const sockets = new Set<net.Socket>();
+  const server = net.createServer((socket) => {
+    connections += 1;
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (typeof address !== "object" || address === null) throw new Error("connection counter has no port");
+  return {
+    port: address.port,
+    count: () => connections,
+    stop: () =>
+      new Promise<void>((resolve) => {
+        for (const socket of sockets) socket.destroy();
+        server.close(() => resolve());
+      }),
+  };
+}
+
+async function credentialAccessLogCount(itemId: string): Promise<string | undefined> {
+  const { rows } = await pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM credential_access_log WHERE item_id = $1",
+    [itemId],
+  );
+  return rows[0]?.count;
+}
+
 describe("MCP connection factory (issue #231)", () => {
+  // The sse/http contract servers listen on loopback, which the default outbound policy refuses.
+  // The "default outbound policy" block below switches back for its own tests.
+  let restoreOutboundPolicy: (() => void) | undefined;
+  beforeAll(() => {
+    restoreOutboundPolicy = allowLoopbackOutboundForTests();
+  });
+  afterAll(() => {
+    restoreOutboundPolicy?.();
+    restoreOutboundPolicy = undefined;
+  });
+
   beforeEach(async () => {
     pool ??= getTestPool();
     viewTypeRegistry = createViewTypeRegistry();
@@ -395,6 +443,100 @@ describe("MCP connection factory (issue #231)", () => {
       }
       expect(thrown).toBeInstanceOf(McpConnectionError);
       expect((thrown as McpConnectionError).reason).toBe("handshake_failed");
+    });
+  });
+
+  describe("connect-time address checks (issue #1034)", () => {
+    let stub: DnsLookupStub | undefined;
+    afterEach(() => {
+      stub?.restore();
+      stub = undefined;
+    });
+
+    describe("under the default outbound policy", () => {
+      beforeAll(() => {
+        restoreOutboundPolicy?.();
+        restoreOutboundPolicy = undefined;
+      });
+      afterAll(() => {
+        restoreOutboundPolicy = allowLoopbackOutboundForTests();
+      });
+
+      it.each([
+        ["http", "https://localhost.test/mcp"],
+        ["sse", "https://localhost.test/sse"],
+      ] as const)("refuses a stored %s URL whose name resolves to loopback", async (transport, url) => {
+        stub = stubDnsLookup({ "localhost.test": ["127.0.0.1"] });
+        const item = await createMcpServerItem({ transport, url }, "sk-refused-secret");
+
+        const err = await connectMcpServer(pool, item).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(McpConnectionError);
+        expect((err as McpConnectionError).reason).toBe("address_not_allowed");
+        expect(stub.calls[0]).toBe("localhost.test");
+        expect(safeStringify(err)).not.toMatch(/sk-refused-secret/);
+      });
+
+      it("refuses a stored http URL whose name resolves to a private address", async () => {
+        stub = stubDnsLookup({ "internal.test": ["10.1.2.3"] });
+        const item = await createMcpServerItem({ transport: "http", url: "https://internal.test/mcp" });
+
+        const err = await connectMcpServer(pool, item).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(McpConnectionError);
+        expect((err as McpConnectionError).reason).toBe("address_not_allowed");
+        expect(stub.calls).toContain("internal.test");
+      });
+
+      it("refuses a legacy http://127.0.0.1 row before decrypting its credential or connecting", async () => {
+        const contract = await startHttpContractServer();
+        try {
+          // `insertItem` skips the write-time baseline, exactly like a row stored before issue #1029.
+          const item = await createMcpServerItem(contract.connectionConfig, "sk-legacy-secret");
+
+          const err = await connectMcpServer(pool, item).catch((e: unknown) => e);
+          expect(err).toBeInstanceOf(McpConnectionError);
+          expect((err as McpConnectionError).reason).toBe("address_not_allowed");
+          expect(contract.getHandshakeCount()).toBe(0);
+          expect(contract.hasOpenSockets()).toBe(false);
+          expect(await credentialAccessLogCount(item.id)).toBe("0");
+        } finally {
+          await contract.stop();
+        }
+      });
+    });
+
+    it("refuses a name resolving to a private address even under the test policy, without connecting", async () => {
+      const counter = await startConnectionCounter();
+      try {
+        stub = stubDnsLookup({ "mixed.test": ["127.0.0.1", "10.0.0.5"] });
+        const item = await createMcpServerItem({ transport: "http", url: `http://mixed.test:${counter.port}/mcp` });
+
+        const err = await connectMcpServer(pool, item).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(McpConnectionError);
+        expect((err as McpConnectionError).reason).toBe("address_not_allowed");
+        expect(stub.calls).toContain("mixed.test");
+        expect(counter.count()).toBe(0);
+      } finally {
+        await counter.stop();
+      }
+    });
+
+    it("connects through a name the test policy resolves to loopback", async () => {
+      const contract = await startHttpContractServer();
+      try {
+        const port = new URL(contract.connectionConfig.transport === "http" ? contract.connectionConfig.url : "").port;
+        stub = stubDnsLookup({ "contract.test": ["127.0.0.1"] });
+        const item = await createMcpServerItem({ transport: "http", url: `http://contract.test:${port}/mcp` });
+
+        const handle = await connectMcpServer(pool, item);
+        try {
+          expect(contract.getHandshakeCount()).toBe(1);
+        } finally {
+          await handle.close();
+        }
+        expect(stub.calls).toContain("contract.test");
+      } finally {
+        await contract.stop();
+      }
     });
   });
 
