@@ -531,6 +531,32 @@ describe("observability.checkSystem (issue #169)", () => {
       expect((await alertRows("process_stale")).map((row) => row.user_id).sort()).toEqual([adminZero, adminB].sort());
     });
 
+    it("re-alerts the admins already written on each new job id while one admin's write keeps failing", async () => {
+      // The documented at-least-once bound: the rolled-back transition is retried under a new
+      // transitionInstance by the next tick, so dedupe holds only within one job's retries.
+      await runCheck(randomUUID(), runtimePool);
+      await makeAgentsStale();
+      await pool.query(`
+        CREATE FUNCTION test_fail_notification() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.user_id = '${adminB}'::uuid THEN RAISE EXCEPTION 'injected recipient failure'; END IF;
+          RETURN NEW;
+        END $$`);
+      await pool.query(
+        `CREATE TRIGGER test_fail_notification BEFORE INSERT ON notifications
+         FOR EACH ROW EXECUTE FUNCTION test_fail_notification()`,
+      );
+      try {
+        await expect(runCheck(randomUUID(), runtimePool)).rejects.toBeInstanceOf(AggregateError);
+        await expect(runCheck(randomUUID(), runtimePool)).rejects.toBeInstanceOf(AggregateError);
+        expect((await getCheck("process:agents"))?.status).not.toBe("alerting");
+        expect((await alertRows("process_stale")).map((row) => row.user_id)).toEqual([adminZero, adminZero]);
+      } finally {
+        await pool.query("DROP TRIGGER test_fail_notification ON notifications");
+        await pool.query("DROP FUNCTION test_fail_notification()");
+      }
+    });
+
     it("skips an admin of a suspended tenant and still records the transition with no admin at all", async () => {
       await makeAgentsStale();
       await pool.query("UPDATE tenants SET status = 'suspended' WHERE id = $1", [tenantB]);
@@ -555,13 +581,17 @@ describe("observability.checkSystem (issue #169)", () => {
       await runCheck(randomUUID(), runtimePool);
 
       const rows = await alertRows("queue_backlog");
-      expect(rows).toHaveLength(4);
-      const payloads = rows.map((row) => row.payload);
-      expect(payloads.filter((payload) => "count" in payload)).toEqual([{ count: 1 }, { count: 1 }]);
-      expect(payloads.filter((payload) => "pending" in payload)).toEqual([
-        { pending: 101, oldestAgeMs: expect.any(Number) },
-        { pending: 101, oldestAgeMs: expect.any(Number) },
+      const recipients = sortedBy([
+        { user_id: adminZero, tenant_id: getTenantZeroId(), payload: {} },
+        { user_id: adminB, tenant_id: tenantB, payload: {} },
       ]);
+      expect(rows.filter((row) => "pending" in row.payload)).toEqual(
+        recipients.map((recipient) => ({ ...recipient, payload: { pending: 101, oldestAgeMs: expect.any(Number) } })),
+      );
+      expect(rows.filter((row) => "count" in row.payload)).toEqual(
+        recipients.map((recipient) => ({ ...recipient, payload: { count: 1 } })),
+      );
+      expect(rows).toHaveLength(4);
     });
 
     it("notifies only the tenant's own user of a mailbox stall and keeps mailbox content out of operator rows", async () => {

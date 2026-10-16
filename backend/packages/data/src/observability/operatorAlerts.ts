@@ -28,7 +28,15 @@ export interface OperatorAlertInput {
  * loop any failure is rethrown as an `AggregateError`, which rolls back the caller's transition so
  * the job's retry redelivers. The retry reuses the same job id, hence the same per-recipient
  * `transitionInstance`, and `writeNotification` deduplicates the admins already written. Delivery
- * is therefore at least once, with exactly one row per admin and transition.
+ * is therefore at least once, with exactly one row per admin and transition across retries of the
+ * same job (or, for a restore run, re-records of the same run id).
+ *
+ * That bound does not extend past the job: while a failure persists, every later attempt with a new
+ * `transitionInstance` — the next crontab tick of `observability.checkSystem` under a new job id — sees
+ * the same not-yet-recorded transition and re-alerts the admins already written. So does a retry of a
+ * check's first-ever transition, whose rolled-back check row comes back with a new id (the
+ * notification's `sourceId`). The rollback-driven retry is the contract issue #1019 chose over
+ * committing the transition apart from its delivery.
  */
 export async function writeOperatorAlert(pool: Pool, client: PoolClient, input: OperatorAlertInput): Promise<string[]> {
   const admins = await listAdminRecipients(client);

@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runAsSystem } from "@semprec/shared";
-import { createTestTenant, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { RESTORE_TEST_CHECK_KEY, recordRestoreTestResult } from "../observability/restoreTestResult.js";
@@ -22,8 +28,8 @@ async function createTestUser(tenantId = getTenantZeroId(), role: "admin" | "mem
   return user.id;
 }
 
-function record(result: Parameters<typeof recordRestoreTestResult>[1]) {
-  return runAsSystem("test", () => recordRestoreTestResult(pool, result));
+function record(result: Parameters<typeof recordRestoreTestResult>[1], taskPool: Pool = pool) {
+  return runAsSystem("test", () => recordRestoreTestResult(taskPool, result));
 }
 
 interface CheckRow {
@@ -151,9 +157,17 @@ describe("recordRestoreTestResult (issue #178)", () => {
     const suspended = await createTestTenant(pool, { status: "suspended" });
     await createTestUser(suspended);
     const input = { status: "failed", runId: "run-1", failedCheck: "pgRestore" } as const;
+    // With a second tenant present the record runs as the runtime role, so RLS governs each admin's write.
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
 
-    const first = await record(input);
-    const second = await record(input);
+    let first: Awaited<ReturnType<typeof record>>;
+    let second: Awaited<ReturnType<typeof record>>;
+    try {
+      first = await record(input, runtimePool);
+      second = await record(input, runtimePool);
+    } finally {
+      await runtimePool.end();
+    }
 
     const notifications = await listNotifications();
     expect(notifications.map((notification) => notification.user_id).sort()).toEqual([adminZero, adminB].sort());

@@ -284,7 +284,9 @@ async function checkMailSync(pool: Pool, helpers: ObservabilityCheckSystemHelper
  * tenant's pass fails the handler rejects, but only after every tenant was attempted. Each family
  * notifies only on a genuine ok/missing -> alerting transition, so a sustained fault across many ticks —
  * or across a restart of whatever process runs this crontab, since the state lives in Postgres,
- * not memory — notifies exactly once until it recovers.
+ * not memory — notifies exactly once until it recovers. The exception is an operator alert whose
+ * write fails for one admin: `writeOperatorAlert` rolls that transition back, so the next tick re-alerts
+ * the admins already written until every admin's write succeeds (see its docstring).
  */
 export async function handleObservabilityCheckSystemTask(
   pool: Pool,
