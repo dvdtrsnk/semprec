@@ -29,7 +29,12 @@ import {
 } from "@semprec/data/testSupport";
 import { randomUUID } from "node:crypto";
 import { runInTenant } from "@semprec/shared";
-import { parseAgentStreamEnvelope, publishAgentRunDelta, publishRealtimeMessage } from "../pgNotifyPublisher.js";
+import {
+  AGENT_STREAM_CHANNEL,
+  parseAgentStreamEnvelope,
+  publishAgentRunDelta,
+  publishRealtimeMessage,
+} from "../pgNotifyPublisher.js";
 import { createSyncServer, type SyncIdentity, type SyncServer } from "../syncServer.js";
 import { buildBinaryFrame, decodeDocId, parseBinaryFrame } from "../protocolV1.js";
 import { wireRealtimeHooks } from "../wireHooks.js";
@@ -1220,6 +1225,206 @@ describe("createSyncServer doc sync tenancy (issue #1026)", () => {
   });
 });
 
+describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
+  let tenantServer: SyncServer;
+  let tenantHttp: Server;
+  let runtimePool: Pool;
+  let port: number;
+  let identityByToken: Map<string, SyncIdentity>;
+  let tenantA: string;
+  let tenantB: string;
+  let userA: string;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    wireRealtimeHooks(pool);
+    tenantA = getTenantZeroId();
+    tenantB = await createTestTenant(pool);
+    // Bound to tenant zero, so this user is the tenant's user: heartbeat runs fall back to it.
+    userA = (
+      await createUser(pool, {
+        email: `agent-tenancy-${Math.random()}@example.test`,
+        passwordHash: await hashPassword("s3cret-password"),
+        locale: "en",
+        tenantId: tenantA,
+      })
+    ).id;
+    identityByToken = new Map();
+    // Row-level security applies only to a runtime role, so the server reads through one, on a fresh
+    // pool so its LISTEN connection is opened outside any tenant scope.
+    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    tenantServer = await createSyncServer(runtimePool, {
+      authenticate: async (req: IncomingMessage) => {
+        const token = new URL(req.url ?? "/", "http://localhost").searchParams.get("token");
+        return token ? (identityByToken.get(token) ?? null) : null;
+      },
+      revalidateSession: async () => true,
+      heartbeatIntervalMs: 30_000,
+    });
+    tenantHttp = createServer();
+    tenantHttp.on("upgrade", (req, socket, head) => tenantServer.handleUpgrade(req, socket, head));
+    await new Promise<void>((resolve) => tenantHttp.listen(0, resolve));
+    const address = tenantHttp.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    port = address.port;
+  });
+
+  afterEach(async () => {
+    await tenantServer.close();
+    await new Promise<void>((resolve) => tenantHttp.close(() => resolve()));
+    await runtimePool.end();
+  });
+
+  async function connectAs(token: string, tenantId: string, userId: string): Promise<WebSocket> {
+    identityByToken.set(token, { tenantId, userId, sessionId: `session-${token}` });
+    const client = new WebSocket(`ws://127.0.0.1:${port}/api/sync?token=${token}`);
+    await waitForOpen(client);
+    return client;
+  }
+
+  /** Collects every frame the client receives, in arrival order. */
+  function collectFrames(client: WebSocket): Record<string, unknown>[] {
+    const frames: Record<string, unknown>[] = [];
+    client.on("message", (data) => frames.push(JSON.parse(messageText(data)) as Record<string, unknown>));
+    return frames;
+  }
+
+  function settle(ms = 150): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /** Creates a run in `tenantId`, through the runtime role, as a user-triggered run by `actorUserId`. */
+  function createRunIn(tenantId: string, actorUserId: string): Promise<{ id: string }> {
+    return runInTenant(tenantId, () =>
+      createAgentRun(runtimePool, { triggeredBy: "user", task: "tenancy run", userId: actorUserId }),
+    );
+  }
+
+  /** Appends a durable event in `tenantId` without a NOTIFY, so a test controls exactly what is announced. */
+  function silentEventIn(tenantId: string, runId: string): Promise<{ id: string }> {
+    return runInTenant(tenantId, () => insertAgentRunEvent(runtimePool, runId, "turn_start", { kind: "turn_start" }));
+  }
+
+  /** Appends a durable event in `tenantId` and announces it through the real publisher. */
+  async function announcedEventIn(tenantId: string, runId: string): Promise<{ id: string }> {
+    return runInTenant(tenantId, async () => {
+      const event = await insertAgentRunEvent(runtimePool, runId, "message", { kind: "message", text: "live" });
+      await publishRealtimeMessage(runtimePool, { type: "agent_run_event", agentRunId: runId, eventId: event.id });
+      return event;
+    });
+  }
+
+  it("delivers nothing to a socket of another tenant watching a run, as for an unknown run id", async () => {
+    const run = await createRunIn(tenantA, userA);
+    await silentEventIn(tenantA, run.id);
+
+    // The other tenant's socket claims the very same user id: only the tenant boundary can refuse it.
+    const foreign = await connectAs("foreign", tenantB, userA);
+    const foreignFrames = collectFrames(foreign);
+    foreign.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    const unknown = await connectAs("unknown", tenantB, userA);
+    const unknownFrames = collectFrames(unknown);
+    unknown.send(JSON.stringify({ type: "agent:watch", runId: randomUUID(), afterEventId: "0" }));
+    await settle();
+    expect(foreignFrames).toEqual(unknownFrames);
+    expect(foreignFrames).toHaveLength(0);
+
+    // A live durable event and a live delta in tenant A are not delivered to the foreign socket.
+    await announcedEventIn(tenantA, run.id);
+    await runInTenant(tenantA, () => publishAgentRunDelta(runtimePool, run.id, { kind: "message_update", text: "x" }));
+    await settle();
+    expect(foreignFrames).toHaveLength(0);
+    foreign.close();
+    unknown.close();
+  });
+
+  it("delivers replay, then live events and deltas in order to the tenant's own user's socket", async () => {
+    const user = await connectAs("own", tenantA, userA);
+    const run = await createRunIn(tenantA, userA);
+    const first = await silentEventIn(tenantA, run.id);
+
+    const frames = collectFrames(user);
+    user.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    await waitUntil(() => frames.length === 1);
+
+    const live = await announcedEventIn(tenantA, run.id);
+    await waitUntil(() => frames.length === 2);
+    await runInTenant(tenantA, () => publishAgentRunDelta(runtimePool, run.id, { kind: "message_update", text: "d" }));
+    await waitUntil(() => frames.length === 3);
+
+    expect(frames.map((frame) => frame.type)).toEqual(["agent:event", "agent:event", "agent:delta"]);
+    expect((frames[0]!.event as { id: string }).id).toBe(first.id);
+    expect((frames[1]!.event as { id: string }).id).toBe(live.id);
+    user.close();
+  });
+
+  it("delivers a heartbeat-triggered run to the tenant's user", async () => {
+    const user = await connectAs("own", tenantA, userA);
+    const run = await runInTenant(tenantA, () => createAgentRun(runtimePool, { triggeredBy: "heartbeat", task: "hb" }));
+    await silentEventIn(tenantA, run.id);
+
+    const frames = collectFrames(user);
+    user.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    await waitUntil(() => frames.length === 1);
+    expect(frames[0]!.type).toBe("agent:event");
+    user.close();
+  });
+
+  it("drops a durable reference stamped with another tenant even when its event id is real for the watched run", async () => {
+    const user = await connectAs("own", tenantA, userA);
+    const run = await createRunIn(tenantA, userA);
+    const frames = collectFrames(user);
+    user.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    await settle();
+
+    // A real row of the watched run, announced under the wrong tenant (a forged NOTIFY).
+    const forged = await silentEventIn(tenantA, run.id);
+    await notifyEnvelope(pool, "semprec_events", tenantB, {
+      type: "agent_run_event",
+      agentRunId: run.id,
+      eventId: forged.id,
+    });
+    await settle();
+    expect(frames).toHaveLength(0);
+
+    // The same reference stamped with the run's own tenant is delivered, proving the watch is live.
+    await notifyEnvelope(pool, "semprec_events", tenantA, {
+      type: "agent_run_event",
+      agentRunId: run.id,
+      eventId: forged.id,
+    });
+    await waitUntil(() => frames.length === 1);
+    expect((frames[0]!.event as { id: string }).id).toBe(forged.id);
+    user.close();
+  });
+
+  it("drops a delta stamped with another tenant, while the run's own tenant's delta is delivered", async () => {
+    const user = await connectAs("own", tenantA, userA);
+    const run = await createRunIn(tenantA, userA);
+    const frames = collectFrames(user);
+    user.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    await settle();
+
+    await notifyEnvelope(pool, AGENT_STREAM_CHANNEL, tenantB, {
+      type: "agent_run_delta",
+      agentRunId: run.id,
+      delta: "forged",
+    });
+    await settle();
+    expect(frames).toHaveLength(0);
+
+    await notifyEnvelope(pool, AGENT_STREAM_CHANNEL, tenantA, {
+      type: "agent_run_delta",
+      agentRunId: run.id,
+      delta: "genuine",
+    });
+    await waitUntil(() => frames.length === 1);
+    expect(frames[0]!.delta).toBe("genuine");
+    user.close();
+  });
+});
+
 describe("createSyncServer watched agent runs (issue #163)", () => {
   let httpServer: Server;
   let syncServer: SyncServer;
@@ -1397,12 +1602,12 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
   });
 
   it("authorizes agent:watch on a heartbeat-triggered run against the tenant's user it falls back to", async () => {
-    const earliestUser = await createTestUser();
+    const tenantUser = await createTestUser();
     const otherUser = await createTestUser();
-    identityByToken.set("earliest", {
+    identityByToken.set("tenant-user", {
       tenantId: getTenantZeroId(),
-      userId: earliestUser,
-      sessionId: "earliest-session",
+      userId: tenantUser,
+      sessionId: "tenant-user-session",
     });
     identityByToken.set("other", { tenantId: getTenantZeroId(), userId: otherUser, sessionId: "other-session" });
     const run = await createAgentRun(pool, { triggeredBy: "heartbeat", task: "heartbeat run" });
@@ -1416,10 +1621,10 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
     expect(otherReceived).toBe(false);
     otherClient.close();
 
-    const earliestClient = await connect("earliest");
-    earliestClient.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
-    expect((await nextFrame(earliestClient)).type).toBe("agent:event");
-    earliestClient.close();
+    const tenantUserClient = await connect("tenant-user");
+    tenantUserClient.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    expect((await nextFrame(tenantUserClient)).type).toBe("agent:event");
+    tenantUserClient.close();
   });
 
   it("keeps the existing watcher live when a replacement watch cannot be authorized", async () => {

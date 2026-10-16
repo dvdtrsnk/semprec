@@ -190,9 +190,11 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
           docSync.handleClose(ws, frame.docId);
           return;
         case "agent:watch":
-          agentRunWatch.watch(ws, identity.userId, frame.runId, frame.afterEventId).catch((err: unknown) => {
-            console.error("Sync server failed to watch an agent run", err);
-          });
+          agentRunWatch
+            .watch(ws, identity.tenantId, identity.userId, frame.runId, frame.afterEventId)
+            .catch((err: unknown) => {
+              console.error("Sync server failed to watch an agent run", err);
+            });
           return;
         case "agent:unwatch":
           agentRunWatch.unwatch(ws, frame.runId);
@@ -297,11 +299,11 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
 
   const agentEventDeliveryTails = new Map<string, { promise: Promise<void> }>();
 
-  function enqueueAgentEvent(runId: string, eventId: string): void {
+  function enqueueAgentEvent(tenantId: string, runId: string, eventId: string): void {
     const entry = { promise: Promise.resolve() };
     const preceding = agentEventDeliveryTails.get(runId)?.promise ?? Promise.resolve();
     entry.promise = preceding
-      .then(() => agentRunWatch.forwardEvent(runId, eventId))
+      .then(() => agentRunWatch.forwardEvent(tenantId, runId, eventId))
       .catch((err: unknown) => {
         // Keep this run's delivery queue usable after a failed row fetch, without delaying a
         // different run's events or pretending the original infrastructure fault was forwarded.
@@ -349,9 +351,8 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
         dropWithoutTenant(msg.channel, rawParsed);
         return;
       }
-      // The scope does not narrow delivery here: `forwardDelta` reads no row and sends to every
-      // watcher of the run. Checking watchers against the envelope's tenant is issue #1027.
-      runInTenant(envelope.tenantId, () => agentRunWatch.forwardDelta(envelope.message));
+      // `forwardDelta` reads no row; it sends only to the envelope tenant's watchers of the run.
+      agentRunWatch.forwardDelta(envelope.tenantId, envelope.message);
       return;
     }
 
@@ -410,7 +411,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
           return;
         }
         case "agent_run_event": {
-          enqueueAgentEvent(parsed.agentRunId, parsed.eventId);
+          enqueueAgentEvent(tenantId, parsed.agentRunId, parsed.eventId);
           return;
         }
         case "doc_update": {
