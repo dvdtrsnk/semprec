@@ -34,6 +34,17 @@ async function authHeader(): Promise<{ Authorization: string }> {
   return (await authSession()).headers;
 }
 
+async function countExecuteJobs(approvalRequestId: string): Promise<number> {
+  const { rows } = await pool.query<{ count: number }>(
+    `SELECT count(*)::int AS count
+      FROM graphile_worker._private_jobs j
+      JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+      WHERE t.identifier = 'approvalExecute' AND j.payload->'payload'->>'approvalRequestId' = $1`,
+    [approvalRequestId],
+  );
+  return rows[0]!.count;
+}
+
 async function createPendingRequest(ownerUserId: string): Promise<string> {
   const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerUserId });
   const payload = { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: { query: "hi" } };
@@ -106,6 +117,7 @@ describe("createApprovalRequestsRequestListener", () => {
     const body = (await res.json()) as { status: string; decidedBy: string };
     expect(body.status).toBe("approved");
     expect(body.decidedBy).toBe(session.userId);
+    expect(await countExecuteJobs(id)).toBe(1);
   });
 
   it("rejects a pending request", async () => {
@@ -195,6 +207,7 @@ describe("createApprovalRequestsRequestListener", () => {
       body: JSON.stringify({ decision: "approved" }),
     });
     expect(first.status).toBe(200);
+    expect(await countExecuteJobs(id)).toBe(1);
 
     const second = await fetch(`${baseUrl}/api/approval-requests/${id}`, {
       method: "PATCH",
@@ -205,6 +218,7 @@ describe("createApprovalRequestsRequestListener", () => {
     const body = (await second.json()) as { status: string; decidedBy: string };
     expect(body.status).toBe("approved");
     expect(body.decidedBy).toBe(session.userId);
+    expect(await countExecuteJobs(id)).toBe(1);
   });
 
   it("answers a non-owner's PATCH with the same 404 as a random id, before and after the owner decides (issue #1028)", async () => {
@@ -230,11 +244,14 @@ describe("createApprovalRequestsRequestListener", () => {
       [id],
     );
     expect(pendingRows[0]).toEqual({ status: "pending", decided_by: null });
+    expect(await countExecuteJobs(id)).toBe(0);
 
     await patch(id, owner.headers, "approved");
-    const foreignAfterDecision = await patch(id, other.headers, "rejected");
+    expect(await countExecuteJobs(id)).toBe(1);
+    const foreignAfterDecision = await patch(id, other.headers, "approved");
     expect(foreignAfterDecision.status).toBe(404);
     expect(await foreignAfterDecision.text()).toBe(unknownBody);
+    expect(await countExecuteJobs(id)).toBe(1);
 
     const { rows: decidedRows } = await pool.query<{ status: string; decided_by: string | null }>(
       `SELECT status, decided_by FROM approval_requests WHERE id = $1`,
