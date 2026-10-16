@@ -1070,6 +1070,95 @@ describe("createSyncServer doc sync (issue #162)", () => {
   });
 });
 
+describe("createSyncServer doc_update envelope tenancy (issue #1026)", () => {
+  let chokePoint: ChokePoint;
+  let docStore: DocStore;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    chokePoint = createChokePoint(pool);
+    docStore = createDocStore(pool);
+    wireRealtimeHooks(pool);
+  });
+
+  async function createTestDoc(): Promise<string> {
+    const db = await chokePoint.createDatabase({ name: "Pages" });
+    const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
+    await docStore.putBlock(item.id, { id: "root", flavour: "page" }, "user");
+    const doc = await docStore.getDoc(item.id);
+    return doc!.id;
+  }
+
+  it("delivers a doc_update envelope only to sockets of the envelope's tenant, whatever doc it names", async () => {
+    const userA = await createUser(pool, {
+      email: `envelope-${Math.random()}@example.test`,
+      passwordHash: await hashPassword("s3cret-password"),
+      locale: "en",
+    });
+    const identityByToken = new Map<string, SyncIdentity>([
+      ["a", { tenantId: getTenantZeroId(), userId: userA.id, sessionId: "session-a" }],
+    ]);
+    const docId = await createTestDoc();
+    // Created after the doc: a second tenant makes scope-less writes through the test pool fail closed.
+    const otherTenant = await createTestTenant(pool);
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM doc_updates WHERE doc_id = $1 ORDER BY id DESC LIMIT 1`,
+      [docId],
+    );
+    const updateId = rows[0]!.id;
+
+    // Its own pool: the LISTEN connection is then created outside any tenant scope, as in production,
+    // not as a pooled connection an earlier test opened inside one (which would throw on a foreign envelope).
+    const envelopePool = createPool(process.env.TEST_DATABASE_URL ?? "");
+    const envelopeServer = await createSyncServer(envelopePool, {
+      authenticate: async (req: IncomingMessage) => {
+        const token = new URL(req.url ?? "/", "http://localhost").searchParams.get("token");
+        return token ? (identityByToken.get(token) ?? null) : null;
+      },
+      revalidateSession: async () => true,
+      heartbeatIntervalMs: 30_000,
+    });
+    const envelopeHttp = createServer();
+    envelopeHttp.on("upgrade", (req, socket, head) => envelopeServer.handleUpgrade(req, socket, head));
+    await new Promise<void>((resolve) => envelopeHttp.listen(0, resolve));
+    const envelopeAddress = envelopeHttp.address();
+    if (!envelopeAddress || typeof envelopeAddress === "string") throw new Error("expected a bound TCP address");
+    const wsA = new WebSocket(`ws://127.0.0.1:${envelopeAddress.port}/api/sync?token=a`);
+    await waitForOpen(wsA);
+    try {
+      const clientA = new TestDocClient(wsA, docId);
+      clientA.open();
+      await waitUntil(() => clientA.received.length > 0);
+      // Let the open handshake (the client's SyncStep1/2 replies) settle so only fan-out frames remain.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const receivedBefore = clientA.received.length;
+
+      await notifyEnvelope(pool, "semprec_events", otherTenant, {
+        type: "doc_update",
+        docId,
+        updateId,
+        createdBy: "user",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(clientA.received).toHaveLength(receivedBefore);
+
+      await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), {
+        type: "doc_update",
+        docId,
+        updateId,
+        createdBy: "user",
+      });
+      await waitUntil(() => clientA.received.length > receivedBefore);
+    } finally {
+      wsA.close();
+      await envelopeServer.close();
+      await new Promise<void>((resolve) => envelopeHttp.close(() => resolve()));
+      await envelopePool.end();
+    }
+  });
+});
+
 describe("createSyncServer watched agent runs (issue #163)", () => {
   let httpServer: Server;
   let syncServer: SyncServer;

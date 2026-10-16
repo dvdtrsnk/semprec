@@ -140,10 +140,13 @@ export async function loadDoc(
  * it into `doc_snapshots` and deleted it, since NOTIFY delivery and this fetch race against
  * that DELETE. The caller (the WS fan-out) treats `null` as "already compacted" and falls
  * back to `doc_snapshots`, which retains everything this row held — never as "nothing to
- * send".
+ * send". A row that belongs to a different doc than `docId` also resolves to `null`.
  */
-export async function getDocUpdateById(pool: Pool, updateId: string): Promise<Buffer | null> {
-  const { rows } = await pool.query<{ update: Buffer }>(`SELECT update FROM doc_updates WHERE id = $1`, [updateId]);
+export async function getDocUpdateById(pool: Pool, docId: string, updateId: string): Promise<Buffer | null> {
+  const { rows } = await pool.query<{ update: Buffer }>(
+    `SELECT update FROM doc_updates WHERE id = $1 AND doc_id = $2`,
+    [updateId, docId],
+  );
   return rows[0]?.update ?? null;
 }
 
