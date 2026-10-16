@@ -321,6 +321,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "isSessionActive",
   "itemDeleteWithClient",
   "libraryModuleManifest",
+  "listAdminRecipients",
   "listAgentRunEvents",
   "listAgentRunEventsAfter",
   "listAgentRunsByHeartbeat",

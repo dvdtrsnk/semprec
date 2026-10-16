@@ -1,8 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
-import { getEarliestUserId } from "../auth/usersStore.js";
+import { getTenantUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
-import type { NotificationKind } from "../notifications/notificationKinds.js";
 import {
   FIXED_PROCESS_NAMES,
   getExpectedProcessHeartbeatStatuses,
@@ -16,6 +15,7 @@ import {
   deleteOrphanedTenantObservabilityChecks,
   type ObservabilityCheckStatus,
 } from "./observabilityChecksStore.js";
+import { writeOperatorAlert } from "./operatorAlerts.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { FAILED_JOB_RETENTION_MS } from "./queueFailedJobsPrune.js";
 
@@ -24,23 +24,21 @@ export interface ObservabilityCheckSystemHelpers {
   job: { id: string };
 }
 
-/** Silently skips before any account exists (setup, #233, not run yet) — same guard as `scheduler/sweep.ts`'s `notifyHeartbeatError`. */
-async function notifyObservabilityAlert(
+/** Notifies the current tenant's user of a mailbox stall; skips when the tenant has no bound user. Must run inside the tenant's transaction. */
+async function notifyMailSyncStalled(
   client: PoolClient,
   helpers: ObservabilityCheckSystemHelpers,
   checkKey: string,
   checkId: string,
-  kind: NotificationKind,
   detail: Record<string, unknown>,
-  sourceTable: "observability_checks" | "tenant_observability_checks" = "observability_checks",
 ): Promise<void> {
-  const userId = await getEarliestUserId(client);
+  const userId = await getTenantUserId(client);
   if (!userId) return;
   await writeNotification(client, {
     userId,
-    kind,
+    kind: "mail_sync_stalled",
     linkHref: null,
-    sourceTable,
+    sourceTable: "tenant_observability_checks",
     sourceId: checkId,
     transitionInstance: `${helpers.job.id}:${checkKey}`,
     payload: detail,
@@ -69,9 +67,11 @@ async function checkProcessHeartbeats(pool: Pool, helpers: ObservabilityCheckSys
         detail: { process: processStatus.process, present: processStatus.present, beatAt: processStatus.beatAt },
       }));
       if (transition.transitionedToAlerting) {
-        await notifyObservabilityAlert(client, helpers, checkKey, transition.id, "process_stale", {
-          process: processStatus.process,
-          beatAt: processStatus.beatAt,
+        await writeOperatorAlert(pool, client, {
+          kind: "process_stale",
+          checkId: transition.id,
+          transitionInstance: `${helpers.job.id}:${checkKey}`,
+          payload: { process: processStatus.process, beatAt: processStatus.beatAt },
         });
       }
     });
@@ -112,15 +112,10 @@ async function checkMailSyncLiveness(pool: Pool, helpers: ObservabilityCheckSyst
         detail: { process: processStatus.process, present: processStatus.present, beatAt: processStatus.beatAt },
       }));
       if (transition.transitionedToAlerting) {
-        await notifyObservabilityAlert(
-          client,
-          helpers,
-          checkKey,
-          transition.id,
-          "mail_sync_stalled",
-          { mailboxItemId, beatAt: processStatus.beatAt },
-          "tenant_observability_checks",
-        );
+        await notifyMailSyncStalled(client, helpers, checkKey, transition.id, {
+          mailboxItemId,
+          beatAt: processStatus.beatAt,
+        });
       }
     });
   }
@@ -180,9 +175,11 @@ async function checkQueueBacklog(pool: Pool, helpers: ObservabilityCheckSystemHe
       detail: { pending: snapshot.pending, oldestAgeMs: snapshot.oldestAgeMs },
     }));
     if (transition.transitionedToAlerting) {
-      await notifyObservabilityAlert(client, helpers, checkKey, transition.id, "queue_backlog", {
-        pending: snapshot.pending,
-        oldestAgeMs: snapshot.oldestAgeMs,
+      await writeOperatorAlert(pool, client, {
+        kind: "queue_backlog",
+        checkId: transition.id,
+        transitionInstance: `${helpers.job.id}:${checkKey}`,
+        payload: { pending: snapshot.pending, oldestAgeMs: snapshot.oldestAgeMs },
       });
     }
   });
@@ -217,7 +214,12 @@ async function checkPermanentlyFailedJobs(pool: Pool, helpers: ObservabilityChec
       detail: { count },
     }));
     if (transition.transitionedToAlerting) {
-      await notifyObservabilityAlert(client, helpers, checkKey, transition.id, "queue_backlog", { count });
+      await writeOperatorAlert(pool, client, {
+        kind: "queue_backlog",
+        checkId: transition.id,
+        transitionInstance: `${helpers.job.id}:${checkKey}`,
+        payload: { count },
+      });
     }
   });
 }
@@ -261,15 +263,10 @@ async function checkMailSync(pool: Pool, helpers: ObservabilityCheckSystemHelper
         },
       }));
       if (transition.transitionedToAlerting) {
-        await notifyObservabilityAlert(
-          client,
-          helpers,
-          checkKey,
-          transition.id,
-          "mail_sync_stalled",
-          { mailboxItemId: account.itemId, lastError: account.lastError },
-          "tenant_observability_checks",
-        );
+        await notifyMailSyncStalled(client, helpers, checkKey, transition.id, {
+          mailboxItemId: account.itemId,
+          lastError: account.lastError,
+        });
       }
     });
   }

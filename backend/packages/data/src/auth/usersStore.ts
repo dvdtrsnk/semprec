@@ -111,6 +111,23 @@ export async function getTenantUserId(client: Pool | PoolClient): Promise<string
 }
 
 /**
+ * Every admin of an active tenant, oldest account first — the recipients of an operator alert.
+ * Reads across tenants, so the caller must be in a system scope. Admins of suspended, provisioning
+ * or deleting tenants are skipped.
+ */
+export async function listAdminRecipients(
+  client: Pool | PoolClient,
+): Promise<Array<{ userId: string; tenantId: string }>> {
+  const { rows } = await client.query<{ user_id: string; tenant_id: string }>(
+    `SELECT u.id AS user_id, u.tenant_id
+     FROM users u JOIN tenants t ON t.id = u.tenant_id
+     WHERE u.role = 'admin' AND t.status = 'active'
+     ORDER BY u.created_at, u.id`,
+  );
+  return rows.map((row) => ({ userId: row.user_id, tenantId: row.tenant_id }));
+}
+
+/**
  * Locale of the tenant's user — the recipient rule of `getTenantUserId`: the user of the scope's
  * tenant. Returns `null` when the tenant has no bound user, and in a system scope once more
  * than one tenant exists.
