@@ -124,8 +124,9 @@
 - A new unique index or unique constraint on a table that has `INSERT … ON CONFLICT`
   statements whose arbiter names a different index, left unchanged and not named as a
   follow-up in the pull request description, is high: a conflict on the new index raises
-  `23505` past the arbiter and surfaces as a 500 under concurrent writes, and a surviving
-  global unique index on a tenant table stays a cross-tenant existence oracle.
+  `23505` past the arbiter and surfaces as a 500 under concurrent writes. When the
+  statement's outcome also lets one tenant infer another's row (a surviving global unique
+  index on a tenant table), it is critical under `tasks/security.md` item 9.
 - A test that asserts tenant isolation through the superuser pool (`getTestPool()`), or
   with two users of one tenant instead of two tenants, is high: superusers and table owners
   bypass row-level security, so the test passes whether or not isolation holds.
