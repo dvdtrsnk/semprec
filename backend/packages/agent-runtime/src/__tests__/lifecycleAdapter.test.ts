@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createAgentRun, setAgentRunEventHook, type AgentRunRow } from "@semprec/data";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createTenantZeroUser, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { getTraceContext } from "@semprec/shared";
 import { publishRealtimeMessage } from "@semprec/realtime";
 import { pushRunStatus, runAgentSession, runAgentSessionForRun } from "../lifecycleAdapter.js";
@@ -160,13 +160,13 @@ describe("runAgentSession", () => {
     const durableForRun = () =>
       notifications
         .filter((n) => n.channel === "semprec_events")
-        .map((n) => JSON.parse(n.payload ?? "{}"))
-        .filter((m) => m.agentRunId === run.id);
+        .map((n) => JSON.parse(n.payload ?? "{}") as { tenantId: string; message: { agentRunId?: string } })
+        .filter((envelope) => envelope.message.agentRunId === run.id);
     const deltasForRun = () =>
       notifications
         .filter((n) => n.channel === "semprec_agent_stream")
-        .map((n) => JSON.parse(n.payload ?? "{}"))
-        .filter((m) => m.agentRunId === run.id);
+        .map((n) => JSON.parse(n.payload ?? "{}") as { tenantId: string; message: { agentRunId?: string } })
+        .filter((envelope) => envelope.message.agentRunId === run.id);
 
     // NOTIFY delivery to a LISTEN-ing client is asynchronous relative to the query that
     // triggered it; poll instead of a fixed sleep so this isn't flaky under load.
@@ -176,7 +176,9 @@ describe("runAgentSession", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
 
-    const durable = durableForRun();
+    const durable = durableForRun().map((envelope) => envelope.message as Record<string, unknown>);
+    expect(durableForRun().every((envelope) => envelope.tenantId === getTenantZeroId())).toBe(true);
+    expect(deltasForRun().every((envelope) => envelope.tenantId === getTenantZeroId())).toBe(true);
     const { rows } = await pool.query<{ id: string; kind: string }>(
       "SELECT id, kind FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id ASC",
       [run.id],
@@ -184,7 +186,7 @@ describe("runAgentSession", () => {
     expect(durable.every((m) => m.type === "agent_run_event")).toBe(true);
     expect(durable.map((m) => m.eventId)).toEqual(rows.map((row) => row.id));
     expect(durable.every((m) => !("payload" in m) && !("kind" in m))).toBe(true);
-    expect(deltasForRun()).toEqual([
+    expect(deltasForRun().map((envelope) => envelope.message)).toEqual([
       {
         type: "agent_run_delta",
         agentRunId: run.id,
@@ -195,7 +197,7 @@ describe("runAgentSession", () => {
       },
     ]);
     expect(rows.some((row) => row.kind === "message_update")).toBe(false);
-    expect(deltasForRun()[0]?.delta).toEqual({
+    expect((deltasForRun()[0]?.message as { delta?: unknown } | undefined)?.delta).toEqual({
       kind: "message_update",
       text: "partial",
     });

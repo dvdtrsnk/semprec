@@ -8,6 +8,7 @@ import * as decoding from "lib0/decoding";
 import * as Y from "yjs";
 import * as syncProtocol from "y-protocols/sync.js";
 import {
+  createPool,
   withTransaction,
   createAgentRun,
   createUser,
@@ -19,13 +20,39 @@ import {
   type ChokePoint,
   type DocStore,
 } from "@semprec/data";
-import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { publishAgentRunDelta, publishRealtimeMessage } from "../pgNotifyPublisher.js";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
+import { randomUUID } from "node:crypto";
+import { runInTenant } from "@semprec/shared";
+import { parseAgentStreamEnvelope, publishAgentRunDelta, publishRealtimeMessage } from "../pgNotifyPublisher.js";
 import { createSyncServer, type SyncIdentity, type SyncServer } from "../syncServer.js";
 import { buildBinaryFrame, decodeDocId, parseBinaryFrame } from "../protocolV1.js";
 import { wireRealtimeHooks } from "../wireHooks.js";
 
+const { realtimeWarn } = vi.hoisted(() => ({ realtimeWarn: vi.fn() }));
+
+// Only the realtime package's own logger is replaced so its warnings can be asserted; every other
+// logger (tenant-scope, ...) stays real.
+vi.mock("@semprec/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@semprec/shared")>();
+  return {
+    ...actual,
+    createLogger: (name: string) =>
+      name === "realtime" ? ({ warn: realtimeWarn } as never) : actual.createLogger(name),
+  };
+});
+
 let pool: Pool;
+
+/** Publishes a hand-built envelope, as a foreign or misbehaving publisher could. */
+async function notifyEnvelope(pool: Pool, channel: string, tenantId: string, message: unknown): Promise<void> {
+  await pool.query("SELECT pg_notify($1, $2)", [channel, JSON.stringify({ tenantId, message })]);
+}
 
 afterAll(async () => {
   await pool?.end();
@@ -217,7 +244,7 @@ describe("createSyncServer (issue #160)", () => {
   });
 
   it("opens a socket for a valid credential", async () => {
-    registerIdentity("t1", { userId: "user-1", sessionId: "session-1" });
+    registerIdentity("t1", { tenantId: getTenantZeroId(), userId: "user-1", sessionId: "session-1" });
     const client = new WebSocket(`ws://127.0.0.1:${port}/api/sync?token=t1`);
     await waitForOpen(client);
     expect(client.readyState).toBe(client.OPEN);
@@ -234,8 +261,8 @@ describe("createSyncServer (issue #160)", () => {
   });
 
   it("drops a malformed text frame and a too-short binary frame without affecting another connected client", async () => {
-    registerIdentity("t1", { userId: "user-1", sessionId: "session-1" });
-    registerIdentity("t2", { userId: "user-2", sessionId: "session-2" });
+    registerIdentity("t1", { tenantId: getTenantZeroId(), userId: "user-1", sessionId: "session-1" });
+    registerIdentity("t2", { tenantId: getTenantZeroId(), userId: "user-2", sessionId: "session-2" });
 
     const troublemaker = new WebSocket(`ws://127.0.0.1:${port}/api/sync?token=t1`);
     const bystander = new WebSocket(`ws://127.0.0.1:${port}/api/sync?token=t2`);
@@ -255,8 +282,8 @@ describe("createSyncServer (issue #160)", () => {
   });
 
   it("closes exactly the revoked session's socket with 4401 on a session_revoked NOTIFY", async () => {
-    registerIdentity("t1", { userId: "user-1", sessionId: "session-a" });
-    registerIdentity("t2", { userId: "user-2", sessionId: "session-b" });
+    registerIdentity("t1", { tenantId: getTenantZeroId(), userId: "user-1", sessionId: "session-a" });
+    registerIdentity("t2", { tenantId: getTenantZeroId(), userId: "user-2", sessionId: "session-b" });
 
     const revoked = new WebSocket(`ws://127.0.0.1:${port}/api/sync?token=t1`);
     const surviving = new WebSocket(`ws://127.0.0.1:${port}/api/sync?token=t2`);
@@ -264,7 +291,10 @@ describe("createSyncServer (issue #160)", () => {
 
     const revokedClosed = new Promise<number>((resolve) => revoked.once("close", (code) => resolve(code)));
 
-    await publishRealtimeMessage(pool, { type: "session_revoked", sessionId: "session-a" });
+    await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), {
+      type: "session_revoked",
+      sessionId: "session-a",
+    });
 
     expect(await revokedClosed).toBe(4401);
 
@@ -274,11 +304,14 @@ describe("createSyncServer (issue #160)", () => {
   });
 
   it("leaves sockets open on a session_revoked NOTIFY for an unrelated session", async () => {
-    registerIdentity("t1", { userId: "user-1", sessionId: "session-a" });
+    registerIdentity("t1", { tenantId: getTenantZeroId(), userId: "user-1", sessionId: "session-a" });
     const client = new WebSocket(`ws://127.0.0.1:${port}/api/sync?token=t1`);
     await waitForOpen(client);
 
-    await publishRealtimeMessage(pool, { type: "session_revoked", sessionId: "some-other-session" });
+    await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), {
+      type: "session_revoked",
+      sessionId: "some-other-session",
+    });
 
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(client.readyState).toBe(client.OPEN);
@@ -313,7 +346,7 @@ describe("createSyncServer heartbeat fallback (issue #160)", () => {
     heartbeatPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
 
     syncServer = await createSyncServer(heartbeatPool, {
-      authenticate: async () => ({ userId: "user-1", sessionId: "session-stale" }),
+      authenticate: async () => ({ tenantId: getTenantZeroId(), userId: "user-1", sessionId: "session-stale" }),
       revalidateSession: async () => false,
       heartbeatIntervalMs: 20,
     });
@@ -382,8 +415,8 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
   it("delivers a user-scoped item invalidation only to the acting user's own socket, never a bystander's (issue #161)", async () => {
     const userA = await createTestUser();
     const userB = await createTestUser();
-    identityByToken.set("a", { userId: userA, sessionId: "session-a" });
-    identityByToken.set("b", { userId: userB, sessionId: "session-b" });
+    identityByToken.set("a", { tenantId: getTenantZeroId(), userId: userA, sessionId: "session-a" });
+    identityByToken.set("b", { tenantId: getTenantZeroId(), userId: userB, sessionId: "session-b" });
     const clientA = await connect("a");
     const clientB = await connect("b");
 
@@ -421,32 +454,221 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
     clientB.close();
   });
 
-  it("falls back to broadcasting an item/schema invalidation to every connected socket when it carries no acting user (a system/background-triggered write)", async () => {
+  it("delivers an item/schema invalidation with no acting user to every socket of its own tenant only", async () => {
     const userA = await createTestUser();
     const userB = await createTestUser();
-    identityByToken.set("a", { userId: userA, sessionId: "session-a" });
-    identityByToken.set("b", { userId: userB, sessionId: "session-b" });
+    const otherTenant = await createTestTenant(pool);
+    identityByToken.set("a", { tenantId: getTenantZeroId(), userId: userA, sessionId: "session-a" });
+    identityByToken.set("b", { tenantId: getTenantZeroId(), userId: userB, sessionId: "session-b" });
+    identityByToken.set("u", { tenantId: otherTenant, userId: await createTestUser(), sessionId: "session-u" });
     const clientA = await connect("a");
     const clientB = await connect("b");
+    const clientU = await connect("u");
 
     const receivedA = new Promise<string>((resolve) => clientA.once("message", (d) => resolve(messageText(d))));
     const receivedB = new Promise<string>((resolve) => clientB.once("message", (d) => resolve(messageText(d))));
+    const receivedU: string[] = [];
+    clientU.on("message", (d) => receivedU.push(messageText(d)));
 
-    await publishRealtimeMessage(pool, { type: "invalidation", scope: "schema", databaseId: "db-1" });
+    await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), {
+      type: "invalidation",
+      scope: "schema",
+      databaseId: "db-1",
+    });
 
     const expected = { type: "invalidate", scope: "schema", databaseId: "db-1" };
     expect(JSON.parse(await receivedA)).toEqual(expected);
     expect(JSON.parse(await receivedB)).toEqual(expected);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(receivedU).toEqual([]);
 
     clientA.close();
     clientB.close();
+    clientU.close();
+  });
+
+  it("narrows a tenant's invalidation to one user's sockets when userId is given and never reaches another tenant", async () => {
+    const userA = await createTestUser();
+    const userB = await createTestUser();
+    const otherTenant = await createTestTenant(pool);
+    identityByToken.set("a", { tenantId: getTenantZeroId(), userId: userA, sessionId: "session-a" });
+    identityByToken.set("b", { tenantId: getTenantZeroId(), userId: userB, sessionId: "session-b" });
+    // Same user id as A but authenticated in another tenant: userId alone must never select it.
+    identityByToken.set("u", { tenantId: otherTenant, userId: userA, sessionId: "session-u" });
+    const clientA = await connect("a");
+    const clientB = await connect("b");
+    const clientU = await connect("u");
+
+    const receivedA = new Promise<string>((resolve) => clientA.once("message", (d) => resolve(messageText(d))));
+    const others: string[] = [];
+    clientB.on("message", (d) => others.push(messageText(d)));
+    clientU.on("message", (d) => others.push(messageText(d)));
+
+    await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), {
+      type: "invalidation",
+      scope: "schema",
+      databaseId: "db-1",
+      userId: userA,
+    });
+
+    expect(JSON.parse(await receivedA)).toEqual({ type: "invalidate", scope: "schema", databaseId: "db-1" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(others).toEqual([]);
+
+    clientA.close();
+    clientB.close();
+    clientU.close();
+  });
+
+  it("closes a session_revoked socket only when the envelope's tenant matches the socket's tenant", async () => {
+    const otherTenant = await createTestTenant(pool);
+    identityByToken.set("t", { tenantId: getTenantZeroId(), userId: await createTestUser(), sessionId: "session-t" });
+    const client = await connect("t");
+    const closed = waitForClose(client);
+
+    await notifyEnvelope(pool, "semprec_events", otherTenant, { type: "session_revoked", sessionId: "session-t" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(client.readyState).toBe(client.OPEN);
+
+    await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), {
+      type: "session_revoked",
+      sessionId: "session-t",
+    });
+    expect(await closed).toBe(4401);
+  });
+
+  it("delivers a notification_created only when the envelope names the notification's own tenant", async () => {
+    const owner = await createTestUser();
+    const notificationId = await withTransaction(pool, (client) =>
+      writeNotification(client, {
+        userId: owner,
+        kind: "heartbeat_error",
+        titleParams: { name: "Daily digest" },
+        linkHref: null,
+        sourceTable: "project_heartbeats",
+        sourceId: "hb-tenant",
+        transitionInstance: "job-tenant",
+      }),
+    );
+    const otherTenant = await createTestTenant(pool);
+    // Row-level security applies only to a runtime role, so the server under test reads through one.
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    const tenantServer = await createSyncServer(runtimePool, {
+      authenticate: async (req: IncomingMessage) => {
+        const token = new URL(req.url ?? "/", "http://localhost").searchParams.get("token");
+        return token ? (identityByToken.get(token) ?? null) : null;
+      },
+      revalidateSession: async () => true,
+      heartbeatIntervalMs: 30_000,
+    });
+    const tenantHttp = createServer();
+    tenantHttp.on("upgrade", (req, socket, head) => tenantServer.handleUpgrade(req, socket, head));
+    await new Promise<void>((resolve) => tenantHttp.listen(0, resolve));
+    const address = tenantHttp.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    try {
+      identityByToken.set("owner", { tenantId: getTenantZeroId(), userId: owner, sessionId: "session-owner" });
+      identityByToken.set("foreign", { tenantId: otherTenant, userId: owner, sessionId: "session-foreign" });
+      const ownerClient = new WebSocket(`ws://127.0.0.1:${address.port}/api/sync?token=owner`);
+      const foreignClient = new WebSocket(`ws://127.0.0.1:${address.port}/api/sync?token=foreign`);
+      await Promise.all([waitForOpen(ownerClient), waitForOpen(foreignClient)]);
+      const received: string[] = [];
+      ownerClient.on("message", (d) => received.push(messageText(d)));
+      foreignClient.on("message", (d) => received.push(messageText(d)));
+
+      await notifyEnvelope(pool, "semprec_events", otherTenant, {
+        type: "notification_created",
+        userId: owner,
+        notificationId,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(received).toEqual([]);
+
+      await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), {
+        type: "notification_created",
+        userId: owner,
+        notificationId,
+      });
+      await waitUntil(() => received.length > 0);
+      expect(received).toHaveLength(1);
+      expect(JSON.parse(received[0] ?? "{}")).toMatchObject({
+        type: "notification",
+        notification: { id: notificationId, userId: owner },
+      });
+      ownerClient.close();
+      foreignClient.close();
+    } finally {
+      await tenantServer.close();
+      await new Promise<void>((resolve) => tenantHttp.close(() => resolve()));
+      await runtimePool.end();
+    }
+  });
+
+  it("stamps publishAgentRunDelta envelopes with the publisher's tenant and keeps every chunk under the NOTIFY cap", async () => {
+    const tenantId = await createTestTenant(pool);
+    const scopedPool = createPool(process.env.TEST_DATABASE_URL ?? "");
+    const listener = await pool.connect();
+    try {
+      await listener.query("LISTEN semprec_agent_stream");
+      const payloads: string[] = [];
+      listener.on("notification", (m) => {
+        if (m.payload) payloads.push(m.payload);
+      });
+      const runId = randomUUID();
+      await runInTenant(tenantId, () => publishAgentRunDelta(scopedPool, runId, { text: "x".repeat(40_000) }));
+      await waitUntil(() => payloads.length >= 5);
+      for (const payload of payloads) {
+        expect(Buffer.byteLength(payload, "utf8")).toBeLessThan(8000);
+        const envelope = parseAgentStreamEnvelope(JSON.parse(payload));
+        expect(envelope?.tenantId).toBe(tenantId);
+      }
+    } finally {
+      listener.release(true);
+      await scopedPool.end();
+    }
+  });
+
+  it("drops an envelope without a usable tenant on either channel and logs exactly one warning per payload without content", async () => {
+    identityByToken.set("t", { tenantId: getTenantZeroId(), userId: await createTestUser(), sessionId: "session-t" });
+    const client = await connect("t");
+    const received: string[] = [];
+    client.on("message", (d) => received.push(messageText(d)));
+    realtimeWarn.mockClear();
+
+    const inner = { type: "invalidation", scope: "schema", databaseId: "secret-db" };
+    const bad: [string, unknown][] = [
+      ["semprec_events", { message: inner }],
+      ["semprec_events", { tenantId: null, message: inner }],
+      ["semprec_events", { tenantId: "not-a-uuid", message: inner }],
+      ["semprec_events", inner],
+      ["semprec_agent_stream", { message: { type: "agent_run_delta", agentRunId: randomUUID(), delta: "x" } }],
+    ];
+    for (const [channel, payload] of bad) {
+      await pool.query("SELECT pg_notify($1, $2)", [channel, JSON.stringify(payload)]);
+    }
+    await waitUntil(() => realtimeWarn.mock.calls.length >= bad.length);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(received).toEqual([]);
+    expect(realtimeWarn.mock.calls).toEqual([
+      [{ channel: "semprec_events", type: "invalidation" }, "realtime_message_without_tenant"],
+      [{ channel: "semprec_events", type: "invalidation" }, "realtime_message_without_tenant"],
+      [{ channel: "semprec_events", type: "invalidation" }, "realtime_message_without_tenant"],
+      [{ channel: "semprec_events", type: "invalidation" }, "realtime_message_without_tenant"],
+      [{ channel: "semprec_agent_stream", type: "agent_run_delta" }, "realtime_message_without_tenant"],
+    ]);
+    client.close();
   });
 
   it("never replays an invalidation published while a socket was disconnected — reconnecting relies on the client's own bounded active-state refetch to heal, not a server-side replay (issue #161)", async () => {
     const userA = await createTestUser();
     const sentinelUser = await createTestUser();
-    identityByToken.set("a", { userId: userA, sessionId: "session-a" });
-    identityByToken.set("sentinel", { userId: sentinelUser, sessionId: "session-sentinel" });
+    identityByToken.set("a", { tenantId: getTenantZeroId(), userId: userA, sessionId: "session-a" });
+    identityByToken.set("sentinel", {
+      tenantId: getTenantZeroId(),
+      userId: sentinelUser,
+      sessionId: "session-sentinel",
+    });
 
     // A socket that was open, then dropped, before the invalidation below is published.
     const droppedClient = await connect("a");
@@ -499,8 +721,12 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
   it("delivers the complete notification row only to its own user's socket (issue #161)", async () => {
     const owner = await createTestUser();
     const bystanderUser = await createTestUser();
-    identityByToken.set("owner", { userId: owner, sessionId: "session-owner" });
-    identityByToken.set("bystander", { userId: bystanderUser, sessionId: "session-bystander" });
+    identityByToken.set("owner", { tenantId: getTenantZeroId(), userId: owner, sessionId: "session-owner" });
+    identityByToken.set("bystander", {
+      tenantId: getTenantZeroId(),
+      userId: bystanderUser,
+      sessionId: "session-bystander",
+    });
     const ownerClient = await connect("owner");
     const bystanderClient = await connect("bystander");
 
@@ -538,7 +764,7 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
   it("drops a notification_created NOTIFY whose userId does not match the fetched row's own owner, rather than delivering cross-user (medium finding on PR #392)", async () => {
     const owner = await createTestUser();
     const impostor = await createTestUser();
-    identityByToken.set("impostor", { userId: impostor, sessionId: "session-impostor" });
+    identityByToken.set("impostor", { tenantId: getTenantZeroId(), userId: impostor, sessionId: "session-impostor" });
     const impostorClient = await connect("impostor");
 
     let impostorMessage: string | undefined;
@@ -569,7 +795,7 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
 
   it("never replays a notification published while a socket was disconnected — reconnecting relies on the client's own GET /api/notifications/unread fetch to heal, not a server-side replay (issue #161, AC referencing #36)", async () => {
     const owner = await createTestUser();
-    identityByToken.set("owner", { userId: owner, sessionId: "session-owner" });
+    identityByToken.set("owner", { tenantId: getTenantZeroId(), userId: owner, sessionId: "session-owner" });
 
     const droppedClient = await connect("owner");
     droppedClient.close();
@@ -617,7 +843,7 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
 
   it("re-fetches and delivers the current row to the owning user on a notification_read_state NOTIFY", async () => {
     const owner = await createTestUser();
-    identityByToken.set("owner", { userId: owner, sessionId: "session-owner" });
+    identityByToken.set("owner", { tenantId: getTenantZeroId(), userId: owner, sessionId: "session-owner" });
     const ownerClient = await connect("owner");
 
     const notificationId = await withTransaction(pool, (client) =>
@@ -714,9 +940,9 @@ describe("createSyncServer doc sync (issue #162)", () => {
     const userA = await createTestUser();
     const userB = await createTestUser();
     const userC = await createTestUser();
-    identityByToken.set("a", { userId: userA, sessionId: "session-a" });
-    identityByToken.set("b", { userId: userB, sessionId: "session-b" });
-    identityByToken.set("c", { userId: userC, sessionId: "session-c" });
+    identityByToken.set("a", { tenantId: getTenantZeroId(), userId: userA, sessionId: "session-a" });
+    identityByToken.set("b", { tenantId: getTenantZeroId(), userId: userB, sessionId: "session-b" });
+    identityByToken.set("c", { tenantId: getTenantZeroId(), userId: userC, sessionId: "session-c" });
 
     const docId = await createTestDoc();
     const wsA = await connect("a");
@@ -751,8 +977,8 @@ describe("createSyncServer doc sync (issue #162)", () => {
   it("converges two subscribed clients after concurrent updates from both, including a duplicate resend", async () => {
     const userA = await createTestUser();
     const userB = await createTestUser();
-    identityByToken.set("a", { userId: userA, sessionId: "session-a" });
-    identityByToken.set("b", { userId: userB, sessionId: "session-b" });
+    identityByToken.set("a", { tenantId: getTenantZeroId(), userId: userA, sessionId: "session-a" });
+    identityByToken.set("b", { tenantId: getTenantZeroId(), userId: userB, sessionId: "session-b" });
 
     const docId = await createTestDoc();
     const wsA = await connect("a");
@@ -784,7 +1010,7 @@ describe("createSyncServer doc sync (issue #162)", () => {
 
   it("reconnecting after offline edits exchanges only the missed Yjs diff and both sides converge", async () => {
     const userA = await createTestUser();
-    identityByToken.set("a", { userId: userA, sessionId: "session-a" });
+    identityByToken.set("a", { tenantId: getTenantZeroId(), userId: userA, sessionId: "session-a" });
     const docId = await createTestDoc();
 
     // First connection makes an edit while "online", then disconnects (goes offline).
@@ -812,8 +1038,8 @@ describe("createSyncServer doc sync (issue #162)", () => {
   it("persists an accepted update durably, attributed to the authenticated user, before a peer observes it", async () => {
     const userA = await createTestUser();
     const userB = await createTestUser();
-    identityByToken.set("a", { userId: userA, sessionId: "session-a" });
-    identityByToken.set("b", { userId: userB, sessionId: "session-b" });
+    identityByToken.set("a", { tenantId: getTenantZeroId(), userId: userA, sessionId: "session-a" });
+    identityByToken.set("b", { tenantId: getTenantZeroId(), userId: userB, sessionId: "session-b" });
     const docId = await createTestDoc();
 
     const wsA = await connect("a");
@@ -899,7 +1125,7 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
 
   it("replays cursor events in id order, then delivers a later thin-reference event without a handoff gap", async () => {
     const owner = await createTestUser();
-    identityByToken.set("owner", { userId: owner, sessionId: "owner-session" });
+    identityByToken.set("owner", { tenantId: getTenantZeroId(), userId: owner, sessionId: "owner-session" });
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "watch me" });
     const first = await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
     const second = await insertAgentRunEvent(pool, run.id, "message", { kind: "message", text: "replayed" });
@@ -933,8 +1159,8 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
   it("never sends durable events or ephemeral deltas to an unwatched or unauthorized socket", async () => {
     const owner = await createTestUser();
     const otherUser = await createTestUser();
-    identityByToken.set("owner", { userId: owner, sessionId: "owner-session" });
-    identityByToken.set("other", { userId: otherUser, sessionId: "other-session" });
+    identityByToken.set("owner", { tenantId: getTenantZeroId(), userId: owner, sessionId: "owner-session" });
+    identityByToken.set("other", { tenantId: getTenantZeroId(), userId: otherUser, sessionId: "other-session" });
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "private run" });
     const ownerClient = await connect("owner");
     const otherClient = await connect("other");
@@ -965,7 +1191,7 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
 
   it("cancels a watch when agent:unwatch arrives while its authorization query is pending", async () => {
     const owner = await createTestUser();
-    identityByToken.set("owner", { userId: owner, sessionId: "owner-session" });
+    identityByToken.set("owner", { tenantId: getTenantZeroId(), userId: owner, sessionId: "owner-session" });
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "cancel pending watch", userId: owner });
     await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
     const client = await connect("owner");
@@ -992,8 +1218,12 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
   it("authorizes agent:watch against the run's actor_user_id rather than the tenant's user", async () => {
     const earliestUser = await createTestUser();
     const actorUser = await createTestUser();
-    identityByToken.set("earliest", { userId: earliestUser, sessionId: "earliest-session" });
-    identityByToken.set("actor", { userId: actorUser, sessionId: "actor-session" });
+    identityByToken.set("earliest", {
+      tenantId: getTenantZeroId(),
+      userId: earliestUser,
+      sessionId: "earliest-session",
+    });
+    identityByToken.set("actor", { tenantId: getTenantZeroId(), userId: actorUser, sessionId: "actor-session" });
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "actor-owned run", userId: actorUser });
     await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
 
@@ -1014,8 +1244,12 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
   it("authorizes agent:watch on a heartbeat-triggered run against the tenant's user it falls back to", async () => {
     const earliestUser = await createTestUser();
     const otherUser = await createTestUser();
-    identityByToken.set("earliest", { userId: earliestUser, sessionId: "earliest-session" });
-    identityByToken.set("other", { userId: otherUser, sessionId: "other-session" });
+    identityByToken.set("earliest", {
+      tenantId: getTenantZeroId(),
+      userId: earliestUser,
+      sessionId: "earliest-session",
+    });
+    identityByToken.set("other", { tenantId: getTenantZeroId(), userId: otherUser, sessionId: "other-session" });
     const run = await createAgentRun(pool, { triggeredBy: "heartbeat", task: "heartbeat run" });
     await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
 
@@ -1035,7 +1269,7 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
 
   it("keeps the existing watcher live when a replacement watch cannot be authorized", async () => {
     const owner = await createTestUser();
-    identityByToken.set("owner", { userId: owner, sessionId: "owner-session" });
+    identityByToken.set("owner", { tenantId: getTenantZeroId(), userId: owner, sessionId: "owner-session" });
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "retain watch after transient failure" });
     await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
     const client = await connect("owner");
@@ -1058,7 +1292,7 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
 
   it("keeps the existing watcher live when a replacement replay fails", async () => {
     const owner = await createTestUser();
-    identityByToken.set("owner", { userId: owner, sessionId: "owner-session" });
+    identityByToken.set("owner", { tenantId: getTenantZeroId(), userId: owner, sessionId: "owner-session" });
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "retain watch after replay failure" });
     await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
     const client = await connect("owner");
@@ -1088,7 +1322,7 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
 
   it("chunks an oversized ephemeral delta below Postgres's NOTIFY payload limit", async () => {
     const owner = await createTestUser();
-    identityByToken.set("owner", { userId: owner, sessionId: "owner-session" });
+    identityByToken.set("owner", { tenantId: getTenantZeroId(), userId: owner, sessionId: "owner-session" });
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "large delta" });
     await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
     const client = await connect("owner");
@@ -1163,8 +1397,8 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
     syncServer = server;
     await bindHttpServer();
 
-    identityByToken.set("a", { userId: await createTestUser(), sessionId: "session-a" });
-    identityByToken.set("b", { userId: await createTestUser(), sessionId: "session-b" });
+    identityByToken.set("a", { tenantId: getTenantZeroId(), userId: await createTestUser(), sessionId: "session-a" });
+    identityByToken.set("b", { tenantId: getTenantZeroId(), userId: await createTestUser(), sessionId: "session-b" });
     const clientA = await connect("a");
     const clientB = await connect("b");
     const closedA = waitForClose(clientA);
@@ -1227,7 +1461,7 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
     });
     await bindHttpServer();
 
-    identityByToken.set("a", { userId: await createTestUser(), sessionId: "session-a" });
+    identityByToken.set("a", { tenantId: getTenantZeroId(), userId: await createTestUser(), sessionId: "session-a" });
     const client = await connect("a");
     const closed = waitForClose(client);
 
@@ -1238,7 +1472,7 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
 
   it("terminates a connection that stops answering pings within a few missed heartbeats", async () => {
     syncServer = await createSyncServer(pool, {
-      authenticate: async () => ({ userId: "user-1", sessionId: "session-1" }),
+      authenticate: async () => ({ tenantId: getTenantZeroId(), userId: "user-1", sessionId: "session-1" }),
       revalidateSession: async () => true,
       heartbeatIntervalMs: 20,
     });
@@ -1257,7 +1491,7 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
 
   it("rejects a frame over the 2MB inbound cap by closing the connection, rather than buffering it", async () => {
     syncServer = await createSyncServer(pool, {
-      authenticate: async () => ({ userId: "user-1", sessionId: "session-1" }),
+      authenticate: async () => ({ tenantId: getTenantZeroId(), userId: "user-1", sessionId: "session-1" }),
       revalidateSession: async () => true,
       heartbeatIntervalMs: 30_000,
     });
@@ -1291,7 +1525,7 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
       heartbeatIntervalMs: 30_000,
     });
     await bindHttpServer();
-    identityByToken.set("a", { userId: await createTestUser(), sessionId: "session-a" });
+    identityByToken.set("a", { tenantId: getTenantZeroId(), userId: await createTestUser(), sessionId: "session-a" });
     const client = await connect("a");
 
     const docIds: string[] = [];
@@ -1338,8 +1572,16 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
     });
     await bindHttpServer();
 
-    identityByToken.set("producer", { userId: await createTestUser(), sessionId: "session-producer" });
-    identityByToken.set("subscriber", { userId: await createTestUser(), sessionId: "session-subscriber" });
+    identityByToken.set("producer", {
+      tenantId: getTenantZeroId(),
+      userId: await createTestUser(),
+      sessionId: "session-producer",
+    });
+    identityByToken.set("subscriber", {
+      tenantId: getTenantZeroId(),
+      userId: await createTestUser(),
+      sessionId: "session-subscriber",
+    });
     const producerWs = await connect("producer");
     const subscriberWs = await connect("subscriber");
     const producer = new TestDocClient(producerWs, docId);

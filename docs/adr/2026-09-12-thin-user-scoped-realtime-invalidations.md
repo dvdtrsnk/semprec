@@ -1,9 +1,9 @@
 ---
-status: accepted
+status: superseded
 date: 2026-09-12
 area: [backend]
 supersedes: []
-superseded-by: null
+superseded-by: 2026-10-16-tenant-scoped-realtime-fan-out
 ---
 
 # Thin, user-scoped realtime invalidations

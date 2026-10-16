@@ -303,6 +303,9 @@ importers:
       '@semprec/data':
         specifier: workspace:*
         version: link:../data
+      '@semprec/shared':
+        specifier: workspace:*
+        version: link:../shared
       lib0:
         specifier: ^0.2.99
         version: 0.2.117

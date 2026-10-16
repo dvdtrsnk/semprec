@@ -3,12 +3,12 @@ import type { Duplex } from "node:stream";
 import type { Pool, PoolClient } from "pg";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { getNotificationById } from "@semprec/data";
+import { createLogger, runAsSystem, runInTenant } from "@semprec/shared";
 import {
   AGENT_STREAM_CHANNEL,
   REALTIME_CHANNEL,
-  parseAgentStreamMessage,
-  parseRealtimeMessage,
-  type RealtimeMessage,
+  parseAgentStreamEnvelope,
+  parseRealtimeEnvelope,
 } from "./pgNotifyPublisher.js";
 import { createAgentRunWatchRegistry } from "./agentRunWatch.js";
 import { createDocSyncRegistry } from "./docSync.js";
@@ -18,6 +18,7 @@ import { createInvalidationCoalescer } from "./invalidationCoalescer.js";
 
 /** The identity every `WS /api/sync` socket is associated with for its whole lifetime. */
 export interface SyncIdentity {
+  tenantId: string;
   userId: string;
   sessionId: string;
 }
@@ -45,6 +46,8 @@ export interface SyncServer {
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
   close(): Promise<void>;
 }
+
+const logger = createLogger("realtime");
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 
@@ -90,16 +93,18 @@ function rejectUpgrade(socket: Duplex): void {
  * `WS /api/sync` (issue #160/#161/#162): the one authenticated, multiplexed connection every
  * realtime stream rides — one socket per client, associated with a verified user/session identity
  * for its whole lifetime. Owns this process's single dedicated Postgres LISTEN connection on
- * `REALTIME_CHANNEL` and acts on five message kinds from it:
+ * `REALTIME_CHANNEL` and acts on five message kinds from it. Every payload is a
+ * `{ tenantId, message }` envelope built by Postgres; one that does not parse is dropped and logged,
+ * and a valid one is handled inside `runInTenant(envelope.tenantId)` and delivered only to sockets
+ * authenticated in that tenant.
  *
  * - `session_revoked` closes every socket authenticated as that exact session with 4401, leaving
  *   every other session's sockets untouched.
  * - `invalidation` (item- or schema-scoped) sends a thin `invalidate` frame only to the sockets of
- *   the user whose write caused it, when the underlying event identifies one — cross-user delivery
- *   is impossible for a REST-driven write. A system/background-triggered write (a rollup recompute,
- *   a mail-sync job, ...) carries no single acting user, so it falls back to every connected
- *   socket. Either way every client refetches the referenced row itself over REST and a client with
- *   nothing cached for it just ignores the frame.
+ *   the user whose write caused it, when the underlying event identifies one. A system/background
+ *   write carries no single acting user, so it reaches every socket of the envelope's tenant — and
+ *   never another tenant's. Every client refetches the referenced row itself over REST and a client
+ *   with nothing cached for it just ignores the frame.
  * - `notification_created` and `notification_read_state` fetch the referenced row(s)' current,
  *   complete state via `getNotificationById` and broadcast a `notification` frame only to sockets
  *   authenticated as that notification's own `userId` — the one place this server sends a full row
@@ -202,8 +207,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
       if (ws.readyState === ws.OPEN) ws.ping();
 
       // The fallback for a lost `session_revoked` NOTIFY (issue #160) rides this same tick.
-      options
-        .revalidateSession(identity.sessionId)
+      runAsSystem("realtime:revalidate", () => options.revalidateSession(identity.sessionId))
         .then((active) => {
           if (!active && ws.readyState === ws.OPEN) ws.close(SESSION_REVOKED_CLOSE_CODE, "session revoked");
         })
@@ -222,15 +226,17 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   }
 
   async function connectListenClient(): Promise<PoolClient> {
-    const client = await pool.connect();
-    try {
-      await client.query(`LISTEN ${REALTIME_CHANNEL}`);
-      await client.query(`LISTEN ${AGENT_STREAM_CHANNEL}`);
-    } catch (err) {
-      client.release(true);
-      throw err;
-    }
-    return client;
+    return runAsSystem("realtime:listen", async () => {
+      const client = await pool.connect();
+      try {
+        await client.query(`LISTEN ${REALTIME_CHANNEL}`);
+        await client.query(`LISTEN ${AGENT_STREAM_CHANNEL}`);
+      } catch (err) {
+        client.release(true);
+        throw err;
+      }
+      return client;
+    });
   }
 
   let listenClient: PoolClient = await connectListenClient();
@@ -238,16 +244,13 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   // race to clean up the same broken connection.
   let listenClientActive = true;
 
-  function broadcast(frame: OutboundFrame): void {
-    for (const client of wss.clients) {
-      if (client.readyState === client.OPEN) deliver(client, frame);
-    }
-  }
-
-  function sendToUser(userId: string, frame: OutboundFrame): void {
+  /** Sends to the open sockets of `tenantId`, narrowed to one user's sockets when `userId` is given. */
+  function sendToTenant(tenantId: string, frame: OutboundFrame, userId?: string): void {
     for (const client of wss.clients) {
       const identity = identityByClient.get(client);
-      if (identity?.userId === userId && client.readyState === client.OPEN) deliver(client, frame);
+      if (identity?.tenantId !== tenantId || client.readyState !== client.OPEN) continue;
+      if (userId !== undefined && identity.userId !== userId) continue;
+      deliver(client, frame);
     }
   }
 
@@ -264,7 +267,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
    * same "here is this notification's current state" frame (a read-state change just carries a
    * non-null `readAt` back).
    */
-  async function forwardNotification(userId: string, notificationId: string): Promise<void> {
+  async function forwardNotification(tenantId: string, userId: string, notificationId: string): Promise<void> {
     const notification = await getNotificationById(pool, notificationId);
     // Already deleted, or the fetch lost a race with a much later state — the next unread-fetch
     // (or active-view refetch) on reconnect still converges the client, so dropping this frame is
@@ -274,7 +277,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     // outright — a malformed or tampered payload with a mismatched userId/notificationId pair must
     // never cause cross-user delivery, the same invariant `invalidation`'s actingUserId upholds.
     if (notification.userId !== userId) return;
-    sendToUser(userId, { type: "notification", notification });
+    sendToTenant(tenantId, { type: "notification", notification }, userId);
   }
 
   const agentEventDeliveryTails = new Map<string, { promise: Promise<void> }>();
@@ -295,91 +298,111 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     agentEventDeliveryTails.set(runId, entry);
   }
 
+  function dropWithoutTenant(channel: string, rawPayload: string): void {
+    let type: unknown;
+    try {
+      const raw: unknown = JSON.parse(rawPayload);
+      if (typeof raw === "object" && raw !== null) {
+        const inner = (raw as { message?: unknown }).message ?? raw;
+        if (typeof inner === "object" && inner !== null) type = (inner as { type?: unknown }).type;
+      }
+    } catch {
+      // An unparsable payload has no readable type; it is still dropped and logged below.
+    }
+    logger.warn({ channel, type: typeof type === "string" ? type : undefined }, "realtime_message_without_tenant");
+  }
+
   const onNotification = (msg: { channel: string; payload?: string }) => {
     if (msg.payload === undefined) return;
 
-    if (msg.channel === AGENT_STREAM_CHANNEL) {
-      let rawParsed: unknown;
-      try {
-        rawParsed = JSON.parse(msg.payload);
-      } catch {
-        return;
-      }
-      const parsed = parseAgentStreamMessage(rawParsed);
-      if (parsed) agentRunWatch.forwardDelta(parsed);
-      return;
-    }
-
-    if (msg.channel !== REALTIME_CHANNEL) return;
+    if (msg.channel !== AGENT_STREAM_CHANNEL && msg.channel !== REALTIME_CHANNEL) return;
 
     let rawParsed: unknown;
     try {
       rawParsed = JSON.parse(msg.payload);
     } catch {
+      dropWithoutTenant(msg.channel, msg.payload);
       return;
     }
-    const parsed: RealtimeMessage | null = parseRealtimeMessage(rawParsed);
-    if (!parsed) return;
 
-    switch (parsed.type) {
-      case "session_revoked": {
-        const revokedSessionId = parsed.sessionId;
-        for (const client of wss.clients) {
-          const identity = identityByClient.get(client);
-          if (identity?.sessionId === revokedSessionId && client.readyState === client.OPEN) {
-            client.close(SESSION_REVOKED_CLOSE_CODE, "session revoked");
-          }
-        }
+    if (msg.channel === AGENT_STREAM_CHANNEL) {
+      const envelope = parseAgentStreamEnvelope(rawParsed);
+      if (!envelope) {
+        dropWithoutTenant(msg.channel, msg.payload);
         return;
       }
-      case "invalidation": {
-        const frame: OutboundFrame =
-          parsed.scope === "item"
-            ? {
-                type: "invalidate",
-                scope: "item",
-                databaseId: parsed.databaseId,
-                itemId: parsed.itemId,
-                op: parsed.op,
-                updatedAt: parsed.updatedAt,
-              }
-            : { type: "invalidate", scope: "schema", databaseId: parsed.databaseId };
-        // Scoped to the acting user's own sockets when the write that caused it identifies one
-        // (every REST-driven item/database/property/view write does) — cross-user delivery is
-        // impossible for those. A system/background-triggered write (rollup recompute, mail sync,
-        // ...) carries no acting user, so it falls back to every socket: there is no user to
-        // exclude, and that data is not scoped to one.
-        if (parsed.userId) sendToUser(parsed.userId, frame);
-        else broadcast(frame);
-        return;
-      }
-      case "notification_created": {
-        forwardNotification(parsed.userId, parsed.notificationId).catch((err: unknown) => {
-          console.error("Sync server failed to forward a created notification", err);
-        });
-        return;
-      }
-      case "notification_read_state": {
-        for (const notificationId of parsed.notificationIds) {
-          forwardNotification(parsed.userId, notificationId).catch((err: unknown) => {
-            console.error("Sync server failed to forward a notification read-state update", err);
-          });
-        }
-        return;
-      }
-      case "agent_run_event": {
-        enqueueAgentEvent(parsed.agentRunId, parsed.eventId);
-        return;
-      }
-      case "doc_update": {
-        docSync.fanOutDocUpdate(parsed.docId, parsed.updateId).catch((err: unknown) => {
-          console.error("Sync server failed to fan out a doc update", err);
-        });
-        return;
-      }
-      default:
-        return;
+      runInTenant(envelope.tenantId, () => agentRunWatch.forwardDelta(envelope.message));
+      return;
     }
+
+    const envelope = parseRealtimeEnvelope(rawParsed);
+    if (!envelope) {
+      dropWithoutTenant(msg.channel, msg.payload);
+      return;
+    }
+    const { tenantId, message: parsed } = envelope;
+
+    runInTenant(tenantId, () => {
+      switch (parsed.type) {
+        case "session_revoked": {
+          const revokedSessionId = parsed.sessionId;
+          for (const client of wss.clients) {
+            const identity = identityByClient.get(client);
+            if (
+              identity?.sessionId === revokedSessionId &&
+              identity.tenantId === tenantId &&
+              client.readyState === client.OPEN
+            ) {
+              client.close(SESSION_REVOKED_CLOSE_CODE, "session revoked");
+            }
+          }
+          return;
+        }
+        case "invalidation": {
+          const frame: OutboundFrame =
+            parsed.scope === "item"
+              ? {
+                  type: "invalidate",
+                  scope: "item",
+                  databaseId: parsed.databaseId,
+                  itemId: parsed.itemId,
+                  op: parsed.op,
+                  updatedAt: parsed.updatedAt,
+                }
+              : { type: "invalidate", scope: "schema", databaseId: parsed.databaseId };
+          // Narrowed to the acting user's sockets when the write identifies one; a write with no
+          // acting user reaches the tenant's sockets only, never another tenant's.
+          sendToTenant(tenantId, frame, parsed.userId);
+          return;
+        }
+        case "notification_created": {
+          forwardNotification(tenantId, parsed.userId, parsed.notificationId).catch((err: unknown) => {
+            console.error("Sync server failed to forward a created notification", err);
+          });
+          return;
+        }
+        case "notification_read_state": {
+          for (const notificationId of parsed.notificationIds) {
+            forwardNotification(tenantId, parsed.userId, notificationId).catch((err: unknown) => {
+              console.error("Sync server failed to forward a notification read-state update", err);
+            });
+          }
+          return;
+        }
+        case "agent_run_event": {
+          enqueueAgentEvent(parsed.agentRunId, parsed.eventId);
+          return;
+        }
+        case "doc_update": {
+          docSync.fanOutDocUpdate(parsed.docId, parsed.updateId).catch((err: unknown) => {
+            console.error("Sync server failed to fan out a doc update", err);
+          });
+          return;
+        }
+        default:
+          return;
+      }
+    });
   };
   function detachListenClient(): void {
     if (!listenClientActive) return;
@@ -440,8 +463,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
 
   return {
     handleUpgrade(req, socket, head) {
-      options
-        .authenticate(req)
+      runAsSystem("realtime:upgrade", () => options.authenticate(req))
         .then((identity) => {
           if (!identity) {
             rejectUpgrade(socket);

@@ -1,9 +1,9 @@
 import { createServer, type ClientRequest, type IncomingMessage, type Server } from "node:http";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { WebSocket } from "ws";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { createUser, hashPassword, type PasswordResetMailer, type UserRow } from "@semprec/data";
+import { createPool, createUser, hashPassword, type PasswordResetMailer, type UserRow } from "@semprec/data";
 import { wireRealtimeHooks, type SyncServer } from "@semprec/realtime";
 import { createAuthRequestListener, SESSION_COOKIE_NAME } from "../authHandler.js";
 import { createSyncUpgradeHandler } from "../syncHandler.js";
@@ -166,5 +166,66 @@ describe("WS /api/sync (issue #160)", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(survivingClient.readyState).toBe(survivingClient.OPEN);
     survivingClient.close();
+  });
+});
+
+describe("WS /api/sync under SEMPREC_TENANT_SCOPE=strict (issue #1025)", () => {
+  let scopedPool: Pool;
+  let server: Server;
+  let syncServer: SyncServer;
+  let baseUrl: string;
+  let wsBaseUrl: string;
+  let previousMode: string | undefined;
+
+  beforeEach(async () => {
+    // The earlier describe's afterAll ended the shared pool, so this block opens its own.
+    pool = getTestPool();
+    await resetDatabase(pool);
+    scopedPool = createPool(process.env.TEST_DATABASE_URL ?? "");
+    const authListener = createAuthRequestListener(scopedPool, {
+      passwordResetMailer: noopMailer,
+      appBaseUrl: "https://app.example.test",
+    });
+    server = createServer(authListener);
+    syncServer = await createSyncUpgradeHandler(scopedPool);
+    server.on("upgrade", (req, socket, head) => syncServer.handleUpgrade(req, socket, head));
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    baseUrl = `http://127.0.0.1:${address.port}`;
+    wsBaseUrl = `ws://127.0.0.1:${address.port}`;
+    previousMode = process.env.SEMPREC_TENANT_SCOPE;
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    if (previousMode === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
+    else process.env.SEMPREC_TENANT_SCOPE = previousMode;
+    await syncServer.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await scopedPool.end();
+    await pool.end();
+  });
+
+  it("opens a socket for a valid session and closes a revoked one on heartbeat revalidation", async () => {
+    // The listener's own LISTEN connection is already open; the session is created before strict mode.
+    const user = await makeUser();
+    const login = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "web" }),
+    });
+    const cookie = sessionCookieFrom(login);
+    process.env.SEMPREC_TENANT_SCOPE = "strict";
+    // Only the heartbeat interval is faked; the socket's own I/O keeps running on real timers.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const client = new WebSocket(`${wsBaseUrl}/api/sync`, { headers: { Cookie: `${SESSION_COOKIE_NAME}=${cookie}` } });
+    await waitForOpen(client);
+    expect(client.readyState).toBe(client.OPEN);
+
+    const closed = new Promise<number>((resolve) => client.once("close", (code: number) => resolve(code)));
+    await pool.query("UPDATE sessions SET revoked_at = now() WHERE revoked_at IS NULL");
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await closed).toBe(4401);
   });
 });

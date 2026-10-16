@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { buildBinaryFrame, decodeDocId, encodeDocId, parseBinaryFrame, parseInboundFrame } from "../protocolV1.js";
-import { parseAgentStreamMessage, parseRealtimeMessage } from "../pgNotifyPublisher.js";
+import {
+  parseAgentStreamEnvelope,
+  parseAgentStreamMessage,
+  parseRealtimeEnvelope,
+  parseRealtimeMessage,
+} from "../pgNotifyPublisher.js";
 
 const DOC_ID = "11111111-1111-1111-1111-111111111111";
 const RUN_ID = "22222222-2222-2222-2222-222222222222";
@@ -125,5 +130,45 @@ describe("parseAgentStreamMessage (issue #163)", () => {
 describe("parseRealtimeMessage (issue #163)", () => {
   it("rejects an agent-run reference with a malformed eventId", () => {
     expect(parseRealtimeMessage({ type: "agent_run_event", agentRunId: RUN_ID, eventId: "abc" })).toBeNull();
+  });
+});
+
+describe("parseRealtimeEnvelope / parseAgentStreamEnvelope (issue #1025)", () => {
+  const TENANT_ID = "33333333-3333-3333-3333-333333333333";
+  const realtimeMessage = { type: "session_revoked", sessionId: "s-1" };
+  const streamMessage = { type: "agent_run_delta", agentRunId: RUN_ID, delta: "x" };
+
+  it("accepts a valid envelope on both channels", () => {
+    expect(parseRealtimeEnvelope({ tenantId: TENANT_ID, message: realtimeMessage })).toEqual({
+      tenantId: TENANT_ID,
+      message: realtimeMessage,
+    });
+    expect(parseAgentStreamEnvelope({ tenantId: TENANT_ID, message: streamMessage })).toEqual({
+      tenantId: TENANT_ID,
+      message: streamMessage,
+    });
+  });
+
+  it.each([
+    ["a missing tenantId", { message: realtimeMessage }],
+    ["a null tenantId", { tenantId: null, message: realtimeMessage }],
+    ["a non-uuid tenantId", { tenantId: "tenant-1", message: realtimeMessage }],
+    ["an invalid inner message", { tenantId: TENANT_ID, message: { type: "nope" } }],
+    ["a missing inner message", { tenantId: TENANT_ID }],
+    ["the bare pre-envelope message", realtimeMessage],
+    ["null", null],
+    ["an array", []],
+  ])("rejects %s on the realtime channel", (_label, raw) => {
+    expect(parseRealtimeEnvelope(raw)).toBeNull();
+  });
+
+  it.each([
+    ["a missing tenantId", { message: streamMessage }],
+    ["a null tenantId", { tenantId: null, message: streamMessage }],
+    ["a non-uuid tenantId", { tenantId: "tenant-1", message: streamMessage }],
+    ["an invalid inner message", { tenantId: TENANT_ID, message: { type: "agent_run_delta" } }],
+    ["the bare pre-envelope message", streamMessage],
+  ])("rejects %s on the agent stream channel", (_label, raw) => {
+    expect(parseAgentStreamEnvelope(raw)).toBeNull();
   });
 });

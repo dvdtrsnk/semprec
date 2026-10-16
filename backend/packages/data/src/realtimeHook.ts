@@ -13,11 +13,11 @@ import type { CreatedBy } from "./types.js";
  * over REST — this event only says "something changed", never what changed to.
  *
  * `userId`, when present, is the user whose write caused this event — `@semprec/realtime`
- * fans it out only to that user's own connected sockets, the same as `NotificationCreatedEvent`
- * below, so cross-user delivery never happens for a REST-driven write. It is absent for a
- * system/background-triggered write (a rollup recompute, a mail-sync job, ...) that has no
- * single acting user to attribute; those fall back to every connected socket, since there is
- * no user to exclude and the underlying data is not scoped to one.
+ * narrows delivery to that user's own sockets inside the tenant, the same as
+ * `NotificationCreatedEvent` below. It is absent for a system/background-triggered write (a rollup
+ * recompute, a mail-sync job, ...) that has no single acting user to attribute; those reach every
+ * socket of the publisher's tenant and never another tenant's, because the NOTIFY envelope carries
+ * the tenant computed by Postgres from the publisher's scope.
  */
 export type InvalidationEvent =
   | {

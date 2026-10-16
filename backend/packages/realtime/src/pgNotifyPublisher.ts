@@ -44,7 +44,30 @@ export type RealtimeMessage =
  * content — see `RealtimeMessage`'s doc comment.
  */
 export async function publishRealtimeMessage(pool: Pool | PoolClient, message: RealtimeMessage): Promise<void> {
-  await pool.query(`SELECT pg_notify($1, $2)`, [REALTIME_CHANNEL, JSON.stringify(message)]);
+  if (message.type === "session_revoked") {
+    // Sessions are global identity rows revoked from scopes that are not the owner's tenant, so the
+    // tenant comes from the session's user (the same binding the socket gets), not the publisher's scope.
+    await pool.query(
+      `SELECT pg_notify($1, json_build_object(
+         'tenantId',
+         (SELECT COALESCE(u.tenant_id, app_sole_tenant()) FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = $3::uuid),
+         'message', $2::json)::text)`,
+      [REALTIME_CHANNEL, JSON.stringify(message), message.sessionId],
+    );
+    return;
+  }
+  await publishEnveloped(pool, REALTIME_CHANNEL, JSON.stringify(message));
+}
+
+/**
+ * Wraps `messageJson` in `{ tenantId, message }` inside Postgres, so the tenant is always computed
+ * from the publisher's own scope and can never be supplied by the message body.
+ */
+async function publishEnveloped(pool: Pool | PoolClient, channel: string, messageJson: string): Promise<void> {
+  await pool.query(
+    `SELECT pg_notify($1, json_build_object('tenantId', app_tenant_default(), 'message', $2::json)::text)`,
+    [channel, messageJson],
+  );
 }
 
 export type AgentStreamMessage =
@@ -66,7 +89,7 @@ export async function publishAgentRunDelta(pool: Pool | PoolClient, agentRunId: 
   // round-trips instead of being silently dropped on the fast (unchunked) path below.
   const single: AgentStreamMessage = { type: "agent_run_delta", agentRunId, delta: delta === undefined ? null : delta };
   if (serializedBytes(single) < MAX_AGENT_STREAM_NOTIFY_BYTES) {
-    await pool.query(`SELECT pg_notify($1, $2)`, [AGENT_STREAM_CHANNEL, JSON.stringify(single)]);
+    await publishEnveloped(pool, AGENT_STREAM_CHANNEL, JSON.stringify(single));
     return;
   }
 
@@ -86,7 +109,7 @@ export async function publishAgentRunDelta(pool: Pool | PoolClient, agentRunId: 
     if (serializedBytes(message) >= MAX_AGENT_STREAM_NOTIFY_BYTES) {
       throw new Error("Agent run delta chunk exceeds the NOTIFY payload limit");
     }
-    await pool.query(`SELECT pg_notify($1, $2)`, [AGENT_STREAM_CHANNEL, JSON.stringify(message)]);
+    await publishEnveloped(pool, AGENT_STREAM_CHANNEL, JSON.stringify(message));
   }
 }
 
@@ -210,4 +233,28 @@ export function parseAgentStreamMessage(raw: unknown): AgentStreamMessage | null
     delta: value.delta,
     chunk: { id: chunk.id, index: chunk.index, total: chunk.total, encoding: "base64json" },
   };
+}
+
+/** A NOTIFY payload after validation: the publisher's tenant and the message it published. */
+export interface RealtimeEnvelope<M> {
+  tenantId: string;
+  message: M;
+}
+
+function parseEnvelope<M>(raw: unknown, parseMessage: (inner: unknown) => M | null): RealtimeEnvelope<M> | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  if (!isUuid(value.tenantId)) return null;
+  const message = parseMessage(value.message);
+  return message ? { tenantId: value.tenantId, message } : null;
+}
+
+/** Validates a `semprec_events` payload: a uuid `tenantId` and a valid `RealtimeMessage`, else `null`. */
+export function parseRealtimeEnvelope(raw: unknown): RealtimeEnvelope<RealtimeMessage> | null {
+  return parseEnvelope(raw, parseRealtimeMessage);
+}
+
+/** Validates a `semprec_agent_stream` payload: a uuid `tenantId` and a valid `AgentStreamMessage`, else `null`. */
+export function parseAgentStreamEnvelope(raw: unknown): RealtimeEnvelope<AgentStreamMessage> | null {
+  return parseEnvelope(raw, parseAgentStreamMessage);
 }
