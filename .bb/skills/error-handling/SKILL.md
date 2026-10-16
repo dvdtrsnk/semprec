@@ -53,6 +53,9 @@ unguarded `finally` that throws replaces the primary error just like the
 An empty `catch`, a `.catch(() => {})`, or a `void somePromise()` deletes the
 evidence. If a failure genuinely does not matter, that is a claim worth writing
 down: log it at the right level and say in one line why it is safe to continue.
+Log the error's `name`, a known `code` and the ids, never the raw error object:
+its message and properties can carry user content into logs that are not
+tenant-scoped (the full rule is in `io-hardening`, inbound section).
 A discarded promise is worse than a swallowed error, because it also escapes
 the surrounding `try`. That includes `void` on an injected async function you
 assume never rejects. You do not control its implementation.

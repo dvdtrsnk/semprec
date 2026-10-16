@@ -223,7 +223,8 @@ can also pass test values through a scratch table or a `set_config` setting that
 the body reads. `JSON.stringify` and other general-purpose escapers are not SQL
 quoters. When interpolation is unavoidable and the value is provably closed (a
 literal union, a generated UUID), say so in a comment next to it, as
-`createRuntimeRolePool` in `testSupport/tenantFixtures.ts` does.
+`createRuntimeRolePool` in
+`backend/packages/data/src/testSupport/tenantFixtures.ts` does.
 
 Why: a test helper is copied into production code more often than it is
 re-reviewed, and the reviewer cannot tell a safe interpolation from an

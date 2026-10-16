@@ -100,7 +100,7 @@ commit and the test in the reply. Resolve only the threads you addressed. A
 rejection reply gives the concrete reason: the issue line, the schema constraint
 or the code path that shows the finding does not hold.
 
-## Before ending the round, check
+## Before committing, check
 
 - [ ] Every finding was checked against the repository and against the issue.
 - [ ] Every sibling of each fixed instance was fixed too.

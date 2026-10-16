@@ -49,7 +49,7 @@ Agents follow ADRs literally, so an inaccurate one is worse than none:
   the isolation level the transaction runs at, the row locks it takes, and the
   locks a DDL statement takes (including the locks a foreign key takes on the
   table it references). "Same transaction" is not "serialized" (see
-  `state-writes` §4).
+  `state-writes` §4, the bullet *Being inside the transaction is not enough*).
 - Every rule states why it exists, and every format states its exact encoding.
 - The title and the opening sentence are no looser than the policy in the body.
   Sections do not contradict each other.
