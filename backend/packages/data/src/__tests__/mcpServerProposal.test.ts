@@ -99,12 +99,10 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
     );
   }
 
-  it("accepts a proposal with a valid stdio connectionConfig and no credential", async () => {
-    const proposal = await createMcpProposal({
-      name: "Local tool",
-      connectionConfig: { transport: "stdio", command: "my-mcp-server" },
-    });
-    expect(proposal.properties.status).toBe("proposed");
+  it("rejects a proposal with a stdio connectionConfig before it becomes a card", async () => {
+    await expect(
+      createMcpProposal({ name: "Local tool", connectionConfig: { transport: "stdio", command: "my-mcp-server" } }),
+    ).rejects.toMatchObject({ details: { field: "connectionConfig" } });
   });
 
   it("rejects a proposal whose connectionConfig has an unknown transport", async () => {
@@ -114,9 +112,9 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
   });
 
   it("rejects a proposal whose connectionConfig is missing required stdio fields", async () => {
-    await expect(createMcpProposal({ name: "Bad", connectionConfig: { transport: "stdio" } })).rejects.toThrow(
-      /Invalid MCP server connectionConfig/,
-    );
+    await expect(createMcpProposal({ name: "Bad", connectionConfig: { transport: "stdio" } })).rejects.toMatchObject({
+      details: { field: "connectionConfig" },
+    });
   });
 
   it.each(MCP_CREDENTIAL_FIELD_NAMES)("rejects a proposal carrying a credential-shaped field '%s'", async (field) => {
@@ -125,28 +123,28 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
     );
   });
 
-  it("rejects a stdio connectionConfig whose env map smuggles a credential-shaped key", async () => {
+  it("rejects a remote connectionConfig whose env map smuggles a credential-shaped key", async () => {
     await expect(
       createMcpProposal({
         name: "Sneaky env",
-        connectionConfig: { transport: "stdio", command: "my-mcp-server", env: { apiKey: "sk-shh" } },
+        connectionConfig: { transport: "http", url: "https://mcp.example.com/mcp", env: { apiKey: "sk-shh" } },
       }),
     ).rejects.toThrow(/cannot carry credential field/);
   });
 
-  it("rejects a stdio connectionConfig env key that only matches the denylist once normalized (SCREAMING_SNAKE_CASE)", async () => {
+  it("rejects a remote connectionConfig env key that only matches the denylist once normalized (SCREAMING_SNAKE_CASE)", async () => {
     await expect(
       createMcpProposal({
         name: "Sneaky env",
-        connectionConfig: { transport: "stdio", command: "my-mcp-server", env: { API_KEY: "sk-shh" } },
+        connectionConfig: { transport: "http", url: "https://mcp.example.com/mcp", env: { API_KEY: "sk-shh" } },
       }),
     ).rejects.toThrow(/cannot carry credential field/);
   });
 
-  it("accepts a stdio connectionConfig whose env map carries only non-credential keys", async () => {
+  it("accepts a remote connectionConfig whose env map carries only non-credential keys", async () => {
     const proposal = await createMcpProposal({
       name: "Fine env",
-      connectionConfig: { transport: "stdio", command: "my-mcp-server", env: { LOG_LEVEL: "debug" } },
+      connectionConfig: { transport: "http", url: "https://mcp.example.com/mcp", env: { LOG_LEVEL: "debug" } },
     });
     expect(proposal.properties.status).toBe("proposed");
   });
@@ -226,7 +224,7 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
   it("confirm without a credential succeeds and stores no credential", async () => {
     const proposal = await createMcpProposal({
       name: "No-auth tool",
-      connectionConfig: { transport: "stdio", command: "my-mcp-server" },
+      connectionConfig: { transport: "http", url: "https://mcp.example.com/mcp" },
     });
 
     const confirmed = await withTransaction(pool, (client) =>

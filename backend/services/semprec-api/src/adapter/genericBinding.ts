@@ -68,5 +68,5 @@ export async function dispatchGenericOperation<K extends GenericOperationName>(
 
 /** A REST human actor derives from the authenticated session's user id alone — no `runId`/`agentProjectItemId` (those are agent-only, populated by #220's composition root). */
 export function restActor(userId: string): AuthenticatedActor {
-  return { userId };
+  return { userId, restSession: true };
 }

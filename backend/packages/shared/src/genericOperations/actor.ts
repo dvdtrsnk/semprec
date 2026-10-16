@@ -10,4 +10,9 @@ export interface AuthenticatedActor {
   userId: string;
   runId?: string;
   agentProjectItemId?: string;
+  /**
+   * Set only by the REST adapter's `restActor`: the actor is a human on an authenticated browser
+   * session. The MCP and AgentTool composition roots never set it, and no input schema accepts it.
+   */
+  restSession?: true;
 }

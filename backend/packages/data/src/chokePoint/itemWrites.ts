@@ -132,6 +132,8 @@ export interface CreateItemWithClientOptions extends AssertWritablePropertiesOpt
   queueAffinity?: ActionQueueAffinity;
   /** The user whose write this is, when there is one — see `InvalidationEvent`'s doc comment. Absent for a system/background caller. */
   actingUserId?: string;
+  /** Set only for a human REST writer (`restSession` actor); read by domain hooks that confine a write to humans. */
+  humanWriterUserId?: string;
 }
 
 export interface CreateItemInput {
@@ -188,7 +190,13 @@ export async function createItemWithClient(
 
   // Domain validation/side effects of a real insert run here, in the same transaction, so a
   // rejection rolls the row back — see docs/adr/2026-10-09-item-create-domain-hooks.md.
-  await runItemCreateHooks({ client, database, item, properties: itemProperties });
+  await runItemCreateHooks({
+    client,
+    database,
+    item,
+    properties: itemProperties,
+    humanWriterUserId: options.humanWriterUserId,
+  });
   await triggerOnItemEventHeartbeats(client, input.databaseId, "create", item.id, options.queueAffinity);
   runAfterCommit(client, () =>
     notifyInvalidation({
@@ -233,6 +241,8 @@ export interface UpdateItemWithClientOptions extends AssertWritablePropertiesOpt
   queueAffinity?: ActionQueueAffinity;
   /** The user whose write this is, when there is one — see `InvalidationEvent`'s doc comment. Absent for a system/background caller. */
   actingUserId?: string;
+  /** Set only for a human REST writer (`restSession` actor); read by domain hooks that confine a write to humans. */
+  humanWriterUserId?: string;
   /**
    * Set only by `convergeObservedEmailFlagsWithClient` below, mail sync's declared, narrow
    * ownership handoff for Emails' owner:'user' `read`/`flagged` properties — never by a
@@ -304,6 +314,7 @@ export async function updateItemWithClient(
     database,
     item,
     propertiesPatch,
+    humanWriterUserId: options.humanWriterUserId,
     skipMailDesiredStateRecording: options.skipMailDesiredStateRecording,
   });
   await triggerOnItemEventHeartbeats(client, input.databaseId, "update", item.id, options.queueAffinity);
@@ -393,12 +404,16 @@ export async function lockItemForObservedMailFlags(
 export function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAffinity">) {
   const { pool, queueAffinity } = deps;
   return {
-    async createItem(input: CreateItemInput, actingUserId?: string): Promise<ItemRow> {
-      return withTransaction(pool, (client) => createItemWithClient(client, input, { queueAffinity, actingUserId }));
+    async createItem(input: CreateItemInput, actingUserId?: string, humanWriterUserId?: string): Promise<ItemRow> {
+      return withTransaction(pool, (client) =>
+        createItemWithClient(client, input, { queueAffinity, actingUserId, humanWriterUserId }),
+      );
     },
 
-    async updateItem(input: UpdateItemInput, actingUserId?: string): Promise<ItemRow> {
-      return withTransaction(pool, (client) => updateItemWithClient(client, input, { queueAffinity, actingUserId }));
+    async updateItem(input: UpdateItemInput, actingUserId?: string, humanWriterUserId?: string): Promise<ItemRow> {
+      return withTransaction(pool, (client) =>
+        updateItemWithClient(client, input, { queueAffinity, actingUserId, humanWriterUserId }),
+      );
     },
   };
 }
