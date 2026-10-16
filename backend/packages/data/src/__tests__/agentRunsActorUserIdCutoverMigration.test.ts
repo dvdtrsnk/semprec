@@ -9,16 +9,20 @@ const TASK = "cutover test";
 
 let adminPool: Pool;
 
-/** Writes a root run raw: a NULL actor is the pre-cutover state the production store no longer produces. */
-async function insertRootRun(tenantId: string, actorUserId: string | null): Promise<string> {
+/** Writes a run raw: a NULL actor is the pre-cutover state the production store no longer produces. */
+async function insertRun(tenantId: string, actorUserId: string | null, parentRunId: string | null): Promise<string> {
   const { rows } = await adminPool.query<{ id: string }>(
-    `INSERT INTO agent_runs (tenant_id, triggered_by, task, actor_user_id)
-     VALUES ($1, 'user', $2, $3) RETURNING id`,
-    [tenantId, TASK, actorUserId],
+    `INSERT INTO agent_runs (tenant_id, triggered_by, task, actor_user_id, parent_run_id)
+     VALUES ($1, 'user', $2, $3, $4) RETURNING id`,
+    [tenantId, TASK, actorUserId, parentRunId],
   );
   const row = rows[0];
-  if (!row) throw new Error("insertRootRun: INSERT INTO agent_runs returned no row");
+  if (!row) throw new Error("insertRun: INSERT INTO agent_runs returned no row");
   return row.id;
+}
+
+async function insertRootRun(tenantId: string, actorUserId: string | null): Promise<string> {
+  return insertRun(tenantId, actorUserId, null);
 }
 
 async function readActor(runId: string): Promise<string | null> {
@@ -117,7 +121,42 @@ describe("agent_runs.actor_user_id cutover (per-tenant backfill)", () => {
     });
   });
 
-  it("returns without writing when actor_user_id is already NOT NULL", async () => {
+  it("propagates a root's actor down its delegated chain before the per-tenant fallback", async () => {
+    await withNullableActorColumn(async () => {
+      const tenantB = await createTestTenant(adminPool);
+      const bUser = await createUser(adminPool, {
+        email: "b@example.test",
+        passwordHash: await hashPassword("s3cret-password"),
+        tenantId: tenantB,
+      });
+      const tenantC = await createTestTenant(adminPool);
+      const cUser = await createUser(adminPool, {
+        email: "c@example.test",
+        passwordHash: await hashPassword("s3cret-password"),
+        tenantId: tenantC,
+      });
+
+      // The attributed root's actor is deliberately not tenant B's user, so a child that took the
+      // per-tenant fallback instead of the parent-chain pass would read bUser, not cUser.
+      const attributedRoot = await insertRun(tenantB, cUser.id, null);
+      const child = await insertRun(tenantB, null, attributedRoot);
+      const grandchild = await insertRun(tenantB, null, child);
+      // A delegated run under a root with no actor is left NULL by the parent-chain pass and takes
+      // its own tenant's user, as its root does.
+      const unattributedRoot = await insertRun(tenantB, null, null);
+      const orphanedChild = await insertRun(tenantB, null, unattributedRoot);
+
+      await runAgentRunsActorUserIdCutoverMigration(adminPool);
+
+      expect(await readActor(child)).toBe(cUser.id);
+      expect(await readActor(grandchild)).toBe(cUser.id);
+      expect(await readActor(unattributedRoot)).toBe(bUser.id);
+      expect(await readActor(orphanedChild)).toBe(bUser.id);
+      expect(await isNullable()).toBe(false);
+    });
+  });
+
+  it("returns before issuing any write when actor_user_id is already NOT NULL", async () => {
     const zeroUser = await createUser(adminPool, {
       email: "zero@example.test",
       passwordHash: await hashPassword("s3cret-password"),
@@ -126,7 +165,22 @@ describe("agent_runs.actor_user_id cutover (per-tenant backfill)", () => {
     const run = await insertRootRun(getTenantZeroId(), zeroUser.id);
     expect(await isNullable()).toBe(false);
 
-    await expect(runAgentRunsActorUserIdCutoverMigration(adminPool)).resolves.toBeUndefined();
+    // A statement-level trigger fires even for an UPDATE that matches no row, so the cutover fails
+    // here unless its idempotency check returns before the backfill statements.
+    await adminPool.query(`
+      CREATE OR REPLACE FUNCTION test_reject_agent_runs_update() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        RAISE EXCEPTION 'cutover issued an UPDATE on agent_runs';
+      END $$`);
+    await adminPool.query(
+      "CREATE TRIGGER test_reject_agent_runs_update BEFORE UPDATE ON agent_runs FOR EACH STATEMENT EXECUTE FUNCTION test_reject_agent_runs_update()",
+    );
+    try {
+      await expect(runAgentRunsActorUserIdCutoverMigration(adminPool)).resolves.toBeUndefined();
+    } finally {
+      await adminPool.query("DROP TRIGGER test_reject_agent_runs_update ON agent_runs");
+      await adminPool.query("DROP FUNCTION test_reject_agent_runs_update()");
+    }
 
     expect(await readActor(run)).toBe(zeroUser.id);
     expect(await isNullable()).toBe(false);
