@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createTenantZeroUser, getTenantZeroId, withTenantTransaction } from "../testSupport/tenantFixtures.js";
+import { createTenantZeroUser, createTestTenant, getTenantZeroId } from "../testSupport/tenantFixtures.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
-import { GuidanceReferenceNotFoundError } from "@semprec/shared";
-import { runAfterCommit, withTransaction } from "../db/pool.js";
+import { GuidanceReferenceNotFoundError, runInTenant } from "@semprec/shared";
+import { createPool, runAfterCommit, withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { insertItem } from "../chokePoint/itemsStore.js";
 import { createUser } from "../auth/usersStore.js";
@@ -18,6 +18,13 @@ import {
 } from "../projectAgentGuidanceStore.js";
 
 let pool: Pool;
+// A production `createPool` pool, so `runInTenant` reaches `app.tenant_id` the way it does at runtime.
+let scopedPool: Pool;
+
+/** Runs `fn` in a transaction on `scopedPool` inside `runInTenant(tenantId, …)`. */
+function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  return runInTenant(tenantId, () => withTransaction(scopedPool, fn));
+}
 
 async function createProjectItem(): Promise<string> {
   const item = await withTransaction(pool, async (client) => {
@@ -36,12 +43,14 @@ async function createTestUser(): Promise<string> {
 describe("projectAgentGuidanceStore (issue #214)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
+    scopedPool ??= createPool(process.env.TEST_DATABASE_URL ?? "");
     await resetDatabase(pool);
     await seedSystem(pool);
   });
 
   afterAll(async () => {
     await pool?.end();
+    await scopedPool?.end();
   });
 
   it("returns null for a project with no guidance yet", async () => {
@@ -160,39 +169,67 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
     it("requireUser and requireUserLocale resolve for the tenant's user", async () => {
       const tenantUser = await createTenantZeroUser(pool);
       await expect(
-        withTenantTransaction(pool, getTenantZeroId(), (client) =>
-          guidanceReferenceStore.requireUser(client, tenantUser.id),
-        ),
+        inTenant(getTenantZeroId(), (client) => guidanceReferenceStore.requireUser(client, tenantUser.id)),
       ).resolves.toBeUndefined();
-      const locale = await withTenantTransaction(pool, getTenantZeroId(), (client) =>
+      const locale = await inTenant(getTenantZeroId(), (client) =>
         guidanceReferenceStore.requireUserLocale(client, tenantUser.id),
       );
       expect(locale).toBe("cs");
     });
 
-    it("requireUser rejects a user id that doesn't exist", async () => {
+    it("requireUser and requireUserLocale reject a user id that doesn't exist", async () => {
       await createTenantZeroUser(pool);
+      const unknownUserId = randomUUID();
       await expect(
-        withTenantTransaction(pool, getTenantZeroId(), (client) =>
-          guidanceReferenceStore.requireUser(client, randomUUID()),
-        ),
-      ).rejects.toThrow(GuidanceReferenceNotFoundError);
+        inTenant(getTenantZeroId(), (client) => guidanceReferenceStore.requireUser(client, unknownUserId)),
+      ).rejects.toThrow(new GuidanceReferenceNotFoundError(`User ${unknownUserId} not found`));
+      await expect(
+        inTenant(getTenantZeroId(), (client) => guidanceReferenceStore.requireUserLocale(client, unknownUserId)),
+      ).rejects.toThrow(new GuidanceReferenceNotFoundError(`User ${unknownUserId} not found`));
     });
 
-    it("requireUser and requireUserLocale reject an existing user who is not the tenant's user", async () => {
+    it("requireUser and requireUserLocale reject an existing user bound to no tenant", async () => {
       await createTenantZeroUser(pool);
-      const foreignUserId = await createTestUser();
+      const unboundUserId = await createTestUser();
 
       await expect(
-        withTenantTransaction(pool, getTenantZeroId(), (client) =>
-          guidanceReferenceStore.requireUser(client, foreignUserId),
-        ),
-      ).rejects.toThrow(GuidanceReferenceNotFoundError);
+        inTenant(getTenantZeroId(), (client) => guidanceReferenceStore.requireUser(client, unboundUserId)),
+      ).rejects.toThrow(new GuidanceReferenceNotFoundError(`User ${unboundUserId} not found`));
       await expect(
-        withTenantTransaction(pool, getTenantZeroId(), (client) =>
-          guidanceReferenceStore.requireUserLocale(client, foreignUserId),
-        ),
-      ).rejects.toThrow(GuidanceReferenceNotFoundError);
+        inTenant(getTenantZeroId(), (client) => guidanceReferenceStore.requireUserLocale(client, unboundUserId)),
+      ).rejects.toThrow(new GuidanceReferenceNotFoundError(`User ${unboundUserId} not found`));
+    });
+
+    it("requireUser and requireUserLocale reject another tenant's user, which its own tenant still resolves", async () => {
+      await createTenantZeroUser(pool);
+      const otherTenantId = await createTestTenant(pool);
+      const otherTenantUser = await createUser(pool, {
+        email: `${randomUUID()}@example.com`,
+        passwordHash: "hash",
+        tenantId: otherTenantId,
+      });
+
+      await expect(
+        inTenant(getTenantZeroId(), (client) => guidanceReferenceStore.requireUser(client, otherTenantUser.id)),
+      ).rejects.toThrow(new GuidanceReferenceNotFoundError(`User ${otherTenantUser.id} not found`));
+      await expect(
+        inTenant(getTenantZeroId(), (client) => guidanceReferenceStore.requireUserLocale(client, otherTenantUser.id)),
+      ).rejects.toThrow(new GuidanceReferenceNotFoundError(`User ${otherTenantUser.id} not found`));
+      await expect(
+        inTenant(otherTenantId, (client) => guidanceReferenceStore.requireUser(client, otherTenantUser.id)),
+      ).resolves.toBeUndefined();
+    });
+
+    it("requireUser and requireUserLocale reject every user in a tenant that has no bound user", async () => {
+      const tenantZeroUser = await createTenantZeroUser(pool);
+      const emptyTenantId = await createTestTenant(pool);
+
+      await expect(
+        inTenant(emptyTenantId, (client) => guidanceReferenceStore.requireUser(client, tenantZeroUser.id)),
+      ).rejects.toThrow(new GuidanceReferenceNotFoundError(`User ${tenantZeroUser.id} not found`));
+      await expect(
+        inTenant(emptyTenantId, (client) => guidanceReferenceStore.requireUserLocale(client, tenantZeroUser.id)),
+      ).rejects.toThrow(new GuidanceReferenceNotFoundError(`User ${tenantZeroUser.id} not found`));
     });
 
     it("requireUser surfaces a dropped connection as itself, not as not-found", async () => {
