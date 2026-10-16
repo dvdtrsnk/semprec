@@ -114,7 +114,8 @@ each round of fixes. Uncommitted work does not survive a run that ends early.
 
 ## 4. Self-review, then verify
 
-In this order, because each step is cheaper than the one after it:
+Steps 1–4 in this order, because each is cheaper than the one after it; step 5
+comes last because anything committed after it can make it stale again:
 
 1. **Read your own diff** (`git diff origin/develop`) in the role of a strict
    reviewer applying `review-rules/rules.md` and `review-rules/tasks/*.md` of
@@ -138,15 +139,17 @@ In this order, because each step is cheaper than the one after it:
    literally, so a false sentence is executed.
 3. **Sweep for leftovers** — debug prints, commented-out code, files unrelated
    to this issue.
-4. **Take the migration ordinal last.** If the diff adds a migration, run
-   `git fetch origin` and compare your number against
-   `backend/packages/data/src/db/migrations/` on `origin/develop` right before
-   your final commit. Renumber only your own file if it collides. Why: parallel
-   issues pick the same next number, and the collision surfaces only after the
-   other pull request merges (see `db-migrations`).
-5. **Run the pipeline**: `pnpm run verify` in `backend/`, then in `web/`. This
+4. **Run the pipeline**: `pnpm run verify` in `backend/`, then in `web/`. This
    is the same sequence CI runs, in the same order. The host is shared — read
    `.bb/AGENTS.md` before you wait on, kill or log a process.
+5. **Take the migration ordinal last.** If the diff adds a migration, run
+   `git fetch origin` and compare your number against
+   `backend/packages/data/src/db/migrations/` on `origin/develop` after the
+   pipeline and any fixes it led to, right before your final commit. Renumber
+   only your own file if it collides, then re-run
+   `pnpm --filter @semprec/data run check-migration-numbering` in `backend/`. Why: parallel
+   issues pick the same next number, and the collision surfaces only after the
+   other pull request merges (see `db-migrations`).
 
 Fix what each step finds and commit it before moving on.
 

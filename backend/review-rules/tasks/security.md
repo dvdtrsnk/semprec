@@ -2,7 +2,10 @@ Check for security vulnerabilities:
 
 1. Hardcoded credentials, API keys, or tokens anywhere in the diff — critical.
 2. SQL injection risk: string interpolation building a query instead of a
-   parameterized query/query builder — critical.
+   parameterized query/query builder — critical. This covers test code, DDL and trigger or
+   function bodies too. A provably closed value (a literal union, a generated
+   UUID) whose invariant is stated in a comment beside the interpolation cannot
+   inject and is not this finding (see `rules.md`).
 3. Missing input validation at an API boundary (a route handler, a choke-point
    endpoint, a webhook receiver) that trusts external input without parsing/validating
    it first — high.
