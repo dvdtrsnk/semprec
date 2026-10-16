@@ -229,16 +229,26 @@ interface AgentFireRun {
   tenantId: string;
   start: number;
   end: number;
-  /** For tenant B's run: whether one of tenant A's runs was executing when it started. */
+  /** For tenant B's run: whether one of tenant A's runs was executing once B had waited for A to start. */
   overlappedOtherTenant: boolean;
 }
 
 /**
- * How long a tenant A probe waits for tenant B's probe to start before it finishes alone. It only
- * bounds the failure case (the lanes never overlap), so it sits well above graphile-worker's 2s
- * `pollInterval`.
+ * How long one tenant's probe waits for the other tenant's probe to start before it carries on alone.
+ * It only bounds the failure case (the lanes never overlap), so it sits well above graphile-worker's
+ * 2s `pollInterval`.
  */
 const OTHER_TENANT_WAIT_MS = 5_000;
+
+/** Waits for `signal`, giving up after {@link OTHER_TENANT_WAIT_MS}. */
+async function waitForOtherTenant(signal: Promise<void>): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const gaveUp = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, OTHER_TENANT_WAIT_MS);
+  });
+  await Promise.race([signal, gaveUp]);
+  clearTimeout(timer);
+}
 
 describe("the agent-run lane serializes one tenant's agent fires but not another tenant's (issue #1047)", () => {
   let runner: Runner | undefined;
@@ -263,18 +273,16 @@ describe("the agent-run lane serializes one tenant's agent fires but not another
     const tenantBStarted = new Promise<void>((resolve) => {
       releaseA = resolve;
     });
-    async function waitForTenantB(): Promise<void> {
-      let timer: NodeJS.Timeout | undefined;
-      const gaveUp = new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, OTHER_TENANT_WAIT_MS);
-      });
-      await Promise.race([tenantBStarted, gaveUp]);
-      clearTimeout(timer);
-    }
+    let markAStarted!: () => void;
+    const tenantAStarted = new Promise<void>((resolve) => {
+      markAStarted = resolve;
+    });
 
     // A blocking stand-in for the real handler: tenant A's runs stay in flight until tenant B's run
     // has started, so a lane that failed to serialize would show two A runs overlapping, and lanes
-    // that failed to run in parallel would show B starting only after A finished.
+    // that failed to run in parallel would show B starting only after A finished. The rendezvous is
+    // symmetric — B also waits for an A run to start before it looks — so the outcome does not depend
+    // on which handler the worker happens to start first.
     const taskList: TaskList = {
       heartbeatFireAgent: registerTask("heartbeatFireAgent", async () => {
         const scope = currentTenantScope();
@@ -282,10 +290,12 @@ describe("the agent-run lane serializes one tenant's agent fires but not another
         const start = Date.now();
         if (scope.tenantId === tenantA) {
           runningA += 1;
-          await waitForTenantB();
+          markAStarted();
+          await waitForOtherTenant(tenantBStarted);
           runningA -= 1;
           runs.push({ tenantId: tenantA, start, end: Date.now(), overlappedOtherTenant: false });
         } else {
+          await waitForOtherTenant(tenantAStarted);
           const overlappedOtherTenant = runningA > 0;
           releaseA();
           runs.push({ tenantId: scope.tenantId, start, end: Date.now(), overlappedOtherTenant });
