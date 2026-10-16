@@ -23,7 +23,6 @@ const MIGRATION_SQL = await readFile(
 
 let pool: Pool;
 let sidePool: Pool;
-let dataPool: Pool;
 
 /** Raw SQL: a row's `at` must be controlled to sit on either side of a window boundary. */
 async function insertCall(tenantId: string, costUsd: number, at: string = "now()"): Promise<void> {
