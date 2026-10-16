@@ -32,8 +32,9 @@ export interface DecideApprovalRequestInput {
  *
  * Decide and re-read run in the same transaction, so the outcome cannot race another decision:
  * - `decided`: this call made the transition (and enqueued, on approval);
- * - `unchanged`: the request is already decided by its owner, so the update matched nothing and
- *   the current state is returned;
+ * - `unchanged`: the caller owns the request's run but it is no longer pending — whoever recorded
+ *   that decision (the owner, or a system path such as a migration that left `decided_by` NULL) —
+ *   so the update matched nothing and the current state is returned;
  * - `null`: the id is unknown, not owned by `decidedByUserId` (issue #1028), or in another tenant.
  *   The caller answers all three identically.
  */

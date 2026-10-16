@@ -144,8 +144,7 @@ describe("approvalRequestsStore (issue #130)", () => {
       const userId = ownerId;
       await decideApprovalRequest(pool, id, "approved", userId);
 
-      const otherUser = await createUser();
-      const second = await decideApprovalRequest(pool, id, "rejected", otherUser);
+      const second = await decideApprovalRequest(pool, id, "rejected", ownerId);
 
       expect(second).toBeNull();
       const stored = await getApprovalRequest(pool, id);
@@ -158,13 +157,12 @@ describe("approvalRequestsStore (issue #130)", () => {
       expect(await decideApprovalRequest(pool, randomUUID(), "approved", userId)).toBeNull();
     });
 
-    it("only one of two concurrent decisions wins", async () => {
+    it("only one of two concurrent decisions by the owner wins", async () => {
       const id = await createPendingRequest();
-      const userB = await createUser();
 
       const [a, b] = await Promise.all([
         decideApprovalRequest(pool, id, "approved", ownerId),
-        decideApprovalRequest(pool, id, "rejected", userB),
+        decideApprovalRequest(pool, id, "rejected", ownerId),
       ]);
 
       const winners = [a, b].filter((r) => r !== null);

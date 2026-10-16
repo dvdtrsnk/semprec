@@ -169,21 +169,41 @@ describe("approval request decide+execute (issue #131)", () => {
     const userId = run.actorUserId;
     const otherUser = await createUser();
 
-    await withTransaction(pool, (client) =>
+    const first = await withTransaction(pool, (client) =>
       decideAndEnqueueApprovalRequest(client, {
         approvalRequestId: request.id,
         decision: "approved",
         decidedByUserId: userId,
       }),
     );
+    expect(first!.outcome).toBe("decided");
     const retry = await withTransaction(pool, (client) =>
+      decideAndEnqueueApprovalRequest(client, {
+        approvalRequestId: request.id,
+        decision: "rejected",
+        decidedByUserId: userId,
+      }),
+    );
+    expect(retry!.outcome).toBe("unchanged");
+    expect(retry!.request.status).toBe("approved");
+    expect(retry!.request.decidedBy).toBe(userId);
+    const { rows: jobs } = await pool.query<{ count: number }>(
+      `SELECT count(*)::int AS count
+        FROM graphile_worker._private_jobs j
+        JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+        WHERE t.identifier = 'approvalExecute' AND j.payload->'payload'->>'approvalRequestId' = $1`,
+      [request.id],
+    );
+    expect(jobs[0]!.count).toBe(1);
+
+    const foreignRetry = await withTransaction(pool, (client) =>
       decideAndEnqueueApprovalRequest(client, {
         approvalRequestId: request.id,
         decision: "rejected",
         decidedByUserId: otherUser,
       }),
     );
-    expect(retry).toBeNull();
+    expect(foreignRetry).toBeNull();
 
     await drainQueue();
 
