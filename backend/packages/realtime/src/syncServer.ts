@@ -173,7 +173,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
         if (!frame) return;
         const docId = decodeDocId(frame.docId);
         if (!docId) return;
-        docSync.handleBinaryFrame(ws, docId, frame.payload).catch((err: unknown) => {
+        docSync.handleBinaryFrame(ws, identity.tenantId, docId, frame.payload).catch((err: unknown) => {
           console.error("Sync server failed to handle a doc binary frame", err);
         });
         return;
@@ -182,7 +182,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
       if (!frame) return;
       switch (frame.type) {
         case "doc:open":
-          docSync.handleOpen(ws, frame.docId).catch((err: unknown) => {
+          docSync.handleOpen(ws, identity.tenantId, frame.docId).catch((err: unknown) => {
             console.error("Sync server failed to handle doc:open", err);
           });
           return;
@@ -414,7 +414,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
           return;
         }
         case "doc_update": {
-          docSync.fanOutDocUpdate(parsed.docId, parsed.updateId).catch((err: unknown) => {
+          docSync.fanOutDocUpdate(tenantId, parsed.docId, parsed.updateId).catch((err: unknown) => {
             console.error("Sync server failed to fan out a doc update", err);
           });
           return;

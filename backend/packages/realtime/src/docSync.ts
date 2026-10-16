@@ -4,6 +4,7 @@ import * as encoding from "lib0/encoding";
 import * as decoding from "lib0/decoding";
 import * as Y from "yjs";
 import * as syncProtocol from "y-protocols/sync.js";
+import { runInTenant } from "@semprec/shared";
 import { getDocById, getDocUpdateById, loadYDoc, mutateYDoc, type CreatedBy } from "@semprec/data";
 import { buildBinaryFrame } from "./protocolV1.js";
 import { sendWithBackpressure } from "./backpressure.js";
@@ -48,16 +49,21 @@ const MAX_OPEN_DOCS_PER_CONNECTION = 32;
  * also means correctness never depends on which of several API processes a socket landed on.
  */
 export interface DocSyncRegistry {
-  /** A client opened `docId`: subscribes the socket and sends it the server's SyncStep1. */
-  handleOpen(ws: WebSocket, docId: string): Promise<void>;
+  /** A client of `tenantId` opened `docId`: subscribes the socket and sends it the server's SyncStep1. */
+  handleOpen(ws: WebSocket, tenantId: string, docId: string): Promise<void>;
   /** A client closed `docId`: unsubscribes the socket from just that document. */
   handleClose(ws: WebSocket, docId: string): void;
   /** The socket itself closed: unsubscribes it from every document it had open. */
   handleSocketClosed(ws: WebSocket): void;
   /** A binary frame for `docId` arrived from `ws`: parses and acts on its y-protocols/sync message. */
-  handleBinaryFrame(ws: WebSocket, docId: string, payload: Buffer): Promise<void>;
+  handleBinaryFrame(ws: WebSocket, tenantId: string, docId: string, payload: Buffer): Promise<void>;
   /** A `doc_update` NOTIFY was received for `docId`/`updateId`: fans it out to every open subscriber. */
-  fanOutDocUpdate(docId: string, updateId: string): Promise<void>;
+  fanOutDocUpdate(tenantId: string, docId: string, updateId: string): Promise<void>;
+}
+
+/** Subscriptions are keyed by tenant as well as document, so one tenant's reference never reaches another's sockets. */
+function subscriptionKey(tenantId: string, docId: string): string {
+  return `${tenantId}:${docId}`;
 }
 
 function sendFrame(ws: WebSocket, docId: string, payload: Uint8Array): void {
@@ -67,6 +73,9 @@ function sendFrame(ws: WebSocket, docId: string, payload: Uint8Array): void {
 export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
   const subscribersByDoc = new Map<string, Set<WebSocket>>();
   const openDocsByClient = new WeakMap<WebSocket, Set<string>>();
+  // A socket is authenticated in exactly one tenant for its whole life; recorded on first open so
+  // `handleClose`/`handleSocketClosed` (which take no tenant) find the subscription key.
+  const tenantByClient = new WeakMap<WebSocket, string>();
   const updateRateByClient = new WeakMap<WebSocket, { count: number; windowStart: number }>();
 
   function isRateLimited(ws: WebSocket): boolean {
@@ -83,11 +92,12 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
     return state.count > MAX_UPDATES_PER_WINDOW;
   }
 
-  function subscribe(ws: WebSocket, docId: string): void {
-    let subscribers = subscribersByDoc.get(docId);
+  function subscribe(ws: WebSocket, tenantId: string, docId: string): void {
+    const key = subscriptionKey(tenantId, docId);
+    let subscribers = subscribersByDoc.get(key);
     if (!subscribers) {
       subscribers = new Set();
-      subscribersByDoc.set(docId, subscribers);
+      subscribersByDoc.set(key, subscribers);
     }
     subscribers.add(ws);
 
@@ -100,10 +110,12 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
   }
 
   function unsubscribe(ws: WebSocket, docId: string): void {
-    const subscribers = subscribersByDoc.get(docId);
-    if (subscribers) {
+    const tenantId = tenantByClient.get(ws);
+    const key = tenantId === undefined ? undefined : subscriptionKey(tenantId, docId);
+    const subscribers = key === undefined ? undefined : subscribersByDoc.get(key);
+    if (key !== undefined && subscribers) {
       subscribers.delete(ws);
-      if (subscribers.size === 0) subscribersByDoc.delete(docId);
+      if (subscribers.size === 0) subscribersByDoc.delete(key);
     }
     openDocsByClient.get(ws)?.delete(docId);
   }
@@ -129,7 +141,7 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
   }
 
   return {
-    async handleOpen(ws, docId) {
+    async handleOpen(ws, tenantId, docId) {
       // The per-connection subscription cap (issue #242's Task) is enforced synchronously,
       // before any `await` below, precisely so a burst of concurrent `doc:open` frames for
       // distinct docs can't all read the same stale count and land at 33 (see
@@ -142,7 +154,9 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
       // A docId naming no real `docs` row (deleted, never existed, malformed-but-UUID-shaped)
       // is dropped rather than opened — there is nothing to sync and no snapshot to read. The
       // reservation above is released so a bad docId never permanently occupies a cap slot.
-      const doc = await getDocById(pool, docId);
+      // Resolved inside the socket's tenant: another tenant's doc is invisible under RLS, so it
+      // takes this same path as a nonexistent id.
+      const doc = await runInTenant(tenantId, () => getDocById(pool, docId));
       if (!doc) {
         openDocsByClient.get(ws)?.delete(docId);
         return;
@@ -158,7 +172,8 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
         return;
       }
 
-      subscribe(ws, docId);
+      tenantByClient.set(ws, tenantId);
+      subscribe(ws, tenantId, docId);
 
       // Same handshake `y-websocket`'s reference server implementation uses: send this
       // process's own SyncStep1 (its current state vector, reconstructed from
@@ -167,7 +182,7 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
       // while offline replies with SyncStep2 carrying only what this server is missing —
       // the "reconnect after offline edits exchanges only the necessary Yjs diff" acceptance
       // criterion — and a client with nothing new simply has nothing to reply with.
-      const ydoc = await loadYDoc(pool, docId);
+      const ydoc = await runInTenant(tenantId, () => loadYDoc(pool, docId));
       const encoder = encoding.createEncoder();
       syncProtocol.writeSyncStep1(encoder, ydoc);
       sendFrame(ws, docId, encoding.toUint8Array(encoder));
@@ -190,7 +205,7 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
       openDocsByClient.delete(ws);
     },
 
-    async handleBinaryFrame(ws, docId, payload) {
+    async handleBinaryFrame(ws, tenantId, docId, payload) {
       // A socket must have opened this document before this server accepts binary frames for
       // it — mirrors the closed-catalog validation the rest of protocol-v1 already applies,
       // and is what makes "an unsubscribed client receives none" also true for what this
@@ -218,7 +233,7 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
           // `doc_updates`) — a client's state vector always yields a correct SyncStep2 diff
           // against this, regardless of how stale it is or how many compactions have run since,
           // because compaction only ever merges retained content forward, never discards it.
-          const ydoc = await loadYDoc(pool, docId);
+          const ydoc = await runInTenant(tenantId, () => loadYDoc(pool, docId));
           const encoder = encoding.createEncoder();
           syncProtocol.writeSyncStep2(encoder, ydoc, clientStateVector);
           sendFrame(ws, docId, encoding.toUint8Array(encoder));
@@ -240,9 +255,11 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
           // issue's Task asks for is inherited from that existing write path rather than
           // reimplemented here. An already-known or no-op update produces no new row and no
           // NOTIFY, preserving idempotence for a duplicate or replayed frame.
-          await mutateYDoc(pool, docId, DOC_SYNC_CREATED_BY, (ydoc) => {
-            Y.applyUpdate(ydoc, update, DOC_SYNC_CREATED_BY);
-          });
+          await runInTenant(tenantId, () =>
+            mutateYDoc(pool, docId, DOC_SYNC_CREATED_BY, (ydoc) => {
+              Y.applyUpdate(ydoc, update, DOC_SYNC_CREATED_BY);
+            }),
+          );
           return;
         }
         default:
@@ -252,11 +269,11 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
       }
     },
 
-    async fanOutDocUpdate(docId, updateId) {
-      const subscribers = subscribersByDoc.get(docId);
+    async fanOutDocUpdate(tenantId, docId, updateId) {
+      const subscribers = subscribersByDoc.get(subscriptionKey(tenantId, docId));
       if (!subscribers || subscribers.size === 0) return;
 
-      const updateBytes = await getDocUpdateById(pool, updateId);
+      const updateBytes = await runInTenant(tenantId, () => getDocUpdateById(pool, docId, updateId));
       const encoder = encoding.createEncoder();
       if (updateBytes) {
         syncProtocol.writeUpdate(encoder, updateBytes);
@@ -269,7 +286,7 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
         // subscriber silently misses the change — it just receives it folded into a full resync
         // instead of as one incremental update. Yjs's update application is idempotent, so a
         // subscriber that already had this content applies a no-op.
-        const ydoc = await loadYDoc(pool, docId);
+        const ydoc = await runInTenant(tenantId, () => loadYDoc(pool, docId));
         syncProtocol.writeSyncStep2(encoder, ydoc);
       }
       const frame = buildBinaryFrame(docId, encoding.toUint8Array(encoder));
