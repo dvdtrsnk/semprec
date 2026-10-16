@@ -1,11 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { enqueueJob } from "@semprec/queue";
 import "../domainWriteHooks.js";
 import { runAsSystem, runInTenant } from "@semprec/shared";
-import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createUser } from "../auth/usersStore.js";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
+import { createUser, listAdminRecipients } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -18,9 +24,16 @@ import { handleObservabilityCheckSystemTask } from "../observability/observabili
 
 let pool: Pool;
 
-async function createTestUser(): Promise<string> {
+/** Tenant zero's admin by default; a further tenant's user when `tenantId` is given. */
+async function createTestUser(tenantId = getTenantZeroId(), role: "admin" | "member" = "admin"): Promise<string> {
   const passwordHash = await hashPassword("s3cret-password");
-  const user = await createUser(pool, { email: `${randomUUID()}@example.test`, passwordHash, locale: "en" });
+  const user = await createUser(pool, {
+    email: `${randomUUID()}@example.test`,
+    passwordHash,
+    locale: "en",
+    tenantId,
+    role,
+  });
   return user.id;
 }
 
@@ -85,8 +98,8 @@ async function beatMailbox(mailboxId: string, ageMs: number): Promise<void> {
   );
 }
 
-async function runCheck(jobId = randomUUID()): Promise<void> {
-  await runAsSystem("test", () => handleObservabilityCheckSystemTask(pool, { job: { id: jobId } }));
+async function runCheck(jobId = randomUUID(), taskPool: Pool = pool): Promise<void> {
+  await runAsSystem("test", () => handleObservabilityCheckSystemTask(taskPool, { job: { id: jobId } }));
 }
 
 describe("observability.checkSystem (issue #169)", () => {
@@ -131,7 +144,7 @@ describe("observability.checkSystem (issue #169)", () => {
     expect(await notificationsFor(afterSecondFault!.id)).toHaveLength(2);
   });
 
-  it("skips notifying before any user account exists, but still records the transition", async () => {
+  it("skips notifying before any admin exists, but still records the transition", async () => {
     await markAllProcessesFresh();
     await pool.query(
       `UPDATE process_heartbeats SET beat_at = now() - interval '5 minutes' WHERE process = 'transcribe'`,
@@ -423,6 +436,172 @@ describe("observability.checkSystem (issue #169)", () => {
 
       expect(await getTenantCheck(`process:mailsync:${mailboxId}`)).toBeUndefined();
       expect(await getCheck(legacyKey)).toBeUndefined();
+    });
+  });
+
+  describe("operator alerts reach every admin (issue #1019)", () => {
+    let runtimePool: Pool;
+    let adminZero: string;
+    let tenantB: string;
+    let adminB: string;
+
+    beforeEach(async () => {
+      await seedSystem(pool);
+      await markAllProcessesFresh();
+      adminZero = await createTestUser();
+      tenantB = await createTestTenant(pool);
+      adminB = await createTestUser(tenantB);
+      const tenantC = await createTestTenant(pool);
+      await createTestUser(tenantC, "member");
+      runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    });
+
+    afterEach(async () => {
+      await runtimePool.end();
+    });
+
+    interface AlertRow {
+      user_id: string;
+      tenant_id: string;
+      payload: Record<string, unknown>;
+    }
+
+    async function alertRows(kind: string): Promise<AlertRow[]> {
+      const { rows } = await pool.query<AlertRow>(
+        `SELECT user_id, tenant_id, payload FROM notifications WHERE kind = $1 ORDER BY user_id`,
+        [kind],
+      );
+      return rows;
+    }
+
+    function sortedBy(rows: AlertRow[]): AlertRow[] {
+      return [...rows].sort((a, b) => a.user_id.localeCompare(b.user_id));
+    }
+
+    async function makeAgentsStale(): Promise<void> {
+      await pool.query(`UPDATE process_heartbeats SET beat_at = now() - interval '5 minutes' WHERE process = 'agents'`);
+    }
+
+    it("writes one content-free row per admin, none for a tenant with only a member, and deduplicates a retry", async () => {
+      await makeAgentsStale();
+      const jobId = randomUUID();
+
+      await runCheck(jobId, runtimePool);
+      const rows = await alertRows("process_stale");
+      const expected = sortedBy([
+        {
+          user_id: adminZero,
+          tenant_id: getTenantZeroId(),
+          payload: { process: "agents", beatAt: expect.any(String) },
+        },
+        { user_id: adminB, tenant_id: tenantB, payload: { process: "agents", beatAt: expect.any(String) } },
+      ]);
+      expect(rows).toEqual(expected);
+
+      await runCheck(jobId, runtimePool);
+      expect(await alertRows("process_stale")).toEqual(expected);
+    });
+
+    it("rolls the transition back when one admin's write fails, skips no other admin and redelivers on retry", async () => {
+      // A healthy tick first, so the check row (and its id, the notification's source) outlives the rolled-back transition.
+      await runCheck(randomUUID(), runtimePool);
+      await makeAgentsStale();
+      const jobId = randomUUID();
+      await pool.query(`
+        CREATE FUNCTION test_fail_notification() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.user_id = '${adminB}'::uuid THEN RAISE EXCEPTION 'injected recipient failure'; END IF;
+          RETURN NEW;
+        END $$`);
+      await pool.query(
+        `CREATE TRIGGER test_fail_notification BEFORE INSERT ON notifications
+         FOR EACH ROW EXECUTE FUNCTION test_fail_notification()`,
+      );
+      try {
+        await expect(runCheck(jobId, runtimePool)).rejects.toBeInstanceOf(AggregateError);
+        expect((await getCheck("process:agents"))?.status).not.toBe("alerting");
+        expect((await alertRows("process_stale")).map((row) => row.user_id)).toEqual([adminZero]);
+      } finally {
+        await pool.query("DROP TRIGGER test_fail_notification ON notifications");
+        await pool.query("DROP FUNCTION test_fail_notification()");
+      }
+
+      await runCheck(jobId, runtimePool);
+      expect((await getCheck("process:agents"))?.status).toBe("alerting");
+      expect((await alertRows("process_stale")).map((row) => row.user_id).sort()).toEqual([adminZero, adminB].sort());
+    });
+
+    it("skips an admin of a suspended tenant and still records the transition with no admin at all", async () => {
+      await makeAgentsStale();
+      await pool.query("UPDATE tenants SET status = 'suspended' WHERE id = $1", [tenantB]);
+
+      await runCheck(randomUUID(), runtimePool);
+      expect((await alertRows("process_stale")).map((row) => row.user_id)).toEqual([adminZero]);
+
+      await pool.query("UPDATE users SET role = 'member'");
+      await pool.query(`UPDATE process_heartbeats SET beat_at = now() - interval '5 minutes' WHERE process = 'api'`);
+      await runCheck(randomUUID(), runtimePool);
+      expect((await getCheck("process:api"))?.status).toBe("alerting");
+      expect(await alertRows("process_stale")).toHaveLength(1);
+    });
+
+    it("sends the backlog and permanently-failed-jobs alerts to every admin with their own payloads", async () => {
+      await enqueueJob(pool, "someUnregisteredTask", {}, { maxAttempts: 1 });
+      await pool.query(`UPDATE graphile_worker._private_jobs SET attempts = 1`);
+      for (let i = 0; i < 101; i += 1) {
+        await enqueueJob(pool, "someUnregisteredTask", { i });
+      }
+
+      await runCheck(randomUUID(), runtimePool);
+
+      const rows = await alertRows("queue_backlog");
+      expect(rows).toHaveLength(4);
+      const payloads = rows.map((row) => row.payload);
+      expect(payloads.filter((payload) => "count" in payload)).toEqual([{ count: 1 }, { count: 1 }]);
+      expect(payloads.filter((payload) => "pending" in payload)).toEqual([
+        { pending: 101, oldestAgeMs: expect.any(Number) },
+        { pending: 101, oldestAgeMs: expect.any(Number) },
+      ]);
+    });
+
+    it("notifies only the tenant's own user of a mailbox stall and keeps mailbox content out of operator rows", async () => {
+      await makeAgentsStale();
+      const mailboxId = randomUUID();
+      await runInTenant(tenantB, () =>
+        withTransaction(pool, async (client) => {
+          await ensureMailAccountSyncState(client, { itemId: mailboxId, syncMode: "imap" });
+          await recordSyncError(client, mailboxId, "boom");
+        }),
+      );
+
+      await runCheck(randomUUID(), runtimePool);
+
+      const stalls = await alertRows("mail_sync_stalled");
+      expect(stalls).toEqual([
+        { user_id: adminB, tenant_id: tenantB, payload: { mailboxItemId: mailboxId, lastError: "boom" } },
+      ]);
+      const operatorRows = await pool.query<{ payload: string }>(
+        `SELECT payload::text AS payload FROM notifications WHERE kind IN ('process_stale', 'queue_backlog')`,
+      );
+      expect(operatorRows.rows).toHaveLength(2);
+      for (const row of operatorRows.rows) {
+        expect(row.payload).not.toContain("mailboxItemId");
+        expect(row.payload).not.toContain("lastError");
+        expect(row.payload).not.toContain("boom");
+      }
+    });
+
+    it("lists only admins of active tenants, oldest account first", async () => {
+      const suspended = await createTestTenant(pool, { status: "suspended" });
+      await createTestUser(suspended);
+      const lateAdmin = await createTestTenant(pool);
+      const adminLate = await createTestUser(lateAdmin);
+
+      expect(await listAdminRecipients(pool)).toEqual([
+        { userId: adminZero, tenantId: getTenantZeroId() },
+        { userId: adminB, tenantId: tenantB },
+        { userId: adminLate, tenantId: lateAdmin },
+      ]);
     });
   });
 });

@@ -1,3 +1,4 @@
+import { runAsSystem } from "@semprec/shared";
 import { createPool } from "../db/pool.js";
 import { recordRestoreTestResult } from "./restoreTestResult.js";
 import { parseRestoreTestResultArgs } from "./restoreTestResultArgs.js";
@@ -12,9 +13,9 @@ if (!connectionString) {
 const result = parseRestoreTestResultArgs(process.argv.slice(2));
 const pool = createPool(connectionString);
 try {
-  const { notificationId } = await recordRestoreTestResult(pool, result);
-  if (result.status === "failed" && notificationId === null) {
-    console.error("restore test failure recorded, but no user exists to notify");
+  const { notificationIds } = await runAsSystem("restore-test-result", () => recordRestoreTestResult(pool, result));
+  if (result.status === "failed" && notificationIds.length === 0) {
+    console.error("restore test failure recorded, but no admin exists to notify");
   }
 } finally {
   await pool.end();
