@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import {
   DEFAULT_CONTRACT_TOOLS,
   startHttpContractServer,
@@ -92,6 +92,9 @@ describe("MCP tool sync (issue #125)", () => {
     await resetDatabase(pool);
     await seedSystem(pool, viewTypeRegistry);
     mcpServersId = await databaseIdFor("mcpServers");
+    // A `stdio` spawn needs an admin of the sole tenant (issue #1033).
+    const tenantZeroUser = await createTenantZeroUser(pool);
+    await pool.query("UPDATE users SET role = 'admin' WHERE id = $1", [tenantZeroUser.id]);
     connectMock.impl = connectMock.actual;
   });
 

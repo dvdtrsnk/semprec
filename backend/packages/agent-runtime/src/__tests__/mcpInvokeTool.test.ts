@@ -84,6 +84,8 @@ describe("MCP invoke adapter (issue #128)", () => {
       locale: "en",
       tenantId: getTenantZeroId(),
     });
+    // A `stdio` spawn needs an admin of the sole tenant (issue #1033): the tenant-zero user is one.
+    await pool.query("UPDATE users SET role = 'admin' WHERE id = $1", [earliestUser.id]);
   });
 
   afterEach(async () => {

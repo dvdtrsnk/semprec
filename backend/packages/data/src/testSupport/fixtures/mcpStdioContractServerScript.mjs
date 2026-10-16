@@ -48,8 +48,15 @@ let handshakeCount = readPreviousHandshakeCount();
 let credential = null;
 let lastToolCall = null;
 
+// `envNames` records only the names of this child's environment variables, never their values:
+// the record file is a plain file on disk, and a test needs to know what the child inherited, not
+// what it held (issue #1033).
 function writeRecord(extra) {
-  writeFileSync(recordFile, JSON.stringify({ pid: process.pid, handshakeCount, credential, lastToolCall, ...extra }));
+  const envNames = Object.keys(process.env);
+  writeFileSync(
+    recordFile,
+    JSON.stringify({ pid: process.pid, handshakeCount, credential, lastToolCall, envNames, ...extra }),
+  );
 }
 
 writeRecord({});

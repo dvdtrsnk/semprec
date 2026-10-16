@@ -9,11 +9,42 @@ import { isBaselineOutboundUrl } from "../net/storedOutboundUrl.js";
  * elsewhere in this package (scheduler/rule.ts, tasks/taskRecurrenceRule.ts), which name an
  * unrelated concept (a schedule's recurrence kind).
  */
+/**
+ * Names a child process environment variable may take (issue #1033). Besides the shape, a name
+ * must not be one the factory's child inherits from the parent (`getDefaultEnvironment`), must not
+ * start with a dynamic-loader prefix, and must not be a known interpreter or shell start-up hook:
+ * any of those lets a stored config change how the child runs rather than what it is given.
+ */
+const INHERITED_ENV_NAMES = ["HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER"];
+const FORBIDDEN_ENV_NAMES = new Set([
+  ...INHERITED_ENV_NAMES,
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "PYTHONPATH",
+  "PYTHONHOME",
+  "PYTHONSTARTUP",
+  "PERL5OPT",
+  "PERL5LIB",
+  "RUBYOPT",
+  "RUBYLIB",
+  "BASH_ENV",
+  "ENV",
+  "SHELLOPTS",
+  "GCONV_PATH",
+]);
+const FORBIDDEN_ENV_PREFIXES = ["LD_", "DYLD_"];
+
+const childEnvVarName = z
+  .string()
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "must be a valid environment variable name")
+  .refine((name) => !FORBIDDEN_ENV_NAMES.has(name), "is reserved for the child process environment")
+  .refine((name) => !FORBIDDEN_ENV_PREFIXES.some((prefix) => name.startsWith(prefix)), "uses a reserved prefix");
+
 const stdioConnectionConfig = z.object({
   transport: z.literal("stdio"),
   command: z.string().min(1),
   args: z.array(z.string()).optional(),
-  env: z.record(z.string(), z.string()).optional(),
+  env: z.record(childEnvVarName, z.string()).optional(),
   /**
    * Names the child process env var the connection factory (issue #231) should inject the
    * server's decrypted `external_credentials` secret under, e.g. `"API_KEY"` — declares only
@@ -22,7 +53,7 @@ const stdioConnectionConfig = z.object({
    * credential; the factory injects nothing when this is absent even if a credential happens
    * to be stored.
    */
-  credentialEnvVar: z.string().min(1).optional(),
+  credentialEnvVar: childEnvVarName.optional(),
 });
 
 const sseConnectionConfig = z.object({

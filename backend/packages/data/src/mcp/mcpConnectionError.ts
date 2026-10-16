@@ -9,6 +9,9 @@
  */
 export const MCP_CONNECTION_ERROR_REASONS = [
   "invalid_config",
+  // A stored `stdio` config whose tenant no longer confines `stdio` to an admin (issue #1033): refused
+  // at spawn before any credential is decrypted or any child process starts.
+  "transport_not_allowed",
   "credential_decryption_failed",
   // `Client.connect()` opens the transport and completes the `initialize` handshake as one call,
   // so the SDK gives this factory no way to tell a transport-open failure apart from a handshake
