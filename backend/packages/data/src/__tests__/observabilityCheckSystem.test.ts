@@ -478,6 +478,34 @@ describe("observability.checkSystem (issue #169)", () => {
       return [...rows].sort((a, b) => a.user_id.localeCompare(b.user_id));
     }
 
+    /**
+     * Makes every `notifications` insert for `userId` raise. The id reaches the trigger as a row of a
+     * test table written with a bound parameter, never spliced into the function body; the
+     * SECURITY DEFINER function reads that table as its owner, so the runtime role needs no grant.
+     */
+    async function failNotificationsFor(userId: string): Promise<void> {
+      await pool.query("CREATE TABLE test_failing_notification_users (user_id uuid PRIMARY KEY)");
+      await pool.query("INSERT INTO test_failing_notification_users VALUES ($1)", [userId]);
+      await pool.query(`
+        CREATE FUNCTION test_fail_notification() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM test_failing_notification_users WHERE user_id = NEW.user_id) THEN
+            RAISE EXCEPTION 'injected recipient failure';
+          END IF;
+          RETURN NEW;
+        END $$`);
+      await pool.query(
+        `CREATE TRIGGER test_fail_notification BEFORE INSERT ON notifications
+         FOR EACH ROW EXECUTE FUNCTION test_fail_notification()`,
+      );
+    }
+
+    async function removeNotificationFailure(): Promise<void> {
+      await pool.query("DROP TRIGGER IF EXISTS test_fail_notification ON notifications");
+      await pool.query("DROP FUNCTION IF EXISTS test_fail_notification()");
+      await pool.query("DROP TABLE IF EXISTS test_failing_notification_users");
+    }
+
     async function makeAgentsStale(): Promise<void> {
       await pool.query(`UPDATE process_heartbeats SET beat_at = now() - interval '5 minutes' WHERE process = 'agents'`);
     }
@@ -507,23 +535,13 @@ describe("observability.checkSystem (issue #169)", () => {
       await runCheck(randomUUID(), runtimePool);
       await makeAgentsStale();
       const jobId = randomUUID();
-      await pool.query(`
-        CREATE FUNCTION test_fail_notification() RETURNS trigger LANGUAGE plpgsql AS $$
-        BEGIN
-          IF NEW.user_id = '${adminB}'::uuid THEN RAISE EXCEPTION 'injected recipient failure'; END IF;
-          RETURN NEW;
-        END $$`);
-      await pool.query(
-        `CREATE TRIGGER test_fail_notification BEFORE INSERT ON notifications
-         FOR EACH ROW EXECUTE FUNCTION test_fail_notification()`,
-      );
       try {
+        await failNotificationsFor(adminB);
         await expect(runCheck(jobId, runtimePool)).rejects.toBeInstanceOf(AggregateError);
         expect((await getCheck("process:agents"))?.status).not.toBe("alerting");
         expect((await alertRows("process_stale")).map((row) => row.user_id)).toEqual([adminZero]);
       } finally {
-        await pool.query("DROP TRIGGER test_fail_notification ON notifications");
-        await pool.query("DROP FUNCTION test_fail_notification()");
+        await removeNotificationFailure();
       }
 
       await runCheck(jobId, runtimePool);
@@ -536,24 +554,14 @@ describe("observability.checkSystem (issue #169)", () => {
       // transitionInstance by the next tick, so dedupe holds only within one job's retries.
       await runCheck(randomUUID(), runtimePool);
       await makeAgentsStale();
-      await pool.query(`
-        CREATE FUNCTION test_fail_notification() RETURNS trigger LANGUAGE plpgsql AS $$
-        BEGIN
-          IF NEW.user_id = '${adminB}'::uuid THEN RAISE EXCEPTION 'injected recipient failure'; END IF;
-          RETURN NEW;
-        END $$`);
-      await pool.query(
-        `CREATE TRIGGER test_fail_notification BEFORE INSERT ON notifications
-         FOR EACH ROW EXECUTE FUNCTION test_fail_notification()`,
-      );
       try {
+        await failNotificationsFor(adminB);
         await expect(runCheck(randomUUID(), runtimePool)).rejects.toBeInstanceOf(AggregateError);
         await expect(runCheck(randomUUID(), runtimePool)).rejects.toBeInstanceOf(AggregateError);
         expect((await getCheck("process:agents"))?.status).not.toBe("alerting");
         expect((await alertRows("process_stale")).map((row) => row.user_id)).toEqual([adminZero, adminZero]);
       } finally {
-        await pool.query("DROP TRIGGER test_fail_notification ON notifications");
-        await pool.query("DROP FUNCTION test_fail_notification()");
+        await removeNotificationFailure();
       }
     });
 
