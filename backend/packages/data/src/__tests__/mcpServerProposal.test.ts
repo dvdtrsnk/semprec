@@ -111,10 +111,10 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
     );
   });
 
-  it("rejects a proposal whose connectionConfig is missing required stdio fields", async () => {
-    await expect(createMcpProposal({ name: "Bad", connectionConfig: { transport: "stdio" } })).rejects.toMatchObject({
-      details: { field: "connectionConfig" },
-    });
+  it("rejects a proposal whose connectionConfig is missing required remote fields", async () => {
+    await expect(createMcpProposal({ name: "Bad", connectionConfig: { transport: "http" } })).rejects.toThrow(
+      /Invalid MCP server connectionConfig/,
+    );
   });
 
   it.each(MCP_CREDENTIAL_FIELD_NAMES)("rejects a proposal carrying a credential-shaped field '%s'", async (field) => {

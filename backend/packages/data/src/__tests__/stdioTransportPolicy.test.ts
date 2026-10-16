@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createTenantZeroUser } from "../testSupport/tenantFixtures.js";
+import { createTenantZeroUser, createTestTenant } from "../testSupport/tenantFixtures.js";
 import { createUser } from "../auth/usersStore.js";
 import { tenantAllowsStdio } from "../mcp/stdioTransportPolicy.js";
 
@@ -41,6 +41,17 @@ describe("tenantAllowsStdio (issue #1030)", () => {
       role: "admin",
     });
     expect(await tenantAllowsStdio(pool, unbound.id)).toBe(false);
+  });
+
+  it("is false for an admin bound to another tenant", async () => {
+    await createTenantZeroUser(pool);
+    const otherTenantAdmin = await createUser(pool, {
+      email: "other-tenant-admin@example.com",
+      passwordHash: "unused",
+      tenantId: await createTestTenant(pool),
+      role: "admin",
+    });
+    expect(await tenantAllowsStdio(pool, otherTenantAdmin.id)).toBe(false);
   });
 
   it("is false for an unknown user id", async () => {
