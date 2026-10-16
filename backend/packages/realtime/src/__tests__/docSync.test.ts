@@ -363,7 +363,16 @@ describe("createDocSyncRegistry tenant isolation (issue #1026)", () => {
     return rows[0]!.id;
   }
 
-  it("treats another tenant's doc exactly like an unknown id: no frame, slot released, no write", async () => {
+  async function countUpdates(): Promise<string> {
+    const { rows } = await pool.query<{ count: string }>(`SELECT count(*) FROM doc_updates`);
+    return rows[0]!.count;
+  }
+
+  function syncStep1Frame(): Buffer {
+    return Buffer.from(encodeClientSyncStep1(new Y.Doc()));
+  }
+
+  it("treats another tenant's doc exactly like an unknown id: no frame, no write", async () => {
     const docA = await createDocIn(tenantA);
     const foreign = new FakeSocket();
     const unknown = new FakeSocket();
@@ -373,18 +382,46 @@ describe("createDocSyncRegistry tenant isolation (issue #1026)", () => {
     expect(foreign.sent).toHaveLength(0);
     expect(unknown.sent).toHaveLength(0);
 
-    const countUpdates = async (): Promise<string> => {
-      const { rows } = await pool.query<{ count: string }>(`SELECT count(*) FROM doc_updates`);
-      return rows[0]!.count;
-    };
     const before = await countUpdates();
     await registry.handleBinaryFrame(foreign as unknown as never, tenantB, docA, textUpdateFrame("intrusion"));
+    await registry.handleBinaryFrame(foreign as unknown as never, tenantB, docA, syncStep1Frame());
     expect(await countUpdates()).toBe(before);
+    expect(foreign.sent).toHaveLength(0);
+  });
 
-    // The reservation was released: the socket can still open 32 further documents.
-    const own = await createDocIn(tenantB);
-    await registry.handleOpen(foreign as unknown as never, tenantB, own);
-    expect(foreign.sent).toHaveLength(1);
+  it("drops binary frames sent for another tenant's doc while its doc:open lookup is still pending", async () => {
+    const docA = await createDocIn(tenantA);
+    const foreign = new FakeSocket();
+    const before = await countUpdates();
+
+    // Not awaited: the open's reservation is taken synchronously, its tenant-scoped lookup is in flight.
+    const opening = registry.handleOpen(foreign as unknown as never, tenantB, docA);
+    const frames = Promise.all([
+      registry.handleBinaryFrame(foreign as unknown as never, tenantB, docA, textUpdateFrame("intrusion")),
+      registry.handleBinaryFrame(foreign as unknown as never, tenantB, docA, syncStep1Frame()),
+    ]);
+    await Promise.all([opening, frames]);
+
+    expect(await countUpdates()).toBe(before);
+    expect(foreign.sent).toHaveLength(0);
+  });
+
+  it("releases a foreign doc's reservation: the socket can still fill all 32 slots with its own docs", async () => {
+    const docA = await createDocIn(tenantA);
+    const socket = new FakeSocket();
+    await registry.handleOpen(socket as unknown as never, tenantB, docA);
+
+    const ownDocs: string[] = [];
+    for (let i = 0; i < 33; i++) ownDocs.push(await createDocIn(tenantB));
+    for (const own of ownDocs.slice(0, 32)) {
+      await registry.handleOpen(socket as unknown as never, tenantB, own);
+    }
+    // A leaked reservation would have left only 31 slots, so the 32nd own doc would get no SyncStep1.
+    expect(socket.sent).toHaveLength(32);
+
+    // The cap itself still holds: a 33rd document is refused.
+    await registry.handleOpen(socket as unknown as never, tenantB, ownDocs[32]!);
+    expect(socket.sent).toHaveLength(32);
   });
 
   it("persists a same-tenant update with the socket's tenant_id and delivers it to another subscriber", async () => {
