@@ -19,7 +19,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
 import { setProjectMcpGrant } from "../mcp/mcpGrantsAdminStore.js";
-import { createUser, getEarliestUserLocale } from "../auth/usersStore.js";
+import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 
 const SYSTEM_DATABASES_MANIFEST_PATH = new URL("../seed/systemDatabasesModuleManifest.js", import.meta.url).href;
@@ -373,26 +373,13 @@ describe("permission manifest and drift check", () => {
     const moduleRegistry = await systemDatabasesRegistry();
     const action = createDriftCheckAction(pool, { moduleRegistry });
 
-    // Exercises the cs catalog: getEarliestUserLocale.test.ts-equivalent coverage below asserts
-    // on the resolved locale value directly; this asserts the action (its one production caller)
-    // doesn't throw while actually depending on that live lookup.
+    // Exercises the cs catalog: the action resolves the tenant user's locale live and must not
+    // throw while doing so.
     await expect(action({}, { heartbeatId: "hb", projectItemId: projectItem.id })).resolves.toBeUndefined();
 
     // A locale change (no persisted manifest to go stale) takes effect on the very next run.
     await pool.query(`UPDATE users SET locale = 'en' WHERE id = $1`, [user.id]);
     await expect(action({}, { heartbeatId: "hb", projectItemId: projectItem.id })).resolves.toBeUndefined();
-  });
-
-  it("getEarliestUserLocale resolves the first-created account's locale and reflects a live update, with no users returning null", async () => {
-    expect(await getEarliestUserLocale(pool)).toBeNull();
-
-    const passwordHash = await hashPassword("s3cret-password");
-    const first = await createUser(pool, { email: "first@example.test", passwordHash, locale: "cs" });
-    await createUser(pool, { email: "second@example.test", passwordHash, locale: "en" });
-    expect(await getEarliestUserLocale(pool)).toBe("cs");
-
-    await pool.query(`UPDATE users SET locale = 'en' WHERE id = $1`, [first.id]);
-    expect(await getEarliestUserLocale(pool)).toBe("en");
   });
 });
 

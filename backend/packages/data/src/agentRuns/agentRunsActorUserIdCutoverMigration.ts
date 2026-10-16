@@ -1,6 +1,5 @@
 import type { Pool } from "pg";
-import { requireAffectedRows, withTransaction } from "../db/pool.js";
-import { getEarliestUserId } from "../auth/usersStore.js";
+import { withTransaction } from "../db/pool.js";
 
 /**
  * One-time populated-upgrade cutover for issue #220's `agent_runs.actor_user_id` column
@@ -13,12 +12,10 @@ import { getEarliestUserId } from "../auth/usersStore.js";
  * `docs/adr/2026-09-10-app-code-post-migration-steps.md` (see `docHistoryCutoverMigration.ts` for
  * the identical lock/idempotency-check/backfill/tighten shape this mirrors).
  *
- * Every remaining row with no resolvable parent chain (a root run) is attributed to the sole
- * account (Semprec is single-tenant — see `permissionManifest.ts`'s note that "the
- * earliest-created account stands in for 'the' user"). Throws if `agent_runs` has rows but no
- * account exists yet to attribute them to — that combination should never arise in practice
- * (every producer of a root run already requires an authenticated session, the setup owner, or a
- * parent run), so surfacing it loudly here is preferable to silently leaving rows unattributed.
+ * Each remaining root run (one with no resolvable parent chain) is attributed to the user bound to
+ * its own tenant (`users.tenant_id`). This runs as the table owner, so row-level security does not
+ * hide any tenant's rows, and `users` has no row-level security. Throws when a root run's tenant has
+ * no user to attribute it to; the transaction then rolls back, so the column stays nullable.
  */
 export async function runAgentRunsActorUserIdCutoverMigration(pool: Pool): Promise<void> {
   await withTransaction(pool, async (client) => {
@@ -46,20 +43,21 @@ export async function runAgentRunsActorUserIdCutoverMigration(pool: Pool): Promi
       if (!rowCount) break;
     }
 
+    // Each root run takes the user bound to its own tenant. `users.tenant_id` is unique, so the
+    // join matches at most one user per run.
+    await client.query(
+      `UPDATE agent_runs AS r
+          SET actor_user_id = u.id
+         FROM users u
+        WHERE u.tenant_id = r.tenant_id
+          AND r.actor_user_id IS NULL`,
+    );
+
     const { rows: remaining } = await client.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM agent_runs WHERE actor_user_id IS NULL`,
     );
     if (Number(remaining[0]!.count) > 0) {
-      const ownerId = await getEarliestUserId(client);
-      if (!ownerId) {
-        throw new Error(
-          "Cannot backfill agent_runs.actor_user_id: rows exist with no resolvable parent chain and no account exists",
-        );
-      }
-      const result = await client.query(`UPDATE agent_runs SET actor_user_id = $1 WHERE actor_user_id IS NULL`, [
-        ownerId,
-      ]);
-      requireAffectedRows(result, "agentRunsActorUserIdCutoverMigration: backfill to earliest account");
+      throw new Error("Cannot backfill agent_runs.actor_user_id: rows exist whose tenant has no user");
     }
 
     await client.query(`ALTER TABLE agent_runs ALTER COLUMN actor_user_id SET NOT NULL`);
