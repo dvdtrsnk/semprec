@@ -1283,11 +1283,27 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     return client;
   }
 
-  /** Collects every frame the client receives, in arrival order. */
+  function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+
+  /** Collects every frame the client receives, in arrival order; a frame that is not a JSON object fails the test. */
   function collectFrames(client: WebSocket): Record<string, unknown>[] {
     const frames: Record<string, unknown>[] = [];
-    client.on("message", (data) => frames.push(JSON.parse(messageText(data)) as Record<string, unknown>));
+    client.on("message", (data) => {
+      const frame: unknown = JSON.parse(messageText(data));
+      if (!isRecord(frame)) throw new Error("expected a JSON object frame");
+      frames.push(frame);
+    });
     return frames;
+  }
+
+  /** The event id an `agent:event` frame carries; any other shape fails the test. */
+  function eventIdOf(frame: Record<string, unknown> | undefined): string {
+    const event = frame?.event;
+    if (!isRecord(event) || typeof event.id !== "string")
+      throw new Error("expected an agent:event frame with an event id");
+    return event.id;
   }
 
   function settle(ms = 150): Promise<void> {
@@ -1330,13 +1346,22 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     expect(foreignFrames).toEqual(unknownFrames);
     expect(foreignFrames).toHaveLength(0);
 
-    // A live durable event and a live delta in tenant A are not delivered to the foreign socket.
+    // A live durable event and a live delta in tenant A are not delivered to the foreign socket. The run's
+    // own user's socket is the positive control: once it has its replay, the live event and the delta,
+    // the same fan-out has already passed over the foreign socket.
+    const own = await connectAs("own", tenantA, userA);
+    const ownFrames = collectFrames(own);
+    own.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    await waitUntil(() => ownFrames.length === 1);
     await announcedEventIn(tenantA, run.id);
+    await waitUntil(() => ownFrames.length === 2);
     await runInTenant(tenantA, () => publishAgentRunDelta(runtimePool, run.id, { kind: "message_update", text: "x" }));
-    await settle();
+    await waitUntil(() => ownFrames.length === 3);
+    expect(ownFrames.map((frame) => frame.type)).toEqual(["agent:event", "agent:event", "agent:delta"]);
     expect(foreignFrames).toHaveLength(0);
     foreign.close();
     unknown.close();
+    own.close();
   });
 
   it("delivers replay, then live events and deltas in order to the tenant's own user's socket", async () => {
@@ -1354,8 +1379,8 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     await waitUntil(() => frames.length === 3);
 
     expect(frames.map((frame) => frame.type)).toEqual(["agent:event", "agent:event", "agent:delta"]);
-    expect((frames[0]!.event as { id: string }).id).toBe(first.id);
-    expect((frames[1]!.event as { id: string }).id).toBe(live.id);
+    expect(eventIdOf(frames[0])).toBe(first.id);
+    expect(eventIdOf(frames[1])).toBe(live.id);
     user.close();
   });
 
@@ -1371,7 +1396,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     user.close();
   });
 
-  it("drops a durable reference stamped with another tenant even when its event id is real for the watched run", async () => {
+  it("drops a durable reference stamped with another tenant for a live watcher even when its event id is real for the watched run", async () => {
     const user = await connectAs("own", tenantA, userA);
     const run = await createRunIn(tenantA, userA);
     const frames = collectFrames(user);
@@ -1395,8 +1420,79 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
       eventId: forged.id,
     });
     await waitUntil(() => frames.length === 1);
-    expect((frames[0]!.event as { id: string }).id).toBe(forged.id);
+    expect(eventIdOf(frames[0])).toBe(forged.id);
     user.close();
+  });
+
+  it("never queues a durable reference stamped with another tenant while the watcher is still replaying", async () => {
+    const user = await connectAs("own", tenantA, userA);
+    const run = await createRunIn(tenantA, userA);
+    const replayed = await silentEventIn(tenantA, run.id);
+    const sentinelRun = await createRunIn(tenantA, userA);
+    const sentinel = await connectAs("sentinel", tenantA, userA);
+    const sentinelFrames = collectFrames(sentinel);
+    sentinel.send(JSON.stringify({ type: "agent:watch", runId: sentinelRun.id, afterEventId: "0" }));
+    await settle();
+
+    // Hold the watcher in its replay window: the replay query runs, then its result is held until
+    // released, so a NOTIFY arriving meanwhile can only be queued for the drain.
+    let replayQueried: (() => void) | undefined;
+    const replayQueriedSignal = new Promise<void>((resolve) => {
+      replayQueried = resolve;
+    });
+    let releaseReplay: (() => void) | undefined;
+    const replayReleased = new Promise<void>((resolve) => {
+      releaseReplay = resolve;
+    });
+    const originalQuery = runtimePool.query.bind(runtimePool) as (...args: unknown[]) => Promise<unknown>;
+    let held = false;
+    const heldReplayQuery = async (...args: unknown[]): Promise<unknown> => {
+      const sql = args[0];
+      const result = await originalQuery(...args);
+      if (!held && typeof sql === "string" && sql.includes("FROM agent_run_events") && sql.includes("id > $2")) {
+        held = true;
+        replayQueried?.();
+        await replayReleased;
+      }
+      return result;
+    };
+    // pg's overloaded `query` type includes a callback form returning void; every caller here awaits it.
+    const heldQueryImplementation = heldReplayQuery as unknown as () => void;
+    const query = vi.spyOn(runtimePool, "query").mockImplementation(heldQueryImplementation);
+    try {
+      const frames = collectFrames(user);
+      user.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+      await replayQueriedSignal;
+
+      // A real row of the watched run, committed after the replay snapshot and announced only under the
+      // wrong tenant. If it were queued, the drain would fetch it under the watcher's own tenant and send it.
+      const forged = await silentEventIn(tenantA, run.id);
+      await notifyEnvelope(pool, "semprec_events", tenantB, {
+        type: "agent_run_event",
+        agentRunId: run.id,
+        eventId: forged.id,
+      });
+      // NOTIFYs arrive in commit order, so once a later reference for another run is delivered, the
+      // forged one has already been offered to the replaying watcher.
+      await announcedEventIn(tenantA, sentinelRun.id);
+      await waitUntil(() => sentinelFrames.length === 1);
+      releaseReplay?.();
+
+      // With nothing queued, the watcher is promoted right after delivering its replay; a delta it then
+      // receives shows the replay window closed without sending anything else.
+      await waitUntil(() => frames.length > 0);
+      await runInTenant(tenantA, () =>
+        publishAgentRunDelta(runtimePool, run.id, { kind: "message_update", text: "d" }),
+      );
+      await waitUntil(() => frames.some((frame) => frame.type === "agent:delta"));
+      expect(frames.map((frame) => frame.type)).toEqual(["agent:event", "agent:delta"]);
+      expect(eventIdOf(frames[0])).toBe(replayed.id);
+    } finally {
+      releaseReplay?.();
+      query.mockRestore();
+      user.close();
+      sentinel.close();
+    }
   });
 
   it("drops a delta stamped with another tenant, while the run's own tenant's delta is delivered", async () => {
