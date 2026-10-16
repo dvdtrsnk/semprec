@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
@@ -82,12 +82,60 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
     expect(stored!.properties.connectionConfig).toEqual(good);
   });
 
-  it("still accepts a stdio config of valid shape", async () => {
-    const item = await create(mcpServersId, {
-      name: "S",
-      connectionConfig: { transport: "stdio", command: "my-server" },
+  async function createAdmin(): Promise<string> {
+    const user = await createTenantZeroUser(pool);
+    await pool.query("UPDATE users SET role = 'admin' WHERE id = $1", [user.id]);
+    return user.id;
+  }
+
+  const STDIO = { transport: "stdio", command: "my-server" };
+
+  it("accepts a stdio config from a human admin writer", async () => {
+    const adminId = await createAdmin();
+    const item = await withTransaction(pool, (client) =>
+      createItemWithClient(
+        client,
+        { databaseId: mcpServersId, properties: { name: "S", connectionConfig: STDIO } },
+        { humanWriterUserId: adminId },
+      ),
+    );
+    expect(item.properties.connectionConfig).toEqual(STDIO);
+  });
+
+  it("refuses a stdio config with no human writer, or a non-admin one, and leaves no row", async () => {
+    const member = await createTenantZeroUser(pool);
+    await pool.query("UPDATE users SET role = 'member' WHERE id = $1", [member.id]);
+    await expect(create(mcpServersId, { name: "S", connectionConfig: STDIO })).rejects.toMatchObject({
+      details: { field: "connectionConfig" },
     });
-    expect(item.properties.connectionConfig).toEqual({ transport: "stdio", command: "my-server" });
+    await expect(
+      withTransaction(pool, (client) =>
+        createItemWithClient(
+          client,
+          { databaseId: mcpServersId, properties: { name: "S", connectionConfig: STDIO } },
+          { humanWriterUserId: member.id },
+        ),
+      ),
+    ).rejects.toMatchObject({ details: { field: "connectionConfig" } });
+    expect(await countItems(mcpServersId)).toBe(0);
+  });
+
+  it("applies the stdio rule on update", async () => {
+    const adminId = await createAdmin();
+    const good = { transport: "http", url: "https://mcp.example.com/mcp" };
+    const item = await create(mcpServersId, { name: "S", connectionConfig: good });
+    const patch = (humanWriterUserId?: string) =>
+      withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          { databaseId: mcpServersId, itemId: item.id, propertiesPatch: { connectionConfig: STDIO } },
+          { humanWriterUserId },
+        ),
+      );
+    await expect(patch()).rejects.toMatchObject({ details: { field: "connectionConfig" } });
+    const stored = await withTransaction(pool, (client) => itemsStore.getItemById(client, mcpServersId, item.id));
+    expect(stored!.properties.connectionConfig).toEqual(good);
+    expect((await patch(adminId)).properties.connectionConfig).toEqual(STDIO);
   });
 
   it("does not touch mcpServers writes that omit connectionConfig", async () => {
@@ -185,6 +233,58 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
     await pool.query(
       `UPDATE items SET properties = jsonb_set(properties, '{proposal,properties,connectionConfig,url}', '"http://127.0.0.1/mcp"') WHERE id = $1`,
       [proposalId],
+    );
+
+    await expect(
+      withTransaction(pool, (client) =>
+        confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposalId),
+      ),
+    ).rejects.toMatchObject({ details: { field: "connectionConfig" } });
+    expect(await countItems(mcpServersId)).toBe(0);
+  });
+
+  it("refuses an admin confirming a stored stdio envelope", async () => {
+    await createAdmin();
+    const inboxId = await databaseIdFor("inbox");
+    const journalId = await databaseIdFor("journal");
+    const proposalsId = await databaseIdFor("processingProposals");
+    const inboxItem = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        journalDatabaseId: journalId,
+        timezone: "Europe/Prague",
+        date: "2026-08-28",
+        time: "09:00",
+        text: "connect a server",
+      }),
+    );
+    await createSemprecTickAction(pool, async () => {
+      throw new Error("must not be called for an untyped item");
+    })(
+      {
+        inboxDatabaseId: inboxId,
+        inboxItemTypesDatabaseId: await databaseIdFor("inboxItemTypes"),
+        processingProposalsDatabaseId: proposalsId,
+      },
+      { heartbeatId: "hb", projectItemId: "proj", itemId: inboxItem.id },
+    );
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM items WHERE database_id = $1 AND properties->>'status' = 'needsClarification' LIMIT 1`,
+      [proposalsId],
+    );
+    const proposalId = rows[0]!.id;
+    await withTransaction(pool, (client) =>
+      reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposalId, {
+        message: "Connect",
+        entityKind: "database",
+        target: mcpServersId,
+        properties: { name: "S", connectionConfig: { transport: "http", url: "https://mcp.example.com/mcp" } },
+      }),
+    );
+    // Simulate an envelope stored before stdio proposals were banned.
+    await pool.query(
+      `UPDATE items SET properties = jsonb_set(properties, '{proposal,properties,connectionConfig}', $2::jsonb) WHERE id = $1`,
+      [proposalId, JSON.stringify(STDIO)],
     );
 
     await expect(

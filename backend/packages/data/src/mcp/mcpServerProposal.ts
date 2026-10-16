@@ -80,6 +80,15 @@ function assertNoCredentialShapedUrlParams(connectionConfig: unknown): void {
   }
 }
 
+function assertNotStdioConfig(connectionConfig: unknown): void {
+  if (typeof connectionConfig !== "object" || connectionConfig === null) return;
+  if ((connectionConfig as { transport?: unknown }).transport === "stdio") {
+    throw new ValidationError("A stdio MCP server can only be configured by an administrator", {
+      field: "connectionConfig",
+    });
+  }
+}
+
 /**
  * Extra validation `assertValidProposalEnvelope` (inboxTickAction.ts) runs for a `database`
  * envelope whose target is the `mcpServers` system database, on top of the generic
@@ -98,6 +107,9 @@ export function assertValidMcpServerProposalProperties(properties: Record<string
     }
   }
   if ("connectionConfig" in properties) {
+    // A model-authored host command never becomes a card: stdio is confined to a human admin
+    // (docs/adr/2026-10-16-stdio-mcp-confined-to-admin-tenants.md).
+    assertNotStdioConfig(properties.connectionConfig);
     assertNoCredentialShapedEnvKeys(properties.connectionConfig);
     assertNoCredentialShapedUrlParams(properties.connectionConfig);
     assertStorableMcpConnectionConfig(properties.connectionConfig);

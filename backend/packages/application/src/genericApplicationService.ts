@@ -262,6 +262,7 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
       return chokePoint.createItem(
         { databaseId: input.databaseId, properties: input.properties, idempotencyKey: input.idempotencyKey },
         actor.userId,
+        humanWriterUserIdOf(actor),
       );
     },
 
@@ -275,6 +276,7 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
           ifVersion: input.ifVersion,
         },
         actor.userId,
+        humanWriterUserIdOf(actor),
       );
     },
 
@@ -335,4 +337,9 @@ export function createGenericApplicationService(pool: Pool): GenericApplicationP
       return edge;
     },
   } satisfies GenericApplicationPort;
+}
+
+/** The writer id the choke point's hooks may trust as human: only a REST session actor that is not acting for an agent. */
+function humanWriterUserIdOf(actor: AuthenticatedActor): string | undefined {
+  return actor.restSession === true && actor.agentProjectItemId === undefined ? actor.userId : undefined;
 }

@@ -13,6 +13,8 @@ export interface ItemCreateHookContext {
   database: DatabaseRow;
   item: ItemRow;
   properties: Record<string, unknown>;
+  /** The user id of a human REST writer; absent for every agent, `/mcp`, system and internal caller. */
+  humanWriterUserId?: string;
 }
 
 export type ItemCreateHook = (context: ItemCreateHookContext) => Promise<void>;
@@ -22,6 +24,8 @@ export interface ItemUpdateHookContext {
   database: DatabaseRow;
   item: ItemRow;
   propertiesPatch: Record<string, unknown>;
+  /** The user id of a human REST writer; absent for every agent, `/mcp`, system and internal caller. */
+  humanWriterUserId?: string;
   /**
    * Set only by `convergeObservedEmailFlagsWithClient` (itemWrites.ts), mail sync's declared,
    * narrow ownership handoff for Emails' owner:'user' `read`/`flagged` properties — never by a

@@ -45,12 +45,28 @@ async function createUser(): Promise<string> {
   return (await createTenantZeroUser(pool)).id;
 }
 
+async function createSoleTenantAdmin(): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>(
+    "UPDATE users SET role = 'admin' WHERE tenant_id = app_tenant_default() RETURNING id",
+  );
+  if (rows[0]) return rows[0].id;
+  const user = await createTenantZeroUser(pool);
+  await pool.query("UPDATE users SET role = 'admin' WHERE id = $1", [user.id]);
+  return user.id;
+}
+
 async function createGrantedTool(contractServer: McpContractServer) {
+  // The contract server is a stdio config, which only a human admin of the sole tenant may store.
+  const adminId = await createSoleTenantAdmin();
   const server = await withTransaction(pool, (client) =>
-    createItemWithClient(client, {
-      databaseId: mcpServersId,
-      properties: { name: "Contract server", active: true, connectionConfig: contractServer.connectionConfig },
-    }),
+    createItemWithClient(
+      client,
+      {
+        databaseId: mcpServersId,
+        properties: { name: "Contract server", active: true, connectionConfig: contractServer.connectionConfig },
+      },
+      { humanWriterUserId: adminId },
+    ),
   );
   const registration = await upsertMcpToolRegistration(pool, {
     mcpServerItemId: server.id,
