@@ -23,20 +23,13 @@ import {
   type StreamFunction,
 } from "@earendil-works/pi-ai";
 import { stream as piClientStream } from "@earendil-works/pi-ai/compat";
-import {
-  createAgentRun,
-  createChokePoint,
-  createUser,
-  getSystemSettingsDatabaseId,
-  getSystemSettingsItemId,
-  hashPassword,
-  seedSystem,
-} from "@semprec/data";
-import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createAgentRun, createUser, hashPassword, seedSystem } from "@semprec/data";
+import { getTenantZeroId, getTestPool, resetDatabase, setTenantAiBudget } from "@semprec/data/testSupport";
 import { createDispatcher } from "../app.js";
 import type { CompleteHandlerOptions } from "../completeHandler.js";
 import type { AudioHandlerOptions } from "../audioHandler.js";
 import type { PiMessagesHandlerOptions } from "../piMessagesHandler.js";
+import { GENEROUS_GLOBAL_CAPS } from "./globalCaps.js";
 
 const TOKEN = "test-internal-token";
 const MODEL_ID = "faux-claude";
@@ -51,6 +44,7 @@ const FAKE_COMPLETE_OPTIONS: CompleteHandlerOptions = {
   model: "fake-model",
   pricePerMillionInputTokens: 1,
   pricePerMillionOutputTokens: 1,
+  globalCaps: GENEROUS_GLOBAL_CAPS,
 };
 
 const FAKE_AUDIO_OPTIONS: AudioHandlerOptions = {
@@ -63,6 +57,7 @@ const FAKE_AUDIO_OPTIONS: AudioHandlerOptions = {
   },
   pyannotePricePerAudioHour: 1,
   deepInfraPricePerAudioHour: 1,
+  globalCaps: GENEROUS_GLOBAL_CAPS,
 };
 
 const CONTEXT: Context = {
@@ -134,6 +129,7 @@ function startServer(
     internalToken: TOKEN,
     models,
     apiKey: "anthropic-key",
+    globalCaps: GENEROUS_GLOBAL_CAPS,
     streamFn,
     ...overrides,
   };
@@ -207,19 +203,6 @@ function scriptedStreamFn(events: AssistantMessageEvent[]): StreamFunction<Api, 
   };
 }
 
-async function setBudgets(budgets: { dailyBudgetUsd?: number | null; monthlyBudgetUsd?: number | null }) {
-  const client = await pool.connect();
-  let itemId: string;
-  let databaseId: string;
-  try {
-    itemId = await getSystemSettingsItemId(client);
-    databaseId = await getSystemSettingsDatabaseId(client);
-  } finally {
-    client.release();
-  }
-  await createChokePoint(pool).updateItem({ databaseId, itemId, propertiesPatch: budgets });
-}
-
 /** An agent run needs an owning account, so the run the header names exists for the foreign key. */
 async function createRun(task: string): Promise<{ id: string }> {
   await createUser(pool, {
@@ -250,6 +233,7 @@ describe("POST /internal/pi/messages", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    await setTenantAiBudget(pool, getTenantZeroId());
     streamCalls = [];
     setUpFaux();
   });
@@ -670,7 +654,7 @@ describe("POST /internal/pi/messages", () => {
     });
 
     it("answers 403 budget_exceeded before contacting the provider and writes no settled row", async () => {
-      await setBudgets({ dailyBudgetUsd: 1, monthlyBudgetUsd: null });
+      await setTenantAiBudget(pool, getTenantZeroId(), { dailyCapUsd: 1, monthlyCapUsd: null });
       await pool.query(
         `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, cost_usd) VALUES ('anthropic', 'claude-sonnet-5', 10, 10, 1)`,
       );

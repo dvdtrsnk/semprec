@@ -12,9 +12,10 @@ other package, service, module, and script makes AI calls only through the
 gateway's internal contract.
 
 Why one door:
-- **Cost control.** The gateway checks the dual budget caps (`dailyBudgetUsd`,
-  `monthlyBudgetUsd` in Semprec settings) *before* the call and refuses when
-  exceeded. A direct provider call is an uncapped spend.
+- **Cost control.** The gateway checks the tenant's own caps (its
+  `tenant_ai_budgets` row) and the operator-wide `AI_GLOBAL_*_CAP_USD` caps
+  *before* the call and refuses, with one identical message, when either is
+  reached. A direct provider call is an uncapped spend.
 - **Observability.** Every call is logged to `ai_gateway_calls` (tokens, cost,
   caller, purpose) — this feeds `GET /api/ai-usage` and the utilization graph.
   A bypassed call is invisible money.

@@ -3,7 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { Pool } from "pg";
 import { z } from "zod";
 import { ChokePointError, ValidationError } from "@semprec/data";
-import { BudgetExceededError, complete } from "@semprec/ai-gateway";
+import { BudgetExceededError, complete, type GlobalAiCaps } from "@semprec/ai-gateway";
 import type {
   Api,
   AssistantMessageEvent,
@@ -41,6 +41,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const AGENT_RUN_ID_HEADER = "x-semprec-agent-run-id";
 
 export interface PiMessagesHandlerOptions {
+  globalCaps: GlobalAiCaps;
   /** Compared against the caller's `Authorization: Bearer <token>` header. */
   internalToken: string;
   /** Resolves the requested model id; only `anthropic` models are ever looked up. */
@@ -365,6 +366,7 @@ export function createPiMessagesRequestListener(pool: Pool, options: PiMessagesH
               projectItemId: null,
               operation: "agent_turn",
               estimatedCostUsd,
+              globalCaps: options.globalCaps,
             },
             () => streamTurn(res, model, body),
           );

@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { Pool } from "pg";
 import { ChokePointError, ValidationError } from "@semprec/data";
-import { BudgetExceededError, diarize, transcribe } from "@semprec/ai-gateway";
+import { BudgetExceededError, diarize, transcribe, type GlobalAiCaps } from "@semprec/ai-gateway";
 import type { DiarizationProvider, TranscriptionProvider } from "./audioProviders/types.js";
 import { AudioProviderCallError } from "./audioProviders/types.js";
 import { logger } from "./logger.js";
@@ -26,6 +26,7 @@ export interface AudioHandlerOptions {
   transcriptionProvider: TranscriptionProvider;
   pyannotePricePerAudioHour: number;
   deepInfraPricePerAudioHour: number;
+  globalCaps: GlobalAiCaps;
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -146,6 +147,7 @@ export function createAudioRequestListener(pool: Pool, options: AudioHandlerOpti
           model: options.diarizationProvider.model,
           operation: DIARIZE_OPERATION,
           estimatedCostUsd: costUsd,
+          globalCaps: options.globalCaps,
         },
         async () => {
           const turns = await options.diarizationProvider.diarize({
@@ -176,6 +178,7 @@ export function createAudioRequestListener(pool: Pool, options: AudioHandlerOpti
           model: options.transcriptionProvider.model,
           operation: TRANSCRIBE_OPERATION,
           estimatedCostUsd: costUsd,
+          globalCaps: options.globalCaps,
         },
         async () => {
           const transcription = await options.transcriptionProvider.transcribe({

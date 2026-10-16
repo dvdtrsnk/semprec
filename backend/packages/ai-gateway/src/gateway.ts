@@ -2,8 +2,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { Pool, PoolClient } from "pg";
 import {
   failGatewayCall,
-  getAiBudgetsWithTimezone,
+  getCurrentTenantAiBudget,
   getGatewaySpend,
+  getGlobalGatewaySpend,
+  getSystemTimezone,
   reserveGatewayCall,
   settleAudioGatewayCall,
   settleTokenGatewayCall,
@@ -11,9 +13,12 @@ import {
   type AiGatewayCallRow,
 } from "@semprec/data";
 import { logger } from "./logger.js";
-import type { AudioCallResult, GatewayCallContext, TokenCallResult } from "./types.js";
+import type { AudioCallResult, GatewayCallContext, GlobalAiCaps, TokenCallResult } from "./types.js";
 
-/** Thrown by `assertWithinBudget` when a non-null daily/monthly cap is already reached. */
+/** The one message every budget refusal carries, so no caller can tell which cap tripped. */
+export const BUDGET_EXCEEDED_MESSAGE = "AI budget exceeded";
+
+/** Thrown by `assertWithinBudget` when the tenant has no budget or a tenant or global cap is reached. */
 export class BudgetExceededError extends Error {
   constructor(message: string) {
     super(message);
@@ -21,24 +26,34 @@ export class BudgetExceededError extends Error {
   }
 }
 
-/**
- * Rejects when a non-null daily/monthly cap is already reached or exceeded (#120); a null cap
- * never blocks. Called only from `reserve`, under the budget lock, so the spend it reads includes
- * every other in-flight reservation at its estimate.
- */
-async function assertWithinBudget(client: Pool | PoolClient): Promise<void> {
-  const { dailyBudgetUsd, monthlyBudgetUsd, timezone } = await getAiBudgetsWithTimezone(client);
-  if (dailyBudgetUsd === null && monthlyBudgetUsd === null) return;
+type BudgetLimit = "noTenantBudget" | "tenantDaily" | "tenantMonthly" | "globalDaily" | "globalMonthly";
 
-  const { spentToday, spentMonth } = await getGatewaySpend(client, timezone);
-  if (dailyBudgetUsd !== null && spentToday >= dailyBudgetUsd) {
-    throw new BudgetExceededError(`Daily AI budget of $${dailyBudgetUsd} reached (spent $${spentToday} today)`);
-  }
-  if (monthlyBudgetUsd !== null && spentMonth >= monthlyBudgetUsd) {
-    throw new BudgetExceededError(
-      `Monthly AI budget of $${monthlyBudgetUsd} reached (spent $${spentMonth} this month)`,
-    );
-  }
+/** Logs which limit refused (never an amount or content) and throws the constant refusal. */
+function refuse(limit: BudgetLimit): never {
+  logger.warn({ limit }, "AI gateway call refused: budget exceeded");
+  throw new BudgetExceededError(BUDGET_EXCEEDED_MESSAGE);
+}
+
+/**
+ * Refuses (`spent >= cap`) when the caller's tenant has no `tenant_ai_budgets` row, when its own
+ * non-null daily/monthly cap is reached (measured in the tenant's timezone over its own rows), or
+ * when the operator-wide `globalCaps` are reached (measured in UTC over every tenant's rows). A
+ * `NULL` tenant cap means that window has no per-tenant cap; the global cap still applies. Called
+ * only from `reserve`, under the budget lock, so the spend it reads includes every other in-flight
+ * reservation at its estimate. Every refusal carries the same message.
+ */
+async function assertWithinBudget(client: PoolClient, globalCaps: GlobalAiCaps): Promise<void> {
+  const budget = await getCurrentTenantAiBudget(client);
+  if (budget === null) refuse("noTenantBudget");
+
+  const timezone = await getSystemTimezone(client);
+  const tenantSpend = await getGatewaySpend(client, timezone);
+  if (budget.dailyCapUsd !== null && tenantSpend.spentToday >= budget.dailyCapUsd) refuse("tenantDaily");
+  if (budget.monthlyCapUsd !== null && tenantSpend.spentMonth >= budget.monthlyCapUsd) refuse("tenantMonthly");
+
+  const globalSpend = await getGlobalGatewaySpend(client);
+  if (globalSpend.spentToday >= globalCaps.dailyCapUsd) refuse("globalDaily");
+  if (globalSpend.spentMonth >= globalCaps.monthlyCapUsd) refuse("globalMonthly");
 }
 
 /**
@@ -53,7 +68,7 @@ async function assertWithinBudget(client: Pool | PoolClient): Promise<void> {
 function reserve(pool: Pool, ctx: GatewayCallContext): Promise<AiGatewayCallRow> {
   return withTransaction(pool, async (tx) => {
     await tx.query("SELECT pg_advisory_xact_lock(hashtext('ai_gateway_budget'))");
-    await assertWithinBudget(tx);
+    await assertWithinBudget(tx, ctx.globalCaps);
     return reserveGatewayCall(tx, {
       provider: ctx.provider,
       model: ctx.model,

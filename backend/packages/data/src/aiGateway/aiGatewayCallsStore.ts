@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
+import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
 import { ForbiddenError } from "../errors.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 
@@ -245,5 +245,19 @@ export async function getGatewaySpend(client: Pool | PoolClient, timezone: strin
     [timezone],
   );
   const totals = requireSingleRow(rows, "ai_gateway_calls spend totals");
+  return { spentToday: Number(totals.spent_today), spentMonth: Number(totals.spent_month) };
+}
+
+/**
+ * Spend over every tenant, in UTC: since UTC midnight and since the first of the current UTC
+ * month. Reads through `ai_global_spend()`, the `semprec_router` function that sees past
+ * row-level security and returns only these two sums. Every row counts at its `cost_usd`, as in
+ * `getGatewaySpend`.
+ */
+export async function getGlobalGatewaySpend(client: Queryable): Promise<GatewaySpend> {
+  const { rows } = await client.query<{ spent_today: string; spent_month: string }>(
+    `SELECT spent_today, spent_month FROM ai_global_spend()`,
+  );
+  const totals = requireSingleRow(rows, "ai_global_spend totals");
   return { spentToday: Number(totals.spent_today), spentMonth: Number(totals.spent_month) };
 }

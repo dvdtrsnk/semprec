@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { Pool } from "pg";
 import { ChokePointError, ValidationError } from "@semprec/data";
-import { BudgetExceededError, complete } from "@semprec/ai-gateway";
+import { BudgetExceededError, complete, type GlobalAiCaps } from "@semprec/ai-gateway";
 import { withTraceContext } from "@semprec/shared";
 import { compileResponseSchema, InvalidResponseSchemaError } from "./schemaValidation.js";
 import {
@@ -45,6 +45,7 @@ export interface CompleteHandlerOptions {
   model: string;
   pricePerMillionInputTokens: number;
   pricePerMillionOutputTokens: number;
+  globalCaps: GlobalAiCaps;
 }
 
 interface CompleteRequestBody {
@@ -244,6 +245,7 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
               projectItemId: body.projectItemId,
               operation: body.operation,
               estimatedCostUsd,
+              globalCaps: options.globalCaps,
             },
             async () => {
               // A transport failure throws here, so `complete()` marks its reservation `failed` at

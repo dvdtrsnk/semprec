@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { createPool } from "@semprec/data";
-import { getTenantZeroId, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, resetDatabase, setTenantAiBudget } from "@semprec/data/testSupport";
 import { runInTenant } from "@semprec/shared";
 import { createProjectItem } from "./projectItemFixture.js";
 import { createDispatcher } from "../app.js";
@@ -17,11 +17,13 @@ import type {
 import type { StructuredCompletionProvider, StructuredCompletionRequest } from "../structuredProviders/types.js";
 import { createModels } from "@earendil-works/pi-ai";
 import type { PiMessagesHandlerOptions } from "../piMessagesHandler.js";
+import { GENEROUS_GLOBAL_CAPS } from "./globalCaps.js";
 /** This suite never reaches `/internal/pi/messages`; the dispatcher only needs the options to exist. */
 const FAKE_PI_OPTIONS: PiMessagesHandlerOptions = {
   internalToken: "test-internal-token",
   models: createModels(),
   apiKey: "unused",
+  globalCaps: GENEROUS_GLOBAL_CAPS,
   streamFn: () => {
     throw new Error("the pi-messages route is not exercised by this suite");
   },
@@ -85,6 +87,7 @@ function startServer(
     model: "fake-model",
     pricePerMillionInputTokens: 3,
     pricePerMillionOutputTokens: 15,
+    globalCaps: GENEROUS_GLOBAL_CAPS,
   };
   const audioOptions: AudioHandlerOptions = {
     internalToken: "test-internal-token",
@@ -92,6 +95,7 @@ function startServer(
     transcriptionProvider,
     pyannotePricePerAudioHour: 6,
     deepInfraPricePerAudioHour: 3,
+    globalCaps: GENEROUS_GLOBAL_CAPS,
   };
   server = createServer(createDispatcher(pool, completeOptions, audioOptions, FAKE_PI_OPTIONS));
 }
@@ -156,6 +160,7 @@ describe("audio concurrency limit in the gateway dispatcher", () => {
     if (!url) throw new Error("TEST_DATABASE_URL is not set");
     pool ??= createPool(url);
     await resetDatabase(pool);
+    await setTenantAiBudget(pool, getTenantZeroId());
     VALID_COMPLETE_BODY.projectItemId = await runInTenant(getTenantZeroId(), () =>
       createProjectItem(pool, { seed: true }),
     );

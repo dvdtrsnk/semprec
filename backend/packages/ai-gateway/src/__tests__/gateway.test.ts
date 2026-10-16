@@ -1,41 +1,28 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
+import { createAgentRun, createUser, failGatewayCall, hashPassword, seedSystem } from "@semprec/data";
 import {
-  createAgentRun,
-  createChokePoint,
-  createUser,
-  failGatewayCall,
-  getSystemSettingsDatabaseId,
-  getSystemSettingsItemId,
-  hashPassword,
-  seedSystem,
-} from "@semprec/data";
-import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+  setTenantAiBudget,
+} from "@semprec/data/testSupport";
+import { runInTenant } from "@semprec/shared";
 import { BudgetExceededError, complete, diarize, embed, transcribe } from "../gateway.js";
 import { logger } from "../logger.js";
 
-let pool: Pool;
+/** Far above any spend in this file, so only the tenant caps are in play unless a test lowers them. */
+const GLOBAL_CAPS = { dailyCapUsd: 1_000_000, monthlyCapUsd: 10_000_000 };
 
-async function setBudgets(
-  pool: Pool,
-  budgets: { dailyBudgetUsd?: number | null; monthlyBudgetUsd?: number | null },
-): Promise<void> {
-  const client = await pool.connect();
-  let itemId: string;
-  let databaseId: string;
-  try {
-    itemId = await getSystemSettingsItemId(client);
-    databaseId = await getSystemSettingsDatabaseId(client);
-  } finally {
-    client.release();
-  }
-  await createChokePoint(pool).updateItem({ databaseId, itemId, propertiesPatch: budgets });
-}
+let pool: Pool;
 
 describe("gateway", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    await setTenantAiBudget(pool, getTenantZeroId());
     const passwordHash = await hashPassword("s3cret-password");
     await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en", tenantId: getTenantZeroId() });
   });
@@ -51,7 +38,7 @@ describe("gateway", () => {
   it("complete() records one token row and returns the invoke result", async () => {
     const result = await complete(
       pool,
-      { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.01 },
+      { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.01, globalCaps: GLOBAL_CAPS },
       async () => ({
         inputTokens: 100,
         outputTokens: 20,
@@ -75,7 +62,7 @@ describe("gateway", () => {
 
     await embed(
       pool,
-      { provider: "anthropic", model: "voyage-3", agentRunId: run.id, estimatedCostUsd: 0.01 },
+      { provider: "anthropic", model: "voyage-3", agentRunId: run.id, estimatedCostUsd: 0.01, globalCaps: GLOBAL_CAPS },
       async () => ({
         inputTokens: 50,
         outputTokens: 0,
@@ -89,10 +76,14 @@ describe("gateway", () => {
   });
 
   it("transcribe() records one audio row with null token columns", async () => {
-    await transcribe(pool, { provider: "deepinfra", model: "whisper-large-v3", estimatedCostUsd: 0.01 }, async () => ({
-      audioSeconds: 180,
-      costUsd: 0.03,
-    }));
+    await transcribe(
+      pool,
+      { provider: "deepinfra", model: "whisper-large-v3", estimatedCostUsd: 0.01, globalCaps: GLOBAL_CAPS },
+      async () => ({
+        audioSeconds: 180,
+        costUsd: 0.03,
+      }),
+    );
 
     const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
     expect(rows).toHaveLength(1);
@@ -102,10 +93,14 @@ describe("gateway", () => {
   });
 
   it("diarize() records one audio row with no agent run when called outside one", async () => {
-    await diarize(pool, { provider: "pyannoteai", model: "pyannote-3", estimatedCostUsd: 0.01 }, async () => ({
-      audioSeconds: 240,
-      costUsd: 0.04,
-    }));
+    await diarize(
+      pool,
+      { provider: "pyannoteai", model: "pyannote-3", estimatedCostUsd: 0.01, globalCaps: GLOBAL_CAPS },
+      async () => ({
+        audioSeconds: 240,
+        costUsd: 0.04,
+      }),
+    );
 
     const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
     expect(rows).toHaveLength(1);
@@ -118,7 +113,13 @@ describe("gateway", () => {
 
     await diarize(
       pool,
-      { provider: "pyannoteai", model: "pyannote-3", agentRunId: run.id, estimatedCostUsd: 0.01 },
+      {
+        provider: "pyannoteai",
+        model: "pyannote-3",
+        agentRunId: run.id,
+        estimatedCostUsd: 0.01,
+        globalCaps: GLOBAL_CAPS,
+      },
       async () => ({
         audioSeconds: 60,
         costUsd: 0.01,
@@ -132,9 +133,13 @@ describe("gateway", () => {
 
   it("leaves one failed row at cost 0 and rethrows the provider error when the call fails", async () => {
     await expect(
-      complete(pool, { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5 }, async () => {
-        throw new Error("provider error");
-      }),
+      complete(
+        pool,
+        { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5, globalCaps: GLOBAL_CAPS },
+        async () => {
+          throw new Error("provider error");
+        },
+      ),
     ).rejects.toThrow("provider error");
 
     const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
@@ -149,11 +154,15 @@ describe("gateway", () => {
     const logError = vi.spyOn(logger, "error");
 
     await expect(
-      complete(pool, { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5 }, async () => {
-        // Removing the reservation makes failGatewayCall's affected-row check throw.
-        await pool.query("DELETE FROM ai_gateway_calls");
-        throw new Error("provider error");
-      }),
+      complete(
+        pool,
+        { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5, globalCaps: GLOBAL_CAPS },
+        async () => {
+          // Removing the reservation makes failGatewayCall's affected-row check throw.
+          await pool.query("DELETE FROM ai_gateway_calls");
+          throw new Error("provider error");
+        },
+      ),
     ).rejects.toThrow("provider error");
 
     expect(logError).toHaveBeenCalledTimes(1);
@@ -161,11 +170,15 @@ describe("gateway", () => {
   });
 
   it("settles the reservation with the real usage, not the estimate", async () => {
-    await complete(pool, { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5 }, async () => ({
-      inputTokens: 120,
-      outputTokens: 30,
-      costUsd: 0.002,
-    }));
+    await complete(
+      pool,
+      { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5, globalCaps: GLOBAL_CAPS },
+      async () => ({
+        inputTokens: 120,
+        outputTokens: 30,
+        costUsd: 0.002,
+      }),
+    );
 
     const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
     expect(rows).toHaveLength(1);
@@ -176,10 +189,14 @@ describe("gateway", () => {
   });
 
   it("settles an audio reservation with the real audio seconds and cost", async () => {
-    await transcribe(pool, { provider: "deepinfra", model: "whisper-large-v3", estimatedCostUsd: 0.5 }, async () => ({
-      audioSeconds: 90,
-      costUsd: 0.015,
-    }));
+    await transcribe(
+      pool,
+      { provider: "deepinfra", model: "whisper-large-v3", estimatedCostUsd: 0.5, globalCaps: GLOBAL_CAPS },
+      async () => ({
+        audioSeconds: 90,
+        costUsd: 0.015,
+      }),
+    );
 
     const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
     expect(rows).toHaveLength(1);
@@ -222,7 +239,7 @@ describe("gateway", () => {
 
       const result = await complete(
         pool,
-        { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5 },
+        { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5, globalCaps: GLOBAL_CAPS },
         async () => ({ inputTokens: 120, outputTokens: 30, costUsd: 0.002 }),
       );
 
@@ -249,7 +266,7 @@ describe("gateway", () => {
 
       const result = await complete(
         pool,
-        { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5 },
+        { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5, globalCaps: GLOBAL_CAPS },
         async () => ({ inputTokens: 120, outputTokens: 30, costUsd: 0.002 }),
       );
 
@@ -264,7 +281,11 @@ describe("gateway", () => {
       expect(rows[0].input_tokens).toBeNull();
 
       expect(logError).toHaveBeenCalledTimes(1);
-      expect(logError.mock.calls[0]?.[0]).toMatchObject({ callId: rows[0].id, attempts: 3, estimatedCostUsd: 0.5 });
+      expect(logError.mock.calls[0]?.[0]).toMatchObject({
+        callId: rows[0].id,
+        attempts: 3,
+        estimatedCostUsd: 0.5,
+      });
     });
 
     it("returns the audio provider result and leaves the row reserved when every settle fails", async () => {
@@ -275,7 +296,7 @@ describe("gateway", () => {
 
       const result = await transcribe(
         pool,
-        { provider: "deepinfra", model: "whisper-large-v3", estimatedCostUsd: 0.5 },
+        { provider: "deepinfra", model: "whisper-large-v3", estimatedCostUsd: 0.5, globalCaps: GLOBAL_CAPS },
         async () => ({ audioSeconds: 90, costUsd: 0.015 }),
       );
 
@@ -300,7 +321,7 @@ describe("gateway", () => {
 
       const result = await complete(
         pool,
-        { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5 },
+        { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5, globalCaps: GLOBAL_CAPS },
         async () => ({ inputTokens: 120, outputTokens: 30, costUsd: 0.002 }),
       );
 
@@ -322,17 +343,21 @@ describe("gateway", () => {
     });
 
     it("rejects the call once the daily cap is already reached, without recording a row", async () => {
-      await setBudgets(pool, { dailyBudgetUsd: 1, monthlyBudgetUsd: null });
+      await setTenantAiBudget(pool, getTenantZeroId(), { dailyCapUsd: 1, monthlyCapUsd: null });
       await pool.query(
         `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, cost_usd) VALUES ('anthropic', 'claude-sonnet-5', 10, 10, 1)`,
       );
 
       await expect(
-        complete(pool, { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.01 }, async () => ({
-          inputTokens: 1,
-          outputTokens: 1,
-          costUsd: 0.01,
-        })),
+        complete(
+          pool,
+          { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.01, globalCaps: GLOBAL_CAPS },
+          async () => ({
+            inputTokens: 1,
+            outputTokens: 1,
+            costUsd: 0.01,
+          }),
+        ),
       ).rejects.toThrow(BudgetExceededError);
 
       const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
@@ -340,14 +365,18 @@ describe("gateway", () => {
     });
 
     it("rejects an audio call before its provider is invoked", async () => {
-      await setBudgets(pool, { dailyBudgetUsd: 1, monthlyBudgetUsd: null });
+      await setTenantAiBudget(pool, getTenantZeroId(), { dailyCapUsd: 1, monthlyCapUsd: null });
       await pool.query(
         `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, cost_usd) VALUES ('anthropic', 'claude-sonnet-5', 10, 10, 1)`,
       );
       const invoke = vi.fn(async () => ({ audioSeconds: 180, costUsd: 0.03 }));
 
       await expect(
-        transcribe(pool, { provider: "deepinfra", model: "whisper-large-v3", estimatedCostUsd: 0.01 }, invoke),
+        transcribe(
+          pool,
+          { provider: "deepinfra", model: "whisper-large-v3", estimatedCostUsd: 0.01, globalCaps: GLOBAL_CAPS },
+          invoke,
+        ),
       ).rejects.toThrow(BudgetExceededError);
 
       expect(invoke).not.toHaveBeenCalled();
@@ -356,14 +385,18 @@ describe("gateway", () => {
     });
 
     it("rejects a diarize() call before its provider is invoked", async () => {
-      await setBudgets(pool, { dailyBudgetUsd: 1, monthlyBudgetUsd: null });
+      await setTenantAiBudget(pool, getTenantZeroId(), { dailyCapUsd: 1, monthlyCapUsd: null });
       await pool.query(
         `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, cost_usd) VALUES ('anthropic', 'claude-sonnet-5', 10, 10, 1)`,
       );
       const invoke = vi.fn(async () => ({ audioSeconds: 240, costUsd: 0.04 }));
 
       await expect(
-        diarize(pool, { provider: "pyannoteai", model: "pyannote-3", estimatedCostUsd: 0.01 }, invoke),
+        diarize(
+          pool,
+          { provider: "pyannoteai", model: "pyannote-3", estimatedCostUsd: 0.01, globalCaps: GLOBAL_CAPS },
+          invoke,
+        ),
       ).rejects.toThrow(BudgetExceededError);
 
       expect(invoke).not.toHaveBeenCalled();
@@ -372,29 +405,33 @@ describe("gateway", () => {
     });
 
     it("rejects the call once the monthly cap is already reached, independently of the daily cap", async () => {
-      await setBudgets(pool, { dailyBudgetUsd: null, monthlyBudgetUsd: 5 });
+      await setTenantAiBudget(pool, getTenantZeroId(), { dailyCapUsd: null, monthlyCapUsd: 5 });
       await pool.query(
         `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, cost_usd) VALUES ('anthropic', 'claude-sonnet-5', 10, 10, 5)`,
       );
 
       await expect(
-        complete(pool, { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.01 }, async () => ({
-          inputTokens: 1,
-          outputTokens: 1,
-          costUsd: 0.01,
-        })),
+        complete(
+          pool,
+          { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.01, globalCaps: GLOBAL_CAPS },
+          async () => ({
+            inputTokens: 1,
+            outputTokens: 1,
+            costUsd: 0.01,
+          }),
+        ),
       ).rejects.toThrow(BudgetExceededError);
     });
 
     it("never blocks when both caps are null, even with heavy prior spend", async () => {
-      await setBudgets(pool, { dailyBudgetUsd: null, monthlyBudgetUsd: null });
+      await setTenantAiBudget(pool, getTenantZeroId(), { dailyCapUsd: null, monthlyCapUsd: null });
       await pool.query(
         `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, cost_usd) VALUES ('anthropic', 'claude-sonnet-5', 10, 10, 10000)`,
       );
 
       const result = await complete(
         pool,
-        { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.01 },
+        { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.01, globalCaps: GLOBAL_CAPS },
         async () => ({
           inputTokens: 1,
           outputTokens: 1,
@@ -406,7 +443,7 @@ describe("gateway", () => {
     });
 
     it("admits exactly one of two concurrent calls whose estimates each reach the daily cap", async () => {
-      await setBudgets(pool, { dailyBudgetUsd: 0.5, monthlyBudgetUsd: null });
+      await setTenantAiBudget(pool, getTenantZeroId(), { dailyCapUsd: 0.5, monthlyCapUsd: null });
       let entered = 0;
       let releaseGate!: () => void;
       const gate = new Promise<void>((resolve) => {
@@ -417,7 +454,7 @@ describe("gateway", () => {
         await gate;
         return { inputTokens: 10, outputTokens: 10, costUsd: 0.4 };
       };
-      const ctx = { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5 };
+      const ctx = { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5, globalCaps: GLOBAL_CAPS };
 
       const calls = [complete(pool, ctx, invoke), complete(pool, ctx, invoke)];
       const first = await Promise.race(
@@ -446,8 +483,8 @@ describe("gateway", () => {
     });
 
     it("does not count a failed call against the cap for the next call", async () => {
-      await setBudgets(pool, { dailyBudgetUsd: 0.5, monthlyBudgetUsd: null });
-      const ctx = { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5 };
+      await setTenantAiBudget(pool, getTenantZeroId(), { dailyCapUsd: 0.5, monthlyCapUsd: null });
+      const ctx = { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.5, globalCaps: GLOBAL_CAPS };
 
       await expect(
         complete(pool, ctx, async () => {
@@ -463,11 +500,11 @@ describe("gateway", () => {
     });
 
     it("still allows the call while spend is below both non-null caps", async () => {
-      await setBudgets(pool, { dailyBudgetUsd: 50, monthlyBudgetUsd: 100 });
+      await setTenantAiBudget(pool, getTenantZeroId(), { dailyCapUsd: 50, monthlyCapUsd: 100 });
 
       const result = await complete(
         pool,
-        { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.01 },
+        { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.01, globalCaps: GLOBAL_CAPS },
         async () => ({
           inputTokens: 1,
           outputTokens: 1,
@@ -477,5 +514,183 @@ describe("gateway", () => {
 
       expect(result).toEqual({ inputTokens: 1, outputTokens: 1, costUsd: 0.01 });
     });
+  });
+});
+
+describe("gateway caps across tenants, through the semprec_side role", () => {
+  const REFUSAL = "AI budget exceeded";
+  let adminPool: Pool;
+  let sidePool: Pool;
+  let tenantA: string;
+  let tenantB: string;
+
+  beforeAll(async () => {
+    adminPool = getTestPool();
+    sidePool = await createRuntimeRolePool(adminPool, "semprec_side");
+  });
+
+  afterAll(async () => {
+    await sidePool?.end();
+    await adminPool?.end();
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(adminPool);
+    tenantA = getTenantZeroId();
+    tenantB = await createTestTenant(adminPool);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Raw SQL: a row's `at` and tenant must be controlled to sit on either side of a window boundary. */
+  async function spend(tenantId: string, costUsd: number, at = "now()"): Promise<void> {
+    await adminPool.query(
+      `INSERT INTO ai_gateway_calls (tenant_id, provider, model, input_tokens, output_tokens, cost_usd, at)
+       VALUES ($1, 'anthropic', 'claude-sonnet-5', 1, 1, $2, ${at})`,
+      [tenantId, costUsd],
+    );
+  }
+
+  function callIn(tenantId: string, globalCaps = GLOBAL_CAPS): Promise<unknown> {
+    return runInTenant(tenantId, () =>
+      complete(
+        sidePool,
+        { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.01, globalCaps },
+        async () => ({ inputTokens: 1, outputTokens: 1, costUsd: 0.01 }),
+      ),
+    );
+  }
+
+  async function rowCount(): Promise<number> {
+    const { rows } = await adminPool.query<{ n: string }>("SELECT count(*) AS n FROM ai_gateway_calls");
+    return Number(rows[0]?.n);
+  }
+
+  async function expectRefused(call: Promise<unknown>): Promise<void> {
+    const err: unknown = await call.then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(BudgetExceededError);
+    expect(err instanceof Error && err.message).toBe(REFUSAL);
+  }
+
+  it("refuses tenant A at its daily cap, writing no row, while tenant B is admitted", async () => {
+    const logWarn = vi.spyOn(logger, "warn");
+    await setTenantAiBudget(adminPool, tenantA, { dailyCapUsd: 1 });
+    await setTenantAiBudget(adminPool, tenantB, { dailyCapUsd: 1 });
+    await spend(tenantA, 1);
+
+    await expectRefused(callIn(tenantA));
+    expect(await rowCount()).toBe(1);
+    await callIn(tenantB);
+    expect(await rowCount()).toBe(2);
+    expect(logWarn).toHaveBeenCalledTimes(1);
+    expect(logWarn).toHaveBeenCalledWith({ limit: "tenantDaily" }, expect.any(String));
+  });
+
+  it("refuses tenant A at its monthly cap while tenant B is admitted", async () => {
+    const logWarn = vi.spyOn(logger, "warn");
+    await setTenantAiBudget(adminPool, tenantA, { monthlyCapUsd: 1 });
+    await setTenantAiBudget(adminPool, tenantB, { monthlyCapUsd: 1 });
+    await spend(tenantA, 1);
+
+    await expectRefused(callIn(tenantA));
+    expect(await rowCount()).toBe(1);
+    await callIn(tenantB);
+    expect(logWarn).toHaveBeenCalledWith({ limit: "tenantMonthly" }, expect.any(String));
+  });
+
+  it("refuses a tenant with no budget row and writes no row", async () => {
+    const logWarn = vi.spyOn(logger, "warn");
+    await setTenantAiBudget(adminPool, tenantA);
+
+    await expectRefused(callIn(tenantB));
+
+    expect(await rowCount()).toBe(0);
+    expect(logWarn).toHaveBeenCalledWith({ limit: "noTenantBudget" }, expect.any(String));
+  });
+
+  it("refuses a reservation outside any tenant scope while two tenants exist", async () => {
+    await setTenantAiBudget(adminPool, tenantA);
+    await setTenantAiBudget(adminPool, tenantB);
+
+    await expectRefused(
+      complete(
+        sidePool,
+        { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.01, globalCaps: GLOBAL_CAPS },
+        async () => ({ inputTokens: 1, outputTokens: 1, costUsd: 0.01 }),
+      ),
+    );
+    expect(await rowCount()).toBe(0);
+  });
+
+  it("admits a call with NULL caps while spend is below the global caps", async () => {
+    await setTenantAiBudget(adminPool, tenantA, { dailyCapUsd: null, monthlyCapUsd: null });
+    await spend(tenantA, 500);
+
+    await callIn(tenantA);
+
+    expect(await rowCount()).toBe(2);
+  });
+
+  it("refuses a NULL-capped tenant once all tenants reach the global daily cap, with the same message", async () => {
+    const logWarn = vi.spyOn(logger, "warn");
+    await setTenantAiBudget(adminPool, tenantA);
+    await setTenantAiBudget(adminPool, tenantB);
+    await spend(tenantA, 1);
+
+    await expectRefused(callIn(tenantB, { dailyCapUsd: 1, monthlyCapUsd: 1_000 }));
+
+    expect(await rowCount()).toBe(1);
+    expect(logWarn).toHaveBeenCalledWith({ limit: "globalDaily" }, expect.any(String));
+  });
+
+  it("refuses a NULL-capped tenant once all tenants reach the global monthly cap", async () => {
+    const logWarn = vi.spyOn(logger, "warn");
+    await setTenantAiBudget(adminPool, tenantA);
+    await setTenantAiBudget(adminPool, tenantB);
+    await spend(tenantA, 1);
+
+    await expectRefused(callIn(tenantB, { dailyCapUsd: 1_000, monthlyCapUsd: 1 }));
+
+    expect(logWarn).toHaveBeenCalledWith({ limit: "globalMonthly" }, expect.any(String));
+  });
+
+  it("does not count a row one minute before the tenant's local midnight toward its daily cap", async () => {
+    // UTC+14: its local midnight is far from UTC midnight for most of the day.
+    const zone = "Pacific/Kiritimati";
+    const dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    try {
+      await runInTenant(tenantA, () => seedSystem(dataPool));
+    } finally {
+      await dataPool.end();
+    }
+    await adminPool.query(
+      `UPDATE items SET properties = properties || jsonb_build_object('timezone', $1::text)
+        WHERE tenant_id = $2 AND database_id = (SELECT id FROM databases WHERE owner_module_id = 'systemSettings' AND system AND tenant_id = $2)`,
+      [zone, tenantA],
+    );
+    await setTenantAiBudget(adminPool, tenantA, { dailyCapUsd: 1 });
+    await adminPool.query(
+      `INSERT INTO ai_gateway_calls (tenant_id, provider, model, input_tokens, output_tokens, cost_usd, at)
+       VALUES ($1, 'anthropic', 'claude-sonnet-5', 1, 1, 5, date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2 - interval '1 minute')`,
+      [tenantA, zone],
+    );
+
+    await callIn(tenantA);
+
+    expect(await rowCount()).toBe(2);
+  });
+
+  it("does not count a row one minute before UTC midnight toward the global daily cap", async () => {
+    await setTenantAiBudget(adminPool, tenantA);
+    await spend(tenantA, 1, "date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '1 minute'");
+
+    await callIn(tenantA, { dailyCapUsd: 1, monthlyCapUsd: 1_000 });
+
+    expect(await rowCount()).toBe(2);
   });
 });
