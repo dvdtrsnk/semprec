@@ -97,14 +97,14 @@ async function createMcpTools(pool: Pool, runId: string, projectItemId: string):
  * Two granted MCP servers can expose the same tool name, and a model can only address one of
  * them: the first keeps the name, and every later one is left out of this run's catalog, logged.
  */
-function withUniqueNames(tools: AgentTool[]): AgentTool[] {
+export function withUniqueNames(tools: AgentTool[]): AgentTool[] {
   const seen = new Set<string>();
   return tools.filter((tool) => {
     if (!seen.has(tool.name)) {
       seen.add(tool.name);
       return true;
     }
-    logger.warn({ toolName: tool.name, label: tool.label }, "Agent tool name collides with an earlier tool; skipped");
+    logger.warn({ toolName: tool.name }, "Agent tool name collides with an earlier tool; skipped");
     return false;
   });
 }

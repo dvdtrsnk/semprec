@@ -159,7 +159,7 @@ export async function ingestAttachments(
       // over it, matching the text-extraction fallback above.
       if (err instanceof AttachmentCapExceededError) {
         logger.warn(
-          { filename: attachment.filename, err: err.message },
+          { messageItemId: input.messageItemId, contentType: attachment.contentType },
           "Skipping attachment that exceeded the size cap",
         );
         continue;
