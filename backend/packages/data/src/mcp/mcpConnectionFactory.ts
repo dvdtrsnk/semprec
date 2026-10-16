@@ -120,10 +120,7 @@ export async function connectMcpServer(
 }
 
 function addressNotAllowed(transport: McpConnectionConfig["transport"]): McpConnectionError {
-  return new McpConnectionError(
-    "address_not_allowed",
-    `MCP server address is not allowed (transport=${transport})`,
-  );
+  return new McpConnectionError("address_not_allowed", `MCP server address is not allowed (transport=${transport})`);
 }
 
 /**
@@ -170,7 +167,10 @@ async function safeCloseOutbound(outbound: OutboundHttp | null): Promise<void> {
   try {
     await outbound.close();
   } catch (err) {
-    logger.warn({ errorName: err instanceof Error ? err.name : typeof err }, "MCP outbound connection pool close failed");
+    logger.warn(
+      { errorName: err instanceof Error ? err.name : typeof err },
+      "MCP outbound connection pool close failed",
+    );
   }
 }
 
@@ -247,7 +247,10 @@ function buildTransport(
       return { transport: new SSEClientTransport(new URL(config.url), { ...authProviderOptions(credential), fetch }) };
     case "http":
       return {
-        transport: new StreamableHTTPClientTransport(new URL(config.url), { ...authProviderOptions(credential), fetch }),
+        transport: new StreamableHTTPClientTransport(new URL(config.url), {
+          ...authProviderOptions(credential),
+          fetch,
+        }),
       };
   }
 }

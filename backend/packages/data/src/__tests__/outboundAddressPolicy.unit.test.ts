@@ -113,10 +113,12 @@ describe("isOutboundAddressNotAllowed (issue #1034)", () => {
   it("finds the refusal anywhere in the cause chain and nothing else", () => {
     const refusal = new OutboundAddressNotAllowedError("internal.test");
     expect(isOutboundAddressNotAllowed(refusal)).toBe(true);
-    expect(isOutboundAddressNotAllowed(new TypeError("fetch failed", { cause: new Error("x", { cause: refusal }) }))).toBe(
-      true,
+    expect(
+      isOutboundAddressNotAllowed(new TypeError("fetch failed", { cause: new Error("x", { cause: refusal }) })),
+    ).toBe(true);
+    expect(isOutboundAddressNotAllowed(new TypeError("fetch failed", { cause: new Error("ECONNREFUSED") }))).toBe(
+      false,
     );
-    expect(isOutboundAddressNotAllowed(new TypeError("fetch failed", { cause: new Error("ECONNREFUSED") }))).toBe(false);
     expect(isOutboundAddressNotAllowed("not an error")).toBe(false);
   });
 });
