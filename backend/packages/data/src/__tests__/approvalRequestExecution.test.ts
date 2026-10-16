@@ -10,7 +10,8 @@ import {
 } from "../testSupport/mcpContractServers.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { withTransaction } from "../db/pool.js";
+import { requireSingleRow, withTransaction } from "../db/pool.js";
+import { createUser as createAuthUser } from "../auth/usersStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
 import { setProjectMcpGrantForAgentPage } from "../mcp/mcpAgentPageGrants.js";
@@ -34,6 +35,7 @@ const SEARCH_TOOL: ContractServerTool = {
 let pool: Pool;
 let mcpServersId: string;
 let servers: McpContractServer[] = [];
+let soleTenantAdminId: string;
 
 async function databaseIdFor(moduleId: string): Promise<string> {
   const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
@@ -45,20 +47,22 @@ async function createUser(): Promise<string> {
   return (await createTenantZeroUser(pool)).id;
 }
 
-// `users.tenant_id` is unique, so the UPDATE touches at most the one user bound to the tenant.
 async function createSoleTenantAdmin(): Promise<string> {
-  const { rows } = await pool.query<{ id: string }>(
-    "UPDATE users SET role = 'admin' WHERE tenant_id = app_tenant_default() RETURNING id",
-  );
-  if (rows[0]) return rows[0].id;
-  const user = await createTenantZeroUser(pool);
-  await pool.query("UPDATE users SET role = 'admin' WHERE id = $1", [user.id]);
+  const { rows } = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
+  const tenantId = requireSingleRow(rows, "sole tenant").id;
+  if (!tenantId) throw new Error("Expected a sole tenant");
+  const user = await createAuthUser(pool, {
+    email: "admin@example.test",
+    passwordHash: "unused",
+    tenantId,
+    role: "admin",
+  });
   return user.id;
 }
 
 async function createGrantedTool(contractServer: McpContractServer) {
   // The contract server is a stdio config, which only a human admin of the sole tenant may store.
-  const adminId = await createSoleTenantAdmin();
+  const adminId = soleTenantAdminId;
   const server = await withTransaction(pool, (client) =>
     createItemWithClient(
       client,
@@ -90,7 +94,7 @@ describe("approval request decide+execute (issue #131)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
-    await createUser();
+    soleTenantAdminId = await createSoleTenantAdmin();
     const viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry();
     await seedSystem(pool, viewTypeRegistry);
     mcpServersId = await databaseIdFor("mcpServers");

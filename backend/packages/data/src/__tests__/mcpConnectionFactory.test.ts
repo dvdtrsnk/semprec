@@ -1,6 +1,13 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { runInTenant } from "@semprec/shared";
+import {
+  createRuntimeRolePool,
+  createTenantZeroUser,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 import {
   startHttpContractServer,
   startSseContractServer,
@@ -8,7 +15,8 @@ import {
 } from "../testSupport/mcpContractServers.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { withTransaction } from "../db/pool.js";
+import { requireSingleRow, withTransaction } from "../db/pool.js";
+import { createUser } from "../auth/usersStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { connectMcpServer } from "../mcp/mcpConnectionFactory.js";
@@ -76,14 +84,21 @@ describe("MCP connection factory (issue #231)", () => {
     mcpServersId = await databaseIdFor("mcpServers");
   });
 
-  describe("stdio", () => {
-    // A `stdio` spawn needs an admin of the sole tenant (issue #1033). Each test that expects a
-    // spawn makes its tenant-zero user that admin; the member test below leaves its user a member.
-    async function makeSoleTenantAdmin(): Promise<void> {
-      const user = await createTenantZeroUser(pool);
-      await pool.query("UPDATE users SET role = 'admin' WHERE id = $1", [user.id]);
-    }
+  // A `stdio` spawn needs an admin of the sole tenant (issue #1033). Each test that expects a
+  // spawn creates that admin explicitly; the member test below leaves its user a member.
+  async function makeSoleTenantAdmin(): Promise<void> {
+    const { rows } = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
+    const tenantId = requireSingleRow(rows, "sole tenant").id;
+    if (!tenantId) throw new Error("Expected a sole tenant");
+    await createUser(pool, {
+      email: "admin@example.test",
+      passwordHash: "unused",
+      tenantId,
+      role: "admin",
+    });
+  }
 
+  describe("stdio", () => {
     it("connects, completes the handshake, and injects the credential into the child's env", async () => {
       await makeSoleTenantAdmin();
       const contract = startStdioContractServer();
@@ -137,6 +152,75 @@ describe("MCP connection factory (issue #231)", () => {
       );
       expect(rows[0]?.count).toBe("0");
     });
+
+    it.each(["admin", "member"] as const)(
+      "checks the active tenant's %s role through a runtime pool when another tenant has an admin",
+      async (role) => {
+        await makeSoleTenantAdmin();
+        const tenantId = await createTestTenant(pool);
+        await createUser(pool, {
+          email: "tenant-b@example.test",
+          passwordHash: "unused",
+          tenantId,
+          role,
+        });
+        const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+        try {
+          await runInTenant(tenantId, async () => {
+            await seedSystem(runtimePool, createViewTypeRegistry());
+            const { rows: databases } = await runtimePool.query<{ id: string }>(
+              "SELECT id FROM databases WHERE owner_module_id = 'mcpServers'",
+            );
+            const databaseId = requireSingleRow(databases, "tenant B MCP database").id;
+            const contract = startStdioContractServer();
+            // A legacy stdio row can predate the write-time admin rule; insert through its store.
+            const item = await withTransaction(runtimePool, async (client) => {
+              const stored = await itemsStore.insertItem(client, {
+                databaseId,
+                properties: { name: "Legacy contract server", connectionConfig: contract.connectionConfig },
+              });
+              await storeCredential(client, {
+                itemId: stored.id,
+                credentialType: "api_key",
+                plaintext: "sk-tenant-b-secret",
+              });
+              return stored;
+            });
+            const { rows: tenants } = await runtimePool.query<{ sole: string | null; current: string }>(
+              "SELECT app_sole_tenant() AS sole, app_current_tenant() AS current",
+            );
+            expect(tenants).toEqual([{ sole: null, current: tenantId }]);
+
+            if (role === "member") {
+              await expect(connectMcpServer(runtimePool, item)).rejects.toMatchObject({
+                reason: "transport_not_allowed",
+              });
+              expect(contract.getHandshakeCount()).toBe(0);
+              expect(contract.getChildEnvironmentNames()).toBeNull();
+              const { rows } = await runtimePool.query<{ count: string }>(
+                "SELECT count(*)::text AS count FROM credential_access_log WHERE item_id = $1",
+                [item.id],
+              );
+              expect(rows).toEqual([{ count: "0" }]);
+            } else {
+              const handle = await connectMcpServer(runtimePool, item);
+              try {
+                await waitFor(
+                  () => contract.getHandshakeCount() === 1,
+                  "tenant B stdio contract server never completed the handshake",
+                );
+                expect(contract.getObservedCredential()).toBe("sk-tenant-b-secret");
+              } finally {
+                await handle.close();
+              }
+              await contract.waitForChildExit();
+            }
+          });
+        } finally {
+          await runtimePool.end();
+        }
+      },
+    );
 
     it("gives the child exactly the inherited names, the config's env names and the credential name", async () => {
       await makeSoleTenantAdmin();
@@ -324,8 +408,7 @@ describe("MCP connection factory (issue #231)", () => {
 
     it("rejects a credential decryption failure before opening any connection", async () => {
       // The `stdio` config is only the vehicle here: the spawn check needs an admin of the sole tenant (issue #1033).
-      const adminUser = await createTenantZeroUser(pool);
-      await pool.query("UPDATE users SET role = 'admin' WHERE id = $1", [adminUser.id]);
+      await makeSoleTenantAdmin();
       const item = await withTransaction(pool, (client) =>
         itemsStore.insertItem(client, {
           databaseId: mcpServersId,

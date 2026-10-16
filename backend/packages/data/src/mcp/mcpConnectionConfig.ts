@@ -2,19 +2,6 @@ import { z } from "zod";
 import { ValidationError } from "../errors.js";
 import { isBaselineOutboundUrl } from "../net/storedOutboundUrl.js";
 
-/**
- * Strict, transport-discriminated shape for `mcpServers.connectionConfig` (issue #123).
- * `transport` (not `kind`) as the discriminator: this mirrors the MCP specification's own
- * vocabulary for these three connection kinds, unlike the `kind`-discriminated rule shapes
- * elsewhere in this package (scheduler/rule.ts, tasks/taskRecurrenceRule.ts), which name an
- * unrelated concept (a schedule's recurrence kind).
- */
-/**
- * Names a child process environment variable may take (issue #1033). Besides the shape, a name
- * must not be one the factory's child inherits from the parent (`getDefaultEnvironment`), must not
- * start with a dynamic-loader prefix, and must not be a known interpreter or shell start-up hook:
- * any of those lets a stored config change how the child runs rather than what it is given.
- */
 const INHERITED_ENV_NAMES = ["HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER"];
 const FORBIDDEN_ENV_NAMES = new Set([
   ...INHERITED_ENV_NAMES,
@@ -34,12 +21,23 @@ const FORBIDDEN_ENV_NAMES = new Set([
 ]);
 const FORBIDDEN_ENV_PREFIXES = ["LD_", "DYLD_"];
 
+/**
+ * Environment variable names allowed by issue #1033: valid identifiers excluding the six SDK
+ * inherited names, the `LD_`/`DYLD_` prefixes, and the interpreter/shell names listed in its Task.
+ */
 const childEnvVarName = z
   .string()
   .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "must be a valid environment variable name")
   .refine((name) => !FORBIDDEN_ENV_NAMES.has(name), "is reserved for the child process environment")
   .refine((name) => !FORBIDDEN_ENV_PREFIXES.some((prefix) => name.startsWith(prefix)), "uses a reserved prefix");
 
+/**
+ * Strict, transport-discriminated shape for `mcpServers.connectionConfig` (issue #123).
+ * `transport` (not `kind`) as the discriminator: this mirrors the MCP specification's own
+ * vocabulary for these three connection kinds, unlike the `kind`-discriminated rule shapes
+ * elsewhere in this package (scheduler/rule.ts, tasks/taskRecurrenceRule.ts), which name an
+ * unrelated concept (a schedule's recurrence kind).
+ */
 const stdioConnectionConfig = z.object({
   transport: z.literal("stdio"),
   command: z.string().min(1),
