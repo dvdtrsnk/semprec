@@ -29,9 +29,8 @@ function getVapidConfigFromEnv(): VapidConfig {
  * limiting) is treated as transient and left for the job's own retry. The request goes through the
  * current outbound address policy's `https.Agent` (issue #1034): an endpoint whose host resolves to a
  * denied address is `permanent-failure` too, so the caller revokes it exactly as for a 404/410.
- * Missing `VAPID_*` env vars
- * (issue #703) resolve `not-configured` instead of throwing — a server-side gap, not a verdict on
- * this subscription.
+ * Missing `VAPID_*` env vars (issue #703) resolve `not-configured` instead of throwing — a
+ * server-side gap, not a verdict on this subscription.
  */
 export async function sendWebPushNotification(
   target: WebPushTarget,
