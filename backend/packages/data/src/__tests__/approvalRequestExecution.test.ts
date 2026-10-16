@@ -45,6 +45,7 @@ async function createUser(): Promise<string> {
   return (await createTenantZeroUser(pool)).id;
 }
 
+// `users.tenant_id` is unique, so the UPDATE touches at most the one user bound to the tenant.
 async function createSoleTenantAdmin(): Promise<string> {
   const { rows } = await pool.query<{ id: string }>(
     "UPDATE users SET role = 'admin' WHERE tenant_id = app_tenant_default() RETURNING id",

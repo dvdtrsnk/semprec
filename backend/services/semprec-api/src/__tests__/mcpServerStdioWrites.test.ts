@@ -160,6 +160,24 @@ describe("stdio MCP servers are confined to a human admin (issue #1030)", () => 
     expect(await itemCount()).toBe(1);
   });
 
+  it("lets an admin human switch a server to stdio over REST PATCH", async () => {
+    const seeded = await seedServer(REMOTE_CONFIG);
+    const res = await restPatch(seeded, STDIO_CONFIG);
+    expect(res.status).toBe(200);
+    expect(await storedConfig(seeded.id)).toEqual(STDIO_CONFIG);
+  });
+
+  it("refuses a REST-session actor that is acting for an agent", async () => {
+    const actor: AuthenticatedActor = { ...agentActor, userId, restSession: true };
+    await expect(
+      gateway().invoke("item.create", actor, new Set(CAPABILITY_IDS), {
+        databaseId: mcpServersId,
+        properties: { name: "S", connectionConfig: STDIO_CONFIG },
+      }),
+    ).rejects.toMatchObject({ details: { field: "connectionConfig" } });
+    expect(await itemCount()).toBe(0);
+  });
+
   it("refuses every other writer with the same message and writes nothing", async () => {
     const adminMessage = "A stdio MCP server can only be configured by an administrator";
 
