@@ -123,6 +123,8 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
     );
   });
 
+  // Defense in depth: the `http` schema defines no `env` and, being non-strict, drops an unknown one,
+  // so assertNoCredentialShapedEnvKeys is what refuses a credential-shaped key before that happens.
   it("rejects a remote connectionConfig whose env map smuggles a credential-shaped key", async () => {
     await expect(
       createMcpProposal({
