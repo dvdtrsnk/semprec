@@ -75,8 +75,9 @@ export interface MailLiveSyncRoot {
   reconcileOnce(): Promise<void>;
   /**
    * Waits for every discovery pass in flight, then stops every hosted lifecycle of `tenantId`
-   * through the same path a deactivated account takes. A second call for the same tenant finds
-   * nothing hosted and does nothing. It does not stop a later pass from hosting the tenant again:
+   * through the same path a deactivated account takes. A lifecycle is stopped once even when a
+   * pass started meanwhile retires it too. A second call for the same tenant finds nothing hosted
+   * and does nothing. It does not stop a later pass from hosting the tenant again:
    * that is prevented by the tenant no longer being `active`, which discovery skips.
    */
   stopTenant(tenantId: string): Promise<void>;
@@ -210,7 +211,12 @@ export function createMailLiveSyncRoot(
     return { active, failedTenants };
   }
 
+  /**
+   * Stops `entry` once: callers pass entries from a snapshot of `hosted` (another pass's retire
+   * loop, `stopTenant`, `stop()`), so an entry another caller already removed is skipped.
+   */
   async function stopHosted(mailboxItemId: string, entry: HostedEntry): Promise<void> {
+    if (hosted.get(mailboxItemId) !== entry) return;
     hosted.delete(mailboxItemId);
     entry.heartbeat?.stop();
     try {

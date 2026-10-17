@@ -820,14 +820,19 @@ describe("mail live-sync root: stopTenant (issue #1042)", () => {
 
   /** Tenant zero's mailbox, created through the runtime role inside tenant zero. */
   async function addMailboxToTenantZero(): Promise<string> {
-    return runInTenant(getTenantZeroId(), () =>
+    return addMailboxTo(getTenantZeroId(), { provider: "generic" });
+  }
+
+  /** A mailbox in a tenant that already has a Mailboxes database, created through the runtime role inside it. */
+  async function addMailboxTo(tenantId: string, properties: Record<string, string> = {}): Promise<string> {
+    return runInTenant(tenantId, () =>
       withTransaction(dataPool, async (client) => {
         const { rows } = await client.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [
           MAILBOXES_MODULE_ID,
         ]);
         const databaseId = rows[0]?.id;
-        if (!databaseId) throw new Error("tenant zero has no Mailboxes database");
-        const item = await createItemWithClient(client, { databaseId, properties: { provider: "generic" } });
+        if (!databaseId) throw new Error(`tenant ${tenantId} has no Mailboxes database`);
+        const item = await createItemWithClient(client, { databaseId, properties });
         return item.id;
       }),
     );
@@ -947,6 +952,62 @@ describe("mail live-sync root: stopTenant (issue #1042)", () => {
     expect(events.filter((event) => event.startsWith("stop:"))).toEqual([`stop:${b.mailboxId}`]);
     expect(events).not.toContain(`stop:${m0}`);
 
+    await root.stop();
+  });
+
+  it("stops each lifecycle once when a pass started while it waits retires the same tenant", async () => {
+    const b = await addTenantWithMailbox();
+    const b2 = await addMailboxTo(b.tenantId);
+    const gate = (): { promise: Promise<void>; release: () => void } => {
+      let release: () => void = () => {};
+      const promise = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { promise, release };
+    };
+    const startGates = new Map<string, Promise<void>>();
+    const firstStop = gate();
+    let stopCalls = 0;
+    const events: string[] = [];
+    const factory: MailLiveSyncLifecycleFactory = (account) => ({
+      async start() {
+        events.push(`start:${account.mailboxItemId}`);
+        await startGates.get(account.mailboxItemId);
+      },
+      async stop() {
+        events.push(`stop:${account.mailboxItemId}`);
+        if (stopCalls++ === 0) await firstStop.promise;
+      },
+    });
+    const root = createMailLiveSyncRoot(dataPool, factory);
+    await root.reconcileOnce();
+    expect(events.filter((event) => event.startsWith("start:")).sort()).toEqual(
+      [`start:${b.mailboxId}`, `start:${b2}`].sort(),
+    );
+
+    // Pass 1 hosts a new tenant-zero mailbox and holds in its start, so stopTenant waits for it.
+    const m0 = await addMailboxToTenantZero();
+    const m0Start = gate();
+    startGates.set(m0, m0Start.promise);
+    await markSuspended(b.tenantId);
+    const pass1 = root.reconcileOnce();
+    await vi.waitFor(() => expect(events).toContain(`start:${m0}`));
+    const stopping = root.stopTenant(b.tenantId);
+
+    // Pass 2 starts after stopTenant took its snapshot of running passes. Its retire loop
+    // snapshots both of B's entries and holds in the first one's stop.
+    const pass2 = root.reconcileOnce();
+    await vi.waitFor(() => expect(events.filter((event) => event.startsWith("stop:"))).toHaveLength(1));
+
+    // Pass 1 then retires B's other entry, and stopTenant finds nothing left to stop.
+    m0Start.release();
+    await pass1;
+    await stopping;
+    firstStop.release();
+    await pass2;
+
+    const stops = events.filter((event) => event.startsWith("stop:")).sort();
+    expect(stops).toEqual([`stop:${b.mailboxId}`, `stop:${b2}`].sort());
     await root.stop();
   });
 

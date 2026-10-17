@@ -33,7 +33,10 @@ function deferred(): Deferred {
 }
 
 /** What the next `pool.connect()` of the listener pool does before (or instead of) connecting. */
-type ConnectStep = { kind: "wait"; gate: Promise<void> } | { kind: "reject"; error: Error } | { kind: "failListen" };
+type ConnectStep =
+  | { kind: "wait"; gate: Promise<void> }
+  | { kind: "reject"; error: Error; gate?: Promise<void> }
+  | { kind: "failListen" };
 
 /**
  * Wraps the dedicated listener pool's `connect()` so a test can see every backend pid the listener
@@ -48,7 +51,10 @@ function instrumentConnect(pool: Pool): { pids: number[]; clients: PoolClient[];
   const connect = async (): Promise<PoolClient> => {
     const step = steps.shift();
     if (step?.kind === "wait") await step.gate;
-    if (step?.kind === "reject") throw step.error;
+    if (step?.kind === "reject") {
+      await step.gate;
+      throw step.error;
+    }
     const client = await original();
     const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
     pids.push(rows[0]!.pid);
@@ -291,6 +297,25 @@ describe("tenant deactivation signal (issue #1042)", () => {
     expect(calls).toEqual([]);
     expect(listenerPool.totalCount).toBe(0);
     await vi.waitFor(async () => expect(await isBackendAlive(pids[0]!)).toBe(false));
+  });
+
+  it("does not back off when a reconnect in flight at close() then fails", async () => {
+    const { pids, steps } = instrumentConnect(listenerPool);
+    await start(async () => {});
+    const gate = deferred();
+    steps.push({ kind: "reject", error: new Error("connect refused"), gate: gate.promise });
+
+    await adminPool.query("SELECT pg_terminate_backend($1)", [pids[0]!]);
+    await vi.waitFor(() => expect(steps).toEqual([]));
+    const setSpy = vi.spyOn(globalThis, "setTimeout");
+    const closing = listener!.close();
+    listener = null;
+    gate.resolve();
+    await closing;
+
+    // 200 ms is the listener's first reconnect backoff.
+    expect(setSpy.mock.calls.filter((call) => call[1] === 200)).toEqual([]);
+    expect(listenerPool.totalCount).toBe(0);
   });
 
   it("releases a reconnect's client that resolves after close(), without calling the handler", async () => {

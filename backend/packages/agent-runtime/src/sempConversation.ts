@@ -19,6 +19,9 @@ import { logger } from "./logger.js";
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 
+/** Upper bound on the delay before a dropped conversation's failed run close is retried; a shorter TTL bounds it further. */
+const DROPPED_RUN_RETRY_MAX_MS = 60 * 1000;
+
 export const SEMP_BUSY_ERROR_MESSAGE = "Semp is already handling another message, retry once the current turn finishes";
 
 export type SempTurnResult = { ok: true; message: string | null } | { ok: false; error: string };
@@ -50,7 +53,8 @@ interface ConversationRegistryEntry {
   agentRunId: string;
   session: AgentSession;
   busy: boolean;
-  ttlTimer: ReturnType<typeof setTimeout>;
+  /** The pending TTL pause, or, once its conversation is dropped, the pending close retry. */
+  ttlTimer: ReturnType<typeof setTimeout> | undefined;
 }
 
 /**
@@ -67,6 +71,27 @@ async function failRun(pool: Pool, agentRunId: string, err: unknown): Promise<vo
   } catch (closeErr) {
     logger.error({ err: closeErr, agentRunId }, "SempConversation: failed to close errored run");
   }
+}
+
+/**
+ * Records the `run_status` event for a close attempt that did not throw: the status this close
+ * wrote, or — when another writer had already finished the run — the status that writer stored,
+ * read back since it may differ from `status`.
+ */
+async function pushClosedRunStatus(
+  pool: Pool,
+  agentRunId: string,
+  closed: boolean,
+  status: "done" | "error",
+): Promise<void> {
+  if (closed) {
+    await pushRunStatus(pool, agentRunId, status);
+    return;
+  }
+  logger.warn({ agentRunId }, `SempConversation: run closed as ${status} was already finished by another writer`);
+  const finished = await getAgentRun(pool, agentRunId);
+  if (!finished) throw new Error(`agent run ${agentRunId} vanished after finishing`);
+  await pushRunStatus(pool, agentRunId, finished.status);
 }
 
 export interface SempConversationOptions {
@@ -86,7 +111,11 @@ interface TenantConversation {
   entry: ConversationRegistryEntry | null;
   /** Set for the span of a brand-new wake, before it has an entry to be `busy` on its own behalf. */
   waking: boolean;
-  /** Set by `dropTenant` during an in-flight turn: when that turn settles, its entry is discarded and its run closed as `error`. */
+  /**
+   * Set by `dropTenant`. A turn or pause in flight closes the run as `error` once it settles (a
+   * successful pause has closed it as `done` already); a failed close keeps the entry and retries.
+   * `send()` rejects a dropped conversation as busy until its entry is gone.
+   */
   dropped?: boolean;
 }
 
@@ -130,28 +159,61 @@ export class SempConversation {
    * Discards `tenantId`'s conversation after its tenant was deactivated, clearing its TTL timer.
    * With no turn in flight, the wake run is closed as `error` ("account deactivated") and the entry
    * removed. With a turn in flight (`busy` or `waking`), the conversation is marked dropped and the
-   * turn is not aborted: once it settles, its entry is discarded and its run closed as `error`
-   * instead of being kept. A TTL pause in progress also holds the entry `busy`; it closes the run as
-   * `done` and removes the entry itself. A call for a tenant with no conversation, or one already
-   * dropped, does nothing.
+   * turn is not aborted: once it settles, its run is closed as `error` and its entry discarded
+   * instead of being kept. A TTL pause in progress also holds the entry `busy`: when it succeeds it
+   * has closed the run as `done` and removes the entry itself; when it fails, it closes the run as
+   * `error` the same way instead of rescheduling the pause.
+   *
+   * Like `pause()`, the entry is only removed once the close succeeded: a failed close keeps it,
+   * still dropped, and retries on a timer, so the run is never left `running` with nothing in
+   * memory to close it. A call for a tenant with no conversation, or one already dropped, does
+   * nothing.
    */
   async dropTenant(tenantId: string): Promise<void> {
     const state = this.conversations.get(tenantId);
     if (!state || state.dropped) return;
+    state.dropped = true;
     const entry = state.entry;
     if (entry) clearTimeout(entry.ttlTimer);
-    if (state.waking || entry?.busy) {
-      state.dropped = true;
-      return;
-    }
-    state.entry = null;
-    this.releaseIfIdle(tenantId);
-    if (entry) await this.failDroppedRun(tenantId, entry.agentRunId);
+    if (state.waking || entry?.busy || !entry) return;
+    await this.closeDropped(tenantId, state, entry);
   }
 
-  /** Closes a dropped conversation's run as `error` inside its tenant; `failRun` logs its own failure. */
-  private async failDroppedRun(tenantId: string, agentRunId: string): Promise<void> {
-    await runInTenant(tenantId, () => failRun(this.pool, agentRunId, new Error(ACCOUNT_DEACTIVATED_MESSAGE)));
+  /**
+   * Closes a dropped conversation's run as `error` inside its tenant, then removes its entry. On a
+   * failure the entry stays, claimed again by the retry timer; the retry runs this again.
+   */
+  private async closeDropped(
+    tenantId: string,
+    state: TenantConversation,
+    entry: ConversationRegistryEntry,
+  ): Promise<void> {
+    entry.busy = true;
+    try {
+      await runInTenant(tenantId, async () => {
+        const closed = await finishAgentRunWithErrorNotification(
+          this.pool,
+          entry.agentRunId,
+          ACCOUNT_DEACTIVATED_MESSAGE,
+        );
+        await pushClosedRunStatus(this.pool, entry.agentRunId, closed, "error");
+      });
+      if (state.entry === entry) state.entry = null;
+      this.releaseIfIdle(tenantId);
+    } catch (err) {
+      logger.error(
+        { err, tenantId, agentRunId: entry.agentRunId },
+        "SempConversation: failed to close dropped run, will retry",
+      );
+      entry.busy = false;
+      const timer = setTimeout(() => {
+        this.closeDropped(tenantId, state, entry).catch((retryErr) => {
+          logger.error({ err: retryErr, tenantId }, "SempConversation: dropped run retry failed");
+        });
+      }, Math.min(this.ttlMs, DROPPED_RUN_RETRY_MAX_MS));
+      timer.unref?.();
+      entry.ttlTimer = timer;
+    }
   }
 
   /** Drops the tenant's key once it is back to `{ entry: null, waking: false }`. */
@@ -174,7 +236,7 @@ export class SempConversation {
     // Busy check and reservation happen synchronously, before any `await` below, so a
     // concurrent call in the same tenant always observes one of these and is rejected rather
     // than racing to dispatch against, or wake alongside, the in-flight one.
-    if (entry?.busy || state?.waking) {
+    if (entry?.busy || state?.waking || state?.dropped) {
       return { ok: false, error: SEMP_BUSY_ERROR_MESSAGE };
     }
 
@@ -202,9 +264,7 @@ export class SempConversation {
             throw err;
           }
           if (state.dropped) {
-            state.entry = null;
-            this.releaseIfIdle(tenantId);
-            await this.failDroppedRun(tenantId, entry.agentRunId);
+            await this.closeDropped(tenantId, state, entry);
           } else {
             this.touch(tenantId, entry);
           }
@@ -254,7 +314,9 @@ export class SempConversation {
         }
 
         if (wakeState.dropped) {
-          await this.failDroppedRun(tenantId, run.id);
+          const entry: ConversationRegistryEntry = { agentRunId: run.id, session, busy: true, ttlTimer: undefined };
+          wakeState.entry = entry;
+          await this.closeDropped(tenantId, wakeState, entry);
         } else {
           wakeState.entry = {
             agentRunId: run.id,
@@ -316,22 +378,17 @@ export class SempConversation {
     entry.busy = true;
     try {
       const closed = await finishAgentRun(this.pool, entry.agentRunId, "done", null);
-      if (closed) {
-        await pushRunStatus(this.pool, entry.agentRunId, "done");
-      } else {
-        logger.warn(
-          { agentRunId: entry.agentRunId },
-          "SempConversation: paused run was already finished by another writer",
-        );
-        const finished = await getAgentRun(this.pool, entry.agentRunId);
-        if (!finished) throw new Error(`agent run ${entry.agentRunId} vanished after finishing`);
-        await pushRunStatus(this.pool, entry.agentRunId, finished.status);
-      }
+      await pushClosedRunStatus(this.pool, entry.agentRunId, closed, "done");
       state.entry = null;
       this.releaseIfIdle(tenantId);
     } catch (err) {
       logger.error({ err, agentRunId: entry.agentRunId }, "SempConversation: failed to close paused run, will retry");
       entry.busy = false;
+      // A tenant dropped while this pause held the entry closes its run as `error` instead.
+      if (state.dropped) {
+        await this.closeDropped(tenantId, state, entry);
+        return;
+      }
       entry.ttlTimer = this.scheduleTtl(tenantId);
     }
   }
