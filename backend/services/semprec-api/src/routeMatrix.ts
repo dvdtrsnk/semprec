@@ -443,6 +443,27 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
   },
   {
+    name: "request account export",
+    method: "POST",
+    path: "/api/account/exports",
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "list account exports",
+    method: "GET",
+    path: "/api/account/exports",
+    surface: "api",
+    public: false,
+  },
+  {
+    name: "download account export",
+    method: "GET",
+    path: `/api/account/exports/${EXAMPLE_ID}/download`,
+    surface: "api",
+    public: false,
+  },
+  {
     name: "admin account list",
     method: "GET",
     path: "/api/admin/accounts",

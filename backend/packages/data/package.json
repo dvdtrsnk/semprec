@@ -32,6 +32,7 @@
     "sanitize-html": "^2.17.7",
     "undici": "^8.9.0",
     "web-push": "^3.6.7",
+    "yazl": "^3.3.1",
     "yjs": "^13.6.32",
     "zod": "^4.1.11"
   },
@@ -43,6 +44,7 @@
     "@types/safe-regex": "^1.1.6",
     "@types/sanitize-html": "^2.16.1",
     "@types/web-push": "^3.6.4",
+    "@types/yazl": "^3.3.1",
     "embedded-postgres": "^18.4.0-beta.17",
     "vitest": "^4.1.11"
   }
