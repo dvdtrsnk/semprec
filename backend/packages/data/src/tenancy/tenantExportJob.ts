@@ -28,7 +28,7 @@ import {
 export const EXPORT_EXCLUDED_TABLES = ["external_credentials", "tenant_keys", "tenant_exports"] as const;
 
 /** The archive layout version written to `manifest.json`. */
-export const EXPORT_FORMAT_VERSION = 1;
+const EXPORT_FORMAT_VERSION = 1;
 
 /** Rows fetched per `FETCH` from a table's cursor. */
 const CURSOR_BATCH_ROWS = 500;
@@ -113,6 +113,8 @@ class ArchiveWriter {
   async abort(cause: unknown): Promise<void> {
     this.currentSource?.destroy();
     this.output.destroy(cause instanceof Error ? cause : new Error(String(cause)));
+    // The write's own rejection is a consequence of `cause` (or the same error); the caller
+    // rethrows `cause`, so only the settling is awaited here.
     await this.written.then(
       () => undefined,
       () => undefined,

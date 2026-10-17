@@ -421,6 +421,57 @@ describe("tenant data export (issue #1043)", () => {
     expect(payloads).toEqual([expect.objectContaining({ tenantId: tenantA, payload: { exportId } })]);
   });
 
+  it("fails the export when a blob file exists but cannot be read", async () => {
+    await seedTenant(tenantA);
+    const exportId = await requestExportIn(tenantA);
+    const unreadable = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    vi.spyOn(mailStorage, "readStream").mockImplementation(() => {
+      const stream = new Readable({ read() {} });
+      process.nextTick(() => stream.destroy(unreadable));
+      return stream;
+    });
+
+    await expect(runExport(tenantA, exportId)).rejects.toBe(unreadable);
+
+    expect((await exportRow(exportId))?.status).toBe("failed");
+    expect(existsSync(archivePath(tenantA, exportId))).toBe(false);
+  });
+
+  it("fails instead of staying running when an interrupted export cannot be put back to pending", async () => {
+    await seedTenant(tenantA);
+    const exportId = await requestExportIn(tenantA);
+    await adminPool.query("SELECT graphile_worker.remove_job($1)", [`tenantExport:${exportId}`]);
+    const controller = new AbortController();
+    const readMailBlob = mailStorage.readStream.bind(mailStorage);
+    vi.spyOn(mailStorage, "readStream").mockImplementation((key, range) => {
+      controller.abort();
+      return readMailBlob(key, range);
+    });
+    // Stands for a concurrent writer that moves the row on before the export is put back, inside the
+    // partial-file delete that runs just before it; no production path does this today.
+    const deleteFile = filesStorage.delete.bind(filesStorage);
+    vi.spyOn(filesStorage, "delete").mockImplementation(async (key) => {
+      await adminPool.query("UPDATE tenant_exports SET status = 'failed' WHERE id = $1", [exportId]);
+      await deleteFile(key);
+    });
+    const logError = vi.spyOn(logger, "error").mockImplementation(() => {});
+
+    await expect(runExport(tenantA, exportId, { abortSignal: controller.signal })).rejects.toThrow(
+      "marking a running tenant export pending",
+    );
+
+    expect((await exportRow(exportId))?.status).toBe("failed");
+    expect(existsSync(archivePath(tenantA, exportId))).toBe(false);
+    const { rows } = await adminPool.query("SELECT 1 FROM graphile_worker.jobs WHERE task_identifier = $1", [
+      CORE_TASK_NAMES.TENANT_EXPORT,
+    ]);
+    expect(rows).toEqual([]);
+    expect(logError).toHaveBeenCalledWith(
+      { errorName: "Error", exportId },
+      "Marking a tenant export failed did not succeed",
+    );
+  });
+
   it("leaves an export that is not pending, and an unknown id, untouched", async () => {
     await seedTenant(tenantA);
     const exportId = await requestExportIn(tenantA);

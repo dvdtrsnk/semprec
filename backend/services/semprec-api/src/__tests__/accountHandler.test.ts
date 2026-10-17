@@ -306,15 +306,18 @@ describe("account export routes (issue #1043)", () => {
     }
   });
 
-  it("answers a non-uuid id with 400 and a request without a session with 401", async () => {
+  it("answers a non-uuid id with 400, a request without a session with 401 and an unknown path with 404", async () => {
     const headersA = await signInTo(tenantA);
     const exportId = await readyExport(headersA);
 
     const malformed = await download(headersA, "not-a-uuid");
     const anonymous = await download({}, exportId);
+    const unknownPath = await download(headersA, `${exportId}/extra`);
 
     expect(malformed.status).toBe(400);
     expect(anonymous.status).toBe(401);
+    expect(unknownPath.status).toBe(404);
+    expect(unknownPath.body.toString("utf8")).toBe('{"error":{"code":"not_found"}}');
   });
 
   it("destroys the read stream when the client aborts mid-download", async () => {
