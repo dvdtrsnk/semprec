@@ -69,14 +69,15 @@ export interface MailLiveSyncRootOptions {
 export interface MailLiveSyncRoot {
   /** Runs discovery once, then re-runs on `discoveryIntervalMs` until `stop()`. */
   start(): Promise<void>;
-  /** Stops every currently hosted lifecycle and the discovery timer. */
+  /** Stops every currently hosted lifecycle and the discovery timer, and waits for every stop already running. */
   stop(): Promise<void>;
   /** One discovery pass, exposed directly so callers (tests, an explicit "reconcile now" trigger) don't have to wait on the interval. */
   reconcileOnce(): Promise<void>;
   /**
    * Waits for every discovery pass in flight, then stops every hosted lifecycle of `tenantId`
    * through the same path a deactivated account takes. A lifecycle is stopped once even when a
-   * pass started meanwhile retires it too. A second call for the same tenant finds nothing hosted
+   * pass started meanwhile retires it too, and the call resolves only after that pass's stop of
+   * it finished. A second call for the same tenant finds nothing hosted
    * and does nothing. It does not stop a later pass from hosting the tenant again:
    * that is prevented by the tenant no longer being `active`, which discovery skips.
    */
@@ -88,6 +89,8 @@ interface HostedEntry {
   lifecycle: MailAccountLifecycle;
   syncMode: SyncMode;
   heartbeat: ProcessHeartbeatHandle | null;
+  /** Set by the `stopHosted` call that removed this entry; settles, never rejecting, once it stopped. */
+  stopping?: Promise<void>;
 }
 
 /**
@@ -141,6 +144,9 @@ export function createMailLiveSyncRoot(
   // and never rejects, so `stopTenant` can wait for them. The pass's own promise, and its rejection,
   // still go to its caller.
   const runningPasses = new Set<Promise<void>>();
+  // Every entry `stopHosted` has removed from `hosted` whose stop is still running, so `stopTenant`
+  // and `stop()` wait for a stop another caller started instead of resolving ahead of it.
+  const stoppingEntries = new Set<HostedEntry>();
   // Guards against a second `start()` re-running the initial reconcile and scheduling a second
   // interval. Set synchronously at the top of `start()` (no `await` in between the check and the
   // set), so two un-awaited `start()` calls can't both observe it unset.
@@ -213,17 +219,32 @@ export function createMailLiveSyncRoot(
 
   /**
    * Stops `entry` once: callers pass entries from a snapshot of `hosted` (another pass's retire
-   * loop, `stopTenant`, `stop()`), so an entry another caller already removed is skipped.
+   * loop, `stopTenant`, `stop()`), so an entry another caller already removed is not stopped
+   * again; the call instead waits for that caller's stop, if it is still running.
    */
-  async function stopHosted(mailboxItemId: string, entry: HostedEntry): Promise<void> {
-    if (hosted.get(mailboxItemId) !== entry) return;
+  function stopHosted(mailboxItemId: string, entry: HostedEntry): Promise<void> {
+    if (entry.stopping) return entry.stopping;
+    if (hosted.get(mailboxItemId) !== entry) return Promise.resolve();
     hosted.delete(mailboxItemId);
-    entry.heartbeat?.stop();
-    try {
-      await runInTenant(entry.tenantId, () => entry.lifecycle.stop());
-    } catch (err) {
-      options.onLifecycleError?.(mailboxItemId, "stop", err);
-    }
+    stoppingEntries.add(entry);
+    entry.stopping = (async () => {
+      entry.heartbeat?.stop();
+      try {
+        await runInTenant(entry.tenantId, () => entry.lifecycle.stop());
+      } catch (err) {
+        options.onLifecycleError?.(mailboxItemId, "stop", err);
+      } finally {
+        stoppingEntries.delete(entry);
+      }
+    })();
+    return entry.stopping;
+  }
+
+  /** The stops of `tenantId`'s entries (every tenant's when omitted) another caller already started. */
+  function stopsInFlight(tenantId?: string): Array<Promise<void>> {
+    return [...stoppingEntries]
+      .filter((entry) => tenantId === undefined || entry.tenantId === tenantId)
+      .map((entry) => entry.stopping ?? Promise.resolve());
   }
 
   function reconcileOnce(): Promise<void> {
@@ -283,6 +304,7 @@ export function createMailLiveSyncRoot(
           .filter(([, entry]) => entry.tenantId === tenantId)
           .map(([mailboxItemId, entry]) => stopHosted(mailboxItemId, entry)),
       );
+      await Promise.all(stopsInFlight(tenantId));
     },
     async start() {
       if (started) return;
@@ -323,6 +345,7 @@ export function createMailLiveSyncRoot(
       timer = undefined;
       await inFlightDiscovery;
       await Promise.all([...hosted].map(([mailboxItemId, entry]) => stopHosted(mailboxItemId, entry)));
+      await Promise.all(stopsInFlight());
     },
   };
 }
