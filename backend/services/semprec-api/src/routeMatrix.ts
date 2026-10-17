@@ -46,6 +46,8 @@ export interface RouteMatrixEntry {
   public: boolean;
   /** Required when `public` is true — why this route is one of the documented exceptions. */
   publicReason?: string;
+  /** `true` for a route only an `admin` may call: a member gets 403 `admin_required`. */
+  admin?: boolean;
 }
 
 const EXAMPLE_ID = "00000000-0000-0000-0000-000000000000";
@@ -439,6 +441,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/blobs/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+  },
+  {
+    name: "admin account list",
+    method: "GET",
+    path: "/api/admin/accounts",
+    surface: "api",
+    public: false,
+    admin: true,
   },
   {
     name: "sync (WS upgrade)",

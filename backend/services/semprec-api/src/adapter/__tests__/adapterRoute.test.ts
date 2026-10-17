@@ -1,9 +1,23 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { currentTenantScope, type TenantScope } from "@semprec/shared";
-import { ConflictError, NotFoundError, createUser, hashPassword, login, type ItemRow } from "@semprec/data";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
+import { currentTenantScope, runInTenant, type TenantScope } from "@semprec/shared";
+import {
+  ConflictError,
+  NotFoundError,
+  createChokePoint,
+  createUser,
+  hashPassword,
+  login,
+  type ItemRow,
+} from "@semprec/data";
 import { createAdapterRequestListener, type AdapterHandler } from "../adapterRoute.js";
 import { requireJsonObjectBody, requireStringField } from "../requestValidation.js";
 
@@ -20,8 +34,8 @@ const SAMPLE_ITEM: ItemRow = {
   deletedAt: null,
 };
 
-async function tokenFor(email: string): Promise<string> {
-  await createUser(pool, { email, passwordHash: await hashPassword(PASSWORD) });
+async function tokenFor(email: string, role?: "admin" | "member", tenantId?: string): Promise<string> {
+  await createUser(pool, { email, passwordHash: await hashPassword(PASSWORD), role, tenantId });
   const result = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "1.2.3.4" });
   return result.token;
 }
@@ -106,6 +120,57 @@ describe("adapter route (issue #238)", () => {
       expect(scopes).toEqual([{ kind: "tenant", tenantId: getTenantZeroId() }]);
     } finally {
       await new Promise<void>((resolve) => scopedServer.close(() => resolve()));
+    }
+  });
+
+  it("runs an admin route in system scope that sees no tenant rows, and refuses a member before the handler", async () => {
+    const tenantA = await createTestTenant(pool);
+    const tenantB = await createTestTenant(pool);
+    for (const tenantId of [tenantA, tenantB]) {
+      await runInTenant(tenantId, async () => {
+        const db = await createChokePoint(pool).createDatabase({ name: `Admin scope ${tenantId}` });
+        await createChokePoint(pool).createItem({ databaseId: db.id, properties: {} });
+      });
+    }
+    // The handler's query runs on a runtime-role pool: the superuser pool bypasses row-level security.
+    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    const scopes: Array<TenantScope | undefined> = [];
+    const counts: string[] = [];
+    const adminServer = createServer(
+      createAdapterRequestListener(
+        pool,
+        async () => {
+          scopes.push(currentTenantScope());
+          const { rows } = await runtimePool.query<{ count: string }>("SELECT count(*)::text AS count FROM items");
+          counts.push(rows[0]?.count ?? "missing");
+          return { status: 200, body: { ok: true } };
+        },
+        { admin: true },
+      ),
+    );
+    await new Promise<void>((resolve) => adminServer.listen(0, resolve));
+    const address = adminServer.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    const url = `http://127.0.0.1:${address.port}`;
+    const call = (token: string) =>
+      fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({}),
+      });
+    try {
+      const member = await call(await tokenFor("admin-gate-member@example.com", "member", tenantA));
+      expect(member.status).toBe(403);
+      expect(await member.json()).toEqual({ error: { code: "admin_required" } });
+      expect(scopes).toEqual([]);
+
+      const admin = await call(await tokenFor("admin-gate-admin@example.com", "admin", tenantB));
+      expect(admin.status).toBe(200);
+      expect(scopes).toEqual([{ kind: "system", reason: "adminRoute" }]);
+      expect(counts).toEqual(["0"]);
+    } finally {
+      await new Promise<void>((resolve) => adminServer.close(() => resolve()));
+      await runtimePool.end();
     }
   });
 

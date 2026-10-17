@@ -389,3 +389,4 @@ export { purgeExpiredTrash, handleItemTrashPurgeSweepTask } from "./trash/purgeE
 export { forEachActiveTenant } from "./tenancy/forEachActiveTenant.js";
 export { provisionTenant } from "./tenancy/provisionTenant.js";
 export { getUserTenantBinding } from "./tenancy/tenantsStore.js";
+export * from "./tenancy/accountsAdminStore.js";

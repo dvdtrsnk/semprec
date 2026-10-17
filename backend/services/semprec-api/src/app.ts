@@ -6,6 +6,7 @@ import type { BlobStorageWriter, PasswordResetMailer, loadFullModuleRegistry } f
 import { createMcpRequestListener } from "./mcp/mcpHandler.js";
 import { mountCustomRoutes } from "./adapter/customRouteMount.js";
 import { mountRoutes } from "./adapter/routeTable.js";
+import { createAdminRoutes } from "./adminHandler.js";
 import { createDatabaseRoutes } from "./databasesHandler.js";
 import { createItemRoutes } from "./itemsHandler.js";
 import { createPropertyRoutes } from "./propertiesHandler.js";
@@ -63,6 +64,7 @@ export async function createDispatcher(
   // second write path — a route never constructs its own `createChokePoint(pool)`.
   const genericApplicationService = createGenericApplicationService(pool);
   const dispatchResourceRoute = mountRoutes(pool, [
+    ...createAdminRoutes(pool, options),
     ...createDatabaseRoutes(genericApplicationService, options.moduleRegistry),
     ...createPropertyRoutes(genericApplicationService, options.moduleRegistry),
     ...createViewRoutes(genericApplicationService),
