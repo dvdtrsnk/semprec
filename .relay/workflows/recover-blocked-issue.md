@@ -13,10 +13,13 @@
 # by that same walk), so `workspace: pr-branch` would fail with "this run
 # has no branch" and nothing in the format looks an issue's open pull request
 # up. A pull-request subject carries its head branch and SHA from the
-# listing, which is exactly what recovery needs. An issue parked by
-# implement-issue has no pull request to recover in the first place (every
-# step that can block there runs before `pull-request`), so labelling the
-# issue is the right terminal for that workflow and this one leaves it alone.
+# listing, which is exactly what recovery needs. An implement-issue run that
+# blocks before its `pull-request` step labels the issue, and this workflow
+# leaves it alone. One that blocks after it (a pre-review `self-fix` step
+# that needs a human decision) labels the draft pull request, because its
+# `labels` subject is the pull request once one exists. That pull request is
+# still a draft, so this workflow does not pick it up (see the draft note
+# below): a human decides, then marks it ready.
 #
 # Bounds: a run that ends `escalate` (the worker has no credential for the
 # needed action) or `blocked` walks the on-blocked chain below, which swaps
