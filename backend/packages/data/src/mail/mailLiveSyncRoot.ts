@@ -73,6 +73,13 @@ export interface MailLiveSyncRoot {
   stop(): Promise<void>;
   /** One discovery pass, exposed directly so callers (tests, an explicit "reconcile now" trigger) don't have to wait on the interval. */
   reconcileOnce(): Promise<void>;
+  /**
+   * Waits for every discovery pass in flight, then stops every hosted lifecycle of `tenantId`
+   * through the same path a deactivated account takes. A second call for the same tenant finds
+   * nothing hosted and does nothing. It does not stop a later pass from hosting the tenant again:
+   * that is prevented by the tenant no longer being `active`, which discovery skips.
+   */
+  stopTenant(tenantId: string): Promise<void>;
 }
 
 interface HostedEntry {
@@ -97,7 +104,8 @@ interface HostedEntry {
  * `start()` and `stop()` run inside its mailbox's tenant scope, so whatever it does later from
  * its own timers and sockets stays in that tenant; the per-account heartbeat beats in the
  * root's system scope. A tenant that is no longer active is not enumerated, so its lifecycles
- * stop on the next pass.
+ * stop on the next pass, or earlier through `stopTenant` when the tenant deactivation signal
+ * reaches this process.
  *
  * Restart-safe by construction rather than by any explicit "am I already running" check: a
  * fresh process starts with an empty `hosted` map, and the only account state it ever reads is
@@ -128,6 +136,10 @@ export function createMailLiveSyncRoot(
   // The discovery pass most recently started by the interval, so `stop()` can wait for it to
   // finish. Never rejects — the interval callback attaches its own handler before storing it.
   let inFlightDiscovery: Promise<unknown> = Promise.resolve();
+  // Every `reconcileOnce` pass still running, whoever started it, as a promise that settles with it
+  // and never rejects, so `stopTenant` can wait for them. The pass's own promise, and its rejection,
+  // still go to its caller.
+  const runningPasses = new Set<Promise<void>>();
   // Guards against a second `start()` re-running the initial reconcile and scheduling a second
   // interval. Set synchronously at the top of `start()` (no `await` in between the check and the
   // set), so two un-awaited `start()` calls can't both observe it unset.
@@ -208,7 +220,17 @@ export function createMailLiveSyncRoot(
     }
   }
 
-  async function reconcileOnce(): Promise<void> {
+  function reconcileOnce(): Promise<void> {
+    const pass = runPass();
+    const forget = (): void => {
+      runningPasses.delete(settled);
+    };
+    const settled = pass.then(forget, forget);
+    runningPasses.add(settled);
+    return pass;
+  }
+
+  async function runPass(): Promise<void> {
     await runAsSystem("mail:liveSync", async () => {
       const { active, failedTenants } = await discoverActiveAccounts();
 
@@ -248,6 +270,14 @@ export function createMailLiveSyncRoot(
 
   return {
     reconcileOnce,
+    async stopTenant(tenantId) {
+      await Promise.all([...runningPasses]);
+      await Promise.all(
+        [...hosted]
+          .filter(([, entry]) => entry.tenantId === tenantId)
+          .map(([mailboxItemId, entry]) => stopHosted(mailboxItemId, entry)),
+      );
+    },
     async start() {
       if (started) return;
       started = true;

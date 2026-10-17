@@ -1,6 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { currentTenantScope, runInTenant, type TenantScope } from "@semprec/shared";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
+import { createDatabase } from "../chokePoint/databasesStore.js";
+import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
+import { FILES_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -790,5 +800,185 @@ describe("mail live-sync root: per-account process heartbeat (issue #707)", () =
     expect(errors).toEqual([{ mailboxItemId: a.id, phase: "heartbeat" }]);
 
     await root.stop();
+  });
+});
+
+describe("mail live-sync root: stopTenant (issue #1042)", () => {
+  let dataPool: Pool;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool);
+    dataPool = await createRuntimeRolePool(pool, "semprec_data");
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    await dataPool.end();
+  });
+
+  /** Tenant zero's mailbox, created through the runtime role inside tenant zero. */
+  async function addMailboxToTenantZero(): Promise<string> {
+    return runInTenant(getTenantZeroId(), () =>
+      withTransaction(dataPool, async (client) => {
+        const { rows } = await client.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [
+          MAILBOXES_MODULE_ID,
+        ]);
+        const databaseId = rows[0]?.id;
+        if (!databaseId) throw new Error("tenant zero has no Mailboxes database");
+        const item = await createItemWithClient(client, { databaseId, properties: { provider: "generic" } });
+        return item.id;
+      }),
+    );
+  }
+
+  /** A second tenant's minimal mail fixture: the four system mail databases and one mailbox. */
+  async function addTenantWithMailbox(): Promise<{ tenantId: string; mailboxId: string }> {
+    const tenantId = await createTestTenant(pool);
+    const mailboxId = await runInTenant(tenantId, () =>
+      withTransaction(dataPool, async (client) => {
+        let mailboxesId = "";
+        for (const ownerModuleId of [EMAILS_MODULE_ID, FILES_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID]) {
+          // `key` stays unset: `databases_key_unique` is still global.
+          const database = await createDatabase(client, { name: ownerModuleId, system: true, ownerModuleId });
+          if (ownerModuleId === MAILBOXES_MODULE_ID) mailboxesId = database.id;
+        }
+        const item = await createItemWithClient(client, { databaseId: mailboxesId, properties: {} });
+        return item.id;
+      }),
+    );
+    return { tenantId, mailboxId };
+  }
+
+  /** Raw status write: the suspension's own writer needs users and an admin, none of which this root reads. */
+  async function markSuspended(tenantId: string): Promise<void> {
+    await pool.query("UPDATE tenants SET status = 'suspended' WHERE id = $1", [tenantId]);
+  }
+
+  async function beatAt(mailboxId: string): Promise<number | undefined> {
+    const { rows } = await pool.query<{ beat_at: Date }>("SELECT beat_at FROM process_heartbeats WHERE process = $1", [
+      mailSyncProcessName(mailboxId),
+    ]);
+    return rows[0]?.beat_at.getTime();
+  }
+
+  interface ScopedLifecycle extends MailAccountLifecycle {
+    starts: Array<TenantScope | undefined>;
+    stops: Array<TenantScope | undefined>;
+  }
+
+  function scopedFactory(startGate?: Promise<void>): {
+    factory: MailLiveSyncLifecycleFactory;
+    created: Array<{ mailboxItemId: string; lifecycle: ScopedLifecycle }>;
+    events: string[];
+  } {
+    const created: Array<{ mailboxItemId: string; lifecycle: ScopedLifecycle }> = [];
+    const events: string[] = [];
+    const factory: MailLiveSyncLifecycleFactory = (account) => {
+      const lifecycle: ScopedLifecycle = {
+        starts: [],
+        stops: [],
+        async start() {
+          lifecycle.starts.push(currentTenantScope());
+          events.push(`start:${account.mailboxItemId}`);
+          if (startGate) await startGate;
+          events.push(`started:${account.mailboxItemId}`);
+        },
+        async stop() {
+          lifecycle.stops.push(currentTenantScope());
+          events.push(`stop:${account.mailboxItemId}`);
+        },
+      };
+      created.push({ mailboxItemId: account.mailboxItemId, lifecycle });
+      return lifecycle;
+    };
+    return { factory, created, events };
+  }
+
+  it("stops the tenant's lifecycles and heartbeats, keeps the other tenant's, and a later pass does not re-host them", async () => {
+    const m0 = await addMailboxToTenantZero();
+    const b = await addTenantWithMailbox();
+    // Only the heartbeat's interval is faked, so its tick can be advanced without waiting 15 s.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const { factory, created } = scopedFactory();
+    const root = createMailLiveSyncRoot(dataPool, factory);
+    await root.reconcileOnce();
+    // Each hosted account's first beat is a fire-and-forget write, so wait for both rows to exist.
+    await vi.waitFor(
+      async () => {
+        expect(await beatAt(b.mailboxId)).toBeDefined();
+        expect(await beatAt(m0)).toBeDefined();
+      },
+      { timeout: 5000 },
+    );
+    const lifecycleOf = (id: string) => created.find((entry) => entry.mailboxItemId === id)!.lifecycle;
+
+    await markSuspended(b.tenantId);
+    await root.stopTenant(b.tenantId);
+
+    expect(lifecycleOf(b.mailboxId).stops).toEqual([{ kind: "tenant", tenantId: b.tenantId }]);
+    expect(lifecycleOf(m0).stops).toEqual([]);
+
+    const before = { b: (await beatAt(b.mailboxId))!, m0: (await beatAt(m0))! };
+    await vi.advanceTimersByTimeAsync(PROCESS_HEARTBEAT_INTERVAL_MS);
+    await vi.waitFor(async () => expect(await beatAt(m0)).toBeGreaterThan(before.m0), { timeout: 5000 });
+    expect(await beatAt(b.mailboxId)).toBe(before.b);
+
+    await root.reconcileOnce();
+    expect(created.map((entry) => entry.mailboxItemId)).toEqual(expect.arrayContaining([m0, b.mailboxId]));
+    expect(created).toHaveLength(2);
+    expect(lifecycleOf(m0).stops).toEqual([]);
+
+    await root.stop();
+  });
+
+  it("does nothing on a second call for the same tenant", async () => {
+    const m0 = await addMailboxToTenantZero();
+    const b = await addTenantWithMailbox();
+    const { factory, events } = scopedFactory();
+    const root = createMailLiveSyncRoot(dataPool, factory);
+    await root.reconcileOnce();
+    await markSuspended(b.tenantId);
+
+    await root.stopTenant(b.tenantId);
+    await root.stopTenant(b.tenantId);
+
+    expect(events.filter((event) => event.startsWith("stop:"))).toEqual([`stop:${b.mailboxId}`]);
+    expect(events).not.toContain(`stop:${m0}`);
+
+    await root.stop();
+  });
+
+  it("waits for a discovery pass in flight before stopping, so a lifecycle still starting is stopped after it started", async () => {
+    const b = await addTenantWithMailbox();
+    let releaseStart: () => void = () => {};
+    const startGate = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    const { factory, events } = scopedFactory(startGate);
+    const root = createMailLiveSyncRoot(dataPool, factory);
+
+    const pass = root.reconcileOnce();
+    await vi.waitFor(() => expect(events).toContain(`start:${b.mailboxId}`));
+    let stopped = false;
+    const stopping = root.stopTenant(b.tenantId).then(() => {
+      stopped = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(stopped).toBe(false);
+
+    releaseStart();
+    await pass;
+    await stopping;
+
+    expect(events.filter((event) => event.includes(b.mailboxId))).toEqual([
+      `start:${b.mailboxId}`,
+      `started:${b.mailboxId}`,
+      `stop:${b.mailboxId}`,
+    ]);
+    // The heartbeat the finished start installed was stopped with the lifecycle: nothing is left hosted.
+    await root.stop();
+    expect(events.filter((event) => event.startsWith("stop:"))).toHaveLength(1);
   });
 });

@@ -12,6 +12,8 @@ export interface QueueRuntimeHandle {
 
 export interface CreateGracefulShutdownOptions {
   server: Server;
+  /** The tenant deactivation listener; closed first, so no deactivation handler runs against a closing sync server or mail root. */
+  tenantDeactivationListener: { close(): Promise<void> };
   syncServer: { close(): Promise<void> };
   queueRuntime: QueueRuntimeHandle;
   mailLiveSync: { stop(): Promise<void> };
@@ -83,7 +85,8 @@ function endPool(pool: Pool, logger: Logger, signal: string): Promise<void> {
 }
 
 /**
- * Builds `semprec-api`'s shutdown sequence: close the sync server (every `/api/sync` client gets
+ * Builds `semprec-api`'s shutdown sequence: close the tenant deactivation listener (its handler
+ * calls into the sync server and the mail live-sync root, so it stops before either does), close the sync server (every `/api/sync` client gets
  * close code 1012 and its `LISTEN` client is released — otherwise each upgraded socket keeps
  * `server.close()` from settling until the drain bound), then stop accepting new HTTP connections
  * and drain in-flight requests (intake), stop the mail live-sync root (issue #650 — before the
@@ -95,13 +98,19 @@ function endPool(pool: Pool, logger: Logger, signal: string): Promise<void> {
  * `semprec-ai-gateway`'s.
  */
 export function createGracefulShutdown(options: CreateGracefulShutdownOptions): (signal: string) => Promise<void> {
-  const { server, syncServer, queueRuntime, mailLiveSync, pool, logger } = options;
+  const { server, tenantDeactivationListener, syncServer, queueRuntime, mailLiveSync, pool, logger } = options;
   const drainTimeoutMs = options.drainTimeoutMs ?? SHUTDOWN_DRAIN_TIMEOUT_MS;
 
   let shutdownPromise: Promise<void> | null = null;
 
   async function runShutdown(signal: string): Promise<void> {
     logger.info({ signal }, "semprec-api shutting down");
+
+    try {
+      await tenantDeactivationListener.close();
+    } catch (err) {
+      logger.error({ err, signal }, "tenantDeactivationListener.close() failed");
+    }
 
     try {
       await syncServer.close();

@@ -46,6 +46,12 @@ export interface SyncServerOptions {
 export interface SyncServer {
   /** Wire this to the underlying `http.Server`'s `'upgrade'` event for the `/api/sync` path. */
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
+  /**
+   * Closes every open socket authenticated in `tenantId` with 4401 and reason
+   * `"account deactivated"`, leaving every other tenant's sockets open. A second call finds no
+   * open socket of that tenant and does nothing.
+   */
+  closeTenant(tenantId: string): void;
   close(): Promise<void>;
 }
 
@@ -503,6 +509,14 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
           console.error("Sync upgrade authentication failed", err);
           rejectUpgrade(socket);
         });
+    },
+    closeTenant(tenantId) {
+      for (const client of wss.clients) {
+        const identity = identityByClient.get(client);
+        if (identity?.tenantId === tenantId && client.readyState === client.OPEN) {
+          client.close(SESSION_REVOKED_CLOSE_CODE, "account deactivated");
+        }
+      }
     },
     async close() {
       closed = true;

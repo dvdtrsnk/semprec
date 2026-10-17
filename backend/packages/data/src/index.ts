@@ -402,3 +402,4 @@ export { getUserTenantBinding } from "./tenancy/tenantsStore.js";
 export * from "./tenancy/accountsAdminStore.js";
 export * from "./tenancy/invites.js";
 export * from "./tenancy/inviteMail.js";
+export * from "./tenancy/tenantStatusSignal.js";
