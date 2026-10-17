@@ -115,11 +115,8 @@ export function createClientIpThrottle(options: ClientIpThrottleOptions = {}): C
   const maxKeys = options.maxKeys ?? DEFAULT_MAX_KEYS;
   const limits = { ...CLIENT_IP_THROTTLE_LIMITS, ...options.limits };
 
-  // One map per action. A `Map` iterates in insertion order and `record` re-inserts the key it
-  // touches, so the front of each map holds the key recorded least recently — and, because every
-  // key in a map shares one window, the keys whose events have all expired form a prefix of it.
-  // A released reservation can leave a key's newest event older than its position implies; the
-  // expired sweep then stops early and the least-recently-recorded fallback still frees a slot.
+  // One map per action. Releasing a reservation can remove a key's newest event without changing
+  // its insertion order, so eviction compares the remaining timestamps of every key.
   const eventsByAction = new Map<ThrottledAction, Map<string, number[]>>(
     THROTTLE_ACTIONS.map((action) => [action, new Map<string, number[]>()]),
   );
@@ -155,7 +152,7 @@ export function createClientIpThrottle(options: ClientIpThrottleOptions = {}): C
       const map = mapFor(action);
       const cutoff = at - windowMs(action);
       for (const [key, events] of map) {
-        if (events[events.length - 1]! > cutoff) break;
+        if (events[events.length - 1]! > cutoff) continue;
         map.delete(key);
         keyCount--;
       }
@@ -164,11 +161,10 @@ export function createClientIpThrottle(options: ClientIpThrottleOptions = {}): C
     let oldest: { map: Map<string, number[]>; key: string; recordedAt: number } | null = null;
     for (const action of THROTTLE_ACTIONS) {
       const map = mapFor(action);
-      const first = map.entries().next();
-      if (first.done) continue;
-      const [key, events] = first.value;
-      const recordedAt = events[events.length - 1]!;
-      if (oldest === null || recordedAt < oldest.recordedAt) oldest = { map, key, recordedAt };
+      for (const [key, events] of map) {
+        const recordedAt = events[events.length - 1]!;
+        if (oldest === null || recordedAt < oldest.recordedAt) oldest = { map, key, recordedAt };
+      }
     }
     if (oldest) {
       oldest.map.delete(oldest.key);

@@ -675,6 +675,53 @@ describe("createAuthRequestListener", () => {
       });
     }
 
+    async function postBurstWithHeldBodies(path: string, bodies: unknown[]): Promise<number[]> {
+      let arrived = 0;
+      let allArrived!: () => void;
+      const allArrivedPromise = new Promise<void>((resolve) => (allArrived = resolve));
+      onThrottledArrival = () => {
+        if (++arrived === bodies.length) allArrived();
+      };
+      const requests = bodies.map((body) => {
+        const payload = JSON.stringify(body);
+        const req = httpRequest(`${throttledUrl}${path}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": String(Buffer.byteLength(payload)),
+            "X-Forwarded-For": ADDRESS,
+          },
+        });
+        const status = new Promise<number>((resolve, reject) => {
+          req.on("response", (res) => {
+            res.resume();
+            res.on("end", () => resolve(res.statusCode ?? 0));
+            res.on("error", reject);
+          });
+          req.on("error", reject);
+          req.setTimeout(5000, () => req.destroy(new Error("burst request timed out")));
+        });
+        return { req, payload, status };
+      });
+      const statuses = Promise.all(requests.map(({ status }) => status));
+      const arrivalTimeout = setTimeout(() => {
+        for (const { req } of requests) req.destroy(new Error("burst arrival barrier timed out"));
+      }, 5000);
+      try {
+        for (const { req } of requests) req.flushHeaders();
+        // The last arrival's listener runs synchronously through the throttle check before this
+        // continuation sends any body. Every request therefore reaches that check before any body is read.
+        await Promise.race([allArrivedPromise, statuses]);
+        for (const { req, payload } of requests) req.end(payload);
+        return await statuses;
+      } finally {
+        clearTimeout(arrivalTimeout);
+        onThrottledArrival = () => {};
+        for (const { req } of requests) req.destroy();
+        await Promise.allSettled(requests.map(({ status }) => status));
+      }
+    }
+
     async function expectRateLimited(res: Response): Promise<void> {
       expect(res.status).toBe(429);
       expect(await res.json()).toEqual({ error: "Too many attempts; try again later", code: "rate_limited" });
@@ -702,10 +749,13 @@ describe("createAuthRequestListener", () => {
     });
 
     it("lets at most the login limit of a concurrent burst of failed logins from one address reach the credential check", async () => {
-      const statuses = await Promise.all(
-        Array.from({ length: 8 }, (_, i) =>
-          post("/api/auth/login", ADDRESS, { email: `burst-${i}@example.com`, password: "wrong", platform: "web" }),
-        ).map(async (pending) => (await pending).status),
+      const statuses = await postBurstWithHeldBodies(
+        "/api/auth/login",
+        Array.from({ length: 8 }, (_, i) => ({
+          email: `burst-${i}@example.com`,
+          password: "wrong",
+          platform: "web",
+        })),
       );
 
       expect(statuses.filter((status) => status === 401)).toHaveLength(3);
@@ -772,38 +822,9 @@ describe("createAuthRequestListener", () => {
 
     it("lets at most the reset-request limit of a concurrent burst from one address through, even with slow bodies", async () => {
       const user = await makeUser();
-      const burst = 5;
-      // Every request's headers reach the handler first; the bodies are held back until all have
-      // arrived, so each request is past the throttle check before any body has been read.
-      let arrived = 0;
-      let allArrived!: () => void;
-      const allArrivedPromise = new Promise<void>((resolve) => (allArrived = resolve));
-      onThrottledArrival = () => {
-        if (++arrived === burst) allArrived();
-      };
-      const payload = JSON.stringify({ email: user.email });
-      const statuses = await Promise.all(
-        Array.from(
-          { length: burst },
-          () =>
-            new Promise<number>((resolve, reject) => {
-              const req = httpRequest(`${throttledUrl}/api/auth/password-reset/request`, {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  "Content-Length": String(Buffer.byteLength(payload)),
-                  "X-Forwarded-For": ADDRESS,
-                },
-              });
-              req.on("response", (res) => {
-                res.resume();
-                resolve(res.statusCode ?? 0);
-              });
-              req.on("error", reject);
-              req.flushHeaders();
-              void allArrivedPromise.then(() => req.end(payload));
-            }),
-        ),
+      const statuses = await postBurstWithHeldBodies(
+        "/api/auth/password-reset/request",
+        Array.from({ length: 5 }, () => ({ email: user.email })),
       );
 
       expect(statuses.filter((status) => status === 200)).toHaveLength(2);
@@ -835,13 +856,12 @@ describe("createAuthRequestListener", () => {
     });
 
     it("lets at most the consume limit of a concurrent burst of token guesses from one address reach the token check", async () => {
-      const statuses = await Promise.all(
-        Array.from({ length: 6 }, (_, i) =>
-          post("/api/auth/password-reset/consume", ADDRESS, {
-            token: `not-a-token-${i}`,
-            newPassword: "a-brand-new-password",
-          }),
-        ).map(async (pending) => (await pending).status),
+      const statuses = await postBurstWithHeldBodies(
+        "/api/auth/password-reset/consume",
+        Array.from({ length: 6 }, (_, i) => ({
+          token: `not-a-token-${i}`,
+          newPassword: "a-brand-new-password",
+        })),
       );
 
       expect(statuses.filter((status) => status === 400)).toHaveLength(2);

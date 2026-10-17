@@ -63,8 +63,9 @@ export interface RequestPasswordResetInput {
  *
  * The token row commits first; the reset mail is dispatched from a `runAfterCommit` callback, so a
  * rolled-back transaction sends nothing, and the send is started after `COMMIT` without being
- * awaited. This function therefore resolves as soon as the token commits, and its response time
- * carries no signal from the SMTP server. Per `docs/adr/2026-09-10-side-effects-follow-the-commit.md`,
+ * awaited. The function resolves after the commit and the minimum duration below, independently
+ * of the mail send, so its response time carries no signal from the SMTP server.
+ * Per `docs/adr/2026-09-10-side-effects-follow-the-commit.md`,
  * a callback's failure is invisible to its caller: a send failure is logged and never surfaces, and
  * a user who never receives the mail requests again — the committed token needs no compensation.
  *
