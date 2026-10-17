@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { Ajv } from "ajv";
 import {
@@ -11,6 +11,7 @@ import {
 } from "@semprec/data/testSupport";
 import { runInTenant } from "@semprec/shared";
 import {
+  allowLoopbackOutboundForTests,
   startHttpContractServer,
   startSseContractServer,
   startStdioContractServer,
@@ -96,7 +97,14 @@ describe("MCP invoke adapter (issue #128)", () => {
     servers = [];
   });
 
+  // The sse/http contract servers listen on loopback, which the default outbound policy refuses.
+  let restoreOutboundPolicy: () => void;
+  beforeAll(() => {
+    restoreOutboundPolicy = allowLoopbackOutboundForTests();
+  });
+
   afterAll(async () => {
+    restoreOutboundPolicy();
     await pool?.end();
   });
 

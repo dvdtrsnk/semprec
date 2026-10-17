@@ -4,12 +4,21 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientMetadata, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { FetchLike, Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { createLogger } from "@semprec/shared";
 import type { Queryable } from "../db/pool.js";
 import type { ItemRow } from "../types.js";
 import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
+import { isBaselineOutboundUrl } from "../net/storedOutboundUrl.js";
+import {
+  createOutboundHttp,
+  currentOutboundAddressPolicy,
+  isOutboundAddressNotAllowed,
+  type OutboundHttp,
+} from "../net/outboundAddressPolicy.js";
 import { assertValidMcpConnectionConfig, type McpConnectionConfig } from "./mcpConnectionConfig.js";
 import { McpConnectionError } from "./mcpConnectionError.js";
+import { SandboxedStdioClientTransport } from "./sandboxedStdioTransport.js";
 import { tenantAllowsStdio } from "./stdioTransportPolicy.js";
 
 /**
@@ -43,6 +52,7 @@ export interface ConnectMcpServerOptions {
   connectTimeoutMs?: number;
 }
 
+const logger = createLogger("mcp");
 const CLIENT_INFO = { name: "semprec-mcp-client", version: "1.0.0" };
 /** A misbehaving server can accept a TCP/SSE/HTTP connection or spawn cleanly and then never answer `initialize` — `mcpClient.connect()` has no timeout of its own for that, so this factory imposes one. */
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
@@ -51,11 +61,17 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
  * Connects to the MCP server described by `mcpServerItem.properties.connectionConfig`,
  * decrypting its `external_credentials` secret (if any) only for this connection's use.
  * Rejects a malformed/unsupported `connectionConfig`, a `stdio` config the tenant no longer allows
- * (`transport_not_allowed`, issue #1033), or a genuine credential decryption failure with
- * `McpConnectionError` before opening any connection; maps a transport connect/handshake
- * failure (including one that times out — see `DEFAULT_CONNECT_TIMEOUT_MS`) to the same safe
- * error shape after releasing whatever the transport had opened. A transient DB failure while
- * resolving the credential propagates as-is rather than being reported as a credential problem.
+ * (`transport_not_allowed`, issue #1033), a `stdio` config in a process with no sandbox launcher
+ * socket outside tests (`stdio_sandbox_unavailable`, issue #1070), an `sse`/`http` URL that fails
+ * the stored-URL baseline (`address_not_allowed`, issue #1034; skipped under the test-only loopback
+ * policy), or a genuine credential decryption failure with `McpConnectionError` before opening any
+ * connection.
+ * `sse`/`http` requests go through the current outbound address policy's `fetch`
+ * (`net/outboundAddressPolicy.ts`): a host resolving to a denied address maps to
+ * `address_not_allowed`, any other transport connect/handshake failure (including one that times
+ * out — see `DEFAULT_CONNECT_TIMEOUT_MS`) to `handshake_failed`, both after releasing whatever the
+ * transport had opened. A transient DB failure while resolving the credential propagates as-is
+ * rather than being reported as a credential problem.
  */
 export async function connectMcpServer(
   client: Queryable,
@@ -69,14 +85,26 @@ export async function connectMcpServer(
   if (config.transport === "stdio" && !(await tenantAllowsStdio(client))) {
     throw new McpConnectionError("transport_not_allowed", "MCP server transport is not allowed for this account");
   }
+  const stdioLaunchSocket = config.transport === "stdio" ? resolveStdioLaunchSocket() : null;
+  // A row can hold a URL stored before the write-time baseline existed (issue #1029), so the
+  // baseline is re-checked here, before the credential is decrypted.
+  const policy = currentOutboundAddressPolicy();
+  if (config.transport !== "stdio" && !policy.isTestPolicy && !isBaselineOutboundUrl(config.url)) {
+    throw addressNotAllowed(config.transport);
+  }
   const credential = await resolveCredential(client, mcpServerItem.id, options);
-  const { transport, afterConnect } = buildTransport(config, credential);
+  const outbound = config.transport === "stdio" ? null : createOutboundHttp(policy);
+  const refusal = { seen: false };
+  const fetch = outbound === null ? undefined : recordAddressRefusal(outbound.fetch, refusal);
+  const { transport, afterConnect } = buildTransport(config, credential, fetch, stdioLaunchSocket);
 
   const mcpClient = new Client(CLIENT_INFO, { capabilities: {} });
   try {
     await withTimeout(mcpClient.connect(transport), options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS);
   } catch {
     await safeCloseTransport(transport);
+    await safeCloseOutbound(outbound);
+    if (refusal.seen) throw addressNotAllowed(config.transport);
     throw new McpConnectionError("handshake_failed", `Failed to connect to MCP server (transport=${config.transport})`);
   }
   // The transport has already used the credential to spawn/authenticate; scrub any copy it kept
@@ -85,7 +113,48 @@ export async function connectMcpServer(
 
   return {
     client: mcpClient,
-    close: () => mcpClient.close(),
+    close: async () => {
+      try {
+        await mcpClient.close();
+      } finally {
+        await safeCloseOutbound(outbound);
+      }
+    },
+  };
+}
+
+/**
+ * Where a `stdio` server runs (issue #1070): under the sandbox launcher's socket when
+ * `SEMPREC_MCP_LAUNCH_SOCKET` is set, as an in-process child (`null`) only under `NODE_ENV=test`,
+ * and nowhere otherwise. The refusal runs before the credential is decrypted, so a host without
+ * the launcher never decrypts a credential or spawns a server with this process's uid. See
+ * `docs/adr/2026-10-17-stdio-mcp-servers-run-in-a-socket-activated-sandbox.md`.
+ */
+function resolveStdioLaunchSocket(): string | null {
+  const socketPath = process.env.SEMPREC_MCP_LAUNCH_SOCKET;
+  if (socketPath !== undefined && socketPath !== "") return socketPath;
+  if (process.env.NODE_ENV === "test") return null;
+  throw new McpConnectionError("stdio_sandbox_unavailable", "MCP stdio sandbox is not available on this host");
+}
+
+function addressNotAllowed(transport: McpConnectionConfig["transport"]): McpConnectionError {
+  return new McpConnectionError("address_not_allowed", `MCP server address is not allowed (transport=${transport})`);
+}
+
+/**
+ * Notes when the policy refused a request: an `OutboundAddressNotAllowedError` anywhere in the
+ * `cause` chain of an error the `fetch` threw. It is checked here rather than on the error
+ * `connect()` rejects with, because the `sse` transport's `EventSource` reduces a failed request to
+ * a message string before the SDK rejects, so the refusal is not in that error's chain.
+ */
+function recordAddressRefusal(fetch: FetchLike, refusal: { seen: boolean }): FetchLike {
+  return async (input, init) => {
+    try {
+      return await fetch(input, init);
+    } catch (err) {
+      if (isOutboundAddressNotAllowed(err)) refusal.seen = true;
+      throw err;
+    }
   };
 }
 
@@ -107,6 +176,19 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
     return await Promise.race([promise, timeout]);
   } finally {
     clearTimeout(timer!);
+  }
+}
+
+/** Closing the connection pools after an already-failed connect must not replace that failure. */
+async function safeCloseOutbound(outbound: OutboundHttp | null): Promise<void> {
+  if (outbound === null) return;
+  try {
+    await outbound.close();
+  } catch (err) {
+    logger.warn(
+      { errorName: err instanceof Error ? err.name : typeof err },
+      "MCP outbound connection pool close failed",
+    );
   }
 }
 
@@ -171,14 +253,26 @@ interface BuiltTransport {
   afterConnect?: () => void;
 }
 
-function buildTransport(config: McpConnectionConfig, credential: string | null): BuiltTransport {
+function buildTransport(
+  config: McpConnectionConfig,
+  credential: string | null,
+  fetch: FetchLike | undefined,
+  stdioLaunchSocket: string | null,
+): BuiltTransport {
   switch (config.transport) {
     case "stdio":
-      return buildStdioTransport(config, credential);
+      return stdioLaunchSocket === null
+        ? buildStdioTransport(config, credential)
+        : buildSandboxedStdioTransport(stdioLaunchSocket, config, credential);
     case "sse":
-      return { transport: new SSEClientTransport(new URL(config.url), authProviderOptions(credential)) };
+      return { transport: new SSEClientTransport(new URL(config.url), { ...authProviderOptions(credential), fetch }) };
     case "http":
-      return { transport: new StreamableHTTPClientTransport(new URL(config.url), authProviderOptions(credential)) };
+      return {
+        transport: new StreamableHTTPClientTransport(new URL(config.url), {
+          ...authProviderOptions(credential),
+          fetch,
+        }),
+      };
   }
 }
 
@@ -205,6 +299,26 @@ function buildStdioTransport(
   // JS-side record, so it can no longer be found by inspecting `handle.client`.
   const afterConnect = injectsCredential ? () => delete env[credentialEnvVar] : undefined;
   return { transport, afterConnect };
+}
+
+/**
+ * The launched server's environment is the launcher's fixed base overlaid by exactly the config's
+ * own `env` plus the injected credential — nothing from this process's `process.env`, unlike the
+ * in-process spawn above. `SandboxedStdioClientTransport` copies `env` into its header and releases
+ * that once `start()` settles, and this `env` object is not kept, so no `afterConnect` scrub is needed.
+ */
+function buildSandboxedStdioTransport(
+  socketPath: string,
+  config: Extract<McpConnectionConfig, { transport: "stdio" }>,
+  credential: string | null,
+): BuiltTransport {
+  const env: Record<string, string> = { ...config.env };
+  if (credential !== null && config.credentialEnvVar !== undefined) {
+    env[config.credentialEnvVar] = credential;
+  }
+  return {
+    transport: new SandboxedStdioClientTransport(socketPath, { command: config.command, args: config.args ?? [], env }),
+  };
 }
 
 /**

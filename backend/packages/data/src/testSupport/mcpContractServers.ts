@@ -11,6 +11,9 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { McpConnectionConfig } from "../mcp/mcpConnectionConfig.js";
 
+/** sse/http contract servers listen on `http://127.0.0.1`, which the default outbound policy refuses. */
+export { allowLoopbackOutboundForTests } from "../net/outboundAddressPolicy.js";
+
 /**
  * Minimal MCP contract servers for `stdio`, `sse`, and `http` (issue #231): each completes the
  * `initialize` handshake, records the credential it observed (from the child process env for

@@ -356,3 +356,86 @@ sudo -u semprec timeout 5 bash -c '</dev/tcp/127.0.0.1/5432'  # succeeds (no pg_
 sudo -u semprec curl -sS -o /dev/null https://example.com     # succeeds
 journalctl -k | grep semprec-egress-deny                 # shows the denials
 ```
+
+## stdio MCP sandbox
+
+A `stdio` MCP server never runs as `semprec` or as a child of `semprec-api` or `semprec-agents`.
+Those services connect to a UNIX socket, and systemd starts the server for that one connection as
+the dedicated user `semprec-mcp`. See
+`docs/adr/2026-10-17-stdio-mcp-servers-run-in-a-socket-activated-sandbox.md`.
+
+- **User.** `provision.sh` creates the system user `semprec-mcp`, with its own group, no
+  membership in `semprec`, home `/var/lib/semprec-mcp` and shell `/usr/sbin/nologin`. systemd
+  creates the home as the unit's `StateDirectory` (`0700`).
+- **Socket.** `semprec-mcp-launch.socket` listens on `/run/semprec-mcp-launch.sock`
+  (`root:semprec`, `0660`). It accepts each connection separately, at most 16 at a time.
+  `provision.sh` enables and starts it. `semprec-api.service` and `semprec-agents.service` want it,
+  start after it, and find it through `SEMPREC_MCP_LAUNCH_SOCKET=/run/semprec-mcp-launch.sock`.
+  Without that variable, a service outside tests refuses every `stdio` connect with
+  `stdio_sandbox_unavailable`.
+- **Unit.** Each connection starts `semprec-mcp-launch@.service`, which runs
+  `/usr/local/libexec/semprec-mcp-launch` (installed by `provision.sh`, `root:root 0755`) with the
+  connection as stdin and stdout. The launcher reads one JSON header line naming the command, its
+  arguments and its environment, then `exec`s the command in `/var/lib/semprec-mcp`. It exits 64
+  and runs nothing on a malformed header or the wrong uid; its stderr goes to the journal under
+  `semprec-mcp-launch`. The unit cannot see `/opt/semprec/shared`, `/opt/semprec/data`,
+  `/var/backups/semprec` or `/etc/caddy`, or other users' processes. It has no capabilities, is
+  stopped after 300 seconds, and is limited to 1 GiB of memory and 64 tasks.
+- **Egress.** The `output` chain sends traffic of uid `semprec-mcp` through `semprec_mcp_egress`. It
+  accepts replies and DNS (tcp/udp port 53) and rejects the same blocked sets as `semprec_egress`.
+  It has no loopback exception: apart from port 53, all of `127.0.0.0/8` and `::1` is rejected,
+  including Postgres and the gateway. Denials are logged, at most 10 per minute, with the prefix
+  `semprec-mcp-egress-deny `. A `stdio` server that needs a private or loopback address cannot
+  run here.
+
+Host check after provisioning, with a `stdio` server connected (for example during "Synchronize
+tools"):
+
+```sh
+systemctl status semprec-mcp-launch.socket                          # active (listening)
+ps -o user= -p <server pid>                                         # semprec-mcp
+sudo -u semprec-mcp cat /opt/semprec/shared/apns-key.p8             # fails (permission denied)
+sudo -u semprec-mcp timeout 5 bash -c '</dev/tcp/127.0.0.1/5432'    # fails immediately
+journalctl -k | grep semprec-mcp-egress-deny                        # shows the denial
+```
+
+## Service sandboxing
+
+The seven `semprec` units (`semprec-api`, `semprec-agents`, `semprec-transcribe`,
+`semprec-ai-gateway`, `semprec-dead-man`, `semprec-failping@` and `semprec-trash-purge`) share one
+`[Service]` baseline (issue #1071): `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ProtectHome=yes`,
+`PrivateTmp=yes`, `PrivateDevices=yes`, the `Protect*` kernel and cgroup switches,
+`ProtectProc=invisible`, `RestrictNamespaces=yes`, `RestrictRealtime=yes`, `RestrictSUIDSGID=yes`,
+`LockPersonality=yes`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`,
+`SystemCallArchitectures=native`, `SystemCallFilter=@system-service`, `SystemCallErrorNumber=EPERM`,
+empty `CapabilityBoundingSet=` and `AmbientCapabilities=`, and `UMask=0027`. The baseline is the
+exact set of directives asserted in `deploy/provision.test.sh`.
+
+Write access is granted only where a unit writes blobs:
+
+- `semprec-api.service`: `ReadWritePaths=/opt/semprec/data/files /opt/semprec/data/mail-attachments`.
+- `semprec-transcribe.service`: `ReadWritePaths=/opt/semprec/data/files`.
+
+Those paths must equal `FILES_STORAGE_DIR` and `MAIL_ATTACHMENTS_DIR` in
+`/opt/semprec/shared/env/settings.env`. Changing either variable requires changing the unit. The
+directories are created by `provision.sh`, so the lines carry no `-` prefix. The other five units have
+no `ReadWritePaths=`, and `semprec-agents` and `semprec-ai-gateway` write no files.
+
+Three directives are deliberately absent:
+
+- `MemoryDenyWriteExecute=`: V8's JIT needs writable-executable pages.
+- `ProcSubset=pid`: it hides `/proc/cpuinfo` and `/proc/meminfo`, which Node's `os` module reads.
+- `PrivateUsers=`: it remaps the uid and gid namespace that the services' ownership checks depend on.
+
+The root units `semprec-backup.service` and `semprec-restore-test.service` (Docker and restic) and
+`semprec-mcp-launch@.service` (sandboxed by #1070) are not changed here.
+
+Host check after provisioning, as the maintainer, at the first deploy after this change:
+
+```sh
+systemd-analyze security semprec-api.service        # repeat for each unit; none reports UNSAFE
+./deploy/deploy.sh                                   # every version is reported
+# upload and download a file in the web client; both succeed
+# run a transcription job to completion (ffmpeg runs under the filter)
+# connect an admin's stdio MCP server through the launcher and call a tool
+```

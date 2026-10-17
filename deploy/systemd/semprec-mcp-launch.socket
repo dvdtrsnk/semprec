@@ -1,0 +1,13 @@
+[Unit]
+Description=Semprec stdio MCP sandbox launcher socket
+
+[Socket]
+ListenStream=/run/semprec-mcp-launch.sock
+SocketUser=root
+SocketGroup=semprec
+SocketMode=0660
+Accept=yes
+MaxConnections=16
+
+[Install]
+WantedBy=sockets.target
