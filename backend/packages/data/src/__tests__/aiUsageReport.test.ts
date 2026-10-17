@@ -1,8 +1,15 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { createRuntimeRolePool, createTestTenant, getTenantZeroId, setTenantAiBudget } from "../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTenantZeroUser,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+  setTenantAiBudget,
+} from "../testSupport/testDb.js";
 import { createDatabase } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createProperty } from "../chokePoint/propertiesStore.js";
@@ -191,6 +198,13 @@ function localDay(instant: string, timeZone: string): string {
   );
 }
 
+/** A report range of two days either side of `instant`, so it always contains calls recorded at that instant. */
+function rangeAround(instant: string | Date): { from: string; to: string } {
+  const centre = new Date(instant).getTime();
+  const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
+  return { from: new Date(centre - twoDaysMs).toISOString(), to: new Date(centre + twoDaysMs).toISOString() };
+}
+
 describe("getAiUsageReport across tenants (issue #1048)", () => {
   let adminPool: Pool;
   let runtimePool: Pool;
@@ -243,7 +257,7 @@ describe("getAiUsageReport across tenants (issue #1048)", () => {
         costUsd: 1,
       }),
     );
-    await runInTenant(tenantB, () =>
+    const callB = await runInTenant(tenantB, () =>
       recordTokenGatewayCall(runtimePool, {
         provider: "anthropic",
         model: "model-b",
@@ -253,7 +267,7 @@ describe("getAiUsageReport across tenants (issue #1048)", () => {
       }),
     );
 
-    const range = { from: "2026-01-01T00:00:00Z", to: "2026-12-30T00:00:00Z" };
+    const range = rangeAround(callA.at);
     const reportA = await runInTenant(tenantA, () => getAiUsageReport(runtimePool, range));
     const reportB = await runInTenant(tenantB, () => getAiUsageReport(runtimePool, range));
 
@@ -268,8 +282,8 @@ describe("getAiUsageReport across tenants (issue #1048)", () => {
     expect(tokensB).toBe(5);
 
     const dayA = localDay(callA.at, "Pacific/Honolulu");
-    const dayB = localDay(callA.at, "Pacific/Kiritimati");
-    expect(dayA).not.toBe(dayB);
+    const dayB = localDay(callB.at, "Pacific/Kiritimati");
+    expect(dayA).not.toBe(localDay(callA.at, "Pacific/Kiritimati"));
     expect(reportA.dailyCostUsd.find((point) => point.costUsd > 0)?.day).toBe(dayA);
     expect(reportB.dailyCostUsd.find((point) => point.costUsd > 0)?.day).toBe(dayB);
 
@@ -281,9 +295,7 @@ describe("getAiUsageReport across tenants (issue #1048)", () => {
     await seedTimezone(tenantA, "Pacific/Honolulu");
     await setTenantAiBudget(adminPool, tenantA, { dailyCapUsd: 7 });
 
-    const report = await runInTenant(tenantA, () =>
-      getAiUsageReport(runtimePool, { from: "2026-01-01T00:00:00Z", to: "2026-12-30T00:00:00Z" }),
-    );
+    const report = await runInTenant(tenantA, () => getAiUsageReport(runtimePool, rangeAround(new Date())));
 
     expect(Object.keys(report).sort()).toEqual(
       ["budgets", "dailyCostUsd", "dailyTokenUsage", "from", "rows", "to", "totalCostUsd"].sort(),
