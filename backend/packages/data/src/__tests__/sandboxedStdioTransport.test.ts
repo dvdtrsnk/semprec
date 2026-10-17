@@ -61,7 +61,11 @@ function parseHeader(line: string): LaunchHeader | null {
   return { command, args, env: parsedEnv };
 }
 
-type LauncherMode = "spawn" | "closeWithoutAnswering" | "neverClose";
+/**
+ * `raw` hands the connection to the test's `answer` after the header, to play a hostile or broken
+ * server; `stall` stops reading after the header, so the client's writes back up.
+ */
+type LauncherMode = "spawn" | "closeWithoutAnswering" | "neverClose" | "raw" | "stall";
 
 interface FakeLauncher {
   readonly socketPath: string;
@@ -70,6 +74,8 @@ interface FakeLauncher {
   spawnedCount(): number;
   childExitCount(): number;
   openConnections(): number;
+  /** Destroys every accepted connection from the launcher's side. */
+  dropConnections(): void;
   stop(): Promise<void>;
 }
 
@@ -80,7 +86,7 @@ interface FakeLauncher {
  * child exits. `allowHalfOpen` keeps the socket writable after the client's EOF, as systemd's
  * accepted socket is, so the child's last answer still reaches the client.
  */
-async function startFakeLauncher(mode: LauncherMode): Promise<FakeLauncher> {
+async function startFakeLauncher(mode: LauncherMode, answer?: (socket: net.Socket) => void): Promise<FakeLauncher> {
   const directory = mkdtempSync(path.join(os.tmpdir(), "semprec-mcp-launch-"));
   const socketPath = path.join(directory, "launch.sock");
   const headers: (LaunchHeader | null)[] = [];
@@ -111,6 +117,14 @@ async function startFakeLauncher(mode: LauncherMode): Promise<FakeLauncher> {
         return;
       }
       if (mode === "neverClose") return;
+      if (mode === "stall") {
+        socket.pause();
+        return;
+      }
+      if (mode === "raw") {
+        answer?.(socket);
+        return;
+      }
       const child = spawn(header.command, header.args, { env: header.env, stdio: ["pipe", "pipe", "inherit"] });
       spawned += 1;
       child.stdin.on("error", () => {
@@ -138,6 +152,9 @@ async function startFakeLauncher(mode: LauncherMode): Promise<FakeLauncher> {
     spawnedCount: () => spawned,
     childExitCount: () => exited,
     openConnections: () => sockets.size,
+    dropConnections: () => {
+      for (const socket of sockets) socket.destroy();
+    },
     stop: async () => {
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -423,6 +440,115 @@ describe("sandboxed stdio MCP transport (issue #1070)", () => {
       } finally {
         await launcher.stop();
       }
+    });
+  });
+
+  describe("SandboxedStdioClientTransport framing", () => {
+    function newTransport(socketPath: string): SandboxedStdioClientTransport {
+      return new SandboxedStdioClientTransport(socketPath, { command: "unused", args: [], env: {} });
+    }
+
+    it("reports a malformed line through onerror and still delivers the next message", async () => {
+      const valid = { jsonrpc: "2.0", id: 7, result: {} };
+      const launcher = await startFakeLauncher("raw", (socket) => {
+        socket.write(`not json\n${JSON.stringify(valid)}\n`);
+      });
+      const transport = newTransport(launcher.socketPath);
+      const errors: Error[] = [];
+      const messages: unknown[] = [];
+      transport.onerror = (error) => errors.push(error);
+      transport.onmessage = (message) => messages.push(message);
+      try {
+        await transport.start();
+        await waitFor(() => messages.length === 1, "the valid message after the malformed line never arrived");
+        expect(messages).toEqual([valid]);
+        expect(errors).toHaveLength(1);
+      } finally {
+        await transport.close();
+        await launcher.stop();
+      }
+    });
+
+    it("destroys the socket and fires onclose once when the server overruns the read buffer", async () => {
+      // One byte past the SDK's 10 MiB `ReadBuffer` cap, with no newline to frame it.
+      const overrun = Buffer.alloc(10 * 1024 * 1024 + 1, "a");
+      const launcher = await startFakeLauncher("raw", (socket) => {
+        socket.write(overrun);
+      });
+      const created = spyOnCreatedSockets();
+      const transport = newTransport(launcher.socketPath);
+      const errors: Error[] = [];
+      const messages: unknown[] = [];
+      let closeCount = 0;
+      transport.onerror = (error) => errors.push(error);
+      transport.onmessage = (message) => messages.push(message);
+      transport.onclose = () => {
+        closeCount += 1;
+      };
+      try {
+        await transport.start();
+        await waitFor(() => closeCount === 1, "the transport never closed after the overrun");
+        expect(created).toHaveLength(1);
+        expect(created[0]?.destroyed).toBe(true);
+        expect(errors.map((error) => error.message)).toEqual([expect.stringContaining("ReadBuffer exceeded")]);
+        expect(messages).toHaveLength(0);
+        await transport.close();
+        expect(closeCount).toBe(1);
+      } finally {
+        await launcher.stop();
+      }
+    });
+
+    it("rejects a send still waiting to drain with Not connected when the socket closes", async () => {
+      const launcher = await startFakeLauncher("stall");
+      const transport = newTransport(launcher.socketPath);
+      transport.onerror = () => {
+        // The launcher dropping the connection mid-write may surface as EPIPE/ECONNRESET.
+      };
+      try {
+        await transport.start();
+        await waitFor(() => launcher.headers.length === 1, "the launcher never received the header");
+        // Far more than the socket and the kernel buffer accept while the launcher does not read.
+        const pending = transport.send({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "ping",
+          params: { padding: "x".repeat(32 * 1024 * 1024) },
+        });
+        let settled = false;
+        pending.then(
+          () => {
+            settled = true;
+          },
+          () => {
+            settled = true;
+          },
+        );
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(settled).toBe(false);
+        launcher.dropConnections();
+        await expect(pending).rejects.toThrow("Not connected");
+      } finally {
+        await transport.close();
+        await launcher.stop();
+      }
+    });
+
+    it("rejects start() when close() destroys the socket before it connects", async () => {
+      // A socket that never connects stands in for a launcher that never accepts.
+      const neverConnecting = new net.Socket();
+      vi.spyOn(net, "createConnection").mockReturnValue(neverConnecting);
+      const transport = newTransport("/unused.sock");
+      let closeCount = 0;
+      transport.onclose = () => {
+        closeCount += 1;
+      };
+      const started = transport.start();
+      started.catch(() => {});
+      await transport.close();
+      await expect(started).rejects.toThrow("Socket closed before it connected");
+      expect(neverConnecting.destroyed).toBe(true);
+      expect(closeCount).toBe(1);
     });
   });
 });
