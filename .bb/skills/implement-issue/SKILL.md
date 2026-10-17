@@ -141,7 +141,11 @@ comes last because anything committed after it can make it stale again:
    to this issue.
 4. **Run the pipeline**: `pnpm run verify` in `backend/`, then in `web/`. This
    is the same sequence CI runs, in the same order. The host is shared — read
-   `.bb/AGENTS.md` before you wait on, kill or log a process.
+   `.bb/AGENTS.md` before you wait on, kill or log a process. In a Relay
+   `implement-issue` run, run only the lint, build and test files for what you
+   touched instead. Relay reviews the draft pull request first and then runs
+   the full verify itself, so a full run here would be paid twice. Why:
+   `docs/adr/2026-10-17-pre-review-draft-pull-requests-before-verify.md`.
 5. **Take the migration ordinal last.** If the diff adds a migration, run
    `git fetch origin` and compare your number against
    `backend/packages/data/src/db/migrations/` on `origin/develop` after the
