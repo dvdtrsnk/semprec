@@ -15,7 +15,7 @@ const TENANT_EXPORT_STATUSES = ["pending", "running", "ready", "failed"] as cons
 export type TenantExportStatus = (typeof TENANT_EXPORT_STATUSES)[number];
 
 /** A ready export can be downloaded for this long after it completed; a failed row is kept as long. */
-export const TENANT_EXPORT_RETENTION_DAYS = 7;
+const TENANT_EXPORT_RETENTION_DAYS = 7;
 
 export interface TenantExportSummary {
   id: string;

@@ -53,9 +53,10 @@ wrapped tenant data key) and `tenant_exports` (the exports themselves). A new
 tenant table is therefore exported unless its migration's issue adds it to
 that list; a table holding a server-only secret must be added there in the same
 pull request that creates it. Each table is read with
-`to_jsonb(t) WHERE t.tenant_id = app_current_tenant()`, under the runtime
-role's row-level security, through a transaction-scoped cursor 500 rows at a
-time.
+`to_jsonb(t) WHERE t.tenant_id = app_current_tenant()` inside the export's
+tenant scope, through a transaction-scoped cursor 500 rows at a time. The
+explicit filter keeps the read inside the tenant even on a connection that
+row-level security does not apply to.
 
 **The archive layout, `formatVersion` 1**, is a ZIP file with:
 
