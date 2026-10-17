@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import type { UserRole } from "../auth/types.js";
+import type { UserRole, UserRow } from "../auth/types.js";
 import { ChokePointError, NotFoundError } from "../errors.js";
 
 export type TenantStatus = "provisioning" | "active" | "suspended" | "deleting";
@@ -7,7 +7,7 @@ export type TenantStatus = "provisioning" | "active" | "suspended" | "deleting";
 export const TENANT_STATUSES: readonly TenantStatus[] = ["provisioning", "active", "suspended", "deleting"];
 const USER_ROLES: readonly UserRole[] = ["admin", "member"];
 
-export function isTenantStatus(value: unknown): value is TenantStatus {
+function isTenantStatus(value: unknown): value is TenantStatus {
   return typeof value === "string" && (TENANT_STATUSES as readonly string[]).includes(value);
 }
 
@@ -48,6 +48,43 @@ export async function getUserTenantBinding(
   if (!isTenantStatus(row.status)) throw new Error("Unknown value in column tenants.status");
   if (!isUserRole(row.role)) throw new Error("Unknown value in column users.role");
   return { tenantId: row.id, status: row.status, role: row.role };
+}
+
+/**
+ * The user with `email` plus the status of the tenant they are bound to, read in one statement so
+ * a login for an unknown email makes the same database round trips as one for a registered email.
+ * The tenant resolves like `getUserTenantBinding` (`users.tenant_id`, else the sole tenant);
+ * `tenantStatus` is `null` when no tenant resolves. An unknown status throws a plain `Error`.
+ */
+export async function getUserByEmailWithTenantStatus(
+  client: Pool | PoolClient,
+  email: string,
+): Promise<{ user: UserRow; tenantStatus: TenantStatus | null } | null> {
+  const { rows } = await client.query<{
+    id: string;
+    email: string;
+    password_hash: string;
+    locale: string;
+    created_at: Date;
+    tenant_status: unknown;
+  }>(
+    `SELECT u.id, u.email, u.password_hash, u.locale, u.created_at, t.status AS tenant_status
+       FROM users u LEFT JOIN tenants t ON t.id = COALESCE(u.tenant_id, app_sole_tenant())
+      WHERE u.email = $1`,
+    [email],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  const user: UserRow = {
+    id: row.id,
+    email: row.email,
+    passwordHash: row.password_hash,
+    locale: row.locale,
+    createdAt: row.created_at.toISOString(),
+  };
+  if (row.tenant_status === null) return { user, tenantStatus: null };
+  if (!isTenantStatus(row.tenant_status)) throw new Error("Unknown value in column tenants.status");
+  return { user, tenantStatus: row.tenant_status };
 }
 
 /**
