@@ -121,6 +121,7 @@
     "packages/data/src/projectAgentGuidanceStore.ts::7df2c2d63510",
     "packages/data/src/rollup/recompute.ts::278164cbdd45",
     "packages/data/src/scheduler/sweep.ts::a5f226914063",
+    "packages/data/src/tenancy/tenantStatusSignal.ts::7246220ba75f",
     "packages/realtime/src/syncServer.ts::7df2c2d63510"
   ]
 }
