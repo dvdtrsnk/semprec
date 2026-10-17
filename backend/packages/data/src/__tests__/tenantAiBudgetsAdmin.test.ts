@@ -13,15 +13,27 @@ let dataPool: Pool;
 let sidePool: Pool;
 
 /** Raw SQL: a row's `at` and `status` must be controlled to sit on either side of a window boundary. */
-async function insertCall(tenantId: string, costUsd: number, at: string, status = "settled"): Promise<void> {
+async function insertCall(tenantId: string, costUsd: number, at: Date, status = "settled"): Promise<void> {
   await pool.query(
     `INSERT INTO ai_gateway_calls (tenant_id, provider, model, input_tokens, output_tokens, cost_usd, at, status)
-     VALUES ($1, 'anthropic', 'claude-sonnet-5', 1, 1, $2, ${at}, $3)`,
-    [tenantId, costUsd, status],
+     VALUES ($1, 'anthropic', 'claude-sonnet-5', 1, 1, $2, $3, $4)`,
+    [tenantId, costUsd, at, status],
   );
 }
 
-async function newAccount(tenantId: string): Promise<string> {
+/** The database's current instant and the starts of its current UTC day and month, the windows `ai_tenant_spend()` uses. */
+async function utcWindows(): Promise<{ now: Date; dayStart: Date; monthStart: Date }> {
+  const { rows } = await pool.query<{ now: Date; day_start: Date; month_start: Date }>(
+    `SELECT now() AS now,
+            date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS day_start,
+            date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS month_start`,
+  );
+  const row = rows[0];
+  if (!row) throw new Error("expected one row of UTC windows");
+  return { now: row.now, dayStart: row.day_start, monthStart: row.month_start };
+}
+
+async function newAccount(tenantId: string | undefined): Promise<string> {
   const user = await createUser(pool, {
     email: `budget-${randomUUID()}@example.test`,
     passwordHash: await hashPassword("s3cret-password"),
@@ -52,12 +64,13 @@ describe("tenant AI budgets: admin writer and overview (issue #1039)", () => {
     const tenantId = await createTestTenant(pool);
     const adminId = await newAccount(tenantId);
 
-    const first = await withTransaction(pool, (client) =>
+    // Through semprec_data, the production role, so its INSERT/UPDATE/SELECT grants are what is exercised.
+    const first = await withTransaction(dataPool, (client) =>
       setTenantAiBudget(client, { tenantId, dailyCapUsd: 5, monthlyCapUsd: 40, updatedBy: adminId }),
     );
     expect(first).toMatchObject({ tenantId, dailyCapUsd: 5, monthlyCapUsd: 40 });
 
-    const second = await withTransaction(pool, (client) =>
+    const second = await withTransaction(dataPool, (client) =>
       setTenantAiBudget(client, { tenantId, dailyCapUsd: null, monthlyCapUsd: 12.5, updatedBy: adminId }),
     );
     expect(second).toMatchObject({ tenantId, dailyCapUsd: null, monthlyCapUsd: 12.5 });
@@ -83,13 +96,22 @@ describe("tenant AI budgets: admin writer and overview (issue #1039)", () => {
       setTenantAiBudget(client, { tenantId: tenantA, dailyCapUsd: 5, monthlyCapUsd: 40, updatedBy: adminId }),
     );
 
-    // Tenant A: today (UTC) 1.50 settled, 0.25 reserved, one failed at 0; 2.00 earlier this month.
-    // The earlier call sits at the first instant of the UTC month, which is "today" only on its first day.
-    await insertCall(tenantA, 1.5, "now()");
-    await insertCall(tenantA, 0.25, "now()", "reserved");
-    await insertCall(tenantA, 0, "now()", "failed");
-    await insertCall(tenantA, 2, "date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'");
-    await insertCall(tenantB, 3, "now()");
+    const { now, dayStart, monthStart } = await utcWindows();
+    const oneSecond = 1000;
+    const beforeToday = new Date(dayStart.getTime() - oneSecond);
+    // On the 1st of a UTC month the instant before today's midnight belongs to the previous month.
+    const beforeTodayIsThisMonth = beforeToday.getTime() >= monthStart.getTime();
+
+    // Tenant A: today (UTC) 1.50 settled, 0.25 reserved, one failed at 0; 2.00 one second before
+    // today's UTC midnight (this month except on the 1st); 100.00 one second before the UTC month starts.
+    await insertCall(tenantA, 1.5, now);
+    await insertCall(tenantA, 0.25, dayStart, "reserved");
+    await insertCall(tenantA, 0, now, "failed");
+    await insertCall(tenantA, 2, beforeToday);
+    await insertCall(tenantA, 100, new Date(monthStart.getTime() - oneSecond));
+    await insertCall(tenantB, 3, now);
+    // An account bound to no tenant is not listed: there is no tenant to hold its caps or spend.
+    const unboundAccount = await newAccount(undefined);
 
     const overview = await listTenantAiBudgetOverview(dataPool);
     const byId = new Map(overview.map((account) => [account.userId, account]));
@@ -99,7 +121,7 @@ describe("tenant AI budgets: admin writer and overview (issue #1039)", () => {
       dailyCapUsd: 5,
       monthlyCapUsd: 40,
       spentTodayUsd: 1.75,
-      spentMonthUsd: 3.75,
+      spentMonthUsd: beforeTodayIsThisMonth ? 3.75 : 1.75,
     });
     expect(byId.get(accountB)).toMatchObject({
       hasBudget: false,
@@ -109,6 +131,7 @@ describe("tenant AI budgets: admin writer and overview (issue #1039)", () => {
       spentMonthUsd: 3,
     });
     expect(byId.get(accountC)).toMatchObject({ hasBudget: false, spentTodayUsd: 0, spentMonthUsd: 0 });
+    expect(byId.has(unboundAccount)).toBe(false);
   });
 
   it("keeps ai_tenant_spend() callable by semprec_data only, as a SECURITY DEFINER function owned by semprec_router", async () => {
