@@ -4,7 +4,7 @@ import { NotFoundError, UnauthorizedError, ValidationError } from "../errors.js"
 import { withTransaction } from "../db/pool.js";
 import { hashPassword, verifyPassword } from "./passwordHash.js";
 import { generateOpaqueToken, hashToken } from "./token.js";
-import { anyUserExists, createUser, getUserByEmailWithTenantStatus, getUserById } from "./usersStore.js";
+import { anyUserExists, createUser, getUserById } from "./usersStore.js";
 import {
   createSession,
   getActiveSessionByTokenHash,
@@ -16,7 +16,12 @@ import { recordLoginAttempt, getFailureStreak } from "./loginAttemptsStore.js";
 import { normalizeEmail } from "./emailNormalization.js";
 import { lockoutDurationSeconds } from "./loginLockout.js";
 import type { SessionPlatform, SessionRow, UserRole, UserRow } from "./types.js";
-import { getSoleTenantId, getUserTenantBinding, lockUserTenantBinding } from "../tenancy/tenantsStore.js";
+import {
+  getSoleTenantId,
+  getUserByEmailWithTenantStatus,
+  getUserTenantBinding,
+  lockUserTenantBinding,
+} from "../tenancy/tenantsStore.js";
 import { revokePushSubscriptionsForSession } from "../push/pushSubscriptionsStore.js";
 
 /** How long a freshly-issued session stays valid without further activity. */
