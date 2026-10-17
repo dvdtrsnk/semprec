@@ -207,8 +207,11 @@ describe("semprec-api graceful shutdown closes the tenant deactivation listener 
   });
 
   it("closes the listener and releases its client before the sync server stops", async () => {
-    const { server, syncServer: realSyncServer, tenantDeactivationListener: realListener } =
-      await startServer(dedicatedPool);
+    const {
+      server,
+      syncServer: realSyncServer,
+      tenantDeactivationListener: realListener,
+    } = await startServer(dedicatedPool);
     const order: string[] = [];
     let clientsWhenSyncCloses = -1;
     const tenantDeactivationListener = {

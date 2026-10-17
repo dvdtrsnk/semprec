@@ -11,9 +11,7 @@ interface CapturedLine {
 }
 
 /** Fakes for every dependency `createGracefulShutdown` takes, each appending its step to one shared `calls` log. */
-function createFakes(
-  options: { mailLiveSyncStop?: () => Promise<void>; listenerClose?: () => Promise<void> } = {},
-) {
+function createFakes(options: { mailLiveSyncStop?: () => Promise<void>; listenerClose?: () => Promise<void> } = {}) {
   const calls: string[] = [];
   const lines: CapturedLine[] = [];
   const server = {
@@ -63,7 +61,11 @@ function createFakes(
       lines.push({ level: "error", obj, msg });
     },
   } as unknown as Logger;
-  return { calls, lines, deps: { server, tenantDeactivationListener, syncServer, mailLiveSync, queueRuntime, pool, logger } };
+  return {
+    calls,
+    lines,
+    deps: { server, tenantDeactivationListener, syncServer, mailLiveSync, queueRuntime, pool, logger },
+  };
 }
 
 describe("semprec-api graceful shutdown stops the mail live-sync root (issue #650)", () => {
