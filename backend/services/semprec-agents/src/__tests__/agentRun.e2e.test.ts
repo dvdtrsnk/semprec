@@ -4,6 +4,7 @@ import type { Pool } from "pg";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxProvider, type FauxProviderHandle } from "@earendil-works/pi-ai";
 import { AGENT_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { runInTenant } from "@semprec/shared";
 import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   CORE_AGENT_RUN_ACTION_ID,
@@ -14,6 +15,7 @@ import {
   seedSystem,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
+import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 import { createAgentRunTask, createRunAgentForHeartbeats } from "../agentRunTasks.js";
 import type { GatewayModel } from "../modelComposition.js";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
@@ -135,9 +137,9 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
 
   async function startRuntime(): Promise<void> {
     runtime = await createAgentsQueueRuntime(pool, registry, {
-      runAgent: createRunAgentForHeartbeats(pool, registry, fauxGateway),
-      agentRunTask: createAgentRunTask(pool, registry, fauxGateway),
-      delegatedAgentRunTask: createAgentRunTask(pool, registry, fauxGateway),
+      runAgent: createRunAgentForHeartbeats(pool, registry, fauxGateway, createInFlightAgentRuns()),
+      agentRunTask: createAgentRunTask(pool, registry, fauxGateway, createInFlightAgentRuns()),
+      delegatedAgentRunTask: createAgentRunTask(pool, registry, fauxGateway, createInFlightAgentRuns()),
     });
   }
 
@@ -201,9 +203,11 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     composition.during = async () => {
       throw new Error("mcp grants unavailable");
     };
-    const task = createAgentRunTask(pool, registry, fauxGateway);
+    const task = createAgentRunTask(pool, registry, fauxGateway, createInFlightAgentRuns());
 
-    await expect(task({ agentRunId: run.id }, { job: { id: "1" } })).rejects.toThrow("mcp grants unavailable");
+    await expect(
+      runInTenant(getTenantZeroId(), () => task({ agentRunId: run.id }, { job: { id: "1" } })),
+    ).rejects.toThrow("mcp grants unavailable");
 
     expect(await runRow(run.id)).toEqual({ status: "error", result: "mcp grants unavailable" });
     expect(await errorNotificationCount(run.id)).toBe(1);
@@ -219,9 +223,11 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
       await finishAgentRun(pool, agentRunId, "done", "closed elsewhere");
       throw new Error("mcp grants unavailable");
     };
-    const task = createAgentRunTask(pool, registry, fauxGateway);
+    const task = createAgentRunTask(pool, registry, fauxGateway, createInFlightAgentRuns());
 
-    await expect(task({ agentRunId: run.id }, { job: { id: "1" } })).rejects.toThrow("mcp grants unavailable");
+    await expect(
+      runInTenant(getTenantZeroId(), () => task({ agentRunId: run.id }, { job: { id: "1" } })),
+    ).rejects.toThrow("mcp grants unavailable");
 
     expect(await runRow(run.id)).toEqual({ status: "done", result: "closed elsewhere" });
     expect(await errorNotificationCount(run.id)).toBe(0);
@@ -236,9 +242,9 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
       await finishAgentRun(pool, agentRunId, "done", "closed elsewhere");
     };
     faux.setResponses([fauxAssistantMessage("must not run")]);
-    const task = createAgentRunTask(pool, registry, fauxGateway);
+    const task = createAgentRunTask(pool, registry, fauxGateway, createInFlightAgentRuns());
 
-    await task({ agentRunId: run.id }, { job: { id: "1" } });
+    await runInTenant(getTenantZeroId(), () => task({ agentRunId: run.id }, { job: { id: "1" } }));
 
     expect(await runRow(run.id)).toEqual({ status: "done", result: "closed elsewhere" });
     expect(await runEvents(run.id)).toEqual([]);

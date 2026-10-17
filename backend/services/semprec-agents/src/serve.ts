@@ -1,7 +1,13 @@
 import { repairInterruptedRuns } from "@semprec/agent-runtime";
-import { createPool, loadFullModuleRegistry, startProcessHeartbeat } from "@semprec/data";
+import {
+  createPool,
+  loadFullModuleRegistry,
+  startProcessHeartbeat,
+  startTenantDeactivationListener,
+} from "@semprec/data";
 import { installFatalHandlers } from "@semprec/shared";
 import { createAgentRunTask, createRunAgentForHeartbeats } from "./agentRunTasks.js";
+import { createInFlightAgentRuns } from "./inFlightAgentRuns.js";
 import { createGatewayModel } from "./modelComposition.js";
 import { createAgentsQueueRuntime } from "./queueRuntime.js";
 import { createGracefulShutdown, registerShutdownSignals } from "./shutdown.js";
@@ -46,13 +52,21 @@ logger.info({ repairedRunCount: repairedRunIds.length }, "Repaired interrupted a
 // throws naming a missing AI_GATEWAY_BASE_URL/AI_GATEWAY_INTERNAL_TOKEN/AGENT_MODEL, so the process
 // refuses to start without them.
 const gateway = createGatewayModel(process.env);
+const inFlightAgentRuns = createInFlightAgentRuns();
 const queueRuntime = await createAgentsQueueRuntime(pool, moduleRegistry, {
-  runAgent: createRunAgentForHeartbeats(pool, moduleRegistry, gateway),
-  agentRunTask: createAgentRunTask(pool, moduleRegistry, gateway),
-  delegatedAgentRunTask: createAgentRunTask(pool, moduleRegistry, gateway),
+  runAgent: createRunAgentForHeartbeats(pool, moduleRegistry, gateway, inFlightAgentRuns),
+  agentRunTask: createAgentRunTask(pool, moduleRegistry, gateway, inFlightAgentRuns),
+  delegatedAgentRunTask: createAgentRunTask(pool, moduleRegistry, gateway, inFlightAgentRuns),
 });
 
-const shutdown = createGracefulShutdown({ queueRuntime, pool, logger });
+// A run already executing when its tenant leaves `active` is aborted here and closes as `error`;
+// the listener resyncs every deactivated tenant on connect, so a run starting in the gap is covered.
+const tenantDeactivationListener = await startTenantDeactivationListener(pool, async (tenantId) => {
+  const aborted = inFlightAgentRuns.abortTenant(tenantId);
+  if (aborted > 0) logger.info({ tenantId, aborted }, "Aborted in-flight agent runs of a deactivated tenant");
+});
+
+const shutdown = createGracefulShutdown({ queueRuntime, tenantDeactivationListener, pool, logger });
 registerShutdownSignals(shutdown);
 
 logger.info({}, "semprec-agents queue runtime started");

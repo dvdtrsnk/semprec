@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { currentTenantScope } from "@semprec/shared";
 import {
   extractResultSnapshot,
   pushRunStatus,
@@ -16,6 +17,7 @@ import {
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentSessionFactoryForRun } from "./agentSessionComposition.js";
+import type { InFlightAgentRuns } from "./inFlightAgentRuns.js";
 import type { GatewayModel } from "./modelComposition.js";
 import { logger } from "./logger.js";
 
@@ -24,6 +26,27 @@ function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
   if (typeof value !== "string") throw new Error(`Job payload missing string field '${field}'`);
   return value;
+}
+
+/**
+ * Registers a fresh controller for the job's tenant, runs `fn` with its signal and unregisters on
+ * every path. The registration spans the whole job, so a deactivation during session composition
+ * is seen as an already-aborted signal when the turn starts. Throws, before `fn`, outside a tenant scope: that is a wiring bug, since every
+ * queued job runs inside its tenant.
+ */
+async function withInFlightRegistration<T>(
+  inFlight: InFlightAgentRuns,
+  fn: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const scope = currentTenantScope();
+  if (scope?.kind !== "tenant") throw new Error("An agent run must execute inside a tenant scope");
+  const controller = new AbortController();
+  const unregister = inFlight.register(scope.tenantId, controller);
+  try {
+    return await fn(controller.signal);
+  } finally {
+    unregister();
+  }
 }
 
 function errorMessage(err: unknown): string {
@@ -73,28 +96,30 @@ export function createAgentRunTask(
   pool: Pool,
   moduleRegistry: ModuleRegistry,
   gateway: GatewayModel,
+  inFlight: InFlightAgentRuns,
 ): AgentQueueTaskHandler {
-  return async (payload) => {
-    const agentRunId = requireString(payload, "agentRunId");
-    const run = await getAgentRun(pool, agentRunId);
-    if (!run || run.status !== "running") {
-      logger.info({ agentRunId, status: run?.status ?? null }, "Skipping agentRun job for a run that is not running");
-      return;
-    }
+  return (payload) =>
+    withInFlightRegistration(inFlight, async (signal) => {
+      const agentRunId = requireString(payload, "agentRunId");
+      const run = await getAgentRun(pool, agentRunId);
+      if (!run || run.status !== "running") {
+        logger.info({ agentRunId, status: run?.status ?? null }, "Skipping agentRun job for a run that is not running");
+        return;
+      }
 
-    let createAgentSession: CreateAgentSession;
-    try {
-      createAgentSession = await createAgentSessionFactoryForRun(pool, moduleRegistry, gateway, run);
-    } catch (err) {
-      await closeUncomposedRun(pool, run, err);
-      throw err;
-    }
-    if (!(await claimRunningRun(pool, run.id))) {
-      logger.info({ agentRunId }, "Skipping agentRun job for a run closed while its session was composed");
-      return;
-    }
-    await runAgentSessionForRun(pool, run, { createAgentSession });
-  };
+      let createAgentSession: CreateAgentSession;
+      try {
+        createAgentSession = await createAgentSessionFactoryForRun(pool, moduleRegistry, gateway, run);
+      } catch (err) {
+        await closeUncomposedRun(pool, run, err);
+        throw err;
+      }
+      if (!(await claimRunningRun(pool, run.id))) {
+        logger.info({ agentRunId }, "Skipping agentRun job for a run closed while its session was composed");
+        return;
+      }
+      await runAgentSessionForRun(pool, run, { createAgentSession, signal });
+    });
 }
 
 /**
@@ -107,16 +132,21 @@ export function createRunAgentForHeartbeats(
   pool: Pool,
   moduleRegistry: ModuleRegistry,
   gateway: GatewayModel,
+  inFlight: InFlightAgentRuns,
 ): RunAgentFn {
   return async ({ agentRunId }) => {
     const run = await getAgentRun(pool, agentRunId);
     if (!run) throw new Error(`agent run ${agentRunId} not found`);
 
+    return withInFlightRegistration(inFlight, (signal) => runHeartbeatSession(run, signal));
+  };
+
+  async function runHeartbeatSession(run: AgentRunRow, signal: AbortSignal): Promise<{ result: string | undefined }> {
     try {
       const createAgentSession = await createAgentSessionFactoryForRun(pool, moduleRegistry, gateway, run);
       await pushRunStatus(pool, run.id, "running");
       const session = createAgentSession({ task: run.task });
-      const last = await runAgentTurn(pool, run.id, session.messages());
+      const last = await runAgentTurn(pool, run.id, session.messages(), undefined, signal);
       await pushRunStatus(pool, run.id, "done");
       return { result: extractResultSnapshot(last) ?? undefined };
     } catch (err) {
@@ -127,5 +157,5 @@ export function createRunAgentForHeartbeats(
       }
       throw err;
     }
-  };
+  }
 }

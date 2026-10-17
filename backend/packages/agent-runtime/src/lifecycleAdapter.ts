@@ -25,6 +25,9 @@ const PERSISTED_EVENT_KINDS: ReadonlySet<string> = new Set<AgentRunEventKind>([
   "run_status",
 ]);
 
+/** Resolves the abort race in `runAgentTurn`. */
+const ABORTED = Symbol("aborted");
+
 export interface RunAgentSessionInput {
   /** Seam for the real `pi-agent-core` `createAgentSession` (or a fake, in tests). */
   createAgentSession: CreateAgentSession;
@@ -38,6 +41,16 @@ export interface RunAgentSessionInput {
   systemPromptOverride?: (defaultPrompt: string) => string;
   /** Extra observer for every message, persisted or not (e.g. #118's session bookkeeping). */
   onEvent?: (message: AgentMessage) => void;
+  /** Aborting it stops the turn and closes the run as `error` with an `AgentRunCancelledError`. */
+  signal?: AbortSignal;
+}
+
+/** Thrown by `runAgentTurn` once its signal aborts; the run then closes as `error` like any failed turn. */
+export class AgentRunCancelledError extends Error {
+  constructor() {
+    super("account deactivated");
+    this.name = "AgentRunCancelledError";
+  }
 }
 
 export function extractResultSnapshot(lastMessage: AgentMessage | null): string | null {
@@ -81,7 +94,9 @@ export function pushRunStatus(
  * pushes `message_update` deltas through the ephemeral stream (never persisted) and appends the
  * persisted-kind ones to `agent_run_events` in arrival order before announcing thin references.
  * Returns the turn's last
- * `message`-kind event, or null if it never produced one.
+ * `message`-kind event, or null if it never produced one. An aborted `signal` (already aborted, or
+ * aborting while the loop waits for or records a message) ends the session through its iterator's
+ * `return()` and throws `AgentRunCancelledError`.
  *
  * Shared by `runAgentSession` (one turn, closing the run immediately after) and the
  * delegation registry (#229: many turns reusing one long-lived `agent_runs` row that only
@@ -93,27 +108,90 @@ export async function runAgentTurn(
   agentRunId: string,
   messages: AsyncIterable<AgentMessage>,
   onEvent?: (message: AgentMessage) => void,
+  signal?: AbortSignal,
 ): Promise<AgentMessage | null> {
   let lastMessage: AgentMessage | null = null;
+  if (signal?.aborted) throw new AgentRunCancelledError();
 
-  for await (const message of messages) {
-    onEvent?.(message);
+  const iterator = messages[Symbol.asyncIterator]();
+  let finished = false;
+  let cancelled = false;
+  let onAbort: (() => void) | undefined;
+  const aborted = signal
+    ? new Promise<typeof ABORTED>((resolve) => {
+        onAbort = () => resolve(ABORTED);
+        signal.addEventListener("abort", onAbort, { once: true });
+      })
+    : null;
 
-    // A watcher missing a live update for a persisted kind catches up from `agent_run_events`;
-    // a missed message_update is deliberately lost, same as a dropped WS typing frame.
-    if (message.kind === "message_update") {
-      await pushLiveDelta(client, agentRunId, message);
-      continue;
+  try {
+    for (;;) {
+      const pending = iterator.next();
+      // The race may abandon `pending`; the iterator's `return()` below ends the session, and a
+      // rejection of the abandoned call must not surface as an unhandled one.
+      pending.catch(() => {});
+      const step = aborted ? await Promise.race([pending, aborted]) : await pending;
+      if (step === ABORTED) {
+        cancelled = true;
+        throw new AgentRunCancelledError();
+      }
+      if (step.done) {
+        finished = true;
+        break;
+      }
+      const { value: message } = step;
+      onEvent?.(message);
+
+      // A watcher missing a live update for a persisted kind catches up from `agent_run_events`;
+      // a missed message_update is deliberately lost, same as a dropped WS typing frame.
+      if (message.kind === "message_update") {
+        await pushLiveDelta(client, agentRunId, message);
+      } else {
+        if (PERSISTED_EVENT_KINDS.has(message.kind)) {
+          await recordPersistentEvent(client, agentRunId, message.kind, message);
+        }
+        if (message.kind === "message") lastMessage = message;
+      }
+
+      // An abort that landed while the message above was being recorded stops before the next one.
+      if (signal?.aborted) {
+        cancelled = true;
+        throw new AgentRunCancelledError();
+      }
     }
-
-    if (PERSISTED_EVENT_KINDS.has(message.kind)) {
-      await recordPersistentEvent(client, agentRunId, message.kind, message);
-    }
-
-    if (message.kind === "message") lastMessage = message;
+  } finally {
+    if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+    if (!finished) await closeSession(iterator, agentRunId, cancelled);
   }
 
   return lastMessage;
+}
+
+/**
+ * Ends an unfinished session through the iterator's `return()`, as leaving a `for await` early
+ * would. A generator queues `return()` behind a `next()` it is still awaiting, so on cancellation
+ * it is not awaited: the run must close now, and the session ends when its pending step settles.
+ * A failing `return()` is logged and never replaces the turn's own outcome.
+ */
+async function closeSession(
+  iterator: AsyncIterator<AgentMessage>,
+  agentRunId: string,
+  cancelled: boolean,
+): Promise<void> {
+  const logFailure = (err: unknown): void => {
+    logger.error(
+      { errorName: err instanceof Error ? err.name : typeof err, agentRunId },
+      "Failed to close an agent session iterator",
+    );
+  };
+  try {
+    const closing = iterator.return?.();
+    if (!closing) return;
+    if (cancelled) closing.catch(logFailure);
+    else await closing;
+  } catch (err) {
+    logFailure(err);
+  }
 }
 
 /**
@@ -165,7 +243,7 @@ export async function runAgentSessionForRun(
     });
 
     try {
-      const lastMessage = await runAgentTurn(client, run.id, session.messages(), input.onEvent);
+      const lastMessage = await runAgentTurn(client, run.id, session.messages(), input.onEvent, input.signal);
       // The row's terminal status and its `run_status` event commit together, so a poller never
       // sees the row closed before the event exists, and a failed close leaves neither behind —
       // the catch below then writes the only terminal state, `error`.

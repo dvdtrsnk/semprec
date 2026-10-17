@@ -7,8 +7,13 @@ export interface QueueRuntimeHandle {
   stop(): Promise<void>;
 }
 
+export interface TenantDeactivationListenerHandle {
+  close(): Promise<void>;
+}
+
 export interface CreateGracefulShutdownOptions {
   queueRuntime: QueueRuntimeHandle;
+  tenantDeactivationListener: TenantDeactivationListenerHandle;
   pool: Pool;
   logger: Logger;
 }
@@ -48,18 +53,27 @@ function endPool(pool: Pool, logger: Logger, signal: string): Promise<void> {
 
 /**
  * Builds `semprec-agents`' shutdown sequence: this process has no HTTP intake to drain (it is a
- * pure queue consumer), so it stops the queue runtime issue #91 hosts (`queueRuntime.stop()`
- * awaits its `Runner.stop()`) and then ends the pool. Per
+ * pure queue consumer), so it closes the tenant deactivation listener, stops the queue runtime
+ * issue #91 hosts (`queueRuntime.stop()` awaits its `Runner.stop()`) and then ends the pool. Per
  * `docs/adr/2026-09-17-shutdown-ordering-with-late-heartbeat-stop.md`'s rejected-alternative
  * note, this ordering is specific to this service — it names no heartbeat step.
  */
 export function createGracefulShutdown(options: CreateGracefulShutdownOptions): (signal: string) => Promise<void> {
-  const { queueRuntime, pool, logger } = options;
+  const { queueRuntime, tenantDeactivationListener, pool, logger } = options;
 
   let shutdownPromise: Promise<void> | null = null;
 
   async function runShutdown(signal: string): Promise<void> {
     logger.info({ signal }, "semprec-agents shutting down");
+
+    try {
+      await tenantDeactivationListener.close();
+    } catch (err) {
+      logger.error(
+        { errorName: err instanceof Error ? err.name : typeof err, signal },
+        "tenantDeactivationListener.close() failed",
+      );
+    }
 
     try {
       await queueRuntime.stop();
