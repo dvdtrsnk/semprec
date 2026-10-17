@@ -62,9 +62,10 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
  * decrypting its `external_credentials` secret (if any) only for this connection's use.
  * Rejects a malformed/unsupported `connectionConfig`, a `stdio` config the tenant no longer allows
  * (`transport_not_allowed`, issue #1033), a `stdio` config in a process with no sandbox launcher
- * socket outside tests (`stdio_sandbox_unavailable`, issue #1070), an `sse`/`http` URL that fails the stored-URL baseline
- * (`address_not_allowed`, issue #1034; skipped under the test-only loopback policy), or a genuine
- * credential decryption failure with `McpConnectionError` before opening any connection.
+ * socket outside tests (`stdio_sandbox_unavailable`, issue #1070), an `sse`/`http` URL that fails
+ * the stored-URL baseline (`address_not_allowed`, issue #1034; skipped under the test-only loopback
+ * policy), or a genuine credential decryption failure with `McpConnectionError` before opening any
+ * connection.
  * `sse`/`http` requests go through the current outbound address policy's `fetch`
  * (`net/outboundAddressPolicy.ts`): a host resolving to a denied address maps to
  * `address_not_allowed`, any other transport connect/handshake failure (including one that times
@@ -303,8 +304,8 @@ function buildStdioTransport(
 /**
  * The launched server's environment is the launcher's fixed base overlaid by exactly the config's
  * own `env` plus the injected credential — nothing from this process's `process.env`, unlike the
- * in-process spawn above. `SandboxedStdioClientTransport` drops the header once it is written, so
- * no `afterConnect` scrub is needed.
+ * in-process spawn above. `SandboxedStdioClientTransport` copies `env` into its header and releases
+ * that once `start()` settles, and this `env` object is not kept, so no `afterConnect` scrub is needed.
  */
 function buildSandboxedStdioTransport(
   socketPath: string,

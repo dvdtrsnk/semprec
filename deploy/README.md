@@ -356,3 +356,45 @@ sudo -u semprec timeout 5 bash -c '</dev/tcp/127.0.0.1/5432'  # succeeds (no pg_
 sudo -u semprec curl -sS -o /dev/null https://example.com     # succeeds
 journalctl -k | grep semprec-egress-deny                 # shows the denials
 ```
+
+## stdio MCP sandbox
+
+A `stdio` MCP server never runs as `semprec` or as a child of `semprec-api` or `semprec-agents`.
+Those services connect to a UNIX socket, and systemd starts the server for that one connection as
+the dedicated user `semprec-mcp`. See
+`docs/adr/2026-10-17-stdio-mcp-servers-run-in-a-socket-activated-sandbox.md`.
+
+- **User.** `provision.sh` creates the system user `semprec-mcp`, with its own group, no
+  membership in `semprec`, home `/var/lib/semprec-mcp` and shell `/usr/sbin/nologin`. systemd
+  creates the home as the unit's `StateDirectory` (`0700`).
+- **Socket.** `semprec-mcp-launch.socket` listens on `/run/semprec-mcp-launch.sock`
+  (`root:semprec`, `0660`). It accepts each connection separately, at most 16 at a time.
+  `provision.sh` enables and starts it. `semprec-api.service` and `semprec-agents.service` want it,
+  start after it, and find it through `SEMPREC_MCP_LAUNCH_SOCKET=/run/semprec-mcp-launch.sock`.
+  Without that variable, a service outside tests refuses every `stdio` connect with
+  `stdio_sandbox_unavailable`.
+- **Unit.** Each connection starts `semprec-mcp-launch@.service`, which runs
+  `/usr/local/libexec/semprec-mcp-launch` (installed by `provision.sh`, `root:root 0755`) with the
+  connection as stdin and stdout. The launcher reads one JSON header line naming the command, its
+  arguments and its environment, then `exec`s the command in `/var/lib/semprec-mcp`. It exits 64
+  and runs nothing on a malformed header or the wrong uid; its stderr goes to the journal under
+  `semprec-mcp-launch`. The unit cannot see `/opt/semprec/shared`, `/opt/semprec/data`,
+  `/var/backups/semprec` or `/etc/caddy`, or other users' processes. It has no capabilities and is
+  stopped after 300 seconds, at 1 GiB of memory or 64 tasks.
+- **Egress.** The `output` chain sends traffic of uid `semprec-mcp` through `semprec_mcp_egress`. It
+  accepts replies and DNS (tcp/udp port 53) and rejects the same blocked sets as `semprec_egress`.
+  It has no loopback exception: all of `127.0.0.0/8` and `::1` is rejected, including Postgres and
+  the gateway. Denials are logged, at most 10 per minute, with the prefix
+  `semprec-mcp-egress-deny `. A `stdio` server that needs a private or loopback address cannot
+  run here.
+
+Host check after provisioning, with a `stdio` server connected (for example during "Synchronize
+tools"):
+
+```sh
+systemctl status semprec-mcp-launch.socket                          # active (listening)
+ps -o user= -p <server pid>                                         # semprec-mcp
+sudo -u semprec-mcp cat /opt/semprec/shared/apns-key.p8             # fails (permission denied)
+sudo -u semprec-mcp timeout 5 bash -c '</dev/tcp/127.0.0.1/5432'    # fails immediately
+journalctl -k | grep semprec-mcp-egress-deny                        # shows the denial
+```

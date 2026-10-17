@@ -407,6 +407,7 @@ describe("sandboxed stdio MCP transport (issue #1070)", () => {
           closeCount += 1;
         };
         await transport.start();
+        await expect(transport.start()).rejects.toThrow("already started");
         await waitFor(() => launcher.headers.length === 1, "the launcher never received the header");
 
         const startedAt = Date.now();
