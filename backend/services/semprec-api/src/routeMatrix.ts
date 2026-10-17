@@ -459,6 +459,22 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     admin: true,
   },
   {
+    name: "admin ai budgets",
+    method: "GET",
+    path: "/api/admin/ai-budgets",
+    surface: "api",
+    public: false,
+    admin: true,
+  },
+  {
+    name: "admin set ai budget",
+    method: "PUT",
+    path: "/api/admin/accounts/00000000-0000-0000-0000-000000000000/ai-budget",
+    surface: "api",
+    public: false,
+    admin: true,
+  },
+  {
     name: "sync (WS upgrade)",
     method: "GET",
     path: "/api/sync",
