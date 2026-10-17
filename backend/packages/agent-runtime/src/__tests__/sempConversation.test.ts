@@ -10,6 +10,7 @@ import {
 import { createUser, finishAgentRun, hashPassword } from "@semprec/data";
 import { currentTenantScope, getTraceContext, runAsSystem, runInTenant } from "@semprec/shared";
 import { SEMP_BUSY_ERROR_MESSAGE, SempConversation, type SempConversationOptions } from "../sempConversation.js";
+import { logger } from "../logger.js";
 import type {
   AgentMessage,
   AgentSession,
@@ -907,10 +908,19 @@ describe("SempConversation across tenants", () => {
         // the run open on that interleaving, so the drop still finds it `running`.
         await failRunCloses(tenantB, ["done", "error"]);
         await sendAs(tenantB, conversation, "b one");
+        const errorSpy = vi.spyOn(logger, "error");
 
         await conversation.dropTenant(tenantB);
 
         expect((await runRowsOf(tenantB)).map((r) => r.status)).toEqual(["running"]);
+        // Only the error's name is logged, never the Postgres error whose detail can carry the row.
+        const dropLogs = errorSpy.mock.calls.filter(
+          ([, msg]) => msg === "SempConversation: failed to close dropped run, will retry",
+        );
+        expect(dropLogs[0]).toEqual([
+          { errorName: "error", tenantId: tenantB, agentRunId: expect.any(String) },
+          "SempConversation: failed to close dropped run, will retry",
+        ]);
         expect(await sendAs(tenantB, conversation, "b during")).toEqual({ ok: false, error: SEMP_BUSY_ERROR_MESSAGE });
         expect(sessions.find((s) => s.tenantId === tenantB)!.tasks).toEqual(["b one"]);
 
@@ -972,7 +982,7 @@ describe("SempConversation across tenants", () => {
         conversation.clear();
       });
 
-      it("lets a TTL pause in progress close the run as done and remove the entry when the pause succeeds", async () => {
+      it("closes the run as error instead of done when the tenant is dropped while a TTL pause starts", async () => {
         const { createAgentSession, sessions } = recordingSessions();
         const conversation = conversationFor(createAgentSession, {}, DROP_TTL_MS);
         await sendAs(tenantB, conversation, "b one");
@@ -981,7 +991,45 @@ describe("SempConversation across tenants", () => {
         await conversation.dropTenant(tenantB);
         await pausing;
 
-        expect((await runRowsOf(tenantB)).map((r) => r.status)).toEqual(["done"]);
+        expect(await runRowsOf(tenantB)).toEqual([
+          expect.objectContaining({ status: "error", result: "account deactivated" }),
+        ]);
+        await sendAs(tenantB, conversation, "b after");
+        expect(sessions.filter((s) => s.tenantId === tenantB)).toHaveLength(2);
+        conversation.clear();
+      });
+
+      it("rolls back a TTL pause's done update and closes the run as error when the drop arrives while that update runs", async () => {
+        const { createAgentSession, sessions } = recordingSessions();
+        const conversation = conversationFor(createAgentSession, {}, DROP_TTL_MS);
+        await sendAs(tenantB, conversation, "b one");
+        const [run] = await runRowsOf(tenantB);
+        // A row lock held elsewhere keeps the pause's `done` update waiting until the drop arrived.
+        const locker = await adminPool.connect();
+        let pausing: Promise<void> | undefined;
+        try {
+          await locker.query("BEGIN");
+          await locker.query("SELECT 1 FROM agent_runs WHERE id = $1 FOR UPDATE", [run!.id]);
+          pausing = pauseOf(conversation, tenantB);
+          await vi.waitFor(async () => {
+            const { rows } = await adminPool.query<{ waiting: boolean }>(
+              `SELECT EXISTS (
+                 SELECT 1 FROM pg_stat_activity
+                 WHERE wait_event_type = 'Lock' AND query LIKE 'UPDATE agent_runs SET status%'
+               ) AS waiting`,
+            );
+            expect(rows[0]!.waiting).toBe(true);
+          });
+          await conversation.dropTenant(tenantB);
+        } finally {
+          await locker.query("ROLLBACK");
+          locker.release();
+        }
+        await pausing;
+
+        expect(await runRowsOf(tenantB)).toEqual([
+          expect.objectContaining({ status: "error", result: "account deactivated" }),
+        ]);
         await sendAs(tenantB, conversation, "b after");
         expect(sessions.filter((s) => s.tenantId === tenantB)).toHaveLength(2);
         conversation.clear();
