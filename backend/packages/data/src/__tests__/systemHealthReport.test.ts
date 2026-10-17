@@ -9,6 +9,7 @@ import {
   createTestTenant,
   getTestPool,
   resetDatabase,
+  withTenantTransaction,
 } from "../testSupport/testDb.js";
 import { createUser } from "../auth/usersStore.js";
 import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
@@ -21,14 +22,28 @@ let pool: Pool;
 let runtimePool: Pool;
 
 /**
- * Seeds one tenant's state through the production pool, under that tenant's scope. The admin pool
- * only writes the global tables (`process_heartbeats`, `observability_checks`) and the queue,
- * which `enqueueJob` stamps from the scope it runs in.
+ * Creates one tenant and a user in it through the admin pool. Each test then seeds that tenant's
+ * own rows through the `semprec_data` runtime pool inside `runInTenant`, and writes the global
+ * tables (`process_heartbeats`, `observability_checks`) and the queue through the admin pool;
+ * `enqueueJob` stamps the job's tenant from the scope it runs in.
  */
 async function seedTenant(): Promise<{ tenantId: string; userId: string }> {
   const tenantId = await createTestTenant(pool);
   const user = await createUser(pool, { email: `${randomUUID()}@example.com`, passwordHash: "unused", tenantId });
   return { tenantId, userId: user.id };
+}
+
+/** One errored `item_automation` row on a fresh Tasks item in `tenantId`; returns the item's database id. */
+async function seedAutomationError(tenantId: string): Promise<string | undefined> {
+  return runInTenant(tenantId, async () => {
+    const itemId = await createTestModuleItem(runtimePool, TASKS_MODULE_ID);
+    // Raw insert: no production writer sets an `item_automation` error on a fixture item.
+    await runtimePool.query(`INSERT INTO item_automation (item_id, status, error) VALUES ($1, 'error', 'boom')`, [
+      itemId,
+    ]);
+    const { rows } = await pool.query<{ database_id: string }>(`SELECT database_id FROM items WHERE id = $1`, [itemId]);
+    return rows[0]?.database_id;
+  });
 }
 
 async function createMailbox(tenantId: string): Promise<string> {
@@ -137,22 +152,62 @@ describe("getSystemHealthReport (issue #170, per-tenant since #1052)", () => {
     expect(reportB.queue).toEqual({ pending: 1, overdue: 0, permanent: 0 });
   });
 
-  it("groups the caller's item_automation errors by database", async () => {
+  it("does not count the caller's in-flight final-attempt job as permanently failed", async () => {
     const a = await seedTenant();
-    const databaseId = await runInTenant(a.tenantId, async () => {
-      const itemId = await createTestModuleItem(runtimePool, TASKS_MODULE_ID);
-      await runtimePool.query(`INSERT INTO item_automation (item_id, status, error) VALUES ($1, 'error', 'boom')`, [
-        itemId,
+    await runInTenant(a.tenantId, async () => {
+      await enqueueJob(pool, "someUnregisteredTask", {}, { jobKey: "a-locked-final", maxAttempts: 1 });
+      await pool.query(`UPDATE graphile_worker._private_jobs SET attempts = 1, locked_at = now() WHERE key = $1`, [
+        "a-locked-final",
       ]);
-      const { rows } = await pool.query<{ database_id: string }>(`SELECT database_id FROM items WHERE id = $1`, [
-        itemId,
-      ]);
-      return rows[0]?.database_id;
+      await enqueueJob(pool, "someUnregisteredTask", {}, { jobKey: "a-failed-final", maxAttempts: 1 });
+      await pool.query(`UPDATE graphile_worker._private_jobs SET attempts = 1 WHERE key = $1`, ["a-failed-final"]);
     });
 
     const reportA = await runInTenant(a.tenantId, () => getSystemHealthReport(runtimePool));
 
-    expect(reportA.itemAutomationErrorsByDatabase).toEqual([{ databaseId, errorCount: 1 }]);
+    expect(reportA.queue).toEqual({ pending: 0, overdue: 0, permanent: 1 });
+  });
+
+  it("groups the caller's item_automation errors by database and keeps them out of another tenant's report", async () => {
+    const a = await seedTenant();
+    const b = await seedTenant();
+    const databaseIdA = await seedAutomationError(a.tenantId);
+    await seedAutomationError(a.tenantId);
+    const databaseIdB = await seedAutomationError(b.tenantId);
+    if (!databaseIdA || !databaseIdB) throw new Error("fixture item has no database");
+
+    const reportA = await runInTenant(a.tenantId, () => getSystemHealthReport(runtimePool));
+    const reportB = await runInTenant(b.tenantId, () => getSystemHealthReport(runtimePool));
+
+    expect(reportA.itemAutomationErrorsByDatabase).toEqual([{ databaseId: databaseIdA, errorCount: 2 }]);
+    expect(reportB.itemAutomationErrorsByDatabase).toEqual([{ databaseId: databaseIdB, errorCount: 1 }]);
+    expect(JSON.stringify(reportB)).not.toContain(databaseIdA);
+  });
+
+  it("narrows the explicitly guarded sections by tenant even on a pool that bypasses row-level security", async () => {
+    const a = await seedTenant();
+    const b = await seedTenant();
+    const databaseIdA = await seedAutomationError(a.tenantId);
+    if (!databaseIdA) throw new Error("fixture item has no database");
+    await runInTenant(a.tenantId, async () => {
+      const run = await createAgentRun(runtimePool, { triggeredBy: "user", task: "a-run", unit: "invocation" });
+      await finishAgentRun(runtimePool, run.id, "error", "boom");
+    });
+    // Raw insert: alerting rows are written by the observability system task, not a choke-point API.
+    await pool.query(
+      `INSERT INTO tenant_observability_checks (tenant_id, check_key, status, detail)
+       VALUES ($1, 'mailbox:stalled', 'alerting', '{}'::jsonb)`,
+      [a.tenantId],
+    );
+
+    // The admin pool is a superuser, so RLS filters nothing here: only the queries' own
+    // `tenant_id = app_current_tenant()` predicates keep A's rows out of B's report. Processes and
+    // mailboxes rely on RLS alone and are not asserted.
+    const reportB = await withTenantTransaction(pool, b.tenantId, (client) => getSystemHealthReport(client));
+
+    expect(reportB.itemAutomationErrorsByDatabase).toEqual([]);
+    expect(reportB.agentRunErrors7d).toBe(0);
+    expect(reportB.alertingChecks).toEqual([]);
   });
 
   it("keeps the caller's agent-run and mailbox errors out of another tenant's report", async () => {

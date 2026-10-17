@@ -130,9 +130,16 @@ async function getAlertingChecks(client: Queryable): Promise<AlertingCheck[]> {
  *
  * `tenantOnly` narrows the count to jobs whose queue envelope names the caller's tenant
  * (`payload->>'tenantId'`, stamped by `enqueueJob`). The public `graphile_worker.jobs` view has no
- * `payload` column, so that branch reads `graphile_worker._private_jobs`, the table the queue
- * package's test helper `readJobPayloadsByIdentifier` also reads. The two literals below are the
- * only SQL `tenantOnly` switches in; neither takes caller input.
+ * `payload` column, so that branch reads `graphile_worker._private_jobs` directly, the same
+ * deliberate deviation onto graphile-worker's internals that `queueFailedJobsPrune.ts` makes. It is
+ * pinned to the schema shape of graphile-worker@0.17.x (see `backend/packages/queue/package.json`);
+ * bumping that dependency to a version that renames or restructures `_private_jobs` requires
+ * re-checking this query. The two literals below are the only SQL `tenantOnly` switches in;
+ * neither takes caller input.
+ *
+ * A legacy job whose envelope carries no `tenantId` (enqueued before `enqueueJob` stamped it) is
+ * counted in no tenant's report, even though `runInTaskScope` may still run it in the sole tenant
+ * under the legacy-envelope fallback. It appears only in the operator report's global counts.
  */
 async function getQueueHealthCounts(client: Queryable, tenantOnly: boolean): Promise<QueueHealthCounts> {
   const jobSource = tenantOnly
