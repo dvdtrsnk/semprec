@@ -41,7 +41,9 @@ interface AdminAiBudgetAccountRow {
  * Every account with its tenant's caps and spend (issue #1039), oldest account first. Spend comes
  * from `ai_tenant_spend()`, a router function, because the admin plane runs in system scope where
  * row-level security hides every tenant's `ai_gateway_calls` rows (migration 0076). An account whose
- * tenant has no budget row reports `hasBudget: false` and null caps; its spend is still shown.
+ * tenant has no budget row reports `hasBudget: false` and null caps; its spend is still shown. An
+ * account is joined to its own `users.tenant_id` only, with no sole-tenant fallback, so an account
+ * without a tenant is not listed: it has no tenant to hold caps or spend.
  */
 export async function listTenantAiBudgetOverview(client: Queryable): Promise<AdminAiBudgetAccount[]> {
   const { rows } = await client.query<AdminAiBudgetAccountRow>(
@@ -50,7 +52,7 @@ export async function listTenantAiBudgetOverview(client: Queryable): Promise<Adm
             b.tenant_id IS NOT NULL AS has_budget,
             s.spent_today_usd, s.spent_month_usd
        FROM users u
-       JOIN tenants t ON t.id = COALESCE(u.tenant_id, app_sole_tenant())
+       JOIN tenants t ON t.id = u.tenant_id
        LEFT JOIN tenant_ai_budgets b ON b.tenant_id = t.id
        LEFT JOIN ai_tenant_spend() s ON s.tenant_id = t.id
       ORDER BY u.created_at, u.id`,
