@@ -290,7 +290,17 @@ export * from "./auth/authActions.js";
 export * from "./auth/nativeBridge.js";
 export * from "./auth/passwordResetStore.js";
 export * from "./auth/passwordResetMail.js";
-export * from "./auth/passwordResetActions.js";
+// Explicit so the timing-floor constant (`PASSWORD_RESET_REQUEST_MIN_DURATION_MS`) stays out of the
+// frozen public surface (`publicSurface.test.ts`); only the data package's own tests need it.
+export {
+  PASSWORD_RESET_TOKEN_TTL_SECONDS,
+  PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS,
+  PASSWORD_RESET_MAX_REQUESTS_PER_WINDOW,
+  requestPasswordReset,
+  resetPassword,
+  type RequestPasswordResetInput,
+  type ResetPasswordInput,
+} from "./auth/passwordResetActions.js";
 
 export * from "./push/types.js";
 export * from "./push/pushSubscriptionsStore.js";
