@@ -43,7 +43,10 @@ tenant's state running until the next restart or discovery pass.
   `SELECT id FROM tenants WHERE status IN ('suspended','deleting')` on that client, and calls its
   handler for each id. It does so on the first connect and on every reconnect after a connection
   error (capped exponential backoff, 200 ms to 5 s). The read follows `LISTEN`, so a deactivation
-  committed in between reaches the handler through one path or the other, possibly both.
+  committed in between reaches the handler through one path or the other, possibly both. A
+  notification that arrives while the client is still being set up (including one committed after
+  the read's snapshot) is buffered from before `LISTEN` and replayed when the client is attached, so
+  none is dropped in the handover.
 - **Idempotent consumers.** Because of the resync, a handler is called repeatedly for the same
   tenant. Every consumer treats a repeated call for a tenant it no longer holds state for as a no-op.
 - **Scope.** The listener runs in a system scope (`tenantDeactivationListener`, its resync read in

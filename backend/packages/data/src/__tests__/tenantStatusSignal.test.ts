@@ -36,7 +36,8 @@ function deferred(): Deferred {
 type ConnectStep =
   | { kind: "wait"; gate: Promise<void> }
   | { kind: "reject"; error: Error; gate?: Promise<void> }
-  | { kind: "failListen" };
+  | { kind: "failListen" }
+  | { kind: "afterResyncSnapshot"; run: () => Promise<void> };
 
 /**
  * Wraps the dedicated listener pool's `connect()` so a test can see every backend pid the listener
@@ -64,6 +65,20 @@ function instrumentConnect(pool: Pool): { pids: number[]; clients: PoolClient[];
       const query = client.query.bind(client) as (text: string) => Promise<unknown>;
       client.query = ((text: string) =>
         text.startsWith("LISTEN") ? Promise.reject(new Error("listen refused")) : query(text)) as PoolClient["query"];
+    }
+    if (step?.kind === "afterResyncSnapshot") {
+      // Runs the resync, then commits `run` and waits for its NOTIFY to reach this client before the
+      // resync resolves, so the notification arrives after the snapshot and before attach().
+      const query = client.query.bind(client) as (text: string) => Promise<unknown>;
+      client.query = (async (text: string) => {
+        const result = await query(text);
+        if (text.startsWith("SELECT id FROM tenants")) {
+          const delivered = new Promise<void>((resolve) => client.once("notification", () => resolve()));
+          await step.run();
+          await delivered;
+        }
+        return result;
+      }) as PoolClient["query"];
     }
     return client;
   };
@@ -214,6 +229,34 @@ describe("tenant deactivation signal (issue #1042)", () => {
     await vi.waitFor(() => expect(calls).toEqual([b.tenantId]));
     expect(errorSpy).toHaveBeenCalledWith({ errorName: "Error" }, "Tenant deactivation LISTEN reconnect failed");
     expect(await isBackendAlive(firstPid)).toBe(false);
+  });
+
+  it("calls the handler for a suspension whose NOTIFY arrives after the resync snapshot and before attaching", async () => {
+    const b = await makeAccount("member");
+    const { steps } = instrumentConnect(listenerPool);
+    steps.push({ kind: "afterResyncSnapshot", run: () => suspend(b) });
+    const calls: string[] = [];
+
+    await start(async (tenantId) => {
+      calls.push(tenantId);
+    });
+
+    await vi.waitFor(() => expect(calls).toEqual([b.tenantId]));
+  });
+
+  it("calls the handler for a suspension whose NOTIFY arrives during a reconnect's resync", async () => {
+    const b = await makeAccount("member");
+    const { pids, steps } = instrumentConnect(listenerPool);
+    const calls: string[] = [];
+    await start(async (tenantId) => {
+      calls.push(tenantId);
+    });
+    steps.push({ kind: "afterResyncSnapshot", run: () => suspend(b) });
+
+    await adminPool.query("SELECT pg_terminate_backend($1)", [pids[0]!]);
+
+    await vi.waitFor(() => expect(calls).toEqual([b.tenantId]));
+    expect(pids).toHaveLength(2);
   });
 
   it("logs and drops a payload that is not { tenantId: <uuid> } and keeps listening", async () => {
