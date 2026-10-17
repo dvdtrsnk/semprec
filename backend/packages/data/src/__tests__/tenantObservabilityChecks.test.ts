@@ -64,7 +64,7 @@ describe("tenant_observability_checks (issue #999)", () => {
     await pool?.end();
   });
 
-  it("reports the caller's alerting tenant check next to an alerting global check, ordered by changed_at, without ok rows", async () => {
+  it("reports only the caller's alerting tenant check, never the global alerting check, without ok rows (issue #1052)", async () => {
     await pool.query(
       `INSERT INTO observability_checks (check_key, status, changed_at) VALUES
          ('queue:backlog', 'alerting', now() - interval '2 minutes'),
@@ -76,8 +76,10 @@ describe("tenant_observability_checks (issue #999)", () => {
          ('mail:b', 'ok', now() - interval '4 minutes')`,
     );
 
-    const report = await withTransaction(pool, (client) => getSystemHealthReport(client));
-    expect(report.alertingChecks.map((check) => check.checkKey)).toEqual(["queue:backlog", "mail:a"]);
+    const report = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) => getSystemHealthReport(client)),
+    );
+    expect(report.alertingChecks.map((check) => check.checkKey)).toEqual(["mail:a"]);
   });
 
   describe("with a second tenant", () => {
