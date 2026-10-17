@@ -120,6 +120,34 @@ describe("admin routes (issue #1037)", () => {
     expect(byId.get(third.id)).toMatchObject({ lastSeenAt: null });
   });
 
+  it("answers an admin's operations health with counts and no tenant content", async () => {
+    const tenantId = await createTestTenant(pool);
+    const admin = await signIn(`admin-${randomUUID()}@example.test`, tenantId, "admin");
+    // Raw SQL on the superuser pool with an explicit tenant id: the fixture seeds tenant content
+    // (a mailbox error text and an item id) that the operator report must never echo back.
+    await pool.query(
+      `INSERT INTO tenant_observability_checks (tenant_id, check_key, status, detail) VALUES ($1, 'mailbox:stall', 'alerting', $2)`,
+      [tenantId, JSON.stringify({ lastError: "SECRET-TENANT-TEXT" })],
+    );
+    await pool.query(`INSERT INTO item_automation (item_id, status, error) VALUES ($1, 'error', 'SECRET-TENANT-TEXT')`, [
+      randomUUID(),
+    ]);
+
+    const res = await fetch(`${baseUrl}/api/admin/health`, { headers: { Authorization: `Bearer ${admin.token}` } });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain("SECRET-TENANT-TEXT");
+    expect(text).not.toContain(tenantId);
+    expect(JSON.parse(text)).toMatchObject({
+      tenantAggregates: { itemAutomationErrors: 1, alertingTenantChecks: 1 },
+    });
+  });
+
+  it("refuses an anonymous operations health request with 401", async () => {
+    const res = await fetch(`${baseUrl}/api/admin/health`);
+    expect(res.status).toBe(401);
+  });
+
   it("refuses to mount a route under /api/admin/ without the admin flag", () => {
     expect(() =>
       mountRoutes(pool, [

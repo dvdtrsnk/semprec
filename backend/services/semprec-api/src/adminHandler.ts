@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { listAccounts } from "@semprec/data";
+import { getOperatorHealthReport, listAccounts } from "@semprec/data";
 import type { RouteDefinition } from "./adapter/routeTable.js";
 import type { AppOptions } from "./app.js";
 
@@ -17,6 +17,12 @@ export function createAdminRoutes(pool: Pool, _options: AppOptions): RouteDefini
       path: "/api/admin/accounts",
       admin: true,
       handler: async () => ({ status: 200, body: { accounts: await listAccounts(pool) } }),
+    },
+    {
+      method: "GET",
+      path: "/api/admin/health",
+      admin: true,
+      handler: async () => ({ status: 200, body: await getOperatorHealthReport(pool) }),
     },
   ];
 }

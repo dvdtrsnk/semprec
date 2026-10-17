@@ -451,6 +451,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     admin: true,
   },
   {
+    name: "admin operations health",
+    method: "GET",
+    path: "/api/admin/health",
+    surface: "api",
+    public: false,
+    admin: true,
+  },
+  {
     name: "sync (WS upgrade)",
     method: "GET",
     path: "/api/sync",

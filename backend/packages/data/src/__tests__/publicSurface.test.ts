@@ -268,6 +268,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "getItemsByIds",
   "getMcpToolRegistration",
   "getNotificationById",
+  "getOperatorHealthReport",
   "getOrCreateJournalItem",
   "getPasswordResetTokenByHash",
   "getProjectMcpGrant",
