@@ -11,6 +11,7 @@ import {
   noopPasswordResetMailer,
   resolveDocHistoryRetentionDays,
   startProcessHeartbeat,
+  startTenantDeactivationListener,
   type InviteMailer,
   type PasswordResetMailer,
 } from "@semprec/data";
@@ -144,9 +145,24 @@ const mailLiveSync = createMailLiveSyncRoot(pool, createNoopMailLiveSyncLifecycl
 });
 await mailLiveSync.start();
 
+// Issue #1042: a tenant leaving `active` ends its sockets and its hosted mailbox lifecycles in this
+// process at once, instead of on the next session check or discovery pass.
+const tenantDeactivationListener = await startTenantDeactivationListener(pool, async (tenantId) => {
+  syncServer.closeTenant(tenantId);
+  await mailLiveSync.stopTenant(tenantId);
+});
+
 const server = createServer(dispatch);
 
-const shutdown = createGracefulShutdown({ server, syncServer, queueRuntime, mailLiveSync, pool, logger });
+const shutdown = createGracefulShutdown({
+  server,
+  tenantDeactivationListener,
+  syncServer,
+  queueRuntime,
+  mailLiveSync,
+  pool,
+  logger,
+});
 registerShutdownSignals(shutdown);
 
 // `WS /api/sync` (issue #160) is the one WS upgrade route this service serves; anything else

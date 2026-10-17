@@ -6,6 +6,7 @@ import { ChokePointError, NotFoundError } from "../errors.js";
 import { revokeAllSessionsForUser } from "../auth/sessionsStore.js";
 import { revokeAllPushSubscriptionsForUser } from "../push/pushSubscriptionsStore.js";
 import { transitionTenantStatus, type TenantStatus } from "./tenantsStore.js";
+import { publishTenantDeactivated } from "./tenantStatusSignal.js";
 
 /**
  * Admin-plane reads and the audit log. Everything here touches global tables only (`users`,
@@ -167,14 +168,16 @@ async function lockTarget(client: PoolClient, targetUserId: string): Promise<Loc
 }
 
 /**
- * Suspends the account's tenant (`active` → `suspended`), revokes the user's sessions and push
- * registrations, and records `accountSuspended`, all in the caller's transaction. Refuses with
+ * Suspends the account's tenant (`active` → `suspended`), publishes the tenant deactivation signal,
+ * revokes the user's sessions and push registrations, and records `accountSuspended`, all in the
+ * caller's transaction. Refuses with
  * `LastAdminError` when the target is the last active admin.
  */
 export async function suspendAccount(client: PoolClient, input: AccountMutationInput): Promise<AdminAccountSummary> {
   const target = await lockTarget(client, input.targetUserId);
   if (target.isActiveAdmin) await assertAnotherActiveAdminRemains(client, input.targetUserId);
   await transitionTenantStatus(client, target.tenantId, ["active"], "suspended");
+  await publishTenantDeactivated(client, target.tenantId);
   await revokeAllSessionsForUser(client, input.targetUserId);
   await revokeAllPushSubscriptionsForUser(client, input.targetUserId);
   await recordAdminAction(client, {

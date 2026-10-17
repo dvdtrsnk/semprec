@@ -86,7 +86,12 @@ interface TenantConversation {
   entry: ConversationRegistryEntry | null;
   /** Set for the span of a brand-new wake, before it has an entry to be `busy` on its own behalf. */
   waking: boolean;
+  /** Set by `dropTenant` during an in-flight turn: when that turn settles, its entry is discarded and its run closed as `error`. */
+  dropped?: boolean;
 }
+
+/** The error a wake run is closed with when its tenant is deactivated. */
+const ACCOUNT_DEACTIVATED_MESSAGE = "account deactivated";
 
 /**
  * Manages Semp's ongoing conversation with each tenant's user through the same in-memory,
@@ -119,6 +124,33 @@ export class SempConversation {
       if (state.entry) clearTimeout(state.entry.ttlTimer);
     }
     this.conversations.clear();
+  }
+
+  /**
+   * Discards `tenantId`'s conversation after its tenant was deactivated, clearing its TTL timer.
+   * With no turn in flight, the wake run is closed as `error` ("account deactivated") and the entry
+   * removed. With a turn in flight (`busy` or `waking`), the conversation is marked dropped and the
+   * turn is not aborted: once it settles, its entry is discarded and its run closed as `error`
+   * instead of being kept. A call for a tenant with no conversation, or one already dropped, does
+   * nothing.
+   */
+  async dropTenant(tenantId: string): Promise<void> {
+    const state = this.conversations.get(tenantId);
+    if (!state || state.dropped) return;
+    const entry = state.entry;
+    if (entry) clearTimeout(entry.ttlTimer);
+    if (state.waking || entry?.busy) {
+      state.dropped = true;
+      return;
+    }
+    state.entry = null;
+    this.releaseIfIdle(tenantId);
+    if (entry) await this.failDroppedRun(tenantId, entry.agentRunId);
+  }
+
+  /** Closes a dropped conversation's run as `error` inside its tenant; `failRun` logs its own failure. */
+  private async failDroppedRun(tenantId: string, agentRunId: string): Promise<void> {
+    await runInTenant(tenantId, () => failRun(this.pool, agentRunId, new Error(ACCOUNT_DEACTIVATED_MESSAGE)));
   }
 
   /** Drops the tenant's key once it is back to `{ entry: null, waking: false }`. */
@@ -168,7 +200,13 @@ export class SempConversation {
             await failRun(this.pool, entry.agentRunId, err);
             throw err;
           }
-          this.touch(tenantId, entry);
+          if (state.dropped) {
+            state.entry = null;
+            this.releaseIfIdle(tenantId);
+            await this.failDroppedRun(tenantId, entry.agentRunId);
+          } else {
+            this.touch(tenantId, entry);
+          }
           return { ok: true, message: extractResultSnapshot(lastMessage) };
         });
       } finally {
@@ -214,12 +252,16 @@ export class SempConversation {
           throw err;
         }
 
-        wakeState.entry = {
-          agentRunId: run.id,
-          session,
-          busy: false,
-          ttlTimer: this.scheduleTtl(tenantId),
-        };
+        if (wakeState.dropped) {
+          await this.failDroppedRun(tenantId, run.id);
+        } else {
+          wakeState.entry = {
+            agentRunId: run.id,
+            session,
+            busy: false,
+            ttlTimer: this.scheduleTtl(tenantId),
+          };
+        }
 
         return { ok: true, message: extractResultSnapshot(lastMessage) };
       });

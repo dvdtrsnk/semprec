@@ -4,7 +4,13 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { Pool } from "pg";
 import { WebSocket } from "ws";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { createUser, hashPassword, login } from "@semprec/data";
+import {
+  createUser,
+  hashPassword,
+  login,
+  startTenantDeactivationListener,
+  type TenantDeactivationListener,
+} from "@semprec/data";
 import type { SyncServer } from "@semprec/realtime";
 import type { Logger } from "@semprec/shared";
 import { createSyncUpgradeHandler } from "../syncHandler.js";
@@ -32,9 +38,20 @@ function createCapturingLogger(): { logger: Logger; lines: CapturedLine[] } {
   return { logger, lines };
 }
 
-/** Builds the same HTTP + `WS /api/sync` wiring `serve.ts` does, over `pool`, bound to an ephemeral port. */
-async function startServer(pool: Pool): Promise<{ server: Server; syncServer: SyncServer; wsBaseUrl: string }> {
+/**
+ * Builds the same HTTP + `WS /api/sync` wiring `serve.ts` does, over `pool`, bound to an ephemeral
+ * port, with the tenant deactivation listener started after the sync server.
+ */
+async function startServer(pool: Pool): Promise<{
+  server: Server;
+  syncServer: SyncServer;
+  tenantDeactivationListener: TenantDeactivationListener;
+  wsBaseUrl: string;
+}> {
   const syncServer = await createSyncUpgradeHandler(pool);
+  const tenantDeactivationListener = await startTenantDeactivationListener(pool, async (tenantId) => {
+    syncServer.closeTenant(tenantId);
+  });
   const server = createServer((_req, res) => {
     res.statusCode = 404;
     res.end();
@@ -50,7 +67,7 @@ async function startServer(pool: Pool): Promise<{ server: Server; syncServer: Sy
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
-  return { server, syncServer, wsBaseUrl: `ws://127.0.0.1:${address.port}` };
+  return { server, syncServer, tenantDeactivationListener, wsBaseUrl: `ws://127.0.0.1:${address.port}` };
 }
 
 async function openAuthenticatedClient(pool: Pool, wsBaseUrl: string): Promise<WebSocket> {
@@ -84,7 +101,7 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
   });
 
   it("settles well under the drain bound and delivers close code 1012 to a connected client", async () => {
-    const { server, syncServer, wsBaseUrl } = await startServer(dedicatedPool);
+    const { server, syncServer, tenantDeactivationListener, wsBaseUrl } = await startServer(dedicatedPool);
     const client = await openAuthenticatedClient(dedicatedPool, wsBaseUrl);
     const closeCode = new Promise<number>((resolve) => {
       client.once("close", (code: number) => resolve(code));
@@ -95,6 +112,7 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
     const started = performance.now();
     await createGracefulShutdown({
       server,
+      tenantDeactivationListener,
       syncServer,
       queueRuntime: { stop },
       mailLiveSync: { stop: async () => {} },
@@ -112,7 +130,7 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
   });
 
   it("still drains, stops the queue runtime and ends the pool when syncServer.close() rejects", async () => {
-    const { server, syncServer: realSyncServer } = await startServer(dedicatedPool);
+    const { server, syncServer: realSyncServer, tenantDeactivationListener } = await startServer(dedicatedPool);
     const closeError = new Error("sync close failed");
     // Releases the real server's LISTEN client first so the pool can still end within its bound, then rejects.
     const syncServer = {
@@ -126,6 +144,7 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
 
     await createGracefulShutdown({
       server,
+      tenantDeactivationListener,
       syncServer,
       queueRuntime: { stop },
       mailLiveSync: { stop: async () => {} },
@@ -145,12 +164,13 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
   });
 
   it("with no sync client connected, drains, stops the queue runtime and ends the pool as before", async () => {
-    const { server, syncServer } = await startServer(dedicatedPool);
+    const { server, syncServer, tenantDeactivationListener } = await startServer(dedicatedPool);
     const stop = vi.fn(async () => {});
     const { logger, lines } = createCapturingLogger();
 
     await createGracefulShutdown({
       server,
+      tenantDeactivationListener,
       syncServer,
       queueRuntime: { stop },
       mailLiveSync: { stop: async () => {} },
@@ -165,5 +185,61 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
       { level: "info", obj: { signal: "SIGTERM" }, msg: "semprec-api shutting down" },
       { level: "info", obj: { signal: "SIGTERM", timedOut: false }, msg: "semprec-api shutdown complete" },
     ]);
+  });
+});
+
+describe("semprec-api graceful shutdown closes the tenant deactivation listener first (issue #1042)", () => {
+  let sharedPool: Pool;
+  let dedicatedPool: Pool;
+
+  beforeEach(async () => {
+    sharedPool ??= getTestPool();
+    await resetDatabase(sharedPool);
+    dedicatedPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
+  });
+
+  afterEach(async () => {
+    if (!dedicatedPool.ended) await dedicatedPool.end();
+  });
+
+  afterAll(async () => {
+    await sharedPool?.end();
+  });
+
+  it("closes the listener and releases its client before the sync server stops", async () => {
+    const { server, syncServer: realSyncServer, tenantDeactivationListener: realListener } =
+      await startServer(dedicatedPool);
+    const order: string[] = [];
+    let clientsWhenSyncCloses = -1;
+    const tenantDeactivationListener = {
+      close: async () => {
+        order.push("listener.close");
+        await realListener.close();
+      },
+    };
+    const syncServer = {
+      close: async () => {
+        order.push("syncServer.close");
+        // The sync server still holds its own LISTEN client; the listener's is already gone.
+        clientsWhenSyncCloses = dedicatedPool.totalCount;
+        await realSyncServer.close();
+      },
+    };
+    const { logger, lines } = createCapturingLogger();
+
+    await createGracefulShutdown({
+      server,
+      tenantDeactivationListener,
+      syncServer,
+      queueRuntime: { stop: async () => {} },
+      mailLiveSync: { stop: async () => {} },
+      pool: dedicatedPool,
+      logger,
+    })("SIGTERM");
+
+    expect(order).toEqual(["listener.close", "syncServer.close"]);
+    expect(clientsWhenSyncCloses).toBe(1);
+    expect(dedicatedPool.ended).toBe(true);
+    expect(lines.filter((line) => line.level === "error")).toEqual([]);
   });
 });

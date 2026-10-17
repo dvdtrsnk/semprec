@@ -11,7 +11,9 @@ interface CapturedLine {
 }
 
 /** Fakes for every dependency `createGracefulShutdown` takes, each appending its step to one shared `calls` log. */
-function createFakes(options: { mailLiveSyncStop?: () => Promise<void> } = {}) {
+function createFakes(
+  options: { mailLiveSyncStop?: () => Promise<void>; listenerClose?: () => Promise<void> } = {},
+) {
   const calls: string[] = [];
   const lines: CapturedLine[] = [];
   const server = {
@@ -26,6 +28,12 @@ function createFakes(options: { mailLiveSyncStop?: () => Promise<void> } = {}) {
     closeIdleConnections: () => {},
     closeAllConnections: () => {},
   } as unknown as Server;
+  const tenantDeactivationListener = {
+    close: async () => {
+      calls.push("tenantDeactivationListener.close");
+      await options.listenerClose?.();
+    },
+  };
   const syncServer = {
     close: async () => {
       calls.push("syncServer.close");
@@ -55,7 +63,7 @@ function createFakes(options: { mailLiveSyncStop?: () => Promise<void> } = {}) {
       lines.push({ level: "error", obj, msg });
     },
   } as unknown as Logger;
-  return { calls, lines, deps: { server, syncServer, mailLiveSync, queueRuntime, pool, logger } };
+  return { calls, lines, deps: { server, tenantDeactivationListener, syncServer, mailLiveSync, queueRuntime, pool, logger } };
 }
 
 describe("semprec-api graceful shutdown stops the mail live-sync root (issue #650)", () => {
@@ -65,6 +73,7 @@ describe("semprec-api graceful shutdown stops the mail live-sync root (issue #65
     await createGracefulShutdown(deps)("SIGTERM");
 
     expect(calls).toEqual([
+      "tenantDeactivationListener.close",
       "syncServer.close",
       "server.close",
       "drained",
@@ -94,5 +103,43 @@ describe("semprec-api graceful shutdown stops the mail live-sync root (issue #65
       { level: "error", obj: { err: stopError, signal: "SIGTERM" }, msg: "mailLiveSync.stop() failed" },
     ]);
     expect(lines.at(-1)).toMatchObject({ level: "info", obj: { signal: "SIGTERM", timedOut: false } });
+  });
+});
+
+describe("semprec-api graceful shutdown closes the tenant deactivation listener (issue #1042)", () => {
+  it("closes the listener before the sync server stops", async () => {
+    const { calls, deps } = createFakes();
+
+    await createGracefulShutdown(deps)("SIGTERM");
+
+    expect(calls.slice(0, 2)).toEqual(["tenantDeactivationListener.close", "syncServer.close"]);
+  });
+
+  it("logs a rejecting listener close and still runs every later step", async () => {
+    const closeError = new Error("listener close failed");
+    const { calls, lines, deps } = createFakes({
+      listenerClose: async () => {
+        throw closeError;
+      },
+    });
+
+    await createGracefulShutdown(deps)("SIGTERM");
+
+    expect(calls).toEqual([
+      "tenantDeactivationListener.close",
+      "syncServer.close",
+      "server.close",
+      "drained",
+      "mailLiveSync.stop",
+      "queueRuntime.stop",
+      "pool.end",
+    ]);
+    expect(lines.filter((line) => line.level === "error")).toEqual([
+      {
+        level: "error",
+        obj: { err: closeError, signal: "SIGTERM" },
+        msg: "tenantDeactivationListener.close() failed",
+      },
+    ]);
   });
 });

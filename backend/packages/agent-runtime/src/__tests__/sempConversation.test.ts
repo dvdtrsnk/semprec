@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import {
   createRuntimeRolePool,
@@ -748,5 +748,134 @@ describe("SempConversation across tenants", () => {
 
     expect(observed).toEqual([tenantA, tenantB]);
     conversation.clear();
+  });
+
+  describe("dropTenant (issue #1042)", () => {
+    /** A TTL no other timer in these tests uses, so the conversation's own TTL timers can be told apart. */
+    const DROP_TTL_MS = 987_654;
+
+    async function runRowsOf(tenantId: string): Promise<Array<{ id: string; status: string; result: string | null }>> {
+      const { rows } = await adminPool.query<{ id: string; status: string; result: string | null }>(
+        `SELECT id, status, result FROM agent_runs WHERE tenant_id = $1 ORDER BY started_at`,
+        [tenantId],
+      );
+      return rows;
+    }
+
+    function gate(): { promise: Promise<void>; release: () => void } {
+      let release!: () => void;
+      const promise = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { promise, release };
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("closes an idle tenant's wake run as error, removes its entry and clears its TTL timer, leaving A untouched", async () => {
+      const setSpy = vi.spyOn(globalThis, "setTimeout");
+      const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+      const { createAgentSession, sessions } = recordingSessions();
+      const conversation = conversationFor(createAgentSession, {}, DROP_TTL_MS);
+      await sendAs(tenantA, conversation, "a one");
+      await sendAs(tenantB, conversation, "b one");
+      const ttlTimers = setSpy.mock.calls.flatMap((call, index) =>
+        call[1] === DROP_TTL_MS ? [setSpy.mock.results[index]!.value as ReturnType<typeof setTimeout>] : [],
+      );
+      expect(ttlTimers).toHaveLength(2);
+      const bTimer = ttlTimers[1];
+
+      await conversation.dropTenant(tenantB);
+
+      expect(clearSpy).toHaveBeenCalledWith(bTimer);
+      expect(clearSpy).not.toHaveBeenCalledWith(ttlTimers[0]);
+      expect(await runRowsOf(tenantB)).toEqual([
+        expect.objectContaining({ status: "error", result: "account deactivated" }),
+      ]);
+      expect((await runRowsOf(tenantA)).map((r) => r.status)).toEqual(["running"]);
+
+      // B's entry is gone: its next send wakes a new session and run. A's continues its own.
+      await sendAs(tenantB, conversation, "b two");
+      await sendAs(tenantA, conversation, "a two");
+      expect(sessions.filter((s) => s.tenantId === tenantB)).toHaveLength(2);
+      expect(await runRowsOf(tenantB)).toHaveLength(2);
+      expect(sessions.filter((s) => s.tenantId === tenantA)).toHaveLength(1);
+      expect(sessions.find((s) => s.tenantId === tenantA)!.tasks).toEqual(["a one", "a two"]);
+      conversation.clear();
+    });
+
+    it("lets an in-flight wake complete, then discards its entry and closes its run as error", async () => {
+      const slow = gate();
+      const { createAgentSession, sessions } = recordingSessions(new Map([["b slow", slow.promise]]));
+      const conversation = conversationFor(createAgentSession, {}, DROP_TTL_MS);
+      await sendAs(tenantA, conversation, "a one");
+
+      const bInFlight = sendAs(tenantB, conversation, "b slow");
+      await vi.waitFor(async () => expect(await runRowsOf(tenantB)).toHaveLength(1));
+      await conversation.dropTenant(tenantB);
+      expect((await runRowsOf(tenantB)).map((r) => r.status)).toEqual(["running"]);
+
+      slow.release();
+      expect(await bInFlight).toEqual({ ok: true, message: "reply to b slow" });
+
+      expect(await runRowsOf(tenantB)).toEqual([
+        expect.objectContaining({ status: "error", result: "account deactivated" }),
+      ]);
+      expect((await runRowsOf(tenantA)).map((r) => r.status)).toEqual(["running"]);
+      await sendAs(tenantB, conversation, "b after");
+      expect(sessions.filter((s) => s.tenantId === tenantB)).toHaveLength(2);
+      conversation.clear();
+    });
+
+    it("lets an in-flight turn on a reused session complete, then discards its entry and closes its run as error", async () => {
+      const slow = gate();
+      const { createAgentSession, sessions } = recordingSessions(new Map([["b slow", slow.promise]]));
+      const conversation = conversationFor(createAgentSession, {}, DROP_TTL_MS);
+      await sendAs(tenantA, conversation, "a one");
+      await sendAs(tenantB, conversation, "b one");
+
+      const bInFlight = sendAs(tenantB, conversation, "b slow");
+      await vi.waitFor(() => expect(sessions.find((s) => s.tenantId === tenantB)!.tasks).toContain("b slow"));
+      await conversation.dropTenant(tenantB);
+      expect((await runRowsOf(tenantB)).map((r) => r.status)).toEqual(["running"]);
+
+      slow.release();
+      expect(await bInFlight).toEqual({ ok: true, message: "reply to b slow" });
+
+      expect(await runRowsOf(tenantB)).toEqual([
+        expect.objectContaining({ status: "error", result: "account deactivated" }),
+      ]);
+      expect((await runRowsOf(tenantA)).map((r) => r.status)).toEqual(["running"]);
+      await sendAs(tenantB, conversation, "b after");
+      expect(sessions.filter((s) => s.tenantId === tenantB)).toHaveLength(2);
+      await sendAs(tenantA, conversation, "a two");
+      expect(sessions.filter((s) => s.tenantId === tenantA)).toHaveLength(1);
+      conversation.clear();
+    });
+
+    it("does nothing on a second call, during a turn or after it, or for a tenant with no conversation", async () => {
+      const slow = gate();
+      const { createAgentSession } = recordingSessions(new Map([["b slow", slow.promise]]));
+      const conversation = conversationFor(createAgentSession, {}, DROP_TTL_MS);
+      await conversation.dropTenant(tenantB);
+      expect(await runRowsOf(tenantB)).toEqual([]);
+
+      const bInFlight = sendAs(tenantB, conversation, "b slow");
+      await vi.waitFor(async () => expect(await runRowsOf(tenantB)).toHaveLength(1));
+      await conversation.dropTenant(tenantB);
+      await conversation.dropTenant(tenantB);
+      slow.release();
+      await bInFlight;
+      await conversation.dropTenant(tenantB);
+
+      const { rows } = await adminPool.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM notifications WHERE kind = 'agent_run_error'`,
+      );
+      expect(rows[0]!.n).toBe(1);
+      expect((await runRowsOf(tenantB)).map((r) => r.status)).toEqual(["error"]);
+      conversation.clear();
+    });
   });
 });
