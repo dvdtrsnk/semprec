@@ -379,8 +379,8 @@ the dedicated user `semprec-mcp`. See
   arguments and its environment, then `exec`s the command in `/var/lib/semprec-mcp`. It exits 64
   and runs nothing on a malformed header or the wrong uid; its stderr goes to the journal under
   `semprec-mcp-launch`. The unit cannot see `/opt/semprec/shared`, `/opt/semprec/data`,
-  `/var/backups/semprec` or `/etc/caddy`, or other users' processes. It has no capabilities and is
-  stopped after 300 seconds, at 1 GiB of memory or 64 tasks.
+  `/var/backups/semprec` or `/etc/caddy`, or other users' processes. It has no capabilities, is
+  stopped after 300 seconds, and is limited to 1 GiB of memory and 64 tasks.
 - **Egress.** The `output` chain sends traffic of uid `semprec-mcp` through `semprec_mcp_egress`. It
   accepts replies and DNS (tcp/udp port 53) and rejects the same blocked sets as `semprec_egress`.
   It has no loopback exception: all of `127.0.0.0/8` and `::1` is rejected, including Postgres and
