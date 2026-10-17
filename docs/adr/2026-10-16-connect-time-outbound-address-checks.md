@@ -19,8 +19,9 @@ decision.
 
 With many tenants on one host that gap is a cross-tenant path. One user's stored URL can reach the
 loopback services of the host (Postgres, the AI gateway, other processes), link-local metadata
-addresses or the private network. Host egress filtering (issue #1063) closes it at the network
-layer, but it is invisible to the code and can be lost in a deployment change.
+addresses or the private network. Host egress filtering
+([[2026-10-03-host-egress-filtered-by-service-uid]]) closes it at the network layer, but it is
+invisible to the code and can be lost in a deployment change.
 
 Resolving the name, checking the result and then letting the HTTP client connect by name would
 resolve twice. The second answer can differ from the first, so the check has to sit inside the
@@ -55,12 +56,14 @@ true })`. It refuses the connection with `OutboundAddressNotAllowedError` unless
   the fan-out revokes the subscription as it does for a 404/410.
 - **Test-only loopback policy.** Contract tests run real MCP servers on `http://127.0.0.1`.
   `allowLoopbackOutboundForTests()` switches the module's default policy to one that also allows
-  loopback addresses (`127/8`, `::1` and their mapped forms) and `http:`. Under it, `connectMcpServer`
-  skips the baseline re-check. The switch is process-wide, because those servers are reached through
+  loopback addresses (`127/8`, `::1` and their mapped forms) and `http:`, both as resolved addresses
+  and as IP-literal hosts. Under it an IP-literal host is allowed whenever its address is public or
+  loopback, so public literals pass too; only the default policy refuses every literal. Under it,
+  `connectMcpServer` skips the baseline re-check. The switch is process-wide, because those servers are reached through
   call paths that take no policy argument. It throws unless `NODE_ENV` is `test`, and it is exported
   only through `testSupport/mcpContractServers.ts`, never from the package index.
-- **Second layer.** Host egress filtering (issue #1063) stays the second layer and is still
-  required. This check runs only for the clients built here.
+- **Second layer.** Host egress filtering ([[2026-10-03-host-egress-filtered-by-service-uid]]) stays
+  the second layer and is still required. This check runs only for the clients built here.
 
 ## Consequences
 
@@ -73,8 +76,14 @@ true })`. It refuses the connection with `OutboundAddressNotAllowedError` unless
 - The `sse` transport's `EventSource` reduces a failed request to a message string before the SDK
   rejects `connect()`, so the MCP factory notes a refusal at its `fetch` wrapper and does not rely
   on the connect error's `cause` chain.
-- Fixed provider endpoints (Gmail, Graph, IMAP, the AI gateway, APNs) take no user-supplied URL and
-  are not routed through this policy. The `stdio` transport opens no network connection and is
+- Fixed provider endpoints (Gmail, Graph, the AI gateway, APNs) take no user-supplied URL and are
+  not routed through this policy.
+- Known gap: tenant-chosen IMAP and SMTP hosts are user-supplied too, but they are not routed
+  through this check. It covers only the HTTP(S) clients built here; a raw TCP/TLS client such as the
+  IMAP client connects by name through its own socket and would need its own policy lookup hook.
+  Until a later decision routes those connections through one, host egress filtering is the only
+  layer that keeps them off internal addresses. A new raw-socket client to a tenant-chosen host is
+  not exempt from this decision's intent: it adopts the policy lookup or records why it cannot. The `stdio` transport opens no network connection and is
   governed by [[2026-10-16-stdio-mcp-confined-to-admin-tenants]].
 - Each MCP connection and each web push send builds its own connection pools and destroys them when
   it closes, so a refused or finished request leaves no pooled socket behind. Connections are not

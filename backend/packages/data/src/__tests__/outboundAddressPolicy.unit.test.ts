@@ -103,9 +103,11 @@ describe("publicOnlyLookup (issue #1034)", () => {
   });
 
   it("passes a resolution failure through unchanged", async () => {
-    const { err } = await lookup("does-not-exist.invalid", false);
-    expect(err).not.toBeNull();
+    stub = stubDnsLookup({ "does-not-exist.test": [] });
+    const { err } = await lookup("does-not-exist.test", false);
     expect(err).not.toBeInstanceOf(OutboundAddressNotAllowedError);
+    expect(err?.code).toBe("ENOTFOUND");
+    expect(stub.calls).toEqual(["does-not-exist.test"]);
   });
 });
 

@@ -1,3 +1,4 @@
+import https from "node:https";
 import net from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
@@ -534,9 +535,56 @@ describe("MCP connection factory (issue #231)", () => {
           await handle.close();
         }
         expect(stub.calls).toContain("contract.test");
+        // Well inside undici's 4s keep-alive: only destroying the per-connection pool closes the socket this soon.
+        await vi.waitFor(
+          () => {
+            if (contract.hasOpenSockets())
+              throw new Error("http contract server still has an open socket after close()");
+          },
+          { timeout: 1_000, interval: 20 },
+        );
       } finally {
         await contract.stop();
       }
+    });
+
+    describe("when tearing down the connection pools fails", () => {
+      it("still rejects a refused connect with address_not_allowed", async () => {
+        const counter = await startConnectionCounter();
+        try {
+          const destroy = vi.spyOn(https.Agent.prototype, "destroy").mockImplementation(() => {
+            throw new Error("pool teardown failed");
+          });
+          stub = stubDnsLookup({ "mixed.test": ["127.0.0.1", "10.0.0.5"] });
+          const item = await createMcpServerItem({ transport: "http", url: `http://mixed.test:${counter.port}/mcp` });
+
+          const err = await connectMcpServer(pool, item).catch((e: unknown) => e);
+          expect(err).toBeInstanceOf(McpConnectionError);
+          expect((err as McpConnectionError).reason).toBe("address_not_allowed");
+          expect(destroy).toHaveBeenCalled();
+          expect(counter.count()).toBe(0);
+        } finally {
+          vi.restoreAllMocks();
+          await counter.stop();
+        }
+      });
+
+      it("still resolves close() of a connected handle", async () => {
+        const contract = await startHttpContractServer();
+        try {
+          const item = await createMcpServerItem(contract.connectionConfig);
+          const handle = await connectMcpServer(pool, item);
+          const destroy = vi.spyOn(https.Agent.prototype, "destroy").mockImplementation(() => {
+            throw new Error("pool teardown failed");
+          });
+
+          await expect(handle.close()).resolves.toBeUndefined();
+          expect(destroy).toHaveBeenCalled();
+        } finally {
+          vi.restoreAllMocks();
+          await contract.stop();
+        }
+      });
     });
   });
 

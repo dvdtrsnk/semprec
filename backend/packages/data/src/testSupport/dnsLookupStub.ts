@@ -4,8 +4,9 @@ import { isIP } from "node:net";
 /**
  * Replaces `dns.lookup` so a test can make a hostname resolve to chosen addresses (issue #1034's
  * outbound address policy tests). Hostnames not in the table go to the real `dns.lookup`, because
- * other code in the process (the `pg` pool) resolves through the same function. Restore it in
- * `afterEach`/`finally`.
+ * other code in the process (the `pg` pool) resolves through the same function. A hostname mapped to
+ * an empty list fails through the callback with `ENOTFOUND`, as the real resolver does for an unknown
+ * name. Restore it in `afterEach`/`finally`.
  */
 export interface DnsLookupStub {
   /** Every stubbed hostname looked up, in order. */
@@ -36,11 +37,14 @@ export function stubDnsLookup(table: Readonly<Record<string, readonly string[]>>
     if (typeof callback !== "function") throw new TypeError("stubDnsLookup: lookup called without a callback");
     const entries = addresses.map((address) => ({ address, family: isIP(address) }));
     process.nextTick(() => {
-      if (wantsAll(options)) {
+      const first = entries[0];
+      if (first === undefined) {
+        const notFound: NodeJS.ErrnoException = new Error(`getaddrinfo ENOTFOUND ${hostname}`);
+        notFound.code = "ENOTFOUND";
+        Reflect.apply(callback, undefined, [notFound, wantsAll(options) ? [] : "", 0]);
+      } else if (wantsAll(options)) {
         Reflect.apply(callback, undefined, [null, entries] satisfies Parameters<LookupAllCallback>);
       } else {
-        const first = entries[0];
-        if (first === undefined) throw new Error(`stubDnsLookup: no address for ${hostname}`);
         Reflect.apply(callback, undefined, [null, first.address, first.family] satisfies Parameters<LookupOneCallback>);
       }
     });
