@@ -1018,6 +1018,40 @@ describe("mail live-sync root: stopTenant (issue #1042)", () => {
     await root.stop();
   });
 
+  it("stops a lifecycle an overlapping pass retired while it started only after its start, and installs no heartbeat for it", async () => {
+    const b = await addTenantWithMailbox();
+    let releaseStart: () => void = () => {};
+    const startGate = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    // Only intervals are faked, so a heartbeat left running shows up as a pending fake timer.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const { factory, events } = scopedFactory(startGate);
+    const root = createMailLiveSyncRoot(dataPool, factory);
+
+    // Pass 1 hosts B's mailbox and holds in its start; pass 2 no longer sees B active and retires it.
+    const pass1 = root.reconcileOnce();
+    await vi.waitFor(() => expect(events).toContain(`start:${b.mailboxId}`));
+    await markSuspended(b.tenantId);
+    const pass2 = root.reconcileOnce();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(events).not.toContain(`stop:${b.mailboxId}`);
+
+    releaseStart();
+    await pass1;
+    await pass2;
+    await root.stopTenant(b.tenantId);
+    await root.stop();
+
+    expect(events.filter((event) => event.includes(b.mailboxId))).toEqual([
+      `start:${b.mailboxId}`,
+      `started:${b.mailboxId}`,
+      `stop:${b.mailboxId}`,
+    ]);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(await beatAt(b.mailboxId)).toBeUndefined();
+  });
+
   it("waits for a discovery pass in flight before stopping, so a lifecycle still starting is stopped after it started", async () => {
     const b = await addTenantWithMailbox();
     let releaseStart: () => void = () => {};

@@ -89,6 +89,8 @@ interface HostedEntry {
   lifecycle: MailAccountLifecycle;
   syncMode: SyncMode;
   heartbeat: ProcessHeartbeatHandle | null;
+  /** The pass's `lifecycle.start()`, settled (never rejecting) once it finished; a stop waits for it. */
+  starting?: Promise<void>;
   /** Set by the `stopHosted` call that removed this entry; settles, never rejecting, once it stopped. */
   stopping?: Promise<void>;
 }
@@ -220,7 +222,9 @@ export function createMailLiveSyncRoot(
   /**
    * Stops `entry` once: callers pass entries from a snapshot of `hosted` (another pass's retire
    * loop, `stopTenant`, `stop()`), so an entry another caller already removed is not stopped
-   * again; the call instead waits for that caller's stop, if it is still running.
+   * again; the call instead waits for that caller's stop, if it is still running. An entry whose
+   * `start()` is still running (an overlapping pass retired it) is stopped only after that start
+   * settled, and the pass that started it then installs no heartbeat for it.
    */
   function stopHosted(mailboxItemId: string, entry: HostedEntry): Promise<void> {
     if (entry.stopping) return entry.stopping;
@@ -228,6 +232,7 @@ export function createMailLiveSyncRoot(
     hosted.delete(mailboxItemId);
     stoppingEntries.add(entry);
     entry.stopping = (async () => {
+      await entry.starting;
       entry.heartbeat?.stop();
       try {
         await runInTenant(entry.tenantId, () => entry.lifecycle.stop());
@@ -272,8 +277,16 @@ export function createMailLiveSyncRoot(
         const lifecycle = lifecycleFactory({ mailboxItemId, syncMode });
         const entry: HostedEntry = { tenantId, lifecycle, syncMode, heartbeat: null };
         hosted.set(mailboxItemId, entry);
+        const start = runInTenant(tenantId, () => lifecycle.start());
+        entry.starting = start.then(
+          () => {},
+          () => {},
+        );
         try {
-          await runInTenant(tenantId, () => lifecycle.start());
+          await start;
+          // Retired by an overlapping pass, `stopTenant` or `stop()` while it started: its stop
+          // runs after this start, and a heartbeat installed now would outlive it.
+          if (entry.stopping) continue;
           entry.heartbeat = startProcessHeartbeat(
             pool,
             {
