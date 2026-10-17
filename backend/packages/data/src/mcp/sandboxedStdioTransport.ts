@@ -24,8 +24,9 @@ const CLOSE_GRACE_MS = 2_000;
  * JSON-RPC framing as the SDK's `StdioClientTransport`, after one header line naming the server.
  *
  * The header holds the decrypted credential, so `start()` takes it off the transport before
- * connecting and releases it once written or once the connect fails: after `start()` settles,
- * nothing reachable from the transport or the connected client keeps a copy.
+ * connecting and keeps only the encoded line, which it releases once handed to the socket or once
+ * the connect fails: after `start()` settles, neither the transport nor any listener it registered
+ * holds the header. The socket's own write queue holds the line's bytes until they are flushed.
  */
 export class SandboxedStdioClientTransport implements Transport {
   onclose?: () => void;
@@ -44,28 +45,44 @@ export class SandboxedStdioClientTransport implements Transport {
   }
 
   async start(): Promise<void> {
-    const header = this.header;
-    if (this.socket !== undefined || header === undefined) {
+    if (this.socket !== undefined || this.header === undefined) {
       throw new Error("SandboxedStdioClientTransport already started");
     }
+    // Every listener below shares this function's closure context, and the socket keeps them alive
+    // for the connection's lifetime, so the header is held only in `line`, which is cleared below.
+    let line: string | undefined = `${JSON.stringify(this.header)}\n`;
     this.header = undefined;
     const socket = net.createConnection(this.socketPath);
     this.socket = socket;
     socket.on("close", () => this.fireClose());
     await new Promise<void>((resolve, reject) => {
-      const onConnect = () => {
+      const settle = () => {
+        socket.off("connect", onConnect);
         socket.off("error", onConnectError);
+        socket.off("close", onCloseBeforeConnect);
+        line = undefined;
+      };
+      const onConnect = () => {
+        const pending = line;
+        settle();
         socket.on("error", (error) => this.onerror?.(error));
         socket.on("data", (chunk: Buffer) => this.handleData(chunk));
-        socket.write(`${JSON.stringify(header)}\n`);
+        if (pending !== undefined) socket.write(pending);
         resolve();
       };
       const onConnectError = (error: Error) => {
-        socket.off("connect", onConnect);
+        settle();
         reject(error);
+      };
+      // `close()` while still connecting destroys the socket without an `error`; without this the
+      // connect would never settle.
+      const onCloseBeforeConnect = () => {
+        settle();
+        reject(new Error("Socket closed before it connected"));
       };
       socket.once("connect", onConnect);
       socket.once("error", onConnectError);
+      socket.once("close", onCloseBeforeConnect);
     });
   }
 
