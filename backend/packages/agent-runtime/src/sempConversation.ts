@@ -181,7 +181,7 @@ export class SempConversation {
 
   /**
    * Closes a dropped conversation's run as `error` inside its tenant, then removes its entry. On a
-   * failure the entry stays, claimed again by the retry timer; the retry runs this again.
+   * failure the entry stays, holding a timer that runs this again.
    */
   private async closeDropped(
     tenantId: string,
