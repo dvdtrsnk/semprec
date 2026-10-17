@@ -406,22 +406,15 @@ describe("AI gateway tenant isolation across every endpoint", () => {
       const suspended = await call(endpoint, { tenantHeader: suspendedTenant, id: idOf(tenantA, endpoint) });
       const unknown = await call(endpoint, { tenantHeader: randomUUID(), id: idOf(tenantA, endpoint) });
 
-      // The gateway answers the two differently today: the suspended tenant passes the budget gate
-      // and is refused by the active-status guard of the reservation, the unknown tenant has no
-      // budget row and is refused by the budget gate. The case below records that divergence.
       expect(suspended.status).toBe(403);
       expect(JSON.parse(suspended.body)).toMatchObject({ code: "attribution_refused" });
       expect(unknown.status).toBe(403);
-      expect(JSON.parse(unknown.body)).toMatchObject({ code: "budget_exceeded" });
+      expect(JSON.parse(unknown.body)).toMatchObject({ code: "attribution_refused" });
       expect(await totalRows()).toBe(0);
       expect(providerCalls).toBe(0);
     });
 
-    // A real leak this suite found: a suspended tenant id can be told from an unknown one. Per
-    // #1057's Task step 4 the handlers are not changed here; #1190 fixes the gateway and turns this
-    // case into a normal test. `it.fails` turns red once the responses become byte-identical, so
-    // the marker has to be removed together with that fix.
-    it.fails("answers a suspended tenant exactly like an unknown tenant", async () => {
+    it("answers a suspended tenant exactly like an unknown tenant", async () => {
       const suspended = await call(endpoint, { tenantHeader: suspendedTenant, id: idOf(tenantA, endpoint) });
       const unknown = await call(endpoint, { tenantHeader: randomUUID(), id: idOf(tenantA, endpoint) });
 
