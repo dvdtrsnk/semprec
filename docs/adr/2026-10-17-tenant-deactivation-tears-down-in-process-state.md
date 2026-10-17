@@ -58,12 +58,20 @@ tenant's state running until the next restart or discovery pass.
   #1050.
 - **Shutdown.** A process closes its listener before the components its handler calls into, so no
   handler runs against a closing sync server or mail root. `close()` waits for handler calls already
-  in flight and starts none afterwards.
+  in flight and starts none afterwards. That wait is as long as the slowest consumer teardown, which
+  for a mailbox lifecycle includes a discovery pass and its lifecycle's `start()`, so the shutdown
+  sequence bounds it: `semprec-api` waits at most `LISTENER_CLOSE_TIMEOUT_MS` (5 s) and then moves on,
+  accepting that a handler still running past the bound races the components' own close. Each
+  consumer's teardown is idempotent against that close.
 
 ## Consequences
 
 - A suspended tenant's sockets close with 4401 (`account deactivated`) and its mailbox lifecycles stop
-  in `semprec-api` as soon as the NOTIFY arrives, instead of on the next heartbeat or discovery pass.
+  in `semprec-api` when the NOTIFY arrives, instead of on the next heartbeat or discovery pass. An
+  upgrade that authenticated against the session before the suspension committed is closed the same
+  way once it attaches. A handler call that fails is logged and not retried: the tenant's state then
+  stops on the next reconnect's resync, discovery pass or heartbeat session check, as before this
+  decision.
 - A process that was disconnected when the tenant was deactivated catches up when it reconnects, at
   the cost of re-running every consumer for every non-active tenant on each reconnect.
 - Consumers stop their in-memory state only. A later discovery pass or new connection is kept out by

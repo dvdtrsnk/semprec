@@ -48,8 +48,9 @@ export interface SyncServer {
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
   /**
    * Closes every open socket authenticated in `tenantId` with 4401 and reason
-   * `"account deactivated"`, leaving every other tenant's sockets open. A second call finds no
-   * open socket of that tenant and does nothing.
+   * `"account deactivated"`, leaving every other tenant's sockets open. An upgrade of that tenant
+   * that began authenticating before this call is closed the same way once it attaches. A second
+   * call finds no open socket of that tenant and does nothing.
    */
   closeTenant(tenantId: string): void;
   close(): Promise<void>;
@@ -148,6 +149,10 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   const agentRunWatch = createAgentRunWatchRegistry(pool);
   const docSync = createDocSyncRegistry(pool);
   let closed = false;
+  // `closeTenant` bumps `tenantCloseCount` and records it per tenant, so an upgrade can tell
+  // whether its tenant was closed after it began authenticating. One entry per closed tenant.
+  let tenantCloseCount = 0;
+  const lastTenantClose = new Map<string, number>();
 
   const invalidationCoalescer = createInvalidationCoalescer();
 
@@ -490,6 +495,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
 
   return {
     handleUpgrade(req, socket, head) {
+      const closesBefore = tenantCloseCount;
       runAsSystem("realtime:upgrade", () => options.authenticate(req))
         .then((identity) => {
           if (!identity) {
@@ -503,7 +509,14 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
             rejectUpgrade(socket);
             return;
           }
-          wss.handleUpgrade(req, socket, head, (ws) => attachClient(ws, identity));
+          wss.handleUpgrade(req, socket, head, (ws) => {
+            attachClient(ws, identity);
+            // `closeTenant` may have run for this tenant while the upgrade authenticated against
+            // the session it read before the deactivation: it never saw this socket, so close it now.
+            if ((lastTenantClose.get(identity.tenantId) ?? 0) > closesBefore) {
+              ws.close(SESSION_REVOKED_CLOSE_CODE, "account deactivated");
+            }
+          });
         })
         .catch((err: unknown) => {
           console.error("Sync upgrade authentication failed", err);
@@ -511,6 +524,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
         });
     },
     closeTenant(tenantId) {
+      lastTenantClose.set(tenantId, ++tenantCloseCount);
       for (const client of wss.clients) {
         const identity = identityByClient.get(client);
         if (identity?.tenantId === tenantId && client.readyState === client.OPEN) {
