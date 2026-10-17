@@ -147,9 +147,57 @@ describe("invites (issue #1040)", () => {
     expect(byId.get(second.invite.id)).toBe("pending");
   });
 
-  it("does not hold a mail send back when the mailer rejects, and logs neither the token nor the URL", async () => {
+  it("serializes concurrent invites to one address so exactly one stays pending", async () => {
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstCreated!: (created: CreatedInvite) => void;
+    const firstInserted = new Promise<CreatedInvite>((resolve) => {
+      firstCreated = resolve;
+    });
+    const first = runAsSystem("invitesTest", () =>
+      withTransaction(dataPool, async (client) => {
+        const created = await createInvite(client, {
+          email: "race@example.com",
+          invitedBy: inviterId,
+          appBaseUrl: APP_BASE_URL,
+          mailer: null,
+        });
+        firstCreated(created);
+        await firstHeld;
+        return created;
+      }),
+    );
+    await firstInserted;
+
+    const second = invite("Race@Example.com");
+    try {
+      await vi.waitFor(async () => {
+        const { rows: waiting } = await pool.query<{ waiting: number }>(
+          "SELECT count(*)::int AS waiting FROM pg_locks WHERE locktype = 'advisory' AND NOT granted",
+        );
+        expect(waiting[0]?.waiting).toBe(1);
+      });
+    } finally {
+      releaseFirst();
+    }
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    const byId = new Map((await listInvites(pool)).map((summary) => [summary.id, summary.status]));
+    expect(byId.get(firstResult.invite.id)).toBe("revoked");
+    expect(byId.get(secondResult.invite.id)).toBe("pending");
+  });
+
+  it("does not hold a mail send back when the mailer rejects, and logs neither the token, the URL nor the address", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const mailer = recordingMailer(new Error("SMTP refused the connection"));
+    const refusal = Object.assign(new Error("550 5.1.1 <new@example.com>: Recipient address rejected"), {
+      code: "EENVELOPE",
+      responseCode: 550,
+      response: "550 5.1.1 <new@example.com>: Recipient address rejected",
+      rejected: ["new@example.com"],
+    });
+    const mailer = recordingMailer(refusal);
 
     const created = await invite("new@example.com", mailer);
 
@@ -158,6 +206,28 @@ describe("invites (issue #1040)", () => {
     expect(logged).toContain(created.invite.id);
     expect(logged).not.toContain(tokenFromUrl(created.inviteUrl));
     expect(logged).not.toContain(created.inviteUrl);
+    expect(logged).not.toContain("new@example.com");
+    expect(errorSpy.mock.calls[0]?.[1]).toEqual({
+      inviteId: created.invite.id,
+      errorName: "Error",
+      errorCode: "EENVELOPE",
+      responseCode: 550,
+    });
+  });
+
+  it("logs only the value's type when the mailer rejects with a non-Error value", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const mailer: InviteMailer = {
+      // A non-Error rejection is the branch under test.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      sendInviteEmail: () => Promise.reject("rejected <new@example.com>"),
+    };
+
+    const created = await invite("new@example.com", mailer);
+
+    await vi.waitFor(() => expect(errorSpy).toHaveBeenCalled());
+    expect(errorSpy.mock.calls[0]?.[1]).toEqual({ inviteId: created.invite.id, errorName: "string" });
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("new@example.com");
   });
 
   it("reports each invite's status from its timestamps, in precedence order, without any token", async () => {

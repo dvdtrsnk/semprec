@@ -2,7 +2,7 @@ import type { PoolClient } from "pg";
 import { EMAIL_PATTERN } from "../auth/authActions.js";
 import { normalizeEmail } from "../auth/emailNormalization.js";
 import { generateOpaqueToken } from "../auth/token.js";
-import { requireAffectedRows, runAfterCommit, type Queryable } from "../db/pool.js";
+import { runAfterCommit, type Queryable } from "../db/pool.js";
 import { ChokePointError, NotFoundError, ValidationError } from "../errors.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import type { InviteMailer } from "./inviteMail.js";
@@ -90,10 +90,25 @@ export interface CreatedInvite {
 }
 
 /**
+ * Only the error's class name and the SMTP status codes reach the log. A recipient refusal carries the
+ * invitee's address in `message`, `response` and `rejected`, and logs are not tenant-scoped.
+ */
+function describeMailFailure(err: unknown): { errorName: string; errorCode?: string; responseCode?: number } {
+  if (!(err instanceof Error)) return { errorName: typeof err };
+  return {
+    errorName: err.name,
+    ...("code" in err && typeof err.code === "string" ? { errorCode: err.code } : {}),
+    ...("responseCode" in err && typeof err.responseCode === "number" ? { responseCode: err.responseCode } : {}),
+  };
+}
+
+/**
  * Creates a pending invitation and supersedes every earlier pending one for the same address. The
- * per-address advisory lock serializes concurrent invites to one address, so the superseding update
- * and the insert cannot interleave with another invite for it. The mail is dispatched from
- * `runAfterCommit`, so a rolled-back transaction sends nothing.
+ * per-address advisory lock serializes concurrent `createInvite` calls for one address, so the
+ * superseding update and the insert cannot interleave with another invite for it. The lock does not
+ * serialize against user creation, which never takes it: the existing-account check refuses an address
+ * that already had an account when it ran, and accepting an invitation (#1087) must check again. The
+ * mail is dispatched from `runAfterCommit`, so a rolled-back transaction sends nothing.
  */
 export async function createInvite(client: PoolClient, input: CreateInviteInput): Promise<CreatedInvite> {
   const email = normalizeEmail(input.email);
@@ -102,7 +117,10 @@ export async function createInvite(client: PoolClient, input: CreateInviteInput)
   }
 
   await client.query("SELECT pg_advisory_xact_lock(hashtext('semprec_invite:' || $1))", [email]);
-  const { rows: existingUsers } = await client.query("SELECT 1 FROM users WHERE email = $1", [email]);
+  const { rows: existingUsers } = await client.query<{ found: number }>(
+    "SELECT 1 AS found FROM users WHERE email = $1",
+    [email],
+  );
   if (existingUsers.length > 0) {
     throw new ValidationError("'email' already belongs to an account", { field: "email" });
   }
@@ -129,7 +147,10 @@ export async function createInvite(client: PoolClient, input: CreateInviteInput)
       void mailer
         .sendInviteEmail({ to: invite.email, inviteUrl, expiresAt: invite.expiresAt })
         .catch((err: unknown) => {
-          console.error("createInvite: failed to send the invitation email", { inviteId: invite.id }, err);
+          console.error("createInvite: failed to send the invitation email", {
+            inviteId: invite.id,
+            ...describeMailFailure(err),
+          });
         });
     });
   }
@@ -146,24 +167,21 @@ export async function listInvites(client: Queryable): Promise<InviteSummary[]> {
 }
 
 /**
- * Revokes one pending invitation. The row is locked and its status read before the update, so the
- * update always touches exactly that row. A missing id is `NotFoundError`; an accepted, revoked or
- * expired invitation is `invite_not_pending` (409), so the caller learns why nothing changed.
+ * Revokes one pending invitation with a single conditional update. When it matches no row, a missing
+ * id is `NotFoundError`; an accepted, revoked or expired invitation is `invite_not_pending` (409), so
+ * the caller learns why nothing changed.
  */
 export async function revokeInvite(client: PoolClient, inviteId: string): Promise<InviteSummary> {
-  const { rows } = await client.query<InviteRow>(`SELECT ${INVITE_COLUMNS} FROM invites WHERE id = $1 FOR UPDATE`, [
-    inviteId,
-  ]);
-  const current = rows[0];
-  if (!current) throw new NotFoundError("Invite not found", { inviteId });
-  if (toInviteSummary(current).status !== "pending") {
-    throw new ChokePointError(409, "invite_not_pending", "Only a pending invite can be revoked");
-  }
-
   const result = await client.query<InviteRow>(
-    `UPDATE invites SET revoked_at = now() WHERE id = $1 RETURNING ${INVITE_COLUMNS}`,
+    `UPDATE invites SET revoked_at = now()
+      WHERE id = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()
+      RETURNING ${INVITE_COLUMNS}`,
     [inviteId],
   );
-  requireAffectedRows(result, "invites revoke");
-  return toInviteSummary(result.rows[0]!);
+  const row = result.rows[0];
+  if (result.rowCount === 1 && row) return toInviteSummary(row);
+
+  const { rows: existing } = await client.query<{ id: string }>("SELECT id FROM invites WHERE id = $1", [inviteId]);
+  if (existing.length === 0) throw new NotFoundError("Invite not found", { inviteId });
+  throw new ChokePointError(409, "invite_not_pending", "Only a pending invite can be revoked");
 }
