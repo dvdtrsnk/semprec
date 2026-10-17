@@ -38,13 +38,22 @@ UNIX socket. It is never a child of the service that uses it.
   stdout.
 - **Launcher protocol.** `/usr/local/libexec/semprec-mcp-launch` (`deploy/bin/`) reads exactly one
   header line, at most 65536 bytes and nothing past its newline:
-  `{"command": string, "args": string[], "env": {NAME: string}}` encoded as JSON. It refuses with
-  exit 64, running nothing, in these cases:
+  `{"command": string, "args": string[], "env": {NAME: string}}` encoded as JSON. Anything else
+  is refused with exit 64, running nothing. That means it refuses when:
   - it is not running as `semprec-mcp`;
-  - the header is too long, has no newline, or contains a NUL;
-  - the header has any other field;
-  - `command` is empty or contains `=`;
-  - an env name does not match `^[A-Za-z_][A-Za-z0-9_]*$`.
+  - the header is longer than 65536 bytes, has no newline, or contains a raw NUL byte;
+  - the line is not exactly one JSON value, or that value is not an object;
+  - the object has a field other than `command`, `args` and `env`, or lacks one of them;
+  - `command` is not a string, is empty, or contains `=` or a NUL;
+  - `args` is not an array of strings, or any element contains a NUL;
+  - `env` is not an object of strings, a value contains a NUL, or a name does not match
+    `^[A-Za-z_][A-Za-z0-9_]*$`.
+
+  The connection is simply closed on a refusal, so the client sees the same `handshake_failed` as
+  for any other server that closes without answering. `mcpConnectionConfig`'s schema does not
+  refuse a `command` containing `=` or a NUL, nor a config whose header with the credential exceeds
+  65536 bytes, so such a stored config reaches the launcher and fails there; the refusal reason is
+  only in the journal.
 
   Otherwise it `exec`s `command` with `args` in `/var/lib/semprec-mcp`. The environment is exactly
   `PATH`, `HOME`, `LANG`, `USER` and `LOGNAME`, overlaid by the header's `env`. Every byte after
@@ -58,9 +67,11 @@ UNIX socket. It is never a child of the service that uses it.
   `RuntimeMaxSec=300`, `MemoryMax=1G` and `TasksMax=64`. There is no `MemoryDenyWriteExecute=`,
   because Node-based servers JIT.
 - **Egress.** `deploy/nftables.conf` jumps `meta skuid "semprec-mcp"` to `semprec_mcp_egress`. That
-  chain accepts established/related traffic and DNS, then logs and rejects everything in the same
-  blocked sets as `semprec_egress`. Unlike `semprec_egress`, it has no loopback exception, so
-  Postgres and the gateway are unreachable.
+  chain accepts established/related traffic and TCP/UDP port 53 to any destination, then logs and
+  rejects everything in the same blocked sets as `semprec_egress`. Unlike `semprec_egress`, it has
+  no loopback exception for Postgres or the gateway, so those ports are unreachable. Port 53 is
+  accepted before the blocked sets, so it stays open on loopback and private addresses too, which
+  lets a server use the host's or the network's resolver.
 - **Client.** `SandboxedStdioClientTransport` (`backend/packages/data/src/mcp/sandboxedStdioTransport.ts`)
   connects to the socket, writes the header, drops its reference to it, and then speaks the
   SDK's newline-delimited JSON-RPC framing. The header's `env` is the config's `env` plus the
@@ -91,12 +102,20 @@ UNIX socket. It is never a child of the service that uses it.
   cannot run `stdio` servers. Connects fail with `stdio_sandbox_unavailable`, and `sse`/`http` are
   unaffected.
 - A `stdio` connection lives at most 300 seconds, after which systemd stops the instance and the
-  client sees the connection close. At most 16 run at once on a host.
+  client sees the connection close. At most 16 run at once on a host, shared by `semprec-api` and
+  `semprec-agents`. A connection beyond that is accepted and closed at once by systemd, so the
+  client's `start()` succeeds and the connect then fails with the same `handshake_failed` as a
+  server that closes without answering; nothing tells the caller that the cap was the reason, and
+  only systemd's journal records it.
 - Every `stdio` server shares the one uid `semprec-mcp`. Nothing isolates two servers from each
   other. That is acceptable only because [[2026-10-16-stdio-mcp-confined-to-admin-tenants]]
   confines `stdio` to an admin's tenant.
-- A `stdio` server can reach only public addresses and DNS. A server that needs a private or
-  loopback address cannot run here.
+- Over IP, a `stdio` server can reach only public addresses, plus port 53 on any address. A server
+  that needs another port on a private or loopback address cannot run here.
+- `AF_UNIX` stays allowed and nftables does not filter UNIX sockets, so a server can connect to any
+  filesystem socket whose permissions admit uid `semprec-mcp` (or any other user) and to any
+  abstract-namespace socket in the host's network namespace, since the unit has no
+  `PrivateNetwork=`. The services must not rely on such sockets being unreachable from it.
 - The launcher depends on `jq`, which `provision.sh` installs.
 - Hardening the api and agents units themselves is left to issue #1071. They only need to connect
   to a UNIX socket for this decision, so that issue can give them `NoNewPrivileges=`.
