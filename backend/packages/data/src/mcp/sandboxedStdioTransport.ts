@@ -23,8 +23,9 @@ const CLOSE_GRACE_MS = 2_000;
  * instead of as a child of this process. The connection carries the same newline-delimited
  * JSON-RPC framing as the SDK's `StdioClientTransport`, after one header line naming the server.
  *
- * The header holds the decrypted credential, so `start()` drops this transport's reference to it
- * once written: nothing reachable from the connected client keeps a copy.
+ * The header holds the decrypted credential, so `start()` takes it off the transport before
+ * connecting and releases it once written or once the connect fails: after `start()` settles,
+ * nothing reachable from the transport or the connected client keeps a copy.
  */
 export class SandboxedStdioClientTransport implements Transport {
   onclose?: () => void;
@@ -43,27 +44,28 @@ export class SandboxedStdioClientTransport implements Transport {
   }
 
   async start(): Promise<void> {
-    if (this.socket !== undefined) {
+    const header = this.header;
+    if (this.socket !== undefined || header === undefined) {
       throw new Error("SandboxedStdioClientTransport already started");
     }
-    const header = this.header;
     this.header = undefined;
-    if (header === undefined) {
-      throw new Error("SandboxedStdioClientTransport cannot be restarted");
-    }
     const socket = net.createConnection(this.socketPath);
     this.socket = socket;
     socket.on("close", () => this.fireClose());
     await new Promise<void>((resolve, reject) => {
-      const onConnectError = (error: Error) => reject(error);
-      socket.once("error", onConnectError);
-      socket.once("connect", () => {
+      const onConnect = () => {
         socket.off("error", onConnectError);
         socket.on("error", (error) => this.onerror?.(error));
         socket.on("data", (chunk: Buffer) => this.handleData(chunk));
         socket.write(`${JSON.stringify(header)}\n`);
         resolve();
-      });
+      };
+      const onConnectError = (error: Error) => {
+        socket.off("connect", onConnect);
+        reject(error);
+      };
+      socket.once("connect", onConnect);
+      socket.once("error", onConnectError);
     });
   }
 
