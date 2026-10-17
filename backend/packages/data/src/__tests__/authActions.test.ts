@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { hashPassword } from "../auth/passwordHash.js";
@@ -9,6 +9,7 @@ import { countRecentFailedAttempts } from "../auth/loginAttemptsStore.js";
 import { transitionTenantStatus } from "../tenancy/tenantsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { createTestTenant } from "../testSupport/tenantFixtures.js";
+import { suspendAccount } from "../tenancy/accountsAdminStore.js";
 import { login, verifySessionToken, logout, revokeUserSession, bootstrapFirstAccount } from "../auth/authActions.js";
 import { LOCKOUT_THRESHOLD } from "../auth/loginLockout.js";
 import { NotFoundError, UnauthorizedError, ValidationError } from "../errors.js";
@@ -350,6 +351,64 @@ describe("auth actions (issue #140)", () => {
       });
 
       expect(result.user.id).toBe(user.id);
+    });
+
+    it("refuses a correct password from a user with no tenant binding like a wrong one", async () => {
+      const unbound = await makeUser("unbound@example.com");
+      await createTestTenant(pool);
+
+      await expect(
+        login(pool, { email: unbound.email, password: "s3cret-password", platform: "web", ip: "1.2.3.4" }),
+      ).rejects.toThrow(UnauthorizedError);
+
+      expect(await listSessionsForUser(pool, unbound.id)).toHaveLength(0);
+      expect(await countRecentFailedAttempts(pool, unbound.email, "1.2.3.4", 3600)).toBe(1);
+    });
+
+    it("refuses a login that reaches its session write while a suspension of the user is uncommitted", async () => {
+      const admin = await createUser(pool, {
+        email: "admin@example.com",
+        passwordHash: await hashPassword("s3cret-password"),
+        tenantId: getTenantZeroId(),
+        role: "admin",
+      });
+      const tenantId = await createTestTenant(pool);
+      const user = await createUser(pool, {
+        email: "member@example.com",
+        passwordHash: await hashPassword("s3cret-password"),
+        tenantId,
+      });
+      let releaseSuspension!: () => void;
+      const suspensionHeld = new Promise<void>((resolve) => {
+        releaseSuspension = resolve;
+      });
+      let markSuspended!: () => void;
+      const suspendedUncommitted = new Promise<void>((resolve) => {
+        markSuspended = resolve;
+      });
+      const suspension = withTransaction(pool, async (client) => {
+        await suspendAccount(client, { actorUserId: admin.id, targetUserId: user.id });
+        markSuspended();
+        await suspensionHeld;
+      });
+      await suspendedUncommitted;
+
+      const attempt = login(pool, { email: user.email, password: "s3cret-password", platform: "web", ip: "1.2.3.4" });
+      try {
+        await vi.waitFor(async () => {
+          const { rows } = await pool.query<{ waiting: number }>(
+            "SELECT count(*)::int AS waiting FROM pg_locks WHERE NOT granted",
+          );
+          expect(rows[0]?.waiting).toBeGreaterThan(0);
+        });
+      } finally {
+        releaseSuspension();
+      }
+      await suspension;
+
+      await expect(attempt).rejects.toThrow(UnauthorizedError);
+      expect(await listSessionsForUser(pool, user.id)).toHaveLength(0);
+      expect(await countRecentFailedAttempts(pool, user.email, "1.2.3.4", 3600)).toBe(1);
     });
   });
 
