@@ -65,8 +65,9 @@ async function assertWithinBudget(client: PoolClient, globalCaps: GlobalAiCaps):
  * caller's estimate. The lock is released at COMMIT, before the provider is called, so concurrent
  * calls serialize only on the check-and-insert, never on the provider round trip — and the next
  * caller's budget check already sees this call's reservation. A `BudgetExceededError`, or the
- * tenant check's `ForbiddenError`, rolls the transaction back (no row) and propagates unchanged. The lock key and the reserve/settle/fail
- * lifecycle are docs/adr/2026-09-27-ai-budget-reservations-under-a-global-advisory-lock.md.
+ * tenant check's `ForbiddenError`, rolls the transaction back (no row) and propagates unchanged.
+ * The lock key and the reserve/settle/fail lifecycle are
+ * docs/adr/2026-09-27-ai-budget-reservations-under-a-global-advisory-lock.md.
  */
 function reserve(pool: Pool, ctx: GatewayCallContext): Promise<AiGatewayCallRow> {
   return withTransaction(pool, async (tx) => {
