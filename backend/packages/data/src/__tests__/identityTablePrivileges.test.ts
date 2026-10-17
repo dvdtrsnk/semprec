@@ -100,7 +100,7 @@ describe("identity table privileges (issue #976)", () => {
       const mailer = fakeMailer();
       await requestPasswordReset(dataPool, mailer, { email: user.email, appBaseUrl: "https://app.example.test" });
       await expect.poll(() => mailer.sent.length).toBe(1);
-      const token = new URL(mailer.sent[0]!.resetUrl).searchParams.get("token");
+      const token = new URLSearchParams(new URL(mailer.sent[0]!.resetUrl).hash.slice(1)).get("token");
       expect(token).toBeTruthy();
 
       await withTransaction(dataPool, (client) =>
