@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { enqueueJob } from "@semprec/queue";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import {
@@ -127,6 +128,35 @@ describe("getOperatorHealthReport (issue #1038)", () => {
     const report = await getOperatorHealthReport(pool);
 
     expect(report.processes.map((process) => process.process)).toEqual(["api", "agents", "transcribe", "ai-gateway"]);
+  });
+
+  it("counts queue jobs across every tenant and the system scope, never an in-flight final attempt as failed", async () => {
+    const tenantA = await createTestTenant(pool);
+    const tenantB = await createTestTenant(pool);
+    // Raw UPDATEs on graphile-worker's table: no public API backdates `run_at` or fakes a spent or
+    // in-flight attempt, which is the state each count's predicate distinguishes.
+    await runInTenant(tenantA, async () => {
+      await enqueueJob(pool, "someUnregisteredTask", {}, { jobKey: "a-pending" });
+      await enqueueJob(pool, "someUnregisteredTask", {}, { jobKey: "a-overdue" });
+      await pool.query(`UPDATE graphile_worker._private_jobs SET run_at = now() - interval '1 hour' WHERE key = $1`, [
+        "a-overdue",
+      ]);
+    });
+    await runInTenant(tenantB, async () => {
+      await enqueueJob(pool, "someUnregisteredTask", {}, { jobKey: "b-permanent", maxAttempts: 1 });
+      await pool.query(`UPDATE graphile_worker._private_jobs SET attempts = 1 WHERE key = $1`, ["b-permanent"]);
+      await enqueueJob(pool, "someUnregisteredTask", {}, { jobKey: "b-locked-final", maxAttempts: 1 });
+      await pool.query(`UPDATE graphile_worker._private_jobs SET attempts = 1, locked_at = now() WHERE key = $1`, [
+        "b-locked-final",
+      ]);
+    });
+    await runAsSystem("test: the operator queue count includes system-scope jobs", () =>
+      enqueueJob(pool, "someUnregisteredTask", {}, { jobKey: "system-pending" }),
+    );
+
+    const report = await getOperatorHealthReport(pool);
+
+    expect(report.queue).toEqual({ pending: 3, overdue: 1, permanent: 1 });
   });
 
   it("reports each tenant status count and zero for a status with no tenant", async () => {

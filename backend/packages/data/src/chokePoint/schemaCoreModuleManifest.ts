@@ -80,9 +80,11 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/system-health",
       handlerExport: "createSystemHealthRouteHandler",
-      // A live snapshot across process_heartbeats/observability_checks/graphile_worker/
-      // item_automation/agent_runs/mail_account_sync_state, shaped for exactly one consumer
-      // (issue #170's System status block) — the "single-consumer-read" justification.
+      // A live snapshot of the caller's own tenant across process_heartbeats/
+      // tenant_observability_checks/graphile_worker/item_automation/agent_runs/
+      // mail_account_sync_state, shaped for exactly one consumer (issue #170's System status
+      // block) — the "single-consumer-read" justification. Operator data is not served here
+      // (issue #1038, GET /api/admin/health).
       justification: "single-consumer-read",
     },
   ],
