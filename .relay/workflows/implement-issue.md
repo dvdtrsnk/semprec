@@ -35,6 +35,13 @@ steps:
     draft: true                       # a draft is not reviewed by the Actions code-review job
     title: "{{issueTitle}} (#{{issueNumber}})"
     body: "Closes #{{issueNumber}}\n\n{{steps.implement.output}}"
+  # review-pipeline reads the pull request only from the run's subject, which Relay builds once per
+  # tick from the stored run, not from the `prNumber` that `pr` has just set in this tick. Run in
+  # the same tick, pre-review-1 always ended blocked ("this run has none") and was skipped. A
+  # command step parks the run until the next tick, whose subject carries the new pull request.
+  - id: pr-settle
+    uses: command
+    run: "true"
   - id: pre-review-1
     uses: review-pipeline
     on-success: { goto: verify-backend }
