@@ -864,17 +864,26 @@ describe("SempConversation across tenants", () => {
         await adminPool.query("DROP FUNCTION IF EXISTS test_fail_run_close()");
       });
 
-      /** Makes every close of `tenantId`'s runs to one of `statuses` raise until the trigger is dropped. */
+      /**
+       * Makes every close of `tenantId`'s runs to one of `statuses` raise until the trigger is dropped.
+       * The trigger body is DDL, which takes no bind parameters, so Postgres builds it with
+       * `format('%L', …)` from the bound values and the statement it returns is then executed.
+       */
       async function failRunCloses(tenantId: string, statuses: Array<"done" | "error">): Promise<void> {
-        const failing = statuses.map((status) => `'${status}'`).join(", ");
-        await adminPool.query(`
-          CREATE OR REPLACE FUNCTION test_fail_run_close() RETURNS trigger AS $$
-          BEGIN
-            IF NEW.tenant_id = '${tenantId}' AND NEW.status IN (${failing}) THEN
-              RAISE EXCEPTION 'injected run close failure';
-            END IF;
-            RETURN NEW;
-          END $$ LANGUAGE plpgsql`);
+        const { rows } = await adminPool.query<{ ddl: string }>(
+          `SELECT format($fmt$
+             CREATE OR REPLACE FUNCTION test_fail_run_close() RETURNS trigger AS $body$
+             BEGIN
+               IF NEW.tenant_id = %L::uuid AND NEW.status::text = ANY (%L::text[]) THEN
+                 RAISE EXCEPTION 'injected run close failure';
+               END IF;
+               RETURN NEW;
+             END $body$ LANGUAGE plpgsql$fmt$, $1::uuid, $2::text[]) AS ddl`,
+          [tenantId, statuses],
+        );
+        const ddl = rows[0]?.ddl;
+        if (ddl === undefined) throw new Error("failRunCloses: format() returned no row");
+        await adminPool.query(ddl);
         await adminPool.query(
           `CREATE TRIGGER test_fail_run_close BEFORE UPDATE ON agent_runs
            FOR EACH ROW EXECUTE FUNCTION test_fail_run_close()`,
@@ -894,8 +903,10 @@ describe("SempConversation across tenants", () => {
       it("keeps an idle dropped entry when its close fails, rejects sends meanwhile, and retries the close", async () => {
         const { createAgentSession, sessions } = recordingSessions();
         const conversation = conversationFor(createAgentSession, {}, RETRY_TTL_MS);
+        // The TTL pause of "b one" can fire before `dropTenant`; failing its `done` close too keeps
+        // the run open on that interleaving, so the drop still finds it `running`.
+        await failRunCloses(tenantB, ["done", "error"]);
         await sendAs(tenantB, conversation, "b one");
-        await failRunCloses(tenantB, ["error"]);
 
         await conversation.dropTenant(tenantB);
 
