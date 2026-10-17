@@ -144,6 +144,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "anyUserExists",
   "appendHistoryEntry",
   "assertAggregationCompatibleWithType",
+  "assertGatewayTenantActive",
   "assertRelationDeletable",
   "assertSourceRetypeAllowed",
   "assertTaskListMatchesAffinity",
