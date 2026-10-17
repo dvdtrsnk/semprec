@@ -112,15 +112,27 @@ interface TenantConversation {
   /** Set for the span of a brand-new wake, before it has an entry to be `busy` on its own behalf. */
   waking: boolean;
   /**
-   * Set by `dropTenant`. A turn or pause in flight closes the run as `error` once it settles (a
-   * successful pause has closed it as `done` already); a failed close keeps the entry and retries.
-   * `send()` rejects a dropped conversation as busy until its entry is gone.
+   * Set by `dropTenant`. A turn or pause in flight closes the run as `error` once it settles; a
+   * failed close keeps the entry and retries. `send()` rejects a dropped conversation as busy
+   * until its entry is gone.
    */
   dropped?: boolean;
 }
 
 /** The error a wake run is closed with when its tenant is deactivated. */
 const ACCOUNT_DEACTIVATED_MESSAGE = "account deactivated";
+
+function errorName(err: unknown): string {
+  return err instanceof Error ? err.name : typeof err;
+}
+
+/** Rolls back a TTL pause's `done` close when its tenant was dropped before that close committed. */
+class PauseSupersededByDrop extends Error {
+  constructor() {
+    super("TTL pause superseded by a tenant drop");
+    this.name = "PauseSupersededByDrop";
+  }
+}
 
 /**
  * Manages Semp's ongoing conversation with each tenant's user through the same in-memory,
@@ -160,9 +172,11 @@ export class SempConversation {
    * With no turn in flight, the wake run is closed as `error` ("account deactivated") and the entry
    * removed. With a turn in flight (`busy` or `waking`), the conversation is marked dropped and the
    * turn is not aborted: once it settles, its run is closed as `error` and its entry discarded
-   * instead of being kept. A TTL pause in progress also holds the entry `busy`: when it succeeds it
-   * has closed the run as `done` and removes the entry itself; when it fails, it closes the run as
-   * `error` the same way instead of rescheduling the pause.
+   * instead of being kept. A TTL pause in progress also holds the entry `busy`: it checks the drop
+   * inside its own transaction after its `done` update and before `COMMIT`, rolls that update back,
+   * and closes the run as `error` the same way; a failed pause does the same instead of
+   * rescheduling. Only a drop arriving once the pause's `COMMIT` was sent finds the run already
+   * `done`, as it would after any finished pause.
    *
    * Like `pause()`, the entry is only removed once the close succeeded: a failed close keeps it,
    * still dropped, and retries on a timer, so the run is never left `running` with nothing in
@@ -201,15 +215,17 @@ export class SempConversation {
       if (state.entry === entry) state.entry = null;
       this.releaseIfIdle(tenantId);
     } catch (err) {
+      // Only the error's name: a Postgres error's detail can carry the failing `agent_runs` row,
+      // whose `task` is the user's prompt, and logs are not tenant-scoped.
       logger.error(
-        { err, tenantId, agentRunId: entry.agentRunId },
+        { errorName: errorName(err), tenantId, agentRunId: entry.agentRunId },
         "SempConversation: failed to close dropped run, will retry",
       );
       entry.busy = false;
       const timer = setTimeout(
         () => {
           this.closeDropped(tenantId, state, entry).catch((retryErr) => {
-            logger.error({ err: retryErr, tenantId }, "SempConversation: dropped run retry failed");
+            logger.error({ errorName: errorName(retryErr), tenantId }, "SempConversation: dropped run retry failed");
           });
         },
         Math.min(this.ttlMs, DROPPED_RUN_RETRY_MAX_MS),
@@ -380,12 +396,20 @@ export class SempConversation {
     if (!state || !entry || entry.busy) return;
     entry.busy = true;
     try {
-      const closed = await finishAgentRun(this.pool, entry.agentRunId, "done", null);
+      const closed = await withTransaction(this.pool, async (client) => {
+        const updated = await finishAgentRun(client, entry.agentRunId, "done", null);
+        // Read after the update and before `COMMIT`, so a drop that arrived while the update ran
+        // still rolls it back and the run closes as `error` below.
+        if (state.dropped) throw new PauseSupersededByDrop();
+        return updated;
+      });
       await pushClosedRunStatus(this.pool, entry.agentRunId, closed, "done");
       state.entry = null;
       this.releaseIfIdle(tenantId);
     } catch (err) {
-      logger.error({ err, agentRunId: entry.agentRunId }, "SempConversation: failed to close paused run, will retry");
+      if (!(err instanceof PauseSupersededByDrop)) {
+        logger.error({ err, agentRunId: entry.agentRunId }, "SempConversation: failed to close paused run, will retry");
+      }
       entry.busy = false;
       // A tenant dropped while this pause held the entry closes its run as `error` instead.
       if (state.dropped) {
