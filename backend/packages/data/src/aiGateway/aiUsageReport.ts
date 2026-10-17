@@ -1,8 +1,9 @@
 import type { Queryable } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
-import { getAiBudgets, getSystemTimezone, type AiBudgets } from "../systemSettings.js";
+import { getSystemTimezone } from "../systemSettings.js";
 import type { AgentRunUnit } from "../agentRuns/agentRunsStore.js";
 import { assertKnownValue } from "../dbRowValidation.js";
+import { getCurrentTenantAiBudget } from "./tenantAiBudgetsStore.js";
 
 const AGENT_RUN_UNITS: readonly AgentRunUnit[] = ["invocation", "session"];
 
@@ -33,15 +34,21 @@ export interface AiUsageReportRow {
   audioSeconds: number | null;
 }
 
+/** The caller's own AI caps as the report shows them. `null` means no per-tenant cap for that window. */
+export interface AiUsageBudgets {
+  dailyBudgetUsd: number | null;
+  monthlyBudgetUsd: number | null;
+}
+
 export interface DailyCostPoint {
-  /** Calendar day in the system's configured timezone (see systemSettings.ts), YYYY-MM-DD — matches the daily budget's own reset boundary. */
+  /** Calendar day in the caller's tenant's settings timezone (see systemSettings.ts), YYYY-MM-DD — matches the daily budget's own reset boundary. */
   day: string;
   /** Always a number, including 0 for a day with no calls — an explicit zero, not a missing point. */
   costUsd: number;
 }
 
 export interface DailyTokenPoint {
-  /** Calendar day in the system's configured timezone, YYYY-MM-DD — same boundary as DailyCostPoint. */
+  /** Calendar day in the caller's tenant's settings timezone, YYYY-MM-DD — same boundary as DailyCostPoint. */
   day: string;
   /** Always a number, including 0 — sums only token-native calls, audio-only calls contribute 0. */
   inputTokens: number;
@@ -59,7 +66,7 @@ export interface AiUsageReport {
   dailyCostUsd: DailyCostPoint[];
   /** One point per calendar day in [from, to), for the token-usage graph — audio-only days show 0/0. */
   dailyTokenUsage: DailyTokenPoint[];
-  budgets: AiBudgets;
+  budgets: AiUsageBudgets;
 }
 
 function assertBoundedRange(from: string, to: string): { fromDate: Date; toDate: Date } {
@@ -171,7 +178,12 @@ export async function getAiUsageReport(client: Queryable, input: AiUsageReportIn
     outputTokens: row.output_tokens === null ? 0 : Number(row.output_tokens),
   }));
   const totalCostUsd = reportRows.reduce((sum, row) => sum + row.costUsd, 0);
-  const budgets = await getAiBudgets(client);
+  // A tenant without a tenant_ai_budgets row may not spend (the gateway refuses every call), so its
+  // effective cap is 0, never null: null would render as "uncapped".
+  const tenantBudget = await getCurrentTenantAiBudget(client);
+  const budgets: AiUsageBudgets = tenantBudget
+    ? { dailyBudgetUsd: tenantBudget.dailyCapUsd, monthlyBudgetUsd: tenantBudget.monthlyCapUsd }
+    : { dailyBudgetUsd: 0, monthlyBudgetUsd: 0 };
 
   return {
     from: fromDate.toISOString(),

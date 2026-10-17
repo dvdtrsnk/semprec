@@ -1,6 +1,12 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { runInTenant } from "@semprec/shared";
 import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createRuntimeRolePool, createTestTenant, getTenantZeroId, setTenantAiBudget } from "../testSupport/testDb.js";
+import { createDatabase } from "../chokePoint/databasesStore.js";
+import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { createProperty } from "../chokePoint/propertiesStore.js";
+import { withTransaction } from "../db/pool.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { recordAudioGatewayCall, recordTokenGatewayCall } from "../aiGateway/aiGatewayCallsStore.js";
 import { getAiUsageReport } from "../aiGateway/aiUsageReport.js";
@@ -23,6 +29,7 @@ describe("getAiUsageReport", () => {
   });
 
   it("aggregates by provider, model, native unit, and the originating run's unit", async () => {
+    await setTenantAiBudget(pool, getTenantZeroId(), { dailyCapUsd: 50 });
     const invocationRun = await createAgentRun(pool, {
       triggeredBy: "user",
       task: "invocation task",
@@ -174,5 +181,113 @@ describe("getAiUsageReport", () => {
     await expect(getAiUsageReport(pool, { from: "not-a-date", to: "2026-01-01T00:00:00Z" })).rejects.toThrow(
       "is not a valid date",
     );
+  });
+});
+
+/** Local calendar day of `instant` in `timeZone`, YYYY-MM-DD, derived with the same Intl API the report's day buckets are read against. */
+function localDay(instant: string, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(
+    new Date(instant),
+  );
+}
+
+describe("getAiUsageReport across tenants (issue #1048)", () => {
+  let adminPool: Pool;
+  let runtimePool: Pool;
+  let tenantA: string;
+  let tenantB: string;
+
+  /** Seeds the tenant's systemSettings database with one settings item carrying `timezone`. */
+  async function seedTimezone(tenantId: string, timezone: string): Promise<void> {
+    await runInTenant(tenantId, () =>
+      withTransaction(runtimePool, async (client) => {
+        const db = await createDatabase(client, {
+          name: `Settings ${tenantId}`,
+          system: true,
+          ownerModuleId: "systemSettings",
+        });
+        await createProperty(client, { databaseId: db.id, key: "timezone", name: null, type: "text" });
+        await createItemWithClient(client, { databaseId: db.id, properties: { timezone } });
+      }),
+    );
+  }
+
+  beforeAll(async () => {
+    adminPool = getTestPool();
+    runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+  });
+
+  afterAll(async () => {
+    await runtimePool?.end();
+    await adminPool?.end();
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(adminPool);
+    tenantA = getTenantZeroId();
+    tenantB = await createTestTenant(adminPool);
+  });
+
+  it("reports each tenant's own calls, caps, and timezone-bucketed days, and nothing of the other's", async () => {
+    // Honolulu (UTC-10) and Kiritimati (UTC+14) are 24 h apart, so one instant always falls on two different local days.
+    await seedTimezone(tenantA, "Pacific/Honolulu");
+    await seedTimezone(tenantB, "Pacific/Kiritimati");
+    await setTenantAiBudget(adminPool, tenantA, { dailyCapUsd: 7, monthlyCapUsd: null });
+
+    const callA = await runInTenant(tenantA, () =>
+      recordTokenGatewayCall(runtimePool, {
+        provider: "anthropic",
+        model: "model-a",
+        inputTokens: 100,
+        outputTokens: 10,
+        costUsd: 1,
+      }),
+    );
+    await runInTenant(tenantB, () =>
+      recordTokenGatewayCall(runtimePool, {
+        provider: "anthropic",
+        model: "model-b",
+        inputTokens: 5,
+        outputTokens: 5,
+        costUsd: 2,
+      }),
+    );
+
+    const range = { from: "2026-01-01T00:00:00Z", to: "2026-12-30T00:00:00Z" };
+    const reportA = await runInTenant(tenantA, () => getAiUsageReport(runtimePool, range));
+    const reportB = await runInTenant(tenantB, () => getAiUsageReport(runtimePool, range));
+
+    expect(reportA.rows.map((row) => row.model)).toEqual(["model-a"]);
+    expect(reportA.totalCostUsd).toBe(1);
+    expect(reportB.rows.map((row) => row.model)).toEqual(["model-b"]);
+    expect(reportB.totalCostUsd).toBe(2);
+
+    const tokensA = reportA.dailyTokenUsage.reduce((sum, point) => sum + point.inputTokens, 0);
+    const tokensB = reportB.dailyTokenUsage.reduce((sum, point) => sum + point.inputTokens, 0);
+    expect(tokensA).toBe(100);
+    expect(tokensB).toBe(5);
+
+    const dayA = localDay(callA.at, "Pacific/Honolulu");
+    const dayB = localDay(callA.at, "Pacific/Kiritimati");
+    expect(dayA).not.toBe(dayB);
+    expect(reportA.dailyCostUsd.find((point) => point.costUsd > 0)?.day).toBe(dayA);
+    expect(reportB.dailyCostUsd.find((point) => point.costUsd > 0)?.day).toBe(dayB);
+
+    expect(reportA.budgets).toEqual({ dailyBudgetUsd: 7, monthlyBudgetUsd: null });
+    expect(reportB.budgets).toEqual({ dailyBudgetUsd: 0, monthlyBudgetUsd: 0 });
+  });
+
+  it("returns exactly the caller's report keys, with budgets limited to the two caps", async () => {
+    await seedTimezone(tenantA, "Pacific/Honolulu");
+    await setTenantAiBudget(adminPool, tenantA, { dailyCapUsd: 7 });
+
+    const report = await runInTenant(tenantA, () =>
+      getAiUsageReport(runtimePool, { from: "2026-01-01T00:00:00Z", to: "2026-12-30T00:00:00Z" }),
+    );
+
+    expect(Object.keys(report).sort()).toEqual(
+      ["budgets", "dailyCostUsd", "dailyTokenUsage", "from", "rows", "to", "totalCostUsd"].sort(),
+    );
+    expect(Object.keys(report.budgets).sort()).toEqual(["dailyBudgetUsd", "monthlyBudgetUsd"]);
   });
 });
