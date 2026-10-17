@@ -15,6 +15,7 @@ import { AgentPage } from "./views/agentPage/AgentPage.js";
 import { ApprovalQueue } from "./views/approvalQueue/ApprovalQueue.js";
 import { AgentRunDetail } from "./views/agentRun/AgentRunDetail.js";
 import { SetupWizard } from "./views/setup/SetupWizard.js";
+import { PasswordResetPage } from "./views/passwordReset/PasswordResetPage.js";
 import { LoginPage } from "./views/login/LoginPage.js";
 import { ErrorState, LoadingState } from "./components/StateViews.js";
 import type { SetupOperations } from "./api/setupOperations.js";
@@ -43,6 +44,11 @@ export interface SetupRoute {
   operations: SetupOperations;
 }
 
+/** `token` is `null` for the request form; a token from the link's fragment opens the new-password form. */
+export interface PasswordResetRoute {
+  token: string | null;
+}
+
 type SessionState =
   | { status: "loading" }
   | { status: "anonymous" }
@@ -59,6 +65,7 @@ export function App({
   approvalQueue,
   agentRun,
   setup,
+  passwordReset,
   auth,
   sessionEvents,
   login,
@@ -78,6 +85,8 @@ export function App({
   agentRun?: AgentRunRoute;
   /** Present only when the composition root routed to the first-account setup wizard (issue #234) rather than an item/view id. */
   setup?: SetupRoute;
+  /** Present only when the composition root routed to the password-reset page (issue #1076) rather than an item/view id. */
+  passwordReset?: PasswordResetRoute;
   auth: AuthOperations;
   /** Fires `"unauthorized"` whenever an adapter receives a 401 mid-session (see `createSessionFetch`). */
   sessionEvents: EventTarget;
@@ -85,7 +94,11 @@ export function App({
   login?: true;
   languages?: readonly string[];
 }) {
-  const { session, setSession, retry } = useSession(auth, sessionEvents, setup !== undefined);
+  const { session, setSession, retry } = useSession(
+    auth,
+    sessionEvents,
+    setup !== undefined || passwordReset !== undefined,
+  );
   const locale: Locale =
     session.status === "authenticated" ? resolveLocale([session.user.locale]) : resolveLocale(languages);
 
@@ -93,6 +106,8 @@ export function App({
     <I18nProvider locale={locale}>
       {setup ? (
         <SetupWizard token={setup.token} operations={setup.operations} />
+      ) : passwordReset ? (
+        <PasswordResetPage token={passwordReset.token} auth={auth} />
       ) : (
         <SessionGate auth={auth} session={session} setSession={setSession} retry={retry} login={login}>
           <RoutedContent

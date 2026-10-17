@@ -131,3 +131,118 @@ describe("auth operations", () => {
     });
   });
 });
+
+describe("password-reset operations", () => {
+  it("requestPasswordReset posts the email as JSON with same-origin credentials and resolves on 200", async () => {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const auth = createAuthOperations({
+      baseUrl: "/api",
+      fetchImpl: async (input, init) => {
+        calls.push({ url: String(input), init });
+        return jsonResponse({ ok: true });
+      },
+    });
+
+    await expect(auth.requestPasswordReset("operator@example.com")).resolves.toBeUndefined();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("/api/auth/password-reset/request");
+    expect(calls[0]!.init?.method).toBe("POST");
+    expect(calls[0]!.init?.credentials).toBe("same-origin");
+    expect(calls[0]!.init?.headers).toEqual({ "Content-Type": "application/json" });
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ email: "operator@example.com" });
+  });
+
+  it.each([429, 500])(
+    "requestPasswordReset rejects a %i as retryable with the status and the server's message",
+    async (status) => {
+      const auth = authWith(() => jsonResponse({ error: "Too many requests" }, status));
+
+      await expect(auth.requestPasswordReset("a@example.com")).rejects.toMatchObject({
+        kind: "retryable",
+        status,
+        message: "Too many requests",
+      });
+    },
+  );
+
+  it("requestPasswordReset reports a transport failure as retryable", async () => {
+    const auth = createAuthOperations({
+      baseUrl: "/api",
+      fetchImpl: async () => {
+        throw new TypeError("Failed to fetch");
+      },
+    });
+
+    await expect(auth.requestPasswordReset("a@example.com")).rejects.toMatchObject({
+      kind: "retryable",
+      message: "Failed to fetch",
+    });
+  });
+
+  it("resetPassword posts the token and new password as JSON and resolves on 200", async () => {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const auth = createAuthOperations({
+      baseUrl: "/api",
+      fetchImpl: async (input, init) => {
+        calls.push({ url: String(input), init });
+        return jsonResponse({ ok: true });
+      },
+    });
+
+    await expect(auth.resetPassword({ token: "abc", newPassword: "a new password" })).resolves.toBeUndefined();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("/api/auth/password-reset/consume");
+    expect(calls[0]!.init?.method).toBe("POST");
+    expect(calls[0]!.init?.credentials).toBe("same-origin");
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ token: "abc", newPassword: "a new password" });
+  });
+
+  it.each(["password_reset_token_invalid", "password_reset_token_expired", "password_reset_token_consumed"])(
+    "resetPassword rejects a 400 with code %s as unavailable",
+    async (code) => {
+      const auth = authWith(() => jsonResponse({ error: "Reset link is not valid", code }, 400));
+
+      await expect(auth.resetPassword({ token: "abc", newPassword: "a new password" })).rejects.toMatchObject({
+        kind: "unavailable",
+        status: 400,
+        message: "Reset link is not valid",
+      });
+    },
+  );
+
+  it("resetPassword rejects a 400 validation_failed as retryable with the server's message", async () => {
+    const auth = authWith(() =>
+      jsonResponse({ error: "password must be at least 8 characters", code: "validation_failed" }, 400),
+    );
+
+    await expect(auth.resetPassword({ token: "abc", newPassword: "short" })).rejects.toMatchObject({
+      kind: "retryable",
+      status: 400,
+      message: "password must be at least 8 characters",
+    });
+  });
+
+  it("resetPassword rejects a non-JSON 500 as retryable with the generic message", async () => {
+    const auth = authWith(() => new Response("oops", { status: 500 }));
+
+    await expect(auth.resetPassword({ token: "abc", newPassword: "a new password" })).rejects.toMatchObject({
+      kind: "retryable",
+      status: 500,
+      message: "Request to /auth/password-reset/consume failed with 500",
+    });
+  });
+
+  it("resetPassword reports a transport failure as retryable", async () => {
+    const auth = createAuthOperations({
+      baseUrl: "/api",
+      fetchImpl: async () => {
+        throw new TypeError("Failed to fetch");
+      },
+    });
+
+    await expect(auth.resetPassword({ token: "abc", newPassword: "a new password" })).rejects.toMatchObject({
+      kind: "retryable",
+      message: "Failed to fetch",
+    });
+  });
+});

@@ -36,12 +36,15 @@ export const PASSWORD_RESET_MAX_REQUESTS_PER_WINDOW = 3;
  */
 export const PASSWORD_RESET_REQUEST_MIN_DURATION_MS = 400;
 
-/** Path the emailed link points at; the web app owns rendering a form at this route. */
-const PASSWORD_RESET_PATH = "/reset-password";
-
+/**
+ * The emailed link opens the web app's `password-reset` page. The token rides in the URL fragment
+ * (`#token=`), never the query string, so it stays out of access logs and `Referer` headers; the
+ * page reads it from `location.hash` and clears it from the address bar on mount.
+ */
 function buildPasswordResetUrl(appBaseUrl: string, token: string): string {
-  const url = new URL(PASSWORD_RESET_PATH, appBaseUrl);
-  url.searchParams.set("token", token);
+  const url = new URL("/", appBaseUrl);
+  url.searchParams.set("page", "password-reset");
+  url.hash = `token=${token}`;
   return url.toString();
 }
 

@@ -24,6 +24,9 @@ import { createSessionFetch } from "./api/sessionFetch.js";
  * until the session cookie exists, and drops back to it whenever an adapter's fetch receives
  * a 401.
  * `?page=setup&token=<setupToken>` routes to the first-account setup wizard (issue #234).
+ * `?page=password-reset#token=<resetToken>` routes to the password-reset page (issue #1076); the
+ * token travels in the fragment, which the browser never sends to the server, and the page clears it
+ * from the address bar on mount. `?page=password-reset` without a fragment routes to the request form.
  */
 const params = new URLSearchParams(window.location.search);
 const viewId = params.get("view") ?? "";
@@ -65,6 +68,12 @@ const setup =
       }
     : undefined;
 
+// An empty `#token=` is no token at all, so it falls back to the request form.
+const passwordReset =
+  page === "password-reset"
+    ? { token: new URLSearchParams(window.location.hash.slice(1)).get("token") || null }
+    : undefined;
+
 const container = document.getElementById("root");
 if (!container) throw new Error("Missing #root container");
 
@@ -79,6 +88,7 @@ createRoot(container).render(
       approvalQueue={approvalQueue}
       agentRun={agentRun}
       setup={setup}
+      passwordReset={passwordReset}
       auth={auth}
       sessionEvents={sessionEvents}
       login={page === "login" ? true : undefined}

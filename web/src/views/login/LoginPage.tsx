@@ -79,6 +79,9 @@ export function LoginPage({ auth, onLoggedIn }: { auth: AuthOperations; onLogged
           {submitting ? t("login.submitting") : t("login.submit")}
         </button>
       </form>
+      <a className="login__link" href="?page=password-reset">
+        {t("login.forgotPassword")}
+      </a>
     </section>
   );
 }
