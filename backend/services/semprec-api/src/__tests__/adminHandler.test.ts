@@ -18,10 +18,13 @@ import {
   createUser,
   hashPassword,
   hashToken,
+  listPushSubscriptionsForUser,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
   mailSyncProcessName,
+  registerPushSubscription,
+  setSessionRevokedHook,
   setTenantAiBudget,
   upsertProcessHeartbeat,
   withTransaction,
@@ -116,7 +119,7 @@ describe("admin routes (issue #1037)", () => {
 
   it("lists every account for an admin with the newest session as lastSeenAt", async () => {
     const tenantA = await createTestTenant(pool);
-    const tenantB = await createTestTenant(pool, { status: "suspended" });
+    const tenantB = await createTestTenant(pool);
     const tenantC = await createTestTenant(pool);
     const admin = await signIn(`admin-${randomUUID()}@example.test`, tenantA, "admin");
     const secondEmail = `other-${randomUUID()}@example.test`;
@@ -128,6 +131,8 @@ describe("admin routes (issue #1037)", () => {
     });
     // The member's second session (the admin's own requests touch its session, so it cannot be asserted exactly); explicit timestamps make "newer" unambiguous.
     await login(pool, { email: secondEmail, password: PASSWORD, platform: "ios", ip: "1.2.3.4" });
+    // Raw SQL: login refuses a suspended tenant, so the status is set after the sessions exist.
+    await pool.query("UPDATE tenants SET status = 'suspended' WHERE id = $1", [tenantB]);
     await pool.query("UPDATE sessions SET last_seen_at = '2026-01-01T00:00:00Z' WHERE user_id = $1", [second.id]);
     await pool.query(
       "UPDATE sessions SET last_seen_at = '2026-02-02T00:00:00Z' WHERE id = (SELECT id FROM sessions WHERE user_id = $1 LIMIT 1)",
@@ -667,6 +672,234 @@ describe("admin routes (issue #1037)", () => {
       } finally {
         await new Promise<void>((resolve) => mailedServer.close(() => resolve()));
       }
+    });
+  });
+
+  describe("account mutations (issue #1041)", () => {
+    function authed(token: string, method: string, path: string, body?: unknown): Promise<Response> {
+      return fetch(`${baseUrl}${path}`, {
+        method,
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    }
+
+    async function auditActions(): Promise<string[]> {
+      const { rows } = await pool.query<{ action: string }>("SELECT action FROM admin_audit_log ORDER BY id");
+      return rows.map((row) => row.action);
+    }
+
+    async function tenantStatus(tenantId: string): Promise<string> {
+      const { rows } = await pool.query<{ status: string }>("SELECT status FROM tenants WHERE id = $1", [tenantId]);
+      return rows[0]!.status;
+    }
+
+    async function tenantOf(userId: string): Promise<string> {
+      const { rows } = await pool.query<{ tenant_id: string }>("SELECT tenant_id FROM users WHERE id = $1", [userId]);
+      return rows[0]!.tenant_id;
+    }
+
+    afterEach(() => {
+      setSessionRevokedHook(() => {});
+    });
+
+    beforeEach(async () => {
+      await pool.query("DELETE FROM admin_audit_log");
+    });
+
+    it("suspends a member: tenant, sessions, push registrations, audit row and 401 for the old token; tenant A untouched", async () => {
+      const tenantA = await createTestTenant(pool);
+      const tenantB = await createTestTenant(pool);
+      const admin = await signIn(`admin-${randomUUID()}@example.test`, tenantA, "admin");
+      const member = await signIn(`member-${randomUUID()}@example.test`, tenantB, "member");
+      const secondEmail = (await pool.query<{ email: string }>("SELECT email FROM users WHERE id = $1", [member.id]))
+        .rows[0]!.email;
+      await login(pool, { email: secondEmail, password: PASSWORD, platform: "web", ip: "1.2.3.4" });
+      await registerPushSubscription(pool, {
+        userId: member.id,
+        sessionId: null,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/member",
+        p256dh: "key",
+        authSecret: "secret",
+      });
+      const statusChangedBefore = (
+        await pool.query<{ status_changed_at: Date }>("SELECT status_changed_at FROM tenants WHERE id = $1", [tenantB])
+      ).rows[0]!.status_changed_at;
+      const events: string[] = [];
+      setSessionRevokedHook((event) => {
+        events.push(event.sessionId);
+      });
+
+      const res = await authed(admin.token, "POST", `/api/admin/accounts/${member.id}/suspend`);
+
+      expect(res.status).toBe(200);
+      expect(readRecord(await res.json(), "account")).toMatchObject({ userId: member.id, status: "suspended" });
+      expect(await tenantStatus(tenantB)).toBe("suspended");
+      const statusChangedAfter = (
+        await pool.query<{ status_changed_at: Date }>("SELECT status_changed_at FROM tenants WHERE id = $1", [tenantB])
+      ).rows[0]!.status_changed_at;
+      expect(statusChangedAfter.getTime()).toBeGreaterThan(statusChangedBefore.getTime());
+      const sessions = await pool.query<{ id: string; revoked_at: Date | null }>(
+        "SELECT id, revoked_at FROM sessions WHERE user_id = $1",
+        [member.id],
+      );
+      expect(sessions.rows).toHaveLength(2);
+      expect(sessions.rows.every((row) => row.revoked_at !== null)).toBe(true);
+      await vi.waitFor(() => expect([...events].sort()).toEqual(sessions.rows.map((r) => r.id).sort()));
+      const push = await listPushSubscriptionsForUser(pool, member.id);
+      expect(push.length).toBeGreaterThan(0);
+      expect(push.every((row) => row.revokedAt !== null)).toBe(true);
+      const audit = await pool.query<{ action: string; target_tenant_id: string }>(
+        "SELECT action, target_tenant_id FROM admin_audit_log",
+      );
+      expect(audit.rows).toEqual([{ action: "accountSuspended", target_tenant_id: tenantB }]);
+      expect((await authed(member.token, "GET", "/api/admin/accounts")).status).toBe(401);
+      expect(await tenantStatus(tenantA)).toBe("active");
+      expect((await authed(admin.token, "GET", "/api/admin/accounts")).status).toBe(200);
+    });
+
+    it("reactivates a suspended account so the user can log in again, and refuses repeat transitions with 409", async () => {
+      const tenantA = await createTestTenant(pool);
+      const tenantB = await createTestTenant(pool);
+      const admin = await signIn(`admin-${randomUUID()}@example.test`, tenantA, "admin");
+      const email = `member-${randomUUID()}@example.test`;
+      const member = await signIn(email, tenantB, "member");
+
+      const activeAgain = await authed(admin.token, "POST", `/api/admin/accounts/${member.id}/reactivate`);
+      expect(activeAgain.status).toBe(409);
+      expect(await activeAgain.json()).toMatchObject({ error: { code: "invalid_account_status" } });
+      expect(await auditActions()).toEqual([]);
+
+      expect((await authed(admin.token, "POST", `/api/admin/accounts/${member.id}/suspend`)).status).toBe(200);
+      const twice = await authed(admin.token, "POST", `/api/admin/accounts/${member.id}/suspend`);
+      expect(twice.status).toBe(409);
+      expect(await twice.json()).toMatchObject({ error: { code: "invalid_account_status" } });
+      expect(await auditActions()).toEqual(["accountSuspended"]);
+
+      const res = await authed(admin.token, "POST", `/api/admin/accounts/${member.id}/reactivate`);
+      expect(res.status).toBe(200);
+      expect(readRecord(await res.json(), "account")).toMatchObject({ userId: member.id, status: "active" });
+      expect(await tenantStatus(tenantB)).toBe("active");
+      expect(await auditActions()).toEqual(["accountSuspended", "accountReactivated"]);
+      const relogin = await login(pool, { email, password: PASSWORD, platform: "web", ip: "1.2.3.4" });
+      expect(relogin.user.id).toBe(member.id);
+    });
+
+    it("refuses the only active admin demoting or suspending themselves, and allows it with a second admin", async () => {
+      const tenantA = await createTestTenant(pool);
+      const admin = await signIn(`admin-${randomUUID()}@example.test`, tenantA, "admin");
+
+      const demote = await authed(admin.token, "PUT", `/api/admin/accounts/${admin.id}/role`, { role: "member" });
+      expect(demote.status).toBe(409);
+      expect(await demote.json()).toMatchObject({ error: { code: "last_admin" } });
+      const suspend = await authed(admin.token, "POST", `/api/admin/accounts/${admin.id}/suspend`);
+      expect(suspend.status).toBe(409);
+      expect(await suspend.json()).toMatchObject({ error: { code: "last_admin" } });
+      expect(await tenantStatus(tenantA)).toBe("active");
+      expect(await auditActions()).toEqual([]);
+
+      const second = await signIn(`admin2-${randomUUID()}@example.test`, await createTestTenant(pool), "admin");
+      const allowedDemote = await authed(admin.token, "PUT", `/api/admin/accounts/${admin.id}/role`, {
+        role: "member",
+      });
+      expect(allowedDemote.status).toBe(200);
+      const allowedSuspend = await authed(second.token, "POST", `/api/admin/accounts/${second.id}/suspend`);
+      // The second admin is now the only active admin again.
+      expect(allowedSuspend.status).toBe(409);
+      expect(await auditActions()).toEqual(["accountRoleChanged"]);
+    });
+
+    it("suspends oneself when a second active admin exists", async () => {
+      const admin = await signIn(`admin-${randomUUID()}@example.test`, await createTestTenant(pool), "admin");
+      await signIn(`admin2-${randomUUID()}@example.test`, await createTestTenant(pool), "admin");
+
+      const res = await authed(admin.token, "POST", `/api/admin/accounts/${admin.id}/suspend`);
+
+      expect(res.status).toBe(200);
+      expect(await auditActions()).toEqual(["accountSuspended"]);
+    });
+
+    it("changes a role with { from, to } in the audit row, effective on the target's next request", async () => {
+      const admin = await signIn(`admin-${randomUUID()}@example.test`, await createTestTenant(pool), "admin");
+      const member = await signIn(`member-${randomUUID()}@example.test`, await createTestTenant(pool), "member");
+      expect((await authed(member.token, "GET", "/api/admin/accounts")).status).toBe(403);
+
+      const res = await authed(admin.token, "PUT", `/api/admin/accounts/${member.id}/role`, { role: "admin" });
+
+      expect(res.status).toBe(200);
+      expect(readRecord(await res.json(), "account")).toMatchObject({ userId: member.id, role: "admin" });
+      const audit = await pool.query<{ action: string; target_tenant_id: string; details: unknown }>(
+        "SELECT action, target_tenant_id, details FROM admin_audit_log",
+      );
+      expect(audit.rows).toEqual([
+        {
+          action: "accountRoleChanged",
+          target_tenant_id: await tenantOf(member.id),
+          details: { from: "member", to: "admin" },
+        },
+      ]);
+      expect((await authed(member.token, "GET", "/api/admin/accounts")).status).toBe(200);
+    });
+
+    it("answers 200 without an audit row when the role is unchanged, and 400 for an unknown role", async () => {
+      const admin = await signIn(`admin-${randomUUID()}@example.test`, await createTestTenant(pool), "admin");
+      const member = await signIn(`member-${randomUUID()}@example.test`, await createTestTenant(pool), "member");
+
+      const same = await authed(admin.token, "PUT", `/api/admin/accounts/${member.id}/role`, { role: "member" });
+      expect(same.status).toBe(200);
+      expect(readRecord(await same.json(), "account")).toMatchObject({ role: "member" });
+      expect(await auditActions()).toEqual([]);
+
+      const invalid = await authed(admin.token, "PUT", `/api/admin/accounts/${member.id}/role`, { role: "owner" });
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toMatchObject({ error: { code: "validation_failed", details: { field: "role" } } });
+      const missing = await authed(admin.token, "PUT", `/api/admin/accounts/${member.id}/role`, {});
+      expect(missing.status).toBe(400);
+      expect(await auditActions()).toEqual([]);
+    });
+
+    it("answers 404 for an unknown user id, 400 for a malformed one, 403 for a member and 401 anonymously", async () => {
+      const admin = await signIn(`admin-${randomUUID()}@example.test`, await createTestTenant(pool), "admin");
+      const member = await signIn(`member-${randomUUID()}@example.test`, await createTestTenant(pool), "member");
+      const unknown = randomUUID();
+      const routes: { method: string; suffix: string; body?: unknown }[] = [
+        { method: "POST", suffix: "suspend" },
+        { method: "POST", suffix: "reactivate" },
+        { method: "PUT", suffix: "role", body: { role: "member" } },
+      ];
+      for (const route of routes) {
+        const missing = await authed(
+          admin.token,
+          route.method,
+          `/api/admin/accounts/${unknown}/${route.suffix}`,
+          route.body,
+        );
+        expect(missing.status, route.suffix).toBe(404);
+        const malformed = await authed(
+          admin.token,
+          route.method,
+          `/api/admin/accounts/not-a-uuid/${route.suffix}`,
+          route.body,
+        );
+        expect(malformed.status, route.suffix).toBe(400);
+        const forbidden = await authed(
+          member.token,
+          route.method,
+          `/api/admin/accounts/${unknown}/${route.suffix}`,
+          route.body,
+        );
+        expect(forbidden.status, route.suffix).toBe(403);
+        expect(await forbidden.json()).toEqual({ error: { code: "admin_required" } });
+        const anonymous = await fetch(`${baseUrl}/api/admin/accounts/${unknown}/${route.suffix}`, {
+          method: route.method,
+          headers: { "Content-Type": "application/json" },
+          body: route.body === undefined ? undefined : JSON.stringify(route.body),
+        });
+        expect(anonymous.status, route.suffix).toBe(401);
+      }
+      expect(await auditActions()).toEqual([]);
     });
   });
 });

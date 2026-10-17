@@ -96,7 +96,7 @@ export interface LoginResult {
  * streak implicitly: `getFailureStreak` only counts failures since the pair's last success.
  *
  * Throws `UnauthorizedError` for every failure reason (unknown email, wrong password, active
- * lockout) with the same message, per #140's "don't reveal which condition applied" requirement.
+ * lockout, a user whose tenant is missing or not `active`) with the same message, per #140's "don't reveal which condition applied" requirement.
  *
  * Takes a `Pool`, not a caller's transaction, on purpose (#628): a failed attempt is recorded
  * with an auto-committed statement directly on `pool`, so the row survives the
@@ -121,6 +121,13 @@ export async function login(pool: Pool, input: LoginInput): Promise<LoginResult>
   const passwordOk = await verifyPassword(user ? user.passwordHash : await dummyPasswordHash, input.password);
 
   if (!user || !passwordOk) {
+    await recordLoginAttempt(pool, { email, ip: input.ip, succeeded: false });
+    throw new UnauthorizedError();
+  }
+
+  // A user whose tenant is not active gets exactly the wrong-password outcome: no session, a failed attempt.
+  const binding = await getUserTenantBinding(pool, user.id);
+  if (!binding || binding.status !== "active") {
     await recordLoginAttempt(pool, { email, ip: input.ip, succeeded: false });
     throw new UnauthorizedError();
   }

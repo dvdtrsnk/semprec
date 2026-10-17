@@ -17,6 +17,8 @@ import { countRecentPasswordResetTokens } from "../auth/passwordResetStore.js";
 import { registerPushSubscription } from "../push/pushSubscriptionActions.js";
 import { listPushSubscriptionsForUser } from "../push/pushSubscriptionsStore.js";
 import type { PasswordResetMailer, SendPasswordResetEmailInput } from "../auth/passwordResetMail.js";
+import { transitionTenantStatus } from "../tenancy/tenantsStore.js";
+import { createTestTenant } from "../testSupport/tenantFixtures.js";
 import { PasswordResetTokenError, ValidationError } from "../errors.js";
 
 let pool: Pool;
@@ -487,6 +489,63 @@ describe("password reset actions (issue #142)", () => {
 
       const unchanged = await getUserByEmail(pool, user.email);
       expect(await verifyPassword(unchanged!.passwordHash, OLD_PASSWORD)).toBe(true);
+    });
+  });
+
+  describe("a suspended account (issue #1041)", () => {
+    async function activeUserInOwnTenant() {
+      const tenantId = await createTestTenant(pool);
+      const user = await createUser(pool, {
+        email: "tenant-user@example.com",
+        passwordHash: await hashPassword(OLD_PASSWORD),
+        tenantId,
+      });
+      return { user, tenantId };
+    }
+
+    function suspend(tenantId: string): Promise<unknown> {
+      return withTransaction(pool, (client) => transitionTenantStatus(client, tenantId, ["active"], "suspended"));
+    }
+
+    it("treats a reset request like an unknown email: no mail and no token row", async () => {
+      const { user, tenantId } = await activeUserInOwnTenant();
+      await suspend(tenantId);
+      const mailer = fakeMailer();
+
+      await expect(
+        requestPasswordReset(pool, mailer, { email: user.email, appBaseUrl: APP_BASE_URL }),
+      ).resolves.toBeUndefined();
+
+      expect(mailer.sent).toHaveLength(0);
+      const { rows } = await pool.query<{ count: string }>(
+        "SELECT count(*) FROM password_reset_tokens WHERE user_id = $1",
+        [user.id],
+      );
+      expect(Number(rows[0]!.count)).toBe(0);
+    });
+
+    it("refuses a token issued before the suspension as invalid and leaves it unconsumed with the password unchanged", async () => {
+      const { user, tenantId } = await activeUserInOwnTenant();
+      const mailer = fakeMailer();
+      await requestPasswordReset(pool, mailer, { email: user.email, appBaseUrl: APP_BASE_URL });
+      const token = tokenFromUrl(mailer.sent[0]!.resetUrl);
+      await suspend(tenantId);
+      const before = await getUserByEmail(pool, user.email);
+
+      const failure = await resetPasswordInTransaction(pool, { token, newPassword: "a-brand-new-password" }).then(
+        () => null,
+        (err: unknown) => err,
+      );
+
+      expect(failure).toBeInstanceOf(PasswordResetTokenError);
+      expect((failure as PasswordResetTokenError).reason).toBe("invalid");
+      const { rows } = await pool.query<{ consumed_at: Date | null }>(
+        "SELECT consumed_at FROM password_reset_tokens WHERE token_hash = $1",
+        [hashToken(token)],
+      );
+      expect(rows[0]!.consumed_at).toBeNull();
+      const after = await getUserByEmail(pool, user.email);
+      expect(after!.passwordHash).toBe(before!.passwordHash);
     });
   });
 });

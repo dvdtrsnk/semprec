@@ -6,6 +6,9 @@ import { createUser } from "../auth/usersStore.js";
 import { getActiveSessionByTokenHash, isSessionActive, listSessionsForUser } from "../auth/sessionsStore.js";
 import { setSessionRevokedHook, type SessionRevokedEvent } from "../realtimeHook.js";
 import { countRecentFailedAttempts } from "../auth/loginAttemptsStore.js";
+import { transitionTenantStatus } from "../tenancy/tenantsStore.js";
+import { withTransaction } from "../db/pool.js";
+import { createTestTenant } from "../testSupport/tenantFixtures.js";
 import { login, verifySessionToken, logout, revokeUserSession, bootstrapFirstAccount } from "../auth/authActions.js";
 import { LOCKOUT_THRESHOLD } from "../auth/loginLockout.js";
 import { NotFoundError, UnauthorizedError, ValidationError } from "../errors.js";
@@ -307,6 +310,47 @@ describe("auth actions (issue #140)", () => {
         expect(rows[0]!.lastSeenAt.toISOString()).toBe(new Date(session.lastSeenAt).toISOString());
       },
     );
+  });
+
+  describe("login for a non-active tenant (issue #1041)", () => {
+    async function suspendedUser() {
+      const tenantId = await createTestTenant(pool);
+      const user = await createUser(pool, {
+        email: "suspended@example.com",
+        passwordHash: await hashPassword("s3cret-password"),
+        tenantId,
+      });
+      await withTransaction(pool, (client) => transitionTenantStatus(client, tenantId, ["active"], "suspended"));
+      return user;
+    }
+
+    it("refuses the correct password like a wrong one: same error, no session, one failed attempt", async () => {
+      const user = await suspendedUser();
+
+      await expect(
+        login(pool, { email: user.email, password: "s3cret-password", platform: "web", ip: "1.2.3.4" }),
+      ).rejects.toThrow(UnauthorizedError);
+
+      expect(await listSessionsForUser(pool, user.id)).toHaveLength(0);
+      expect(await countRecentFailedAttempts(pool, user.email, "1.2.3.4", 3600)).toBe(1);
+    });
+
+    it("lets the same user log in once the tenant is active again", async () => {
+      const user = await suspendedUser();
+      const { rows } = await pool.query<{ tenant_id: string }>("SELECT tenant_id FROM users WHERE id = $1", [user.id]);
+      await withTransaction(pool, (client) =>
+        transitionTenantStatus(client, rows[0]!.tenant_id, ["suspended"], "active"),
+      );
+
+      const result = await login(pool, {
+        email: user.email,
+        password: "s3cret-password",
+        platform: "web",
+        ip: "1.2.3.4",
+      });
+
+      expect(result.user.id).toBe(user.id);
+    });
   });
 
   describe("logout", () => {
