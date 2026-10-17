@@ -1,4 +1,5 @@
 import { assertKnownValue } from "../dbRowValidation.js";
+import { visibleDatabaseIds } from "../chokePoint/itemsStore.js";
 import type { Queryable } from "../db/pool.js";
 import { TENANT_STATUSES } from "../tenancy/tenantsStore.js";
 import {
@@ -169,10 +170,11 @@ async function getItemAutomationErrorCounts(client: Queryable): Promise<ItemAuto
   const { rows } = await client.query<{ database_id: string; error_count: string }>(
     `SELECT i.database_id, count(*) AS error_count
      FROM item_automation ia
-     JOIN items i ON i.id = ia.item_id
+     JOIN items i ON i.id = ia.item_id AND i.database_id = ANY($1::uuid[])
      WHERE ia.status = 'error' AND ia.tenant_id = app_current_tenant()
      GROUP BY i.database_id
      ORDER BY i.database_id`,
+    [await visibleDatabaseIds(client)],
   );
   return rows.map((row) => ({ databaseId: row.database_id, errorCount: Number(row.error_count) }));
 }
