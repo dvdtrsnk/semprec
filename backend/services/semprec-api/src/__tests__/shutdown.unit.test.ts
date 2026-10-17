@@ -1,8 +1,8 @@
 import type { Server } from "node:http";
 import type { Pool } from "pg";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "@semprec/shared";
-import { createGracefulShutdown } from "../shutdown.js";
+import { createGracefulShutdown, LISTENER_CLOSE_TIMEOUT_MS } from "../shutdown.js";
 
 interface CapturedLine {
   level: "info" | "error";
@@ -115,6 +115,38 @@ describe("semprec-api graceful shutdown closes the tenant deactivation listener 
     await createGracefulShutdown(deps)("SIGTERM");
 
     expect(calls.slice(0, 2)).toEqual(["tenantDeactivationListener.close", "syncServer.close"]);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("stops waiting for a listener close that does not settle within LISTENER_CLOSE_TIMEOUT_MS and runs every later step", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { calls, lines, deps } = createFakes({ listenerClose: () => new Promise<void>(() => {}) });
+
+    const shutdown = createGracefulShutdown(deps)("SIGTERM");
+    await vi.advanceTimersByTimeAsync(LISTENER_CLOSE_TIMEOUT_MS - 1);
+    expect(calls).toEqual(["tenantDeactivationListener.close"]);
+    await vi.advanceTimersByTimeAsync(1);
+    await shutdown;
+
+    expect(calls).toEqual([
+      "tenantDeactivationListener.close",
+      "syncServer.close",
+      "server.close",
+      "drained",
+      "mailLiveSync.stop",
+      "queueRuntime.stop",
+      "pool.end",
+    ]);
+    expect(lines.filter((line) => line.level === "error")).toEqual([
+      {
+        level: "error",
+        obj: { signal: "SIGTERM" },
+        msg: "tenantDeactivationListener.close() did not settle within LISTENER_CLOSE_TIMEOUT_MS",
+      },
+    ]);
   });
 
   it("logs a rejecting listener close and still runs every later step", async () => {

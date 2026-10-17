@@ -206,11 +206,14 @@ export class SempConversation {
         "SempConversation: failed to close dropped run, will retry",
       );
       entry.busy = false;
-      const timer = setTimeout(() => {
-        this.closeDropped(tenantId, state, entry).catch((retryErr) => {
-          logger.error({ err: retryErr, tenantId }, "SempConversation: dropped run retry failed");
-        });
-      }, Math.min(this.ttlMs, DROPPED_RUN_RETRY_MAX_MS));
+      const timer = setTimeout(
+        () => {
+          this.closeDropped(tenantId, state, entry).catch((retryErr) => {
+            logger.error({ err: retryErr, tenantId }, "SempConversation: dropped run retry failed");
+          });
+        },
+        Math.min(this.ttlMs, DROPPED_RUN_RETRY_MAX_MS),
+      );
       timer.unref?.();
       entry.ttlTimer = timer;
     }

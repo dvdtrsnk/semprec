@@ -1233,6 +1233,9 @@ describe("createSyncServer closeTenant (issue #1042)", () => {
   let identityByToken: Map<string, SyncIdentity>;
   let tenantA: string;
   let tenantB: string;
+  /** When set, every upgrade's authentication waits on it before resolving its identity. */
+  let authGate: Promise<void> | null;
+  let authStarted: number;
 
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -1240,9 +1243,13 @@ describe("createSyncServer closeTenant (issue #1042)", () => {
     tenantA = await createTestTenant(pool);
     tenantB = await createTestTenant(pool);
     identityByToken = new Map();
+    authGate = null;
+    authStarted = 0;
     runtimePool = await createRuntimeRolePool(pool, "semprec_data");
     tenantServer = await createSyncServer(runtimePool, {
       authenticate: async (req: IncomingMessage) => {
+        authStarted++;
+        await authGate;
         const token = new URL(req.url ?? "/", "http://localhost").searchParams.get("token");
         return token ? (identityByToken.get(token) ?? null) : null;
       },
@@ -1299,6 +1306,32 @@ describe("createSyncServer closeTenant (issue #1042)", () => {
     } finally {
       wsA1.close();
       wsA2.close();
+    }
+  });
+
+  it("closes an upgrade of the tenant that was authenticating when it ran, and not the other tenant's", async () => {
+    let releaseAuth: () => void = () => {};
+    authGate = new Promise<void>((resolve) => {
+      releaseAuth = resolve;
+    });
+    identityByToken.set("b-late", { tenantId: tenantB, userId: randomUUID(), sessionId: randomUUID() });
+    identityByToken.set("a-late", { tenantId: tenantA, userId: randomUUID(), sessionId: randomUUID() });
+    const lateB = new WebSocket(`ws://127.0.0.1:${port}/api/sync?token=b-late`);
+    const lateA = new WebSocket(`ws://127.0.0.1:${port}/api/sync?token=a-late`);
+    try {
+      const closedB = closeEvent(lateB);
+      const openedA = waitForOpen(lateA);
+      await vi.waitFor(() => expect(authStarted).toBe(2));
+
+      tenantServer.closeTenant(tenantB);
+      releaseAuth();
+
+      expect(await closedB).toEqual({ code: 4401, reason: "account deactivated" });
+      await openedA;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(lateA.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      lateA.close();
     }
   });
 

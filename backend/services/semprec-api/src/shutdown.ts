@@ -5,6 +5,8 @@ import type { Logger } from "@semprec/shared";
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 60_000;
 export const DRAIN_POLL_INTERVAL_MS = 50;
 export const POOL_END_TIMEOUT_MS = 5_000;
+/** How long shutdown waits for the deactivation listener's in-flight handlers before moving on. */
+export const LISTENER_CLOSE_TIMEOUT_MS = 5_000;
 
 export interface QueueRuntimeHandle {
   stop(): Promise<void>;
@@ -85,8 +87,50 @@ function endPool(pool: Pool, logger: Logger, signal: string): Promise<void> {
 }
 
 /**
+ * Closes the tenant deactivation listener, bounded by `LISTENER_CLOSE_TIMEOUT_MS`: its `close()`
+ * waits for handler calls in flight, and a handler stopping a mailbox lifecycle can take as long as
+ * that lifecycle's `start()` or `stop()`. Past the bound shutdown moves on; the handler still
+ * running then races the sync server's and the mail root's own close.
+ */
+function closeListener(listener: { close(): Promise<void> }, logger: Logger, signal: string): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+
+    const boundTimer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      logger.error({ signal }, "tenantDeactivationListener.close() did not settle within LISTENER_CLOSE_TIMEOUT_MS");
+      resolve();
+    }, LISTENER_CLOSE_TIMEOUT_MS);
+
+    listener.close().then(
+      () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(boundTimer);
+        resolve();
+      },
+      (err: unknown) => {
+        if (settled) {
+          logger.error(
+            { err, signal },
+            "tenantDeactivationListener.close() rejected after LISTENER_CLOSE_TIMEOUT_MS had already elapsed",
+          );
+          return;
+        }
+        settled = true;
+        clearTimeout(boundTimer);
+        logger.error({ err, signal }, "tenantDeactivationListener.close() failed");
+        resolve();
+      },
+    );
+  });
+}
+
+/**
  * Builds `semprec-api`'s shutdown sequence: close the tenant deactivation listener (its handler
- * calls into the sync server and the mail live-sync root, so it stops before either does), close the sync server (every `/api/sync` client gets
+ * calls into the sync server and the mail live-sync root, so it stops before either does; bounded
+ * by `LISTENER_CLOSE_TIMEOUT_MS`), close the sync server (every `/api/sync` client gets
  * close code 1012 and its `LISTEN` client is released — otherwise each upgraded socket keeps
  * `server.close()` from settling until the drain bound), then stop accepting new HTTP connections
  * and drain in-flight requests (intake), stop the mail live-sync root (issue #650 — before the
@@ -106,11 +150,7 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
   async function runShutdown(signal: string): Promise<void> {
     logger.info({ signal }, "semprec-api shutting down");
 
-    try {
-      await tenantDeactivationListener.close();
-    } catch (err) {
-      logger.error({ err, signal }, "tenantDeactivationListener.close() failed");
-    }
+    await closeListener(tenantDeactivationListener, logger, signal);
 
     try {
       await syncServer.close();
