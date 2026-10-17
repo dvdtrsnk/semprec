@@ -403,3 +403,12 @@ export * from "./tenancy/accountsAdminStore.js";
 export * from "./tenancy/invites.js";
 export * from "./tenancy/inviteMail.js";
 export * from "./tenancy/tenantStatusSignal.js";
+export {
+  getDownloadableTenantExport,
+  listTenantExports,
+  requestTenantExport,
+  type DownloadableTenantExport,
+  type RequestedTenantExport,
+  type TenantExportStatus,
+  type TenantExportSummary,
+} from "./tenancy/tenantExportsStore.js";

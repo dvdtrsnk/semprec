@@ -6,6 +6,7 @@ import type { BlobStorageWriter, InviteMailer, PasswordResetMailer, loadFullModu
 import { createMcpRequestListener } from "./mcp/mcpHandler.js";
 import { mountCustomRoutes } from "./adapter/customRouteMount.js";
 import { mountRoutes } from "./adapter/routeTable.js";
+import { createAccountExportDownloadListener, createAccountRoutes } from "./accountHandler.js";
 import { createAdminRoutes } from "./adminHandler.js";
 import { createDatabaseRoutes } from "./databasesHandler.js";
 import { createItemRoutes } from "./itemsHandler.js";
@@ -66,6 +67,7 @@ export async function createDispatcher(
   // second write path — a route never constructs its own `createChokePoint(pool)`.
   const genericApplicationService = createGenericApplicationService(pool);
   const dispatchResourceRoute = mountRoutes(pool, [
+    ...createAccountRoutes(pool, options),
     ...createAdminRoutes(pool, options),
     ...createDatabaseRoutes(genericApplicationService, options.moduleRegistry),
     ...createPropertyRoutes(genericApplicationService, options.moduleRegistry),
@@ -100,6 +102,7 @@ export async function createDispatcher(
   });
   const blobsListener = createBlobsRequestListener(pool, { storage: options.blobStorage });
   const graphWebhookListener = createGraphWebhookRequestListener(pool);
+  const accountExportDownloadListener = createAccountExportDownloadListener(pool, { storage: options.blobStorage });
 
   // Issue #167's HTTP entry point: every request mints its own trace id, carried through
   // whichever async work the matched route kicks off (nothing below awaits `dispatch` itself, but
@@ -152,6 +155,10 @@ export async function createDispatcher(
     }
     if (pathname.startsWith("/api/blobs/") && req.method === "GET") {
       void blobsListener(req, res);
+      return;
+    }
+    if (pathname.startsWith("/api/account/exports/") && pathname.endsWith("/download") && req.method === "GET") {
+      void accountExportDownloadListener(req, res);
       return;
     }
     if (pathname === "/api/mail/graph/webhook") {
