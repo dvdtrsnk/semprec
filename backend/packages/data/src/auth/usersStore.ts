@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { requireSingleRow } from "../db/pool.js";
 import type { UserRole, UserRow } from "./types.js";
+import { isTenantStatus, type TenantStatus } from "../tenancy/tenantsStore.js";
 
 /** The raw `users` row shape this module reads back from Postgres. */
 type UserDbRow = { id: string; email: string; password_hash: string; locale: string; created_at: Date };
@@ -55,6 +56,30 @@ export async function getUserByEmail(client: Pool | PoolClient, email: string): 
     [email],
   );
   return rows[0] ? mapRow(rows[0]) : null;
+}
+
+/**
+ * `getUserByEmail` plus the status of the tenant the user is bound to, read in one statement so
+ * a login for an unknown email makes the same database round trips as one for a registered email.
+ * The tenant resolves like `getUserTenantBinding` (`users.tenant_id`, else the sole tenant);
+ * `tenantStatus` is `null` when no tenant resolves. An unknown status throws a plain `Error`.
+ */
+export async function getUserByEmailWithTenantStatus(
+  client: Pool | PoolClient,
+  email: string,
+): Promise<{ user: UserRow; tenantStatus: TenantStatus | null } | null> {
+  const { rows } = await client.query<UserDbRow & { tenant_status: unknown }>(
+    `SELECT u.id, u.email, u.password_hash, u.locale, u.created_at, t.status AS tenant_status
+       FROM users u LEFT JOIN tenants t ON t.id = COALESCE(u.tenant_id, app_sole_tenant())
+      WHERE u.email = $1`,
+    [email],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  const status = row.tenant_status;
+  if (status === null) return { user: mapRow(row), tenantStatus: null };
+  if (!isTenantStatus(status)) throw new Error("Unknown value in column tenants.status");
+  return { user: mapRow(row), tenantStatus: status };
 }
 
 export async function getUserById(client: Pool | PoolClient, id: string): Promise<UserRow | null> {

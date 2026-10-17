@@ -4,7 +4,7 @@ import { NotFoundError, UnauthorizedError, ValidationError } from "../errors.js"
 import { withTransaction } from "../db/pool.js";
 import { hashPassword, verifyPassword } from "./passwordHash.js";
 import { generateOpaqueToken, hashToken } from "./token.js";
-import { anyUserExists, createUser, getUserByEmail, getUserById } from "./usersStore.js";
+import { anyUserExists, createUser, getUserByEmailWithTenantStatus, getUserById } from "./usersStore.js";
 import {
   createSession,
   getActiveSessionByTokenHash,
@@ -119,14 +119,15 @@ export async function login(pool: Pool, input: LoginInput): Promise<LoginResult>
     }
   }
 
-  const user = await getUserByEmail(pool, email);
-  // Read for every known user before the password check, so a refusal for a non-active tenant runs
-  // the same queries as a wrong password and its timing does not confirm the password.
-  const binding = user ? await getUserTenantBinding(pool, user.id) : null;
+  // The user and their tenant status come from one statement, before the password check, so an
+  // unknown email, a wrong password and a refusal for a non-active tenant all run the same queries
+  // and timing confirms neither the email nor the password.
+  const found = await getUserByEmailWithTenantStatus(pool, email);
+  const user = found?.user ?? null;
   const passwordOk = await verifyPassword(user ? user.passwordHash : await dummyPasswordHash, input.password);
 
   // A user whose tenant is not active gets exactly the wrong-password outcome: no session, a failed attempt.
-  if (!user || !passwordOk || !binding || binding.status !== "active") {
+  if (!user || !passwordOk || found?.tenantStatus !== "active") {
     await recordLoginAttempt(pool, { email, ip: input.ip, succeeded: false });
     throw new UnauthorizedError();
   }
