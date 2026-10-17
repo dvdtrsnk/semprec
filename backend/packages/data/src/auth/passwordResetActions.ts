@@ -30,6 +30,12 @@ export const PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
  */
 export const PASSWORD_RESET_MAX_REQUESTS_PER_WINDOW = 3;
 
+/**
+ * Floor on how long `requestPasswordReset` takes to resolve, so an unknown email, a capped account
+ * and a freshly issued token cannot be told apart by response time.
+ */
+export const PASSWORD_RESET_REQUEST_MIN_DURATION_MS = 400;
+
 /** Path the emailed link points at; the web app owns rendering a form at this route. */
 const PASSWORD_RESET_PATH = "/reset-password";
 
@@ -57,16 +63,23 @@ export interface RequestPasswordResetInput {
  *
  * The token row commits first; the reset mail is dispatched from a `runAfterCommit` callback, so a
  * rolled-back transaction sends nothing, and the send is started after `COMMIT` without being
- * awaited. This function therefore resolves as soon as the token commits, and its response time
- * carries no signal from the SMTP server. Per `docs/adr/2026-09-10-side-effects-follow-the-commit.md`,
+ * awaited. The function resolves after the commit and the minimum duration below, independently
+ * of the mail send, so its response time carries no signal from the SMTP server.
+ * Per `docs/adr/2026-09-10-side-effects-follow-the-commit.md`,
  * a callback's failure is invisible to its caller: a send failure is logged and never surfaces, and
  * a user who never receives the mail requests again — the committed token needs no compensation.
+ *
+ * Every path that returns (unknown email, inactive tenant, per-account cap, token issued) resolves
+ * no earlier than `PASSWORD_RESET_REQUEST_MIN_DURATION_MS` after the call, because the paths differ
+ * in database work and that difference would otherwise reveal whether an account exists. A path
+ * that throws is not delayed.
  */
 export async function requestPasswordReset(
   pool: Pool,
   mailer: PasswordResetMailer,
   input: RequestPasswordResetInput,
 ): Promise<void> {
+  const startedAt = Date.now();
   const email = normalizeEmail(input.email);
 
   await withTransaction(pool, async (client) => {
@@ -90,6 +103,9 @@ export async function requestPasswordReset(
         });
     });
   });
+
+  const remainingMs = PASSWORD_RESET_REQUEST_MIN_DURATION_MS - (Date.now() - startedAt);
+  if (remainingMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, remainingMs));
 }
 
 export interface ResetPasswordInput {

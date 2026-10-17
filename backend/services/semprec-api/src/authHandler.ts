@@ -4,6 +4,7 @@ import {
   ChokePointError,
   ValidationError,
   UnauthorizedError,
+  PasswordResetTokenError,
   login,
   logout,
   verifySessionToken,
@@ -24,6 +25,12 @@ import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { assertUuid } from "./adapter/requestValidation.js";
 import { PayloadTooLargeError, readJsonBody, sendJson } from "./adapter/http.js";
 import { clientIpFromRequest } from "./clientIp.js";
+import {
+  createClientIpThrottle,
+  type ClientIpThrottle,
+  type ThrottledAction,
+  type ThrottleReservation,
+} from "./clientIpThrottle.js";
 import { logger } from "./logger.js";
 
 /** Name of the cookie a web client's login response carries the session token in. */
@@ -109,6 +116,8 @@ export interface AuthRequestListenerOptions {
    * (see `clientIpFromRequest`). Only safe behind a proxy that appends that hop; defaults to `false`.
    */
   trustProxy?: boolean;
+  /** Per-client-address throttle for the public routes; defaults to one fresh limiter per listener. */
+  clientIpThrottle?: ClientIpThrottle;
 }
 
 /**
@@ -127,38 +136,71 @@ export interface AuthRequestListenerOptions {
  * other channel from the one its platform declared at login.
  */
 export function createAuthRequestListener(pool: Pool, options: AuthRequestListenerOptions) {
+  const clientIpThrottle = options.clientIpThrottle ?? createClientIpThrottle();
+
+  /**
+   * Counts one event for `ip` under `action` and returns its reservation, or answers 429 and returns
+   * `null` when the address is over the limit; callers return before reading the body. The check and
+   * the count are one synchronous step, so concurrent requests from one address cannot all pass the
+   * check before any is counted; a caller releases the reservation for an outcome that must not count.
+   */
+  function acquireOrRefuse(res: ServerResponse, action: ThrottledAction, ip: string): ThrottleReservation | null {
+    const acquisition = clientIpThrottle.tryAcquire(action, ip);
+    if (acquisition.granted) return acquisition.reservation;
+    sendJson(
+      res,
+      429,
+      { error: "Too many attempts; try again later", code: "rate_limited" },
+      { "Retry-After": String(acquisition.retryAfterSeconds) },
+    );
+    return null;
+  }
+
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
 
     try {
       if (req.method === "POST" && url.pathname === "/api/auth/login") {
-        const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as {
-          email?: unknown;
-          password?: unknown;
-          platform?: unknown;
-        };
-        if (typeof body.email !== "string" || body.email.length === 0) {
-          throw new ValidationError("'email' must be a non-empty string");
-        }
-        if (typeof body.password !== "string" || body.password.length === 0) {
-          throw new ValidationError("'password' must be a non-empty string");
-        }
-        if (!isSessionPlatform(body.platform)) {
-          throw new ValidationError(`'platform' must be one of: ${SESSION_PLATFORMS.join(", ")}`);
-        }
+        const ip = clientIpFromRequest(req, { trustProxy: options.trustProxy ?? false });
+        const reservation = acquireOrRefuse(res, "login", ip);
+        if (!reservation) return;
+        let body: { email: string; password: string; platform: SessionPlatform };
+        let result: Awaited<ReturnType<typeof login>>;
+        try {
+          const raw = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as {
+            email?: unknown;
+            password?: unknown;
+            platform?: unknown;
+          };
+          if (typeof raw.email !== "string" || raw.email.length === 0) {
+            throw new ValidationError("'email' must be a non-empty string");
+          }
+          if (typeof raw.password !== "string" || raw.password.length === 0) {
+            throw new ValidationError("'password' must be a non-empty string");
+          }
+          if (!isSessionPlatform(raw.platform)) {
+            throw new ValidationError(`'platform' must be one of: ${SESSION_PLATFORMS.join(", ")}`);
+          }
+          body = { email: raw.email, password: raw.password, platform: raw.platform };
 
-        const userAgentHeader = req.headers["user-agent"];
-        const result = await login(pool, {
-          email: body.email,
-          password: body.password,
-          platform: body.platform,
-          // Throttle key (#635): the failure streak is scoped per (email, ip) and there is
-          // deliberately no per-email aggregate lock — that would let an attacker from any address
-          // lock the owner out everywhere. Per-address scoping only ever locks the attacker's own
-          // address, and Argon2id verification keeps distributed guessing expensive.
-          ip: clientIpFromRequest(req, { trustProxy: options.trustProxy ?? false }),
-          userAgent: typeof userAgentHeader === "string" ? userAgentHeader : null,
-        });
+          const userAgentHeader = req.headers["user-agent"];
+          result = await login(pool, {
+            email: body.email,
+            password: body.password,
+            platform: body.platform,
+            // Throttle key (#635): the failure streak is scoped per (email, ip) and there is
+            // deliberately no per-email aggregate lock — that would let an attacker from any address
+            // lock the owner out everywhere. Per-address scoping only ever locks the attacker's own
+            // address, and Argon2id verification keeps distributed guessing expensive.
+            ip,
+            userAgent: typeof userAgentHeader === "string" ? userAgentHeader : null,
+          });
+        } catch (err) {
+          // Only a failed credential check counts; infrastructure errors and validation do not.
+          if (!(err instanceof UnauthorizedError)) reservation.release();
+          throw err;
+        }
+        reservation.release();
 
         // Per #141: a browser must never see its token in a readable response body — only the
         // `httpOnly` cookie carries it. iOS/macOS get it back in the body for Keychain storage
@@ -177,15 +219,26 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
       }
 
       if (req.method === "POST" && url.pathname === "/api/auth/password-reset/request") {
-        const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as { email?: unknown };
-        if (typeof body.email !== "string" || body.email.length === 0) {
-          throw new ValidationError("'email' must be a non-empty string");
+        const ip = clientIpFromRequest(req, { trustProxy: options.trustProxy ?? false });
+        const reservation = acquireOrRefuse(res, "passwordResetRequest", ip);
+        if (!reservation) return;
+        let email: string;
+        try {
+          const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as { email?: unknown };
+          if (typeof body.email !== "string" || body.email.length === 0) {
+            throw new ValidationError("'email' must be a non-empty string");
+          }
+          email = body.email;
+        } catch (err) {
+          // Every accepted request counts; one that never got past the body read or validation does not.
+          reservation.release();
+          throw err;
         }
 
         // Always 200 with the same body regardless of whether `email` matched an account —
         // issue #142's "request responses do not disclose whether an email exists".
         await requestPasswordReset(pool, options.passwordResetMailer, {
-          email: body.email,
+          email,
           appBaseUrl: options.appBaseUrl,
         });
         sendJson(res, 200, { ok: true });
@@ -193,20 +246,28 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
       }
 
       if (req.method === "POST" && url.pathname === "/api/auth/password-reset/consume") {
-        const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as {
-          token?: unknown;
-          newPassword?: unknown;
-        };
-        if (typeof body.token !== "string" || body.token.length === 0) {
-          throw new ValidationError("'token' must be a non-empty string");
+        const ip = clientIpFromRequest(req, { trustProxy: options.trustProxy ?? false });
+        const reservation = acquireOrRefuse(res, "passwordResetConsume", ip);
+        if (!reservation) return;
+        try {
+          const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as {
+            token?: unknown;
+            newPassword?: unknown;
+          };
+          const { token, newPassword } = body;
+          if (typeof token !== "string" || token.length === 0) {
+            throw new ValidationError("'token' must be a non-empty string");
+          }
+          if (typeof newPassword !== "string" || newPassword.length === 0) {
+            throw new ValidationError("'newPassword' must be a non-empty string");
+          }
+          await withTransaction(pool, (client) => resetPassword(client, { token, newPassword }));
+        } catch (err) {
+          // Only a rejected token counts; validation and infrastructure errors do not.
+          if (!(err instanceof PasswordResetTokenError)) reservation.release();
+          throw err;
         }
-        if (typeof body.newPassword !== "string" || body.newPassword.length === 0) {
-          throw new ValidationError("'newPassword' must be a non-empty string");
-        }
-
-        await withTransaction(pool, (client) =>
-          resetPassword(client, { token: body.token as string, newPassword: body.newPassword as string }),
-        );
+        reservation.release();
         sendJson(res, 200, { ok: true });
         return;
       }
