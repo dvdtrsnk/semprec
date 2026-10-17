@@ -151,8 +151,9 @@ comes last because anything committed after it can make it stale again:
    cover the code you changed, whether or not you edited a test file:
    `npx vitest run --config <tier config> <test files>` in `backend/`, with
    the config matching each file's tier (`vitest.unit.config.ts` for
-   `*.unit.test.ts`, `vitest.integration.config.ts` for `*.test.ts`,
-   `vitest.e2e.config.ts` for `*.e2e.test.ts`), and
+   `*.unit.test.ts`, `vitest.e2e.config.ts` for `*.e2e.test.ts`, and
+   `vitest.integration.config.ts` for every other `*.test.ts`, which is the
+   set that config includes once it excludes the other two tiers), and
    `npx vitest run <test files>` in `web/`. A source change with no test file
    run is not a partial check.
 5. **Take the migration ordinal last.** If the diff adds a migration, run
