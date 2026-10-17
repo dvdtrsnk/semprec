@@ -3,9 +3,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
-import { listTenantAiBudgetOverview, setTenantAiBudget } from "../aiGateway/tenantAiBudgetsStore.js";
+import {
+  getCurrentTenantAiBudget,
+  listTenantAiBudgetOverview,
+  setTenantAiBudget,
+} from "../aiGateway/tenantAiBudgetsStore.js";
 import { withTransaction } from "../db/pool.js";
-import { createTestTenant } from "../testSupport/tenantFixtures.js";
+import { createTestTenant, withTenantTransaction } from "../testSupport/tenantFixtures.js";
 import { createRuntimeRolePool, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 let pool: Pool;
@@ -63,17 +67,22 @@ describe("tenant AI budgets: admin writer and overview (issue #1039)", () => {
   it("creates the tenant's budget row on first write and updates it in place on the second", async () => {
     const tenantId = await createTestTenant(pool);
     const adminId = await newAccount(tenantId);
+    const readInTenant = () => withTenantTransaction(dataPool, tenantId, (client) => getCurrentTenantAiBudget(client));
+    expect(await readInTenant()).toBeNull();
 
     // Through semprec_data, the production role, so its INSERT/UPDATE/SELECT grants are what is exercised.
     const first = await withTransaction(dataPool, (client) =>
       setTenantAiBudget(client, { tenantId, dailyCapUsd: 5, monthlyCapUsd: 40, updatedBy: adminId }),
     );
     expect(first).toMatchObject({ tenantId, dailyCapUsd: 5, monthlyCapUsd: 40 });
+    // The gateway's own read, inside the tenant's scope, sees the caps the admin writer created.
+    expect(await readInTenant()).toEqual({ tenantId, dailyCapUsd: 5, monthlyCapUsd: 40 });
 
     const second = await withTransaction(dataPool, (client) =>
       setTenantAiBudget(client, { tenantId, dailyCapUsd: null, monthlyCapUsd: 12.5, updatedBy: adminId }),
     );
     expect(second).toMatchObject({ tenantId, dailyCapUsd: null, monthlyCapUsd: 12.5 });
+    expect(await readInTenant()).toEqual({ tenantId, dailyCapUsd: null, monthlyCapUsd: 12.5 });
 
     const { rows } = await pool.query<{ updated_by: string }>(
       "SELECT updated_by FROM tenant_ai_budgets WHERE tenant_id = $1",
