@@ -2,7 +2,7 @@ import type { PoolClient } from "pg";
 import { EMAIL_PATTERN } from "../auth/authActions.js";
 import { normalizeEmail } from "../auth/emailNormalization.js";
 import { generateOpaqueToken } from "../auth/token.js";
-import { runAfterCommit, type Queryable } from "../db/pool.js";
+import { requireAffectedRows, runAfterCommit, type Queryable } from "../db/pool.js";
 import { ChokePointError, NotFoundError, ValidationError } from "../errors.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import type { InviteMailer } from "./inviteMail.js";
@@ -146,20 +146,24 @@ export async function listInvites(client: Queryable): Promise<InviteSummary[]> {
 }
 
 /**
- * Revokes one pending invitation. A missing id is `NotFoundError`; an accepted, revoked or expired
- * invitation is `invite_not_pending` (409), so the caller learns why nothing changed.
+ * Revokes one pending invitation. The row is locked and its status read before the update, so the
+ * update always touches exactly that row. A missing id is `NotFoundError`; an accepted, revoked or
+ * expired invitation is `invite_not_pending` (409), so the caller learns why nothing changed.
  */
 export async function revokeInvite(client: PoolClient, inviteId: string): Promise<InviteSummary> {
-  const { rows } = await client.query<InviteRow>(
-    `UPDATE invites SET revoked_at = now()
-      WHERE id = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()
-      RETURNING ${INVITE_COLUMNS}`,
+  const { rows } = await client.query<InviteRow>(`SELECT ${INVITE_COLUMNS} FROM invites WHERE id = $1 FOR UPDATE`, [
+    inviteId,
+  ]);
+  const current = rows[0];
+  if (!current) throw new NotFoundError("Invite not found", { inviteId });
+  if (toInviteSummary(current).status !== "pending") {
+    throw new ChokePointError(409, "invite_not_pending", "Only a pending invite can be revoked");
+  }
+
+  const result = await client.query<InviteRow>(
+    `UPDATE invites SET revoked_at = now() WHERE id = $1 RETURNING ${INVITE_COLUMNS}`,
     [inviteId],
   );
-  const row = rows[0];
-  if (row) return toInviteSummary(row);
-
-  const { rows: existing } = await client.query("SELECT 1 FROM invites WHERE id = $1", [inviteId]);
-  if (existing.length === 0) throw new NotFoundError("Invite not found", { inviteId });
-  throw new ChokePointError(409, "invite_not_pending", "Only a pending invite can be revoked");
+  requireAffectedRows(result, "invites revoke");
+  return toInviteSummary(result.rows[0]!);
 }
