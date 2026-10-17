@@ -85,7 +85,21 @@ export interface ClientIpThrottle {
   retryAfterSeconds(action: ThrottledAction, ip: string): number | null;
   /** Counts one event for the address under the action. */
   record(action: ThrottledAction, ip: string): void;
+  /**
+   * Checks the limit and, when the address is under it, counts one event in the same synchronous
+   * step, so concurrent requests cannot all pass the check before any of them is counted. The
+   * returned reservation's `release` uncounts that event again, for an outcome that must not count.
+   */
+  tryAcquire(action: ThrottledAction, ip: string): ThrottleAcquisition;
 }
+
+/** An event counted by `tryAcquire`; `release` removes it, and is a no-op once it has expired, been evicted or been released. */
+export interface ThrottleReservation {
+  release(): void;
+}
+
+export type ThrottleAcquisition =
+  { granted: true; reservation: ThrottleReservation } | { granted: false; retryAfterSeconds: number };
 
 /**
  * A per-client-address sliding-window limiter for the public authentication routes. State lives in
@@ -104,6 +118,8 @@ export function createClientIpThrottle(options: ClientIpThrottleOptions = {}): C
   // One map per action. A `Map` iterates in insertion order and `record` re-inserts the key it
   // touches, so the front of each map holds the key recorded least recently — and, because every
   // key in a map shares one window, the keys whose events have all expired form a prefix of it.
+  // A released reservation can leave a key's newest event older than its position implies; the
+  // expired sweep then stops early and the least-recently-recorded fallback still frees a slot.
   const eventsByAction = new Map<ThrottledAction, Map<string, number[]>>(
     THROTTLE_ACTIONS.map((action) => [action, new Map<string, number[]>()]),
   );
@@ -160,38 +176,73 @@ export function createClientIpThrottle(options: ClientIpThrottleOptions = {}): C
     }
   }
 
+  function retryAfterSeconds(action: ThrottledAction, ip: string): number | null {
+    const key = throttleKeyForIp(ip);
+    const stored = mapFor(action).get(key);
+    if (!stored) return null;
+    const at = now();
+    const events = prune(action, key, stored, at);
+    const { maxEvents } = limits[action];
+    if (events.length < maxEvents) return null;
+    const oldestCounted = events[events.length - maxEvents]!;
+    return Math.max(1, Math.ceil((oldestCounted + windowMs(action) - at) / 1000));
+  }
+
+  /** Counts one event and returns the key's event array (kept by identity while the key lives) and its timestamp. */
+  function recordEvent(action: ThrottledAction, ip: string): { key: string; events: number[]; at: number } {
+    const key = throttleKeyForIp(ip);
+    const map = mapFor(action);
+    const at = now();
+    const stored = map.get(key);
+    const events = stored ? prune(action, key, stored, at) : [];
+    if (events.length > 0) {
+      // Re-inserted below, so the key moves to the back of the recency order.
+      map.delete(key);
+      keyCount--;
+    } else {
+      makeRoom(at);
+    }
+    events.push(at);
+    // Only the newest `maxEvents` can ever matter to `retryAfterSeconds`.
+    const { maxEvents } = limits[action];
+    if (events.length > maxEvents) events.splice(0, events.length - maxEvents);
+    map.set(key, events);
+    keyCount++;
+    return { key, events, at };
+  }
+
   return {
-    retryAfterSeconds(action, ip) {
-      const key = throttleKeyForIp(ip);
-      const stored = mapFor(action).get(key);
-      if (!stored) return null;
-      const at = now();
-      const events = prune(action, key, stored, at);
-      const { maxEvents } = limits[action];
-      if (events.length < maxEvents) return null;
-      const oldestCounted = events[events.length - maxEvents]!;
-      return Math.max(1, Math.ceil((oldestCounted + windowMs(action) - at) / 1000));
-    },
+    retryAfterSeconds,
 
     record(action, ip) {
-      const key = throttleKeyForIp(ip);
-      const map = mapFor(action);
-      const at = now();
-      const stored = map.get(key);
-      const events = stored ? prune(action, key, stored, at) : [];
-      if (events.length > 0) {
-        // Re-inserted below, so the key moves to the back of the recency order.
-        map.delete(key);
-        keyCount--;
-      } else {
-        makeRoom(at);
-      }
-      events.push(at);
-      // Only the newest `maxEvents` can ever matter to `retryAfterSeconds`.
-      const { maxEvents } = limits[action];
-      if (events.length > maxEvents) events.splice(0, events.length - maxEvents);
-      map.set(key, events);
-      keyCount++;
+      recordEvent(action, ip);
+    },
+
+    tryAcquire(action, ip) {
+      const retryAfter = retryAfterSeconds(action, ip);
+      if (retryAfter !== null) return { granted: false, retryAfterSeconds: retryAfter };
+      const { key, events, at } = recordEvent(action, ip);
+      let released = false;
+      return {
+        granted: true,
+        reservation: {
+          release() {
+            if (released) return;
+            released = true;
+            const map = mapFor(action);
+            // Identity, not key presence: once the key's events all expired or the key was evicted, a
+            // later record starts a fresh array that does not hold this reservation's event.
+            if (map.get(key) !== events) return;
+            const index = events.lastIndexOf(at);
+            if (index === -1) return;
+            events.splice(index, 1);
+            if (events.length === 0) {
+              map.delete(key);
+              keyCount--;
+            }
+          },
+        },
+      };
     },
   };
 }
