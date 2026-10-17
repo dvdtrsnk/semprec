@@ -197,7 +197,8 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
     // Operator configuration written only by semprec-api (migration 0070): the gateway's semprec_side
     // may read it but never raise its own caps, and nobody deletes a row (it goes with its tenant).
     // admin_audit_log (migration 0074) is append-only: semprec_side reads it, semprec_data only inserts.
-    const READ_ONLY_FOR_SIDE_TABLES = new Set(["tenant_ai_budgets", "admin_audit_log"]);
+    // invites (migration 0077) is written by the admin routes only: semprec_side reads it, semprec_data runs DML.
+    const READ_ONLY_FOR_SIDE_TABLES = new Set(["tenant_ai_budgets", "admin_audit_log", "invites"]);
     const NO_DELETE_TABLES = new Set(["tenant_ai_budgets", "admin_audit_log"]);
 
     async function listTables(): Promise<{ name: string; oid: string }[]> {

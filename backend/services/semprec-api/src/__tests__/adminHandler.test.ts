@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import {
@@ -17,6 +17,7 @@ import {
 import {
   createUser,
   hashPassword,
+  hashToken,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
@@ -24,6 +25,7 @@ import {
   setTenantAiBudget,
   upsertProcessHeartbeat,
   withTransaction,
+  type InviteMailer,
   type PasswordResetMailer,
 } from "@semprec/data";
 import { createDispatcher } from "../app.js";
@@ -500,6 +502,171 @@ describe("admin routes (issue #1037)", () => {
       const { rows } = await pool.query<{ count: string }>("SELECT count(*) AS count FROM tenant_ai_budgets");
       expect(rows).toEqual([{ count: "0" }]);
       expect(await auditRowsFor("tenantAiBudgetSet")).toEqual([]);
+    });
+  });
+
+  describe("invitations (issue #1040)", () => {
+    interface AuditEntry {
+      action: string;
+      details: Record<string, unknown>;
+    }
+
+    async function invitesTable(): Promise<{ id: string; status: string }[]> {
+      const { rows } = await pool.query<{ id: string; accepted_at: Date | null; revoked_at: Date | null }>(
+        "SELECT id, accepted_at, revoked_at FROM invites",
+      );
+      return rows.map((row) => ({
+        id: row.id,
+        status: row.revoked_at ? "revoked" : row.accepted_at ? "accepted" : "pending",
+      }));
+    }
+
+    async function inviteAuditEntries(): Promise<AuditEntry[]> {
+      const { rows } = await pool.query<AuditEntry>(
+        "SELECT action, details FROM admin_audit_log WHERE action LIKE 'invite%' ORDER BY id",
+      );
+      return rows;
+    }
+
+    function authed(token: string, method: string, path: string, body?: unknown): Promise<Response> {
+      return fetch(`${baseUrl}${path}`, {
+        method,
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    }
+
+    it("creates a pending invite with a normalized email, a seven-day expiry and one audit row without the email", async () => {
+      const tenantId = await createTestTenant(pool);
+      const admin = await signIn(`admin-${randomUUID()}@example.test`, tenantId, "admin");
+
+      const res = await authed(admin.token, "POST", "/api/admin/invites", { email: " New@Example.COM " });
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { invite: Record<string, unknown>; inviteUrl: string; emailed: boolean };
+      expect(body.invite).toMatchObject({ email: "new@example.com", status: "pending", invitedBy: admin.id });
+      expect(Date.parse(String(body.invite.expiresAt)) - Date.parse(String(body.invite.createdAt))).toBe(
+        7 * 24 * 60 * 60 * 1000,
+      );
+      expect(body.inviteUrl).toMatch(/^https:\/\/app\.example\.test\/\?page=invite#token=[A-Za-z0-9_-]+$/);
+      expect(body.emailed).toBe(false);
+      expect(Object.keys(body.invite).sort()).not.toContain("token_hash");
+
+      const token = new URL(body.inviteUrl).hash.replace("#token=", "");
+      const { rows } = await pool.query<{ token_hash: string }>("SELECT token_hash FROM invites");
+      expect(rows).toEqual([{ token_hash: hashToken(token) }]);
+      expect(await inviteAuditEntries()).toEqual([{ action: "inviteCreated", details: { inviteId: body.invite.id } }]);
+    });
+
+    it("answers 400 validation_failed on email for a malformed address or one that already has an account, writing nothing", async () => {
+      const tenantId = await createTestTenant(pool);
+      const admin = await signIn(`admin-${randomUUID()}@example.test`, tenantId, "admin");
+      const takenEmail = `taken-${randomUUID()}@example.test`;
+      await signIn(takenEmail, await createTestTenant(pool), "member");
+
+      for (const email of ["not-an-email", takenEmail]) {
+        const res = await authed(admin.token, "POST", "/api/admin/invites", { email });
+        expect(res.status, email).toBe(400);
+        expect(await res.json(), email).toMatchObject({
+          error: { code: "validation_failed", details: { field: "email" } },
+        });
+      }
+      expect(await invitesTable()).toEqual([]);
+      expect(await inviteAuditEntries()).toEqual([]);
+    });
+
+    it("lists every invite newest first with its status and never a token", async () => {
+      const tenantId = await createTestTenant(pool);
+      const admin = await signIn(`admin-${randomUUID()}@example.test`, tenantId, "admin");
+      const first = (await (
+        await authed(admin.token, "POST", "/api/admin/invites", { email: "one@example.com" })
+      ).json()) as { invite: { id: string } };
+      const second = (await (
+        await authed(admin.token, "POST", "/api/admin/invites", { email: "two@example.com" })
+      ).json()) as { invite: { id: string }; inviteUrl: string };
+      await pool.query("UPDATE invites SET accepted_at = now() WHERE id = $1", [first.invite.id]);
+
+      const res = await authed(admin.token, "GET", "/api/admin/invites");
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text).not.toContain("token_hash");
+      expect(text).not.toContain(new URL(second.inviteUrl).hash.replace("#token=", ""));
+      const invites = (JSON.parse(text) as { invites: { id: string; status: string }[] }).invites;
+      expect(invites.map((entry) => [entry.id, entry.status])).toEqual([
+        [second.invite.id, "pending"],
+        [first.invite.id, "accepted"],
+      ]);
+    });
+
+    it("revokes a pending invite with an audit row, and answers 409 or 404 without one for a non-pending or unknown id", async () => {
+      const tenantId = await createTestTenant(pool);
+      const admin = await signIn(`admin-${randomUUID()}@example.test`, tenantId, "admin");
+      const pending = (await (
+        await authed(admin.token, "POST", "/api/admin/invites", { email: "p@example.com" })
+      ).json()) as { invite: { id: string } };
+      const accepted = (await (
+        await authed(admin.token, "POST", "/api/admin/invites", { email: "a@example.com" })
+      ).json()) as { invite: { id: string } };
+      await pool.query("UPDATE invites SET accepted_at = now() WHERE id = $1", [accepted.invite.id]);
+      const auditBefore = (await inviteAuditEntries()).length;
+
+      const revoked = await authed(admin.token, "POST", `/api/admin/invites/${pending.invite.id}/revoke`);
+      expect(revoked.status).toBe(200);
+      expect(await revoked.json()).toMatchObject({ invite: { id: pending.invite.id, status: "revoked" } });
+      expect((await inviteAuditEntries()).at(-1)).toEqual({
+        action: "inviteRevoked",
+        details: { inviteId: pending.invite.id },
+      });
+
+      const auditAfterRevoke = (await inviteAuditEntries()).length;
+      const refused = await authed(admin.token, "POST", `/api/admin/invites/${accepted.invite.id}/revoke`);
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toMatchObject({ error: { code: "invite_not_pending" } });
+
+      const unknown = await authed(admin.token, "POST", `/api/admin/invites/${randomUUID()}/revoke`);
+      expect(unknown.status).toBe(404);
+      expect(await unknown.json()).toMatchObject({ error: { code: "not_found" } });
+
+      expect((await inviteAuditEntries()).length).toBe(auditAfterRevoke);
+      expect(auditAfterRevoke).toBe(auditBefore + 1);
+      expect((await authed(admin.token, "POST", "/api/admin/invites/not-a-uuid/revoke")).status).toBe(400);
+    });
+
+    it("reports emailed true and sends the mail after commit when an invite mailer is configured", async () => {
+      const sent: { to: string; inviteUrl: string }[] = [];
+      const mailer: InviteMailer = {
+        async sendInviteEmail(input) {
+          sent.push({ to: input.to, inviteUrl: input.inviteUrl });
+        },
+      };
+      const mailedDispatch = await createDispatcher(pool, {
+        passwordResetMailer: noopMailer,
+        inviteMailer: mailer,
+        appBaseUrl: "https://app.example.test",
+        setupToken: "admin-handler-setup-token",
+        moduleRegistry,
+        blobStorage: new LocalFsBlobStorageWriter(tmpBlobDir),
+        maxFileSizeBytes: 10 * 1024 * 1024,
+      });
+      const mailedServer = createServer(mailedDispatch);
+      await new Promise<void>((resolve) => mailedServer.listen(0, resolve));
+      const address = mailedServer.address();
+      if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+      try {
+        const tenantId = await createTestTenant(pool);
+        const admin = await signIn(`admin-${randomUUID()}@example.test`, tenantId, "admin");
+        const res = await fetch(`http://127.0.0.1:${address.port}/api/admin/invites`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${admin.token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "Mailed@Example.com" }),
+        });
+        expect(res.status).toBe(201);
+        const body = (await res.json()) as { inviteUrl: string; emailed: boolean };
+        expect(body.emailed).toBe(true);
+        await vi.waitFor(() => expect(sent).toHaveLength(1));
+        expect(sent).toEqual([{ to: "mailed@example.com", inviteUrl: body.inviteUrl }]);
+      } finally {
+        await new Promise<void>((resolve) => mailedServer.close(() => resolve()));
+      }
     });
   });
 });

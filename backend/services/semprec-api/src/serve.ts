@@ -6,13 +6,15 @@ import {
   LocalFsBlobStorageWriter,
   loadFullModuleRegistry,
   resolveBlobStorageDir,
+  NodemailerInviteMailer,
   NodemailerPasswordResetMailer,
   noopPasswordResetMailer,
   resolveDocHistoryRetentionDays,
   startProcessHeartbeat,
+  type InviteMailer,
   type PasswordResetMailer,
 } from "@semprec/data";
-import { createTransport } from "nodemailer";
+import { createTransport, type Transporter } from "nodemailer";
 import { wireRealtimeHooks } from "@semprec/realtime";
 import { installFatalHandlers, withTraceContext } from "@semprec/shared";
 import { createDispatcher } from "./app.js";
@@ -58,10 +60,14 @@ if (!Number.isInteger(port) || port <= 0 || port > 65535)
 // password-reset request route fails (via `noopPasswordResetMailer`) if it's ever hit.
 const appBaseUrl = process.env.APP_BASE_URL ?? "http://localhost:3000";
 
-function buildPasswordResetMailer(): PasswordResetMailer {
+/**
+ * The SMTP transport and sender address the transactional mailers share, or `null` when SMTP is not
+ * configured. A set `SMTP_HOST` with an invalid `SMTP_PORT` throws at startup.
+ */
+function buildSmtpTransport(): { transporter: Transporter; from: string } | null {
   const host = process.env.SMTP_HOST;
   const from = process.env.SMTP_FROM_ADDRESS;
-  if (!host || !from) return noopPasswordResetMailer;
+  if (!host || !from) return null;
 
   const rawSmtpPort = process.env.SMTP_PORT ?? "587";
   const smtpPort = Number(rawSmtpPort);
@@ -74,8 +80,17 @@ function buildPasswordResetMailer(): PasswordResetMailer {
     secure: process.env.SMTP_SECURE === "true",
     auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD } : undefined,
   });
-  return new NodemailerPasswordResetMailer(transporter, from);
+  return { transporter, from };
 }
+
+const smtp = buildSmtpTransport();
+const passwordResetMailer: PasswordResetMailer = smtp
+  ? new NodemailerPasswordResetMailer(smtp.transporter, smtp.from)
+  : noopPasswordResetMailer;
+// Issue #1040: an absent invite mailer means no invitation mail is sent; the invite and its link still work.
+const inviteMailer: InviteMailer | undefined = smtp
+  ? new NodemailerInviteMailer(smtp.transporter, smtp.from)
+  : undefined;
 
 // Issue #158: `POST /api/files`'s hard streamed-upload cap, and where `LocalFsBlobStorageWriter`
 // keeps uploaded bytes on disk — resolved like `MAIL_ATTACHMENTS_DIR` (worker.ts): required outside tests.
@@ -103,7 +118,8 @@ startProcessHeartbeat(
 
 const moduleRegistry = await loadFullModuleRegistry();
 const dispatch = await createDispatcher(pool, {
-  passwordResetMailer: buildPasswordResetMailer(),
+  passwordResetMailer,
+  inviteMailer,
   appBaseUrl,
   setupToken,
   moduleRegistry,
