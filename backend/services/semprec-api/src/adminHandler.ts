@@ -2,13 +2,16 @@ import type { Pool } from "pg";
 import {
   createInvite,
   getOperatorHealthReport,
+  changeAccountRole,
   listAccounts,
   listInvites,
   listTenantAiBudgetOverview,
   NotFoundError,
+  reactivateAccount,
   recordAdminAction,
   revokeInvite,
   setTenantAiBudget,
+  suspendAccount,
   ValidationError,
   withTransaction,
 } from "@semprec/data";
@@ -107,6 +110,48 @@ export function createAdminRoutes(pool: Pool, options: AppOptions): RouteDefinit
             },
           },
         };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/admin/accounts/:userId/suspend",
+      admin: true,
+      handler: async (ctx) => {
+        const targetUserId = requireUuidParam(ctx.params, "userId");
+        const actorUserId = ctx.identity.user.id;
+        const account = await withTransaction(pool, (client) => suspendAccount(client, { actorUserId, targetUserId }));
+        return { status: 200, body: { account } };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/admin/accounts/:userId/reactivate",
+      admin: true,
+      handler: async (ctx) => {
+        const targetUserId = requireUuidParam(ctx.params, "userId");
+        const actorUserId = ctx.identity.user.id;
+        const account = await withTransaction(pool, (client) =>
+          reactivateAccount(client, { actorUserId, targetUserId }),
+        );
+        return { status: 200, body: { account } };
+      },
+    },
+    {
+      method: "PUT",
+      path: "/api/admin/accounts/:userId/role",
+      admin: true,
+      handler: async (ctx) => {
+        const targetUserId = requireUuidParam(ctx.params, "userId");
+        const body = requireJsonObjectBody(ctx.body);
+        const role = body.role;
+        if (role !== "admin" && role !== "member") {
+          throw new ValidationError("'role' must be 'admin' or 'member'", { field: "role" });
+        }
+        const actorUserId = ctx.identity.user.id;
+        const account = await withTransaction(pool, (client) =>
+          changeAccountRole(client, { actorUserId, targetUserId, role }),
+        );
+        return { status: 200, body: { account } };
       },
     },
     {

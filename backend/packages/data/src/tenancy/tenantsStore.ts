@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import type { UserRole } from "../auth/types.js";
+import { ChokePointError, NotFoundError } from "../errors.js";
 
 export type TenantStatus = "provisioning" | "active" | "suspended" | "deleting";
 
@@ -47,4 +48,36 @@ export async function getUserTenantBinding(
   if (!isTenantStatus(row.status)) throw new Error("Unknown value in column tenants.status");
   if (!isUserRole(row.role)) throw new Error("Unknown value in column users.role");
   return { tenantId: row.id, status: row.status, role: row.role };
+}
+
+/**
+ * The only writer of `tenants.status` after provisioning: one conditional `UPDATE` moves the
+ * tenant to `to` when its current status is in `from`. Runs on the caller's client, so the change
+ * commits or rolls back with the caller's transaction. When no row matches, an existing tenant
+ * answers 409 `invalid_account_status` and a missing one `NotFoundError`.
+ */
+export async function transitionTenantStatus(
+  client: PoolClient,
+  tenantId: string,
+  from: readonly TenantStatus[],
+  to: TenantStatus,
+): Promise<{ id: string; status: TenantStatus; statusChangedAt: string }> {
+  const result = await client.query<{ id: string; status: unknown; status_changed_at: Date }>(
+    `UPDATE tenants SET status = $3, status_changed_at = now()
+      WHERE id = $1 AND status = ANY($2::text[])
+      RETURNING id, status, status_changed_at`,
+    [tenantId, from, to],
+  );
+  const row = result.rows[0];
+  if (result.rowCount !== 0 && row) {
+    if (!isTenantStatus(row.status)) throw new Error("Unknown value in column tenants.status");
+    return { id: row.id, status: row.status, statusChangedAt: row.status_changed_at.toISOString() };
+  }
+  const existing = await client.query<{ id: string }>("SELECT id FROM tenants WHERE id = $1", [tenantId]);
+  if (existing.rows.length === 0) throw new NotFoundError("Tenant not found", { tenantId });
+  throw new ChokePointError(
+    409,
+    "invalid_account_status",
+    `Account status cannot change to ${to} from its current status`,
+  );
 }
