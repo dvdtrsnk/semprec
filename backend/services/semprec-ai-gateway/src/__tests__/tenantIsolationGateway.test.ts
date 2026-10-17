@@ -102,6 +102,8 @@ interface CallResult {
   status: number;
   /** The response body with every requested id replaced by `<id>`. */
   body: string;
+  /** Every response header except `date`, which differs between any two responses. */
+  headers: Record<string, string>;
 }
 
 let adminPool: Pool;
@@ -170,14 +172,19 @@ function startServer(globalCaps: GlobalAiCaps): Promise<void> {
   };
   const created = createServer(createDispatcher(sidePool, complete, audio, pi));
   server = created;
-  return new Promise<void>((resolve) =>
+  return new Promise<void>((resolve, reject) => {
+    created.once("error", reject);
     created.listen(0, () => {
+      created.off("error", reject);
       const address = created.address();
-      if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+      if (!address || typeof address === "string") {
+        reject(new Error("expected a bound TCP address"));
+        return;
+      }
       baseUrl = `http://127.0.0.1:${address.port}`;
       resolve();
-    }),
-  );
+    });
+  });
 }
 
 async function stopServer(): Promise<void> {
@@ -212,7 +219,11 @@ async function call(endpoint: GatewayEndpoint, options: RequestOptions = {}): Pr
   for (const requested of [id, options.tenantHeader]) {
     if (requested) body = body.split(requested).join("<id>");
   }
-  return { status: res.status, body };
+  const headers: Record<string, string> = {};
+  res.headers.forEach((value, name) => {
+    if (name !== "date") headers[name] = value;
+  });
+  return { status: res.status, body, headers };
 }
 
 /** The rows `tenantId` can see, read through a runtime-role pool so row-level security applies. */
@@ -302,10 +313,11 @@ describe("AI gateway tenant isolation across every endpoint", () => {
 
     tenantA = await createFixture(await createTestTenant(adminPool));
     tenantB = await createFixture(await createTestTenant(adminPool));
-    // C has no `tenant_ai_budgets` row; the suspended tenant has none either, so it is refused
-    // for the same reason an unknown tenant is.
+    // C has no `tenant_ai_budgets` row. The suspended tenant keeps the budget row it was provisioned
+    // with, as a tenant suspended after provisioning does, so its refusal comes from the suspension.
     tenantC = await createTestTenant(adminPool);
     suspendedTenant = await createTestTenant(adminPool, { status: "suspended" });
+    await setTenantAiBudget(adminPool, suspendedTenant);
 
     faux = fauxProvider({
       provider: "anthropic",
@@ -403,7 +415,9 @@ describe("AI gateway tenant isolation across every endpoint", () => {
     it("refuses a request without the tenant header, with no row and no provider call", async () => {
       const result = await call(endpoint, { id: idOf(tenantA, endpoint) });
 
-      expect(result.status).toBeGreaterThanOrEqual(400);
+      // Strict scope refuses the scopeless reservation, which reaches the handler's catch-all.
+      expect(result.status).toBe(500);
+      expect(JSON.parse(result.body)).toEqual({ error: "Internal server error" });
       expect(await totalRows()).toBe(0);
       expect(providerCalls).toBe(0);
     });
