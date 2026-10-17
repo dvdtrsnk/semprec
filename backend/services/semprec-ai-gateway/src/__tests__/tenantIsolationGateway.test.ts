@@ -417,9 +417,10 @@ describe("AI gateway tenant isolation across every endpoint", () => {
       expect(providerCalls).toBe(0);
     });
 
-    // Known divergence from the issue's acceptance criterion, left for a follow-up in the area of
-    // the attribution guard and the budget rules. `it.fails` turns red once the responses become
-    // byte-identical, so the marker has to be removed together with the fix.
+    // A real leak this suite found: a suspended tenant id can be told from an unknown one. Per
+    // #1057's Task step 4 the handlers are not changed here; #1190 fixes the gateway and turns this
+    // case into a normal test. `it.fails` turns red once the responses become byte-identical, so
+    // the marker has to be removed together with that fix.
     it.fails("answers a suspended tenant exactly like an unknown tenant", async () => {
       const suspended = await call(endpoint, { tenantHeader: suspendedTenant, id: idOf(tenantA, endpoint) });
       const unknown = await call(endpoint, { tenantHeader: randomUUID(), id: idOf(tenantA, endpoint) });
