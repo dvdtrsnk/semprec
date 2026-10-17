@@ -7,7 +7,7 @@ export type TenantStatus = "provisioning" | "active" | "suspended" | "deleting";
 export const TENANT_STATUSES: readonly TenantStatus[] = ["provisioning", "active", "suspended", "deleting"];
 const USER_ROLES: readonly UserRole[] = ["admin", "member"];
 
-function isTenantStatus(value: unknown): value is TenantStatus {
+export function isTenantStatus(value: unknown): value is TenantStatus {
   return typeof value === "string" && (TENANT_STATUSES as readonly string[]).includes(value);
 }
 

@@ -365,6 +365,30 @@ describe("auth actions (issue #140)", () => {
       expect(await countRecentFailedAttempts(pool, unbound.email, "1.2.3.4", 3600)).toBe(1);
     });
 
+    it("issues the same number of queries on the pool for an unknown email, a wrong password and a suspended tenant", async () => {
+      const known = await makeUser("known@example.com");
+      const suspended = await suspendedUser();
+      const attempts = [
+        { email: "nobody@example.com", password: "s3cret-password" },
+        { email: known.email, password: "wrong-password" },
+        { email: suspended.email, password: "s3cret-password" },
+      ];
+
+      const counts: number[] = [];
+      for (const attempt of attempts) {
+        const querySpy = vi.spyOn(pool, "query");
+        try {
+          await expect(login(pool, { ...attempt, platform: "web", ip: "1.2.3.4" })).rejects.toThrow(UnauthorizedError);
+          counts.push(querySpy.mock.calls.length);
+        } finally {
+          querySpy.mockRestore();
+        }
+      }
+
+      expect(counts[0]).toBeGreaterThan(0);
+      expect(counts).toEqual([counts[0], counts[0], counts[0]]);
+    });
+
     it("refuses a login that reaches its session write while a suspension of the user is uncommitted", async () => {
       const admin = await createUser(pool, {
         email: "admin@example.com",
