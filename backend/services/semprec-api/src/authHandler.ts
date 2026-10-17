@@ -4,6 +4,7 @@ import {
   ChokePointError,
   ValidationError,
   UnauthorizedError,
+  PasswordResetTokenError,
   login,
   logout,
   verifySessionToken,
@@ -24,6 +25,7 @@ import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { assertUuid } from "./adapter/requestValidation.js";
 import { PayloadTooLargeError, readJsonBody, sendJson } from "./adapter/http.js";
 import { clientIpFromRequest } from "./clientIp.js";
+import { createClientIpThrottle, type ClientIpThrottle, type ThrottledAction } from "./clientIpThrottle.js";
 import { logger } from "./logger.js";
 
 /** Name of the cookie a web client's login response carries the session token in. */
@@ -109,6 +111,8 @@ export interface AuthRequestListenerOptions {
    * (see `clientIpFromRequest`). Only safe behind a proxy that appends that hop; defaults to `false`.
    */
   trustProxy?: boolean;
+  /** Per-client-address throttle for the public routes; defaults to one fresh limiter per listener. */
+  clientIpThrottle?: ClientIpThrottle;
 }
 
 /**
@@ -127,11 +131,28 @@ export interface AuthRequestListenerOptions {
  * other channel from the one its platform declared at login.
  */
 export function createAuthRequestListener(pool: Pool, options: AuthRequestListenerOptions) {
+  const clientIpThrottle = options.clientIpThrottle ?? createClientIpThrottle();
+
+  /** Answers 429 and returns true when `ip` is over the limit for `action`; callers return before reading the body. */
+  function refuseIfThrottled(res: ServerResponse, action: ThrottledAction, ip: string): boolean {
+    const retryAfter = clientIpThrottle.retryAfterSeconds(action, ip);
+    if (retryAfter === null) return false;
+    sendJson(
+      res,
+      429,
+      { error: "Too many attempts; try again later", code: "rate_limited" },
+      { "Retry-After": String(retryAfter) },
+    );
+    return true;
+  }
+
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
 
     try {
       if (req.method === "POST" && url.pathname === "/api/auth/login") {
+        const ip = clientIpFromRequest(req, { trustProxy: options.trustProxy ?? false });
+        if (refuseIfThrottled(res, "login", ip)) return;
         const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as {
           email?: unknown;
           password?: unknown;
@@ -148,17 +169,24 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
         }
 
         const userAgentHeader = req.headers["user-agent"];
-        const result = await login(pool, {
-          email: body.email,
-          password: body.password,
-          platform: body.platform,
-          // Throttle key (#635): the failure streak is scoped per (email, ip) and there is
-          // deliberately no per-email aggregate lock — that would let an attacker from any address
-          // lock the owner out everywhere. Per-address scoping only ever locks the attacker's own
-          // address, and Argon2id verification keeps distributed guessing expensive.
-          ip: clientIpFromRequest(req, { trustProxy: options.trustProxy ?? false }),
-          userAgent: typeof userAgentHeader === "string" ? userAgentHeader : null,
-        });
+        let result: Awaited<ReturnType<typeof login>>;
+        try {
+          result = await login(pool, {
+            email: body.email,
+            password: body.password,
+            platform: body.platform,
+            // Throttle key (#635): the failure streak is scoped per (email, ip) and there is
+            // deliberately no per-email aggregate lock — that would let an attacker from any address
+            // lock the owner out everywhere. Per-address scoping only ever locks the attacker's own
+            // address, and Argon2id verification keeps distributed guessing expensive.
+            ip,
+            userAgent: typeof userAgentHeader === "string" ? userAgentHeader : null,
+          });
+        } catch (err) {
+          // Only a failed credential check counts; infrastructure errors and validation do not.
+          if (err instanceof UnauthorizedError) clientIpThrottle.record("login", ip);
+          throw err;
+        }
 
         // Per #141: a browser must never see its token in a readable response body — only the
         // `httpOnly` cookie carries it. iOS/macOS get it back in the body for Keychain storage
@@ -177,11 +205,14 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
       }
 
       if (req.method === "POST" && url.pathname === "/api/auth/password-reset/request") {
+        const ip = clientIpFromRequest(req, { trustProxy: options.trustProxy ?? false });
+        if (refuseIfThrottled(res, "passwordResetRequest", ip)) return;
         const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as { email?: unknown };
         if (typeof body.email !== "string" || body.email.length === 0) {
           throw new ValidationError("'email' must be a non-empty string");
         }
 
+        clientIpThrottle.record("passwordResetRequest", ip);
         // Always 200 with the same body regardless of whether `email` matched an account —
         // issue #142's "request responses do not disclose whether an email exists".
         await requestPasswordReset(pool, options.passwordResetMailer, {
@@ -193,6 +224,8 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
       }
 
       if (req.method === "POST" && url.pathname === "/api/auth/password-reset/consume") {
+        const ip = clientIpFromRequest(req, { trustProxy: options.trustProxy ?? false });
+        if (refuseIfThrottled(res, "passwordResetConsume", ip)) return;
         const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as {
           token?: unknown;
           newPassword?: unknown;
@@ -204,9 +237,14 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
           throw new ValidationError("'newPassword' must be a non-empty string");
         }
 
-        await withTransaction(pool, (client) =>
-          resetPassword(client, { token: body.token as string, newPassword: body.newPassword as string }),
-        );
+        try {
+          await withTransaction(pool, (client) =>
+            resetPassword(client, { token: body.token as string, newPassword: body.newPassword as string }),
+          );
+        } catch (err) {
+          if (err instanceof PasswordResetTokenError) clientIpThrottle.record("passwordResetConsume", ip);
+          throw err;
+        }
         sendJson(res, 200, { ok: true });
         return;
       }

@@ -10,6 +10,7 @@ import { generateOpaqueToken, hashToken } from "../auth/token.js";
 import {
   PASSWORD_RESET_MAX_REQUESTS_PER_WINDOW,
   PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS,
+  PASSWORD_RESET_REQUEST_MIN_DURATION_MS,
   requestPasswordReset,
   resetPassword,
 } from "../auth/passwordResetActions.js";
@@ -82,6 +83,44 @@ describe("password reset actions (issue #142)", () => {
       ).resolves.toBeUndefined();
 
       expect(mailer.sent).toHaveLength(0);
+    });
+
+    describe("timing floor", () => {
+      async function elapsedMs(run: () => Promise<void>): Promise<number> {
+        const startedAt = performance.now();
+        await run();
+        return performance.now() - startedAt;
+      }
+
+      it("takes at least the minimum duration for an unknown email", async () => {
+        const elapsed = await elapsedMs(() =>
+          requestPasswordReset(pool, fakeMailer(), { email: "nobody@example.com", appBaseUrl: APP_BASE_URL }),
+        );
+        expect(elapsed).toBeGreaterThanOrEqual(PASSWORD_RESET_REQUEST_MIN_DURATION_MS - 5);
+      });
+
+      it("takes at least the minimum duration for an account at its token cap", async () => {
+        const user = await makeUser();
+        for (let i = 0; i < PASSWORD_RESET_MAX_REQUESTS_PER_WINDOW; i++) {
+          await requestPasswordReset(pool, fakeMailer(), { email: user.email, appBaseUrl: APP_BASE_URL });
+        }
+        const mailer = fakeMailer();
+        const elapsed = await elapsedMs(() =>
+          requestPasswordReset(pool, mailer, { email: user.email, appBaseUrl: APP_BASE_URL }),
+        );
+        expect(mailer.sent).toHaveLength(0);
+        expect(elapsed).toBeGreaterThanOrEqual(PASSWORD_RESET_REQUEST_MIN_DURATION_MS - 5);
+      });
+
+      it("takes at least the minimum duration when a token is issued", async () => {
+        const user = await makeUser();
+        const mailer = fakeMailer();
+        const elapsed = await elapsedMs(() =>
+          requestPasswordReset(pool, mailer, { email: user.email, appBaseUrl: APP_BASE_URL }),
+        );
+        expect(mailer.sent).toHaveLength(1);
+        expect(elapsed).toBeGreaterThanOrEqual(PASSWORD_RESET_REQUEST_MIN_DURATION_MS - 5);
+      });
     });
 
     it("normalizes the email the same way login does (trims and lowercases before lookup)", async () => {
