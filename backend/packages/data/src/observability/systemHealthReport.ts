@@ -3,7 +3,7 @@ import type { Queryable } from "../db/pool.js";
 import { TENANT_STATUSES } from "../tenancy/tenantsStore.js";
 import {
   FIXED_PROCESS_NAMES,
-  getExpectedProcessNames,
+  getActiveMailSyncProcessNames,
   PROCESS_HEARTBEAT_STALE_AFTER_MS,
 } from "../health/processHeartbeats.js";
 import { listAllMailAccountSyncStates } from "../mail/mailAccountSyncStateStore.js";
@@ -60,8 +60,9 @@ export interface SystemHealthReport {
 
 /**
  * One row per process in `expected`, joined against whatever `process_heartbeats` rows actually
- * exist. The caller decides the set: the tenant-visible report passes `getExpectedProcessNames`
- * (issue #168), the operator report passes the fixed list so mailbox rows never appear.
+ * exist. The caller decides the set: the per-tenant report passes the caller's mailbox processes
+ * (`getActiveMailSyncProcessNames`, issue #1052), the operator report passes the fixed list so
+ * mailbox rows never appear.
  */
 async function getProcessHealthStatuses(
   client: Queryable,
@@ -107,15 +108,13 @@ async function getProcessHealthStatuses(
 }
 
 /**
- * Every currently-`alerting` row of issue #169's `observability_checks` plus the alerting
- * `tenant_observability_checks` rows visible in the caller's scope (RLS) — the signal this report
- * treats as authoritative for "is a component degraded."
+ * The caller's alerting `tenant_observability_checks` rows (issue #169's per-tenant checks). The
+ * global `observability_checks` table is operator data and is left to the operator report.
  */
 async function getAlertingChecks(client: Queryable): Promise<AlertingCheck[]> {
   const { rows } = await client.query<{ check_key: string; detail: Record<string, unknown>; changed_at: Date }>(
-    `SELECT check_key, detail, changed_at FROM observability_checks WHERE status = 'alerting'
-     UNION ALL
-     SELECT check_key, detail, changed_at FROM tenant_observability_checks WHERE status = 'alerting'
+    `SELECT check_key, detail, changed_at FROM tenant_observability_checks
+     WHERE status = 'alerting' AND tenant_id = app_current_tenant()
      ORDER BY changed_at`,
   );
   return rows.map((row) => ({ checkKey: row.check_key, detail: row.detail, changedAt: row.changed_at.toISOString() }));
@@ -128,14 +127,23 @@ async function getAlertingChecks(client: Queryable): Promise<AlertingCheck[]> {
  * would call it overdue the instant any time at all has passed — true of nearly every ready job.
  * "Overdue" means stuck past its due time long enough that the worker fleet should have already
  * picked it up, not merely past due; this grace window separates the two.
+ *
+ * `tenantOnly` narrows the count to jobs whose queue envelope names the caller's tenant
+ * (`payload->>'tenantId'`, stamped by `enqueueJob`). The public `graphile_worker.jobs` view has no
+ * `payload` column, so that branch reads `graphile_worker._private_jobs`, the table the queue
+ * package's test helper `readJobPayloadsByIdentifier` also reads. The two literals below are the
+ * only SQL `tenantOnly` switches in; neither takes caller input.
  */
-async function getQueueHealthCounts(client: Queryable): Promise<QueueHealthCounts> {
+async function getQueueHealthCounts(client: Queryable, tenantOnly: boolean): Promise<QueueHealthCounts> {
+  const jobSource = tenantOnly
+    ? "graphile_worker._private_jobs WHERE payload->>'tenantId' = app_current_tenant()::text"
+    : "graphile_worker.jobs";
   const { rows } = await client.query<{ pending: string; overdue: string; permanent: string }>(
     `SELECT
        count(*) FILTER (WHERE locked_at IS NULL AND attempts < max_attempts) AS pending,
        count(*) FILTER (WHERE locked_at IS NULL AND attempts < max_attempts AND run_at < now() - interval '1 minute') AS overdue,
        count(*) FILTER (WHERE locked_at IS NULL AND attempts >= max_attempts) AS permanent
-     FROM graphile_worker.jobs`,
+     FROM ${jobSource}`,
   );
   const row = rows[0];
   return {
@@ -155,7 +163,7 @@ async function getItemAutomationErrorCounts(client: Queryable): Promise<ItemAuto
     `SELECT i.database_id, count(*) AS error_count
      FROM item_automation ia
      JOIN items i ON i.id = ia.item_id
-     WHERE ia.status = 'error'
+     WHERE ia.status = 'error' AND ia.tenant_id = app_current_tenant()
      GROUP BY i.database_id
      ORDER BY i.database_id`,
   );
@@ -164,7 +172,8 @@ async function getItemAutomationErrorCounts(client: Queryable): Promise<ItemAuto
 
 async function getAgentRunErrorCount7d(client: Queryable): Promise<number> {
   const { rows } = await client.query<{ count: string }>(
-    `SELECT count(*) AS count FROM agent_runs WHERE status = 'error' AND started_at >= now() - interval '7 days'`,
+    `SELECT count(*) AS count FROM agent_runs
+     WHERE status = 'error' AND started_at >= now() - interval '7 days' AND tenant_id = app_current_tenant()`,
   );
   return Number(rows[0]?.count ?? 0);
 }
@@ -181,18 +190,32 @@ function toMailboxHealthStatus(
 }
 
 /**
- * The read model behind issue #170's `GET /api/system-health`: a live snapshot of process
- * freshness/version/uptime, every currently-alerting `observability_checks` row (issue #169),
- * graphile-worker queue counts, `item_automation` errors per database, agent-run errors over the
- * last seven days, and per-mailbox sync activity/error — no samples persisted, computed fresh on
- * every request.
+ * Asserts that the caller runs inside a tenant scope. Every section below reads through the
+ * caller's `app.tenant_id`, so a missing scope is a wiring bug. It throws rather than returning a
+ * report that looks empty and healthy.
+ */
+async function assertTenantScope(client: Queryable): Promise<void> {
+  const { rows } = await client.query<{ tenant_id: string | null }>(`SELECT app_current_tenant()::text AS tenant_id`);
+  if (!rows[0]?.tenant_id) {
+    throw new Error("getSystemHealthReport requires an active tenant scope");
+  }
+}
+
+/**
+ * The per-tenant read model behind issue #170's `GET /api/system-health`, a snapshot of the
+ * caller's own tenant (issue #1052). It holds the freshness of the caller's mailbox processes,
+ * the caller's alerting tenant checks, the caller's queue jobs, the caller's `item_automation`
+ * errors per database, its agent-run errors over the last seven days, and per-mailbox sync
+ * activity/error. Operator-wide data is out of scope here; `getOperatorHealthReport` serves it.
+ * No samples are persisted, and the report is computed fresh on every request.
  */
 export async function getSystemHealthReport(client: Queryable): Promise<SystemHealthReport> {
+  await assertTenantScope(client);
   const [processes, alertingChecks, queue, itemAutomationErrorsByDatabase, agentRunErrors7d, mailAccounts] =
     await Promise.all([
-      getExpectedProcessNames(client).then((expected) => getProcessHealthStatuses(client, expected)),
+      getActiveMailSyncProcessNames(client).then((names) => getProcessHealthStatuses(client, names)),
       getAlertingChecks(client),
-      getQueueHealthCounts(client),
+      getQueueHealthCounts(client, true),
       getItemAutomationErrorCounts(client),
       getAgentRunErrorCount7d(client),
       listAllMailAccountSyncStates(client),
@@ -234,9 +257,8 @@ export interface OperatorHealthReport {
 }
 
 /**
- * Global `observability_checks` rows only. `getAlertingChecks` also unions the caller's
- * `tenant_observability_checks`, which would expose tenant rows while a single tenant is the only
- * tenant. The operator report never reads that table directly. Legacy per-mailbox `mail:<itemId>`
+ * Global `observability_checks` rows only. The operator report never reads
+ * `tenant_observability_checks`, the per-tenant table `getAlertingChecks` reads. Legacy per-mailbox `mail:<itemId>`
  * and `process:mailsync:<itemId>` rows, whose key carries a mailbox id and whose `detail` carries
  * its `lastError`, are excluded here: `handleObservabilityCheckSystemTask` purges them only on its
  * next tick, so they can still exist when this report is read.
@@ -296,7 +318,7 @@ export async function getOperatorHealthReport(client: Queryable): Promise<Operat
   const [processes, alertingChecks, queue, tenants, tenantAggregates] = await Promise.all([
     getProcessHealthStatuses(client, FIXED_PROCESS_NAMES),
     getGlobalAlertingChecks(client),
-    getQueueHealthCounts(client),
+    getQueueHealthCounts(client, false),
     getTenantStatusCounts(client),
     getOperatorTenantAggregates(client),
   ]);
