@@ -13,6 +13,7 @@ import {
   type AdminAuditAction,
 } from "../tenancy/accountsAdminStore.js";
 import { createUser } from "../auth/usersStore.js";
+import { transitionTenantStatus } from "../tenancy/tenantsStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { NotFoundError } from "../errors.js";
 import { createTestTenant } from "../testSupport/tenantFixtures.js";
@@ -278,5 +279,21 @@ describe("account mutations (issue #1041)", () => {
       run((c) => changeAccountRole(c, { actorUserId: admin.userId, targetUserId: unknown, role: "member" })),
     ).rejects.toBeInstanceOf(NotFoundError);
     expect(await auditActions()).toEqual([]);
+  });
+
+  it("transitions a tenant's status only from an allowed status, and answers NotFoundError for an unknown tenant", async () => {
+    const member = await makeAccount("member");
+    const unknown = "99999999-9999-9999-9999-999999999999";
+
+    await expect(
+      withTransaction(pool, (client) => transitionTenantStatus(client, unknown, ["active"], "suspended")),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    await expect(
+      withTransaction(pool, (client) => transitionTenantStatus(client, member.tenantId, ["suspended"], "active")),
+    ).rejects.toMatchObject({ status: 409, code: "invalid_account_status" });
+    const moved = await withTransaction(pool, (client) =>
+      transitionTenantStatus(client, member.tenantId, ["active"], "suspended"),
+    );
+    expect(moved).toMatchObject({ id: member.tenantId, status: "suspended" });
   });
 });

@@ -16,7 +16,7 @@ import { recordLoginAttempt, getFailureStreak } from "./loginAttemptsStore.js";
 import { normalizeEmail } from "./emailNormalization.js";
 import { lockoutDurationSeconds } from "./loginLockout.js";
 import type { SessionPlatform, SessionRow, UserRole, UserRow } from "./types.js";
-import { getSoleTenantId, getUserTenantBinding } from "../tenancy/tenantsStore.js";
+import { getSoleTenantId, getUserTenantBinding, lockUserTenantBinding } from "../tenancy/tenantsStore.js";
 import { revokePushSubscriptionsForSession } from "../push/pushSubscriptionsStore.js";
 
 /** How long a freshly-issued session stays valid without further activity. */
@@ -103,7 +103,9 @@ export interface LoginResult {
  * `UnauthorizedError` thrown right after it. Inside a caller-managed transaction that throw
  * would roll the row back, `getFailureStreak` would always read zero, and the lockout would
  * never engage. Only the success path — the new session row and the streak-resetting success
- * row — runs in one `withTransaction`, so those two still commit or roll back together.
+ * row — runs in one `withTransaction`, so those two still commit or roll back together. That
+ * transaction re-reads the tenant status through `lockUserTenantBinding`, so a session is never
+ * created for a tenant a concurrent suspension has already left non-active.
  */
 export async function login(pool: Pool, input: LoginInput): Promise<LoginResult> {
   const email = normalizeEmail(input.email);
@@ -118,16 +120,13 @@ export async function login(pool: Pool, input: LoginInput): Promise<LoginResult>
   }
 
   const user = await getUserByEmail(pool, email);
+  // Read for every known user before the password check, so a refusal for a non-active tenant runs
+  // the same queries as a wrong password and its timing does not confirm the password.
+  const binding = user ? await getUserTenantBinding(pool, user.id) : null;
   const passwordOk = await verifyPassword(user ? user.passwordHash : await dummyPasswordHash, input.password);
 
-  if (!user || !passwordOk) {
-    await recordLoginAttempt(pool, { email, ip: input.ip, succeeded: false });
-    throw new UnauthorizedError();
-  }
-
   // A user whose tenant is not active gets exactly the wrong-password outcome: no session, a failed attempt.
-  const binding = await getUserTenantBinding(pool, user.id);
-  if (!binding || binding.status !== "active") {
+  if (!user || !passwordOk || !binding || binding.status !== "active") {
     await recordLoginAttempt(pool, { email, ip: input.ip, succeeded: false });
     throw new UnauthorizedError();
   }
@@ -135,6 +134,10 @@ export async function login(pool: Pool, input: LoginInput): Promise<LoginResult>
   const { token, tokenHash } = generateOpaqueToken();
   const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000);
   const session = await withTransaction(pool, async (client) => {
+    // Re-checked under lock: a suspension that committed after the read above is seen here, and
+    // one that has not yet locked the user waits for this commit and then revokes this session.
+    const locked = await lockUserTenantBinding(client, user.id);
+    if (!locked || locked.status !== "active") return null;
     const created = await createSession(client, {
       userId: user.id,
       tokenHash,
@@ -145,6 +148,10 @@ export async function login(pool: Pool, input: LoginInput): Promise<LoginResult>
     await recordLoginAttempt(client, { email, ip: input.ip, succeeded: true });
     return created;
   });
+  if (!session) {
+    await recordLoginAttempt(pool, { email, ip: input.ip, succeeded: false });
+    throw new UnauthorizedError();
+  }
 
   return { token, session, user: toPublicUser(user) };
 }

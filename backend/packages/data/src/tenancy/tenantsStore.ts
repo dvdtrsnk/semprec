@@ -51,10 +51,39 @@ export async function getUserTenantBinding(
 }
 
 /**
+ * `getUserTenantBinding` for a caller about to write on the strength of the answer (a session,
+ * a reset token, a new password hash). It locks the user row `FOR KEY SHARE` and then the tenant
+ * row `FOR SHARE`, in the order the admin mutations lock them, so a concurrent `suspendAccount`
+ * either commits first and is seen here, or waits for the caller's transaction to commit and then
+ * revokes what it wrote (docs/adr/2026-10-17-admin-membership-and-tenant-status-writes.md).
+ */
+export async function lockUserTenantBinding(
+  client: PoolClient,
+  userId: string,
+): Promise<{ tenantId: string; status: TenantStatus; role: UserRole } | null> {
+  const user = await client.query<{ tenant_id: string | null; role: unknown }>(
+    "SELECT COALESCE(tenant_id, app_sole_tenant()) AS tenant_id, role FROM users WHERE id = $1 FOR KEY SHARE",
+    [userId],
+  );
+  const userRow = user.rows[0];
+  if (!userRow?.tenant_id) return null;
+  const tenant = await client.query<{ status: unknown }>("SELECT status FROM tenants WHERE id = $1 FOR SHARE", [
+    userRow.tenant_id,
+  ]);
+  const tenantRow = tenant.rows[0];
+  if (!tenantRow) return null;
+  if (!isTenantStatus(tenantRow.status)) throw new Error("Unknown value in column tenants.status");
+  if (!isUserRole(userRow.role)) throw new Error("Unknown value in column users.role");
+  return { tenantId: userRow.tenant_id, status: tenantRow.status, role: userRow.role };
+}
+
+/**
  * The only writer of `tenants.status` after provisioning: one conditional `UPDATE` moves the
  * tenant to `to` when its current status is in `from`. Runs on the caller's client, so the change
  * commits or rolls back with the caller's transaction. When no row matches, an existing tenant
- * answers 409 `invalid_account_status` and a missing one `NotFoundError`.
+ * answers 409 `invalid_account_status` and a missing one `NotFoundError`. The single-writer
+ * rule and the lock order its callers follow are recorded in
+ * docs/adr/2026-10-17-admin-membership-and-tenant-status-writes.md.
  */
 export async function transitionTenantStatus(
   client: PoolClient,

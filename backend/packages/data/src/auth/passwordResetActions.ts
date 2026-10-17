@@ -5,7 +5,7 @@ import { MIN_PASSWORD_LENGTH } from "./authActions.js";
 import { hashPassword } from "./passwordHash.js";
 import { generateOpaqueToken, hashToken } from "./token.js";
 import { getUserByEmail, updateUserPasswordHash } from "./usersStore.js";
-import { getUserTenantBinding } from "../tenancy/tenantsStore.js";
+import { lockUserTenantBinding } from "../tenancy/tenantsStore.js";
 import { revokeAllSessionsForUser } from "./sessionsStore.js";
 import { revokeAllPushSubscriptionsForUser } from "../push/pushSubscriptionsStore.js";
 import {
@@ -73,7 +73,7 @@ export async function requestPasswordReset(
     const user = await getUserByEmail(client, email);
     if (!user) return;
     // A user whose tenant is missing or not active takes the unknown-email path: no token, no mail.
-    const binding = await getUserTenantBinding(client, user.id);
+    const binding = await lockUserTenantBinding(client, user.id);
     if (!binding || binding.status !== "active") return;
 
     const recentCount = await countRecentPasswordResetTokens(client, user.id, PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS);
@@ -139,7 +139,7 @@ export async function resetPassword(client: PoolClient, input: ResetPasswordInpu
   }
 
   // A token issued before a suspension is refused; the caller's rollback leaves it unconsumed.
-  const binding = await getUserTenantBinding(client, consumed.userId);
+  const binding = await lockUserTenantBinding(client, consumed.userId);
   if (!binding || binding.status !== "active") throw new PasswordResetTokenError("invalid");
 
   const passwordHash = await hashPassword(input.newPassword);

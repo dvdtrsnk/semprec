@@ -114,7 +114,7 @@ export class LastAdminError extends ChokePointError {
 /**
  * Serializes every admin-membership mutation for the rest of the caller's transaction. Take it
  * before reading the target row, so the guard's count cannot go stale against a concurrent
- * mutation.
+ * mutation (docs/adr/2026-10-17-admin-membership-and-tenant-status-writes.md).
  */
 export async function lockAdminMembership(client: PoolClient): Promise<void> {
   await client.query("SELECT pg_advisory_xact_lock(hashtext('semprec_admin_membership'))");
