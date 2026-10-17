@@ -1,6 +1,6 @@
 import { assertKnownValue } from "../dbRowValidation.js";
 import type { Queryable } from "../db/pool.js";
-import type { TenantStatus } from "../tenancy/tenantsStore.js";
+import { TENANT_STATUSES } from "../tenancy/tenantsStore.js";
 import {
   FIXED_PROCESS_NAMES,
   getExpectedProcessNames,
@@ -233,16 +233,19 @@ export interface OperatorHealthReport {
   tenantAggregates: OperatorTenantAggregates;
 }
 
-const OPERATOR_TENANT_STATUSES: readonly TenantStatus[] = ["provisioning", "active", "suspended", "deleting"];
-
 /**
  * Global `observability_checks` rows only. `getAlertingChecks` also unions the caller's
  * `tenant_observability_checks`, which would expose tenant rows while a single tenant is the only
- * tenant. The operator report never reads that table directly.
+ * tenant. The operator report never reads that table directly. Legacy per-mailbox `mail:<itemId>`
+ * and `process:mailsync:<itemId>` rows, whose key carries a mailbox id and whose `detail` carries
+ * its `lastError`, are excluded here: `handleObservabilityCheckSystemTask` purges them only on its
+ * next tick, so they can still exist when this report is read.
  */
 async function getGlobalAlertingChecks(client: Queryable): Promise<AlertingCheck[]> {
   const { rows } = await client.query<{ check_key: string; detail: Record<string, unknown>; changed_at: Date }>(
-    `SELECT check_key, detail, changed_at FROM observability_checks WHERE status = 'alerting' ORDER BY changed_at`,
+    `SELECT check_key, detail, changed_at FROM observability_checks
+     WHERE status = 'alerting' AND check_key NOT LIKE 'mail:%' AND check_key NOT LIKE 'process:mailsync:%'
+     ORDER BY changed_at`,
   );
   return rows.map((row) => ({ checkKey: row.check_key, detail: row.detail, changedAt: row.changed_at.toISOString() }));
 }
@@ -254,7 +257,7 @@ async function getTenantStatusCounts(client: Queryable): Promise<TenantStatusCou
   );
   const counts: TenantStatusCounts = { provisioning: 0, active: 0, suspended: 0, deleting: 0 };
   for (const row of rows) {
-    const status = assertKnownValue(OPERATOR_TENANT_STATUSES, row.status, "tenants.status");
+    const status = assertKnownValue(TENANT_STATUSES, row.status, "tenants.status");
     counts[status] = Number(row.count);
   }
   return counts;
@@ -262,7 +265,9 @@ async function getTenantStatusCounts(client: Queryable): Promise<TenantStatusCou
 
 /**
  * The three cross-tenant counts, run as `semprec_router` behind `ops_health_counts()`
- * (migration 0075, docs/operations/database-roles.md). The function returns one row of numbers.
+ * (migration 0075, docs/operations/database-roles.md). The function always returns one row of
+ * numbers, so a missing row means the function or its grants are broken and is thrown rather than
+ * reported as zero errors.
  */
 async function getOperatorTenantAggregates(client: Queryable): Promise<OperatorTenantAggregates> {
   const { rows } = await client.query<{
@@ -271,17 +276,21 @@ async function getOperatorTenantAggregates(client: Queryable): Promise<OperatorT
     alerting_tenant_checks: string;
   }>(`SELECT agent_run_errors_7d, item_automation_errors, alerting_tenant_checks FROM ops_health_counts()`);
   const row = rows[0];
+  if (!row) {
+    throw new Error("ops_health_counts() returned no row");
+  }
   return {
-    agentRunErrors7d: Number(row?.agent_run_errors_7d ?? 0),
-    itemAutomationErrors: Number(row?.item_automation_errors ?? 0),
-    alertingTenantChecks: Number(row?.alerting_tenant_checks ?? 0),
+    agentRunErrors7d: Number(row.agent_run_errors_7d),
+    itemAutomationErrors: Number(row.item_automation_errors),
+    alertingTenantChecks: Number(row.alerting_tenant_checks),
   };
 }
 
 /**
  * The admin operations health report behind `GET /api/admin/health` (issue #1038). Processes are
  * the four fixed processes only, so no mailbox heartbeat row is reported. Every value is a count
- * or a global operator row, so no tenant id, item text or `lastError` reaches the response.
+ * or a global operator row (legacy per-mailbox rows excluded), so no tenant id, item text or
+ * `lastError` reaches the response.
  */
 export async function getOperatorHealthReport(client: Queryable): Promise<OperatorHealthReport> {
   const [processes, alertingChecks, queue, tenants, tenantAggregates] = await Promise.all([

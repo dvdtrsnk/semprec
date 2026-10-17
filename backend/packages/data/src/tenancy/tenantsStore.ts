@@ -3,7 +3,7 @@ import type { UserRole } from "../auth/types.js";
 
 export type TenantStatus = "provisioning" | "active" | "suspended" | "deleting";
 
-const TENANT_STATUSES: readonly TenantStatus[] = ["provisioning", "active", "suspended", "deleting"];
+export const TENANT_STATUSES: readonly TenantStatus[] = ["provisioning", "active", "suspended", "deleting"];
 const USER_ROLES: readonly UserRole[] = ["admin", "member"];
 
 function isTenantStatus(value: unknown): value is TenantStatus {
