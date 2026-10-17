@@ -1,7 +1,8 @@
 import { createECDH, randomBytes } from "node:crypto";
 import http, { type Server } from "node:http";
+import https from "node:https";
 import webpush from "web-push";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   OutboundAddressNotAllowedError,
   allowLoopbackOutboundForTests,
@@ -156,5 +157,18 @@ describe("sendWebPushNotification under the default policy (issue #1034)", () =>
   it("returns permanent-failure for an IP-literal endpoint", async () => {
     const result = await sendWebPushNotification(subscription("https://10.0.0.5/send/1"), payload, config);
     expect(result).toEqual({ outcome: "permanent-failure", error: expect.any(OutboundAddressNotAllowedError) });
+  });
+
+  it("keeps the decided outcome when tearing down the per-send pool fails", async () => {
+    const destroy = vi.spyOn(https.Agent.prototype, "destroy").mockImplementation(() => {
+      throw new Error("pool teardown failed");
+    });
+    try {
+      const result = await sendWebPushNotification(subscription("https://10.0.0.5/send/1"), payload, config);
+      expect(result).toEqual({ outcome: "permanent-failure", error: expect.any(OutboundAddressNotAllowedError) });
+      expect(destroy).toHaveBeenCalledTimes(1);
+    } finally {
+      destroy.mockRestore();
+    }
   });
 });
