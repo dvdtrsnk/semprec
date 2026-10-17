@@ -15,6 +15,7 @@ import {
   seedSystem,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
+import { createInFlightAgentRuns } from "../inFlightAgentRuns.js";
 import { createAgentRunTask, createRunAgentForHeartbeats } from "../agentRunTasks.js";
 import type { GatewayModel } from "../modelComposition.js";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
@@ -100,9 +101,9 @@ function seededAgentHeartbeat(): Promise<{ id: string; projectItemId: string }> 
 async function startRuntime(): Promise<void> {
   expect(currentTenantScope()).toBeUndefined();
   runtime = await createAgentsQueueRuntime(pool, registry, {
-    runAgent: createRunAgentForHeartbeats(pool, registry, fauxGateway),
-    agentRunTask: createAgentRunTask(pool, registry, fauxGateway),
-    delegatedAgentRunTask: createAgentRunTask(pool, registry, fauxGateway),
+    runAgent: createRunAgentForHeartbeats(pool, registry, fauxGateway, createInFlightAgentRuns()),
+    agentRunTask: createAgentRunTask(pool, registry, fauxGateway, createInFlightAgentRuns()),
+    delegatedAgentRunTask: createAgentRunTask(pool, registry, fauxGateway, createInFlightAgentRuns()),
   });
 }
 

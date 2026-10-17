@@ -4,7 +4,13 @@ import { createAgentRun, setAgentRunEventHook, type AgentRunRow } from "@semprec
 import { createTenantZeroUser, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { getTraceContext } from "@semprec/shared";
 import { publishRealtimeMessage } from "@semprec/realtime";
-import { pushRunStatus, runAgentSession, runAgentSessionForRun } from "../lifecycleAdapter.js";
+import {
+  AgentRunCancelledError,
+  pushRunStatus,
+  runAgentSession,
+  runAgentSessionForRun,
+  runAgentTurn,
+} from "../lifecycleAdapter.js";
 import type { AgentMessage, AgentSession, CreateAgentSession } from "../types.js";
 
 let pool: Pool;
@@ -360,5 +366,159 @@ describe("runAgentSessionForRun terminal close", () => {
     }
     expect(await rowStatus(run.id)).toBe("running");
     expect(await terminalEvents(run.id)).toEqual([]);
+  });
+});
+
+describe("runAgentTurn cancellation", () => {
+  interface HangingSession {
+    messages: AsyncIterable<AgentMessage>;
+    nextCalls: () => number;
+    returnCalls: () => number;
+  }
+
+  /** Yields `first`, then hangs on every later `next()` until the test ends; counts `next()` and `return()` calls. */
+  function hangingSession(first: AgentMessage[], options: { rejectReturn?: boolean } = {}): HangingSession {
+    let nextCalls = 0;
+    let returnCalls = 0;
+    const iterator: AsyncIterator<AgentMessage> = {
+      next() {
+        nextCalls += 1;
+        const message = first[nextCalls - 1];
+        if (message) return Promise.resolve({ done: false, value: message });
+        return new Promise<IteratorResult<AgentMessage>>(() => {});
+      },
+      return() {
+        returnCalls += 1;
+        if (options.rejectReturn) return Promise.reject(new Error("return failed"));
+        return Promise.resolve({ done: true, value: undefined });
+      },
+    };
+    return {
+      messages: { [Symbol.asyncIterator]: () => iterator },
+      nextCalls: () => nextCalls,
+      returnCalls: () => returnCalls,
+    };
+  }
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await createUser();
+  });
+
+  async function openRun(): Promise<AgentRunRow> {
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "cancel me" });
+    await pushRunStatus(pool, run.id, "running");
+    return run;
+  }
+
+  it("stops consuming the session and throws AgentRunCancelledError when the signal aborts while it waits", async () => {
+    const run = await openRun();
+    const session = hangingSession([{ kind: "turn_start" }]);
+    const controller = new AbortController();
+    const turn = runAgentTurn(
+      pool,
+      run.id,
+      session.messages,
+      (m) => {
+        // Later than the recording of this message, so the abort lands while `next()` hangs.
+        if (m.kind === "turn_start") setTimeout(() => controller.abort(), 50);
+      },
+      controller.signal,
+    );
+
+    await expect(turn).rejects.toThrow(AgentRunCancelledError);
+    await expect(turn).rejects.toThrow("account deactivated");
+    expect(session.nextCalls()).toBe(2);
+    expect(session.returnCalls()).toBe(1);
+  });
+
+  it("throws before consuming the first message when the signal is already aborted", async () => {
+    const run = await openRun();
+    const session = hangingSession([{ kind: "turn_start" }]);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(runAgentTurn(pool, run.id, session.messages, undefined, controller.signal)).rejects.toThrow(
+      AgentRunCancelledError,
+    );
+    expect(session.nextCalls()).toBe(0);
+    expect(session.returnCalls()).toBe(0);
+  });
+
+  it("stops before the next message when the signal aborts while a message is being recorded", async () => {
+    const run = await openRun();
+    const session = hangingSession([{ kind: "turn_start" }, { kind: "turn_end" }]);
+    const controller = new AbortController();
+
+    await expect(
+      runAgentTurn(pool, run.id, session.messages, () => controller.abort(), controller.signal),
+    ).rejects.toThrow(AgentRunCancelledError);
+    expect(session.nextCalls()).toBe(1);
+    expect(session.returnCalls()).toBe(1);
+  });
+
+  it("completes a turn whose signal never aborts and leaves no abort listener behind", async () => {
+    const run = await openRun();
+    const controller = new AbortController();
+
+    const last = await runAgentTurn(
+      pool,
+      run.id,
+      fakeSession([{ kind: "turn_start" }, { kind: "message", text: "fine" }, { kind: "turn_end" }])({
+        task: "t",
+      }).messages(),
+      undefined,
+      controller.signal,
+    );
+
+    expect(last).toEqual({ kind: "message", text: "fine" });
+    // A listener left registered would make this late abort resolve a promise nobody awaits; the
+    // observable contract is that the abort after completion changes nothing.
+    controller.abort();
+  });
+
+  it("rethrows the turn's own failure when the session's return() also fails", async () => {
+    const run = await openRun();
+    const session = hangingSession([{ kind: "turn_start" }], { rejectReturn: true });
+
+    await expect(
+      runAgentTurn(pool, run.id, session.messages, () => {
+        throw new Error("observer failed");
+      }),
+    ).rejects.toThrow("observer failed");
+    expect(session.returnCalls()).toBe(1);
+  });
+
+  it("closes the run as error with its notification and run_status event through runAgentSessionForRun", async () => {
+    const run = await openRun();
+    const session = hangingSession([{ kind: "turn_start" }]);
+    const controller = new AbortController();
+    const createAgentSession: CreateAgentSession = () => ({ messages: () => session.messages });
+
+    await expect(
+      runAgentSessionForRun(pool, run, {
+        createAgentSession,
+        signal: controller.signal,
+        onEvent: () => setTimeout(() => controller.abort(), 50),
+      }),
+    ).rejects.toThrow(AgentRunCancelledError);
+
+    const { rows: runs } = await pool.query<{ status: string }>("SELECT status FROM agent_runs WHERE id = $1", [
+      run.id,
+    ]);
+    expect(runs).toEqual([{ status: "error" }]);
+    const { rows: events } = await pool.query<{ status: string }>(
+      `SELECT payload->>'status' AS status FROM agent_run_events
+       WHERE agent_run_id = $1 AND kind = 'run_status' AND payload->>'status' <> 'running'`,
+      [run.id],
+    );
+    expect(events).toEqual([{ status: "error" }]);
+    const { rows: notifications } = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM notifications WHERE kind = 'agent_run_error' AND source_id = $1",
+      [run.id],
+    );
+    expect(notifications).toEqual([{ count: "1" }]);
+    expect(session.returnCalls()).toBe(1);
   });
 });

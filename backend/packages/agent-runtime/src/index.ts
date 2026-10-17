@@ -5,6 +5,7 @@ export {
   runAgentTurn,
   pushRunStatus,
   extractResultSnapshot,
+  AgentRunCancelledError,
   type RunAgentSessionInput,
 } from "./lifecycleAdapter.js";
 export { repairInterruptedRuns } from "./startupRepair.js";
