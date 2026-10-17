@@ -1225,6 +1225,101 @@ describe("createSyncServer doc sync tenancy (issue #1026)", () => {
   });
 });
 
+describe("createSyncServer closeTenant (issue #1042)", () => {
+  let runtimePool: Pool;
+  let tenantServer: SyncServer;
+  let tenantHttp: Server;
+  let port: number;
+  let identityByToken: Map<string, SyncIdentity>;
+  let tenantA: string;
+  let tenantB: string;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    tenantA = await createTestTenant(pool);
+    tenantB = await createTestTenant(pool);
+    identityByToken = new Map();
+    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    tenantServer = await createSyncServer(runtimePool, {
+      authenticate: async (req: IncomingMessage) => {
+        const token = new URL(req.url ?? "/", "http://localhost").searchParams.get("token");
+        return token ? (identityByToken.get(token) ?? null) : null;
+      },
+      revalidateSession: async () => true,
+      heartbeatIntervalMs: 30_000,
+    });
+    tenantHttp = createServer();
+    tenantHttp.on("upgrade", (req, socket, head) => tenantServer.handleUpgrade(req, socket, head));
+    await new Promise<void>((resolve) => tenantHttp.listen(0, resolve));
+    const address = tenantHttp.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    port = address.port;
+  });
+
+  afterEach(async () => {
+    await tenantServer.close();
+    await new Promise<void>((resolve) => tenantHttp.close(() => resolve()));
+    await runtimePool.end();
+  });
+
+  async function connectAs(token: string, tenantId: string): Promise<WebSocket> {
+    identityByToken.set(token, { tenantId, userId: randomUUID(), sessionId: randomUUID() });
+    const client = new WebSocket(`ws://127.0.0.1:${port}/api/sync?token=${token}`);
+    await waitForOpen(client);
+    return client;
+  }
+
+  function closeEvent(client: WebSocket): Promise<{ code: number; reason: string }> {
+    return new Promise((resolve) => {
+      client.once("close", (code: number, reason: Buffer) => resolve({ code, reason: reason.toString("utf8") }));
+    });
+  }
+
+  it("closes every socket of the tenant with 4401 'account deactivated' and leaves the other tenant's open", async () => {
+    const wsA1 = await connectAs("a1", tenantA);
+    const wsA2 = await connectAs("a2", tenantA);
+    const wsB1 = await connectAs("b1", tenantB);
+    const wsB2 = await connectAs("b2", tenantB);
+    try {
+      const closedB1 = closeEvent(wsB1);
+      const closedB2 = closeEvent(wsB2);
+      let aClosed = false;
+      wsA1.once("close", () => (aClosed = true));
+      wsA2.once("close", () => (aClosed = true));
+
+      tenantServer.closeTenant(tenantB);
+
+      expect(await closedB1).toEqual({ code: 4401, reason: "account deactivated" });
+      expect(await closedB2).toEqual({ code: 4401, reason: "account deactivated" });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(aClosed).toBe(false);
+      expect(wsA1.readyState).toBe(WebSocket.OPEN);
+      expect(wsA2.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      wsA1.close();
+      wsA2.close();
+    }
+  });
+
+  it("does nothing on a second call for the same tenant", async () => {
+    const wsA = await connectAs("a", tenantA);
+    const wsB = await connectAs("b", tenantB);
+    try {
+      const closedB = closeEvent(wsB);
+      tenantServer.closeTenant(tenantB);
+      expect((await closedB).code).toBe(4401);
+
+      tenantServer.closeTenant(tenantB);
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(wsA.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      wsA.close();
+    }
+  });
+});
+
 describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
   let tenantServer: SyncServer;
   let tenantHttp: Server;
@@ -2075,99 +2170,4 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
 
     expect(await closed).toBe(1013);
   }, 20_000);
-});
-
-describe("createSyncServer closeTenant (issue #1042)", () => {
-  let runtimePool: Pool;
-  let tenantServer: SyncServer;
-  let tenantHttp: Server;
-  let port: number;
-  let identityByToken: Map<string, SyncIdentity>;
-  let tenantA: string;
-  let tenantB: string;
-
-  beforeEach(async () => {
-    pool ??= getTestPool();
-    await resetDatabase(pool);
-    tenantA = await createTestTenant(pool);
-    tenantB = await createTestTenant(pool);
-    identityByToken = new Map();
-    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
-    tenantServer = await createSyncServer(runtimePool, {
-      authenticate: async (req: IncomingMessage) => {
-        const token = new URL(req.url ?? "/", "http://localhost").searchParams.get("token");
-        return token ? (identityByToken.get(token) ?? null) : null;
-      },
-      revalidateSession: async () => true,
-      heartbeatIntervalMs: 30_000,
-    });
-    tenantHttp = createServer();
-    tenantHttp.on("upgrade", (req, socket, head) => tenantServer.handleUpgrade(req, socket, head));
-    await new Promise<void>((resolve) => tenantHttp.listen(0, resolve));
-    const address = tenantHttp.address();
-    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
-    port = address.port;
-  });
-
-  afterEach(async () => {
-    await tenantServer.close();
-    await new Promise<void>((resolve) => tenantHttp.close(() => resolve()));
-    await runtimePool.end();
-  });
-
-  async function connectAs(token: string, tenantId: string): Promise<WebSocket> {
-    identityByToken.set(token, { tenantId, userId: randomUUID(), sessionId: randomUUID() });
-    const client = new WebSocket(`ws://127.0.0.1:${port}/api/sync?token=${token}`);
-    await waitForOpen(client);
-    return client;
-  }
-
-  function closeEvent(client: WebSocket): Promise<{ code: number; reason: string }> {
-    return new Promise((resolve) => {
-      client.once("close", (code: number, reason: Buffer) => resolve({ code, reason: reason.toString("utf8") }));
-    });
-  }
-
-  it("closes every socket of the tenant with 4401 'account deactivated' and leaves the other tenant's open", async () => {
-    const wsA1 = await connectAs("a1", tenantA);
-    const wsA2 = await connectAs("a2", tenantA);
-    const wsB1 = await connectAs("b1", tenantB);
-    const wsB2 = await connectAs("b2", tenantB);
-    try {
-      const closedB1 = closeEvent(wsB1);
-      const closedB2 = closeEvent(wsB2);
-      let aClosed = false;
-      wsA1.once("close", () => (aClosed = true));
-      wsA2.once("close", () => (aClosed = true));
-
-      tenantServer.closeTenant(tenantB);
-
-      expect(await closedB1).toEqual({ code: 4401, reason: "account deactivated" });
-      expect(await closedB2).toEqual({ code: 4401, reason: "account deactivated" });
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      expect(aClosed).toBe(false);
-      expect(wsA1.readyState).toBe(WebSocket.OPEN);
-      expect(wsA2.readyState).toBe(WebSocket.OPEN);
-    } finally {
-      wsA1.close();
-      wsA2.close();
-    }
-  });
-
-  it("does nothing on a second call for the same tenant", async () => {
-    const wsA = await connectAs("a", tenantA);
-    const wsB = await connectAs("b", tenantB);
-    try {
-      const closedB = closeEvent(wsB);
-      tenantServer.closeTenant(tenantB);
-      expect((await closedB).code).toBe(4401);
-
-      tenantServer.closeTenant(tenantB);
-
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      expect(wsA.readyState).toBe(WebSocket.OPEN);
-    } finally {
-      wsA.close();
-    }
-  });
 });

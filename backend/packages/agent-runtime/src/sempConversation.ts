@@ -131,8 +131,9 @@ export class SempConversation {
    * With no turn in flight, the wake run is closed as `error` ("account deactivated") and the entry
    * removed. With a turn in flight (`busy` or `waking`), the conversation is marked dropped and the
    * turn is not aborted: once it settles, its entry is discarded and its run closed as `error`
-   * instead of being kept. A call for a tenant with no conversation, or one already dropped, does
-   * nothing.
+   * instead of being kept. A TTL pause in progress also holds the entry `busy`; it closes the run as
+   * `done` and removes the entry itself. A call for a tenant with no conversation, or one already
+   * dropped, does nothing.
    */
   async dropTenant(tenantId: string): Promise<void> {
     const state = this.conversations.get(tenantId);

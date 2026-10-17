@@ -61,7 +61,8 @@ function instrumentConnect(pool: Pool): { pids: number[]; clients: PoolClient[];
     }
     return client;
   };
-  vi.spyOn(pool, "connect").mockImplementation(connect as Pool["connect"]);
+  // Viewed through its promise overload only: the listener never uses the callback form.
+  vi.spyOn(pool as unknown as { connect: () => Promise<PoolClient> }, "connect").mockImplementation(connect);
   return { pids, clients, steps };
 }
 
@@ -205,10 +206,7 @@ describe("tenant deactivation signal (issue #1042)", () => {
     gate.resolve();
 
     await vi.waitFor(() => expect(calls).toEqual([b.tenantId]));
-    expect(errorSpy).toHaveBeenCalledWith(
-      { errorName: "Error" },
-      "Tenant deactivation LISTEN reconnect failed",
-    );
+    expect(errorSpy).toHaveBeenCalledWith({ errorName: "Error" }, "Tenant deactivation LISTEN reconnect failed");
     expect(await isBackendAlive(firstPid)).toBe(false);
   });
 
