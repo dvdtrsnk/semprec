@@ -423,4 +423,61 @@ done
 
 grep -qx 'TimeoutStopSec=960' "$TEST_ROOT/systemd/system/semprec-transcribe.service"
 
+# Service sandboxing (issue #1071): the baseline, the omitted directives and the
+# writable paths of each unit are pinned here so that dropping one fails the test.
+sandboxed_units=(
+  semprec-api.service
+  semprec-agents.service
+  semprec-transcribe.service
+  semprec-ai-gateway.service
+  semprec-dead-man.service
+  semprec-failping@.service
+  semprec-trash-purge.service
+)
+sandbox_baseline=(
+  'NoNewPrivileges=yes'
+  'ProtectSystem=strict'
+  'ProtectHome=yes'
+  'PrivateTmp=yes'
+  'PrivateDevices=yes'
+  'ProtectKernelTunables=yes'
+  'ProtectKernelModules=yes'
+  'ProtectKernelLogs=yes'
+  'ProtectControlGroups=yes'
+  'ProtectClock=yes'
+  'ProtectHostname=yes'
+  'ProtectProc=invisible'
+  'RestrictNamespaces=yes'
+  'RestrictRealtime=yes'
+  'RestrictSUIDSGID=yes'
+  'LockPersonality=yes'
+  'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK'
+  'SystemCallArchitectures=native'
+  'SystemCallFilter=@system-service'
+  'SystemCallErrorNumber=EPERM'
+  'CapabilityBoundingSet='
+  'AmbientCapabilities='
+  'UMask=0027'
+)
+for unit in "${sandboxed_units[@]}"; do
+  unit_file="$TEST_ROOT/systemd/system/$unit"
+  for directive in "${sandbox_baseline[@]}"; do
+    grep -qx -- "$directive" "$unit_file"
+  done
+  if grep -Eq '^(MemoryDenyWriteExecute|ProcSubset|PrivateUsers)=' "$unit_file"; then
+    echo "$unit sets a directive that must stay absent" >&2
+    exit 1
+  fi
+done
+grep -qx 'ReadWritePaths=/opt/semprec/data/files /opt/semprec/data/mail-attachments' \
+  "$TEST_ROOT/systemd/system/semprec-api.service"
+grep -qx 'ReadWritePaths=/opt/semprec/data/files' \
+  "$TEST_ROOT/systemd/system/semprec-transcribe.service"
+for unit in semprec-agents.service semprec-ai-gateway.service semprec-dead-man.service semprec-failping@.service semprec-trash-purge.service; do
+  if grep -q '^ReadWritePaths=' "$TEST_ROOT/systemd/system/$unit"; then
+    echo "$unit must not have ReadWritePaths" >&2
+    exit 1
+  fi
+done
+
 echo 'provision.sh idempotence test passed'

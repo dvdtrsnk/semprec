@@ -398,3 +398,44 @@ sudo -u semprec-mcp cat /opt/semprec/shared/apns-key.p8             # fails (per
 sudo -u semprec-mcp timeout 5 bash -c '</dev/tcp/127.0.0.1/5432'    # fails immediately
 journalctl -k | grep semprec-mcp-egress-deny                        # shows the denial
 ```
+
+## Service sandboxing
+
+The seven `semprec` units (`semprec-api`, `semprec-agents`, `semprec-transcribe`,
+`semprec-ai-gateway`, `semprec-dead-man`, `semprec-failping@` and `semprec-trash-purge`) share one
+`[Service]` baseline (issue #1071): `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ProtectHome=yes`,
+`PrivateTmp=yes`, `PrivateDevices=yes`, the `Protect*` kernel and cgroup switches,
+`ProtectProc=invisible`, `RestrictNamespaces=yes`, `RestrictRealtime=yes`, `RestrictSUIDSGID=yes`,
+`LockPersonality=yes`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`,
+`SystemCallArchitectures=native`, `SystemCallFilter=@system-service`, `SystemCallErrorNumber=EPERM`,
+empty `CapabilityBoundingSet=` and `AmbientCapabilities=`, and `UMask=0027`. The baseline is the
+exact set of directives asserted in `deploy/provision.test.sh`.
+
+Write access is granted only where a unit writes blobs:
+
+- `semprec-api.service`: `ReadWritePaths=/opt/semprec/data/files /opt/semprec/data/mail-attachments`.
+- `semprec-transcribe.service`: `ReadWritePaths=/opt/semprec/data/files`.
+
+Those paths must equal `FILES_STORAGE_DIR` and `MAIL_ATTACHMENTS_DIR` in
+`/opt/semprec/shared/env/settings.env`. Changing either variable requires changing the unit. The
+directories are created by `provision.sh`, so the lines carry no `-` prefix. The other five units have
+no `ReadWritePaths=`, and `semprec-agents` and `semprec-ai-gateway` write no files.
+
+Three directives are deliberately absent:
+
+- `MemoryDenyWriteExecute=`: V8's JIT needs writable-executable pages.
+- `ProcSubset=pid`: it hides `/proc/cpuinfo` and `/proc/meminfo`, which Node's `os` module reads.
+- `PrivateUsers=`: it remaps the uid and gid namespace that the services' ownership checks depend on.
+
+The root units `semprec-backup.service` and `semprec-restore-test.service` (Docker and restic) and
+`semprec-mcp-launch@.service` (sandboxed by #1070) are not changed here.
+
+Host check after provisioning, as the maintainer, at the first deploy after this change:
+
+```sh
+systemd-analyze security semprec-api.service        # repeat for each unit; none reports UNSAFE
+./deploy/deploy.sh                                   # every version is reported
+# upload and download a file in the web client; both succeed
+# run a transcription job to completion (ffmpeg runs under the filter)
+# connect an admin's stdio MCP server through the launcher and call a tool
+```
