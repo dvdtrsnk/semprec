@@ -1,6 +1,6 @@
-import { createServer, type Server } from "node:http";
+import { createServer, request as httpRequest, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import pg, { type Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createUser, hashPassword, LOCKOUT_THRESHOLD, type PasswordResetMailer, type UserRow } from "@semprec/data";
 import { createAuthRequestListener, SESSION_COOKIE_NAME } from "../authHandler.js";
@@ -635,24 +635,28 @@ describe("createAuthRequestListener", () => {
   describe("per-address throttle (issue #1073)", () => {
     let throttledServer: Server;
     let throttledUrl: string;
+    let onThrottledArrival: () => void;
     const ADDRESS = "203.0.113.9";
     const OTHER_ADDRESS = "198.51.100.4";
 
     beforeEach(async () => {
-      throttledServer = createServer(
-        createAuthRequestListener(pool, {
-          passwordResetMailer: mailer,
-          appBaseUrl: APP_BASE_URL,
-          trustProxy: true,
-          clientIpThrottle: createClientIpThrottle({
-            limits: {
-              login: { maxEvents: 3, windowSeconds: 900 },
-              passwordResetRequest: { maxEvents: 2, windowSeconds: 3600 },
-              passwordResetConsume: { maxEvents: 2, windowSeconds: 3600 },
-            },
-          }),
+      onThrottledArrival = () => {};
+      const listener = createAuthRequestListener(pool, {
+        passwordResetMailer: mailer,
+        appBaseUrl: APP_BASE_URL,
+        trustProxy: true,
+        clientIpThrottle: createClientIpThrottle({
+          limits: {
+            login: { maxEvents: 3, windowSeconds: 900 },
+            passwordResetRequest: { maxEvents: 2, windowSeconds: 3600 },
+            passwordResetConsume: { maxEvents: 2, windowSeconds: 3600 },
+          },
         }),
-      );
+      });
+      throttledServer = createServer((req, res) => {
+        onThrottledArrival();
+        listener(req, res);
+      });
       await new Promise<void>((resolve) => throttledServer.listen(0, resolve));
       const address = throttledServer.address();
       if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
@@ -697,6 +701,117 @@ describe("createAuthRequestListener", () => {
       expect((await login(OTHER_ADDRESS, user.email, PASSWORD)).status).toBe(200);
     });
 
+    it("lets at most the login limit of a concurrent burst of failed logins from one address reach the credential check", async () => {
+      const statuses = await Promise.all(
+        Array.from({ length: 8 }, (_, i) =>
+          post("/api/auth/login", ADDRESS, { email: `burst-${i}@example.com`, password: "wrong", platform: "web" }),
+        ).map(async (pending) => (await pending).status),
+      );
+
+      expect(statuses.filter((status) => status === 401)).toHaveLength(3);
+      expect(statuses.filter((status) => status === 429)).toHaveLength(5);
+      const attempts = await pool.query<{ count: string }>("SELECT count(*) FROM login_attempts");
+      expect(Number(attempts.rows[0]!.count)).toBe(3);
+    });
+
+    it("answers a throttled login with 429 before reading an oversized body", async () => {
+      for (let i = 0; i < 3; i++) {
+        const failed = await post("/api/auth/login", ADDRESS, {
+          email: `stuffing-${i}@example.com`,
+          password: "wrong",
+          platform: "web",
+        });
+        expect(failed.status).toBe(401);
+      }
+
+      await expectRateLimited(
+        await post("/api/auth/login", ADDRESS, {
+          email: "x@example.com",
+          password: "p".repeat(128 * 1024),
+          platform: "web",
+        }),
+      );
+      const oversizedElsewhere = await post("/api/auth/login", OTHER_ADDRESS, {
+        email: "x@example.com",
+        password: "p".repeat(128 * 1024),
+        platform: "web",
+      });
+      expect(oversizedElsewhere.status).toBe(413);
+    });
+
+    it("does not count a login that failed for a reason other than its credentials", async () => {
+      // A pool whose connections are refused makes `login` throw an infrastructure error, not UnauthorizedError.
+      const unreachablePool = new pg.Pool({ host: "127.0.0.1", port: 1, connectionTimeoutMillis: 1000 });
+      const throttle = createClientIpThrottle({ limits: { login: { maxEvents: 1, windowSeconds: 900 } } });
+      const brokenServer = createServer(
+        createAuthRequestListener(unreachablePool, {
+          passwordResetMailer: mailer,
+          appBaseUrl: APP_BASE_URL,
+          trustProxy: true,
+          clientIpThrottle: throttle,
+        }),
+      );
+      try {
+        await new Promise<void>((resolve) => brokenServer.listen(0, resolve));
+        const address = brokenServer.address();
+        if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+        for (let i = 0; i < 3; i++) {
+          const res = await fetch(`http://127.0.0.1:${address.port}/api/auth/login`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Forwarded-For": ADDRESS },
+            body: JSON.stringify({ email: "person@example.com", password: "wrong", platform: "web" }),
+          });
+          expect(res.status).toBe(500);
+        }
+        expect(throttle.retryAfterSeconds("login", ADDRESS)).toBeNull();
+      } finally {
+        await new Promise<void>((resolve) => brokenServer.close(() => resolve()));
+        await unreachablePool.end();
+      }
+    });
+
+    it("lets at most the reset-request limit of a concurrent burst from one address through, even with slow bodies", async () => {
+      const user = await makeUser();
+      const burst = 5;
+      // Every request's headers reach the handler first; the bodies are held back until all have
+      // arrived, so each request is past the throttle check before any body has been read.
+      let arrived = 0;
+      let allArrived!: () => void;
+      const allArrivedPromise = new Promise<void>((resolve) => (allArrived = resolve));
+      onThrottledArrival = () => {
+        if (++arrived === burst) allArrived();
+      };
+      const payload = JSON.stringify({ email: user.email });
+      const statuses = await Promise.all(
+        Array.from(
+          { length: burst },
+          () =>
+            new Promise<number>((resolve, reject) => {
+              const req = httpRequest(`${throttledUrl}/api/auth/password-reset/request`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "Content-Length": String(Buffer.byteLength(payload)),
+                  "X-Forwarded-For": ADDRESS,
+                },
+              });
+              req.on("response", (res) => {
+                res.resume();
+                resolve(res.statusCode ?? 0);
+              });
+              req.on("error", reject);
+              req.flushHeaders();
+              void allArrivedPromise.then(() => req.end(payload));
+            }),
+        ),
+      );
+
+      expect(statuses.filter((status) => status === 200)).toHaveLength(2);
+      expect(statuses.filter((status) => status === 429)).toHaveLength(3);
+      const tokens = await pool.query<{ count: string }>("SELECT count(*) FROM password_reset_tokens");
+      expect(Number(tokens.rows[0]!.count)).toBe(2);
+    });
+
     it("refuses a password-reset request past the limit without creating a token, and answers alike below it", async () => {
       const user = await makeUser();
       const requestReset = (email: unknown): Promise<Response> =>
@@ -717,6 +832,20 @@ describe("createAuthRequestListener", () => {
 
       const otherAddress = await post("/api/auth/password-reset/request", OTHER_ADDRESS, { email: user.email });
       expect(otherAddress.status).toBe(200);
+    });
+
+    it("lets at most the consume limit of a concurrent burst of token guesses from one address reach the token check", async () => {
+      const statuses = await Promise.all(
+        Array.from({ length: 6 }, (_, i) =>
+          post("/api/auth/password-reset/consume", ADDRESS, {
+            token: `not-a-token-${i}`,
+            newPassword: "a-brand-new-password",
+          }),
+        ).map(async (pending) => (await pending).status),
+      );
+
+      expect(statuses.filter((status) => status === 400)).toHaveLength(2);
+      expect(statuses.filter((status) => status === 429)).toHaveLength(4);
     });
 
     it("refuses consuming from an address after its invalid-token attempts, without consuming a valid token", async () => {
