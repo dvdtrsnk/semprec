@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import { requireAffectedRows, type Queryable } from "../db/pool.js";
 import type { ItemUpdateHook } from "../chokePoint/hooks.js";
+import { visibleDatabaseIds } from "../chokePoint/itemsStore.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { FLAGGED_PROPERTY_KEY, READ_PROPERTY_KEY, type WritableImapFlag } from "./messageFlags.js";
 
@@ -130,6 +131,7 @@ export async function listPendingImapFlagWrites(
       AND (email_folder.item_a = state.message_item_id OR email_folder.item_b = state.message_item_id)
      JOIN items folder
        ON folder.id = CASE WHEN email_folder.item_a = state.message_item_id THEN email_folder.item_b ELSE email_folder.item_a END
+      AND folder.database_id = ANY($4::uuid[])
      JOIN item_relations mailbox_folder
        ON mailbox_folder.relation_definition_id = $2
       AND (mailbox_folder.item_a = folder.id OR mailbox_folder.item_b = folder.id)
@@ -139,7 +141,12 @@ export async function listPendingImapFlagWrites(
        AND email_folder.metadata ->> 'uid' ~ '^[0-9]+$'
        AND folder.properties ->> 'providerId' IS NOT NULL
      ORDER BY state.message_item_id, state.property_key, folder.id`,
-    [input.folderRelationDefinitionId, input.mailboxFolderRelationDefinitionId, input.mailboxItemId],
+    [
+      input.folderRelationDefinitionId,
+      input.mailboxFolderRelationDefinitionId,
+      input.mailboxItemId,
+      await visibleDatabaseIds(client),
+    ],
   );
   return rows.flatMap((row) => {
     if (!isMailMessageFlagKey(row.property_key)) return [];

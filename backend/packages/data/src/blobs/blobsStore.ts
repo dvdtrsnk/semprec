@@ -1,3 +1,4 @@
+import { visibleDatabaseIds } from "../chokePoint/itemsStore.js";
 import type { Queryable } from "../db/pool.js";
 import { requireSingleRow } from "../db/pool.js";
 import type { BlobRow } from "../types.js";
@@ -116,15 +117,19 @@ export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput
  * blob is still referenced or already absent.
  */
 export async function deleteBlobIfUnreferenced(client: Queryable, id: string): Promise<string | null> {
-  // `@>` rather than `->> =` so the lookup can use `items_props_gin` (jsonb_path_ops).
+  // `@>` rather than `->> =` so the lookup can use `items_props_gin` (jsonb_path_ops). The
+  // `database_id` bind prunes the reference lookup to the visible partitions; it does not change
+  // which rows count as references, since every item in those databases is still considered.
   const { rows } = await client.query<{ storage_key: string }>(
     `DELETE FROM blobs WHERE id = $1
        AND NOT EXISTS (
-         SELECT 1 FROM items WHERE properties @> jsonb_build_object('file', jsonb_build_object('blobId', $2::text))
+         SELECT 1 FROM items
+         WHERE database_id = ANY($3::uuid[])
+           AND properties @> jsonb_build_object('file', jsonb_build_object('blobId', $2::text))
        )
        AND NOT EXISTS (SELECT 1 FROM mail_attachments WHERE blob_id = $1)
      RETURNING storage_key`,
-    [id, id],
+    [id, id, await visibleDatabaseIds(client)],
   );
   return rows[0]?.storage_key ?? null;
 }

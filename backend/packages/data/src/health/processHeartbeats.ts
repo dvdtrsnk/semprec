@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 import { runAsSystem } from "@semprec/shared";
+import { visibleDatabaseIds } from "../chokePoint/itemsStore.js";
 import type { Queryable } from "../db/pool.js";
 
 /** How often a running process re-UPSERTs its own identity row (issue #168's Task). */
@@ -105,7 +106,10 @@ export function startProcessHeartbeat(
  */
 export async function getActiveMailSyncProcessNames(client: Queryable): Promise<string[]> {
   const result = await client.query<{ item_id: string }>(
-    "SELECT s.item_id FROM mail_account_sync_state s JOIN items i ON i.id = s.item_id WHERE i.deleted_at IS NULL",
+    `SELECT s.item_id FROM mail_account_sync_state s
+     JOIN items i ON i.id = s.item_id AND i.database_id = ANY($1::uuid[])
+     WHERE i.deleted_at IS NULL`,
+    [await visibleDatabaseIds(client)],
   );
   return result.rows.map((row) => mailSyncProcessName(row.item_id));
 }

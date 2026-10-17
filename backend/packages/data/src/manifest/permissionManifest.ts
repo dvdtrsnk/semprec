@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { CAPABILITY_IDS, type CapabilityId } from "@semprec/shared";
+import { visibleDatabaseIds } from "../chokePoint/itemsStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { heartbeatRuleSchema, type HeartbeatRule } from "../scheduler/rule.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
@@ -158,8 +159,8 @@ export async function generatePermissionManifest(
   }));
 
   const { rows: projectRows } = await client.query<{ properties: Record<string, unknown> }>(
-    `SELECT properties FROM items WHERE id = $1`,
-    [projectItemId],
+    `SELECT properties FROM items WHERE id = $1 AND database_id = ANY($2::uuid[])`,
+    [projectItemId, await visibleDatabaseIds(client)],
   );
   const projectProperties = projectRows[0]?.properties ?? {};
   const capabilities: ManifestCapabilities = {

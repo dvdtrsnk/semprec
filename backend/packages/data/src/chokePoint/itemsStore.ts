@@ -29,7 +29,7 @@ function mapItemRow(row: ItemDbRow): ItemRow {
  * exactly the current tenant's databases, archived ones included. Bound as an array parameter it
  * lets the planner prune `items` partitions, which a `= ANY(ARRAY(SELECT ...))` sub-plan does not.
  */
-async function visibleDatabaseIds(client: Queryable): Promise<string[]> {
+export async function visibleDatabaseIds(client: Queryable): Promise<string[]> {
   const { rows } = await client.query<{ ids: string[] }>(`SELECT coalesce(array_agg(id), '{}') AS ids FROM databases`);
   return requireSingleRow(rows, "visible databases").ids;
 }
