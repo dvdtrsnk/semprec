@@ -33,6 +33,8 @@ sed -i "s|readonly CADDY_UNIT_DROPIN_DIR=/etc/systemd/system/caddy.service.d|rea
   "$TEST_DEPLOY/provision.sh"
 sed -i "s|readonly NFTABLES_CONFIG=/etc/nftables.conf|readonly NFTABLES_CONFIG=$TEST_ROOT/nftables.conf|" \
   "$TEST_DEPLOY/provision.sh"
+sed -i "s|readonly MCP_LAUNCHER_PATH=/usr/local/libexec/semprec-mcp-launch|readonly MCP_LAUNCHER_PATH=$TEST_ROOT/libexec/semprec-mcp-launch|" \
+  "$TEST_DEPLOY/provision.sh"
 sed -i "s|readonly APT_KEYRING_DIR=/etc/apt/keyrings|readonly APT_KEYRING_DIR=$TEST_ROOT/keyrings|" \
   "$TEST_DEPLOY/provision.sh"
 sed -i "s|readonly APT_SOURCES_DIR=/etc/apt/sources.list.d|readonly APT_SOURCES_DIR=$TEST_ROOT/sources|" \
@@ -50,8 +52,8 @@ write_mock() {
 }
 
 write_mock id 'if [[ "${1:-}" == "-u" ]]; then echo 0; fi'
-write_mock getent '[[ "${1:-}" == "passwd" && "${2:-}" == "semprec" && -f "$TEST_STATE/semprec-user" ]]'
-write_mock useradd 'touch "$TEST_STATE/semprec-user"; echo useradd >> "$TEST_STATE/commands"'
+write_mock getent '[[ "${1:-}" == "passwd" && -n "${2:-}" && -f "$TEST_STATE/user-$2" ]]'
+write_mock useradd 'touch "$TEST_STATE/user-${*: -1}"; echo "useradd $*" >> "$TEST_STATE/commands"'
 write_mock apt-get 'echo "apt-get $*" >> "$TEST_STATE/commands"'
 write_mock curl 'printf key'
 write_mock gpg 'cat > /dev/null; while [[ "$#" -gt 0 ]]; do if [[ "$1" == "--output" ]]; then printf key > "$2"; exit 0; fi; shift; done; exit 1'
@@ -113,7 +115,33 @@ for group in "${GROUPS_UNDER_TEST[@]}"; do
   cmp "$TEST_DEPLOY/shared/env/$group.env.example" "$TEST_ROOT/opt/semprec/shared/env/$group.env"
 done
 test ! -e "$TEST_ROOT/opt/semprec/shared/.env"
-test -f "$TEST_STATE/semprec-user"
+test -f "$TEST_STATE/user-semprec"
+test -f "$TEST_STATE/user-semprec-mcp"
+# The sandbox uid has its own group and no supplementary groups, so it is not in `semprec`.
+grep -qx 'useradd --system --user-group --home-dir /var/lib/semprec-mcp --no-create-home --shell /usr/sbin/nologin semprec-mcp' "$TEST_STATE/commands"
+if grep -E '^useradd .*semprec-mcp$' "$TEST_STATE/commands" | grep -Eq -- ' (-G|--groups)'; then
+  echo 'semprec-mcp was given supplementary groups' >&2
+  exit 1
+fi
+mcp_useradd_line="$(grep -m 1 -n '^useradd .*semprec-mcp$' "$TEST_STATE/commands" | cut -d: -f1)"
+nft_check_line="$(grep -m 1 -n '^nft -c ' "$TEST_STATE/commands" | cut -d: -f1)"
+test -n "$nft_check_line"
+test "$mcp_useradd_line" -lt "$nft_check_line"
+test -f "$TEST_ROOT/systemd/system/semprec-mcp-launch.socket"
+test -f "$TEST_ROOT/systemd/system/semprec-mcp-launch@.service"
+grep -Eq "^systemd-analyze verify .*/semprec-mcp-launch\.socket( |\$)" "$TEST_STATE/commands"
+grep -Eq "^systemd-analyze verify .*/semprec-mcp-launch@\.service( |\$)" "$TEST_STATE/commands"
+grep -qx 'systemctl enable --now semprec-mcp-launch.socket' "$TEST_STATE/commands"
+test -f "$TEST_ROOT/libexec/semprec-mcp-launch"
+test "$(stat -c %a "$TEST_ROOT/libexec/semprec-mcp-launch")" -eq 755
+cmp "$TEST_DEPLOY/bin/semprec-mcp-launch" "$TEST_ROOT/libexec/semprec-mcp-launch"
+grep -qx "install -o root -g root -m 0755 $TEST_DEPLOY/bin/semprec-mcp-launch $TEST_ROOT/libexec/semprec-mcp-launch" "$TEST_STATE/commands"
+grep -Eq '^apt-get install .* jq( |$)' "$TEST_STATE/commands"
+for unit in semprec-api semprec-agents; do
+  grep -qx 'Environment=SEMPREC_MCP_LAUNCH_SOCKET=/run/semprec-mcp-launch.sock' "$TEST_ROOT/systemd/system/$unit.service"
+  grep -Eqx 'Wants=.*semprec-mcp-launch\.socket( .*)?' "$TEST_ROOT/systemd/system/$unit.service"
+  grep -Eqx 'After=.*semprec-mcp-launch\.socket( .*)?' "$TEST_ROOT/systemd/system/$unit.service"
+done
 test -f "$TEST_ROOT/systemd/system/semprec-api.service"
 test -f "$TEST_ROOT/systemd/system/semprec-ai-gateway.service"
 test -f "$TEST_ROOT/systemd/system/semprec-transcribe.service"
@@ -200,7 +228,8 @@ first_run_commands="$(wc -l < "$TEST_STATE/commands")"
 run_provision
 tail -n +"$((first_run_commands + 1))" "$TEST_STATE/commands" > "$TEST_STATE/second-run-commands"
 
-test "$(grep -c '^useradd$' "$TEST_STATE/commands")" -eq 1
+test "$(grep -c '^useradd .* semprec$' "$TEST_STATE/commands")" -eq 1
+test "$(grep -c '^useradd .* semprec-mcp$' "$TEST_STATE/commands")" -eq 1
 grep -qx 'OPERATOR_CONFIGURED_SECRET=preserved' "$TEST_ROOT/opt/semprec/shared/env/settings.env"
 test "$(sha256sum "$TEST_ROOT/opt/semprec/shared/env/settings.env")" = "$settings_env_before"
 # A missing group file is installed from its template without touching the others.
@@ -287,6 +316,21 @@ grep -qx 'meta l4proto tcp ct original ip daddr 127.0.0.1 ct original proto-dst 
 grep -qx 'ip daddr @semprec_blocked_v4 reject with icmpx type admin-prohibited' <<<"$egress_rules"
 grep -qx 'ip6 daddr @semprec_blocked_v6 reject with icmpx type admin-prohibited' <<<"$egress_rules"
 test "$(grep -c 'semprec-egress-deny ' <<<"$egress_rules")" -eq 2
+grep -qE '^\s*meta skuid "semprec-mcp" jump semprec_mcp_egress$' "$TEST_ROOT/nftables.conf"
+mcp_egress_rules="$(awk '/chain semprec_mcp_egress \{/{f=1;next} f&&/^\t\}/{exit} f&&NF' "$TEST_ROOT/nftables.conf" | sed 's/^[[:space:]]*//' | grep -v '^#')"
+test "$(head -n 1 <<<"$mcp_egress_rules")" = 'ct state established,related accept'
+grep -qx 'tcp dport 53 accept' <<<"$mcp_egress_rules"
+grep -qx 'udp dport 53 accept' <<<"$mcp_egress_rules"
+grep -qx 'ip daddr @semprec_blocked_v4 reject with icmpx type admin-prohibited' <<<"$mcp_egress_rules"
+grep -qx 'ip6 daddr @semprec_blocked_v6 reject with icmpx type admin-prohibited' <<<"$mcp_egress_rules"
+test "$(grep -c 'limit rate 10/minute log prefix "semprec-mcp-egress-deny "' <<<"$mcp_egress_rules")" -eq 2
+# No loopback or port exception: every accept is either established/related or DNS.
+test "$(grep -c 'accept$' <<<"$mcp_egress_rules")" -eq 3
+if grep -Eq '127\.0\.0\.1|::1|proto-dst|5432|3002' <<<"$mcp_egress_rules"; then
+  echo 'semprec_mcp_egress has a loopback exception' >&2
+  exit 1
+fi
+test "$(wc -l <<<"$mcp_egress_rules")" -eq 7
 grep -q "^nft -c -f $TEST_ROOT/nftables.conf$" "$TEST_STATE/commands"
 grep -qx 'systemctl enable nftables' "$TEST_STATE/commands"
 grep -qx 'systemctl reload-or-restart nftables' "$TEST_STATE/commands"
