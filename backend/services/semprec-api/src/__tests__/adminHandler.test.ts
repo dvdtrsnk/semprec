@@ -4,13 +4,25 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { runInTenant } from "@semprec/shared";
+import {
+  createRuntimeRolePool,
+  createTestModuleItem,
+  createTestProjectItem,
+  createTestTenant,
+  ensureMailAccountSyncState,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
 import {
   createUser,
   hashPassword,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
+  mailSyncProcessName,
+  upsertProcessHeartbeat,
+  withTransaction,
   type PasswordResetMailer,
 } from "@semprec/data";
 import { createDispatcher } from "../app.js";
@@ -123,22 +135,55 @@ describe("admin routes (issue #1037)", () => {
   it("answers an admin's operations health with counts and no tenant content", async () => {
     const tenantId = await createTestTenant(pool);
     const admin = await signIn(`admin-${randomUUID()}@example.test`, tenantId, "admin");
-    // Raw SQL on the superuser pool with an explicit tenant id: the fixture seeds tenant content
-    // (a mailbox error text and an item id) that the operator report must never echo back.
+    // Tenant content through production writers: a live Mailbox with its sync state, and a
+    // Projects item, both inside the tenant on a runtime-role pool.
+    const dataPool = await createRuntimeRolePool(pool, "semprec_data");
+    let mailboxItemId: string;
+    let projectItemId: string;
+    try {
+      ({ mailboxItemId, projectItemId } = await runInTenant(tenantId, async () => {
+        const mailbox = await createTestModuleItem(dataPool, "mailboxes");
+        await withTransaction(dataPool, (client) =>
+          ensureMailAccountSyncState(client, { itemId: mailbox, syncMode: "imap" }),
+        );
+        return { mailboxItemId: mailbox, projectItemId: await createTestProjectItem(dataPool) };
+      }));
+    } finally {
+      await dataPool.end();
+    }
+    const { rows: databaseRows } = await pool.query<{ database_id: string }>(
+      "SELECT database_id FROM items WHERE id = ANY($1)",
+      [[mailboxItemId, projectItemId]],
+    );
+    const databaseIds = databaseRows.map((row) => row.database_id);
+    expect(databaseIds).toHaveLength(2);
+    await upsertProcessHeartbeat(
+      pool,
+      { process: mailSyncProcessName(mailboxItemId), pid: 1, version: "1.0.0" },
+      new Date(),
+    );
+    // Raw SQL on the superuser pool with an explicit tenant id: no production writer records these
+    // error states from a fixture, and each carries tenant content the operator report must never echo.
     await pool.query(
-      `INSERT INTO tenant_observability_checks (tenant_id, check_key, status, detail) VALUES ($1, 'mailbox:stall', 'alerting', $2)`,
-      [tenantId, JSON.stringify({ lastError: "SECRET-TENANT-TEXT" })],
+      `INSERT INTO tenant_observability_checks (tenant_id, check_key, status, detail) VALUES ($1, $2, 'alerting', $3)`,
+      [tenantId, `mail:${mailboxItemId}`, JSON.stringify({ mailboxItemId, lastError: "SECRET-TENANT-TEXT" })],
     );
     await pool.query(
       `INSERT INTO item_automation (tenant_id, item_id, status, error) VALUES ($1, $2, 'error', 'SECRET-TENANT-TEXT')`,
-      [tenantId, randomUUID()],
+      [tenantId, projectItemId],
     );
+    // A legacy global per-mailbox row, as left behind until the check-system tick purges it.
+    await pool.query(`INSERT INTO observability_checks (check_key, status, detail) VALUES ($1, 'alerting', $2)`, [
+      `mail:${mailboxItemId}`,
+      JSON.stringify({ mailboxItemId, lastError: "SECRET-TENANT-TEXT" }),
+    ]);
 
     const res = await fetch(`${baseUrl}/api/admin/health`, { headers: { Authorization: `Bearer ${admin.token}` } });
     expect(res.status).toBe(200);
     const text = await res.text();
-    expect(text).not.toContain("SECRET-TENANT-TEXT");
-    expect(text).not.toContain(tenantId);
+    for (const secret of ["SECRET-TENANT-TEXT", tenantId, mailboxItemId, projectItemId, ...databaseIds]) {
+      expect(text).not.toContain(secret);
+    }
     expect(JSON.parse(text)).toMatchObject({
       tenantAggregates: { itemAutomationErrors: 1, alertingTenantChecks: 1 },
     });
