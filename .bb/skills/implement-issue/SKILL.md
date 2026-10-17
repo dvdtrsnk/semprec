@@ -150,9 +150,11 @@ comes last because anything committed after it can make it stale again:
    `pnpm run format:check` and `pnpm run build`. Then run the test files that
    cover the code you changed, whether or not you edited a test file:
    `npx vitest run --config <tier config> <test files>` in `backend/`, with
-   `vitest.unit.config.ts` or `vitest.integration.config.ts` by filename tier,
-   and `npx vitest run <test files>` in `web/`. A source change with no test
-   file run is not a partial check.
+   the config matching each file's tier (`vitest.unit.config.ts` for
+   `*.unit.test.ts`, `vitest.integration.config.ts` for `*.test.ts`,
+   `vitest.e2e.config.ts` for `*.e2e.test.ts`), and
+   `npx vitest run <test files>` in `web/`. A source change with no test file
+   run is not a partial check.
 5. **Take the migration ordinal last.** If the diff adds a migration, run
    `git fetch origin` and compare your number against
    `backend/packages/data/src/db/migrations/` on `origin/develop` after the
