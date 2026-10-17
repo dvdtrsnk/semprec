@@ -63,6 +63,27 @@ export default tseslint.config(
     },
   },
   {
+    // Admin code runs in system scope and never enters a tenant. dependency-cruiser rules are
+    // file-level and @semprec/shared resolves to one entry file, so only ESLint can forbid the
+    // single named export (docs/adr/2026-10-17-admin-role-without-content-access.md).
+    files: ["services/semprec-api/src/adminHandler.ts", "packages/data/src/tenancy/accountsAdminStore.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@semprec/shared",
+              importNames: ["runInTenant"],
+              message:
+                "Admin code runs in system scope and never enters a tenant (docs/adr/2026-10-17-admin-role-without-content-access.md).",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     // Config and tooling files live outside every package's tsconfig `include`, so the
     // type-aware rules have no program to consult and error out on them.
     files: ["**/*.cjs", "**/*.mjs", "*.config.ts", "**/scripts/**"],

@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
-import { ChokePointError, type AuthenticatedIdentity, type ItemRow } from "@semprec/data";
+import { runAsSystem, runInTenant } from "@semprec/shared";
+import { ChokePointError, ForbiddenError, type AuthenticatedIdentity, type ItemRow } from "@semprec/data";
 import { authenticateRequest } from "../authHandler.js";
 import { toErrorResponseBody, statusForError } from "./errorContract.js";
 import { toItemEnvelope } from "./itemEnvelope.js";
@@ -67,6 +67,11 @@ export type AdapterHandler = (ctx: AdapterRequestContext) => Promise<AdapterHand
 export interface AdapterRequestListenerOptions {
   /** Resolves the mounted route's path parameters for this request; omitted (or returning `{}`) for a route with none. */
   extractParams?: (req: IncomingMessage) => Record<string, string>;
+  /**
+   * An admin route: a caller whose role is not `admin` is refused with 403 `admin_required` before
+   * the body is read, and the handler runs in system scope instead of the caller's tenant.
+   */
+  admin?: boolean;
 }
 
 /**
@@ -84,13 +89,17 @@ export function createAdapterRequestListener(
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const identity = await requireAuthenticatedIdentity(pool, req);
-      // The tenant comes from the authenticated session only; the handler and everything it
-      // awaits runs inside it.
-      const result = await runInTenant(identity.tenantId, async () => {
+      if (options.admin && identity.role !== "admin") {
+        throw new ForbiddenError("Admin role required", undefined, "admin_required");
+      }
+      const run = async (): Promise<AdapterHandlerResult> => {
         const body = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
         const params = options.extractParams?.(req) ?? {};
         return handler({ req, identity, params, body });
-      });
+      };
+      // The tenant comes from the authenticated session only; the handler and everything it
+      // awaits runs inside it. An admin route runs in system scope and never enters a tenant.
+      const result = options.admin ? await runAsSystem("adminRoute", run) : await runInTenant(identity.tenantId, run);
       if ("item" in result) {
         sendItemResponse(res, result.status, result.item);
       } else {

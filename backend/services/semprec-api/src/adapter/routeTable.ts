@@ -14,6 +14,8 @@ export interface RouteDefinition {
   /** e.g. `/api/databases/:id` — a `:name` segment is captured and handed to the handler as `ctx.params.name`. */
   path: string;
   handler: AdapterHandler;
+  /** Admin-only route: members get 403 `admin_required` and the handler runs in system scope. Required for every `/api/admin/` path. */
+  admin?: true;
 }
 
 interface CompiledRoute {
@@ -58,8 +60,12 @@ export function mountRoutes(
   routes: readonly RouteDefinition[],
 ): (req: IncomingMessage, res: ServerResponse) => boolean {
   const compiled: CompiledRoute[] = routes.map((route) => {
+    if (route.path.startsWith("/api/admin/") && route.admin !== true) {
+      throw new Error(`Route ${route.method} ${route.path} is under /api/admin/ but is not flagged admin: true`);
+    }
     const { matcher, paramNames } = compilePath(route.path);
     const listener = createAdapterRequestListener(pool, route.handler, {
+      admin: route.admin === true,
       extractParams: (req) => {
         // dispatchRoute already tested this pattern before calling this closure's enclosing listener.
         const match = pathnameOf(req).match(matcher)!;

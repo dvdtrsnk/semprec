@@ -42,6 +42,7 @@ export type FrozenTypeExports = [
 ];
 
 const EXPECTED_RUNTIME_EXPORTS = [
+  "ADMIN_AUDIT_ACTIONS",
   "AGENT_GUIDANCE_DRIFT_ACTION_ID",
   "AGENT_RUN_EVENTS_RETENTION_DAYS",
   "AGENT_TASK_NAME_SET",
@@ -319,6 +320,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "isSessionActive",
   "itemDeleteWithClient",
   "libraryModuleManifest",
+  "listAccounts",
   "listAdminRecipients",
   "listAgentRunEvents",
   "listAgentRunEventsAfter",
@@ -388,6 +390,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "reclassifyMcpTool",
   "recomputeAllForTimezoneChange",
   "recomputeRollupCell",
+  "recordAdminAction",
   "recordAudioGatewayCall",
   "recordHeartbeatFailure",
   "recordHeartbeatFireSetupFailure",
