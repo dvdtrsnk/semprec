@@ -172,7 +172,7 @@ describe("password reset actions (issue #142)", () => {
       expect(Number(rows[0]!.count)).toBe(PASSWORD_RESET_MAX_REQUESTS_PER_WINDOW);
     });
 
-    it("resolves once the token commits, without waiting for the mail send to finish", async () => {
+    it("resolves after the timing floor without waiting for the mail send to finish", async () => {
       const user = await makeUser();
       const sent: SendPasswordResetEmailInput[] = [];
       let release!: () => void;

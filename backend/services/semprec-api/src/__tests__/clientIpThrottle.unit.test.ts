@@ -166,6 +166,32 @@ describe("createClientIpThrottle", () => {
     expect(throttle.retryAfterSeconds("login", "192.0.2.3")).toBe(100);
   });
 
+  it.each([
+    { elapsedSeconds: 30, reason: "the least recently recorded live key" },
+    { elapsedSeconds: 105, reason: "an expired key behind a live key" },
+  ])("evicts $reason after releasing its newest reservation", ({ elapsedSeconds }) => {
+    const clock = makeClock();
+    const throttle = createClientIpThrottle({ now: clock.now, maxKeys: 2, limits: SMALL_LIMITS });
+    throttle.record("login", "192.0.2.1");
+    clock.advanceSeconds(10);
+    throttle.record("login", "192.0.2.2");
+    throttle.record("login", "192.0.2.2");
+    clock.advanceSeconds(10);
+    const acquisition = throttle.tryAcquire("login", "192.0.2.1");
+    if (!acquisition.granted) throw new Error("expected the attempt to be granted");
+    acquisition.reservation.release();
+    // .1 is now behind .2 in insertion order, but its remaining event is older.
+    clock.advanceSeconds(elapsedSeconds - 20);
+    throttle.record("login", "192.0.2.3");
+    throttle.record("login", "192.0.2.3");
+
+    expect(throttle.retryAfterSeconds("login", "192.0.2.2")).toBe(110 - elapsedSeconds);
+    expect(throttle.retryAfterSeconds("login", "192.0.2.3")).toBe(100);
+    // Both new attempts fit only if .1's remaining event was evicted.
+    expect(throttle.tryAcquire("login", "192.0.2.1").granted).toBe(true);
+    expect(throttle.tryAcquire("login", "192.0.2.1").granted).toBe(true);
+  });
+
   it("counts keys of every action toward maxKeys and evicts the oldest across actions", () => {
     const clock = makeClock();
     const throttle = createClientIpThrottle({ now: clock.now, maxKeys: 2, limits: SMALL_LIMITS });
