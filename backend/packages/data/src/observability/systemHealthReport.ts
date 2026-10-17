@@ -1,5 +1,11 @@
+import { assertKnownValue } from "../dbRowValidation.js";
 import type { Queryable } from "../db/pool.js";
-import { getExpectedProcessNames, PROCESS_HEARTBEAT_STALE_AFTER_MS } from "../health/processHeartbeats.js";
+import type { TenantStatus } from "../tenancy/tenantsStore.js";
+import {
+  FIXED_PROCESS_NAMES,
+  getExpectedProcessNames,
+  PROCESS_HEARTBEAT_STALE_AFTER_MS,
+} from "../health/processHeartbeats.js";
 import { listAllMailAccountSyncStates } from "../mail/mailAccountSyncStateStore.js";
 
 export interface ProcessHealthStatus {
@@ -52,9 +58,12 @@ export interface SystemHealthReport {
   mailboxes: MailboxHealthStatus[];
 }
 
-/** One row per currently-expected process (`getExpectedProcessNames`, issue #168), joined against whatever `process_heartbeats` rows actually exist. */
-async function getProcessHealthStatuses(client: Queryable): Promise<ProcessHealthStatus[]> {
-  const expected = await getExpectedProcessNames(client);
+/**
+ * One row per process in `expected`, joined against whatever `process_heartbeats` rows actually
+ * exist. The caller decides the set: the tenant-visible report passes `getExpectedProcessNames`
+ * (issue #168), the operator report passes the fixed list so mailbox rows never appear.
+ */
+async function getProcessHealthStatuses(client: Queryable, expected: readonly string[]): Promise<ProcessHealthStatus[]> {
   if (expected.length === 0) return [];
 
   const { rows } = await client.query<{
@@ -178,7 +187,7 @@ function toMailboxHealthStatus(
 export async function getSystemHealthReport(client: Queryable): Promise<SystemHealthReport> {
   const [processes, alertingChecks, queue, itemAutomationErrorsByDatabase, agentRunErrors7d, mailAccounts] =
     await Promise.all([
-      getProcessHealthStatuses(client),
+      getExpectedProcessNames(client).then((expected) => getProcessHealthStatuses(client, expected)),
       getAlertingChecks(client),
       getQueueHealthCounts(client),
       getItemAutomationErrorCounts(client),
@@ -194,5 +203,98 @@ export async function getSystemHealthReport(client: Queryable): Promise<SystemHe
     itemAutomationErrorsByDatabase,
     agentRunErrors7d,
     mailboxes: mailAccounts.map(toMailboxHealthStatus),
+  };
+}
+
+export interface TenantStatusCounts {
+  provisioning: number;
+  active: number;
+  suspended: number;
+  deleting: number;
+}
+
+/** Totals only, one per `ops_health_counts()` column. Never a tenant id, never a per-tenant breakdown. */
+export interface OperatorTenantAggregates {
+  agentRunErrors7d: number;
+  itemAutomationErrors: number;
+  alertingTenantChecks: number;
+}
+
+/** The admin-only operator report (issue #1038): content-free counts and global operator rows, never tenant content. */
+export interface OperatorHealthReport {
+  generatedAt: string;
+  processes: ProcessHealthStatus[];
+  alertingChecks: AlertingCheck[];
+  queue: QueueHealthCounts;
+  tenants: TenantStatusCounts;
+  tenantAggregates: OperatorTenantAggregates;
+}
+
+const OPERATOR_TENANT_STATUSES: readonly TenantStatus[] = ["provisioning", "active", "suspended", "deleting"];
+
+/**
+ * Global `observability_checks` rows only. `getAlertingChecks` also unions the caller's
+ * `tenant_observability_checks`, which would expose tenant rows while a single tenant is the only
+ * tenant. The operator report never reads that table directly.
+ */
+async function getGlobalAlertingChecks(client: Queryable): Promise<AlertingCheck[]> {
+  const { rows } = await client.query<{ check_key: string; detail: Record<string, unknown>; changed_at: Date }>(
+    `SELECT check_key, detail, changed_at FROM observability_checks WHERE status = 'alerting' ORDER BY changed_at`,
+  );
+  return rows.map((row) => ({ checkKey: row.check_key, detail: row.detail, changedAt: row.changed_at.toISOString() }));
+}
+
+/** `count(*) GROUP BY tenants.status`; a status with no tenant reports 0. */
+async function getTenantStatusCounts(client: Queryable): Promise<TenantStatusCounts> {
+  const { rows } = await client.query<{ status: string; count: string }>(
+    `SELECT status, count(*) AS count FROM tenants GROUP BY status`,
+  );
+  const counts: TenantStatusCounts = { provisioning: 0, active: 0, suspended: 0, deleting: 0 };
+  for (const row of rows) {
+    const status = assertKnownValue(OPERATOR_TENANT_STATUSES, row.status, "tenants.status");
+    counts[status] = Number(row.count);
+  }
+  return counts;
+}
+
+/**
+ * The three cross-tenant counts, run as `semprec_router` behind `ops_health_counts()`
+ * (migration 0075, docs/operations/database-roles.md). The function returns one row of numbers.
+ */
+async function getOperatorTenantAggregates(client: Queryable): Promise<OperatorTenantAggregates> {
+  const { rows } = await client.query<{
+    agent_run_errors_7d: string;
+    item_automation_errors: string;
+    alerting_tenant_checks: string;
+  }>(`SELECT agent_run_errors_7d, item_automation_errors, alerting_tenant_checks FROM ops_health_counts()`);
+  const row = rows[0];
+  return {
+    agentRunErrors7d: Number(row?.agent_run_errors_7d ?? 0),
+    itemAutomationErrors: Number(row?.item_automation_errors ?? 0),
+    alertingTenantChecks: Number(row?.alerting_tenant_checks ?? 0),
+  };
+}
+
+/**
+ * The admin operations health report behind `GET /api/admin/health` (issue #1038). Processes are
+ * the four fixed processes only, so no mailbox heartbeat row is reported. Every value is a count
+ * or a global operator row, so no tenant id, item text or `lastError` reaches the response.
+ */
+export async function getOperatorHealthReport(client: Queryable): Promise<OperatorHealthReport> {
+  const [processes, alertingChecks, queue, tenants, tenantAggregates] = await Promise.all([
+    getProcessHealthStatuses(client, FIXED_PROCESS_NAMES),
+    getGlobalAlertingChecks(client),
+    getQueueHealthCounts(client),
+    getTenantStatusCounts(client),
+    getOperatorTenantAggregates(client),
+  ]);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    processes,
+    alertingChecks,
+    queue,
+    tenants,
+    tenantAggregates,
   };
 }
