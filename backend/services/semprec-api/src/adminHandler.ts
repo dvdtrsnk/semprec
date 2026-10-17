@@ -1,7 +1,30 @@
 import type { Pool } from "pg";
-import { getOperatorHealthReport, listAccounts } from "@semprec/data";
+import {
+  getOperatorHealthReport,
+  listAccounts,
+  listTenantAiBudgetOverview,
+  NotFoundError,
+  recordAdminAction,
+  setTenantAiBudget,
+  ValidationError,
+  withTransaction,
+} from "@semprec/data";
+import { requireJsonObjectBody, requireUuidParam } from "./adapter/requestValidation.js";
 import type { RouteDefinition } from "./adapter/routeTable.js";
 import type { AppOptions } from "./app.js";
+
+/**
+ * A cap body field: `null` for no tenant cap in that window, otherwise a finite number >= 0 — the
+ * full domain of `tenant_ai_budgets`' columns. Anything else is `validation_failed` naming the field.
+ */
+function requireCapField(body: Record<string, unknown>, field: string): number | null {
+  const value = body[field];
+  if (value === null) return null;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new ValidationError(`'${field}' must be null or a finite number >= 0`, { field });
+  }
+  return value;
+}
 
 /**
  * The admin route family (issue #1037). Every route is flagged `admin: true`, so the adapter
@@ -23,6 +46,59 @@ export function createAdminRoutes(pool: Pool, _options: AppOptions): RouteDefini
       path: "/api/admin/health",
       admin: true,
       handler: async () => ({ status: 200, body: await getOperatorHealthReport(pool) }),
+    },
+    {
+      method: "GET",
+      path: "/api/admin/ai-budgets",
+      admin: true,
+      handler: async () => ({
+        status: 200,
+        body: { spendWindow: "utc", accounts: await listTenantAiBudgetOverview(pool) },
+      }),
+    },
+    {
+      method: "PUT",
+      path: "/api/admin/accounts/:userId/ai-budget",
+      admin: true,
+      handler: async (ctx) => {
+        const userId = requireUuidParam(ctx.params, "userId");
+        const body = requireJsonObjectBody(ctx.body);
+        const dailyCapUsd = requireCapField(body, "dailyCapUsd");
+        const monthlyCapUsd = requireCapField(body, "monthlyCapUsd");
+        const actorUserId = ctx.identity.user.id;
+        const budget = await withTransaction(pool, async (client) => {
+          const { rows } = await client.query<{ tenant_id: string }>(
+            "SELECT COALESCE(tenant_id, app_sole_tenant()) AS tenant_id FROM users WHERE id = $1",
+            [userId],
+          );
+          const tenantId = rows[0]?.tenant_id;
+          if (!tenantId) throw new NotFoundError("Account not found", { userId });
+          const saved = await setTenantAiBudget(client, {
+            tenantId,
+            dailyCapUsd,
+            monthlyCapUsd,
+            updatedBy: actorUserId,
+          });
+          await recordAdminAction(client, {
+            actorUserId,
+            action: "tenantAiBudgetSet",
+            targetTenantId: tenantId,
+            details: { dailyCapUsd, monthlyCapUsd },
+          });
+          return saved;
+        });
+        return {
+          status: 200,
+          body: {
+            budget: {
+              userId,
+              dailyCapUsd: budget.dailyCapUsd,
+              monthlyCapUsd: budget.monthlyCapUsd,
+              updatedAt: budget.updatedAt,
+            },
+          },
+        };
+      },
     },
   ];
 }

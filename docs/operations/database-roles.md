@@ -109,3 +109,4 @@ and the function returns only ids or numbers, never content. The caller then ent
 | `route_graph_subscription(text)` | `semprec_data` | a tenant id, or `NULL`                                                          | `mail_account_sync_state(graph_subscription_id, tenant_id)`                         |
 | `route_gmail_address(text)`      | `semprec_data` | `(tenant_id, mailbox_item_id)` rows, one per Gmail mailbox watching the address | `mail_account_sync_state(item_id, tenant_id, sync_mode, gmail_watch_email_address)` |
 | `ops_health_counts()`            | `semprec_data` | one row of three counts: agent-run errors (7 days), `item_automation` errors, alerting tenant checks | `agent_runs(status, started_at)`, `item_automation(status)`, `tenant_observability_checks(status)` |
+| `ai_tenant_spend()`              | `semprec_data` | one row per tenant with calls: its id, spend today and spend this month (UTC windows) | `ai_gateway_calls(tenant_id, at, cost_usd)` |

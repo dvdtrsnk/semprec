@@ -209,4 +209,114 @@ describe("admin routes (issue #1037)", () => {
       ]),
     ).not.toThrow();
   });
+  describe("AI budgets (issue #1039)", () => {
+    async function budgetRowCount(tenantId: string): Promise<number> {
+      const { rows } = await pool.query<{ n: string }>(
+        "SELECT count(*) AS n FROM tenant_ai_budgets WHERE tenant_id = $1",
+        [tenantId],
+      );
+      return Number(rows[0]?.n);
+    }
+
+    async function auditRowsFor(
+      action: string,
+    ): Promise<{ target_tenant_id: string; details: Record<string, unknown> }[]> {
+      const { rows } = await pool.query<{ target_tenant_id: string; details: Record<string, unknown> }>(
+        "SELECT target_tenant_id, details FROM admin_audit_log WHERE action = $1",
+        [action],
+      );
+      return rows;
+    }
+
+    it("sets the caps of the target user's tenant and records one audit row for that tenant only", async () => {
+      const tenantA = await createTestTenant(pool);
+      const tenantB = await createTestTenant(pool);
+      const admin = await signIn(`admin-${randomUUID()}@example.test`, tenantA, "admin");
+      const target = await signIn(`target-${randomUUID()}@example.test`, tenantB, "member");
+
+      const res = await fetch(`${baseUrl}/api/admin/accounts/${target.id}/ai-budget`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${admin.token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ dailyCapUsd: 5, monthlyCapUsd: 40 }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { budget: Record<string, unknown> };
+      expect(Object.keys(body.budget).sort()).toEqual(["dailyCapUsd", "monthlyCapUsd", "updatedAt", "userId"]);
+      expect(body.budget).toMatchObject({ userId: target.id, dailyCapUsd: 5, monthlyCapUsd: 40 });
+
+      const { rows } = await pool.query<{ daily_cap_usd: string; monthly_cap_usd: string; updated_by: string }>(
+        "SELECT daily_cap_usd, monthly_cap_usd, updated_by FROM tenant_ai_budgets WHERE tenant_id = $1",
+        [tenantB],
+      );
+      expect(rows).toEqual([{ daily_cap_usd: "5", monthly_cap_usd: "40", updated_by: admin.id }]);
+      expect(await budgetRowCount(tenantA)).toBe(0);
+
+      const audit = await auditRowsFor("tenantAiBudgetSet");
+      expect(audit).toEqual([{ target_tenant_id: tenantB, details: { dailyCapUsd: 5, monthlyCapUsd: 40 } }]);
+    });
+
+    it("creates a budget row for a tenant that has none, and reads it back in the overview", async () => {
+      const tenantId = await createTestTenant(pool);
+      const admin = await signIn(`admin-${randomUUID()}@example.test`, await createTestTenant(pool), "admin");
+      const target = await signIn(`target-${randomUUID()}@example.test`, tenantId, "member");
+      expect(await budgetRowCount(tenantId)).toBe(0);
+
+      const put = await fetch(`${baseUrl}/api/admin/accounts/${target.id}/ai-budget`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${admin.token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ dailyCapUsd: null, monthlyCapUsd: 0 }),
+      });
+      expect(put.status).toBe(200);
+
+      const get = await fetch(`${baseUrl}/api/admin/ai-budgets`, {
+        headers: { Authorization: `Bearer ${admin.token}` },
+      });
+      expect(get.status).toBe(200);
+      const overview = (await get.json()) as { spendWindow: string; accounts: Record<string, unknown>[] };
+      expect(overview.spendWindow).toBe("utc");
+      const entry = overview.accounts.find((account) => account.userId === target.id);
+      expect(entry).toMatchObject({ hasBudget: true, dailyCapUsd: null, monthlyCapUsd: 0 });
+    });
+
+    it.each([
+      ["negative daily", { dailyCapUsd: -1, monthlyCapUsd: 40 }, "dailyCapUsd"],
+      ["string monthly", { dailyCapUsd: 5, monthlyCapUsd: "5" }, "monthlyCapUsd"],
+      ["missing monthly", { dailyCapUsd: 5 }, "monthlyCapUsd"],
+    ])(
+      "refuses a %s cap as validation_failed naming the field, with no row and no audit row",
+      async (_label, body, field) => {
+        const tenantId = await createTestTenant(pool);
+        const admin = await signIn(`admin-${randomUUID()}@example.test`, await createTestTenant(pool), "admin");
+        const target = await signIn(`target-${randomUUID()}@example.test`, tenantId, "member");
+
+        const res = await fetch(`${baseUrl}/api/admin/accounts/${target.id}/ai-budget`, {
+          method: "PUT",
+          headers: { Authorization: `Bearer ${admin.token}`, "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ error: { code: "validation_failed", details: { field } } });
+        expect(await budgetRowCount(tenantId)).toBe(0);
+        expect(await auditRowsFor("tenantAiBudgetSet")).toEqual([]);
+      },
+    );
+
+    it("answers 400 for a non-uuid user id and 404 not_found for an unknown one, with no audit row", async () => {
+      const tenantId = await createTestTenant(pool);
+      const admin = await signIn(`admin-${randomUUID()}@example.test`, tenantId, "admin");
+      const put = (userId: string) =>
+        fetch(`${baseUrl}/api/admin/accounts/${userId}/ai-budget`, {
+          method: "PUT",
+          headers: { Authorization: `Bearer ${admin.token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ dailyCapUsd: 5, monthlyCapUsd: 40 }),
+        });
+
+      expect((await put("not-a-uuid")).status).toBe(400);
+      const unknown = await put(randomUUID());
+      expect(unknown.status).toBe(404);
+      expect(await unknown.json()).toMatchObject({ error: { code: "not_found" } });
+      expect(await auditRowsFor("tenantAiBudgetSet")).toEqual([]);
+      expect(await budgetRowCount(tenantId)).toBe(0);
+    });
+  });
 });

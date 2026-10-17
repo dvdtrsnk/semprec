@@ -45,6 +45,8 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "system health report": "packages/data/src/observability/systemHealthRouteHandler.ts",
   "admin account list": "services/semprec-api/src/adminHandler.ts",
   "admin operations health": "services/semprec-api/src/adminHandler.ts",
+  "admin ai budgets": "services/semprec-api/src/adminHandler.ts",
+  "admin set ai budget": "services/semprec-api/src/adminHandler.ts",
   "list databases": "services/semprec-api/src/databasesHandler.ts",
   "create database": "services/semprec-api/src/databasesHandler.ts",
   "database detail": "services/semprec-api/src/databasesHandler.ts",
