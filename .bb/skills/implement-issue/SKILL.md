@@ -141,7 +141,21 @@ comes last because anything committed after it can make it stale again:
    to this issue.
 4. **Run the pipeline**: `pnpm run verify` in `backend/`, then in `web/`. This
    is the same sequence CI runs, in the same order. The host is shared — read
-   `.bb/AGENTS.md` before you wait on, kill or log a process.
+   `.bb/AGENTS.md` before you wait on, kill or log a process. In a Relay
+   `implement-issue` run, run a partial check instead, because Relay reviews
+   the draft pull request first and then runs the full verify itself, so a
+   full run here would be paid twice
+   (`docs/adr/2026-10-17-pre-review-draft-pull-requests-before-verify.md`). In
+   each of `backend/` and `web/` that your diff changes, run `pnpm run lint`,
+   `pnpm run format:check` and `pnpm run build`. Then run the test files that
+   cover the code you changed, whether or not you edited a test file:
+   `npx vitest run --config <tier config> <test files>` in `backend/`, with
+   the config matching each file's tier (`vitest.unit.config.ts` for
+   `*.unit.test.ts`, `vitest.e2e.config.ts` for `*.e2e.test.ts`, and
+   `vitest.integration.config.ts` for every other `*.test.ts`, which is the
+   set that config includes once it excludes the other two tiers), and
+   `npx vitest run <test files>` in `web/`. A source change with no test file
+   run is not a partial check.
 5. **Take the migration ordinal last.** If the diff adds a migration, run
    `git fetch origin` and compare your number against
    `backend/packages/data/src/db/migrations/` on `origin/develop` after the
