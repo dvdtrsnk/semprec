@@ -955,7 +955,7 @@ describe("mail live-sync root: stopTenant (issue #1042)", () => {
     await root.stop();
   });
 
-  it("stops each lifecycle once when a pass started while it waits retires the same tenant", async () => {
+  it("stops each lifecycle once, and waits for its stop, when a pass started while it waits retires the same tenant", async () => {
     const b = await addTenantWithMailbox();
     const b2 = await addMailboxTo(b.tenantId);
     const gate = (): { promise: Promise<void>; release: () => void } => {
@@ -992,18 +992,25 @@ describe("mail live-sync root: stopTenant (issue #1042)", () => {
     await markSuspended(b.tenantId);
     const pass1 = root.reconcileOnce();
     await vi.waitFor(() => expect(events).toContain(`start:${m0}`));
-    const stopping = root.stopTenant(b.tenantId);
+    let stopped = false;
+    const stopping = root.stopTenant(b.tenantId).then(() => {
+      stopped = true;
+    });
 
     // Pass 2 starts after stopTenant took its snapshot of running passes. Its retire loop
     // snapshots both of B's entries and holds in the first one's stop.
     const pass2 = root.reconcileOnce();
     await vi.waitFor(() => expect(events.filter((event) => event.startsWith("stop:"))).toHaveLength(1));
 
-    // Pass 1 then retires B's other entry, and stopTenant finds nothing left to stop.
+    // Pass 1 then retires B's other entry, and stopTenant finds nothing left hosted, but still
+    // waits for pass 2's stop of B's first entry before it resolves.
     m0Start.release();
     await pass1;
-    await stopping;
+    await vi.waitFor(() => expect(events.filter((event) => event.startsWith("stop:"))).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(stopped).toBe(false);
     firstStop.release();
+    await stopping;
     await pass2;
 
     const stops = events.filter((event) => event.startsWith("stop:")).sort();
