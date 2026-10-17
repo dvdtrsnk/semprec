@@ -43,7 +43,7 @@ function fakeMailer(): PasswordResetMailer & { sent: SendPasswordResetEmailInput
 }
 
 function tokenFromUrl(resetUrl: string): string {
-  const token = new URL(resetUrl).searchParams.get("token");
+  const token = new URLSearchParams(new URL(resetUrl).hash.slice(1)).get("token");
   if (!token) throw new Error(`expected a token in ${resetUrl}`);
   return token;
 }
@@ -72,7 +72,8 @@ describe("password reset actions (issue #142)", () => {
 
       expect(mailer.sent).toHaveLength(1);
       expect(mailer.sent[0]!.to).toBe(user.email);
-      expect(mailer.sent[0]!.resetUrl.startsWith(`${APP_BASE_URL}/reset-password?token=`)).toBe(true);
+      expect(mailer.sent[0]!.resetUrl.startsWith(`${APP_BASE_URL}/?page=password-reset#token=`)).toBe(true);
+      expect(new URL(mailer.sent[0]!.resetUrl).searchParams.has("token")).toBe(false);
     });
 
     it("is a silent no-op for an unknown email — no mail sent, no error", async () => {

@@ -14,7 +14,13 @@ const USER: SessionUser = {
 };
 
 function stubAuth(login: AuthOperations["login"]): AuthOperations {
-  return { login, getSession: vi.fn(async () => null), logout: vi.fn(async () => undefined) };
+  return {
+    login,
+    getSession: vi.fn(async () => null),
+    logout: vi.fn(async () => undefined),
+    requestPasswordReset: vi.fn(async () => undefined),
+    resetPassword: vi.fn(async () => undefined),
+  };
 }
 
 function renderPage(auth: AuthOperations, onLoggedIn = vi.fn()) {
@@ -92,5 +98,14 @@ describe("LoginPage", () => {
 
     resolve(USER);
     await vi.waitFor(() => expect(onLoggedIn).toHaveBeenCalledWith(USER));
+  });
+
+  it("links to the password-reset page from below the form", async () => {
+    renderPage(stubAuth(vi.fn()));
+
+    expect(await screen.findByRole("link", { name: "Forgot password?" })).toHaveAttribute(
+      "href",
+      "?page=password-reset",
+    );
   });
 });

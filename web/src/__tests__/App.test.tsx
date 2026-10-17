@@ -30,6 +30,8 @@ function stubAuth(overrides: Partial<AuthOperations> = {}): AuthOperations {
     login: vi.fn(async () => USER),
     getSession: vi.fn(async (): Promise<SessionUser | null> => USER),
     logout: vi.fn(async () => undefined),
+    requestPasswordReset: vi.fn(async () => undefined),
+    resetPassword: vi.fn(async () => undefined),
     ...overrides,
   };
 }
@@ -39,6 +41,7 @@ function renderApp({
   operations = contentOperations(),
   sessionEvents = new EventTarget(),
   setup,
+  passwordReset,
   login,
   languages = ["en"],
 }: {
@@ -46,6 +49,7 @@ function renderApp({
   operations?: GenericOperations;
   sessionEvents?: EventTarget;
   setup?: { token: string; operations: SetupOperations };
+  passwordReset?: { token: string | null };
   login?: true;
   languages?: readonly string[];
 }) {
@@ -56,6 +60,7 @@ function renderApp({
       auth={auth}
       sessionEvents={sessionEvents}
       setup={setup}
+      passwordReset={passwordReset}
       login={login}
       languages={languages}
     />,
@@ -211,5 +216,15 @@ describe("App session lifecycle", () => {
     });
     expect(replace).not.toHaveBeenCalled();
     expect(getSession).not.toHaveBeenCalled();
+  });
+
+  it("renders the password-reset page without the header and never reads the session", async () => {
+    const auth = stubAuth();
+    renderApp({ auth, passwordReset: { token: null } });
+
+    expect(await screen.findByRole("heading", { name: "Reset password" })).toBeInTheDocument();
+    expect(screen.queryByRole("banner")).not.toBeInTheDocument();
+    expect(screen.queryByText(CONTENT_MARKER)).not.toBeInTheDocument();
+    expect(auth.getSession).not.toHaveBeenCalled();
   });
 });

@@ -185,6 +185,23 @@ export const en = {
   "login.logout": "Sign out",
   "login.logoutFailed": "Signing out failed: {message}",
   "login.signedInAs": "Signed in as {email}",
+  "login.forgotPassword": "Forgot password?",
+  "passwordReset.title": "Reset password",
+  "passwordReset.email": "Email",
+  "passwordReset.request.submit": "Send reset link",
+  "passwordReset.request.submitting": "Sending…",
+  "passwordReset.request.sent":
+    "If an account exists for this email address, a password reset link has been sent to it.",
+  "passwordReset.request.failed": "Sending the reset link failed: {message}",
+  "passwordReset.newPassword": "New password",
+  "passwordReset.confirm.submit": "Set new password",
+  "passwordReset.confirm.submitting": "Saving…",
+  "passwordReset.confirm.success":
+    "Your password has been changed and every session was signed out. Sign in again with the new password.",
+  "passwordReset.confirm.continue": "Continue to sign in",
+  "passwordReset.confirm.invalid": "This reset link is invalid, has expired or has already been used.",
+  "passwordReset.confirm.requestNew": "Request a new reset link",
+  "passwordReset.confirm.failed": "Setting the new password failed: {message}",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -372,6 +389,22 @@ export const cs: Messages = {
   "login.logout": "Odhlásit se",
   "login.logoutFailed": "Odhlášení se nezdařilo: {message}",
   "login.signedInAs": "Přihlášen(a) jako {email}",
+  "login.forgotPassword": "Zapomenuté heslo?",
+  "passwordReset.title": "Obnovení hesla",
+  "passwordReset.email": "E-mail",
+  "passwordReset.request.submit": "Odeslat odkaz pro obnovení",
+  "passwordReset.request.submitting": "Odesílání…",
+  "passwordReset.request.sent":
+    "Pokud k této e-mailové adrese existuje účet, byl na ni odeslán odkaz pro obnovení hesla.",
+  "passwordReset.request.failed": "Odeslání odkazu se nezdařilo: {message}",
+  "passwordReset.newPassword": "Nové heslo",
+  "passwordReset.confirm.submit": "Nastavit nové heslo",
+  "passwordReset.confirm.submitting": "Ukládání…",
+  "passwordReset.confirm.success": "Heslo bylo změněno a všechny relace byly odhlášeny. Přihlaste se novým heslem.",
+  "passwordReset.confirm.continue": "Pokračovat na přihlášení",
+  "passwordReset.confirm.invalid": "Tento odkaz pro obnovení hesla je neplatný, vypršel nebo už byl použit.",
+  "passwordReset.confirm.requestNew": "Požádat o nový odkaz",
+  "passwordReset.confirm.failed": "Nastavení nového hesla se nezdařilo: {message}",
 };
 
 export const CATALOGS = { cs, en } as const;

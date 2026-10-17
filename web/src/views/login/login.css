@@ -19,3 +19,7 @@
 .login__error {
   color: var(--color-danger);
 }
+
+.login__link {
+  align-self: flex-start;
+}

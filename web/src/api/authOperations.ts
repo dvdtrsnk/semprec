@@ -3,7 +3,8 @@ import { OperationError } from "./genericOperations.js";
 
 /**
  * The client's binding for the session lifecycle `semprec-api` serves under `/api/auth/*`:
- * log in, read the current session, log out. The session token is never read or stored here —
+ * log in, read the current session, log out, and the password-reset request and consume calls.
+ * The session token is never read or stored here —
  * for `platform: "web"` the server sets it as an `HttpOnly` cookie and never puts it in the body,
  * so every call just issues a same-origin fetch and lets the browser carry the cookie.
  */
@@ -21,9 +22,25 @@ const userResponseSchema = z.object({ user: sessionUserSchema });
 
 const errorResponseSchema = z.object({ error: z.string() });
 
+const passwordResetErrorSchema = z.object({ error: z.string(), code: z.string() });
+
+/** The codes `POST /api/auth/password-reset/consume` answers a rejected token with, all as a 400. */
+const PASSWORD_RESET_TOKEN_CODES = new Set([
+  "password_reset_token_invalid",
+  "password_reset_token_expired",
+  "password_reset_token_consumed",
+]);
+
+const BAD_REQUEST_STATUS = 400;
+
 export interface LoginInput {
   email: string;
   password: string;
+}
+
+export interface ResetPasswordInput {
+  token: string;
+  newPassword: string;
 }
 
 export interface AuthOperations {
@@ -32,6 +49,13 @@ export interface AuthOperations {
   getSession(): Promise<SessionUser | null>;
   /** Resolves on 200 and on 401: a session that is already gone is logged out. */
   logout(): Promise<void>;
+  /** Resolves on any 2xx, for a known and an unknown address alike. */
+  requestPasswordReset(email: string): Promise<void>;
+  /**
+   * Resolves on 200. A rejected token rejects as `unavailable` (status 400); any other failure
+   * rejects as `retryable`, so the same token can be submitted again.
+   */
+  resetPassword(input: ResetPasswordInput): Promise<void>;
 }
 
 export interface AuthOperationsOptions {
@@ -101,15 +125,53 @@ export function createAuthOperations(options: AuthOperationsOptions): AuthOperat
       if (response.ok || response.status === UNAUTHORIZED_STATUS) return;
       throw await failure(path, response);
     },
+
+    async requestPasswordReset(email) {
+      const path = "/auth/password-reset/request";
+      const response = await send(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      if (!response.ok) throw await failure(path, response);
+    },
+
+    async resetPassword(input) {
+      const path = "/auth/password-reset/consume";
+      const response = await send(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: input.token, newPassword: input.newPassword }),
+      });
+      if (response.ok) return;
+      // The body is read once here; a second read would fail, so the rejection is classified from this parse.
+      const parsed = passwordResetErrorSchema.safeParse(await readJsonBody(response));
+      if (
+        response.status === BAD_REQUEST_STATUS &&
+        parsed.success &&
+        PASSWORD_RESET_TOKEN_CODES.has(parsed.data.code)
+      ) {
+        throw new OperationError("unavailable", parsed.data.error, BAD_REQUEST_STATUS);
+      }
+      throw new OperationError(
+        "retryable",
+        parsed.success ? parsed.data.error : `Request to ${path} failed with ${response.status}`,
+        response.status,
+      );
+    },
   };
 }
 
 /** Best-effort read of `{ error: string }` (the handler's shape for 400/401/etc) so a failure surfaces its actual reason instead of a bare status code. */
 async function readErrorMessage(response: Response): Promise<string | null> {
+  const parsed = errorResponseSchema.safeParse(await readJsonBody(response));
+  return parsed.success ? parsed.data.error : null;
+}
+
+/** Reads a response body as JSON, resolving `null` when it is not JSON. Consumes the body, so call it once per response. */
+async function readJsonBody(response: Response): Promise<unknown> {
   try {
-    const body: unknown = await response.json();
-    const parsed = errorResponseSchema.safeParse(body);
-    return parsed.success ? parsed.data.error : null;
+    return await response.json();
   } catch {
     return null;
   }

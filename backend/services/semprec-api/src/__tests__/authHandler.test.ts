@@ -38,8 +38,8 @@ function createFakeMailer(): FakeMailer {
 }
 
 function tokenFromResetUrl(resetUrl: string): string {
-  const token = new URL(resetUrl).searchParams.get("token");
-  if (!token) throw new Error(`expected a token query param in ${resetUrl}`);
+  const token = new URLSearchParams(new URL(resetUrl).hash.slice(1)).get("token");
+  if (!token) throw new Error(`expected a token in the URL fragment of ${resetUrl}`);
   return token;
 }
 
@@ -455,7 +455,8 @@ describe("createAuthRequestListener", () => {
       expect(await res.json()).toEqual({ ok: true });
       expect(mailer.sent).toHaveLength(1);
       expect(mailer.sent[0]!.to).toBe(user.email);
-      expect(mailer.sent[0]!.resetUrl.startsWith(`${APP_BASE_URL}/reset-password?token=`)).toBe(true);
+      expect(mailer.sent[0]!.resetUrl.startsWith(`${APP_BASE_URL}/?page=password-reset#token=`)).toBe(true);
+      expect(new URL(mailer.sent[0]!.resetUrl).searchParams.has("token")).toBe(false);
     });
 
     it("returns the identical response for an unknown email, without sending mail", async () => {
