@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Pool, PoolClient } from "pg";
 import {
+  assertGatewayTenantActive,
   failGatewayCall,
   getCurrentTenantAiBudget,
   getGatewaySpend,
@@ -58,16 +59,20 @@ async function assertWithinBudget(client: PoolClient, globalCaps: GlobalAiCaps):
 
 /**
  * #620: before each provider call, one transaction takes a transaction-scoped advisory lock that
- * serializes every gateway reservation, checks the budget, and inserts a `reserved` row at the
+ * serializes every gateway reservation, then checks that the caller's tenant exists and is active
+ * (`assertGatewayTenantActive`, so an inactive and an unknown tenant get the same
+ * `attribution_refused`), then checks the budget, and then inserts a `reserved` row at the
  * caller's estimate. The lock is released at COMMIT, before the provider is called, so concurrent
  * calls serialize only on the check-and-insert, never on the provider round trip — and the next
- * caller's budget check already sees this call's reservation. A `BudgetExceededError` rolls the
- * transaction back (no row) and propagates unchanged. The lock key and the reserve/settle/fail
- * lifecycle are docs/adr/2026-09-27-ai-budget-reservations-under-a-global-advisory-lock.md.
+ * caller's budget check already sees this call's reservation. A `BudgetExceededError`, or the
+ * tenant check's `ForbiddenError`, rolls the transaction back (no row) and propagates unchanged.
+ * The lock key and the reserve/settle/fail lifecycle are
+ * docs/adr/2026-09-27-ai-budget-reservations-under-a-global-advisory-lock.md.
  */
 function reserve(pool: Pool, ctx: GatewayCallContext): Promise<AiGatewayCallRow> {
   return withTransaction(pool, async (tx) => {
     await tx.query("SELECT pg_advisory_xact_lock(hashtext('ai_gateway_budget'))");
+    await assertGatewayTenantActive(tx);
     await assertWithinBudget(tx, ctx.globalCaps);
     return reserveGatewayCall(tx, {
       provider: ctx.provider,

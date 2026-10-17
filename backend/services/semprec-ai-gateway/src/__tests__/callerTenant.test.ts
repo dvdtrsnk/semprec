@@ -301,11 +301,16 @@ describe("caller tenant on the gateway routes", () => {
       expect(providerCalls).toBe(0);
     });
 
-    it("refuses a tenant that does not exist with 403 budget_exceeded, before attribution is checked", async () => {
-      const res = await send(route, { [TENANT_HEADER]: randomUUID() });
+    it("refuses a tenant that does not exist exactly like a suspended tenant, before the budget check", async () => {
+      const unknown = await send(route, { [TENANT_HEADER]: randomUUID() });
+      await pool.query("UPDATE tenants SET status = 'suspended' WHERE id = $1", [tenantZero]);
+      const suspended = await send(route, { [TENANT_HEADER]: tenantZero });
 
-      expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: "AI budget exceeded", code: "budget_exceeded" });
+      expect(unknown.status).toBe(403);
+      const unknownBody: unknown = await unknown.json();
+      expectRefused(unknownBody);
+      expect(suspended.status).toBe(unknown.status);
+      expect(await suspended.json()).toEqual(unknownBody);
       expect(await callRows()).toEqual([]);
       expect(providerCalls).toBe(0);
     });

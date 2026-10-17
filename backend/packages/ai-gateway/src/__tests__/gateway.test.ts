@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { createAgentRun, createUser, failGatewayCall, hashPassword, seedSystem } from "@semprec/data";
+import { createAgentRun, createUser, failGatewayCall, ForbiddenError, hashPassword, seedSystem } from "@semprec/data";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -613,17 +613,22 @@ describe("gateway caps across tenants, through the semprec_side role", () => {
     expect(logWarn).toHaveBeenCalledWith({ limit: "noTenantBudget" }, expect.any(String));
   });
 
-  it("refuses a reservation outside any tenant scope while two tenants exist", async () => {
+  it("refuses a reservation outside any tenant scope while two tenants exist, as attribution_refused", async () => {
     await setTenantAiBudget(adminPool, tenantA);
     await setTenantAiBudget(adminPool, tenantB);
 
-    await expectRefused(
-      complete(
-        sidePool,
-        { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.01, globalCaps: GLOBAL_CAPS },
-        async () => ({ inputTokens: 1, outputTokens: 1, costUsd: 0.01 }),
-      ),
+    // With no scope and two tenants `app_tenant_default()` is NULL, so the tenant-active check
+    // refuses before the budget check reads anything.
+    const err: unknown = await complete(
+      sidePool,
+      { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.01, globalCaps: GLOBAL_CAPS },
+      async () => ({ inputTokens: 1, outputTokens: 1, costUsd: 0.01 }),
+    ).then(
+      () => null,
+      (e: unknown) => e,
     );
+    expect(err).toBeInstanceOf(ForbiddenError);
+    expect(err instanceof ForbiddenError && err.code).toBe("attribution_refused");
     expect(await rowCount()).toBe(0);
   });
 

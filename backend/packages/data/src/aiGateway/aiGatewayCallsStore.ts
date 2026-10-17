@@ -127,6 +127,31 @@ export interface ReserveGatewayCallInput {
   operation?: string | null;
 }
 
+/** The one refusal for a call that cannot be attributed to an active tenant: no details, so no case is told apart. */
+function attributionRefused(): ForbiddenError {
+  return new ForbiddenError(
+    "AI gateway call is not attributable to the caller's tenant",
+    undefined,
+    "attribution_refused",
+  );
+}
+
+/**
+ * Refuses the ambient tenant (`app_tenant_default()`) unless it exists and is `active`, with the
+ * same `attribution_refused` error `reserveGatewayCall` throws. The gateway runs it before its
+ * budget check so that an inactive tenant and an unknown tenant get one refusal. Without it, an
+ * unknown tenant has no `tenant_ai_budgets` row and is refused as `budget_exceeded`, while a
+ * suspended tenant keeps its row, passes the budget check and is refused only by the insert, so the
+ * two answers tell a caller which tenant ids exist. `reserveGatewayCall` keeps its own
+ * `status = 'active'` predicate as the write-time guard.
+ */
+export async function assertGatewayTenantActive(client: Pool | PoolClient): Promise<void> {
+  const { rows } = await client.query<{ active: boolean }>(
+    "SELECT EXISTS (SELECT 1 FROM tenants WHERE id = app_tenant_default() AND status = 'active') AS active",
+  );
+  if (rows[0]?.active !== true) throw attributionRefused();
+}
+
 /**
  * Inserts a `reserved` row at the estimate, with every usage column NULL until it is settled.
  *
@@ -158,12 +183,7 @@ export async function reserveGatewayCall(
     ],
   );
   const row = rows[0];
-  if (!row)
-    throw new ForbiddenError(
-      "AI gateway call is not attributable to the caller's tenant",
-      undefined,
-      "attribution_refused",
-    );
+  if (!row) throw attributionRefused();
   return mapRow(row);
 }
 

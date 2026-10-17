@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
@@ -8,7 +8,7 @@ import { createUser } from "../auth/usersStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { insertItem } from "../chokePoint/itemsStore.js";
 import { ForbiddenError } from "../errors.js";
-import { reserveGatewayCall } from "../aiGateway/aiGatewayCallsStore.js";
+import { assertGatewayTenantActive, reserveGatewayCall } from "../aiGateway/aiGatewayCallsStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import {
@@ -164,5 +164,41 @@ describe("reserveGatewayCall attribution guard", () => {
     } finally {
       await sidePool.end();
     }
+  });
+});
+
+describe("assertGatewayTenantActive", () => {
+  // The describe above ends the shared admin pool in its afterAll, so this one opens its own.
+  beforeAll(() => {
+    adminPool = getTestPool();
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(adminPool);
+    tenantZero = getTenantZeroId();
+    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+  });
+
+  afterEach(async () => {
+    await adminPool.query("UPDATE tenants SET status = 'active' WHERE id = $1", [tenantZero]);
+    await pool.end();
+  });
+
+  afterAll(async () => {
+    await adminPool?.end();
+  });
+
+  it("resolves for an active tenant", async () => {
+    await expect(runInTenant(tenantZero, () => assertGatewayTenantActive(pool))).resolves.toBeUndefined();
+  });
+
+  it.each(["provisioning", "suspended", "deleting"] as const)("refuses a %s tenant", async (status) => {
+    await adminPool.query("UPDATE tenants SET status = $2 WHERE id = $1", [tenantZero, status]);
+
+    await expectRefused(runInTenant(tenantZero, () => assertGatewayTenantActive(pool)));
+  });
+
+  it("refuses a tenant that does not exist with the same refusal", async () => {
+    await expectRefused(runInTenant(randomUUID(), () => assertGatewayTenantActive(pool)));
   });
 });
