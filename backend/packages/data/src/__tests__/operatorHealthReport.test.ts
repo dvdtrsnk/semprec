@@ -7,13 +7,14 @@ import { upsertProcessHeartbeat } from "../health/processHeartbeats.js";
 import { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import { createAgentRun, finishAgentRun } from "../agentRuns/agentRunsStore.js";
 import { getOperatorHealthReport } from "../observability/systemHealthReport.js";
+import { createUser } from "../auth/usersStore.js";
 
 let pool: Pool;
 
-/** Errored agent run inside one tenant; `ageDays` moves its start time into the past. */
-async function seedErroredAgentRun(tenantId: string, ageDays = 0): Promise<void> {
+/** Errored agent run inside one tenant, actor `userId`; `ageDays` moves its start time into the past. */
+async function seedErroredAgentRun(tenantId: string, userId: string, ageDays = 0): Promise<void> {
   await withTenantTransaction(pool, tenantId, async (client) => {
-    const run = await createAgentRun(client, { triggeredBy: "user", task: "fixture", unit: "invocation" });
+    const run = await createAgentRun(client, { triggeredBy: "user", task: "fixture", unit: "invocation", userId });
     await finishAgentRun(client, run.id, "error", "boom");
     if (ageDays > 0) {
       await client.query(`UPDATE agent_runs SET started_at = now() - make_interval(days => $2) WHERE id = $1`, [
@@ -30,7 +31,10 @@ async function seedErroredAgentRun(tenantId: string, ageDays = 0): Promise<void>
  */
 async function seedAutomationError(tenantId: string): Promise<void> {
   await withTenantTransaction(pool, tenantId, (client) =>
-    client.query(`INSERT INTO item_automation (item_id, status, error) VALUES ($1, 'error', 'boom')`, [randomUUID()]),
+    client.query(`INSERT INTO item_automation (tenant_id, item_id, status, error) VALUES ($1, $2, 'error', 'boom')`, [
+      tenantId,
+      randomUUID(),
+    ]),
   );
 }
 
@@ -56,12 +60,23 @@ describe("getOperatorHealthReport (issue #1038)", () => {
   it("sums errors across tenants, excludes agent-run errors older than seven days", async () => {
     const tenantA = await createTestTenant(pool);
     const tenantB = await createTestTenant(pool);
+    const userA = await createUser(pool, {
+      email: `a-${randomUUID()}@example.test`,
+      passwordHash: "unused",
+      tenantId: tenantA,
+    });
+    const userB = await createUser(pool, {
+      email: `b-${randomUUID()}@example.test`,
+      passwordHash: "unused",
+      tenantId: tenantB,
+    });
+    await seedErroredAgentRun(tenantA, userA.id);
+    await seedErroredAgentRun(tenantB, userB.id);
     for (const tenantId of [tenantA, tenantB]) {
-      await seedErroredAgentRun(tenantId);
       await seedAutomationError(tenantId);
       await seedAlertingTenantCheck(tenantId);
     }
-    await seedErroredAgentRun(tenantA, 8);
+    await seedErroredAgentRun(tenantA, userA.id, 8);
 
     const report = await getOperatorHealthReport(pool);
 
@@ -93,7 +108,9 @@ describe("getOperatorHealthReport (issue #1038)", () => {
   it("reports only global observability checks, never a tenant's alerting check", async () => {
     const tenantId = await createTestTenant(pool);
     await seedAlertingTenantCheck(tenantId);
-    await pool.query(`INSERT INTO observability_checks (check_key, status, detail) VALUES ('queue:backlog', 'alerting', '{}'::jsonb)`);
+    await pool.query(
+      `INSERT INTO observability_checks (check_key, status, detail) VALUES ('queue:backlog', 'alerting', '{}'::jsonb)`,
+    );
 
     const report = await getOperatorHealthReport(pool);
 
@@ -117,8 +134,6 @@ describe("getOperatorHealthReport (issue #1038)", () => {
       `SELECT p.proowner::regrole::text AS owner, p.prosecdef AS secdef, p.proconfig AS config
          FROM pg_proc p WHERE p.proname = 'ops_health_counts'`,
     );
-    expect(rows).toEqual([
-      { owner: "semprec_router", secdef: true, config: ["search_path=pg_catalog, public"] },
-    ]);
+    expect(rows).toEqual([{ owner: "semprec_router", secdef: true, config: ["search_path=pg_catalog, public"] }]);
   });
 });

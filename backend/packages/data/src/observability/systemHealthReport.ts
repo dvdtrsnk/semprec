@@ -63,7 +63,10 @@ export interface SystemHealthReport {
  * exist. The caller decides the set: the tenant-visible report passes `getExpectedProcessNames`
  * (issue #168), the operator report passes the fixed list so mailbox rows never appear.
  */
-async function getProcessHealthStatuses(client: Queryable, expected: readonly string[]): Promise<ProcessHealthStatus[]> {
+async function getProcessHealthStatuses(
+  client: Queryable,
+  expected: readonly string[],
+): Promise<ProcessHealthStatus[]> {
   if (expected.length === 0) return [];
 
   const { rows } = await client.query<{
