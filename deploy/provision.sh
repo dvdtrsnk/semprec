@@ -9,6 +9,9 @@ readonly JOURNALD_CONFIG_DIR=/etc/systemd/journald.conf.d
 readonly CADDY_CONFIG_DIR=/etc/caddy
 readonly CADDY_UNIT_DROPIN_DIR=/etc/systemd/system/caddy.service.d
 readonly NFTABLES_CONFIG=/etc/nftables.conf
+readonly MCP_LAUNCHER_PATH=/usr/local/libexec/semprec-mcp-launch
+readonly MCP_SANDBOX_USER=semprec-mcp
+readonly MCP_SANDBOX_HOME=/var/lib/semprec-mcp
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly APT_KEYRING_DIR=/etc/apt/keyrings
 readonly APT_SOURCES_DIR=/etc/apt/sources.list.d
@@ -58,6 +61,12 @@ readonly -a TIMER_SERVICES=(
 
 readonly -a FAILURE_SERVICE_UNITS=(
   semprec-failping@.service
+)
+
+# The stdio MCP sandbox (docs/adr/2026-10-17-stdio-mcp-servers-run-in-a-socket-activated-sandbox.md).
+readonly -a MCP_SANDBOX_UNITS=(
+  semprec-mcp-launch.socket
+  semprec-mcp-launch@.service
 )
 
 require_root() {
@@ -115,7 +124,8 @@ install_host_packages() {
     nftables \
     restic \
     ffmpeg \
-    hunspell-cs
+    hunspell-cs \
+    jq
   corepack enable pnpm
 }
 
@@ -189,6 +199,16 @@ install_postgresql_hunspell_assets() {
 ensure_service_user() {
   if ! getent passwd semprec >/dev/null; then
     useradd --system --user-group --home-dir "$SEMPREC_ROOT" --shell /usr/sbin/nologin semprec
+  fi
+}
+
+# The uid stdio MCP servers run as: its own group only, never a member of `semprec`, so it reads
+# nothing the services' group can. systemd creates its home as the launcher unit's StateDirectory.
+# It must exist before apply_nftables, whose ruleset names it.
+ensure_mcp_sandbox_user() {
+  if ! getent passwd "$MCP_SANDBOX_USER" >/dev/null; then
+    useradd --system --user-group --home-dir "$MCP_SANDBOX_HOME" --no-create-home \
+      --shell /usr/sbin/nologin "$MCP_SANDBOX_USER"
   fi
 }
 
@@ -317,7 +337,7 @@ ensure_backup_directory() {
 
 install_systemd_units() {
   local unit
-  for unit in "${SERVICE_UNITS[@]}" "${TIMER_SERVICES[@]}" "${TIMER_UNITS[@]}" "${FAILURE_SERVICE_UNITS[@]}"; do
+  for unit in "${SERVICE_UNITS[@]}" "${TIMER_SERVICES[@]}" "${TIMER_UNITS[@]}" "${FAILURE_SERVICE_UNITS[@]}" "${MCP_SANDBOX_UNITS[@]}"; do
     install -o root -g root -m 0644 "$SCRIPT_DIR/systemd/$unit" "$SYSTEMD_UNIT_DIR/$unit"
   done
 
@@ -336,13 +356,22 @@ install_timer_scripts() {
   done
 }
 
+install_mcp_launcher() {
+  install -d -o root -g root -m 0755 "$(dirname -- "$MCP_LAUNCHER_PATH")"
+  install -o root -g root -m 0755 "$SCRIPT_DIR/bin/semprec-mcp-launch" "$MCP_LAUNCHER_PATH"
+}
+
 verify_systemd_units() {
   local -a unit_paths=()
   local unit
-  for unit in "${SERVICE_UNITS[@]}" "${TIMER_SERVICES[@]}" "${TIMER_UNITS[@]}" "${FAILURE_SERVICE_UNITS[@]}"; do
+  for unit in "${SERVICE_UNITS[@]}" "${TIMER_SERVICES[@]}" "${TIMER_UNITS[@]}" "${FAILURE_SERVICE_UNITS[@]}" "${MCP_SANDBOX_UNITS[@]}"; do
     unit_paths+=("$SYSTEMD_UNIT_DIR/$unit")
   done
   systemd-analyze verify "${unit_paths[@]}"
+}
+
+enable_mcp_launch_socket() {
+  systemctl enable --now semprec-mcp-launch.socket
 }
 
 enable_timers() {
@@ -458,16 +487,19 @@ main() {
   require_supported_distribution
   install_host_packages
   ensure_service_user
+  ensure_mcp_sandbox_user
   ensure_release_tree
   install_postgresql_hunspell_assets
   ensure_backup_directory
   install_systemd_units
   install_timer_scripts
+  install_mcp_launcher
   ensure_shared_permissions
   verify_systemd_units
   systemctl daemon-reload
   systemctl restart systemd-journald
   enable_timers
+  enable_mcp_launch_socket
   install_caddy_config
   render_caddy_environment
   check_outbound_link_settings

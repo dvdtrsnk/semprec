@@ -1,7 +1,7 @@
 [Unit]
 Description=Semprec agents queue worker
-Wants=network-online.target
-After=network-online.target docker.service
+Wants=network-online.target semprec-mcp-launch.socket
+After=network-online.target docker.service semprec-mcp-launch.socket
 StartLimitIntervalSec=15min
 StartLimitBurst=180
 OnFailure=semprec-failping@%n.service
@@ -17,6 +17,7 @@ EnvironmentFile=/opt/semprec/shared/env/gateway-token.env
 EnvironmentFile=/opt/semprec/shared/env/agents.env
 EnvironmentFile=/opt/semprec/shared/env/settings.env
 EnvironmentFile=/opt/semprec/current/release.env
+Environment=SEMPREC_MCP_LAUNCH_SOCKET=/run/semprec-mcp-launch.sock
 SyslogIdentifier=semprec-agents
 ExecStart=/usr/bin/env node /opt/semprec/current/backend/services/semprec-agents/dist/serve.js
 Restart=on-failure

@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Issue #1070: runs one stdio MCP server for one connection accepted by
+# semprec-mcp-launch.socket. stdin and stdout are that connection. The first line is a JSON header
+# {"command": string, "args": string[], "env": {NAME: string}}; every byte after it belongs to the
+# server. The header can hold a credential, so no message here ever includes it.
+# See docs/adr/2026-10-17-stdio-mcp-servers-run-in-a-socket-activated-sandbox.md.
+set -euo pipefail
+
+# Byte semantics for `read -n 1`, whatever locale systemd hands over.
+export LC_ALL=C
+
+readonly SANDBOX_USER=semprec-mcp
+readonly SANDBOX_HOME=/var/lib/semprec-mcp
+readonly MAX_HEADER_BYTES=65536
+readonly EXIT_REFUSED=64
+
+refuse() {
+  echo "semprec-mcp-launch: refused: $1" >&2
+  exit "$EXIT_REFUSED"
+}
+
+if [[ "$(id -un 2>/dev/null || true)" != "$SANDBOX_USER" ]]; then
+  refuse "not running as $SANDBOX_USER"
+fi
+
+# One byte per `read`, so not a byte past the header's newline is consumed: the rest of stdin is
+# the server's. `read` silently drops NUL bytes from a line, so the delimiter is NUL instead and an
+# empty result is a NUL byte in the header.
+header=""
+header_bytes=0
+terminated=0
+while IFS= read -r -d '' -n 1 byte; do
+  if [[ -z "$byte" ]]; then
+    refuse "header contains a NUL byte"
+  fi
+  if [[ "$byte" == $'\n' ]]; then
+    terminated=1
+    break
+  fi
+  if (( header_bytes == MAX_HEADER_BYTES )); then
+    refuse "header exceeds $MAX_HEADER_BYTES bytes"
+  fi
+  header+="$byte"
+  header_bytes=$((header_bytes + 1))
+done
+if (( ! terminated )); then
+  refuse "header is not terminated by a newline"
+fi
+
+# Exactly one JSON value with exactly the three fields. NULs are found with `explode`, because
+# jq 1.6's `contains("\u0000")` is true for every string; `\A`/`\z` anchor the name pattern, since
+# `$` would also match before a trailing newline.
+readonly HEADER_FILTER='
+  def no_nul: (explode | any(. == 0)) | not;
+  length == 1
+  and (.[0] | type == "object"
+    and (keys == ["args", "command", "env"])
+    and (.command | type == "string" and length > 0 and no_nul and (explode | any(. == 61) | not))
+    and (.args | type == "array" and all(.[]; type == "string" and no_nul))
+    and (.env | type == "object" and all(to_entries[];
+      (.key | test("\\A[A-Za-z_][A-Za-z0-9_]*\\z"))
+      and (.value | type == "string" and no_nul))))
+'
+if ! jq -n -e "[inputs] | $HEADER_FILTER" <<<"$header" >/dev/null 2>&1; then
+  refuse "header is not a valid launch header"
+fi
+
+# Each field is read NUL-terminated, so a value may hold newlines or spaces unchanged.
+mapfile -d '' -t command_field < <(jq -j '.command, "\u0000"' <<<"$header")
+mapfile -d '' -t args < <(jq -j '.args[] | (., "\u0000")' <<<"$header")
+mapfile -d '' -t env_pairs < <(jq -j '.env | to_entries[] | (.key + "=" + .value, "\u0000")' <<<"$header")
+if [[ "${#command_field[@]}" -ne 1 ]] \
+  || [[ "${#args[@]}" -ne "$(jq '.args | length' <<<"$header")" ]] \
+  || [[ "${#env_pairs[@]}" -ne "$(jq '.env | length' <<<"$header")" ]]; then
+  refuse "header could not be decoded"
+fi
+unset header
+
+cd "$SANDBOX_HOME"
+# `env -i` starts from an empty environment; later assignments override earlier ones, so the
+# header's `env` overlays the base. `command` contains no `=`, so `env` never reads it as one.
+exec env -i -- \
+  PATH=/usr/local/bin:/usr/bin:/bin \
+  HOME="$SANDBOX_HOME" \
+  LANG=C.UTF-8 \
+  USER="$SANDBOX_USER" \
+  LOGNAME="$SANDBOX_USER" \
+  "${env_pairs[@]}" \
+  "${command_field[0]}" "${args[@]}"
