@@ -383,8 +383,8 @@ the dedicated user `semprec-mcp`. See
   stopped after 300 seconds, and is limited to 1 GiB of memory and 64 tasks.
 - **Egress.** The `output` chain sends traffic of uid `semprec-mcp` through `semprec_mcp_egress`. It
   accepts replies and DNS (tcp/udp port 53) and rejects the same blocked sets as `semprec_egress`.
-  It has no loopback exception: all of `127.0.0.0/8` and `::1` is rejected, including Postgres and
-  the gateway. Denials are logged, at most 10 per minute, with the prefix
+  It has no loopback exception: apart from port 53, all of `127.0.0.0/8` and `::1` is rejected,
+  including Postgres and the gateway. Denials are logged, at most 10 per minute, with the prefix
   `semprec-mcp-egress-deny `. A `stdio` server that needs a private or loopback address cannot
   run here.
 
