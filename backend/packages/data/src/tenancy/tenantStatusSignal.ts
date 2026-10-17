@@ -135,6 +135,7 @@ export async function startTenantDeactivationListener(
       // the process when its connection drops.
       next.on("error", onSetupError);
       try {
+        // LISTEN takes no bind parameters; the channel is this module's own constant identifier.
         await next.query(`LISTEN ${TENANT_STATUS_CHANNEL}`);
         const { rows } = await runAsSystem("tenantDeactivationResync", () =>
           next.query<{ id: string }>("SELECT id FROM tenants WHERE status IN ('suspended', 'deleting') ORDER BY id"),
