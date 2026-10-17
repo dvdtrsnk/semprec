@@ -855,6 +855,146 @@ describe("SempConversation across tenants", () => {
       conversation.clear();
     });
 
+    describe("when closing the run fails or a TTL pause holds the entry", () => {
+      /** Short enough that the pause retry and the dropped-run retry both fire within a test. */
+      const RETRY_TTL_MS = 80;
+
+      afterEach(async () => {
+        await adminPool.query("DROP TRIGGER IF EXISTS test_fail_run_close ON agent_runs");
+        await adminPool.query("DROP FUNCTION IF EXISTS test_fail_run_close()");
+      });
+
+      /** Makes every close of `tenantId`'s runs to one of `statuses` raise until the trigger is dropped. */
+      async function failRunCloses(tenantId: string, statuses: Array<"done" | "error">): Promise<void> {
+        const failing = statuses.map((status) => `'${status}'`).join(", ");
+        await adminPool.query(`
+          CREATE OR REPLACE FUNCTION test_fail_run_close() RETURNS trigger AS $$
+          BEGIN
+            IF NEW.tenant_id = '${tenantId}' AND NEW.status IN (${failing}) THEN
+              RAISE EXCEPTION 'injected run close failure';
+            END IF;
+            RETURN NEW;
+          END $$ LANGUAGE plpgsql`);
+        await adminPool.query(
+          `CREATE TRIGGER test_fail_run_close BEFORE UPDATE ON agent_runs
+           FOR EACH ROW EXECUTE FUNCTION test_fail_run_close()`,
+        );
+      }
+
+      async function healRunCloses(): Promise<void> {
+        await adminPool.query("DROP TRIGGER test_fail_run_close ON agent_runs");
+      }
+
+      function pauseOf(conversation: SempConversation, tenantId: string): Promise<void> {
+        return runInTenant(tenantId, () =>
+          (conversation as unknown as { pause(tenantId: string): Promise<void> }).pause(tenantId),
+        );
+      }
+
+      it("keeps an idle dropped entry when its close fails, rejects sends meanwhile, and retries the close", async () => {
+        const { createAgentSession, sessions } = recordingSessions();
+        const conversation = conversationFor(createAgentSession, {}, RETRY_TTL_MS);
+        await sendAs(tenantB, conversation, "b one");
+        await failRunCloses(tenantB, ["error"]);
+
+        await conversation.dropTenant(tenantB);
+
+        expect((await runRowsOf(tenantB)).map((r) => r.status)).toEqual(["running"]);
+        expect(await sendAs(tenantB, conversation, "b during")).toEqual({ ok: false, error: SEMP_BUSY_ERROR_MESSAGE });
+        expect(sessions.find((s) => s.tenantId === tenantB)!.tasks).toEqual(["b one"]);
+
+        await healRunCloses();
+        await vi.waitFor(async () =>
+          expect(await runRowsOf(tenantB)).toEqual([
+            expect.objectContaining({ status: "error", result: "account deactivated" }),
+          ]),
+        );
+        await vi.waitFor(async () => expect((await sendAs(tenantB, conversation, "b after")).ok).toBe(true));
+        expect(sessions.filter((s) => s.tenantId === tenantB)).toHaveLength(2);
+        conversation.clear();
+      });
+
+      it("keeps an in-flight turn's dropped entry when the close after it fails, and retries the close", async () => {
+        const slow = gate();
+        const { createAgentSession, sessions } = recordingSessions(new Map([["b slow", slow.promise]]));
+        const conversation = conversationFor(createAgentSession, {}, RETRY_TTL_MS);
+        await sendAs(tenantB, conversation, "b one");
+        const bInFlight = sendAs(tenantB, conversation, "b slow");
+        await vi.waitFor(() => expect(sessions.find((s) => s.tenantId === tenantB)!.tasks).toContain("b slow"));
+        await conversation.dropTenant(tenantB);
+        await failRunCloses(tenantB, ["error"]);
+
+        slow.release();
+        expect(await bInFlight).toEqual({ ok: true, message: "reply to b slow" });
+        expect((await runRowsOf(tenantB)).map((r) => r.status)).toEqual(["running"]);
+        expect(await sendAs(tenantB, conversation, "b during")).toEqual({ ok: false, error: SEMP_BUSY_ERROR_MESSAGE });
+
+        await healRunCloses();
+        await vi.waitFor(async () =>
+          expect(await runRowsOf(tenantB)).toEqual([
+            expect.objectContaining({ status: "error", result: "account deactivated" }),
+          ]),
+        );
+        conversation.clear();
+      });
+
+      it("keeps an in-flight wake's dropped entry when the close after it fails, and retries the close", async () => {
+        const slow = gate();
+        const { createAgentSession } = recordingSessions(new Map([["b slow", slow.promise]]));
+        const conversation = conversationFor(createAgentSession, {}, RETRY_TTL_MS);
+        const bInFlight = sendAs(tenantB, conversation, "b slow");
+        await vi.waitFor(async () => expect(await runRowsOf(tenantB)).toHaveLength(1));
+        await conversation.dropTenant(tenantB);
+        await failRunCloses(tenantB, ["error"]);
+
+        slow.release();
+        expect(await bInFlight).toEqual({ ok: true, message: "reply to b slow" });
+        expect((await runRowsOf(tenantB)).map((r) => r.status)).toEqual(["running"]);
+        expect(await sendAs(tenantB, conversation, "b during")).toEqual({ ok: false, error: SEMP_BUSY_ERROR_MESSAGE });
+
+        await healRunCloses();
+        await vi.waitFor(async () =>
+          expect(await runRowsOf(tenantB)).toEqual([
+            expect.objectContaining({ status: "error", result: "account deactivated" }),
+          ]),
+        );
+        conversation.clear();
+      });
+
+      it("lets a TTL pause in progress close the run as done and remove the entry when the pause succeeds", async () => {
+        const { createAgentSession, sessions } = recordingSessions();
+        const conversation = conversationFor(createAgentSession, {}, DROP_TTL_MS);
+        await sendAs(tenantB, conversation, "b one");
+
+        const pausing = pauseOf(conversation, tenantB);
+        await conversation.dropTenant(tenantB);
+        await pausing;
+
+        expect((await runRowsOf(tenantB)).map((r) => r.status)).toEqual(["done"]);
+        await sendAs(tenantB, conversation, "b after");
+        expect(sessions.filter((s) => s.tenantId === tenantB)).toHaveLength(2);
+        conversation.clear();
+      });
+
+      it("closes the run as error instead of rescheduling the pause when a TTL pause in progress fails", async () => {
+        const { createAgentSession, sessions } = recordingSessions();
+        const conversation = conversationFor(createAgentSession, {}, DROP_TTL_MS);
+        await sendAs(tenantB, conversation, "b one");
+        await failRunCloses(tenantB, ["done"]);
+
+        const pausing = pauseOf(conversation, tenantB);
+        await conversation.dropTenant(tenantB);
+        await pausing;
+
+        expect(await runRowsOf(tenantB)).toEqual([
+          expect.objectContaining({ status: "error", result: "account deactivated" }),
+        ]);
+        await sendAs(tenantB, conversation, "b after");
+        expect(sessions.filter((s) => s.tenantId === tenantB)).toHaveLength(2);
+        conversation.clear();
+      });
+    });
+
     it("does nothing on a second call, during a turn or after it, or for a tenant with no conversation", async () => {
       const slow = gate();
       const { createAgentSession } = recordingSessions(new Map([["b slow", slow.promise]]));

@@ -183,6 +183,8 @@ export async function startTenantDeactivationListener(
           connected = await connect();
         } catch (err) {
           logger.error({ errorName: errorName(err) }, "Tenant deactivation LISTEN reconnect failed");
+          // `close()` ran while this connect was in flight; its cancelBackoff found no timer to cancel.
+          if (closed) return;
           await backoff(delay);
           delay = Math.min(delay * 2, RECONNECT_MAX_DELAY_MS);
           continue;
