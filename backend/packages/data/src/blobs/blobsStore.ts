@@ -109,8 +109,9 @@ export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput
 }
 
 /**
- * Deletes blob `id` only when nothing references it any more — no item in any partition (live or
- * trashed) whose `properties.file.blobId` names it and no mail attachment — because
+ * Deletes blob `id` only when nothing references it any more — no item visible to the caller (live
+ * or trashed, in any of its databases, archived ones included) whose `properties.file.blobId` names
+ * it and no mail attachment — because
  * `findOrCreateBlob`'s content-hash dedup shares one blob between identical uploads. Used by the
  * trash purge (issue #675) in its own transaction, after the referencing item is gone. Returns the
  * deleted row's `storage_key` so the caller can remove the bytes after the commit, or null when the
@@ -120,8 +121,13 @@ export async function deleteBlobIfUnreferenced(client: Queryable, id: string): P
   // `@>` rather than `->> =` so the lookup can use `items_props_gin` (jsonb_path_ops). The
   // `database_id` bind prunes the reference lookup to the visible partitions; it does not change
   // which rows count as references, since every item in those databases is still considered.
+  // The ids are read by an earlier statement, so under READ COMMITTED a database committed in
+  // between would be visible to this DELETE but missing from the list, and an item in it that
+  // references the blob would go unseen. The `databases` guard makes the DELETE a no-op in that
+  // case: the blob is kept, as if still referenced, rather than deleted from under a reference.
   const { rows } = await client.query<{ storage_key: string }>(
     `DELETE FROM blobs WHERE id = $1
+       AND NOT EXISTS (SELECT 1 FROM databases WHERE NOT (id = ANY($3::uuid[])))
        AND NOT EXISTS (
          SELECT 1 FROM items
          WHERE database_id = ANY($3::uuid[])
