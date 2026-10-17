@@ -390,3 +390,5 @@ export { forEachActiveTenant } from "./tenancy/forEachActiveTenant.js";
 export { provisionTenant } from "./tenancy/provisionTenant.js";
 export { getUserTenantBinding } from "./tenancy/tenantsStore.js";
 export * from "./tenancy/accountsAdminStore.js";
+export * from "./tenancy/invites.js";
+export * from "./tenancy/inviteMail.js";

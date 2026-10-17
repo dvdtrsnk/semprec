@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { CAPABILITY_IDS, withTraceContext } from "@semprec/shared";
 import { createGenericApplicationService, createGenericOperationGateway } from "@semprec/application";
-import type { BlobStorageWriter, PasswordResetMailer, loadFullModuleRegistry } from "@semprec/data";
+import type { BlobStorageWriter, InviteMailer, PasswordResetMailer, loadFullModuleRegistry } from "@semprec/data";
 import { createMcpRequestListener } from "./mcp/mcpHandler.js";
 import { mountCustomRoutes } from "./adapter/customRouteMount.js";
 import { mountRoutes } from "./adapter/routeTable.js";
@@ -25,6 +25,8 @@ import { createGraphWebhookRequestListener } from "./graphWebhookHandler.js";
 
 export interface AppOptions {
   passwordResetMailer: PasswordResetMailer;
+  /** Issue #1040: absent when SMTP is not configured — invitations are still issued, but no mail is sent. */
+  inviteMailer?: InviteMailer;
   appBaseUrl: string;
   setupToken: string;
   /** Backs `GET /api/schema` (issue #147) — every active module's manifest loaded once at startup. */

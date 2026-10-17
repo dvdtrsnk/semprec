@@ -1,15 +1,18 @@
 import type { Pool } from "pg";
 import {
+  createInvite,
   getOperatorHealthReport,
   listAccounts,
+  listInvites,
   listTenantAiBudgetOverview,
   NotFoundError,
   recordAdminAction,
+  revokeInvite,
   setTenantAiBudget,
   ValidationError,
   withTransaction,
 } from "@semprec/data";
-import { requireJsonObjectBody, requireUuidParam } from "./adapter/requestValidation.js";
+import { requireJsonObjectBody, requireStringField, requireUuidParam } from "./adapter/requestValidation.js";
 import type { RouteDefinition } from "./adapter/routeTable.js";
 import type { AppOptions } from "./app.js";
 
@@ -30,10 +33,10 @@ function requireCapField(body: Record<string, unknown>, field: string): number |
  * The admin route family (issue #1037). Every route is flagged `admin: true`, so the adapter
  * refuses members with 403 `admin_required` and runs the handler in system scope; handlers here
  * read global identity tables only and never enter a tenant
- * (docs/adr/2026-10-17-admin-role-without-content-access.md). `_options` is the dispatcher's own
- * options object, passed through for the admin routes later issues add.
+ * (docs/adr/2026-10-17-admin-role-without-content-access.md). `options` is the dispatcher's own
+ * options object: invitations read its `appBaseUrl` and `inviteMailer`.
  */
-export function createAdminRoutes(pool: Pool, _options: AppOptions): RouteDefinition[] {
+export function createAdminRoutes(pool: Pool, options: AppOptions): RouteDefinition[] {
   return [
     {
       method: "GET",
@@ -104,6 +107,62 @@ export function createAdminRoutes(pool: Pool, _options: AppOptions): RouteDefini
             },
           },
         };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/admin/invites",
+      admin: true,
+      handler: async (ctx) => {
+        const body = requireJsonObjectBody(ctx.body);
+        const email = requireStringField(body, "email");
+        const actorUserId = ctx.identity.user.id;
+        const created = await withTransaction(pool, async (client) => {
+          const result = await createInvite(client, {
+            email,
+            invitedBy: actorUserId,
+            appBaseUrl: options.appBaseUrl,
+            mailer: options.inviteMailer ?? null,
+          });
+          // The audit row carries the invite id only: never the email address, never the token.
+          await recordAdminAction(client, {
+            actorUserId,
+            action: "inviteCreated",
+            targetTenantId: null,
+            details: { inviteId: result.invite.id },
+          });
+          return result;
+        });
+        return {
+          status: 201,
+          body: { invite: created.invite, inviteUrl: created.inviteUrl, emailed: options.inviteMailer !== undefined },
+        };
+      },
+    },
+    {
+      method: "GET",
+      path: "/api/admin/invites",
+      admin: true,
+      handler: async () => ({ status: 200, body: { invites: await listInvites(pool) } }),
+    },
+    {
+      method: "POST",
+      path: "/api/admin/invites/:id/revoke",
+      admin: true,
+      handler: async (ctx) => {
+        const inviteId = requireUuidParam(ctx.params, "id");
+        const actorUserId = ctx.identity.user.id;
+        const invite = await withTransaction(pool, async (client) => {
+          const revoked = await revokeInvite(client, inviteId);
+          await recordAdminAction(client, {
+            actorUserId,
+            action: "inviteRevoked",
+            targetTenantId: null,
+            details: { inviteId },
+          });
+          return revoked;
+        });
+        return { status: 200, body: { invite } };
       },
     },
   ];
