@@ -129,9 +129,10 @@ describe("admin routes (issue #1037)", () => {
       `INSERT INTO tenant_observability_checks (tenant_id, check_key, status, detail) VALUES ($1, 'mailbox:stall', 'alerting', $2)`,
       [tenantId, JSON.stringify({ lastError: "SECRET-TENANT-TEXT" })],
     );
-    await pool.query(`INSERT INTO item_automation (item_id, status, error) VALUES ($1, 'error', 'SECRET-TENANT-TEXT')`, [
-      randomUUID(),
-    ]);
+    await pool.query(
+      `INSERT INTO item_automation (tenant_id, item_id, status, error) VALUES ($1, $2, 'error', 'SECRET-TENANT-TEXT')`,
+      [tenantId, randomUUID()],
+    );
 
     const res = await fetch(`${baseUrl}/api/admin/health`, { headers: { Authorization: `Bearer ${admin.token}` } });
     expect(res.status).toBe(200);
