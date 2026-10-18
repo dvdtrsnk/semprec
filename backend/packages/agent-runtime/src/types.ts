@@ -23,6 +23,8 @@ export interface ConversationEntry {
 
 export interface AgentSessionOptions {
   task: string;
+  /** Cancels the underlying agent, including a prompt blocked waiting for its next event. */
+  signal?: AbortSignal;
   /** pi-agent-core's system-prompt override hook: given its default prompt, returns the one to use. */
   systemPromptOverride?: (defaultPrompt: string) => string;
   /**

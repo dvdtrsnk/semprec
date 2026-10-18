@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import { currentTenantScope } from "@semprec/shared";
 import {
+  AgentRunCancelledError,
   extractResultSnapshot,
   pushRunStatus,
   runAgentSessionForRun,
@@ -35,6 +36,7 @@ function requireString(payload: unknown, field: string): string {
  * queued job runs inside its tenant.
  */
 async function withInFlightRegistration<T>(
+  pool: Pool,
   inFlight: InFlightAgentRuns,
   fn: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
@@ -43,6 +45,13 @@ async function withInFlightRegistration<T>(
   const controller = new AbortController();
   const unregister = inFlight.register(scope.tenantId, controller);
   try {
+    // Registration precedes the read: an earlier deactivation is visible here, and a later
+    // notification reaches this controller. The registry keeps no deactivation tombstones.
+    const { rows } = await pool.query<{ active: boolean }>(
+      "SELECT status = 'active' AS active FROM tenants WHERE id = $1",
+      [scope.tenantId],
+    );
+    if (rows[0]?.active !== true) controller.abort();
     return await fn(controller.signal);
   } finally {
     unregister();
@@ -99,7 +108,7 @@ export function createAgentRunTask(
   inFlight: InFlightAgentRuns,
 ): AgentQueueTaskHandler {
   return (payload) =>
-    withInFlightRegistration(inFlight, async (signal) => {
+    withInFlightRegistration(pool, inFlight, async (signal) => {
       const agentRunId = requireString(payload, "agentRunId");
       const run = await getAgentRun(pool, agentRunId);
       if (!run || run.status !== "running") {
@@ -134,18 +143,19 @@ export function createRunAgentForHeartbeats(
   gateway: GatewayModel,
   inFlight: InFlightAgentRuns,
 ): RunAgentFn {
-  return async ({ agentRunId }) => {
-    const run = await getAgentRun(pool, agentRunId);
-    if (!run) throw new Error(`agent run ${agentRunId} not found`);
-
-    return withInFlightRegistration(inFlight, (signal) => runHeartbeatSession(run, signal));
-  };
+  return ({ agentRunId }) =>
+    withInFlightRegistration(pool, inFlight, async (signal) => {
+      const run = await getAgentRun(pool, agentRunId);
+      if (!run) throw new Error(`agent run ${agentRunId} not found`);
+      return runHeartbeatSession(run, signal);
+    });
 
   async function runHeartbeatSession(run: AgentRunRow, signal: AbortSignal): Promise<{ result: string | undefined }> {
     try {
       const createAgentSession = await createAgentSessionFactoryForRun(pool, moduleRegistry, gateway, run);
       await pushRunStatus(pool, run.id, "running");
-      const session = createAgentSession({ task: run.task });
+      if (signal.aborted) throw new AgentRunCancelledError();
+      const session = createAgentSession({ task: run.task, signal });
       const last = await runAgentTurn(pool, run.id, session.messages(), undefined, signal);
       await pushRunStatus(pool, run.id, "done");
       return { result: extractResultSnapshot(last) ?? undefined };

@@ -92,7 +92,9 @@ async function* promptMessages(
   agent: Agent,
   task: string,
   toolFailure: { error: Error | undefined },
+  signal?: AbortSignal,
 ): AsyncGenerator<AgentMessage> {
+  signal?.throwIfAborted();
   const queue: AgentMessage[] = [];
   let wake: (() => void) | null = null;
   let settled = false;
@@ -112,6 +114,10 @@ async function* promptMessages(
     notify();
   });
 
+  const onAbort = (): void => agent.abort();
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) onAbort();
+
   try {
     for (;;) {
       const next = queue.shift();
@@ -127,6 +133,7 @@ async function* promptMessages(
     await prompt;
     await agent.waitForIdle();
   } finally {
+    signal?.removeEventListener("abort", onAbort);
     unsubscribe();
     if (!settled) {
       agent.abort();
@@ -187,7 +194,7 @@ export function createPiAgentSessionFactory(options: PiAgentSessionFactoryOption
     // second `prompt()` while one is active).
     const prompt = (task: string): AsyncIterable<AgentMessage> => {
       toolFailure.error = undefined;
-      return promptMessages(piAgent, task, toolFailure);
+      return promptMessages(piAgent, task, toolFailure, sessionOptions.signal);
     };
     const session: AgentSession = {
       messages: () => prompt(sessionOptions.task),

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
 import { Type, fauxAssistantMessage, fauxProvider, fauxToolCall, type Context } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@semprec/agent-runtime";
@@ -64,6 +64,67 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
     expect(toolResult).toMatchObject({ toolCallId: "call-1", isError: false });
     expect(persisted.at(-2)).toMatchObject({ kind: "message", text: "all done" });
     expect(calls).toEqual([{ value: "hi" }]);
+  });
+
+  it("aborts a blocked production tool directly while its async generator waits", async () => {
+    const { faux, model, streamFn } = fauxModel();
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("echo", { value: "hi" }, { id: "call-1" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage("must not run"),
+    ]);
+    let started!: () => void;
+    const toolStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let toolAborted = false;
+    const tool: AgentTool = {
+      ...echoTool([]),
+      execute: async (_id, _params, signal) => {
+        if (!signal) throw new Error("tool requires a cancellation signal");
+        await new Promise<void>((resolve) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              toolAborted = true;
+              resolve();
+            },
+            { once: true },
+          );
+          started();
+        });
+        return { content: [{ type: "text", text: "cancelled" }], details: {} };
+      },
+    };
+    const controller = new AbortController();
+    const add = vi.spyOn(controller.signal, "addEventListener");
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    const session = createPiAgentSessionFactory({ model, streamFn, tools: [tool], systemPrompt: "base" })({
+      task: "t",
+      signal: controller.signal,
+    });
+    const result = collect(session.messages()).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    await toolStarted;
+    controller.abort();
+    expect(toolAborted).toBe(true);
+    await result;
+    expect(remove).toHaveBeenCalledExactlyOnceWith("abort", add.mock.calls[0]![1]);
+    vi.restoreAllMocks();
+  });
+
+  it("starts no prompt when the session signal was already aborted", async () => {
+    const { model, streamFn } = fauxModel();
+    const stream = vi.fn(streamFn);
+    const controller = new AbortController();
+    controller.abort();
+    const session = createPiAgentSessionFactory({ model, streamFn: stream, tools: [], systemPrompt: "base" })({
+      task: "t",
+      signal: controller.signal,
+    });
+    await expect(collect(session.messages())).rejects.toThrow();
+    expect(stream).not.toHaveBeenCalled();
   });
 
   it("applies systemPromptOverride to the base prompt", async () => {

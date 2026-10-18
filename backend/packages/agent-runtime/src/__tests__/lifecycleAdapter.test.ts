@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { createAgentRun, setAgentRunEventHook, type AgentRunRow } from "@semprec/data";
 import { createTenantZeroUser, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
@@ -443,7 +443,7 @@ describe("runAgentTurn cancellation", () => {
       AgentRunCancelledError,
     );
     expect(session.nextCalls()).toBe(0);
-    expect(session.returnCalls()).toBe(0);
+    expect(session.returnCalls()).toBe(1);
   });
 
   it("stops before the next message when the signal aborts while a message is being recorded", async () => {
@@ -462,6 +462,8 @@ describe("runAgentTurn cancellation", () => {
     const run = await openRun();
     const controller = new AbortController();
 
+    const addListener = vi.spyOn(controller.signal, "addEventListener");
+    const removeListener = vi.spyOn(controller.signal, "removeEventListener");
     const last = await runAgentTurn(
       pool,
       run.id,
@@ -473,9 +475,36 @@ describe("runAgentTurn cancellation", () => {
     );
 
     expect(last).toEqual({ kind: "message", text: "fine" });
-    // A listener left registered would make this late abort resolve a promise nobody awaits; the
-    // observable contract is that the abort after completion changes nothing.
+    expect(addListener).toHaveBeenCalledOnce();
+    expect(removeListener).toHaveBeenCalledExactlyOnceWith("abort", addListener.mock.calls[0]![1]);
+    vi.restoreAllMocks();
+  });
+
+  it.each([false, true])("does not close an iterator whose next() rejects (signal: %s)", async (withSignal) => {
+    const run = await openRun();
+    const failure = new Error("next failed");
+    const close = vi.fn(() => Promise.resolve({ done: true as const, value: undefined }));
+    const messages: AsyncIterable<AgentMessage> = {
+      [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(failure), return: close }),
+    };
+    await expect(
+      runAgentTurn(pool, run.id, messages, undefined, withSignal ? new AbortController().signal : undefined),
+    ).rejects.toBe(failure);
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it("does not create a session for an already-aborted run and closes it as error", async () => {
+    const run = await openRun();
+    const controller = new AbortController();
     controller.abort();
+    const createAgentSession = vi.fn(fakeSession([]));
+    await expect(runAgentSessionForRun(pool, run, { createAgentSession, signal: controller.signal })).rejects.toThrow(
+      AgentRunCancelledError,
+    );
+    expect(createAgentSession).not.toHaveBeenCalled();
+    expect(
+      (await pool.query<{ status: string }>("SELECT status FROM agent_runs WHERE id = $1", [run.id])).rows,
+    ).toEqual([{ status: "error" }]);
   });
 
   it("rethrows the turn's own failure when the session's return() also fails", async () => {
@@ -494,7 +523,7 @@ describe("runAgentTurn cancellation", () => {
     const run = await openRun();
     const session = hangingSession([{ kind: "turn_start" }]);
     const controller = new AbortController();
-    const createAgentSession: CreateAgentSession = () => ({ messages: () => session.messages });
+    const createAgentSession = vi.fn<CreateAgentSession>(() => ({ messages: () => session.messages }));
 
     await expect(
       runAgentSessionForRun(pool, run, {
@@ -520,5 +549,6 @@ describe("runAgentTurn cancellation", () => {
     );
     expect(notifications).toEqual([{ count: "1" }]);
     expect(session.returnCalls()).toBe(1);
+    expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({ signal: controller.signal }));
   });
 });

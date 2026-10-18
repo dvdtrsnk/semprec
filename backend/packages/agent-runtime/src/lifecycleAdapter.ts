@@ -111,8 +111,6 @@ export async function runAgentTurn(
   signal?: AbortSignal,
 ): Promise<AgentMessage | null> {
   let lastMessage: AgentMessage | null = null;
-  if (signal?.aborted) throw new AgentRunCancelledError();
-
   const iterator = messages[Symbol.asyncIterator]();
   let finished = false;
   let cancelled = false;
@@ -125,12 +123,21 @@ export async function runAgentTurn(
     : null;
 
   try {
+    if (signal?.aborted) {
+      cancelled = true;
+      throw new AgentRunCancelledError();
+    }
     for (;;) {
-      const pending = iterator.next();
-      // The race may abandon `pending`; the iterator's `return()` below ends the session, and a
-      // rejection of the abandoned call must not surface as an unhandled one.
-      pending.catch(() => {});
-      const step = aborted ? await Promise.race([pending, aborted]) : await pending;
+      let step: IteratorResult<AgentMessage> | typeof ABORTED;
+      try {
+        const pending = iterator.next();
+        // Promise.race observes the pending next() even when cancellation wins.
+        step = aborted ? await Promise.race([pending, aborted]) : await pending;
+      } catch (err) {
+        // Like for-await, a rejected next() propagates without calling return().
+        finished = true;
+        throw err;
+      }
       if (step === ABORTED) {
         cancelled = true;
         throw new AgentRunCancelledError();
@@ -237,12 +244,13 @@ export async function runAgentSessionForRun(
   input: Omit<RunAgentSessionInput, "task" | "triggeredBy" | "unit" | "projectItemId" | "parentRunId" | "heartbeatId">,
 ): Promise<AgentRunRow> {
   return withTraceContext({ agentRunId: run.id }, async () => {
-    const session = input.createAgentSession({
-      task: run.task,
-      systemPromptOverride: input.systemPromptOverride,
-    });
-
     try {
+      if (input.signal?.aborted) throw new AgentRunCancelledError();
+      const session = input.createAgentSession({
+        task: run.task,
+        systemPromptOverride: input.systemPromptOverride,
+        signal: input.signal,
+      });
       const lastMessage = await runAgentTurn(client, run.id, session.messages(), input.onEvent, input.signal);
       // The row's terminal status and its `run_status` event commit together, so a poller never
       // sees the row closed before the event exists, and a failed close leaves neither behind —
