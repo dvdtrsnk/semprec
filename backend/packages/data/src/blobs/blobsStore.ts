@@ -90,11 +90,8 @@ export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput
   if (!input.contentHash) return createBlob(client, input);
 
   const inserted = await client.query<BlobDbRow>(
-    // No conflict target on purpose: a bare DO NOTHING makes every unique index on `blobs` an
-    // arbiter. While the legacy global `blobs_content_hash_uq` coexists with the tenant-leading
-    // `blobs_tenant_content_hash_uq`, a target naming only one would let a concurrent identical
-    // insert trip the other with a raw unique_violation instead of being skipped; once the legacy
-    // index is gone, the tenant-leading one alone arbitrates, so dedupe is per tenant.
+    // No conflict target: all unique indexes arbitrate. Migration 0080 removes the legacy global
+    // content-hash index, leaving content deduplication scoped by blobs_tenant_content_hash_uq.
     `INSERT INTO blobs (mime_type, byte_size, storage_key, source_url, content_hash)
      VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT DO NOTHING
