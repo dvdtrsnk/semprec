@@ -3,7 +3,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { escapeIdentifier, type Pool } from "pg";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxProvider, type FauxProviderHandle } from "@earendil-works/pi-ai";
-import { AGENT_TASK_NAMES, TASK_TENANCY, enqueueJob, runOnce, type TaskList, type TaskTenancy } from "@semprec/queue";
+import {
+  AGENT_TASK_NAMES,
+  TASK_TENANCY,
+  enqueueJob,
+  ensureQueueSchema,
+  grantQueueSchemaPrivileges,
+  runOnce,
+  type TaskList,
+  type TaskTenancy,
+} from "@semprec/queue";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   CORE_AGENT_RUN_ACTION_ID,
@@ -181,7 +190,8 @@ function randomizedPayload(payload: Payload): Payload {
 }
 
 function tenancyOf(name: string): TaskTenancy {
-  return Object.hasOwn(TASK_TENANCY, name) ? TASK_TENANCY[name as keyof typeof TASK_TENANCY] : "tenant";
+  const declared: Readonly<Record<string, TaskTenancy>> = TASK_TENANCY;
+  return Object.hasOwn(declared, name) ? (declared[name] ?? "tenant") : "tenant";
 }
 
 async function seededSemprecProjectItemId(tenant: Tenant): Promise<string> {
@@ -273,6 +283,8 @@ describe("background task isolation across two tenants: agents runtime (issue #1
 
     adminPool = getTestPool();
     await resetDatabase(adminPool);
+    await ensureQueueSchema(adminPool);
+    await grantQueueSchemaPrivileges(adminPool);
     pool = await createRuntimeRolePool(adminPool, "semprec_data");
     tenantTables = await loadTenantTables();
 
