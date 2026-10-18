@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { OperationError, type GenericOperations } from "../api/genericOperations.js";
 import type { AuthOperations, SessionUser } from "../api/authOperations.js";
 import type { SetupOperations } from "../api/setupOperations.js";
+import type { AdminOperations } from "../api/adminOperations.js";
 import { createFakeOperations } from "../test/fakeOperations.js";
 import { App } from "../App.js";
 
@@ -43,6 +44,7 @@ function renderApp({
   sessionEvents = new EventTarget(),
   setup,
   passwordReset,
+  admin,
   login,
   languages = ["en"],
 }: {
@@ -51,6 +53,7 @@ function renderApp({
   sessionEvents?: EventTarget;
   setup?: { token: string; operations: SetupOperations };
   passwordReset?: { token: string | null };
+  admin?: { operations: AdminOperations };
   login?: true;
   languages?: readonly string[];
 }) {
@@ -62,6 +65,7 @@ function renderApp({
       sessionEvents={sessionEvents}
       setup={setup}
       passwordReset={passwordReset}
+      admin={admin}
       login={login}
       languages={languages}
     />,
@@ -227,5 +231,62 @@ describe("App session lifecycle", () => {
     expect(screen.queryByRole("banner")).not.toBeInTheDocument();
     expect(screen.queryByText(CONTENT_MARKER)).not.toBeInTheDocument();
     expect(auth.getSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("App admin page", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  const ADMIN_USER: SessionUser = { ...USER, role: "admin" };
+
+  function stubAdmin(): AdminOperations {
+    return {
+      listAccounts: vi.fn(async () => []),
+      suspendAccount: vi.fn(async () => {
+        throw new OperationError("retryable", "unused");
+      }),
+      reactivateAccount: vi.fn(async () => {
+        throw new OperationError("retryable", "unused");
+      }),
+      changeRole: vi.fn(async () => {
+        throw new OperationError("retryable", "unused");
+      }),
+    };
+  }
+
+  it("shows the admin link in the header for an admin session", async () => {
+    renderApp({ auth: stubAuth({ getSession: vi.fn(async () => ADMIN_USER) }) });
+
+    const link = await screen.findByRole("link", { name: "Admin" });
+    expect(link).toHaveAttribute("href", "?page=admin");
+  });
+
+  it("hides the admin link from a member session", async () => {
+    renderApp({ auth: stubAuth() });
+
+    await screen.findByText("Signed in as operator@example.com");
+    expect(screen.queryByRole("link", { name: "Admin" })).not.toBeInTheDocument();
+  });
+
+  it("tells a member the admin page is not available and makes no admin request", async () => {
+    const admin = stubAdmin();
+    renderApp({ auth: stubAuth(), admin: { operations: admin } });
+
+    expect(await screen.findByText("This page is only available to administrators")).toBeInTheDocument();
+    expect(admin.listAccounts).not.toHaveBeenCalled();
+    expect(screen.queryByRole("heading", { name: "Admin" })).not.toBeInTheDocument();
+  });
+
+  it("shows the admin page with the accounts panel to an admin", async () => {
+    const admin = stubAdmin();
+    vi.mocked(admin.listAccounts).mockResolvedValue([]);
+    renderApp({ auth: stubAuth({ getSession: vi.fn(async () => ADMIN_USER) }), admin: { operations: admin } });
+
+    expect(await screen.findByRole("heading", { name: "Admin" })).toBeInTheDocument();
+    expect(await screen.findByText("No accounts yet")).toBeInTheDocument();
+    expect(admin.listAccounts).toHaveBeenCalledTimes(1);
   });
 });

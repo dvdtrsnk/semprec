@@ -10,7 +10,7 @@ import { OperationError } from "./genericOperations.js";
  * Every call goes out as a same-origin fetch, so the browser carries the session cookie.
  */
 
-export const ADMIN_ROLES = ["admin", "member"] as const;
+const ADMIN_ROLES = ["admin", "member"] as const;
 export type AdminRole = (typeof ADMIN_ROLES)[number];
 
 const adminAccountSummarySchema = z.object({
