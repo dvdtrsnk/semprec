@@ -5,6 +5,7 @@ import { OperationError, type GenericOperations } from "../api/genericOperations
 import type { AuthOperations, SessionUser } from "../api/authOperations.js";
 import type { SetupOperations } from "../api/setupOperations.js";
 import type { AdminOperations } from "../api/adminOperations.js";
+import type { AccountOperations } from "../api/accountOperations.js";
 import { createFakeOperations } from "../test/fakeOperations.js";
 import { App } from "../App.js";
 
@@ -45,6 +46,7 @@ function renderApp({
   setup,
   passwordReset,
   admin,
+  account,
   login,
   languages = ["en"],
 }: {
@@ -54,6 +56,7 @@ function renderApp({
   setup?: { token: string; operations: SetupOperations };
   passwordReset?: { token: string | null };
   admin?: { operations: AdminOperations };
+  account?: { operations: AccountOperations };
   login?: true;
   languages?: readonly string[];
 }) {
@@ -66,6 +69,7 @@ function renderApp({
       setup={setup}
       passwordReset={passwordReset}
       admin={admin}
+      account={account}
       login={login}
       languages={languages}
     />,
@@ -300,5 +304,53 @@ describe("App admin page", () => {
     expect(await screen.findByRole("heading", { name: "Admin" })).toBeInTheDocument();
     expect(await screen.findByText("No accounts yet")).toBeInTheDocument();
     expect(admin.listAccounts).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("App account page", () => {
+  function stubAccount(): AccountOperations {
+    return {
+      listExports: vi.fn(async () => []),
+      requestExport: vi.fn(async () => {
+        throw new Error("not used");
+      }),
+      exportDownloadUrl: vi.fn((id: string) => `/api/account/exports/${id}/download`),
+      deleteAccount: vi.fn(async () => undefined),
+    };
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("shows the account link in the header of a member session", async () => {
+    renderApp({ auth: stubAuth() });
+
+    const link = await screen.findByRole("link", { name: "Account" });
+    expect(link).toHaveAttribute("href", "?page=account");
+  });
+
+  it("renders the account page when routed to it", async () => {
+    const account = stubAccount();
+    renderApp({ auth: stubAuth(), account: { operations: account } });
+
+    expect(await screen.findByRole("heading", { name: "Data export" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Delete account" })).toBeInTheDocument();
+    await vi.waitFor(() => expect(account.listExports).toHaveBeenCalledTimes(1));
+  });
+
+  it("reloads to a clean URL once the account is deleted", async () => {
+    const replace = vi.fn();
+    vi.stubGlobal("location", { ...window.location, replace });
+    const account = stubAccount();
+    renderApp({ auth: stubAuth(), account: { operations: account } });
+
+    await userEvent.type(await screen.findByLabelText("Password"), "correct horse");
+    await userEvent.click(screen.getByRole("button", { name: "Delete my account" }));
+
+    await vi.waitFor(() => expect(replace).toHaveBeenCalledTimes(1));
+    expect(replace).toHaveBeenCalledWith("/");
+    expect(account.deleteAccount).toHaveBeenCalledWith("correct horse");
+    expect(screen.queryByRole("heading", { name: "Delete account" })).not.toBeInTheDocument();
   });
 });

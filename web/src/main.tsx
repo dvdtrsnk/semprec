@@ -11,6 +11,7 @@ import { createSetupOperations } from "./api/setupOperations.js";
 import { createAuthOperations } from "./api/authOperations.js";
 import { createSessionFetch } from "./api/sessionFetch.js";
 import { createAdminOperations } from "./api/adminOperations.js";
+import { createAccountOperations } from "./api/accountOperations.js";
 
 /**
  * Composition root: which backend to talk to and which view to open come from the
@@ -30,6 +31,8 @@ import { createAdminOperations } from "./api/adminOperations.js";
  * from the address bar on mount. `?page=password-reset` without a fragment routes to the request form.
  * `?page=admin` routes to the admin page (issue #1079); the page itself is shown only to an admin
  * session, and a member sees a notice instead.
+ * `?page=account` routes to the caller's own account page (issue #1083): the data export and
+ * self-deletion. Every authenticated session may open it.
  */
 const params = new URLSearchParams(window.location.search);
 const viewId = params.get("view") ?? "";
@@ -64,6 +67,8 @@ const agentRun =
       }
     : undefined;
 const admin = page === "admin" ? { operations: createAdminOperations({ baseUrl: apiBaseUrl, fetchImpl }) } : undefined;
+const account =
+  page === "account" ? { operations: createAccountOperations({ baseUrl: apiBaseUrl, fetchImpl }) } : undefined;
 const setup =
   page === "setup" && params.get("token")
     ? {
@@ -94,6 +99,7 @@ createRoot(container).render(
       setup={setup}
       passwordReset={passwordReset}
       admin={admin}
+      account={account}
       auth={auth}
       sessionEvents={sessionEvents}
       login={page === "login" ? true : undefined}

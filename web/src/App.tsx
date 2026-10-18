@@ -21,6 +21,8 @@ import { EmptyState, ErrorState, LoadingState } from "./components/StateViews.js
 import type { AdminOperations } from "./api/adminOperations.js";
 import { AdminPage } from "./views/admin/AdminPage.js";
 import type { SetupOperations } from "./api/setupOperations.js";
+import type { AccountOperations } from "./api/accountOperations.js";
+import { AccountPage } from "./views/account/AccountPage.js";
 import "./styles/tokens.css";
 import "./styles/app.css";
 
@@ -44,6 +46,11 @@ export interface AgentRunRoute {
 /** Present only when the composition root routed to the admin page (issue #1079) rather than an item/view id. */
 export interface AdminRoute {
   operations: AdminOperations;
+}
+
+/** Present only when the composition root routed to the caller's account page (issue #1083). */
+export interface AccountRoute {
+  operations: AccountOperations;
 }
 
 export interface SetupRoute {
@@ -74,6 +81,7 @@ export function App({
   setup,
   passwordReset,
   admin,
+  account,
   auth,
   sessionEvents,
   login,
@@ -97,6 +105,8 @@ export function App({
   passwordReset?: PasswordResetRoute;
   /** Present only when the composition root routed to the admin page (issue #1079) rather than an item/view id. */
   admin?: AdminRoute;
+  /** Present only when the composition root routed to the caller's account page (issue #1083). */
+  account?: AccountRoute;
   auth: AuthOperations;
   /** Fires `"unauthorized"` whenever an adapter receives a 401 mid-session (see `createSessionFetch`). */
   sessionEvents: EventTarget;
@@ -129,6 +139,8 @@ export function App({
             approvalQueue={approvalQueue}
             agentRun={agentRun}
             admin={admin}
+            account={account}
+            onAccountDeleted={() => setSession({ status: "ending" })}
             user={session.status === "authenticated" ? session.user : null}
           />
         </SessionGate>
@@ -247,6 +259,7 @@ function SessionGate({
           <header className="app-header">
             <span className="app-header__user">{t("login.signedInAs", { email: session.user.email })}</span>
             {session.user.role === "admin" ? <a href="?page=admin">{t("admin.link")}</a> : null}
+            <a href="?page=account">{t("account.link")}</a>
             {logoutError ? (
               <span className="app-header__error" role="alert">
                 {t("login.logoutFailed", { message: logoutError })}
@@ -271,6 +284,8 @@ function RoutedContent({
   approvalQueue,
   agentRun,
   admin,
+  account,
+  onAccountDeleted,
   user,
 }: {
   viewId: string;
@@ -281,6 +296,9 @@ function RoutedContent({
   approvalQueue?: ApprovalQueueRoute;
   agentRun?: AgentRunRoute;
   admin?: AdminRoute;
+  account?: AccountRoute;
+  /** Ends the session after the account is deleted; the App's session state owns the reload. */
+  onAccountDeleted: () => void;
   user: SessionUser | null;
 }) {
   const t = useTranslate();
@@ -313,6 +331,8 @@ function RoutedContent({
       ) : (
         <EmptyState message={t("admin.notAvailable")} />
       );
+  } else if (account) {
+    content = <AccountPage operations={account.operations} onAccountDeleted={onAccountDeleted} />;
   } else {
     content = <ViewHost viewId={viewId} operations={operations} registry={registry} />;
   }
