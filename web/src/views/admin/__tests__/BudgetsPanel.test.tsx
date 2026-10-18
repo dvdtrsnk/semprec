@@ -141,6 +141,33 @@ describe("BudgetsPanel rendering", () => {
 });
 
 describe("BudgetsPanel editing", () => {
+  it.each(["Daily cap", "Monthly cap"])("reads an empty %s field's live browser validity at Save", async (label) => {
+    const operations = stubOperations({
+      listAiBudgets: vi.fn(async () => [account({ hasBudget: false, dailyCapUsd: null, monthlyCapUsd: null })]),
+    });
+    renderPanel(operations);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Edit caps" }));
+    const input = screen.getByLabelText<HTMLInputElement>(label);
+    expect(input).toHaveValue(null);
+    // The browser reports the same empty value for incomplete number text; React may skip onChange.
+    Object.defineProperty(input, "validity", { value: { badInput: true }, configurable: true });
+    fireEvent.input(input, { target: { value: "" } });
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Each cap must be empty or a number that is zero or greater",
+    );
+    expect(operations.setAiBudget).not.toHaveBeenCalled();
+
+    // Clearing the incomplete text also keeps value empty; a stale mirrored flag must not refuse it.
+    Object.defineProperty(input, "validity", { value: { badInput: false }, configurable: true });
+    fireEvent.input(input, { target: { value: "" } });
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await vi.waitFor(() =>
+      expect(operations.setAiBudget).toHaveBeenCalledWith("user-2", { dailyCapUsd: null, monthlyCapUsd: null }),
+    );
+  });
+
   it("saves empty caps for a no-budget account as explicit nulls and reloads the list", async () => {
     const operations = stubOperations({
       listAiBudgets: vi.fn(async () => [account({ hasBudget: false, dailyCapUsd: null, monthlyCapUsd: null })]),
