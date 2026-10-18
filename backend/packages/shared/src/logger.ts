@@ -72,8 +72,10 @@ function serializeError(value: unknown): unknown {
  * - `info` records normal lifecycle milestones and completed work.
  * - `warn` records an unexpected but recoverable degradation or retry.
  * - `error` records failed work that the current request or job cannot complete.
- * - `fatal` records a process-terminating failure, exclusively via the shared
- *   fatal handlers below.
+ * - `fatal` records a process-terminating failure: the shared fatal handlers
+ *   below, and a service's `registerShutdownSignals` when its `shutdown()`
+ *   rejects immediately before `process.exit(1)`
+ *   (`docs/adr/2026-10-18-fatal-shutdown-rejection-and-mail-failure-logs.md`).
  * - `debug` and `trace` are opt-in diagnostics, enabled only through
  *   `LOG_LEVEL`; they must follow the same identity-not-content rule.
  */

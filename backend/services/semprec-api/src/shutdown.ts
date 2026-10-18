@@ -198,7 +198,7 @@ export function registerShutdownSignals(shutdown: (signal: string) => Promise<vo
           process.exit(0);
         })
         .catch((err: unknown) => {
-          logger.error({ err, signal }, "shutdown() rejected unexpectedly");
+          logger.fatal({ err, signal }, "shutdown() rejected unexpectedly");
           process.exit(1);
         });
     });
