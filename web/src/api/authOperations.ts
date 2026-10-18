@@ -52,7 +52,7 @@ export interface AuthOperations {
   /** Resolves on any 2xx, for a known and an unknown address alike. */
   requestPasswordReset(email: string): Promise<void>;
   /**
-   * Resolves on 200. A rejected token rejects as `unavailable` (status 400); any other failure
+   * Resolves on any 2xx. A rejected token rejects as `unavailable` (status 400); any other failure
    * rejects as `retryable`, so the same token can be submitted again.
    */
   resetPassword(input: ResetPasswordInput): Promise<void>;
@@ -145,7 +145,8 @@ export function createAuthOperations(options: AuthOperationsOptions): AuthOperat
       });
       if (response.ok) return;
       // The body is read once here; a second read would fail, so the rejection is classified from this parse.
-      const parsed = passwordResetErrorSchema.safeParse(await readJsonBody(response));
+      const body = await readJsonBody(response);
+      const parsed = passwordResetErrorSchema.safeParse(body);
       if (
         response.status === BAD_REQUEST_STATUS &&
         parsed.success &&
@@ -153,9 +154,10 @@ export function createAuthOperations(options: AuthOperationsOptions): AuthOperat
       ) {
         throw new OperationError("unavailable", parsed.data.error, BAD_REQUEST_STATUS);
       }
+      const errorMessage = errorResponseSchema.safeParse(body);
       throw new OperationError(
         "retryable",
-        parsed.success ? parsed.data.error : `Request to ${path} failed with ${response.status}`,
+        errorMessage.success ? errorMessage.data.error : `Request to ${path} failed with ${response.status}`,
         response.status,
       );
     },

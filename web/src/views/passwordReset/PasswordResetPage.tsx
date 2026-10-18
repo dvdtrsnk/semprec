@@ -15,8 +15,9 @@ type ConfirmState =
  * an account. With a `token` (the link's `#token=` fragment, read by the composition root) it asks for
  * a new password and posts it with the token to `POST /api/auth/password-reset/consume`.
  *
- * The fragment is stripped from the address bar on mount, so the token is not left in the tab's
- * history entry; the component keeps the `token` prop it received and never re-reads the URL.
+ * The fragment is stripped from the address bar and current session-history entry on mount;
+ * the component keeps the `token` prop it received and never re-reads the URL. This does not
+ * guarantee erasure from global browser history, autocomplete or synced history.
  */
 export function PasswordResetPage({ token, auth }: { token: string | null; auth: AuthOperations }) {
   if (token === null) return <RequestPasswordReset auth={auth} />;
