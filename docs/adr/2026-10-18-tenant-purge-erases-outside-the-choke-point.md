@@ -39,14 +39,14 @@ tenant's `databases` rows, and the global identity rows are deleted by the purge
 normalised email. Nobody can observe the
 tenant, so no hook, audit row or notification is lost. This applies to a tenant in `deleting` only.
 
-**Bytes before rows.** The tenant's blob keys, export keys and `<root>/<tenantId>` directories are
-removed before any row that references them. Once the rows are gone, both `<root>/<tenantId>`
-directories are removed again, right before finalisation, so bytes that a writer already running
-at deletion time stored after the bytes step are erased too. A failure throws for that tenant, so the tenant is not
-finalised and the next run retries. Missing bytes behind a surviving row harm nobody, because the
-tenant is unreachable; surviving bytes without any row would be unrecoverable. Each blob key is
-removed from both roots, because content-hash deduplication can leave the bytes in either
-([[2026-10-18-tenant-export-cross-root-blob-lookup]]).
+**Bytes before rows, and again before finalisation.** The tenant's blob keys, export keys and
+`<root>/<tenantId>` directories are removed before any row that references them. Once the rows are
+gone, both `<root>/<tenantId>` directories are removed again, right before finalisation, so bytes
+that a writer already running at deletion time stored after the bytes step are erased too. A
+failure throws for that tenant, so the tenant is not finalised and the next run retries. Missing
+bytes behind a surviving row harm nobody, because the tenant is unreachable; surviving bytes without
+any row would be unrecoverable. Each blob key is removed from both roots, because content-hash
+deduplication can leave the bytes in either ([[2026-10-18-tenant-export-cross-root-blob-lookup]]).
 
 **Catalog-driven foreign-key ordering.** The tables to purge are the public tables whose comment is
 `semprec:tenancy=tenant` and which are not partitions. Their order comes from `pg_constraint`, fed to
@@ -58,9 +58,9 @@ deletion, since a `ctid` is unique only within one partition. Their partitions a
 `drop_items_partition` first, one transaction per database with `lock_timeout = '5s'`, and again
 right before `items` is deleted (it precedes `databases`, its parent), so a database created by a
 writer already running at deletion time loses its partition too. The predicate delete that follows
-is expected to affect nothing; rows it does find are deleted and logged rather than failing the
-tenant, because their database's partition could not be dropped on a retry once the `databases` row
-is gone.
+must affect nothing. Rows it does find belong to a database created after that second pass: they are
+deleted, and the tenant fails before `databases` is reached, so the next run still finds that
+database and drops its partition.
 
 **A per-minute sweep with a per-tenant try-lock.** `tenantPurge` is a system task on `* * * * *`.
 It lists `deleting` tenants by `status_changed_at` and, for each, takes
@@ -95,12 +95,17 @@ is global, `semprec_data` may only insert into it, and a backup restore will rep
 - Queued jobs of the tenant that are locked (running) when the purge removes the rest are not
   removed, and work already running when the deletion began (such a job, or an in-flight request)
   keeps running; only work that starts afterwards completes as a no-op. If it leaves a row,
-  finalisation fails and the next tick retries. Bytes it stores under `<root>/<tenantId>` are erased
-  by the second directory removal, and a database it creates loses its partition in the second
-  partition pass (every key written since #1008 carries the `<tenantId>/` prefix). One narrow window
-  remains: a database created between the second partition pass and the delete of `databases`
-  leaves its partition behind, emptied by the predicate delete on `items`, so it holds no row of the
-  tenant.
+  finalisation fails and the next tick retries. Bytes it stores under `<root>/<tenantId>` (every key
+  written since #1008 carries that prefix) before the second directory removal are erased by it,
+  and a database it creates before the second partition pass loses its partition there.
+  A database it creates after that pass that holds an item when `items` is deleted fails the
+  tenant, and loses its partition on the retry. Two narrow windows remain:
+  - bytes it stores after the second directory removal are not erased, and the tombstone still
+    records the tenant as erased;
+  - a database it creates after the second partition pass that holds no item when `items` is
+    deleted leaves its partition behind once its `databases` row is gone, because no later
+    partition pass finds it. The partition holds no row of the tenant at finalisation: an item
+    written into it later fails finalisation, and the next runs delete it before finalising.
 - `drop_items_partition` takes `ACCESS EXCLUSIVE` locks on the partition and on `items`. Other
   tenants' item queries wait for it, for at most the 5 s lock timeout per database; a timeout fails
   that tenant and the next tick retries.
