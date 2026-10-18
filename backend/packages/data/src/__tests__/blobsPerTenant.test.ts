@@ -80,10 +80,9 @@ async function useTenant(client: PoolClient, tenantId: string): Promise<void> {
   await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
 }
 
-/** Drops the legacy index, adds tenant B beside tenant zero (A), and runs as `semprec_data`. */
+/** Adds tenant B beside tenant zero (A) and runs as `semprec_data` against the migrated schema. */
 async function twoTenants(client: PoolClient): Promise<{ tenantA: string; tenantB: string }> {
   await client.query("DROP INDEX IF EXISTS tenants_single_tenant_guard");
-  await client.query("DROP INDEX blobs_content_hash_uq");
   const { rows } = await client.query<{ id: string }>("INSERT INTO tenants (status) VALUES ('active') RETURNING id");
   const tenantB = rows[0]?.id;
   if (!tenantB) throw new Error("second tenant was not inserted");
@@ -228,9 +227,8 @@ describe("blobs are stored and deduplicated per tenant", () => {
     });
   });
 
-  it("dedupes one hash within a tenant without the legacy global index", async () => {
+  it("dedupes one hash within a tenant using the migrated indexes", async () => {
     await inRolledBackTransaction(async (client) => {
-      await client.query("DROP INDEX blobs_content_hash_uq");
       const hash = createHash("sha256").update("same").digest("hex");
 
       const first = await findOrCreateBlob(client, blobInput(`${getTenantZeroId()}/files/a`, hash));

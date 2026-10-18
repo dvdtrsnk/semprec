@@ -174,12 +174,11 @@ const PERMANENT_EXCEPTIONS: { table: string; columns: string[]; reason: string }
   },
 ];
 
-/** Legacy global keys kept beside their tenant-leading successors until #1065 drops them; #1065 empties this list. */
+/** Remaining legacy global keys await #1065; migration 0080 already removed the blob content-hash key. */
 const LEGACY_GLOBAL_UNIQUES: { table: string; columns: string[] }[] = [
   { table: "idempotency_keys", columns: ["key"] },
   { table: "person_email_index", columns: ["email"] },
   { table: "mail_message_meta", columns: ["provider_message_id"] },
-  { table: "blobs", columns: ["content_hash"] },
   { table: "notifications", columns: ["source_table", "source_id", "kind", "transition_instance"] },
   { table: "manifest_drift_findings", columns: ["kind", "dedupe_key"] },
   { table: "module_migrations", columns: ["module_id", "database_key", "from_version", "to_version"] },
@@ -545,8 +544,9 @@ describe("tenancy classification catalog", () => {
     expect(NEW_UNIQUE_INDEXES).toHaveLength(23);
   });
 
-  it("keeps the legacy global keys beside the new ones", async () => {
+  it("keeps the remaining legacy global keys and removes the obsolete blob content-hash index", async () => {
     const rows = await listUniqueIndexes(pool);
+    expect(rows.some((row) => row.index_name === "blobs_content_hash_uq")).toBe(false);
     for (const legacy of LEGACY_GLOBAL_UNIQUES) {
       expect(
         rows.some((row) => sameKey(row, legacy)),
