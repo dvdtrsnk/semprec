@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import type { Pool } from "pg";
+import { escapeIdentifier, type Pool, type PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { enqueueJob } from "@semprec/queue";
 import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
@@ -18,6 +18,7 @@ import { createSession } from "../auth/sessionsStore.js";
 import { createUser } from "../auth/usersStore.js";
 import { ingestUploadedFile } from "../blobs/fileUploadStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
+import { createDatabase } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { getOrCreateTenantDataKey } from "../credentials/tenantKeysStore.js";
@@ -31,6 +32,7 @@ import { claimPushDeliveryTargets } from "../push/pushDeliveriesStore.js";
 import { registerPushSubscription } from "../push/pushSubscriptionActions.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { beginTenantDeletion } from "../tenancy/deleteAccount.js";
+import { logger } from "../tenancy/logger.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
 import { handleTenantExportTask } from "../tenancy/tenantExportJob.js";
 import { requestTenantExport } from "../tenancy/tenantExportsStore.js";
@@ -275,7 +277,7 @@ async function rowCounts(tenantId: string): Promise<Record<string, number>> {
   const counts: Record<string, number> = {};
   for (const table of [...(await tenantTables()), "agent_run_mcp_credentials"]) {
     const { rows } = await adminPool.query<Record<string, unknown>>(
-      `SELECT count(*) AS n FROM "${table}" WHERE tenant_id = $1`,
+      `SELECT count(*) AS n FROM ${escapeIdentifier(table)} WHERE tenant_id = $1`,
       [tenantId],
     );
     counts[table] = countSchema.parse(rows[0]).n;
@@ -318,6 +320,54 @@ async function blockDeletion(path: string): Promise<void> {
 
 async function unblockDeletion(path: string): Promise<void> {
   await rm(path, { recursive: true, force: true });
+}
+
+/** The statement the purge lists a tenant's databases with: first in the partitions step, then right before `items`. */
+const DATABASE_LISTING = "SELECT id FROM databases WHERE tenant_id = $1";
+
+/**
+ * A runtime-role pool whose `query` runs `after` once the `nth` statement containing `sqlFragment`
+ * has returned: the stand-in for a writer that was already running when the deletion began.
+ */
+async function poolRunningAfter(sqlFragment: string, nth: number, after: () => Promise<void>): Promise<Pool> {
+  const hooked = await createRuntimeRolePool(adminPool, "semprec_data");
+  const realQuery = hooked.query.bind(hooked) as (...args: unknown[]) => Promise<unknown>;
+  let seen = 0;
+  (hooked as unknown as { query: unknown }).query = async (...args: unknown[]) => {
+    const result = await realQuery(...args);
+    if (String(args[0]).includes(sqlFragment)) {
+      seen += 1;
+      if (seen === nth) await after();
+    }
+    return result;
+  };
+  return hooked;
+}
+
+/** Creates a database (and so its `items` partition) in `tenantId`, optionally holding one item. */
+async function createLateDatabase(tenantId: string, withItem: boolean): Promise<string> {
+  return runInTenant(tenantId, () =>
+    withTransaction(pool, async (client) => {
+      const database = await createDatabase(client, { name: "Late" });
+      if (withItem) await createItemWithClient(client, { databaseId: database.id, properties: {} });
+      return database.id;
+    }),
+  );
+}
+
+/** Whether `tenantId`'s purge lock is free, checked from a session other than the purge's. */
+async function purgeLockIsFree(tenantId: string): Promise<boolean> {
+  const client = await adminPool.connect();
+  try {
+    const { rows } = await client.query<{ locked: boolean }>(
+      "SELECT pg_try_advisory_lock(hashtextextended('semprec_tenant_purge:' || $1::text, 0)) AS locked",
+      [tenantId],
+    );
+    if (rows[0]?.locked) await client.query("SELECT pg_advisory_unlock_all()");
+    return rows[0]?.locked === true;
+  } finally {
+    client.release();
+  }
 }
 
 describe("tenant purge (issue #1055)", () => {
@@ -380,7 +430,7 @@ describe("tenant purge (issue #1055)", () => {
       ["tenant_ai_budgets", "tenant_id", tenantB],
     ] as const) {
       const { rows } = await adminPool.query<Record<string, unknown>>(
-        `SELECT count(*) AS n FROM ${table} WHERE ${column} = $1`,
+        `SELECT count(*) AS n FROM ${escapeIdentifier(table)} WHERE ${escapeIdentifier(column)} = $1`,
         [value],
       );
       expect({ table, n: countSchema.parse(rows[0]).n }).toEqual({ table, n: 0 });
@@ -390,7 +440,7 @@ describe("tenant purge (issue #1055)", () => {
     );
     for (const { relname } of tables.rows) {
       const { rows } = await adminPool.query<Record<string, unknown>>(
-        `SELECT count(*) AS n FROM "${relname}" t WHERE t::text LIKE $1`,
+        `SELECT count(*) AS n FROM ${escapeIdentifier(relname)} t WHERE t::text LIKE $1`,
         [`%${b.email}%`],
       );
       expect({ relname, n: countSchema.parse(rows[0]).n }).toEqual({ relname, n: 0 });
@@ -597,6 +647,117 @@ describe("tenant purge (issue #1055)", () => {
     expect(await tenantStatus(tenantB)).toBeUndefined();
     expect(await tombstones(tenantB)).toHaveLength(1);
     expect(await nonEmptyTables(tenantB)).toEqual([]);
+  });
+
+  it("erases bytes a running writer stores under the tenant's directories after the bytes step", async () => {
+    const tenantB = await provisionedTenant();
+    await seedTenant(tenantB);
+    await beginDeletion(tenantB);
+    const latePaths = [
+      join(dirs.files, tenantB, "late", "upload.bin"),
+      join(dirs.mailAttachments, tenantB, "late.bin"),
+    ];
+    const writer = await poolRunningAfter(DATABASE_LISTING, 1, async () => {
+      for (const path of latePaths) {
+        await mkdir(join(path, ".."), { recursive: true });
+        await writeFile(path, "late bytes");
+      }
+    });
+    try {
+      await purge({}, writer);
+    } finally {
+      await writer.end();
+    }
+
+    for (const path of latePaths) expect(existsSync(path)).toBe(false);
+    expect(existsSync(join(dirs.files, tenantB))).toBe(false);
+    expect(existsSync(join(dirs.mailAttachments, tenantB))).toBe(false);
+    expect(await tombstones(tenantB)).toHaveLength(1);
+  });
+
+  it("drops the partition of a database a running writer creates after the partitions step", async () => {
+    const tenantB = await provisionedTenant();
+    await seedTenant(tenantB);
+    await beginDeletion(tenantB);
+    let lateDatabaseId: string | undefined;
+    const writer = await poolRunningAfter(DATABASE_LISTING, 1, async () => {
+      lateDatabaseId = await createLateDatabase(tenantB, true);
+    });
+    const warnSpy = vi.spyOn(logger, "warn");
+    try {
+      await purge({}, writer);
+    } finally {
+      await writer.end();
+    }
+
+    if (!lateDatabaseId) throw new Error("the late writer never ran");
+    expect(await partitionExists(lateDatabaseId)).toBe(false);
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.anything(), "tenant_purge_partitioned_table_had_rows");
+    expect(await nonEmptyTables(tenantB)).toEqual([]);
+    expect(await tombstones(tenantB)).toHaveLength(1);
+  });
+
+  it("deletes and logs, without failing the tenant, item rows found after the partitions were dropped", async () => {
+    const tenantB = await provisionedTenant();
+    await seedTenant(tenantB);
+    await beginDeletion(tenantB);
+    // Created after the second partition pass, so only the predicate delete on `items` reaches its row.
+    const writer = await poolRunningAfter(DATABASE_LISTING, 2, async () => {
+      await createLateDatabase(tenantB, true);
+    });
+    const warnSpy = vi.spyOn(logger, "warn");
+    try {
+      await purge({}, writer);
+    } finally {
+      await writer.end();
+    }
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      { tenantId: tenantB, table: "items", count: 1 },
+      "tenant_purge_partitioned_table_had_rows",
+    );
+    expect(await nonEmptyTables(tenantB)).toEqual([]);
+    expect(await tombstones(tenantB)).toHaveLength(1);
+  });
+
+  it("destroys the lock connection when the unlock fails, so the purge lock does not leak", async () => {
+    const tenantB = await provisionedTenant();
+    await seedTenant(tenantB);
+    await beginDeletion(tenantB);
+    const errorSpy = vi.spyOn(logger, "error");
+    const flaky = await createRuntimeRolePool(adminPool, "semprec_data");
+    let releasedWith: unknown = "never released";
+    try {
+      const realConnect = flaky.connect.bind(flaky) as () => Promise<PoolClient>;
+      let patched = false;
+      // Only the first connection, the purge's dedicated lock client, refuses the unlock.
+      (flaky as unknown as { connect: unknown }).connect = async () => {
+        const client = await realConnect();
+        if (!patched) {
+          patched = true;
+          const realQuery = client.query.bind(client) as (...args: unknown[]) => Promise<unknown>;
+          (client as unknown as { query: unknown }).query = async (...args: unknown[]) => {
+            if (String(args[0]).includes("pg_advisory_unlock")) throw new Error("unlock refused");
+            return realQuery(...args);
+          };
+          const realRelease = client.release.bind(client);
+          client.release = (err?: Error | boolean) => {
+            releasedWith = err;
+            realRelease(err);
+          };
+        }
+        return client;
+      };
+
+      await purge({}, flaky);
+
+      expect(releasedWith).toBeInstanceOf(Error);
+      expect(await purgeLockIsFree(tenantB)).toBe(true);
+    } finally {
+      await flaky.end();
+    }
+    expect(errorSpy).toHaveBeenCalledWith({ tenantId: tenantB, errorName: "Error" }, "tenant_purge_unlock_failed");
+    expect(await tombstones(tenantB)).toHaveLength(1);
   });
 
   describe("tenant_deletions", () => {
