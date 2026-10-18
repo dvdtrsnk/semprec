@@ -16,6 +16,7 @@ import {
 } from "./passwordResetStore.js";
 import { normalizeEmail } from "./emailNormalization.js";
 import type { PasswordResetMailer } from "./passwordResetMail.js";
+import { describeMailFailure } from "../mail/describeMailFailure.js";
 import { logger } from "./logger.js";
 
 /** Issue #142's "30-minute default expiry" for a reset token. */
@@ -103,13 +104,9 @@ export async function requestPasswordReset(
       void mailer
         .sendPasswordResetEmail({ to: user.email, resetUrl: buildPasswordResetUrl(input.appBaseUrl, token) })
         .catch((err: unknown) => {
-          // An SMTP refusal can echo the recipient address, so log the error's name and code only
-          // (docs/adr/2026-10-18-fatal-shutdown-rejection-and-mail-failure-logs.md).
+          // An SMTP refusal can echo the recipient address, so the error object is never logged.
           logger.error(
-            {
-              errorName: err instanceof Error ? err.name : typeof err,
-              errorCode: err instanceof Error && "code" in err ? String(err.code) : undefined,
-            },
+            { userId: user.id, ...describeMailFailure(err) },
             "requestPasswordReset: failed to send the password-reset email",
           );
         });

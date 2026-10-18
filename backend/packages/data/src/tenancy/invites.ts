@@ -6,6 +6,7 @@ import { runAfterCommit, type Queryable } from "../db/pool.js";
 import { ChokePointError, NotFoundError, ValidationError } from "../errors.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import type { InviteMailer } from "./inviteMail.js";
+import { describeMailFailure } from "../mail/describeMailFailure.js";
 import { logger } from "./logger.js";
 
 /**
@@ -88,19 +89,6 @@ export interface CreateInviteInput {
 export interface CreatedInvite {
   invite: InviteSummary;
   inviteUrl: string;
-}
-
-/**
- * Only the error's class name and the SMTP status codes reach the log. A recipient refusal carries the
- * invitee's address in `message`, `response` and `rejected`, and logs are not tenant-scoped.
- */
-function describeMailFailure(err: unknown): { errorName: string; errorCode?: string; responseCode?: number } {
-  if (!(err instanceof Error)) return { errorName: typeof err };
-  return {
-    errorName: err.name,
-    ...("code" in err && typeof err.code === "string" ? { errorCode: err.code } : {}),
-    ...("responseCode" in err && typeof err.responseCode === "number" ? { responseCode: err.responseCode } : {}),
-  };
 }
 
 /**

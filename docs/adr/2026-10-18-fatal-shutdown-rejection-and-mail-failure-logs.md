@@ -51,8 +51,10 @@ instructions needed a decision that no ADR recorded:
   writers and cites this ADR.
 - A new process type with its own `registerShutdownSignals` logs a rejected shutdown at
   `fatal`.
-- A new mail-send call site logs the same fields as `passwordResetActions.ts` and
-  `tenancy/invites.ts`. A test for it uses a refusal that names the recipient and asserts
-  that the address is absent from every logged argument.
+- Every mail-send failure log builds its error fields with `describeMailFailure`
+  (`backend/packages/data/src/mail/describeMailFailure.ts`) and adds its own identifiers:
+  `inviteId` in `tenancy/invites.ts`, `userId` in `passwordResetActions.ts`. A new call site
+  does the same. A test for it uses a refusal that names the recipient and asserts that the
+  address is absent from every logged argument.
 - An operator who needs a mail failure's full SMTP text has to reproduce it. The log line
   does not contain it.
