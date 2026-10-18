@@ -8,8 +8,14 @@ import { useAsyncResource } from "../mailbox/useAsyncResource.js";
 
 type CapParse = { ok: true; value: number | null } | { ok: false };
 
-/** An empty field means "no cap"; anything else must be a finite number ≥ 0. `Number("")` is 0, so empty is checked first. */
-function parseCap(text: string): CapParse {
+/**
+ * An empty field means "no cap"; anything else must be a finite number ≥ 0. A `type="number"` input
+ * reports an empty value for text it cannot parse (a lone `-`, an incomplete exponent), so `badInput`
+ * — the browser's own flag for that text — makes the field invalid rather than uncapped. `Number("")`
+ * is 0, so empty is checked first.
+ */
+function parseCap(text: string, badInput: boolean): CapParse {
+  if (badInput) return { ok: false };
   const trimmed = text.trim();
   if (trimmed === "") return { ok: true, value: null };
   const value = Number(trimmed);
@@ -30,6 +36,8 @@ export function BudgetsPanel({ operations }: { operations: AdminOperations }) {
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [dailyDraft, setDailyDraft] = useState("");
   const [monthlyDraft, setMonthlyDraft] = useState("");
+  const [dailyBadInput, setDailyBadInput] = useState(false);
+  const [monthlyBadInput, setMonthlyBadInput] = useState(false);
   const [invalid, setInvalid] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -38,6 +46,8 @@ export function BudgetsPanel({ operations }: { operations: AdminOperations }) {
     setEditingUserId(account.userId);
     setDailyDraft(account.dailyCapUsd === null ? "" : String(account.dailyCapUsd));
     setMonthlyDraft(account.monthlyCapUsd === null ? "" : String(account.monthlyCapUsd));
+    setDailyBadInput(false);
+    setMonthlyBadInput(false);
     setInvalid(false);
     setSaveError(null);
   }
@@ -49,8 +59,8 @@ export function BudgetsPanel({ operations }: { operations: AdminOperations }) {
   }
 
   async function handleSave(account: AiBudgetAccount) {
-    const daily = parseCap(dailyDraft);
-    const monthly = parseCap(monthlyDraft);
+    const daily = parseCap(dailyDraft, dailyBadInput);
+    const monthly = parseCap(monthlyDraft, monthlyBadInput);
     if (!daily.ok || !monthly.ok) {
       setInvalid(true);
       return;
@@ -150,7 +160,10 @@ export function BudgetsPanel({ operations }: { operations: AdminOperations }) {
             aria-label={t("admin.budgets.dailyCap")}
             disabled={saving}
             value={dailyDraft}
-            onChange={(event) => setDailyDraft(event.target.value)}
+            onChange={(event) => {
+              setDailyDraft(event.target.value);
+              setDailyBadInput(event.target.validity.badInput);
+            }}
           />
         </td>
         <td>
@@ -161,7 +174,10 @@ export function BudgetsPanel({ operations }: { operations: AdminOperations }) {
             aria-label={t("admin.budgets.monthlyCap")}
             disabled={saving}
             value={monthlyDraft}
-            onChange={(event) => setMonthlyDraft(event.target.value)}
+            onChange={(event) => {
+              setMonthlyDraft(event.target.value);
+              setMonthlyBadInput(event.target.validity.badInput);
+            }}
           />
         </td>
       </>

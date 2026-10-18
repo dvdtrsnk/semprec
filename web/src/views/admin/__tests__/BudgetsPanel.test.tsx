@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "../../../i18n/index.js";
 import { OperationError } from "../../../api/genericOperations.js";
@@ -193,5 +193,60 @@ describe("BudgetsPanel editing", () => {
     expect(screen.getByLabelText("Daily cap")).toHaveValue(7);
     expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
     expect(operations.listAiBudgets).toHaveBeenCalledTimes(1);
+  });
+
+  it("Cancel closes the form without a request and leaves the caps as they were", async () => {
+    const operations = stubOperations();
+    renderPanel(operations);
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Edit caps" }));
+    await user.clear(screen.getByLabelText("Daily cap"));
+    await user.type(screen.getByLabelText("Daily cap"), "9");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByLabelText("Daily cap")).not.toBeInTheDocument();
+    expect(within(rowFor("member@example.com")).getByText("$5.00")).toBeInTheDocument();
+    expect(operations.setAiBudget).not.toHaveBeenCalled();
+  });
+
+  it("refuses a field the browser reports as bad input, rather than saving it as no cap", async () => {
+    const operations = stubOperations();
+    renderPanel(operations);
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Edit caps" }));
+    const daily = screen.getByLabelText<HTMLInputElement>("Daily cap");
+    // jsdom never reports badInput, so the flag is stubbed the way a browser sets it for a lone "-".
+    Object.defineProperty(daily, "validity", { value: { badInput: true }, configurable: true });
+    fireEvent.change(daily, { target: { value: "" } });
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Each cap must be empty or a number that is zero or greater",
+    );
+    expect(operations.setAiBudget).not.toHaveBeenCalled();
+  });
+
+  it("sends one request when Save is clicked twice before the save settles", async () => {
+    let settle!: () => void;
+    const operations = stubOperations({
+      setAiBudget: vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            settle = resolve;
+          }),
+      ),
+    });
+    renderPanel(operations);
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Edit caps" }));
+    const save = screen.getByRole("button", { name: "Save" });
+    fireEvent.click(save);
+    fireEvent.click(save);
+
+    expect(operations.setAiBudget).toHaveBeenCalledTimes(1);
+    settle();
   });
 });
