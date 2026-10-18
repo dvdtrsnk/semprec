@@ -10,6 +10,7 @@ import { createAgentRunOperations } from "./api/agentRunOperations.js";
 import { createSetupOperations } from "./api/setupOperations.js";
 import { createAuthOperations } from "./api/authOperations.js";
 import { createSessionFetch } from "./api/sessionFetch.js";
+import { createAdminOperations } from "./api/adminOperations.js";
 
 /**
  * Composition root: which backend to talk to and which view to open come from the
@@ -27,6 +28,8 @@ import { createSessionFetch } from "./api/sessionFetch.js";
  * `?page=password-reset#token=<resetToken>` routes to the password-reset page (issue #1076); the
  * token travels in the fragment, which the browser never sends to the server, and the page clears it
  * from the address bar on mount. `?page=password-reset` without a fragment routes to the request form.
+ * `?page=admin` routes to the admin page (issue #1079); the page itself is shown only to an admin
+ * session, and a member sees a notice instead.
  */
 const params = new URLSearchParams(window.location.search);
 const viewId = params.get("view") ?? "";
@@ -60,6 +63,7 @@ const agentRun =
         operations: createAgentRunOperations({ baseUrl: apiBaseUrl, fetchImpl }),
       }
     : undefined;
+const admin = page === "admin" ? { operations: createAdminOperations({ baseUrl: apiBaseUrl, fetchImpl }) } : undefined;
 const setup =
   page === "setup" && params.get("token")
     ? {
@@ -89,6 +93,7 @@ createRoot(container).render(
       agentRun={agentRun}
       setup={setup}
       passwordReset={passwordReset}
+      admin={admin}
       auth={auth}
       sessionEvents={sessionEvents}
       login={page === "login" ? true : undefined}

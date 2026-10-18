@@ -83,7 +83,10 @@ describe("auth operations", () => {
   });
 
   it.each([undefined, "owner"])("getSession rejects a session role of %s as retryable", async (role) => {
-    const user = role === undefined ? { id: USER.id, email: USER.email, locale: USER.locale, createdAt: USER.createdAt } : { ...USER, role };
+    const user =
+      role === undefined
+        ? { id: USER.id, email: USER.email, locale: USER.locale, createdAt: USER.createdAt }
+        : { ...USER, role };
     const auth = authWith(() => jsonResponse({ user }));
 
     await expect(auth.getSession()).rejects.toMatchObject({ kind: "retryable" });

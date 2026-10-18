@@ -17,7 +17,9 @@ import { AgentRunDetail } from "./views/agentRun/AgentRunDetail.js";
 import { SetupWizard } from "./views/setup/SetupWizard.js";
 import { PasswordResetPage } from "./views/passwordReset/PasswordResetPage.js";
 import { LoginPage } from "./views/login/LoginPage.js";
-import { ErrorState, LoadingState } from "./components/StateViews.js";
+import { EmptyState, ErrorState, LoadingState } from "./components/StateViews.js";
+import type { AdminOperations } from "./api/adminOperations.js";
+import { AdminPage } from "./views/admin/AdminPage.js";
 import type { SetupOperations } from "./api/setupOperations.js";
 import "./styles/tokens.css";
 import "./styles/app.css";
@@ -37,6 +39,11 @@ export interface ApprovalQueueRoute {
 export interface AgentRunRoute {
   agentRunId: string;
   operations: AgentRunOperations;
+}
+
+/** Present only when the composition root routed to the admin page (issue #1079) rather than an item/view id. */
+export interface AdminRoute {
+  operations: AdminOperations;
 }
 
 export interface SetupRoute {
@@ -66,6 +73,7 @@ export function App({
   agentRun,
   setup,
   passwordReset,
+  admin,
   auth,
   sessionEvents,
   login,
@@ -87,6 +95,8 @@ export function App({
   setup?: SetupRoute;
   /** Present only when the composition root routed to the password-reset page (issue #1076) rather than an item/view id. */
   passwordReset?: PasswordResetRoute;
+  /** Present only when the composition root routed to the admin page (issue #1079) rather than an item/view id. */
+  admin?: AdminRoute;
   auth: AuthOperations;
   /** Fires `"unauthorized"` whenever an adapter receives a 401 mid-session (see `createSessionFetch`). */
   sessionEvents: EventTarget;
@@ -118,6 +128,8 @@ export function App({
             agentPage={agentPage}
             approvalQueue={approvalQueue}
             agentRun={agentRun}
+            admin={admin}
+            user={session.status === "authenticated" ? session.user : null}
           />
         </SessionGate>
       )}
@@ -234,6 +246,7 @@ function SessionGate({
         <>
           <header className="app-header">
             <span className="app-header__user">{t("login.signedInAs", { email: session.user.email })}</span>
+            {session.user.role === "admin" ? <a href="?page=admin">{t("admin.link")}</a> : null}
             {logoutError ? (
               <span className="app-header__error" role="alert">
                 {t("login.logoutFailed", { message: logoutError })}
@@ -257,6 +270,8 @@ function RoutedContent({
   agentPage,
   approvalQueue,
   agentRun,
+  admin,
+  user,
 }: {
   viewId: string;
   operations: GenericOperations;
@@ -265,7 +280,10 @@ function RoutedContent({
   agentPage?: AgentPageRoute;
   approvalQueue?: ApprovalQueueRoute;
   agentRun?: AgentRunRoute;
+  admin?: AdminRoute;
+  user: SessionUser | null;
 }) {
+  const t = useTranslate();
   let content;
   if (aiUsageOperations) {
     content = (
@@ -287,6 +305,14 @@ function RoutedContent({
     content = <ApprovalQueue operations={approvalQueue.operations} />;
   } else if (agentRun) {
     content = <AgentRunDetail agentRunId={agentRun.agentRunId} operations={agentRun.operations} />;
+  } else if (admin) {
+    // The gate is client-side presentation only; the backend refuses every admin route to a member.
+    content =
+      user?.role === "admin" ? (
+        <AdminPage operations={admin.operations} />
+      ) : (
+        <EmptyState message={t("admin.notAvailable")} />
+      );
   } else {
     content = <ViewHost viewId={viewId} operations={operations} registry={registry} />;
   }
