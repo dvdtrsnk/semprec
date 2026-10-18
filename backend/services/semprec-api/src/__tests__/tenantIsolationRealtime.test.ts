@@ -255,6 +255,8 @@ interface TenantFixture {
   itemId: string;
   docId: string;
   runId: string;
+  /** An unread notification for the tenant's user, written when the fixture is built. */
+  notificationId: string;
   /** Events already on the run when the fixture is built. */
   runEventCount: number;
 }
@@ -294,6 +296,7 @@ async function buildTenantFixture(tenantId: string): Promise<TenantFixture> {
     if (!doc) throw new Error("expected the item to have a doc");
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "fixture", userId: user.id });
     await insertAndNotifyAgentRunEvent(pool, run.id, "message", { text: "first" });
+    const notificationId = await writeNotificationFor(user.id);
     return {
       tenantId,
       userId: user.id,
@@ -302,6 +305,7 @@ async function buildTenantFixture(tenantId: string): Promise<TenantFixture> {
       itemId: item.id,
       docId: doc.id,
       runId: run.id,
+      notificationId,
       runEventCount: 1,
     };
   });
@@ -356,20 +360,22 @@ async function expectNothingReceived(socket: TestSocket, tenantId: string): Prom
   expect(await socket.drainUntil(isSentinel(sentinel))).toEqual([]);
 }
 
-async function writeNotificationInA(): Promise<string> {
-  return runInTenant(tenantA.tenantId, () =>
-    withTransaction(pool, (client) =>
-      writeNotification(client, {
-        userId: tenantA.userId,
-        kind: "heartbeat_error",
-        titleParams: { name: "Daily digest" },
-        linkHref: null,
-        sourceTable: "project_heartbeats",
-        sourceId: randomUUID(),
-        transitionInstance: randomUUID(),
-      }),
-    ),
+async function writeNotificationFor(userId: string): Promise<string> {
+  return withTransaction(pool, (client) =>
+    writeNotification(client, {
+      userId,
+      kind: "heartbeat_error",
+      titleParams: { name: "Daily digest" },
+      linkHref: null,
+      sourceTable: "project_heartbeats",
+      sourceId: randomUUID(),
+      transitionInstance: randomUUID(),
+    }),
   );
+}
+
+async function writeNotificationInA(): Promise<string> {
+  return runInTenant(tenantA.tenantId, () => writeNotificationFor(tenantA.userId));
 }
 
 /** Writes one more block to `fixture`'s doc, which publishes a `doc_update`. */
@@ -540,9 +546,8 @@ const notifyCases = {
   },
   notification_read_state: {
     scenarios: {
-      "A's notification being read": async () => {
-        const notificationId = await writeNotificationInA();
-        await Promise.all([a1, a2].map((socket) => socket.nextMatching((frame) => frame.kind === "text")));
+      "A's fixture notification being read": async () => {
+        const notificationId = tenantA.notificationId;
         await runInTenant(tenantA.tenantId, () =>
           withTransaction(pool, (client) => visitNotification(client, tenantA.userId, notificationId)),
         );
@@ -718,22 +723,39 @@ const binaryCase = {
     },
     "B1's frame prefixed with A's doc id, sent after a refused doc:open": async () => {
       b1.sendJson({ type: "doc:open", docId: tenantA.docId });
+      // B's own open is answered only after the refused one was handled, so the binary frame below
+      // meets a socket whose open of A's doc is finished, not one still pending its lookup.
+      await openDoc(b1, tenantB.docId);
       await foreignBinaryFrameWritesNothing();
       return [];
     },
   },
 } satisfies Case;
 
-type ProducerRef =
-  { table: "notify"; key: keyof typeof notifyCases } | { table: "stream"; key: keyof typeof streamCases };
+/** A case whose single scenario runs every scenario of `producing` and requires a `type` frame among what they delivered. */
+function producedBy(type: OutboundFrame["type"], producing: Case): Case {
+  return {
+    scenarios: {
+      "produced by its mapped case": async () => {
+        const observed: Observed[] = [];
+        for (const run of Object.values(producing.scenarios)) {
+          await reconnectAll();
+          observed.push(...(await run()));
+        }
+        expect(observed).toContain(type);
+        return observed;
+      },
+    },
+  };
+}
 
-/** The case whose scenarios produce each outbound frame type. */
-const outboundProducers = {
-  invalidate: { table: "notify", key: "invalidation" },
-  notification: { table: "notify", key: "notification_created" },
-  "agent:event": { table: "notify", key: "agent_run_event" },
-  "agent:delta": { table: "stream", key: "agent_run_delta" },
-} satisfies Record<OutboundFrame["type"], ProducerRef>;
+/** Each outbound frame type, mapped to the case whose scenarios produce it. */
+const outboundCases = {
+  invalidate: producedBy("invalidate", notifyCases.invalidation),
+  notification: producedBy("notification", notifyCases.notification_created),
+  "agent:event": producedBy("agent:event", notifyCases.agent_run_event),
+  "agent:delta": producedBy("agent:delta", streamCases.agent_run_delta),
+} satisfies Record<OutboundFrame["type"], Case>;
 
 function scenariosOf(table: Record<string, Case>): Array<[string, string, Scenario]> {
   return Object.entries(table).flatMap(([caseName, c]) =>
@@ -745,6 +767,7 @@ const notifyTable: Record<string, Case> = notifyCases;
 const streamTable: Record<string, Case> = streamCases;
 const inboundTable: Record<string, Case> = inboundCases;
 const binaryTable: Record<string, Case> = { "binary doc frame": binaryCase };
+const outboundTable: Record<string, Case> = outboundCases;
 
 describe("realtime isolation across two tenants (issue #1054)", () => {
   beforeAll(async () => {
@@ -876,17 +899,8 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
   });
 
   describe("outbound frames", () => {
-    it.each(OUTBOUND_TYPES)("%s frames are produced by the case mapped to them", async (type) => {
-      const producer: ProducerRef = outboundProducers[type];
-      const table = producer.table === "notify" ? notifyTable : streamTable;
-      const producing = table[producer.key];
-      if (!producing) throw new Error(`no case named ${producer.key}`);
-      const observed: Observed[] = [];
-      for (const run of Object.values(producing.scenarios)) {
-        await reconnectAll();
-        observed.push(...(await run()));
-      }
-      expect(observed).toContain(type);
+    it.each(scenariosOf(outboundTable))("%s: %s", async (_caseName, _scenarioName, run) => {
+      await run();
     });
   });
 });
