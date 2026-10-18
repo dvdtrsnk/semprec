@@ -254,7 +254,8 @@ restore:
      /root/tenant-deletions.ledger
    ```
 
-   It parses the file first (exit 2 and no database write on a malformed line), then moves every
+   It parses the file first (exit 2 and no database write on a missing `DATABASE_URL`, a wrong
+   argument, an unreadable, non-regular or over-8-MiB file, or a malformed line), then moves every
    listed `active` or `suspended` tenant to `deleting` the way an account deletion does: sessions
    and push registrations revoked, the tenant's key row deleted, the deactivation signal published.
    It prints how many tenants were marked, already `deleting`, absent, or refused, and lists the
@@ -262,7 +263,11 @@ restore:
 4. Start the services. The purge sweep then erases the replayed tenants within a minute.
 5. If the CLI exits 1, a tenant was refused: `lastAdmin` (it holds the only active admin) or
    `unexpectedStatus` (e.g. `provisioning`). Nothing was changed for it; resolve each by hand,
-   then run the CLI again, which is safe to repeat.
+   then run the CLI again, which is safe to repeat. A `lastAdmin` refusal can also hit a deletion
+   that was recorded: when every active admin's tenant was deleted before the backup, the last one
+   in the ledger is refused, and only an operator can decide whether it goes. Any other failure
+   stops the run at that tenant (exit 1 with the error); tenants already marked stay marked and are
+   skipped as `alreadyDeleting` on the next run.
 
 Limits. A deletion completed after the newest snapshot is in no ledger and must be requested
 again; with the daily backup that is the 24-hour RPO window. Replaying a deletion does not remove
