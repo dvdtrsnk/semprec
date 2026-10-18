@@ -35,6 +35,7 @@ const SYSTEM_TASKS = [
   "agentRunEventsRetention",
   "queueFailedJobsPrune",
   "tenantExportExpirySweep",
+  "tenantPurge",
 ];
 
 interface FakeHelperOptions {
@@ -229,7 +230,7 @@ describe("registerTask supersession", () => {
 });
 
 describe("TASK_TENANCY", () => {
-  it("has an entry for every core and agent task name, with exactly the 12 sweeps as system", () => {
+  it("has an entry for every core and agent task name, with exactly the 13 sweeps as system", () => {
     const names = [...Object.values(CORE_TASK_NAMES), ...Object.values(AGENT_TASK_NAMES)];
     expect(Object.keys(TASK_TENANCY).sort()).toEqual([...names].sort());
     const system = names.filter((name) => TASK_TENANCY[name] === "system");
