@@ -134,6 +134,8 @@ async function fingerprint(tenant: Tenant): Promise<Fingerprint> {
     withTransaction(pool, async (client) => {
       const result: Fingerprint = {};
       for (const table of tenantTables) {
+        // `table` comes from pg_class (see loadTenantTables), never from input, and escapeIdentifier
+        // quotes it; a table name cannot be a bind parameter.
         const { rows } = await client.query<{ count: number; md5: string }>(
           `SELECT count(*)::int AS count, md5(COALESCE(string_agg(t::text, E'\\n' ORDER BY t::text), '')) AS md5
              FROM ${escapeIdentifier(table)} t`,
@@ -176,6 +178,65 @@ async function jobOutcome(jobKey: string): Promise<JobOutcome> {
 /** Removes a job a case left failed in the queue, so it cannot run again in a later case. */
 async function removeJob(jobKey: string): Promise<void> {
   await adminPool.query("SELECT graphile_worker.remove_job($1)", [jobKey]);
+}
+
+/** What a tenant holds that a job may add to: per-table row counts, notifications and queued jobs. */
+interface SideEffectSnapshot {
+  rowCounts: Record<string, number>;
+  notificationIds: ReadonlySet<string>;
+  jobIds: ReadonlySet<string>;
+}
+
+/** What one run added to a tenant, stated without ids so two runs naming different ids compare equal. */
+interface SideEffects {
+  /** Tables whose row count changed, with the change. */
+  rowCountDeltas: Record<string, number>;
+  /** Kinds of the notifications the run wrote, sorted. */
+  notificationKinds: string[];
+  /** Task identifiers of the jobs the run left queued (its own job excluded), sorted. */
+  queuedJobs: string[];
+}
+
+async function sideEffectSnapshot(tenant: Tenant): Promise<SideEffectSnapshot> {
+  const tableFingerprints = await fingerprint(tenant);
+  const rowCounts = Object.fromEntries(Object.entries(tableFingerprints).map(([table, { count }]) => [table, count]));
+  const notificationIds = new Set((await notifications(tenant)).keys());
+  const { rows } = await adminPool.query<{ id: string }>("SELECT id::text AS id FROM graphile_worker.jobs");
+  return { rowCounts, notificationIds, jobIds: new Set(rows.map((row) => row.id)) };
+}
+
+async function sideEffectsSince(tenant: Tenant, before: SideEffectSnapshot, ownJobKey: string): Promise<SideEffects> {
+  const after = await sideEffectSnapshot(tenant);
+  const rowCountDeltas = Object.fromEntries(
+    Object.entries(after.rowCounts)
+      .map(([table, count]): [string, number] => [table, count - (before.rowCounts[table] ?? 0)])
+      .filter(([, delta]) => delta !== 0),
+  );
+  const notificationKinds = await runInTenant(tenant.tenantId, async () => {
+    const { rows } = await pool.query<{ id: string; kind: string }>("SELECT id, kind FROM notifications");
+    return rows
+      .filter((row) => !before.notificationIds.has(row.id))
+      .map((row) => row.kind)
+      .sort();
+  });
+  const { rows: jobs } = await adminPool.query<{ id: string; key: string | null; task_identifier: string }>(
+    "SELECT id::text AS id, key, task_identifier FROM graphile_worker.jobs",
+  );
+  const queuedJobs = jobs
+    .filter((job) => !before.jobIds.has(job.id) && job.key !== ownJobKey)
+    .map((job) => job.task_identifier)
+    .sort();
+  return { rowCountDeltas, notificationKinds, queuedJobs };
+}
+
+/** Runs `name` in B with `payload` and returns how the job ended and what it added to B. */
+async function runInBObserved(name: string, payload: Payload): Promise<{ outcome: JobOutcome; effects: SideEffects }> {
+  const before = await sideEffectSnapshot(tenantB);
+  const jobKey = await runJobIn(tenantB, name, payload);
+  const outcome = await jobOutcome(jobKey);
+  const effects = await sideEffectsSince(tenantB, before, jobKey);
+  await removeJob(jobKey);
+  return { outcome, effects };
 }
 
 /** Enqueues `name` inside `tenant` under a fresh job key, drains the queue once and returns the key. */
@@ -352,17 +413,13 @@ describe("background task isolation across two tenants: transcribe runtime (issu
     );
 
     it.each(tenantCases)(
-      "%s (b): a job of B naming A's rows ends like one naming random ids and leaves A unchanged",
+      "%s (b): a job of B naming A's rows ends, and adds to B, like one naming random ids, and leaves A unchanged",
       async (name, c) => {
         const payload = await c.seed(tenantA);
         const beforeA = await fingerprint(tenantA);
 
-        const foreignKey = await runJobIn(tenantB, name, payload);
-        const foreign = await jobOutcome(foreignKey);
-        const randomKey = await runJobIn(tenantB, name, randomizedPayload(payload));
-        const random = await jobOutcome(randomKey);
-        await removeJob(foreignKey);
-        await removeJob(randomKey);
+        const foreign = await runInBObserved(name, payload);
+        const random = await runInBObserved(name, randomizedPayload(payload));
 
         expect(foreign).toEqual(random);
         expect(await fingerprint(tenantA)).toEqual(beforeA);
