@@ -841,7 +841,14 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       const foreign = await expectExcludesA(b.member, register(a.pushDeviceToken));
       const random = await send(b.member, register(randomBytes(32).toString("hex")));
       expect(foreign.status).toBe(random.status);
-      await expectAAccountActive();
+      expect(foreign.status).toBe(200);
+      // Push device tokens are deliberately global identity-plane keys (the 2026-10-03
+      // tenancy ADR). Registering the same physical device moves it to the caller, as
+      // upsertApnsSubscription specifies; this is distinct from revoking a foreign row id.
+      const subscriptions = await runInTenant(a.tenantId, () => listPushSubscriptionsForUser(pool, a.member.userId));
+      expect(subscriptions.find((subscription) => subscription.id === a.pushSubscriptionId)?.revokedAt).toEqual(
+        expect.any(String),
+      );
     } finally {
       // Re-register A's device as A when the case displaced it, so later cases start from an
       // active subscription instead of failing on this case's leftover.
@@ -851,6 +858,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         a.ids.push(a.pushSubscriptionId);
       }
     }
+    await expectAAccountActive();
   },
   "revoke push subscription": async () => {
     await expectForeignLikeRandom(b.member, [a.pushSubscriptionId], ([id]) => ({
