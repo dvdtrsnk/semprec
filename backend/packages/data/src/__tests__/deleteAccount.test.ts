@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { sealSecret } from "@semprec/credentials";
@@ -16,7 +16,7 @@ import { getOrCreateTenantDataKey } from "../credentials/tenantKeysStore.js";
 import { ChokePointError, NotFoundError, UnauthorizedError } from "../errors.js";
 import { listPushSubscriptionsForUser } from "../push/pushSubscriptionsStore.js";
 import { registerPushSubscription } from "../push/pushSubscriptionActions.js";
-import { transitionTenantStatus, type TenantStatus } from "../tenancy/tenantsStore.js";
+import { type TenantStatus } from "../tenancy/tenantsStore.js";
 import { TENANT_STATUS_CHANNEL } from "../tenancy/tenantStatusSignal.js";
 import { LastAdminError } from "../tenancy/accountsAdminStore.js";
 import { withTransaction } from "../db/pool.js";
@@ -27,6 +27,21 @@ import {
   ReauthenticationFailedError,
   SelfDeletionRequiresReauthenticationError,
 } from "../tenancy/deleteAccount.js";
+
+// Runs `afterVerify` right after a real password verification, so a test can commit a concurrent
+// change in the gap between `deleteOwnAccount`'s check and its transaction.
+const verifyHook = vi.hoisted(() => ({ afterVerify: null as null | (() => Promise<void>) }));
+vi.mock("../auth/passwordHash.js", async (importActual) => {
+  const actual = await importActual<typeof import("../auth/passwordHash.js")>();
+  return {
+    ...actual,
+    verifyPassword: async (...args: Parameters<typeof actual.verifyPassword>) => {
+      const ok = await actual.verifyPassword(...args);
+      await verifyHook.afterVerify?.();
+      return ok;
+    },
+  };
+});
 
 const PASSWORD = "s3cret-password";
 const IP = "10.1.2.3";
@@ -170,6 +185,7 @@ describe("account deletion (issue #1049)", () => {
   });
 
   afterEach(() => {
+    verifyHook.afterVerify = null;
     listener.release(true);
   });
 
@@ -236,6 +252,23 @@ describe("account deletion (issue #1049)", () => {
       expect(await tenantStatusOf(b.tenantId)).toBe("active");
       expect(await activeSessionCount(b.userId)).toBe(1);
       expect(await keyCount(b.tenantId)).toBe(1);
+      await settle();
+      expect(notified).toEqual([]);
+    });
+
+    it("refuses a deletion whose password hash was replaced after the verification and changes nothing", async () => {
+      await makeAccount("admin");
+      const b = await makeAccount("member");
+      await signIn(b);
+      const newHash = await hashPassword("a-new-password");
+      verifyHook.afterVerify = async () => {
+        await adminPool.query("UPDATE users SET password_hash = $2 WHERE id = $1", [b.userId, newHash]);
+      };
+
+      await expect(deleteOwn(b)).rejects.toBeInstanceOf(ReauthenticationFailedError);
+
+      expect(await tenantStatusOf(b.tenantId)).toBe("active");
+      expect(await activeSessionCount(b.userId)).toBe(1);
       await settle();
       expect(notified).toEqual([]);
     });
@@ -384,6 +417,15 @@ describe("account deletion (issue #1049)", () => {
       expect(notified).toEqual([]);
     });
 
+    it("deletes the only admin of a suspended tenant without the last-admin guard", async () => {
+      const actor = await makeAccount("admin");
+      const target = await makeAccount("admin", "suspended");
+
+      await deleteAsAdmin(actor, target);
+
+      expect(await tenantStatusOf(target.tenantId)).toBe("deleting");
+    });
+
     it("deletes an admin when a second active admin exists", async () => {
       const actor = await makeAccount("admin");
       const target = await makeAccount("admin");
@@ -424,6 +466,7 @@ describe("account deletion (issue #1049)", () => {
 
       expect(err).toBeInstanceOf(Error);
       expect(err).not.toBeInstanceOf(ChokePointError);
+      expect(err).toHaveProperty("message", expect.stringContaining("beginTenantDeletion must run inside runInTenant"));
       expect(await tenantStatusOf(b.tenantId)).toBe("active");
     });
 
@@ -444,11 +487,8 @@ describe("account deletion (issue #1049)", () => {
       expect(notified).toEqual([]);
     });
 
-    it("throws when the tenant is not active or suspended and rolls the transaction back", async () => {
+    it("throws invalid_account_status for a tenant that is not active or suspended and leaves its key", async () => {
       const b = await makeAccount("member");
-      await runAsSystem("deleteAccount.test", () =>
-        withTransaction(adminPool, (client) => transitionTenantStatus(client, b.tenantId, ["active"], "suspended")),
-      );
       await seedTenantCredential(b.tenantId);
       await adminPool.query("UPDATE tenants SET status = 'provisioning' WHERE id = $1", [b.tenantId]);
 
@@ -457,6 +497,39 @@ describe("account deletion (issue #1049)", () => {
       ).rejects.toMatchObject({ code: "invalid_account_status" });
 
       expect(await keyCount(b.tenantId)).toBe(1);
+    });
+
+    it("leaves status, sessions, push, key and notification unchanged when the transaction fails after it succeeded", async () => {
+      const b = await makeAccount("member");
+      await signIn(b);
+      await registerPushSubscription(adminPool, {
+        userId: b.userId,
+        sessionId: null,
+        channel: "web_push",
+        platform: "web",
+        endpoint: "https://push.example/rollback",
+        p256dh: "key",
+        authSecret: "secret",
+      });
+      await seedTenantCredential(b.tenantId);
+
+      await expect(
+        runInTenant(b.tenantId, () =>
+          withTransaction(pool, async (client) => {
+            await beginTenantDeletion(client, b.tenantId);
+            throw new Error("later step failed");
+          }),
+        ),
+      ).rejects.toThrow("later step failed");
+
+      expect(await tenantStatusOf(b.tenantId)).toBe("active");
+      expect(await activeSessionCount(b.userId)).toBe(1);
+      const push = await listPushSubscriptionsForUser(adminPool, b.userId);
+      expect(push).toHaveLength(1);
+      expect(push.every((row) => row.revokedAt === null)).toBe(true);
+      expect(await keyCount(b.tenantId)).toBe(1);
+      await settle();
+      expect(notified).toEqual([]);
     });
   });
 });

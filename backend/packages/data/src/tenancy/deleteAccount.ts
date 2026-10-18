@@ -49,10 +49,11 @@ const USER_ROLES: readonly UserRole[] = ["admin", "member"];
  * together: `active`/`suspended` → `deleting`, every session and push registration of the tenant's
  * users revoked, the tenant's `tenant_keys` row deleted, and the deactivation signal published.
  *
- * Crypto-shred guarantee: once this transaction commits, the tenant's wrapped data key no longer
- * exists, so every credential sealed under it (`scheme = 'tenant'`) is undecryptable. Credentials
- * sealed under the master key (`scheme = 'master'`) are
- * not covered; sealing new credentials under the tenant key is delivered by later issues.
+ * Crypto-shred guarantee: this transaction deletes the tenant's wrapped data key, so once it commits
+ * every credential sealed under that key (`scheme = 'tenant'`) is undecryptable. It does not stop a
+ * request that was already in flight from creating a new key afterwards; the purge (#1055) erases
+ * the tenant's remaining rows. Credentials sealed under the master key (`scheme = 'master'`) are
+ * not covered; credentials written before #1060 and #1062 land are still master-sealed.
  *
  * Must run inside `runInTenant(tenantId, …)`, because `tenant_keys` is only reachable from its own
  * tenant's scope; any other scope throws before any write.
@@ -79,12 +80,16 @@ export async function beginTenantDeletion(client: PoolClient, tenantId: string):
 
 /**
  * Takes the admin-membership lock, re-reads the user `FOR UPDATE` and applies the last-admin guard
- * when the user currently counts as an active admin. Returns the user's tenant id.
+ * when the user currently counts as an active admin. Returns the user's tenant id and the password
+ * hash as it is under the lock.
  */
-async function lockUserAndGuardLastAdmin(client: PoolClient, userId: string): Promise<string> {
+async function lockUserAndGuardLastAdmin(
+  client: PoolClient,
+  userId: string,
+): Promise<{ tenantId: string; passwordHash: string }> {
   await lockAdminMembership(client);
-  const { rows } = await client.query<{ tenant_id: string; role: string; status: string }>(
-    `SELECT t.id AS tenant_id, u.role, t.status
+  const { rows } = await client.query<{ tenant_id: string; role: string; status: string; password_hash: string }>(
+    `SELECT t.id AS tenant_id, u.role, t.status, u.password_hash
        FROM users u
        JOIN tenants t ON t.id = COALESCE(u.tenant_id, app_sole_tenant())
       WHERE u.id = $1
@@ -96,7 +101,7 @@ async function lockUserAndGuardLastAdmin(client: PoolClient, userId: string): Pr
   const role = assertKnownValue(USER_ROLES, row.role, "users.role");
   const status = assertKnownValue(TENANT_STATUSES, row.status, "tenants.status");
   if (role === "admin" && status === "active") await assertAnotherActiveAdminRemains(client, userId);
-  return row.tenant_id;
+  return { tenantId: row.tenant_id, passwordHash: row.password_hash };
 }
 
 export interface DeleteOwnAccountInput {
@@ -112,7 +117,9 @@ export interface DeleteOwnAccountInput {
  * attempt on the pool (auto-committed, so it survives the throw) and throws
  * `ReauthenticationFailedError`. Then, in one transaction in the tenant's scope, takes the admin
  * membership lock, refuses with `LastAdminError` for the last active admin and runs
- * `beginTenantDeletion`. No audit row is written for a self-deletion.
+ * `beginTenantDeletion`. A password hash that changed between the verification and that
+ * transaction is refused with `ReauthenticationFailedError`. No audit row is written for a
+ * self-deletion.
  */
 export async function deleteOwnAccount(pool: Pool, input: DeleteOwnAccountInput): Promise<void> {
   const user = await getUserById(pool, input.userId);
@@ -134,8 +141,11 @@ export async function deleteOwnAccount(pool: Pool, input: DeleteOwnAccountInput)
 
   await runInTenant(input.tenantId, () =>
     withTransaction(pool, async (client) => {
-      const tenantId = await lockUserAndGuardLastAdmin(client, input.userId);
-      await beginTenantDeletion(client, tenantId);
+      const locked = await lockUserAndGuardLastAdmin(client, input.userId);
+      // The password was verified before this transaction. A password change that committed in
+      // between replaced the hash, so the verified credential is stale and the request is refused.
+      if (locked.passwordHash !== user.passwordHash) throw new ReauthenticationFailedError();
+      await beginTenantDeletion(client, locked.tenantId);
     }),
   );
 }
@@ -151,7 +161,8 @@ export interface DeleteAccountAsAdminInput {
  * with password re-authentication. The target's tenant is resolved from `users`, then one
  * transaction in that tenant's scope takes the admin membership lock, refuses with `LastAdminError`
  * for the last active admin, runs `beginTenantDeletion` and records `accountDeletionRequested`.
- * Enters the tenant only for that write transaction and reads none of its content. Returns the
+ * Enters the tenant only for that write transaction and reads no tenant content, only the identity
+ * rows (`users`, `tenants`, `sessions`, `push_subscriptions`) the deletion itself touches. Returns the
  * account's summary after the commit.
  */
 export async function deleteAccountAsAdmin(pool: Pool, input: DeleteAccountAsAdminInput): Promise<AdminAccountSummary> {
@@ -165,7 +176,7 @@ export async function deleteAccountAsAdmin(pool: Pool, input: DeleteAccountAsAdm
 
   await runInTenant(targetTenantId, () =>
     withTransaction(pool, async (client) => {
-      const tenantId = await lockUserAndGuardLastAdmin(client, input.targetUserId);
+      const { tenantId } = await lockUserAndGuardLastAdmin(client, input.targetUserId);
       await beginTenantDeletion(client, tenantId);
       await recordAdminAction(client, {
         actorUserId: input.actorUserId,
