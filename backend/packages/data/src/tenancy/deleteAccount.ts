@@ -18,6 +18,7 @@ import {
   recordAdminAction,
   type AdminAccountSummary,
 } from "./accountsAdminStore.js";
+import { logger } from "./logger.js";
 import { transitionTenantStatus, TENANT_STATUSES } from "./tenantsStore.js";
 import { publishTenantDeactivated } from "./tenantStatusSignal.js";
 
@@ -49,8 +50,8 @@ const USER_ROLES: readonly UserRole[] = ["admin", "member"];
  * users revoked, the tenant's `tenant_keys` row deleted, and the deactivation signal published.
  *
  * Crypto-shred guarantee: once this transaction commits, the tenant's wrapped data key no longer
- * exists, so every credential sealed under it (`scheme = 'tenant'`) is undecryptable, including in
- * backups taken after the commit. Credentials sealed under the master key (`scheme = 'master'`) are
+ * exists, so every credential sealed under it (`scheme = 'tenant'`) is undecryptable. Credentials
+ * sealed under the master key (`scheme = 'master'`) are
  * not covered; sealing new credentials under the tenant key is delivered by later issues.
  *
  * Must run inside `runInTenant(tenantId, …)`, because `tenant_keys` is only reachable from its own
@@ -71,7 +72,8 @@ export async function beginTenantDeletion(client: PoolClient, tenantId: string):
     await revokeAllPushSubscriptionsForUser(client, user.id);
   }
   // Zero rows is legitimate: a tenant that never stored a credential has no key.
-  await client.query("DELETE FROM tenant_keys WHERE tenant_id = $1", [tenantId]);
+  const shredded = await client.query("DELETE FROM tenant_keys WHERE tenant_id = $1", [tenantId]);
+  logger.info({ tenantId, keyDeleted: (shredded.rowCount ?? 0) > 0 }, "tenant_deletion_begun");
   await publishTenantDeactivated(client, tenantId);
 }
 
