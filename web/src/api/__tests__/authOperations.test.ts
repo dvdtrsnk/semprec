@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import { OperationError } from "../genericOperations.js";
 import { createAuthOperations } from "../authOperations.js";
 
-const USER = { id: "user-1", email: "operator@example.com", locale: "en", createdAt: "2026-09-01T12:00:00.000Z" };
+const USER = {
+  id: "user-1",
+  email: "operator@example.com",
+  locale: "en",
+  createdAt: "2026-09-01T12:00:00.000Z",
+  role: "member",
+};
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -26,7 +32,7 @@ describe("auth operations", () => {
     const user = await auth.login({ email: "operator@example.com", password: "correct horse" });
 
     expect(user).toEqual(USER);
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
     expect(calls[0]!.url).toBe("/api/auth/login");
     expect(calls[0]!.init?.method).toBe("POST");
     expect(calls[0]!.init?.credentials).toBe("same-origin");
@@ -36,6 +42,51 @@ describe("auth operations", () => {
       password: "correct horse",
       platform: "web",
     });
+  });
+
+  it("login resolves the user through the session read, since the login body carries no role", async () => {
+    const calls: string[] = [];
+    const auth = createAuthOperations({
+      baseUrl: "/api",
+      fetchImpl: async (input) => {
+        calls.push(String(input));
+        if (String(input).endsWith("/auth/login")) return jsonResponse({ user: { id: "user-1" } });
+        return jsonResponse({ user: { ...USER, role: "admin" } });
+      },
+    });
+
+    await expect(auth.login({ email: "operator@example.com", password: "x" })).resolves.toEqual({
+      ...USER,
+      role: "admin",
+    });
+    expect(calls).toEqual(["/api/auth/login", "/api/auth/session"]);
+  });
+
+  it("login rejects as retryable when the session read after a successful login finds no session", async () => {
+    const auth = createAuthOperations({
+      baseUrl: "/api",
+      fetchImpl: async (input) =>
+        String(input).endsWith("/auth/login")
+          ? jsonResponse({ user: USER })
+          : jsonResponse({ error: "Invalid or missing credentials" }, 401),
+    });
+
+    await expect(auth.login({ email: "operator@example.com", password: "x" })).rejects.toMatchObject({
+      kind: "retryable",
+    });
+  });
+
+  it.each(["admin", "member"])("getSession parses a session role of %s", async (role) => {
+    const auth = authWith(() => jsonResponse({ user: { ...USER, role } }));
+
+    await expect(auth.getSession()).resolves.toEqual({ ...USER, role });
+  });
+
+  it.each([undefined, "owner"])("getSession rejects a session role of %s as retryable", async (role) => {
+    const user = role === undefined ? { id: USER.id, email: USER.email, locale: USER.locale, createdAt: USER.createdAt } : { ...USER, role };
+    const auth = authWith(() => jsonResponse({ user }));
+
+    await expect(auth.getSession()).rejects.toMatchObject({ kind: "retryable" });
   });
 
   it("login maps a 401 to an OperationError carrying status 401 and the server's message", async () => {

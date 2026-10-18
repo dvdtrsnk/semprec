@@ -12,6 +12,7 @@ const USER: SessionUser = {
   email: "operator@example.com",
   locale: "en",
   createdAt: "2026-09-01T12:00:00.000Z",
+  role: "member",
 };
 
 const CONTENT_MARKER_STATUS = 599;
