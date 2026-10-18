@@ -12,6 +12,8 @@ readonly DUMP_FILE="$BACKUP_DIRECTORY/postgres.dump"
 readonly DUMP_TEMPORARY_FILE="$DUMP_FILE.tmp"
 readonly TENANT_KEYS_DUMP_FILE="$BACKUP_DIRECTORY/tenant-keys.dump"
 readonly TENANT_KEYS_DUMP_TEMPORARY_FILE="$TENANT_KEYS_DUMP_FILE.tmp"
+readonly DELETION_LEDGER_FILE="$BACKUP_DIRECTORY/tenant-deletions.ledger"
+readonly DELETION_LEDGER_TEMPORARY_FILE="$DELETION_LEDGER_FILE.tmp"
 
 require_environment() {
   local name
@@ -25,7 +27,7 @@ require_environment() {
 }
 
 remove_partial_dump() {
-  rm -f -- "$DUMP_TEMPORARY_FILE" "$TENANT_KEYS_DUMP_TEMPORARY_FILE"
+  rm -f -- "$DUMP_TEMPORARY_FILE" "$TENANT_KEYS_DUMP_TEMPORARY_FILE" "$DELETION_LEDGER_TEMPORARY_FILE"
 }
 
 # Both blob directories are created at provisioning; a missing one means the configuration points
@@ -59,7 +61,16 @@ main() {
     --table=public.tenant_keys > "$TENANT_KEYS_DUMP_TEMPORARY_FILE"
   mv -- "$TENANT_KEYS_DUMP_TEMPORARY_FILE" "$TENANT_KEYS_DUMP_FILE"
 
-  restic backup "$DUMP_FILE" "$FILES_STORAGE_DIR" "$MAIL_ATTACHMENTS_DIR"
+  # The ids of every tenant erased so far travel in the same snapshot as the dump, so a restore of
+  # an older snapshot can re-apply the deletions recorded since (see deploy/README.md).
+  docker compose -f "$COMPOSE_FILE" exec -T postgres \
+    psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --no-psqlrc --tuples-only --no-align \
+    --set=ON_ERROR_STOP=1 \
+    --command="SELECT tenant_id FROM tenant_deletions ORDER BY completed_at, tenant_id" \
+    > "$DELETION_LEDGER_TEMPORARY_FILE"
+  mv -- "$DELETION_LEDGER_TEMPORARY_FILE" "$DELETION_LEDGER_FILE"
+
+  restic backup "$DUMP_FILE" "$DELETION_LEDGER_FILE" "$FILES_STORAGE_DIR" "$MAIL_ATTACHMENTS_DIR"
   restic backup "$TENANT_KEYS_DUMP_FILE"
 
   # Retention runs only after both snapshots exist; --path keeps each policy to its own kind.
