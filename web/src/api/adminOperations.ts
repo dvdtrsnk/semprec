@@ -70,6 +70,15 @@ export type AiBudgetAccount = z.infer<typeof aiBudgetAccountSchema>;
 
 const aiBudgetsResponseSchema = z.object({ spendWindow: z.literal("utc"), accounts: z.array(aiBudgetAccountSchema) });
 
+const setAiBudgetResponseSchema = z.object({
+  budget: z.object({
+    userId: z.string(),
+    dailyCapUsd: z.number().nullable(),
+    monthlyCapUsd: z.number().nullable(),
+    updatedAt: z.string(),
+  }),
+});
+
 /** The caps of one account's AI budget; `null` means no cap for that period. */
 export interface AiBudgetCaps {
   dailyCapUsd: number | null;
@@ -105,8 +114,7 @@ export function createAdminOperations(options: AdminOperationsOptions): AdminOpe
   const baseUrl = options.baseUrl.replace(/\/$/, "");
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
 
-  /** Sends the request and resolves once it answers 2xx; a non-2xx answer is thrown as its mapped failure. */
-  async function send(path: string, init?: RequestInit): Promise<Response> {
+  async function request(path: string, init?: RequestInit): Promise<unknown> {
     let response: Response;
     try {
       response = await fetchImpl(`${baseUrl}${path}`, { credentials: "same-origin", ...init });
@@ -117,11 +125,7 @@ export function createAdminOperations(options: AdminOperationsOptions): AdminOpe
     if (!response.ok) {
       throw await failure(path, response);
     }
-    return response;
-  }
 
-  async function request(path: string, init?: RequestInit): Promise<unknown> {
-    const response = await send(path, init);
     try {
       return await response.json();
     } catch {
@@ -182,16 +186,14 @@ export function createAdminOperations(options: AdminOperationsOptions): AdminOpe
       return parseBody(aiBudgetsResponseSchema, body, "/admin/ai-budgets").accounts;
     },
 
-    /**
-     * The 2xx status is the success signal: the write is committed once the server answers 2xx, and
-     * the body is not read. Parsing it would report a committed budget as a failed save.
-     */
     async setAiBudget(userId, caps) {
-      await send(`/admin/accounts/${encodeURIComponent(userId)}/ai-budget`, {
+      const path = `/admin/accounts/${encodeURIComponent(userId)}/ai-budget`;
+      const body = await request(path, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ dailyCapUsd: caps.dailyCapUsd, monthlyCapUsd: caps.monthlyCapUsd }),
       });
+      parseBody(setAiBudgetResponseSchema, body, path);
     },
   };
 }
