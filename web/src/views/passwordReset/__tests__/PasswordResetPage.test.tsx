@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "../../../i18n/index.js";
 import { OperationError } from "../../../api/genericOperations.js";
@@ -34,6 +34,32 @@ describe("PasswordResetPage", () => {
   });
 
   describe("without a token", () => {
+    it("disables the controls and shows Sending… while the request is pending", async () => {
+      let resolvePending!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        resolvePending = resolve;
+      });
+      const requestPasswordReset = vi.fn(() => pending);
+      renderPage(null, stubAuth({ requestPasswordReset }));
+
+      try {
+        await userEvent.type(screen.getByLabelText("Email"), "operator@example.com");
+        await userEvent.click(screen.getByRole("button", { name: "Send reset link" }));
+
+        expect(requestPasswordReset).toHaveBeenCalledExactlyOnceWith("operator@example.com");
+        expect(screen.getByLabelText("Email")).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Sending…" })).toBeDisabled();
+        expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      } finally {
+        await act(async () => {
+          resolvePending();
+          await pending;
+        });
+      }
+
+      expect(screen.getByRole("status")).toHaveTextContent("If an account exists");
+    });
+
     it("posts the entered email and shows a confirmation that does not say whether the address has an account", async () => {
       const auth = stubAuth();
       renderPage(null, auth);
@@ -67,6 +93,32 @@ describe("PasswordResetPage", () => {
   });
 
   describe("with a token", () => {
+    it("disables the controls and shows Saving… while the reset is pending", async () => {
+      let resolvePending!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        resolvePending = resolve;
+      });
+      const resetPassword = vi.fn(() => pending);
+      renderPage("abc", stubAuth({ resetPassword }));
+
+      try {
+        await userEvent.type(screen.getByLabelText("New password"), "a new password");
+        await userEvent.click(screen.getByRole("button", { name: "Set new password" }));
+
+        expect(resetPassword).toHaveBeenCalledExactlyOnceWith({ token: "abc", newPassword: "a new password" });
+        expect(screen.getByLabelText("New password")).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
+        expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      } finally {
+        await act(async () => {
+          resolvePending();
+          await pending;
+        });
+      }
+
+      expect(screen.getByRole("status")).toHaveTextContent("Your password has been changed");
+    });
+
     it("removes the fragment from the address bar on mount without adding a history entry", async () => {
       window.history.replaceState(null, "", "/?page=password-reset#token=abc");
       const historyLength = window.history.length;

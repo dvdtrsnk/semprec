@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { OperationError } from "../genericOperations.js";
 import { createAuthOperations } from "../authOperations.js";
 
@@ -229,6 +229,32 @@ describe("password-reset operations", () => {
       kind: "retryable",
       status: 500,
       message: "Request to /auth/password-reset/consume failed with 500",
+    });
+  });
+
+  it.each([400, 413, 500])(
+    "resetPassword preserves an error-only %i response and reads its body once",
+    async (status) => {
+      const response = jsonResponse({ error: "Reset request failed" }, status);
+      const readJson = vi.spyOn(response, "json");
+      const auth = authWith(() => response);
+
+      await expect(auth.resetPassword({ token: "abc", newPassword: "a new password" })).rejects.toMatchObject({
+        kind: "retryable",
+        status,
+        message: "Reset request failed",
+      });
+      expect(readJson).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("resetPassword preserves the error message when the code has an unexpected type", async () => {
+    const auth = authWith(() => jsonResponse({ error: "Reset request failed", code: 123 }, 400));
+
+    await expect(auth.resetPassword({ token: "abc", newPassword: "a new password" })).rejects.toMatchObject({
+      kind: "retryable",
+      status: 400,
+      message: "Reset request failed",
     });
   });
 
