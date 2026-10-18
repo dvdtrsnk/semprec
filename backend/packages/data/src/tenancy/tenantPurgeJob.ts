@@ -469,7 +469,13 @@ async function replayOneTenant(pool: Pool, tenantId: string): Promise<ReplayOutc
  * per tenant, and the purge sweep then erases it. A tenant that is already `deleting` or absent is
  * reported and left alone; the last active admin's tenant and a tenant in another status (e.g.
  * `provisioning`) are `refused` and left unchanged. Any other failure propagates, so a replay that
- * could not finish never reports success; tenants marked before it stay marked.
+ * could not finish never reports success: the loop stops there on purpose, the tenants already
+ * marked stay marked, and running the replay again skips them as `alreadyDeleting`.
+ *
+ * Tenants are handled in the order given, and each one sees the admins left by the ones before it.
+ * If every active admin's tenant was deleted before the backup, the last of them in the ledger is
+ * refused as `lastAdmin` although its deletion was recorded: a `lastAdmin` refusal means a recorded
+ * deletion was not applied and needs an operator's decision.
  */
 export async function replayTenantDeletions(
   pool: Pool,
