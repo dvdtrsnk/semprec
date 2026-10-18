@@ -197,7 +197,7 @@ export async function syncMcpServerTools(
       // The original sync failure (`err`, thrown below) is what the caller needs to see — a
       // secondary failure while merely trying to *record* it must never replace or hide it.
       logger.error(
-        { err: recordingErr },
+        { err: recordingErr, mcpServerItemId },
         "syncMcpServerTools: failed to record syncStatus:'error' after a sync failure",
       );
     }
@@ -206,7 +206,7 @@ export async function syncMcpServerTools(
     } catch (closeErr) {
       // Same discipline as the recordingErr handling above: `err` is what the caller needs to
       // see, so a secondary failure while merely closing the connection must never replace it.
-      logger.error({ err: closeErr }, "syncMcpServerTools: failed to close the MCP client handle");
+      logger.error({ err: closeErr, mcpServerItemId }, "syncMcpServerTools: failed to close the MCP client handle");
     }
     throw err;
   }

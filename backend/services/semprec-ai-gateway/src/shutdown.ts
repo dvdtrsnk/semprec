@@ -141,7 +141,7 @@ export function registerShutdownSignals(shutdown: (signal: string) => Promise<vo
           // `shutdown` is caller-injected and typed only as `Promise<void>`; this repository's
           // own `createGracefulShutdown` never rejects, but this function makes no such
           // guarantee about its argument, so a rejection here must not become unhandled.
-          logger.fatal({ err, signal }, "shutdown() rejected unexpectedly");
+          logger.error({ err, signal }, "shutdown() rejected unexpectedly");
           process.exit(1);
         });
     });
