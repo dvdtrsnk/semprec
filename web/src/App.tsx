@@ -327,7 +327,7 @@ function RoutedContent({
     // The gate is client-side presentation only; the backend refuses every admin route to a member.
     content =
       user?.role === "admin" ? (
-        <AdminPage operations={admin.operations} />
+        <AdminPage operations={admin.operations} currentUserId={user.id} />
       ) : (
         <EmptyState message={t("admin.notAvailable")} />
       );

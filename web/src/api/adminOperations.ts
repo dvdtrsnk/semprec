@@ -124,6 +124,7 @@ export interface AdminOperations {
   listAccounts(): Promise<AdminAccountSummary[]>;
   suspendAccount(userId: string): Promise<AdminAccountSummary>;
   reactivateAccount(userId: string): Promise<AdminAccountSummary>;
+  deleteAccount(userId: string): Promise<AdminAccountSummary>;
   changeRole(userId: string, role: AdminRole): Promise<AdminAccountSummary>;
   listInvites(): Promise<InviteSummary[]>;
   createInvite(email: string): Promise<CreatedInvite>;
@@ -170,6 +171,12 @@ export function createAdminOperations(options: AdminOperationsOptions): AdminOpe
 
     async reactivateAccount(userId) {
       const path = `/admin/accounts/${encodeURIComponent(userId)}/reactivate`;
+      const body = await request(path, { method: "POST" });
+      return parseBody(accountResponseSchema, body, path).account;
+    },
+
+    async deleteAccount(userId) {
+      const path = `/admin/accounts/${encodeURIComponent(userId)}/delete`;
       const body = await request(path, { method: "POST" });
       return parseBody(accountResponseSchema, body, path).account;
     },

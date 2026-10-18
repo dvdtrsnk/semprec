@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { OperationError, type GenericOperations } from "../api/genericOperations.js";
 import type { AuthOperations, SessionUser } from "../api/authOperations.js";
@@ -255,6 +255,9 @@ describe("App admin page", () => {
       reactivateAccount: vi.fn(async () => {
         throw new OperationError("retryable", "unused");
       }),
+      deleteAccount: vi.fn(async () => {
+        throw new Error("unused");
+      }),
       changeRole: vi.fn(async () => {
         throw new OperationError("retryable", "unused");
       }),
@@ -304,6 +307,35 @@ describe("App admin page", () => {
     expect(await screen.findByRole("heading", { name: "Admin" })).toBeInTheDocument();
     expect(await screen.findByText("No accounts yet")).toBeInTheDocument();
     expect(admin.listAccounts).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the session user's id to the accounts panel, so the admin's own row offers no Delete", async () => {
+    const admin = stubAdmin();
+    vi.mocked(admin.listAccounts).mockResolvedValue([
+      {
+        userId: ADMIN_USER.id,
+        email: ADMIN_USER.email,
+        role: "admin",
+        status: "active",
+        createdAt: "2026-09-01T12:00:00.000Z",
+        lastSeenAt: null,
+      },
+      {
+        userId: "user-2",
+        email: "member@example.com",
+        role: "member",
+        status: "active",
+        createdAt: "2026-09-01T12:00:00.000Z",
+        lastSeenAt: null,
+      },
+    ]);
+    renderApp({ auth: stubAuth({ getSession: vi.fn(async () => ADMIN_USER) }), admin: { operations: admin } });
+
+    const ownRow = await screen.findByRole("row", { name: new RegExp(ADMIN_USER.email) });
+    expect(within(ownRow).queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    expect(
+      within(screen.getByRole("row", { name: /member@example.com/ })).getByRole("button", { name: "Delete" }),
+    ).toBeInTheDocument();
   });
 });
 

@@ -23,6 +23,7 @@ function stubOperations(overrides: Partial<AdminOperations> = {}): AdminOperatio
     listAccounts: vi.fn(async (): Promise<AdminAccountSummary[]> => [account()]),
     suspendAccount: vi.fn(async () => account({ status: "suspended" })),
     reactivateAccount: vi.fn(async () => account()),
+    deleteAccount: vi.fn(async () => account({ status: "deleting" })),
     changeRole: vi.fn(async () => account({ role: "admin" })),
     listInvites: vi.fn(async () => []),
     createInvite: vi.fn(async () => {
@@ -40,10 +41,13 @@ function stubOperations(overrides: Partial<AdminOperations> = {}): AdminOperatio
   };
 }
 
+/** The signed-in admin: never a row the panel offers Delete on. */
+const CURRENT_USER_ID = "admin-1";
+
 function renderPanel(operations: AdminOperations) {
   render(
     <I18nProvider locale="en">
-      <AccountsPanel operations={operations} />
+      <AccountsPanel operations={operations} currentUserId={CURRENT_USER_ID} />
     </I18nProvider>,
   );
 }
@@ -216,5 +220,143 @@ describe("AccountsPanel", () => {
 
     expect(await screen.findByRole("row", { name: /member@example.com/ })).toBeInTheDocument();
     expect(operations.listAccounts).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("AccountsPanel delete", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("offers Delete on active and suspended rows of other accounts only", async () => {
+    const operations = stubOperations({
+      listAccounts: vi.fn(async () => [
+        account({ userId: "user-2", email: "active@example.com", status: "active" }),
+        account({ userId: "user-3", email: "suspended@example.com", status: "suspended" }),
+        account({ userId: "user-4", email: "provisioning@example.com", status: "provisioning" }),
+        account({ userId: "user-5", email: "deleting@example.com", status: "deleting" }),
+        account({ userId: CURRENT_USER_ID, email: "self@example.com", role: "admin", status: "active" }),
+      ]),
+    });
+    renderPanel(operations);
+
+    expect(
+      within(await screen.findByRole("row", { name: /active@example.com/ })).getByRole("button", { name: "Delete" }),
+    ).toBeInTheDocument();
+    expect(within(rowFor("suspended@example.com")).getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    expect(
+      within(rowFor("provisioning@example.com")).queryByRole("button", { name: "Delete" }),
+    ).not.toBeInTheDocument();
+    expect(within(rowFor("deleting@example.com")).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(rowFor("self@example.com")).queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    expect(within(rowFor("self@example.com")).getByRole("button", { name: "Suspend" })).toBeInTheDocument();
+  });
+
+  it("shows the confirmation naming the email and sends no request; Cancel restores the row", async () => {
+    const operations = stubOperations();
+    renderPanel(operations);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Delete" }));
+
+    expect(
+      screen.getByText("Permanently delete member@example.com and all of its data? This cannot be undone."),
+    ).toBeInTheDocument();
+    expect(operations.deleteAccount).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(operations.deleteAccount).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Permanently delete/)).not.toBeInTheDocument();
+    expect(within(rowFor("member@example.com")).getByRole("button", { name: "Suspend" })).toBeInTheDocument();
+    expect(within(rowFor("member@example.com")).getByRole("button", { name: "Delete" })).toBeInTheDocument();
+  });
+
+  it("holds one confirmation at a time: opening another row's confirmation closes the first", async () => {
+    const operations = stubOperations({
+      listAccounts: vi.fn(async () => [
+        account({ userId: "user-2", email: "first@example.com" }),
+        account({ userId: "user-3", email: "second@example.com" }),
+      ]),
+    });
+    renderPanel(operations);
+
+    await userEvent.click((await screen.findAllByRole("button", { name: "Delete" }))[0]!);
+    await userEvent.click(within(rowFor("second@example.com")).getByRole("button", { name: "Delete" }));
+
+    expect(
+      screen.getByText("Permanently delete second@example.com and all of its data? This cannot be undone."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Permanently delete first@example.com/)).not.toBeInTheDocument();
+    expect(within(rowFor("first@example.com")).getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    expect(operations.deleteAccount).not.toHaveBeenCalled();
+  });
+
+  it("confirming calls deleteAccount once with the userId and reloads the list", async () => {
+    const operations = stubOperations();
+    renderPanel(operations);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
+
+    expect(operations.deleteAccount).toHaveBeenCalledTimes(1);
+    expect(operations.deleteAccount).toHaveBeenCalledWith("user-2");
+    await vi.waitFor(() => expect(operations.listAccounts).toHaveBeenCalledTimes(2));
+  });
+
+  it("disables the confirmation while the delete is pending", async () => {
+    let finish: (value: AdminAccountSummary) => void = () => undefined;
+    const operations = stubOperations({
+      deleteAccount: vi.fn(
+        () =>
+          new Promise<AdminAccountSummary>((resolve) => {
+            finish = resolve;
+          }),
+      ),
+    });
+    renderPanel(operations);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
+
+    expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    finish(account({ status: "deleting" }));
+  });
+
+  it("shows the last-admin message on refusal, closes the confirmation and keeps the row's status", async () => {
+    const operations = stubOperations({
+      listAccounts: vi.fn(async () => [account({ role: "admin", email: "last@example.com" })]),
+      deleteAccount: vi.fn(async () => {
+        throw new OperationError("retryable", "last_admin", 409);
+      }),
+    });
+    renderPanel(operations);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("At least one active admin must remain");
+    const row = rowFor("last@example.com");
+    expect(within(row).getByText("Active")).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "Delete" })).toBeEnabled();
+    expect(screen.queryByText(/Permanently delete/)).not.toBeInTheDocument();
+    expect(operations.listAccounts).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows any other rejection's message, closes the confirmation and keeps the row's status", async () => {
+    const operations = stubOperations({
+      deleteAccount: vi.fn(async () => {
+        throw new OperationError("retryable", "boom", 500);
+      }),
+    });
+    renderPanel(operations);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("The change failed: boom");
+    expect(within(rowFor("member@example.com")).getByText("Active")).toBeInTheDocument();
+    expect(within(rowFor("member@example.com")).getByRole("button", { name: "Delete" })).toBeEnabled();
+    expect(operations.listAccounts).toHaveBeenCalledTimes(1);
   });
 });

@@ -28,6 +28,9 @@ function stubOperations(overrides: Partial<AdminOperations> = {}): AdminOperatio
     reactivateAccount: vi.fn(async () => {
       throw new OperationError("retryable", "unused");
     }),
+    deleteAccount: vi.fn(async () => {
+      throw new Error("unused");
+    }),
     changeRole: vi.fn(async () => {
       throw new OperationError("retryable", "unused");
     }),
