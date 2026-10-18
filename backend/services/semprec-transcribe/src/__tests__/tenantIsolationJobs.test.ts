@@ -180,38 +180,45 @@ async function removeJob(jobKey: string): Promise<void> {
   await adminPool.query("SELECT graphile_worker.remove_job($1)", [jobKey]);
 }
 
-/** What a tenant holds that a job may add to: per-table row counts, notifications and queued jobs. */
+/**
+ * What a run may change: the tenant's fingerprint and notifications, and the queued jobs of the whole
+ * queue — the `jobs` view carries no tenant, so a job any run enqueued anywhere counts.
+ */
 interface SideEffectSnapshot {
-  rowCounts: Record<string, number>;
+  fingerprint: Fingerprint;
   notificationIds: ReadonlySet<string>;
   jobIds: ReadonlySet<string>;
 }
 
-/** What one run added to a tenant, stated without ids so two runs naming different ids compare equal. */
+/** What one run changed, stated without ids so two runs naming different ids compare equal. */
 interface SideEffects {
   /** Tables whose row count changed, with the change. */
   rowCountDeltas: Record<string, number>;
+  /** Tables whose content changed, including rows updated in place, sorted. */
+  changedTables: string[];
   /** Kinds of the notifications the run wrote, sorted. */
   notificationKinds: string[];
-  /** Task identifiers of the jobs the run left queued (its own job excluded), sorted. */
+  /** Task identifiers of the jobs the run left queued anywhere in the queue (its own job excluded), sorted. */
   queuedJobs: string[];
 }
 
 async function sideEffectSnapshot(tenant: Tenant): Promise<SideEffectSnapshot> {
-  const tableFingerprints = await fingerprint(tenant);
-  const rowCounts = Object.fromEntries(Object.entries(tableFingerprints).map(([table, { count }]) => [table, count]));
   const notificationIds = new Set((await notifications(tenant)).keys());
   const { rows } = await adminPool.query<{ id: string }>("SELECT id::text AS id FROM graphile_worker.jobs");
-  return { rowCounts, notificationIds, jobIds: new Set(rows.map((row) => row.id)) };
+  return { fingerprint: await fingerprint(tenant), notificationIds, jobIds: new Set(rows.map((row) => row.id)) };
 }
 
 async function sideEffectsSince(tenant: Tenant, before: SideEffectSnapshot, ownJobKey: string): Promise<SideEffects> {
   const after = await sideEffectSnapshot(tenant);
   const rowCountDeltas = Object.fromEntries(
-    Object.entries(after.rowCounts)
-      .map(([table, count]): [string, number] => [table, count - (before.rowCounts[table] ?? 0)])
+    Object.entries(after.fingerprint)
+      .map(([table, { count }]): [string, number] => [table, count - (before.fingerprint[table]?.count ?? 0)])
       .filter(([, delta]) => delta !== 0),
   );
+  const changedTables = Object.entries(after.fingerprint)
+    .filter(([table, { md5 }]) => before.fingerprint[table]?.md5 !== md5)
+    .map(([table]) => table)
+    .sort();
   const notificationKinds = await runInTenant(tenant.tenantId, async () => {
     const { rows } = await pool.query<{ id: string; kind: string }>("SELECT id, kind FROM notifications");
     return rows
@@ -226,10 +233,10 @@ async function sideEffectsSince(tenant: Tenant, before: SideEffectSnapshot, ownJ
     .filter((job) => !before.jobIds.has(job.id) && job.key !== ownJobKey)
     .map((job) => job.task_identifier)
     .sort();
-  return { rowCountDeltas, notificationKinds, queuedJobs };
+  return { rowCountDeltas, changedTables, notificationKinds, queuedJobs };
 }
 
-/** Runs `name` in B with `payload` and returns how the job ended and what it added to B. */
+/** Runs `name` in B with `payload` and returns how the job ended and what it changed in B and the queue. */
 async function runInBObserved(name: string, payload: Payload): Promise<{ outcome: JobOutcome; effects: SideEffects }> {
   const before = await sideEffectSnapshot(tenantB);
   const jobKey = await runJobIn(tenantB, name, payload);
