@@ -150,11 +150,24 @@ async function purgeBytes(ctx: PurgeContext): Promise<number> {
   }
   removed += exports.length;
 
-  for (const root of ctx.roots) await rm(join(root, ctx.tenantId), { recursive: true, force: true });
+  await removeTenantDirectories(ctx);
   return removed;
 }
 
-/** Drops the `items` partition of each of the tenant's databases, one transaction each. */
+/**
+ * Removes `<root>/<tenantId>` under both roots. Runs in the bytes step and again once the rows are
+ * gone, so bytes a writer already running at deletion time stored after the bytes step are erased too.
+ */
+async function removeTenantDirectories(ctx: PurgeContext): Promise<void> {
+  for (const root of ctx.roots) await rm(join(root, ctx.tenantId), { recursive: true, force: true });
+}
+
+/**
+ * Drops the `items` partition of each of the tenant's databases, one transaction each
+ * (`set_config(…, true)` is `SET LOCAL`). Runs as its own step and again right before `items`
+ * is deleted, so a database a writer already running at deletion time created after the first
+ * pass loses its partition too.
+ */
 async function purgePartitions(ctx: PurgeContext): Promise<number> {
   const { rows } = await ctx.pool.query<{ id: string }>("SELECT id FROM databases WHERE tenant_id = $1 ORDER BY id", [
     ctx.tenantId,
@@ -162,7 +175,7 @@ async function purgePartitions(ctx: PurgeContext): Promise<number> {
   for (const row of rows) {
     checkpoint(ctx);
     await withTransaction(ctx.pool, async (client) => {
-      await client.query(`SET LOCAL lock_timeout = '${PARTITION_LOCK_TIMEOUT}'`);
+      await client.query("SELECT set_config('lock_timeout', $1, true)", [PARTITION_LOCK_TIMEOUT]);
       await client.query("SELECT drop_items_partition($1)", [row.id]);
     });
   }
@@ -200,7 +213,10 @@ async function deleteInOneStatement(ctx: PurgeContext, table: string): Promise<n
  * Deletes `agent_run_mcp_credentials` (global, references `agent_runs`) and then every tenant table,
  * children before parents. `items` and any other partitioned table cannot use the `ctid` chunking
  * (a `ctid` is only unique within one partition), so they are deleted by predicate: the partitions
- * are already dropped and the statement is expected to affect nothing.
+ * are dropped again just before `items` (which precedes `databases`, its parent) and the statement
+ * is expected to affect nothing. Rows it does find come from a database created after that second
+ * pass; they are deleted and logged rather than failing the tenant, because a retry could not drop
+ * that partition once its `databases` row is gone.
  */
 async function purgeRows(ctx: PurgeContext): Promise<number> {
   const { tables, foreignKeys } = await readCatalog(ctx.pool);
@@ -218,6 +234,12 @@ async function purgeRows(ctx: PurgeContext): Promise<number> {
   ]);
   total += credentials.rowCount ?? 0;
   for (const table of order) {
+    if (table === "items") {
+      logger.info(
+        { tenantId: ctx.tenantId, step: "latePartitions", count: await purgePartitions(ctx) },
+        "tenant_purge_step",
+      );
+    }
     const count =
       partitioned.has(table) || selfReferencing.has(table)
         ? await deleteInOneStatement(ctx, table)
@@ -309,6 +331,7 @@ async function purgeTenant(ctx: PurgeContext): Promise<void> {
     logger.info({ tenantId, step: "partitions", count: await purgePartitions(ctx) }, "tenant_purge_step");
     logger.info({ tenantId, step: "rows", count: await purgeRows(ctx) }, "tenant_purge_step");
     checkpoint(ctx);
+    await removeTenantDirectories(ctx);
     await finalise(ctx);
   });
   logger.info({ tenantId }, "tenant_purge_completed");
@@ -325,6 +348,9 @@ async function purgeUnderLock(
   tenantId: string,
   signal: AbortSignal | undefined,
 ): Promise<boolean> {
+  // A dedicated connection, not `withTransaction`: the advisory lock is session-level and must stay
+  // held across the many transactions `purgeTenant` commits. The `finally` below unlocks and
+  // releases it on every path (this is the write-safety baseline's leaked-connect entry for this file).
   const client = await pool.connect();
   let releaseError: Error | undefined;
   let locked = false;

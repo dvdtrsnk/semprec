@@ -50,4 +50,18 @@ describe("orderTablesForPurge", () => {
       ),
     ).toThrow(/a, b/);
   });
+
+  it("also names a parent that only waits behind a cycle, and never a child ordered before it", () => {
+    expect(() =>
+      orderTablesForPurge(
+        ["a", "b", "child", "root"],
+        [
+          { table: "a", referencedTable: "b" },
+          { table: "b", referencedTable: "a" },
+          { table: "a", referencedTable: "root" },
+          { table: "child", referencedTable: "a" },
+        ],
+      ),
+    ).toThrow("Foreign keys form a cycle; tables on or behind it: a, b, root");
+  });
 });
