@@ -13,6 +13,9 @@ function stubOperations(): AdminOperations {
     reactivateAccount: vi.fn(async () => {
       throw new Error("unused");
     }),
+    deleteAccount: vi.fn(async () => {
+      throw new Error("unused");
+    }),
     changeRole: vi.fn(async () => {
       throw new Error("unused");
     }),
@@ -44,7 +47,7 @@ describe("AdminPage", () => {
   it("renders the invitations panel after the accounts panel", async () => {
     render(
       <I18nProvider locale="en">
-        <AdminPage operations={stubOperations()} />
+        <AdminPage operations={stubOperations()} currentUserId="admin-1" />
       </I18nProvider>,
     );
 
@@ -58,7 +61,7 @@ describe("AdminPage", () => {
   it("renders the AI budgets panel after the invitations panel", async () => {
     render(
       <I18nProvider locale="en">
-        <AdminPage operations={stubOperations()} />
+        <AdminPage operations={stubOperations()} currentUserId="admin-1" />
       </I18nProvider>,
     );
 
@@ -70,7 +73,7 @@ describe("AdminPage", () => {
   it("renders the operator health panel after the AI budgets panel", async () => {
     render(
       <I18nProvider locale="en">
-        <AdminPage operations={stubOperations()} />
+        <AdminPage operations={stubOperations()} currentUserId="admin-1" />
       </I18nProvider>,
     );
 

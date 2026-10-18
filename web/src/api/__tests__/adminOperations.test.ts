@@ -53,6 +53,14 @@ describe("admin operations: calls", () => {
     expect(calls[0]!.init).toMatchObject({ method: "POST", credentials: "same-origin" });
   });
 
+  it("deleteAccount posts to the delete route and parses the deleting account from a 202", async () => {
+    const { operations, calls } = recording(() => jsonResponse({ account: { ...ACCOUNT, status: "deleting" } }, 202));
+
+    await expect(operations.deleteAccount("user-2")).resolves.toEqual({ ...ACCOUNT, status: "deleting" });
+    expect(calls[0]!.url).toBe("/api/admin/accounts/user-2/delete");
+    expect(calls[0]!.init).toMatchObject({ method: "POST", credentials: "same-origin" });
+  });
+
   it("changeRole puts the role as JSON to the role route and parses the account", async () => {
     const { operations, calls } = recording(() => jsonResponse({ account: { ...ACCOUNT, role: "admin" } }));
 
@@ -164,6 +172,37 @@ const INVITE = {
   revokedAt: null,
   status: "pending",
 };
+
+describe("admin operations: account deletion", () => {
+  it("deleteAccount encodes the user id in the delete path", async () => {
+    const { operations, calls } = recording(() => jsonResponse({ account: { ...ACCOUNT, status: "deleting" } }, 202));
+
+    await operations.deleteAccount("a/b c");
+    expect(calls[0]!.url).toBe("/api/admin/accounts/a%2Fb%20c/delete");
+  });
+
+  it("deleteAccount rejects a 409 last_admin as retryable with the code as its message", async () => {
+    const operations = failingWith(() => jsonResponse({ error: { code: "last_admin" } }, 409));
+
+    await expect(operations.deleteAccount("user-2")).rejects.toMatchObject({
+      kind: "retryable",
+      status: 409,
+      message: "last_admin",
+    });
+  });
+
+  it("deleteAccount rejects a 404 as unavailable", async () => {
+    const operations = failingWith(() => jsonResponse({ error: { code: "not_found" } }, 404));
+
+    await expect(operations.deleteAccount("user-2")).rejects.toMatchObject({ kind: "unavailable", status: 404 });
+  });
+
+  it("deleteAccount rejects a malformed success body as retryable", async () => {
+    const operations = failingWith(() => jsonResponse({ account: { userId: "user-2" } }, 202));
+
+    await expect(operations.deleteAccount("user-2")).rejects.toMatchObject({ kind: "retryable" });
+  });
+});
 
 describe("admin operations: invitations", () => {
   it("listInvites gets the invitation list with same-origin credentials and parses it", async () => {

@@ -21,7 +21,7 @@ const STATUS_KEYS: Record<AdminAccountSummary["status"], MessageKey> = {
 /** The refusal the backend answers when the change would leave no active admin (issue #1041). */
 const LAST_ADMIN_CODE = "last_admin";
 
-type RowAction = "suspend" | "reactivate" | "changeRole";
+type RowAction = "suspend" | "reactivate" | "changeRole" | "delete";
 
 interface RowState {
   /** The action in flight for this row; while it is set, every button in the row is disabled. */
@@ -29,23 +29,32 @@ interface RowState {
   error: string | null;
 }
 
-/** Which actions a status offers: nothing while an account is being provisioned or deleted. */
-function actionsFor(account: AdminAccountSummary): RowAction[] {
-  if (account.status === "active") return ["suspend", "changeRole"];
-  if (account.status === "suspended") return ["reactivate", "changeRole"];
+/**
+ * Which actions a row offers. Nothing is offered while an account is provisioned or deleted. Delete
+ * is never offered on the signed-in admin's own row: that account is deleted from the account page,
+ * which asks for the password (issue #1083).
+ */
+function actionsFor(account: AdminAccountSummary, currentUserId: string): RowAction[] {
+  const canDelete = account.userId !== currentUserId;
+  if (account.status === "active") return canDelete ? ["suspend", "changeRole", "delete"] : ["suspend", "changeRole"];
+  if (account.status === "suspended") {
+    return canDelete ? ["reactivate", "changeRole", "delete"] : ["reactivate", "changeRole"];
+  }
   return [];
 }
 
 /**
- * The accounts table on the admin page (issue #1079). Each row offers only the actions its status
- * allows. An action is applied on the server and never optimistically: the list reloads after a
+ * The accounts table on the admin page (issues #1079 and #1084). Each row offers only the actions its
+ * status allows. An action is applied on the server and never optimistically: the list reloads after a
  * success, and after a failure the row stays as it was and shows the refusal beside its buttons.
+ * Delete is confirmed inline before it is sent, and only one row can hold that confirmation at a time.
  */
-export function AccountsPanel({ operations }: { operations: AdminOperations }) {
+export function AccountsPanel({ operations, currentUserId }: { operations: AdminOperations; currentUserId: string }) {
   const t = useTranslate();
   const locale = useLocale();
   const { resource, reload } = useAsyncResource(() => operations.listAccounts(), [operations]);
   const [rows, setRows] = useState<Record<string, RowState>>({});
+  const [confirmingUserId, setConfirmingUserId] = useState<string | null>(null);
 
   const runAction = useCallback(
     async (account: AdminAccountSummary, action: RowAction) => {
@@ -53,6 +62,7 @@ export function AccountsPanel({ operations }: { operations: AdminOperations }) {
       try {
         if (action === "suspend") await operations.suspendAccount(account.userId);
         else if (action === "reactivate") await operations.reactivateAccount(account.userId);
+        else if (action === "delete") await operations.deleteAccount(account.userId);
         else {
           // The target is the opposite of the role shown on this row. If another admin changed the role since
           // the last load, the server treats an unchanged role as a no-op, and the reload shows the current state.
@@ -63,6 +73,7 @@ export function AccountsPanel({ operations }: { operations: AdminOperations }) {
         const shown =
           message === LAST_ADMIN_CODE ? t("admin.accounts.lastAdmin") : t("admin.accounts.actionFailed", { message });
         setRows((prev) => ({ ...prev, [account.userId]: { pendingAction: null, error: shown } }));
+        setConfirmingUserId(null);
         return;
       }
       setRows((prev) => {
@@ -70,6 +81,7 @@ export function AccountsPanel({ operations }: { operations: AdminOperations }) {
         delete next[account.userId];
         return next;
       });
+      setConfirmingUserId(null);
       reload();
     },
     [operations, reload, t],
@@ -99,6 +111,7 @@ export function AccountsPanel({ operations }: { operations: AdminOperations }) {
           {accounts.map((account) => {
             const row = rows[account.userId];
             const pendingAction = row?.pendingAction ?? null;
+            const confirming = confirmingUserId === account.userId;
             return (
               <tr key={account.userId}>
                 <td>{account.email}</td>
@@ -107,16 +120,36 @@ export function AccountsPanel({ operations }: { operations: AdminOperations }) {
                 <td>{formatDateTime(locale, account.createdAt)}</td>
                 <td>{formatDateTime(locale, account.lastSeenAt)}</td>
                 <td>
-                  {actionsFor(account).map((action) => (
-                    <button
-                      key={action}
-                      type="button"
-                      disabled={pendingAction !== null}
-                      onClick={() => runAction(account, action)}
-                    >
-                      {pendingAction === action ? t("admin.accounts.action.pending") : actionLabel(account, action)}
-                    </button>
-                  ))}
+                  {confirming ? (
+                    <>
+                      <p>{t("admin.accounts.deleteConfirm", { email: account.email })}</p>
+                      <button
+                        type="button"
+                        disabled={pendingAction !== null}
+                        onClick={() => runAction(account, "delete")}
+                      >
+                        {pendingAction === "delete"
+                          ? t("admin.accounts.action.pending")
+                          : t("admin.accounts.deleteConfirmButton")}
+                      </button>
+                      <button type="button" disabled={pendingAction !== null} onClick={() => setConfirmingUserId(null)}>
+                        {t("admin.accounts.deleteCancel")}
+                      </button>
+                    </>
+                  ) : (
+                    actionsFor(account, currentUserId).map((action) => (
+                      <button
+                        key={action}
+                        type="button"
+                        disabled={pendingAction !== null}
+                        onClick={() =>
+                          action === "delete" ? setConfirmingUserId(account.userId) : runAction(account, action)
+                        }
+                      >
+                        {pendingAction === action ? t("admin.accounts.action.pending") : actionLabel(account, action)}
+                      </button>
+                    ))
+                  )}
                   {row?.error ? (
                     <p role="alert" className="admin-accounts__error">
                       {row.error}
@@ -134,6 +167,7 @@ export function AccountsPanel({ operations }: { operations: AdminOperations }) {
   function actionLabel(account: AdminAccountSummary, action: RowAction): string {
     if (action === "suspend") return t("admin.accounts.action.suspend");
     if (action === "reactivate") return t("admin.accounts.action.reactivate");
+    if (action === "delete") return t("admin.accounts.delete");
     return account.role === "admin" ? t("admin.accounts.action.makeMember") : t("admin.accounts.action.makeAdmin");
   }
 }
