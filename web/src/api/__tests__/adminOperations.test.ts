@@ -293,18 +293,13 @@ describe("admin operations: AI budgets", () => {
     });
   });
 
-  it("setAiBudget resolves on a 2xx whatever its body, so a committed write is never reported as failed", async () => {
-    const caps = { dailyCapUsd: 1, monthlyCapUsd: null };
+  it("setAiBudget rejects a malformed budget response as retryable", async () => {
+    const operations = failingWith(() => jsonResponse({ budget: { userId: "user-2" } }));
 
-    await expect(
-      failingWith(() => jsonResponse({ budget: { userId: "user-2" } })).setAiBudget("user-2", caps),
-    ).resolves.toBeUndefined();
-    await expect(
-      failingWith(() => new Response(null, { status: 204 })).setAiBudget("user-2", caps),
-    ).resolves.toBeUndefined();
-    await expect(
-      failingWith(() => new Response("not json", { status: 200 })).setAiBudget("user-2", caps),
-    ).resolves.toBeUndefined();
+    await expect(operations.setAiBudget("user-2", { dailyCapUsd: 1, monthlyCapUsd: null })).rejects.toMatchObject({
+      kind: "retryable",
+      message: "Unexpected response from /admin/accounts/user-2/ai-budget",
+    });
   });
 
   it("listAiBudgets rejects a 403 as unavailable", async () => {

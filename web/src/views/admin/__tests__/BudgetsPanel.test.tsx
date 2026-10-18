@@ -54,7 +54,9 @@ function renderPanel(operations: AdminOperations) {
 
 /** The table row that shows one account's email, so assertions stay on that row only. Call after the list has loaded. */
 function rowFor(email: string): HTMLElement {
-  return screen.getByText(email).closest("tr") as HTMLElement;
+  const row = screen.getByText(email).closest("tr");
+  if (row === null) throw new Error("Account email is not inside a table row");
+  return row;
 }
 
 afterEach(() => {
@@ -139,6 +141,23 @@ describe("BudgetsPanel rendering", () => {
 });
 
 describe("BudgetsPanel editing", () => {
+  it("saves empty caps for a no-budget account as explicit nulls and reloads the list", async () => {
+    const operations = stubOperations({
+      listAiBudgets: vi.fn(async () => [account({ hasBudget: false, dailyCapUsd: null, monthlyCapUsd: null })]),
+    });
+    renderPanel(operations);
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Edit caps" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await vi.waitFor(() =>
+      expect(operations.setAiBudget).toHaveBeenCalledWith("user-2", { dailyCapUsd: null, monthlyCapUsd: null }),
+    );
+    await vi.waitFor(() => expect(operations.listAiBudgets).toHaveBeenCalledTimes(2));
+    expect(screen.queryByLabelText("Daily cap")).not.toBeInTheDocument();
+  });
+
   it("saves a daily cap with an empty monthly field as null, closes the form and reloads the list", async () => {
     const operations = stubOperations({
       listAiBudgets: vi.fn(async () => [account({ dailyCapUsd: null, monthlyCapUsd: null })]),
