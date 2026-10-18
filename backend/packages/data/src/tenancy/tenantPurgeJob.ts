@@ -444,6 +444,8 @@ async function replayOneTenant(pool: Pool, tenantId: string): Promise<ReplayOutc
     if (status !== "active" && status !== "suspended") return "unexpectedStatus";
 
     // Only an admin of an active tenant counts towards the guard, as in deleteAccount.
+    // `users_tenant_id_key` (migration 0056) allows one user per tenant, so excluding that one user is
+    // the same as excluding the whole tenant.
     if (status === "active") {
       const { rows: admins } = await client.query<{ id: string }>(
         "SELECT id FROM users WHERE COALESCE(tenant_id, app_sole_tenant()) = $1 AND role = 'admin' ORDER BY id",
