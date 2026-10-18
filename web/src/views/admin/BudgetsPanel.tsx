@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { EmptyState, ErrorState, LoadingState } from "../../components/StateViews.js";
 import { useLocale, useTranslate } from "../../i18n/index.js";
 import { formatUsd } from "../../i18n/format.js";
@@ -36,8 +36,8 @@ export function BudgetsPanel({ operations }: { operations: AdminOperations }) {
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [dailyDraft, setDailyDraft] = useState("");
   const [monthlyDraft, setMonthlyDraft] = useState("");
-  const [dailyBadInput, setDailyBadInput] = useState(false);
-  const [monthlyBadInput, setMonthlyBadInput] = useState(false);
+  const dailyInput = useRef<HTMLInputElement>(null);
+  const monthlyInput = useRef<HTMLInputElement>(null);
   const [invalid, setInvalid] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -46,8 +46,6 @@ export function BudgetsPanel({ operations }: { operations: AdminOperations }) {
     setEditingUserId(account.userId);
     setDailyDraft(account.dailyCapUsd === null ? "" : String(account.dailyCapUsd));
     setMonthlyDraft(account.monthlyCapUsd === null ? "" : String(account.monthlyCapUsd));
-    setDailyBadInput(false);
-    setMonthlyBadInput(false);
     setInvalid(false);
     setSaveError(null);
   }
@@ -59,8 +57,8 @@ export function BudgetsPanel({ operations }: { operations: AdminOperations }) {
   }
 
   async function handleSave(account: AiBudgetAccount) {
-    const daily = parseCap(dailyDraft, dailyBadInput);
-    const monthly = parseCap(monthlyDraft, monthlyBadInput);
+    const daily = parseCap(dailyDraft, dailyInput.current?.validity.badInput ?? false);
+    const monthly = parseCap(monthlyDraft, monthlyInput.current?.validity.badInput ?? false);
     if (!daily.ok || !monthly.ok) {
       setInvalid(true);
       return;
@@ -159,10 +157,10 @@ export function BudgetsPanel({ operations }: { operations: AdminOperations }) {
             step="0.01"
             aria-label={t("admin.budgets.dailyCap")}
             disabled={saving}
+            ref={dailyInput}
             value={dailyDraft}
             onChange={(event) => {
               setDailyDraft(event.target.value);
-              setDailyBadInput(event.target.validity.badInput);
             }}
           />
         </td>
@@ -173,10 +171,10 @@ export function BudgetsPanel({ operations }: { operations: AdminOperations }) {
             step="0.01"
             aria-label={t("admin.budgets.monthlyCap")}
             disabled={saving}
+            ref={monthlyInput}
             value={monthlyDraft}
             onChange={(event) => {
               setMonthlyDraft(event.target.value);
-              setMonthlyBadInput(event.target.validity.badInput);
             }}
           />
         </td>
