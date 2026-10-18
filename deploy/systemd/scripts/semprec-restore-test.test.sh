@@ -63,6 +63,10 @@ case "$1" in
     if [[ "$arguments" == *" pg_isready "* ]]; then ! fail postgres-ready
     elif [[ "$arguments" == *" pg_restore "* && "$arguments" == *" --data-only "* ]]; then cat > /dev/null; ! fail key-restore
     elif [[ "$arguments" == *" pg_restore "* ]]; then cat > /dev/null; ! fail pg-restore
+    elif [[ "$arguments" == *"count(*) FROM tenants WHERE id = ANY("* ]]
+    then if fail ledger-tenant-present; then echo 1; else echo 0; fi
+    elif [[ "$arguments" == *"count(*) FROM tenant_deletions"* ]]
+    then if fail ledger-empty; then echo 0; elif fail ledger-count-mismatch; then echo 3; else echo 2; fi
     elif [[ "$arguments" == *"count(*) FROM tenant_keys"* ]]; then if fail tenant-keys-present; then echo 2; else echo 0; fi
     elif [[ "$arguments" == *"FROM blobs"* ]]; then cat "$TEST_STATE/blob-rows"
     elif [[ "$arguments" == *"octet_length(state) = 0"* ]]; then if fail empty-doc-state; then echo 1; else echo 0; fi
@@ -87,6 +91,12 @@ if [[ "$snapshot_path" == /var/backups/semprec/tenant-keys.dump ]]; then
   exit 0
 fi
 printf "custom PostgreSQL dump" > "$target/var/backups/semprec/postgres.dump"
+ledger="$target/var/backups/semprec/tenant-deletions.ledger"
+if [[ -e "$TEST_STATE/fail-ledger-empty" ]]; then : > "$ledger"
+elif [[ -e "$TEST_STATE/fail-ledger-malformed" ]]; then printf "%s\\nnot-a-uuid\\n" 11111111-1111-4111-8111-111111111111 > "$ledger"
+elif [[ -e "$TEST_STATE/fail-ledger-uppercase" ]]; then printf "%s\\n" 11111111-1111-4111-8111-11111111111A 22222222-2222-4222-8222-222222222222 > "$ledger"
+elif [[ ! -e "$TEST_STATE/fail-ledger-missing" ]]; then printf "%s\\n" 11111111-1111-4111-8111-111111111111 22222222-2222-4222-8222-222222222222 > "$ledger"
+fi
 cp -R "$TEST_BLOBS/." "$target/"
 if [[ -e "$TEST_STATE/fail-blob-missing-files" ]]; then rm "$target/opt/semprec/data/files/cd/file-b"; fi
 if [[ -e "$TEST_STATE/fail-blob-missing-mail" ]]; then rm "$target/opt/semprec/data/mail-attachments/mailbox-1/attachment-c"; fi
@@ -176,6 +186,14 @@ fi
 assert_never_touches_production
 assert_disposable_state_removed
 
+# An empty ledger with an empty tenant_deletions passes.
+reset_state
+touch "$TEST_STATE/fail-ledger-empty"
+run_restore_test env > "$TEST_STATE/stdout"
+grep -qx "$PING_URL" "$TEST_STATE/pings"
+grep -q '^passed ' "$TEST_STATE/results"
+assert_disposable_state_removed
+
 # Each injected failure records exactly one failure for its check, pings /fail exactly once,
 # never pings success, exits non-zero, and leaves no disposable state behind.
 assert_failure() {
@@ -204,6 +222,11 @@ assert_failure itemsCount no-items
 assert_failure itemsFreshness stale-items
 assert_failure docSnapshotsCount no-doc-snapshots
 assert_failure docSnapshotsState empty-doc-state
+assert_failure deletionLedger ledger-missing
+assert_failure deletionLedger ledger-malformed
+assert_failure deletionLedger ledger-uppercase
+assert_failure deletionLedger ledger-tenant-present
+assert_failure deletionLedger ledger-count-mismatch
 assert_failure tenantKeysExcluded tenant-keys-present
 assert_failure tenantKeysRestore key-dump-missing
 assert_failure tenantKeysRestore key-restore

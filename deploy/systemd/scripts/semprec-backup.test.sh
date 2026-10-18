@@ -31,7 +31,10 @@ write_mock() {
 write_mock docker '
 printf "docker %s\\n" "$*" >> "$TEST_STATE/commands"
 if [[ "$1" == "compose" && " $* " == *" exec -T postgres "* ]]; then
-  if [[ " $* " == *" --table=public.tenant_keys "* ]]; then
+  if [[ " $* " == *" psql "* ]]; then
+    if [[ -e "$TEST_STATE/fail-ledger" ]]; then printf "partial"; exit 31; fi
+    printf "%s\\n" "11111111-1111-4111-8111-111111111111" "22222222-2222-4222-8222-222222222222"
+  elif [[ " $* " == *" --table=public.tenant_keys "* ]]; then
     if [[ -e "$TEST_STATE/fail-key-dump" ]]; then printf "partial"; exit 27; fi
     printf "tenant keys dump"
   else
@@ -65,11 +68,14 @@ run_backup() {
 run_backup env
 test -f "$TEST_BACKUP_DIRECTORY/postgres.dump"
 grep -qx 'custom PostgreSQL dump' "$TEST_BACKUP_DIRECTORY/postgres.dump"
-grep -qx "restic backup $TEST_BACKUP_DIRECTORY/postgres.dump $TEST_FILES_DIRECTORY $TEST_MAIL_ATTACHMENTS_DIRECTORY" "$TEST_STATE/commands"
+grep -qx "restic backup $TEST_BACKUP_DIRECTORY/postgres.dump $TEST_BACKUP_DIRECTORY/tenant-deletions.ledger $TEST_FILES_DIRECTORY $TEST_MAIL_ATTACHMENTS_DIRECTORY" "$TEST_STATE/commands"
 grep -qx 'tenant keys dump' "$TEST_BACKUP_DIRECTORY/tenant-keys.dump"
 ! test -e "$TEST_BACKUP_DIRECTORY/tenant-keys.dump.tmp"
 # The two dumps are the only containers the backup touches; the blob directories are read from the host.
-test "$(grep -c '^docker ' "$TEST_STATE/commands")" -eq 2
+test "$(grep -c '^docker ' "$TEST_STATE/commands")" -eq 3
+test "$(cat "$TEST_BACKUP_DIRECTORY/tenant-deletions.ledger")" = "$(printf '%s\n%s' 11111111-1111-4111-8111-111111111111 22222222-2222-4222-8222-222222222222)"
+! test -e "$TEST_BACKUP_DIRECTORY/tenant-deletions.ledger.tmp"
+grep -q '^docker compose .* exec -T postgres psql --username=postgres --dbname=semprec --no-psqlrc --tuples-only --no-align --set=ON_ERROR_STOP=1 --command=SELECT tenant_id FROM tenant_deletions ORDER BY completed_at, tenant_id$' "$TEST_STATE/commands"
 grep -q '^docker compose .* exec -T postgres pg_dump .* --format=custom --exclude-table-data=public.tenant_keys$' "$TEST_STATE/commands"
 grep -q '^docker compose .* exec -T postgres pg_dump .* --format=custom --data-only --table=public.tenant_keys$' "$TEST_STATE/commands"
 grep -qx "restic backup $TEST_BACKUP_DIRECTORY/tenant-keys.dump" "$TEST_STATE/commands"
@@ -100,6 +106,17 @@ fi
 ! test -e "$TEST_BACKUP_DIRECTORY/tenant-keys.dump.tmp"
 ! test -e "$TEST_STATE/commands" || ! grep -q '^restic ' "$TEST_STATE/commands"
 rm "$TEST_STATE/fail-key-dump" "$TEST_STATE/commands"
+
+touch "$TEST_STATE/fail-ledger"
+rm -f "$TEST_BACKUP_DIRECTORY/tenant-deletions.ledger"
+if run_backup env; then
+  echo 'ledger query failure unexpectedly succeeded' >&2
+  exit 1
+fi
+! test -e "$TEST_BACKUP_DIRECTORY/tenant-deletions.ledger.tmp"
+! test -e "$TEST_BACKUP_DIRECTORY/tenant-deletions.ledger"
+! test -e "$TEST_STATE/commands" || ! grep -q '^restic ' "$TEST_STATE/commands"
+rm "$TEST_STATE/fail-ledger" "$TEST_STATE/commands"
 
 touch "$TEST_STATE/fail-key-backup"
 if run_backup env; then

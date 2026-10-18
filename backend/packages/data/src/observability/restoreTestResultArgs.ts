@@ -12,6 +12,7 @@ export const RESTORE_TEST_FAILED_CHECKS = [
   "itemsFreshness",
   "docSnapshotsCount",
   "docSnapshotsState",
+  "deletionLedger",
   "tenantKeysExcluded",
   "tenantKeysRestore",
   "minioStart",

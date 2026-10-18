@@ -9,6 +9,7 @@ readonly RESTORE_ROOT=/var/tmp
 readonly RESULT_CLI=/opt/semprec/current/backend/packages/data/dist/observability/restoreTestResultCli.js
 readonly POSTGRES_IMAGE=postgres:16-alpine
 readonly RESTORED_DUMP_PATH=var/backups/semprec/postgres.dump
+readonly RESTORED_DELETION_LEDGER_PATH=var/backups/semprec/tenant-deletions.ledger
 readonly RESTORED_TENANT_KEYS_DUMP_PATH=var/backups/semprec/tenant-keys.dump
 readonly RESTORE_DATABASE=semprec_restore
 readonly ITEMS_MAX_AGE_HOURS=48
@@ -174,6 +175,33 @@ check_postgres_contents() {
   [[ "$empty_snapshots" == 0 ]] || fail_check "restored doc_snapshots has empty state"
 }
 
+# The ledger travels in the same snapshot as the dump. It must list only well-formed ids, none of
+# them still present in the restored `tenants`, and exactly as many as the restored
+# `tenant_deletions` holds. Each id is matched against the uuid pattern before it reaches SQL.
+check_deletion_ledger() {
+  CURRENT_CHECK=deletionLedger
+  local ledger="$WORK_DIRECTORY/$RESTORED_DELETION_LEDGER_PATH"
+  [[ -f "$ledger" ]] || fail_check "restored snapshot has no tenant deletion ledger"
+
+  local uuid_pattern='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  local line ids='' ledger_lines=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" ]] || continue
+    [[ "$line" =~ $uuid_pattern ]] || fail_check "tenant deletion ledger has a line that is not a lowercase uuid"
+    ids="${ids:+$ids,}$line"
+    ledger_lines=$((ledger_lines + 1))
+  done < "$ledger"
+
+  local resurrected
+  resurrected="$(pg_query "SELECT count(*) FROM tenants WHERE id = ANY('{$ids}'::uuid[])")"
+  [[ "$resurrected" == 0 ]] || fail_check "a tenant in the deletion ledger is present in the restored tenants table"
+
+  local recorded
+  recorded="$(pg_query 'SELECT count(*) FROM tenant_deletions')"
+  [[ "$recorded" =~ ^[0-9]+$ && "$recorded" -eq "$ledger_lines" ]] ||
+    fail_check "tenant deletion ledger line count differs from the restored tenant_deletions table"
+}
+
 # Every backup writes the key dump after the main dump, and the main dump holds no tenant_keys data.
 check_tenant_keys_excluded() {
   CURRENT_CHECK=tenantKeysExcluded
@@ -242,6 +270,7 @@ main() {
   start_postgres
   restore_postgres
   check_postgres_contents
+  check_deletion_ledger
   check_tenant_keys_excluded
   check_tenant_keys_restore
   check_blob_objects

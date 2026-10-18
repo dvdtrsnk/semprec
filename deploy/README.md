@@ -152,7 +152,13 @@ custom-format dumps, each to a temporary file that is moved into place only when
   taken after the main dump. Keys are only ever created or deleted, so every credential in the main
   dump has its key in the key dump. A failing dump fails the run before any restic call.
 
-It then runs two `restic backup` commands: the main snapshot (the main dump plus the two blob
+Between the key dump and restic it writes `/var/backups/semprec/tenant-deletions.ledger` (also
+through a temporary file and `mv`): one tenant uuid per line, the ids in `tenant_deletions` ordered
+by `completed_at`, read with `psql` in the Postgres container. A failed query fails the run before
+any restic call. The ledger is what lets a restore re-apply deletions recorded after a snapshot
+(see "Re-applying account deletions after a restore").
+
+It then runs two `restic backup` commands: the main snapshot (the main dump, the ledger and the two blob
 storage directories the `blobs` rows point into, `FILES_STORAGE_DIR` (`/opt/semprec/data/files`)
 and `MAIL_ATTACHMENTS_DIR` (`/opt/semprec/data/mail-attachments`); a missing directory fails the
 backup before restic runs), and a separate snapshot of the key dump alone. MinIO is not used by
@@ -180,8 +186,8 @@ and MCP servers. Main snapshots taken between the introduction of per-tenant key
 still contain tenant zero's wrapped key inside the dump until they age out; no other tenant
 existed at that time.
 
-The backup input inventory is intentionally narrow: the two custom PostgreSQL dumps and the two blob
-storage directories only. It excludes `/opt/semprec/shared/env/`, the legacy `/opt/semprec/shared/.env`, `apns-key.p8`, all credentials
+The backup input inventory is intentionally narrow: the two custom PostgreSQL dumps, the deletion
+ledger and the two blob storage directories only. It excludes `/opt/semprec/shared/env/`, the legacy `/opt/semprec/shared/.env`, `apns-key.p8`, all credentials
 including `CREDENTIALS_MASTER_KEY` (the deployment's secrets master key), `/var/log/journal`,
 certificates, and reproducible release or deployment configuration. No restic invocation traverses a parent
 directory that could include those paths. The daily schedule gives a maximum data-loss window
@@ -201,6 +207,10 @@ containers or volumes. The run passes only if all of these hold:
 - `pg_restore --exit-on-error` of the restored custom dump succeeds;
 - `items` is non-empty and its newest `updated_at` is at most 48 hours old;
 - `doc_snapshots` is non-empty and no row has an empty `state`;
+- `deletionLedger`: the restored snapshot has `var/backups/semprec/tenant-deletions.ledger`, every
+  non-empty line of it is a lowercase uuid (checked before any line reaches SQL), none of those ids
+  is in the restored `tenants`, and its line count equals the restored `tenant_deletions` row count
+  (an empty ledger with an empty table passes);
 - `tenantKeysExcluded`: the restored main database has no `tenant_keys` rows;
 - `tenantKeysRestore`: the newest key snapshot (`--path /var/backups/semprec/tenant-keys.dump`)
   restores into the same work directory, is non-empty, and `pg_restore --data-only --exit-on-error
@@ -218,6 +228,46 @@ observability check `ok` and ping `HEALTHCHECKS_RESTORE_PING_URL`. A failed run 
 `writeNotification` (the `restoreTestResultCli.js` of the current release, as `semprec_side`),
 pings the monitor's `/fail` endpoint, and exits non-zero. It never sends the success ping.
 `deploy/systemd/scripts/semprec-restore-test.test.sh` is the hermetic behavior test.
+
+## Re-applying account deletions after a restore (issue #1078)
+
+A deleted account must never come back, but a restored snapshot taken before the deletion still
+holds the tenant. The ledger in every main snapshot lists the deletions completed up to that
+snapshot, and the replay CLI re-marks the ones the restored database lacks. After a production
+restore:
+
+1. Restore the dump (`restic restore` of the main snapshot, then `pg_restore`, then the key dump,
+   as described under "Encrypted off-site backups").
+2. Fetch the **newest** ledger. It is newer than the restored snapshot when an older one was
+   restored. A bare `latest` can resolve to a key-dump-only snapshot, so name the path:
+
+   ```
+   restic dump --path /var/backups/semprec/postgres.dump latest \
+     /var/backups/semprec/tenant-deletions.ledger > /root/tenant-deletions.ledger
+   ```
+
+3. Run the CLI as `semprec_data`, with the api's `SEMPREC_API_DATABASE_URL` as `DATABASE_URL`:
+
+   ```
+   DATABASE_URL="$SEMPREC_API_DATABASE_URL" node \
+     /opt/semprec/current/backend/packages/data/dist/tenancy/replayTenantDeletionsCli.js \
+     /root/tenant-deletions.ledger
+   ```
+
+   It parses the file first (exit 2 and no database write on a malformed line), then moves every
+   listed `active` or `suspended` tenant to `deleting` the way an account deletion does: sessions
+   and push registrations revoked, the tenant's key row deleted, the deactivation signal published.
+   It prints how many tenants were marked, already `deleting`, absent, or refused, and lists the
+   refused ids.
+4. Start the services. The purge sweep then erases the replayed tenants within a minute.
+5. If the CLI exits 1, a tenant was refused: `lastAdmin` (it holds the only active admin) or
+   `unexpectedStatus` (e.g. `provisioning`). Nothing was changed for it; resolve each by hand,
+   then run the CLI again, which is safe to repeat.
+
+Limits. A deletion completed after the newest snapshot is in no ledger and must be requested
+again; with the daily backup that is the 24-hour RPO window. Replaying a deletion does not remove
+the tenant's content from existing snapshots: it stays in restic until retention expires (12
+monthly snapshots), and only its secrets are crypto-shredded.
 
 ## Bootstrap secrets (issue #175)
 

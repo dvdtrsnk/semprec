@@ -5,6 +5,8 @@ import { runAsSystem, runInTenant } from "@semprec/shared";
 import { normalizeEmail } from "../auth/emailNormalization.js";
 import { requireAffectedRows, requireSingleRow, withTransaction } from "../db/pool.js";
 import { LocalFsBlobStorageWriter } from "../mail/blobStorage.js";
+import { assertAnotherActiveAdminRemains, LastAdminError, lockAdminMembership } from "./accountsAdminStore.js";
+import { beginTenantDeletion } from "./deleteAccount.js";
 import { logger } from "./logger.js";
 import { orderTablesForPurge, type TableForeignKey } from "./tenantPurgeOrder.js";
 
@@ -416,4 +418,68 @@ export async function handleTenantPurgeTask(
       throw new AggregateError(errors, `tenantPurge: ${errors.length} of ${rows.length} tenants failed`);
     }
   });
+}
+
+/** What `replayTenantDeletions` did with the ids it was given. */
+export interface TenantDeletionReplayResult {
+  marked: string[];
+  alreadyDeleting: string[];
+  absent: string[];
+  refused: { tenantId: string; reason: "lastAdmin" | "unexpectedStatus" }[];
+}
+
+type ReplayOutcome = "marked" | "alreadyDeleting" | "absent" | "lastAdmin" | "unexpectedStatus";
+
+/** Decides and, for an `active` or `suspended` tenant, starts the deletion of one tenant; runs in the tenant's scope. */
+async function replayOneTenant(pool: Pool, tenantId: string): Promise<ReplayOutcome> {
+  return withTransaction(pool, async (client): Promise<ReplayOutcome> => {
+    // Same order as the account-deletion routes: the membership lock first, then the tenant row.
+    await lockAdminMembership(client);
+    const { rows } = await client.query<{ status: string }>("SELECT status FROM tenants WHERE id = $1 FOR UPDATE", [
+      tenantId,
+    ]);
+    const status = rows[0]?.status;
+    if (status === undefined) return "absent";
+    if (status === "deleting") return "alreadyDeleting";
+    if (status !== "active" && status !== "suspended") return "unexpectedStatus";
+
+    // Only an admin of an active tenant counts towards the guard, as in deleteAccount.
+    if (status === "active") {
+      const { rows: admins } = await client.query<{ id: string }>(
+        "SELECT id FROM users WHERE COALESCE(tenant_id, app_sole_tenant()) = $1 AND role = 'admin' ORDER BY id",
+        [tenantId],
+      );
+      for (const admin of admins) {
+        try {
+          await assertAnotherActiveAdminRemains(client, admin.id);
+        } catch (err) {
+          if (err instanceof LastAdminError) return "lastAdmin";
+          throw err;
+        }
+      }
+    }
+    await beginTenantDeletion(client, tenantId);
+    return "marked";
+  });
+}
+
+/**
+ * Re-applies deletions recorded in a backup ledger to a restored database (issue #1078): every
+ * `active` or `suspended` tenant in `tenantIds` goes through `beginTenantDeletion`, one transaction
+ * per tenant, and the purge sweep then erases it. A tenant that is already `deleting` or absent is
+ * reported and left alone; the last active admin's tenant and a tenant in another status (e.g.
+ * `provisioning`) are `refused` and left unchanged. Any other failure propagates, so a replay that
+ * could not finish never reports success; tenants marked before it stay marked.
+ */
+export async function replayTenantDeletions(
+  pool: Pool,
+  tenantIds: readonly string[],
+): Promise<TenantDeletionReplayResult> {
+  const result: TenantDeletionReplayResult = { marked: [], alreadyDeleting: [], absent: [], refused: [] };
+  for (const tenantId of tenantIds) {
+    const outcome = await runInTenant(tenantId, () => replayOneTenant(pool, tenantId));
+    if (outcome === "lastAdmin" || outcome === "unexpectedStatus") result.refused.push({ tenantId, reason: outcome });
+    else result[outcome].push(tenantId);
+  }
+  return result;
 }
