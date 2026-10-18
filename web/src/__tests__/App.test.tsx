@@ -263,6 +263,9 @@ describe("App admin page", () => {
       }),
       listAiBudgets: vi.fn(async () => []),
       setAiBudget: vi.fn(async () => undefined),
+      getOperationsHealth: vi.fn(async () => {
+        throw new Error("unused");
+      }),
     };
   }
 

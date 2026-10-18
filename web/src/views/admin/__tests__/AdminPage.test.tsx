@@ -25,6 +25,14 @@ function stubOperations(): AdminOperations {
     }),
     listAiBudgets: vi.fn(async () => []),
     setAiBudget: vi.fn(async () => undefined),
+    getOperationsHealth: vi.fn(async () => ({
+      generatedAt: "2026-10-18T00:00:00.000Z",
+      processes: [],
+      alertingChecks: [],
+      queue: { pending: 0, overdue: 0, permanent: 0 },
+      tenants: { provisioning: 0, active: 1, suspended: 0, deleting: 0 },
+      tenantAggregates: { agentRunErrors7d: 0, itemAutomationErrors: 0, alertingTenantChecks: 0 },
+    })),
   };
 }
 
@@ -57,5 +65,17 @@ describe("AdminPage", () => {
     const invitations = await screen.findByRole("heading", { name: "Invitations" });
     const budgets = await screen.findByRole("heading", { name: "AI budgets" });
     expect(invitations.compareDocumentPosition(budgets) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("renders the operator health panel after the AI budgets panel", async () => {
+    render(
+      <I18nProvider locale="en">
+        <AdminPage operations={stubOperations()} />
+      </I18nProvider>,
+    );
+
+    const budgets = await screen.findByRole("heading", { name: "AI budgets" });
+    const health = await screen.findByRole("heading", { name: "Operator health" });
+    expect(budgets.compareDocumentPosition(health) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

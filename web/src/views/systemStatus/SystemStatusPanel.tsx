@@ -5,11 +5,12 @@ import type {
   ItemAutomationErrorCount,
   MailboxHealthStatus,
   ProcessHealthStatus,
+  QueueHealthCounts,
   SystemHealthOperations,
   SystemHealthReport,
 } from "../../api/systemHealthOperations.js";
 
-function ProcessRow({ t, process }: { t: Translate; process: ProcessHealthStatus }) {
+export function ProcessRow({ t, process }: { t: Translate; process: ProcessHealthStatus }) {
   const label = !process.present
     ? t("systemStatus.processes.absent")
     : process.stale
@@ -49,8 +50,31 @@ function MailboxRow({ t, mailbox }: { t: Translate; mailbox: MailboxHealthStatus
 }
 
 /**
+ * The three queue counts (issue #170) as list rows. Pending is a plain queue depth, not a fault
+ * count: there is no number of pending jobs that is wrong on its own, which is why this row carries
+ * no degraded styling. A backlog that has become a fault arrives as the `queue_backlog` alerting
+ * check. Overdue and permanent are different — each is already a count of jobs in a bad state, so a
+ * non-zero value is itself the signal.
+ */
+export function QueueCounts({ t, queue }: { t: Translate; queue: QueueHealthCounts }) {
+  return (
+    <>
+      <li className="system-status__row">{t("systemStatus.queue.pending", { count: queue.pending })}</li>
+      <li className={queue.overdue > 0 ? "system-status__row system-status__row--degraded" : "system-status__row"}>
+        {t("systemStatus.queue.overdue", { count: queue.overdue })}
+      </li>
+      <li className={queue.permanent > 0 ? "system-status__row system-status__row--degraded" : "system-status__row"}>
+        {t("systemStatus.queue.permanent", { count: queue.permanent })}
+      </li>
+    </>
+  );
+}
+
+/**
  * The System page's status block (issue #170), rendered beside the AI usage block from a plain
- * live snapshot (`GET /api/system-health`, no persisted samples). `alertingChecks` is the
+ * live snapshot (`GET /api/system-health`, no persisted samples). Since issue #1082 every section
+ * is scoped to the caller's own tenant, so the processes, checks and queue counts shown here are
+ * the user's own, not system-wide. `alertingChecks` is the
  * authoritative degraded signal — it comes from issue #169's hysteresis-managed state machine,
  * so this panel names degraded components from it rather than inventing its own thresholds over
  * the raw counts shown alongside it.
@@ -98,28 +122,7 @@ export function SystemStatusPanel({ operations }: { operations: SystemHealthOper
 
       <h2>{t("systemStatus.queue.title")}</h2>
       <ul>
-        {/*
-          Pending is a plain queue depth, not a fault count: there is no number of pending
-          jobs that is wrong on its own, which is why this row carries no degraded styling.
-          A backlog that has become a fault arrives as the `queue_backlog` alerting check,
-          listed above. Overdue and permanent below are different — each is already a count
-          of jobs in a bad state, so a non-zero value is itself the signal.
-        */}
-        <li className="system-status__row">{t("systemStatus.queue.pending", { count: report.queue.pending })}</li>
-        <li
-          className={
-            report.queue.overdue > 0 ? "system-status__row system-status__row--degraded" : "system-status__row"
-          }
-        >
-          {t("systemStatus.queue.overdue", { count: report.queue.overdue })}
-        </li>
-        <li
-          className={
-            report.queue.permanent > 0 ? "system-status__row system-status__row--degraded" : "system-status__row"
-          }
-        >
-          {t("systemStatus.queue.permanent", { count: report.queue.permanent })}
-        </li>
+        <QueueCounts t={t} queue={report.queue} />
       </ul>
 
       <h2>{t("systemStatus.itemAutomation.title")}</h2>

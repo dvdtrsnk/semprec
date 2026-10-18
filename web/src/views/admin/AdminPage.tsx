@@ -3,11 +3,12 @@ import type { AdminOperations } from "../../api/adminOperations.js";
 import { AccountsPanel } from "./AccountsPanel.js";
 import { InvitesPanel } from "./InvitesPanel.js";
 import { BudgetsPanel } from "./BudgetsPanel.js";
+import { HealthPanel } from "./HealthPanel.js";
 
 /**
  * The admin page (issue #1079): a heading over the panels the admin plane offers. The invitations
  * panel (issue #1080) follows the accounts panel, and the AI budgets panel (issue #1081) follows the
- * invitations; the health panel of a later issue is added below it.
+ * invitations, and the operator health panel (issue #1082) follows the budgets.
  */
 export function AdminPage({ operations }: { operations: AdminOperations }) {
   const t = useTranslate();
@@ -17,6 +18,7 @@ export function AdminPage({ operations }: { operations: AdminOperations }) {
       <AccountsPanel operations={operations} />
       <InvitesPanel operations={operations} />
       <BudgetsPanel operations={operations} />
+      <HealthPanel operations={operations} />
     </section>
   );
 }
