@@ -199,7 +199,8 @@ describe("password reset actions (issue #142)", () => {
 
     it("still resolves and keeps the token row when the mail send rejects, logging the failure", async () => {
       const user = await makeUser();
-      const sendError = new Error("smtp down");
+      // An SMTP refusal echoes the recipient, as a real one does; the log must not carry it.
+      const sendError = Object.assign(new Error(`550 rejected <${user.email}>`), { code: "EENVELOPE" });
       const mailer: PasswordResetMailer = {
         sendPasswordResetEmail() {
           return Promise.reject(sendError);
@@ -214,10 +215,11 @@ describe("password reset actions (issue #142)", () => {
 
         await vi.waitFor(() => {
           expect(loggerError).toHaveBeenCalledWith(
-            { err: sendError },
+            { errorName: "Error", errorCode: "EENVELOPE" },
             "requestPasswordReset: failed to send the password-reset email",
           );
         });
+        expect(JSON.stringify(loggerError.mock.calls)).not.toContain(user.email);
         expect(await countRecentPasswordResetTokens(pool, user.id, PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS)).toBe(1);
       } finally {
         loggerError.mockRestore();

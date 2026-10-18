@@ -306,7 +306,7 @@ describe("MCP tool sync (issue #125)", () => {
       await expect(syncMcpServerTools(pool, item.id)).rejects.toThrow(ValidationError);
 
       expect(loggerErrorSpy).toHaveBeenCalledWith(
-        { err: closeErr },
+        { err: closeErr, mcpServerItemId: item.id },
         "syncMcpServerTools: failed to close the MCP client handle",
       );
     } finally {

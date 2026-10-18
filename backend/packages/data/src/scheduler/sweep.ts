@@ -306,7 +306,7 @@ async function runScheduledOccurrenceFire(
         // The setup failure is what failed this job; the close-out failing too must not replace it.
         logger.error(
           { err: closeOutErr, heartbeatId, occurrenceId },
-          "Failed to record the setup failure of a heartbeat occurrence",
+          "Failed to record the setup failure of heartbeat occurrence",
         );
       }
     }

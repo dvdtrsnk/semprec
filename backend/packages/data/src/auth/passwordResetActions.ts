@@ -103,7 +103,14 @@ export async function requestPasswordReset(
       void mailer
         .sendPasswordResetEmail({ to: user.email, resetUrl: buildPasswordResetUrl(input.appBaseUrl, token) })
         .catch((err: unknown) => {
-          logger.error({ err }, "requestPasswordReset: failed to send the password-reset email");
+          // An SMTP refusal can echo the recipient address, so log the error's name and code only.
+          logger.error(
+            {
+              errorName: err instanceof Error ? err.name : typeof err,
+              errorCode: err instanceof Error && "code" in err ? String(err.code) : undefined,
+            },
+            "requestPasswordReset: failed to send the password-reset email",
+          );
         });
     });
   });
