@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import {
+  assertRuntimeRole,
   createMailLiveSyncRoot,
   createNoopMailLiveSyncLifecycleFactory,
   createPool,
@@ -9,7 +10,6 @@ import {
   NodemailerInviteMailer,
   NodemailerPasswordResetMailer,
   noopPasswordResetMailer,
-  assertRuntimeRole,
   resolveDocHistoryRetentionDays,
   startProcessHeartbeat,
   startTenantDeactivationListener,
