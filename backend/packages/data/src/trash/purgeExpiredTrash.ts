@@ -3,6 +3,7 @@ import { createChokePoint } from "../chokePoint/chokePoint.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
+import { logger } from "./logger.js";
 
 const DEFAULT_RETENTION_DAYS = 30;
 const CANDIDATE_PAGE_SIZE = 500;
@@ -48,7 +49,7 @@ export async function purgeExpiredTrash(
       try {
         result = await chokePoint.purgeExpiredTrashSubtree(candidate.id, cutoff);
       } catch (err) {
-        console.error(`Failed to purge trashed item ${candidate.id}`, err);
+        logger.error({ err, itemId: candidate.id }, "Failed to purge trashed item");
         continue;
       }
       for (const id of result.purgedItemIds) purgedInPage.add(id);
@@ -58,7 +59,10 @@ export async function purgeExpiredTrash(
           await storage.delete(key);
         } catch (err) {
           // The blob row is already gone, so these bytes are unreachable; leaving them is safe.
-          console.error(`Failed to delete blob bytes ${key} of a purged item`, err);
+          logger.error(
+            { errCode: err instanceof Error && "code" in err ? String(err.code) : undefined, itemId: candidate.id },
+            "Failed to delete blob bytes of a purged item",
+          );
         }
       }
     }

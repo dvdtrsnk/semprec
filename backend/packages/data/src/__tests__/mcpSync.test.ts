@@ -22,6 +22,7 @@ import { listMcpToolRegistrationsForServer } from "../mcp/mcpToolRegistrationsSt
 import { setMcpToolRequiresApproval, setMcpToolRiskClass } from "../mcp/mcpGrantsAdminStore.js";
 import type { McpConnectionConfig } from "../mcp/mcpConnectionConfig.js";
 import { NotFoundError, ValidationError } from "../errors.js";
+import { logger } from "../mcp/logger.js";
 
 /**
  * `connectMock.impl` is what the mocked `connectMcpServer` actually calls — defaults to the real
@@ -292,7 +293,7 @@ describe("MCP tool sync (issue #125)", () => {
       { name: "dup", description: "two", inputSchema: { type: "object", properties: {} } },
     ]);
     const closeErr = new Error("close failed: ECONNRESET");
-    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const loggerErrorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
     try {
       const item = await createMcpServerItem(contract.connectionConfig);
       connectMock.impl = async (...args: Parameters<typeof ConnectMcpServerFn>) => {
@@ -304,12 +305,12 @@ describe("MCP tool sync (issue #125)", () => {
       // so both the sync error and the close failure are in flight when `finally` runs.
       await expect(syncMcpServerTools(pool, item.id)).rejects.toThrow(ValidationError);
 
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect(loggerErrorSpy).toHaveBeenCalledWith(
+        { err: closeErr },
         "syncMcpServerTools: failed to close the MCP client handle",
-        closeErr,
       );
     } finally {
-      consoleErrorSpy.mockRestore();
+      loggerErrorSpy.mockRestore();
       await contract.stop();
     }
   });

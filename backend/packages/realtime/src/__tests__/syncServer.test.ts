@@ -48,7 +48,7 @@ vi.mock("@semprec/shared", async (importOriginal) => {
   return {
     ...actual,
     createLogger: (name: string) =>
-      name === "realtime" ? ({ warn: realtimeWarn } as never) : actual.createLogger(name),
+      name === "realtime" ? ({ warn: realtimeWarn, error: vi.fn() } as never) : actual.createLogger(name),
   };
 });
 

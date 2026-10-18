@@ -8,6 +8,7 @@ import { createBlob } from "../../blobs/blobsStore.js";
 import { withClient } from "../../db/pool.js";
 import type { BlobStorageWriter } from "../../mail/blobStorage.js";
 import { purgeExpiredTrash } from "../purgeExpiredTrash.js";
+import { logger } from "../logger.js";
 
 // Passthrough spy, so the paging test can see how many candidates each page loaded.
 vi.mock("../../chokePoint/itemsStore.js", async (importOriginal) => {
@@ -479,7 +480,7 @@ describe("purgeExpiredTrash (issue #156)", () => {
         await chokePoint.softDeleteItem(db.id, item.id);
         await ageDeletion(item.id, 31, db.id);
       }
-      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
       const { storage, deleteMock } = fakeStorage(async (key) => {
         if (key === "failing-key") throw new Error("storage down");
       });
@@ -488,6 +489,10 @@ describe("purgeExpiredTrash (issue #156)", () => {
         expect(await purgeExpiredTrash(pool, storage)).toBe(2);
         expect(deleteMock.mock.calls.map(([key]) => key).sort()).toEqual(["failing-key", "working-key"]);
         expect(errorSpy).toHaveBeenCalledTimes(1);
+        expect(errorSpy).toHaveBeenCalledWith({ itemId: first.id }, "Failed to delete blob bytes of a purged item");
+        const logged = JSON.stringify(errorSpy.mock.calls);
+        expect(logged).not.toContain("failing-key");
+        expect(logged).not.toContain("storage down");
       } finally {
         errorSpy.mockRestore();
       }

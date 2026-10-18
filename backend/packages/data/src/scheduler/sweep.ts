@@ -19,6 +19,7 @@ import {
 } from "./schedulerStore.js";
 import type { HeartbeatRuleKindRegistry } from "./rule.js";
 import { resolveHeartbeatFireTaskName, type ActionHandler, type ActionRegistry } from "./actions.js";
+import { logger } from "./logger.js";
 
 /**
  * Writes the reference `heartbeat_error` notification (issue #237) for a heartbeat that just
@@ -303,9 +304,9 @@ async function runScheduledOccurrenceFire(
         });
       } catch (closeOutErr) {
         // The setup failure is what failed this job; the close-out failing too must not replace it.
-        console.error(
-          `Failed to record the setup failure of heartbeat ${heartbeatId}'s occurrence ${occurrenceId}`,
-          closeOutErr,
+        logger.error(
+          { err: closeOutErr, heartbeatId, occurrenceId },
+          "Failed to record the setup failure of a heartbeat occurrence",
         );
       }
     }

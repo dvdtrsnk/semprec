@@ -8,6 +8,7 @@ import {
   setSessionRevokedHook,
 } from "@semprec/data";
 import { publishRealtimeMessage } from "./pgNotifyPublisher.js";
+import { logger } from "./logger.js";
 
 /**
  * Wires the data layer's in-process invalidation hooks (`realtimeHook.ts`) to real
@@ -24,7 +25,7 @@ export function wireRealtimeHooks(pool: Pool): void {
     entry.promise = preceding
       .then(() => publishRealtimeMessage(pool, { type: "agent_run_event", ...event }))
       .catch((err: unknown) => {
-        console.error("Failed to publish agent_run_event realtime message", err);
+        logger.error({ err }, "Failed to publish agent_run_event realtime message");
       })
       .then(() => {
         if (agentRunPublishTails.get(event.agentRunId) === entry) agentRunPublishTails.delete(event.agentRunId);
@@ -35,27 +36,27 @@ export function wireRealtimeHooks(pool: Pool): void {
   setInvalidationHook((event) => {
     // Best-effort fan-out: a failed NOTIFY must not fail (or roll back) the write that triggered it.
     publishRealtimeMessage(pool, { type: "invalidation", ...event }).catch((err: unknown) => {
-      console.error("Failed to publish invalidation realtime message", err);
+      logger.error({ err }, "Failed to publish invalidation realtime message");
     });
   });
   setDocUpdateHook((event) => {
     publishRealtimeMessage(pool, { type: "doc_update", ...event }).catch((err: unknown) => {
-      console.error("Failed to publish doc_update realtime message", err);
+      logger.error({ err }, "Failed to publish doc_update realtime message");
     });
   });
   setNotificationCreatedHook((event) => {
     publishRealtimeMessage(pool, { type: "notification_created", ...event }).catch((err: unknown) => {
-      console.error("Failed to publish notification_created realtime message", err);
+      logger.error({ err }, "Failed to publish notification_created realtime message");
     });
   });
   setNotificationReadStateHook((event) => {
     publishRealtimeMessage(pool, { type: "notification_read_state", ...event }).catch((err: unknown) => {
-      console.error("Failed to publish notification_read_state realtime message", err);
+      logger.error({ err }, "Failed to publish notification_read_state realtime message");
     });
   });
   setSessionRevokedHook((event) => {
     publishRealtimeMessage(pool, { type: "session_revoked", ...event }).catch((err: unknown) => {
-      console.error("Failed to publish session_revoked realtime message", err);
+      logger.error({ err }, "Failed to publish session_revoked realtime message");
     });
   });
   setAgentRunEventHook(enqueueAgentRunEvent);

@@ -111,7 +111,7 @@ describe("withTransaction", () => {
     const fnError = new Error("E1");
     const rollbackError = new Error("E2");
     const { pool, query, release } = fakeClient({ ROLLBACK: rollbackError });
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const loggerError = vi.spyOn(logger, "error").mockImplementation(() => undefined);
 
     try {
       await expect(
@@ -123,19 +123,19 @@ describe("withTransaction", () => {
       expect(sqlCalls(query)).toEqual(["BEGIN", "ROLLBACK"]);
       expect(release).toHaveBeenCalledTimes(1);
       expect(release).toHaveBeenCalledWith(rollbackError);
-      expect(consoleError).toHaveBeenCalledWith(
+      expect(loggerError).toHaveBeenCalledWith(
+        { err: rollbackError },
         "withTransaction: ROLLBACK failed; discarding the connection",
-        rollbackError,
       );
     } finally {
-      consoleError.mockRestore();
+      loggerError.mockRestore();
     }
   });
 
   it("wraps a non-Error ROLLBACK rejection so the client is still discarded", async () => {
     const fnError = new Error("E1");
     const { pool, release } = fakeClient({ ROLLBACK: "connection gone" });
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const loggerError = vi.spyOn(logger, "error").mockImplementation(() => undefined);
 
     try {
       await expect(
@@ -149,7 +149,7 @@ describe("withTransaction", () => {
       expect(releaseArg).toBeInstanceOf(Error);
       expect(releaseArg).toMatchObject({ message: "connection gone" });
     } finally {
-      consoleError.mockRestore();
+      loggerError.mockRestore();
     }
   });
 
@@ -237,7 +237,7 @@ describe("withTransaction", () => {
     const commitError = new Error("commit failed");
     const rollbackError = new Error("rollback failed");
     const { pool, query, release } = fakeClient({ COMMIT: commitError, ROLLBACK: rollbackError });
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const loggerError = vi.spyOn(logger, "error").mockImplementation(() => undefined);
     const callback = vi.fn();
 
     try {
@@ -253,7 +253,7 @@ describe("withTransaction", () => {
       expect(release).toHaveBeenCalledTimes(1);
       expect(release).toHaveBeenCalledWith(rollbackError);
     } finally {
-      consoleError.mockRestore();
+      loggerError.mockRestore();
     }
   });
 });
