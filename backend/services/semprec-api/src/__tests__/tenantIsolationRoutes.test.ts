@@ -293,7 +293,7 @@ function aStateReads(): Request[] {
   ];
 }
 
-/** A's own view of its rows, plus the heartbeat, run events and push subscriptions no route lists. */
+/** A's own view of its rows, plus the heartbeats, run events, relation edges (with metadata) and push subscriptions no route lists. */
 async function readAState(): Promise<string[]> {
   const lines: string[] = [];
   for (const request of aStateReads()) {
@@ -309,10 +309,14 @@ async function readAState(): Promise<string[]> {
     const events = await client.query<{ id: string; kind: string }>(
       "SELECT id, kind FROM agent_run_events ORDER BY id",
     );
-    return { heartbeats: heartbeats.rows, events: events.rows };
+    const relations = await client.query<{ item_a: string; item_b: string; metadata: unknown }>(
+      "SELECT item_a, item_b, metadata FROM item_relations ORDER BY item_a, item_b",
+    );
+    return { heartbeats: heartbeats.rows, events: events.rows, relations: relations.rows };
   });
   lines.push(`heartbeats ${JSON.stringify(rows.heartbeats)}`);
   lines.push(`agent run events ${JSON.stringify(rows.events)}`);
+  lines.push(`relations ${JSON.stringify(rows.relations)}`);
   lines.push(...(await readAAccountState()));
   return lines;
 }
@@ -476,6 +480,8 @@ async function seedTenant(): Promise<TenantFixture> {
     body: {},
   });
   await sendOk(member, { method: "PUT", path: `/api/views/${curatedView.id}/items/${item.id}`, body: {} });
+  // A second member, so a foreign reorder of the first one to position 1 would change the order.
+  await sendOk(member, { method: "PUT", path: `/api/views/${curatedView.id}/items/${targetItem.id}`, body: {} });
   // Re-read after the relation write, which may have bumped the item's version.
   const itemVersion = readString(await sendOk(member, { method: "GET", path: `/api/items/${item.id}` }), "updatedAt");
 
@@ -1136,13 +1142,15 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     leavesAUnchanged(async () => {
       await expectForeignLikeRandom(b.member, [a.viewId], ([id]) => ({ method: "DELETE", path: `/api/views/${id}` }));
     }),
+  // Position 1 moves A's first curated item behind its second, so a foreign write that landed
+  // would change the order A's curated view query returns.
   "add/reposition curated view item": () =>
     leavesAUnchanged(async () => {
-      await curatedItemCases("PUT", { position: 0 });
+      await curatedItemCases("PUT", { position: 1 });
     }),
   "reorder curated view item": () =>
     leavesAUnchanged(async () => {
-      await curatedItemCases("PATCH", { position: 0 });
+      await curatedItemCases("PATCH", { position: 1 });
     }),
   "remove curated view item": () =>
     leavesAUnchanged(async () => {
@@ -1219,7 +1227,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   },
   "create/replace relation": () =>
     leavesAUnchanged(async () => {
-      await relationCases("PUT", {});
+      // Metadata A's existing edge does not carry, so a foreign replace that landed changes it.
+      await relationCases("PUT", { metadata: { writtenBy: "B" } });
     }),
   "delete relation": () =>
     leavesAUnchanged(async () => {
@@ -1489,12 +1498,8 @@ function ownerProbes(): OwnerProbe[] {
       label: "confirm proposal",
       ids: [a.proposalItemId],
       build: call("POST", ([id]) => `/api/proposals/${id}/confirm`),
-    },
-    {
-      label: "visit notification",
-      ids: [a.notificationId],
-      build: call("POST", ([id]) => `/api/notifications/${id}/visit`),
-      status: 200,
+      // The fixture proposal has no status, so A's own confirm is refused and writes nothing.
+      status: 400,
     },
     {
       label: "mint mcp run credential",
@@ -1515,11 +1520,11 @@ function ownerProbes(): OwnerProbe[] {
     {
       label: "mcp tool registration reclassify",
       ids: [a.mcpToolRegistrationId],
-      build: call("PATCH", ([id]) => `/api/mcp-tool-registrations/${id}`, {
-        requiresApproval: false,
-        riskClass: "read",
-      }),
+      // The seeded value, so A's registration keeps a classification other than the one B's
+      // foreign reclassify sends, and a cross-tenant write would still change what A reads.
+      build: call("PATCH", ([id]) => `/api/mcp-tool-registrations/${id}`, { requiresApproval: true }),
       status: 200,
+      contains: ['"requiresApproval":true'],
     },
     {
       label: "rename database",
