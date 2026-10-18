@@ -244,6 +244,21 @@ export const en = {
   "admin.invites.revoking": "Revoking…",
   "admin.invites.empty": "No invitations yet",
   "admin.invites.actionFailed": "The action failed: {message}",
+  "admin.budgets.title": "AI budgets",
+  "admin.budgets.utcNote": "Spend is measured over the UTC day and the UTC month.",
+  "admin.budgets.dailyCap": "Daily cap",
+  "admin.budgets.monthlyCap": "Monthly cap",
+  "admin.budgets.spentToday": "Spent today",
+  "admin.budgets.spentMonth": "Spent this month",
+  "admin.budgets.noBudget": "No budget — AI requests are refused",
+  "admin.budgets.uncapped": "No cap",
+  "admin.budgets.edit": "Edit caps",
+  "admin.budgets.save": "Save",
+  "admin.budgets.saving": "Saving…",
+  "admin.budgets.cancel": "Cancel",
+  "admin.budgets.invalid": "Each cap must be empty or a number that is zero or greater",
+  "admin.budgets.saveFailed": "The budget could not be saved: {message}",
+  "admin.budgets.empty": "No accounts to show budgets for",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -489,6 +504,21 @@ export const cs: Messages = {
   "admin.invites.revoking": "Rušení…",
   "admin.invites.empty": "Zatím žádné pozvánky",
   "admin.invites.actionFailed": "Akci se nepodařilo provést: {message}",
+  "admin.budgets.title": "Rozpočty AI",
+  "admin.budgets.utcNote": "Útrata se počítá podle UTC dne a UTC měsíce.",
+  "admin.budgets.dailyCap": "Denní limit",
+  "admin.budgets.monthlyCap": "Měsíční limit",
+  "admin.budgets.spentToday": "Utraceno dnes",
+  "admin.budgets.spentMonth": "Utraceno tento měsíc",
+  "admin.budgets.noBudget": "Bez rozpočtu — AI požadavky jsou odmítány",
+  "admin.budgets.uncapped": "Bez limitu",
+  "admin.budgets.edit": "Upravit limity",
+  "admin.budgets.save": "Uložit",
+  "admin.budgets.saving": "Ukládání…",
+  "admin.budgets.cancel": "Zrušit",
+  "admin.budgets.invalid": "Každý limit musí být prázdný, nebo číslo větší nebo rovno nule",
+  "admin.budgets.saveFailed": "Rozpočet se nepodařilo uložit: {message}",
+  "admin.budgets.empty": "Žádné účty, pro které by se zobrazily rozpočty",
 };
 
 export const CATALOGS = { cs, en } as const;

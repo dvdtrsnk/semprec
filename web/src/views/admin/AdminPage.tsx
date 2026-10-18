@@ -2,11 +2,12 @@ import { useTranslate } from "../../i18n/index.js";
 import type { AdminOperations } from "../../api/adminOperations.js";
 import { AccountsPanel } from "./AccountsPanel.js";
 import { InvitesPanel } from "./InvitesPanel.js";
+import { BudgetsPanel } from "./BudgetsPanel.js";
 
 /**
  * The admin page (issue #1079): a heading over the panels the admin plane offers. The invitations
- * panel (issue #1080) follows the accounts panel; the budgets and health panels of later issues are
- * added below it.
+ * panel (issue #1080) follows the accounts panel, and the AI budgets panel (issue #1081) follows the
+ * invitations; the health panel of a later issue is added below it.
  */
 export function AdminPage({ operations }: { operations: AdminOperations }) {
   const t = useTranslate();
@@ -15,6 +16,7 @@ export function AdminPage({ operations }: { operations: AdminOperations }) {
       <h1>{t("admin.title")}</h1>
       <AccountsPanel operations={operations} />
       <InvitesPanel operations={operations} />
+      <BudgetsPanel operations={operations} />
     </section>
   );
 }

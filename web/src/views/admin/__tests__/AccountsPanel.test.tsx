@@ -31,6 +31,8 @@ function stubOperations(overrides: Partial<AdminOperations> = {}): AdminOperatio
     revokeInvite: vi.fn(async () => {
       throw new OperationError("retryable", "unused");
     }),
+    listAiBudgets: vi.fn(async () => []),
+    setAiBudget: vi.fn(async () => undefined),
     ...overrides,
   };
 }

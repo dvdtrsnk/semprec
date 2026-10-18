@@ -56,6 +56,35 @@ export type CreatedInvite = z.infer<typeof createInviteResponseSchema>;
 
 const inviteResponseSchema = z.object({ invite: inviteSummarySchema });
 
+const aiBudgetAccountSchema = z.object({
+  userId: z.string(),
+  email: z.string(),
+  hasBudget: z.boolean(),
+  dailyCapUsd: z.number().nullable(),
+  monthlyCapUsd: z.number().nullable(),
+  spentTodayUsd: z.number(),
+  spentMonthUsd: z.number(),
+});
+
+export type AiBudgetAccount = z.infer<typeof aiBudgetAccountSchema>;
+
+const aiBudgetsResponseSchema = z.object({ spendWindow: z.literal("utc"), accounts: z.array(aiBudgetAccountSchema) });
+
+const setAiBudgetResponseSchema = z.object({
+  budget: z.object({
+    userId: z.string(),
+    dailyCapUsd: z.number().nullable(),
+    monthlyCapUsd: z.number().nullable(),
+    updatedAt: z.string(),
+  }),
+});
+
+/** The caps of one account's AI budget; `null` means no cap for that period. */
+export interface AiBudgetCaps {
+  dailyCapUsd: number | null;
+  monthlyCapUsd: number | null;
+}
+
 const errorCodeSchema = z.object({ error: z.object({ code: z.string() }) });
 
 /** Enough for any error envelope the admin routes answer; a longer failure body is not read further. */
@@ -77,6 +106,8 @@ export interface AdminOperations {
   listInvites(): Promise<InviteSummary[]>;
   createInvite(email: string): Promise<CreatedInvite>;
   revokeInvite(inviteId: string): Promise<InviteSummary>;
+  listAiBudgets(): Promise<AiBudgetAccount[]>;
+  setAiBudget(userId: string, caps: AiBudgetCaps): Promise<void>;
 }
 
 export function createAdminOperations(options: AdminOperationsOptions): AdminOperations {
@@ -148,6 +179,21 @@ export function createAdminOperations(options: AdminOperationsOptions): AdminOpe
       const path = `/admin/invites/${encodeURIComponent(inviteId)}/revoke`;
       const body = await request(path, { method: "POST" });
       return parseBody(inviteResponseSchema, body, path).invite;
+    },
+
+    async listAiBudgets() {
+      const body = await request("/admin/ai-budgets");
+      return parseBody(aiBudgetsResponseSchema, body, "/admin/ai-budgets").accounts;
+    },
+
+    async setAiBudget(userId, caps) {
+      const path = `/admin/accounts/${encodeURIComponent(userId)}/ai-budget`;
+      const body = await request(path, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dailyCapUsd: caps.dailyCapUsd, monthlyCapUsd: caps.monthlyCapUsd }),
+      });
+      parseBody(setAiBudgetResponseSchema, body, path);
     },
   };
 }
