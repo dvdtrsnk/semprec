@@ -28,6 +28,34 @@ const accountsResponseSchema = z.object({ accounts: z.array(adminAccountSummaryS
 
 const accountResponseSchema = z.object({ account: adminAccountSummarySchema });
 
+const INVITE_STATUSES = ["pending", "accepted", "revoked", "expired"] as const;
+export type InviteStatus = (typeof INVITE_STATUSES)[number];
+
+const inviteSummarySchema = z.object({
+  id: z.string(),
+  email: z.string(),
+  invitedBy: z.string().nullable(),
+  createdAt: z.string(),
+  expiresAt: z.string(),
+  acceptedAt: z.string().nullable(),
+  revokedAt: z.string().nullable(),
+  status: z.enum(INVITE_STATUSES),
+});
+
+export type InviteSummary = z.infer<typeof inviteSummarySchema>;
+
+const invitesResponseSchema = z.object({ invites: z.array(inviteSummarySchema) });
+
+const createInviteResponseSchema = z.object({
+  invite: inviteSummarySchema,
+  inviteUrl: z.string(),
+  emailed: z.boolean(),
+});
+
+export type CreatedInvite = z.infer<typeof createInviteResponseSchema>;
+
+const inviteResponseSchema = z.object({ invite: inviteSummarySchema });
+
 const errorCodeSchema = z.object({ error: z.object({ code: z.string() }) });
 
 /** Enough for any error envelope the admin routes answer; a longer failure body is not read further. */
@@ -46,6 +74,9 @@ export interface AdminOperations {
   suspendAccount(userId: string): Promise<AdminAccountSummary>;
   reactivateAccount(userId: string): Promise<AdminAccountSummary>;
   changeRole(userId: string, role: AdminRole): Promise<AdminAccountSummary>;
+  listInvites(): Promise<InviteSummary[]>;
+  createInvite(email: string): Promise<CreatedInvite>;
+  revokeInvite(inviteId: string): Promise<InviteSummary>;
 }
 
 export function createAdminOperations(options: AdminOperationsOptions): AdminOperations {
@@ -97,6 +128,26 @@ export function createAdminOperations(options: AdminOperationsOptions): AdminOpe
         body: JSON.stringify({ role }),
       });
       return parseBody(accountResponseSchema, body, path).account;
+    },
+
+    async listInvites() {
+      const body = await request("/admin/invites");
+      return parseBody(invitesResponseSchema, body, "/admin/invites").invites;
+    },
+
+    async createInvite(email) {
+      const body = await request("/admin/invites", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      return parseBody(createInviteResponseSchema, body, "/admin/invites");
+    },
+
+    async revokeInvite(inviteId) {
+      const path = `/admin/invites/${encodeURIComponent(inviteId)}/revoke`;
+      const body = await request(path, { method: "POST" });
+      return parseBody(inviteResponseSchema, body, path).invite;
     },
   };
 }
