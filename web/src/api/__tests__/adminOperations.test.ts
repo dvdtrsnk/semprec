@@ -317,3 +317,50 @@ describe("admin operations: AI budgets", () => {
     });
   });
 });
+
+const OPERATIONS_HEALTH = {
+  generatedAt: "2026-10-18T00:00:00.000Z",
+  processes: [
+    {
+      process: "api",
+      present: true,
+      stale: false,
+      pid: 10,
+      version: "1.4.0",
+      startedAt: null,
+      beatAt: null,
+      uptimeMs: null,
+    },
+  ],
+  alertingChecks: [{ checkKey: "queue_backlog", detail: {}, changedAt: "2026-10-18T00:00:00.000Z" }],
+  queue: { pending: 3, overdue: 1, permanent: 0 },
+  tenants: { provisioning: 0, active: 2, suspended: 1, deleting: 0 },
+  tenantAggregates: { agentRunErrors7d: 4, itemAutomationErrors: 0, alertingTenantChecks: 1 },
+};
+
+describe("admin operations: operator health", () => {
+  it("getOperationsHealth gets the health report with same-origin credentials and parses it", async () => {
+    const { operations, calls } = recording(() => jsonResponse(OPERATIONS_HEALTH));
+
+    await expect(operations.getOperationsHealth()).resolves.toEqual(OPERATIONS_HEALTH);
+    expect(calls[0]!.url).toBe("/api/admin/health");
+    expect(calls[0]!.init).toMatchObject({ credentials: "same-origin" });
+    expect(calls[0]!.init?.method).toBeUndefined();
+  });
+
+  it("getOperationsHealth rejects a 403 as unavailable", async () => {
+    const operations = failingWith(() => jsonResponse({ error: { code: "admin_required" } }, 403));
+
+    await expect(operations.getOperationsHealth()).rejects.toMatchObject({ kind: "unavailable", status: 403 });
+  });
+
+  it("getOperationsHealth rejects a body missing tenantAggregates as retryable", async () => {
+    const { tenantAggregates: _omitted, ...withoutAggregates } = OPERATIONS_HEALTH;
+    const operations = failingWith(() => jsonResponse(withoutAggregates));
+
+    await expect(operations.getOperationsHealth()).rejects.toMatchObject({
+      kind: "retryable",
+      message: "Unexpected response from /admin/health",
+    });
+  });
+});

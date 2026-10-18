@@ -40,6 +40,9 @@ function stubOperations(overrides: Partial<AdminOperations> = {}): AdminOperatio
     }),
     listAiBudgets: vi.fn(async (): Promise<AiBudgetAccount[]> => [account()]),
     setAiBudget: vi.fn(async () => undefined),
+    getOperationsHealth: vi.fn(async () => {
+      throw new OperationError("retryable", "unused");
+    }),
     ...overrides,
   };
 }

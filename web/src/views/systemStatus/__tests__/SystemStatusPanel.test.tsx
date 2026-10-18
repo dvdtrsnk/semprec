@@ -55,7 +55,7 @@ describe("SystemStatusPanel (issue #170)", () => {
   it("shows a healthy summary when there are no alerting checks", async () => {
     renderPanel(stubOperations(async () => makeReport()));
 
-    expect(await screen.findByText("All monitored components are healthy")).toBeInTheDocument();
+    expect(await screen.findByText("All your monitored services are healthy")).toBeInTheDocument();
   });
 
   it("shows a degraded summary and names each alerting component", async () => {
@@ -67,7 +67,7 @@ describe("SystemStatusPanel (issue #170)", () => {
       ),
     );
 
-    expect(await screen.findByText("1 component(s) degraded")).toBeInTheDocument();
+    expect(await screen.findByText("1 of your services degraded")).toBeInTheDocument();
     expect(screen.getByText("process:agents")).toBeInTheDocument();
   });
 
@@ -90,7 +90,7 @@ describe("SystemStatusPanel (issue #170)", () => {
     );
     renderPanel(operations);
 
-    expect(await screen.findByText(/1 component/i)).toBeTruthy();
+    expect(await screen.findByText(/1 of your services/i)).toBeTruthy();
     expect(screen.queryByText("No system status data is available")).toBeNull();
     expect(screen.getByText("queue_backlog")).toBeTruthy();
   });
@@ -125,7 +125,7 @@ describe("SystemStatusPanel (issue #170)", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
 
-    expect(await screen.findByText("All monitored components are healthy")).toBeInTheDocument();
+    expect(await screen.findByText("All your monitored services are healthy")).toBeInTheDocument();
   });
 
   it("renders queue, item automation, agent run, and mailbox sections with no secrets", async () => {

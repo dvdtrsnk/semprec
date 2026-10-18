@@ -44,6 +44,9 @@ function stubOperations(overrides: Partial<AdminOperations> = {}): AdminOperatio
     revokeInvite: vi.fn(async () => invite({ status: "revoked", revokedAt: "2026-10-02T09:00:00.000Z" })),
     listAiBudgets: vi.fn(async () => []),
     setAiBudget: vi.fn(async () => undefined),
+    getOperationsHealth: vi.fn(async () => {
+      throw new Error("unused");
+    }),
     ...overrides,
   };
 }

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { OperationError } from "./genericOperations.js";
+import { alertingCheckSchema, processHealthStatusSchema, queueHealthCountsSchema } from "./systemHealthOperations.js";
 
 /**
  * The client's binding for the admin plane under `/api/admin/*` (issue #1079): the account list
@@ -85,6 +86,27 @@ export interface AiBudgetCaps {
   monthlyCapUsd: number | null;
 }
 
+const operationsHealthSchema = z.object({
+  generatedAt: z.string(),
+  processes: z.array(processHealthStatusSchema),
+  alertingChecks: z.array(alertingCheckSchema),
+  queue: queueHealthCountsSchema,
+  tenants: z.object({
+    provisioning: z.number(),
+    active: z.number(),
+    suspended: z.number(),
+    deleting: z.number(),
+  }),
+  tenantAggregates: z.object({
+    agentRunErrors7d: z.number(),
+    itemAutomationErrors: z.number(),
+    alertingTenantChecks: z.number(),
+  }),
+});
+
+/** The operator health report of `GET /api/admin/health`: global, content-free, never per tenant. */
+export type OperationsHealth = z.infer<typeof operationsHealthSchema>;
+
 const errorCodeSchema = z.object({ error: z.object({ code: z.string() }) });
 
 /** Enough for any error envelope the admin routes answer; a longer failure body is not read further. */
@@ -108,6 +130,7 @@ export interface AdminOperations {
   revokeInvite(inviteId: string): Promise<InviteSummary>;
   listAiBudgets(): Promise<AiBudgetAccount[]>;
   setAiBudget(userId: string, caps: AiBudgetCaps): Promise<void>;
+  getOperationsHealth(): Promise<OperationsHealth>;
 }
 
 export function createAdminOperations(options: AdminOperationsOptions): AdminOperations {
@@ -194,6 +217,11 @@ export function createAdminOperations(options: AdminOperationsOptions): AdminOpe
         body: JSON.stringify({ dailyCapUsd: caps.dailyCapUsd, monthlyCapUsd: caps.monthlyCapUsd }),
       });
       parseBody(setAiBudgetResponseSchema, body, path);
+    },
+
+    async getOperationsHealth() {
+      const body = await request("/admin/health");
+      return parseBody(operationsHealthSchema, body, "/admin/health");
     },
   };
 }
