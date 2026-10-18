@@ -107,6 +107,42 @@ describe("WS /api/sync (issue #160)", () => {
     client.close();
   });
 
+  it("refuses an upgrade from a foreign Origin with HTTP 403 before authentication, even with a valid session", async () => {
+    const user = await makeUser();
+    const login = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "web" }),
+    });
+    const cookie = sessionCookieFrom(login);
+
+    const client = new WebSocket(`${wsBaseUrl}/api/sync`, {
+      headers: { Cookie: `${SESSION_COOKIE_NAME}=${cookie}`, Origin: "https://evil.example" },
+    });
+    const statusCode = await new Promise<number>((resolve) => {
+      client.once("unexpected-response", (_req: ClientRequest, res: IncomingMessage) => resolve(res.statusCode ?? 0));
+    });
+    expect(statusCode).toBe(403);
+    expect(client.readyState).not.toBe(client.OPEN);
+  });
+
+  it("opens an upgrade whose Origin matches Host, with a valid session", async () => {
+    const user = await makeUser();
+    const login = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "web" }),
+    });
+    const cookie = sessionCookieFrom(login);
+
+    const client = new WebSocket(`${wsBaseUrl}/api/sync`, {
+      headers: { Cookie: `${SESSION_COOKIE_NAME}=${cookie}`, Origin: baseUrl },
+    });
+    await waitForOpen(client);
+    expect(client.readyState).toBe(client.OPEN);
+    client.close();
+  });
+
   it("rejects an upgrade with no credential with HTTP 401 and never opens a socket", async () => {
     const client = new WebSocket(`${wsBaseUrl}/api/sync`);
     const statusCode = await new Promise<number>((resolve) => {
