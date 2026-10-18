@@ -372,19 +372,25 @@ describe("runAgentSessionForRun terminal close", () => {
 describe("runAgentTurn cancellation", () => {
   interface HangingSession {
     messages: AsyncIterable<AgentMessage>;
+    waiting: Promise<void>;
     nextCalls: () => number;
     returnCalls: () => number;
   }
 
-  /** Yields `first`, then hangs on every later `next()` until the test ends; counts `next()` and `return()` calls. */
+  /** Yields `first`, then signals `waiting` when a later `next()` hangs; counts `next()` and `return()` calls. */
   function hangingSession(first: AgentMessage[], options: { rejectReturn?: boolean } = {}): HangingSession {
     let nextCalls = 0;
     let returnCalls = 0;
+    let notifyWaiting!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      notifyWaiting = resolve;
+    });
     const iterator: AsyncIterator<AgentMessage> = {
       next() {
         nextCalls += 1;
         const message = first[nextCalls - 1];
         if (message) return Promise.resolve({ done: false, value: message });
+        notifyWaiting();
         return new Promise<IteratorResult<AgentMessage>>(() => {});
       },
       return() {
@@ -395,6 +401,7 @@ describe("runAgentTurn cancellation", () => {
     };
     return {
       messages: { [Symbol.asyncIterator]: () => iterator },
+      waiting,
       nextCalls: () => nextCalls,
       returnCalls: () => returnCalls,
     };
@@ -416,18 +423,14 @@ describe("runAgentTurn cancellation", () => {
     const run = await openRun();
     const session = hangingSession([{ kind: "turn_start" }]);
     const controller = new AbortController();
-    const turn = runAgentTurn(
-      pool,
-      run.id,
-      session.messages,
-      (m) => {
-        // Later than the recording of this message, so the abort lands while `next()` hangs.
-        if (m.kind === "turn_start") setTimeout(() => controller.abort(), 50);
-      },
-      controller.signal,
-    );
+    const turn = runAgentTurn(pool, run.id, session.messages, undefined, controller.signal);
+    const cancellation = expect(turn).rejects.toThrow(AgentRunCancelledError);
 
-    await expect(turn).rejects.toThrow(AgentRunCancelledError);
+    await session.waiting;
+    expect(session.nextCalls()).toBe(2);
+    controller.abort();
+
+    await cancellation;
     await expect(turn).rejects.toThrow("account deactivated");
     expect(session.nextCalls()).toBe(2);
     expect(session.returnCalls()).toBe(1);
@@ -525,13 +528,17 @@ describe("runAgentTurn cancellation", () => {
     const controller = new AbortController();
     const createAgentSession = vi.fn<CreateAgentSession>(() => ({ messages: () => session.messages }));
 
-    await expect(
+    const cancellation = expect(
       runAgentSessionForRun(pool, run, {
         createAgentSession,
         signal: controller.signal,
-        onEvent: () => setTimeout(() => controller.abort(), 50),
       }),
     ).rejects.toThrow(AgentRunCancelledError);
+
+    await session.waiting;
+    expect(session.nextCalls()).toBe(2);
+    controller.abort();
+    await cancellation;
 
     const { rows: runs } = await pool.query<{ status: string }>("SELECT status FROM agent_runs WHERE id = $1", [
       run.id,
