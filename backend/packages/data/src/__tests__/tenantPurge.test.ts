@@ -683,8 +683,8 @@ describe("tenant purge (issue #1055)", () => {
     const writer = await poolRunningAfter(DATABASE_LISTING, 1, async () => {
       lateDatabaseId = await createLateDatabase(tenantB, true);
     });
-    const warnSpy = vi.spyOn(logger, "warn");
     try {
+      // Resolving proves the predicate delete on `items` found nothing: any row there fails the tenant.
       await purge({}, writer);
     } finally {
       await writer.end();
@@ -692,30 +692,33 @@ describe("tenant purge (issue #1055)", () => {
 
     if (!lateDatabaseId) throw new Error("the late writer never ran");
     expect(await partitionExists(lateDatabaseId)).toBe(false);
-    expect(warnSpy).not.toHaveBeenCalledWith(expect.anything(), "tenant_purge_partitioned_table_had_rows");
     expect(await nonEmptyTables(tenantB)).toEqual([]);
     expect(await tombstones(tenantB)).toHaveLength(1);
   });
 
-  it("deletes and logs, without failing the tenant, item rows found after the partitions were dropped", async () => {
+  it("fails the tenant when item rows remain after the partitions were dropped, and drops their partition on the retry", async () => {
     const tenantB = await provisionedTenant();
     await seedTenant(tenantB);
     await beginDeletion(tenantB);
     // Created after the second partition pass, so only the predicate delete on `items` reaches its row.
+    let lateDatabaseId: string | undefined;
     const writer = await poolRunningAfter(DATABASE_LISTING, 2, async () => {
-      await createLateDatabase(tenantB, true);
+      lateDatabaseId = await createLateDatabase(tenantB, true);
     });
-    const warnSpy = vi.spyOn(logger, "warn");
     try {
-      await purge({}, writer);
+      await expect(purge({}, writer)).rejects.toBeInstanceOf(AggregateError);
     } finally {
       await writer.end();
     }
 
-    expect(warnSpy).toHaveBeenCalledWith(
-      { tenantId: tenantB, table: "items", count: 1 },
-      "tenant_purge_partitioned_table_had_rows",
-    );
+    if (!lateDatabaseId) throw new Error("the late writer never ran");
+    expect(await tenantStatus(tenantB)).toBe("deleting");
+    expect(await tombstones(tenantB)).toHaveLength(0);
+    expect(await partitionExists(lateDatabaseId)).toBe(true);
+
+    await purge();
+
+    expect(await partitionExists(lateDatabaseId)).toBe(false);
     expect(await nonEmptyTables(tenantB)).toEqual([]);
     expect(await tombstones(tenantB)).toHaveLength(1);
   });

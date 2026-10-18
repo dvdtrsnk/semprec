@@ -214,9 +214,9 @@ async function deleteInOneStatement(ctx: PurgeContext, table: string): Promise<n
  * children before parents. `items` and any other partitioned table cannot use the `ctid` chunking
  * (a `ctid` is only unique within one partition), so they are deleted by predicate: the partitions
  * are dropped again just before `items` (which precedes `databases`, its parent) and the statement
- * is expected to affect nothing. Rows it does find come from a database created after that second
- * pass; they are deleted and logged rather than failing the tenant, because a retry could not drop
- * that partition once its `databases` row is gone.
+ * must affect nothing. Rows it does find come from a database created after that second pass: they
+ * are deleted (committed) and the tenant fails before `databases` is reached, so the retry still
+ * finds that database and drops its partition.
  */
 async function purgeRows(ctx: PurgeContext): Promise<number> {
   const { tables, foreignKeys } = await readCatalog(ctx.pool);
@@ -246,7 +246,7 @@ async function purgeRows(ctx: PurgeContext): Promise<number> {
         : await deleteInChunks(ctx, table);
     total += count;
     if (partitioned.has(table) && count > 0) {
-      logger.warn({ tenantId: ctx.tenantId, table, count }, "tenant_purge_partitioned_table_had_rows");
+      throw new Error(`Tenant purge deleted ${count} rows of ${table} after its partitions were dropped`);
     }
   }
   return total;
