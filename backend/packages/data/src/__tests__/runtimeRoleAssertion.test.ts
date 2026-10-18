@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import { Pool } from "pg";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { assertRuntimeRole, RuntimeRoleAssertionError } from "../db/runtimeRoleAssertion.js";
 import { createRuntimeRolePool, getTestPool } from "../testSupport/testDb.js";
 
@@ -157,12 +158,27 @@ describe("assertRuntimeRole", () => {
     expect(error.violations).toEqual(["ownsPublicRelation"]);
   });
 
+  it("throws a plain Error when the catalog query returns no row", async () => {
+    // current_user always has a row, so the no-row branch is reached only through a stub pool whose
+    // query returns none. The stub implements only the one method the assertion calls.
+    const stubPool = { query: () => Promise.resolve({ rows: [] }) } as unknown as Pool;
+
+    const error = await assertRuntimeRole(stubPool).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(RuntimeRoleAssertionError);
+    expect((error as Error).message).toBe("Runtime role assertion query returned no row for current_user");
+  });
+
   describe("tenant scope", () => {
     const originalMode = process.env.SEMPREC_TENANT_SCOPE;
 
     afterEach(() => {
       if (originalMode === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
       else process.env.SEMPREC_TENANT_SCOPE = originalMode;
+      vi.restoreAllMocks();
     });
 
     it("resolves under strict scope with no surrounding scope", async () => {
@@ -171,6 +187,33 @@ describe("assertRuntimeRole", () => {
       process.env.SEMPREC_TENANT_SCOPE = "strict";
 
       await expect(assertRuntimeRole(pool)).resolves.toBeUndefined();
+    });
+
+    it("logs no tenant_scope_missing under warn scope", async () => {
+      const pool = await createRuntimeRolePool(adminPool, "semprec_data");
+      openedPools.push(pool);
+      process.env.SEMPREC_TENANT_SCOPE = "warn";
+      // pino writes records to fd 1 with the asynchronous fs.write, so that call is the capture point.
+      const writes: string[] = [];
+      const realWrite = fs.write.bind(fs);
+      vi.spyOn(fs, "write").mockImplementation((fd: number, ...rest: unknown[]) => {
+        writes.push(String(rest[0]));
+        return (realWrite as (...args: unknown[]) => unknown)(fd, ...rest);
+      });
+      // sonic-boom flushes asynchronously; give it a tick before reading the capture.
+      const flush = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Positive control: an unscoped query through a createPool pool under warn logs
+      // tenant_scope_missing, so the capture would see it if the assertion had emitted it. getTestPool
+      // is a plain pg Pool with no scope hook, so it cannot serve as the control.
+      await pool.query("SELECT 1");
+      await flush();
+      expect(writes.join("")).toContain("tenant_scope_missing");
+      writes.length = 0;
+
+      await assertRuntimeRole(pool);
+      await flush();
+      expect(writes.join("")).not.toContain("tenant_scope_missing");
     });
   });
 });

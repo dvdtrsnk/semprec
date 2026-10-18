@@ -2,13 +2,15 @@ import type { Pool } from "pg";
 import { runAsSystem } from "@semprec/shared";
 
 /**
- * Startup check that a long-running service connects as a runtime role. Row-level security is
- * skipped for a superuser, a `BYPASSRLS` role and the owner of a table, and for any member of such a
- * role, so a service that logs in as one of them silently loses tenant isolation. The tenant-isolation
- * ADR (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`, its "No `FORCE ROW LEVEL
- * SECURITY`" decision) requires
- * runtime roles to be neither superuser nor `BYPASSRLS` and to own no table; this module is the
- * per-process half of that rule. The deploy-time half is issue #1085.
+ * Startup check that a long-running service connects as a runtime role. Row-level security does not
+ * apply to a role that is itself a superuser or has `BYPASSRLS`, nor to the owner of a table. Those
+ * attributes are not inherited through role membership, but a member can `SET ROLE` into a privileged
+ * role, so membership in one is refused too. The tenant-isolation ADR
+ * (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`, "No `FORCE ROW LEVEL SECURITY`")
+ * requires runtime roles to be neither superuser nor `BYPASSRLS` and to own no table. The ownership
+ * check covers relations in the `public` schema only, as issue #1051 specifies; tables in other schemas
+ * are not checked here. This module is the per-process half of that rule; the deploy-time half is
+ * issue #1085.
  */
 
 export type RuntimeRoleViolation = "superuser" | "bypassrls" | "memberOfPrivilegedRole" | "ownsPublicRelation";
