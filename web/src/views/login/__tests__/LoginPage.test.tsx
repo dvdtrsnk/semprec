@@ -11,6 +11,7 @@ const USER: SessionUser = {
   email: "operator@example.com",
   locale: "en",
   createdAt: "2026-09-01T12:00:00.000Z",
+  role: "member",
 };
 
 function stubAuth(login: AuthOperations["login"]): AuthOperations {

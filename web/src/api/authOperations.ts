@@ -14,6 +14,7 @@ export const sessionUserSchema = z.object({
   email: z.string(),
   locale: z.string(),
   createdAt: z.string(),
+  role: z.enum(["admin", "member"]),
 });
 
 export type SessionUser = z.infer<typeof sessionUserSchema>;
@@ -86,6 +87,14 @@ export function createAuthOperations(options: AuthOperationsOptions): AuthOperat
     }
   }
 
+  async function readSession(): Promise<SessionUser | null> {
+    const path = "/auth/session";
+    const response = await send(path, { method: "GET" });
+    if (response.status === UNAUTHORIZED_STATUS) return null;
+    if (!response.ok) throw await failure(path, response);
+    return parseUser(response);
+  }
+
   async function failure(path: string, response: Response): Promise<OperationError> {
     const message = await readErrorMessage(response);
     return new OperationError(
@@ -108,16 +117,15 @@ export function createAuthOperations(options: AuthOperationsOptions): AuthOperat
         throw new OperationError("unavailable", message ?? "Invalid or missing credentials", UNAUTHORIZED_STATUS);
       }
       if (!response.ok) throw await failure(path, response);
-      return parseUser(response);
+      // The login body carries no role, so the user comes from the session that the login just set up.
+      const user = await readSession();
+      if (user === null) {
+        throw new OperationError("retryable", "The session was not available right after signing in");
+      }
+      return user;
     },
 
-    async getSession() {
-      const path = "/auth/session";
-      const response = await send(path, { method: "GET" });
-      if (response.status === UNAUTHORIZED_STATUS) return null;
-      if (!response.ok) throw await failure(path, response);
-      return parseUser(response);
-    },
+    getSession: readSession,
 
     async logout() {
       const path = "/auth/logout";
