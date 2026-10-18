@@ -200,7 +200,12 @@ describe("password reset actions (issue #142)", () => {
     it("still resolves and keeps the token row when the mail send rejects, logging the failure", async () => {
       const user = await makeUser();
       // An SMTP refusal echoes the recipient, as a real one does; the log must not carry it.
-      const sendError = Object.assign(new Error(`550 rejected <${user.email}>`), { code: "EENVELOPE" });
+      const sendError = Object.assign(new Error(`550 rejected <${user.email}>`), {
+        code: "EENVELOPE",
+        responseCode: 550,
+        response: `550 rejected <${user.email}>`,
+        rejected: [user.email],
+      });
       const mailer: PasswordResetMailer = {
         sendPasswordResetEmail() {
           return Promise.reject(sendError);
@@ -215,7 +220,7 @@ describe("password reset actions (issue #142)", () => {
 
         await vi.waitFor(() => {
           expect(loggerError).toHaveBeenCalledWith(
-            { errorName: "Error", errorCode: "EENVELOPE" },
+            { userId: user.id, errorName: "Error", errorCode: "EENVELOPE", responseCode: 550 },
             "requestPasswordReset: failed to send the password-reset email",
           );
         });
