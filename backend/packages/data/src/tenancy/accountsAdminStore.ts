@@ -64,7 +64,7 @@ export async function listAccounts(client: Queryable): Promise<AdminAccountSumma
   return rows.map(toAccountSummary);
 }
 
-async function getAccountSummary(client: Queryable, userId: string): Promise<AdminAccountSummary> {
+export async function getAccountSummary(client: Queryable, userId: string): Promise<AdminAccountSummary> {
   const { rows } = await client.query<AdminAccountRow>(`${ACCOUNT_SELECT} WHERE u.id = $1 ${ACCOUNT_GROUP}`, [userId]);
   const row = rows[0];
   if (!row) throw new NotFoundError("Account not found", { userId });
