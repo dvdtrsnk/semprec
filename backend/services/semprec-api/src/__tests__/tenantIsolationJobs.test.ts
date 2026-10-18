@@ -880,7 +880,7 @@ const cases: Record<string, TaskCase> = {
       return async () => {
         const remaining = Object.entries(await fingerprint(tenant)).filter(([, table]) => table.count > 0);
         expect(remaining).toEqual([]);
-        // `tenants` and the `tenant_deletions` tombstone are global tables the runtime role cannot read in full.
+        // `tenants` and the `tenant_deletions` tombstone are global tables, outside every fingerprint; read them as admin.
         const { rows: tenantRows } = await adminPool.query<{ present: number }>(
           "SELECT 1 AS present FROM tenants WHERE id = $1",
           [tenant.tenantId],
