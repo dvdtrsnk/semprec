@@ -755,7 +755,8 @@ describe("tenant purge (issue #1055)", () => {
       await purge({}, flaky);
 
       expect(releasedWith).toBeInstanceOf(Error);
-      expect(await purgeLockIsFree(tenantB)).toBe(true);
+      // Pool removal is synchronous; PostgreSQL releases session locks after observing the socket close.
+      await expect.poll(() => purgeLockIsFree(tenantB), { timeout: 5_000 }).toBe(true);
     } finally {
       await flaky.end();
     }
