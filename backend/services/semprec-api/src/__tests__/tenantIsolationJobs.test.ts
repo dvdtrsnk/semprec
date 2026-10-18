@@ -95,13 +95,29 @@ interface TenantTaskCase {
 /** Asserts, once the job ran, that the work it was returned for was done. */
 type Check = () => Promise<void>;
 
+/** Work seeded in one tenant: the ids that identify it, and the check that it was done. */
+interface SeededWork {
+  /** Ids of the seeded rows (and, for a purge, the tenant); no row of another tenant may contain one. */
+  markers: string[];
+  check: Check;
+}
+
+/** Only UUIDs make markers: a short id such as a bigint event id would match unrelated row text. */
+function marked(markers: string[], check: Check): SeededWork {
+  const notUuid = markers.filter(
+    (marker) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(marker),
+  );
+  if (notUuid.length > 0) throw new Error(`marked: not UUIDs: ${notUuid.join(", ")}`);
+  return { markers, check };
+}
+
 interface SystemTaskCase {
   tenancy: "system";
   touchesTenantTables: true;
   /** The two tenants the work is due in; A and B unless given. */
   tenants?(): Promise<[Tenant, Tenant]>;
-  /** Seeds due work in `tenant`; the returned check asserts, inside `tenant`, that it was done. */
-  seed(tenant: Tenant): Promise<Check>;
+  /** Seeds due work in `tenant`; its check asserts, inside `tenant`, that the work was done. */
+  seed(tenant: Tenant): Promise<SeededWork>;
 }
 
 interface GlobalSystemTaskCase {
@@ -217,38 +233,45 @@ async function removeJob(jobKey: string): Promise<void> {
   await adminPool.query("SELECT graphile_worker.remove_job($1)", [jobKey]);
 }
 
-/** What a tenant holds that a job may add to: per-table row counts, notifications and queued jobs. */
+/**
+ * What a run may change: the tenant's fingerprint and notifications, and the queued jobs of the whole
+ * queue — the `jobs` view carries no tenant, so a job any run enqueued anywhere counts.
+ */
 interface SideEffectSnapshot {
-  rowCounts: Record<string, number>;
+  fingerprint: Fingerprint;
   notificationIds: ReadonlySet<string>;
   jobIds: ReadonlySet<string>;
 }
 
-/** What one run added to a tenant, stated without ids so two runs naming different ids compare equal. */
+/** What one run changed, stated without ids so two runs naming different ids compare equal. */
 interface SideEffects {
   /** Tables whose row count changed, with the change. */
   rowCountDeltas: Record<string, number>;
+  /** Tables whose content changed, including rows updated in place, sorted. */
+  changedTables: string[];
   /** Kinds of the notifications the run wrote, sorted. */
   notificationKinds: string[];
-  /** Task identifiers of the jobs the run left queued (its own job excluded), sorted. */
+  /** Task identifiers of the jobs the run left queued anywhere in the queue (its own job excluded), sorted. */
   queuedJobs: string[];
 }
 
 async function sideEffectSnapshot(tenant: Tenant): Promise<SideEffectSnapshot> {
-  const tableFingerprints = await fingerprint(tenant);
-  const rowCounts = Object.fromEntries(Object.entries(tableFingerprints).map(([table, { count }]) => [table, count]));
   const notificationIds = new Set((await notifications(tenant)).keys());
   const { rows } = await adminPool.query<{ id: string }>("SELECT id::text AS id FROM graphile_worker.jobs");
-  return { rowCounts, notificationIds, jobIds: new Set(rows.map((row) => row.id)) };
+  return { fingerprint: await fingerprint(tenant), notificationIds, jobIds: new Set(rows.map((row) => row.id)) };
 }
 
 async function sideEffectsSince(tenant: Tenant, before: SideEffectSnapshot, ownJobKey: string): Promise<SideEffects> {
   const after = await sideEffectSnapshot(tenant);
   const rowCountDeltas = Object.fromEntries(
-    Object.entries(after.rowCounts)
-      .map(([table, count]): [string, number] => [table, count - (before.rowCounts[table] ?? 0)])
+    Object.entries(after.fingerprint)
+      .map(([table, { count }]): [string, number] => [table, count - (before.fingerprint[table]?.count ?? 0)])
       .filter(([, delta]) => delta !== 0),
   );
+  const changedTables = Object.entries(after.fingerprint)
+    .filter(([table, { md5 }]) => before.fingerprint[table]?.md5 !== md5)
+    .map(([table]) => table)
+    .sort();
   const notificationKinds = await runInTenant(tenant.tenantId, async () => {
     const { rows } = await pool.query<{ id: string; kind: string }>("SELECT id, kind FROM notifications");
     return rows
@@ -263,10 +286,10 @@ async function sideEffectsSince(tenant: Tenant, before: SideEffectSnapshot, ownJ
     .filter((job) => !before.jobIds.has(job.id) && job.key !== ownJobKey)
     .map((job) => job.task_identifier)
     .sort();
-  return { rowCountDeltas, notificationKinds, queuedJobs };
+  return { rowCountDeltas, changedTables, notificationKinds, queuedJobs };
 }
 
-/** Runs `name` in B with `payload` and returns how the job ended and what it added to B. */
+/** Runs `name` in B with `payload` and returns how the job ended and what it changed in B and the queue. */
 async function runInBObserved(name: string, payload: Payload): Promise<{ outcome: JobOutcome; effects: SideEffects }> {
   const before = await sideEffectSnapshot(tenantB);
   const jobKey = await runJobIn(tenantB, name, payload);
@@ -305,6 +328,26 @@ function randomizedPayload(payload: Payload): Payload {
 function tenancyOf(name: string): TaskTenancy {
   const declared: Readonly<Record<string, TaskTenancy>> = TASK_TENANCY;
   return Object.hasOwn(declared, name) ? (declared[name] ?? "tenant") : "tenant";
+}
+
+/** Tenant tables of which some row, read inside `tenant`, contains one of `markers` in its text. */
+async function tablesMentioning(tenant: Tenant, markers: string[]): Promise<string[]> {
+  const patterns = markers.map((marker) => `%${marker}%`);
+  return runInTenant(tenant.tenantId, () =>
+    withTransaction(pool, async (client) => {
+      const mentioning: string[] = [];
+      for (const table of tenantTables) {
+        // `table` comes from pg_class (see loadTenantTables), never from input, and escapeIdentifier
+        // quotes it; a table name cannot be a bind parameter.
+        const { rows } = await client.query<{ found: boolean }>(
+          `SELECT EXISTS (SELECT 1 FROM ${escapeIdentifier(table)} t WHERE t::text LIKE ANY($1)) AS found`,
+          [patterns],
+        );
+        if (rows[0]?.found) mentioning.push(table);
+      }
+      return mentioning;
+    }),
+  );
 }
 
 /** Enqueues `name` as system work under a fresh job key, drains the queue once and returns the key. */
@@ -465,7 +508,7 @@ async function createItemWithAutomation(tenant: Tenant): Promise<{ databaseId: s
 }
 
 /** A trashed item whose `deleted_at` lies past the 30-day retention. */
-async function createExpiredTrash(tenant: Tenant): Promise<Check> {
+async function createExpiredTrash(tenant: Tenant): Promise<SeededWork> {
   const { databaseId, itemId } = await inTenant(tenant, async () => {
     const database = await chokePoint.createDatabase({ name: `Trash ${randomUUID()}` });
     const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
@@ -477,11 +520,11 @@ async function createExpiredTrash(tenant: Tenant): Promise<Check> {
     ]);
     return { databaseId: database.id, itemId: item.id };
   });
-  return async () => {
+  return marked([itemId, databaseId], async () => {
     expect(await rows(tenant, "SELECT 1 FROM items WHERE id = $1 AND database_id = $2", [itemId, databaseId])).toEqual(
       [],
     );
-  };
+  });
 }
 
 let journalDaysSeeded = 0;
@@ -729,11 +772,11 @@ const cases: Record<string, TaskCase> = {
           heartbeatId,
         ]),
       );
-      return async () => {
+      return marked([heartbeatId], async () => {
         expect(
           await rows(tenant, "SELECT status FROM heartbeat_occurrences WHERE heartbeat_id = $1", [heartbeatId]),
         ).toEqual([{ status: "succeeded" }]);
-      };
+      });
     },
   },
   [CORE_TASK_NAMES.DOC_COMPACTION_SWEEP]: {
@@ -752,14 +795,14 @@ const cases: Record<string, TaskCase> = {
         if (!doc) throw new Error("expected the item to have a doc");
         return doc.id;
       });
-      return async () => {
+      return marked([docId], async () => {
         expect(await rows(tenant, "SELECT count(*)::int AS count FROM doc_updates WHERE doc_id = $1", [docId])).toEqual(
           [{ count: 0 }],
         );
         expect(await rows(tenant, "SELECT 1 AS present FROM doc_snapshots WHERE doc_id = $1", [docId])).toEqual([
           { present: 1 },
         ]);
-      };
+      });
     },
   },
   [CORE_TASK_NAMES.DOC_HISTORY_CLEANUP]: {
@@ -782,7 +825,7 @@ const cases: Record<string, TaskCase> = {
         );
         return doc.id;
       });
-      return async () => {
+      return marked([docId], async () => {
         expect(
           await rows(
             tenant,
@@ -790,7 +833,7 @@ const cases: Record<string, TaskCase> = {
             [docId],
           ),
         ).toEqual([{ rebaselined: true }]);
-      };
+      });
     },
   },
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: {
@@ -799,11 +842,11 @@ const cases: Record<string, TaskCase> = {
     async seed(tenant) {
       const mailboxItemId = await createMailbox(tenant);
       // The sweep enqueues the mailbox's sync in its tenant; that sync fails for want of a transport.
-      return async () => {
+      return marked([mailboxItemId], async () => {
         expect(
           await rows(tenant, "SELECT last_error FROM mail_account_sync_state WHERE item_id = $1", [mailboxItemId]),
         ).toEqual([{ last_error: "No IMAP adapter configured for this composition root" }]);
-      };
+      });
     },
   },
   [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: {
@@ -813,11 +856,11 @@ const cases: Record<string, TaskCase> = {
       const { itemId } = await createEmail(tenant);
       // The sweep exists for an Emails item written past the standard indexing path; this produces one.
       await inTenant(tenant, () => pool.query("DELETE FROM item_search_index WHERE item_id = $1", [itemId]));
-      return async () => {
+      return marked([itemId], async () => {
         expect(await rows(tenant, "SELECT 1 AS present FROM item_search_index WHERE item_id = $1", [itemId])).toEqual([
           { present: 1 },
         ]);
-      };
+      });
     },
   },
   [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: {
@@ -836,7 +879,7 @@ const cases: Record<string, TaskCase> = {
     async seed(tenant) {
       // A syncable mailbox whose sync process never beat is stale.
       const mailboxItemId = await createMailbox(tenant);
-      return async () => {
+      return marked([mailboxItemId], async () => {
         expect(
           await rows(tenant, "SELECT status FROM tenant_observability_checks WHERE check_key = $1", [
             `process:mailsync:${mailboxItemId}`,
@@ -849,7 +892,7 @@ const cases: Record<string, TaskCase> = {
             [`process:mailsync:${mailboxItemId}`],
           ),
         ).toEqual([{ user_id: tenant.userId }]);
-      };
+      });
     },
   },
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: {
@@ -868,11 +911,11 @@ const cases: Record<string, TaskCase> = {
         );
         return minted.run.id;
       });
-      return async () => {
+      return marked([runId], async () => {
         expect(await rows(tenant, "SELECT status FROM agent_runs WHERE id = $1", [runId])).toEqual([
           { status: "done" },
         ]);
-      };
+      });
     },
   },
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: {
@@ -895,7 +938,7 @@ const cases: Record<string, TaskCase> = {
         await finishAgentRun(pool, run.id, "done", null);
         return { runId: run.id, messageId: message.id };
       });
-      return async () => {
+      return marked([runId], async () => {
         expect(
           await rows(tenant, "SELECT 1 FROM agent_run_events WHERE agent_run_id = $1 AND id = $2", [runId, messageId]),
         ).toEqual([]);
@@ -904,7 +947,7 @@ const cases: Record<string, TaskCase> = {
             runId,
           ]),
         ).toEqual([{ kind: "compaction" }]);
-      };
+      });
     },
   },
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: {
@@ -921,9 +964,9 @@ const cases: Record<string, TaskCase> = {
           WHERE id = $1`,
         [exportId],
       );
-      return async () => {
+      return marked([exportId], async () => {
         expect(await rows(tenant, "SELECT 1 FROM tenant_exports WHERE id = $1", [exportId])).toEqual([]);
-      };
+      });
     },
   },
   [CORE_TASK_NAMES.TENANT_PURGE]: {
@@ -938,7 +981,7 @@ const cases: Record<string, TaskCase> = {
     },
     async seed(tenant) {
       await inTenant(tenant, () => withTransaction(pool, (client) => beginTenantDeletion(client, tenant.tenantId)));
-      return async () => {
+      return marked([tenant.tenantId], async () => {
         const remaining = Object.entries(await fingerprint(tenant)).filter(([, table]) => table.count > 0);
         expect(remaining).toEqual([]);
         // `tenants` and the `tenant_deletions` tombstone are global tables, outside every fingerprint; read them as admin.
@@ -952,7 +995,7 @@ const cases: Record<string, TaskCase> = {
           [tenant.tenantId],
         );
         expect(tombstones).toEqual([{ tenant_id: tenant.tenantId }]);
-      };
+      });
     },
   },
   [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: {
@@ -1117,8 +1160,8 @@ describe("background task isolation across two tenants: api runtime (issue #1056
       async (name, c) => {
         await discardQueuedJobs();
         const [first, second] = c.tenants ? await c.tenants() : [tenantA, tenantB];
-        const checkFirst = await c.seed(first);
-        const checkSecond = await c.seed(second);
+        const firstWork = await c.seed(first);
+        const secondWork = await c.seed(second);
         const bystanders = [tenantZero, tenantA, tenantB].filter((tenant) => tenant !== first && tenant !== second);
         const bystandersBefore = await Promise.all(bystanders.map((tenant) => fingerprint(tenant)));
         const firstNotificationsBefore = await notifications(first);
@@ -1127,8 +1170,11 @@ describe("background task isolation across two tenants: api runtime (issue #1056
         const jobKey = await runSystemJob(name);
 
         expect(await jobOutcome(jobKey)).toEqual({ attempts: null, lastError: null });
-        await checkFirst();
-        await checkSecond();
+        await firstWork.check();
+        await secondWork.check();
+        // Each tenant's results stay in it: no row of the other working tenant names its seeded ids.
+        expect(await tablesMentioning(second, firstWork.markers)).toEqual([]);
+        expect(await tablesMentioning(first, secondWork.markers)).toEqual([]);
         expect(await Promise.all(bystanders.map((tenant) => fingerprint(tenant)))).toEqual(bystandersBefore);
         await expectNewNotificationsAddressedTo(first, firstNotificationsBefore);
         await expectNewNotificationsAddressedTo(second, secondNotificationsBefore);
