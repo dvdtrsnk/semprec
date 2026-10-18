@@ -254,6 +254,13 @@ describe("App admin page", () => {
       changeRole: vi.fn(async () => {
         throw new OperationError("retryable", "unused");
       }),
+      listInvites: vi.fn(async () => []),
+      createInvite: vi.fn(async () => {
+        throw new OperationError("retryable", "unused");
+      }),
+      revokeInvite: vi.fn(async () => {
+        throw new OperationError("retryable", "unused");
+      }),
     };
   }
 

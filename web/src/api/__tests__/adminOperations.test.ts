@@ -153,3 +153,81 @@ describe("admin operations: rejections", () => {
     });
   });
 });
+
+const INVITE = {
+  id: "i1",
+  email: "a@example.com",
+  invitedBy: "user-1",
+  createdAt: "2026-10-01T09:00:00.000Z",
+  expiresAt: "2026-10-08T09:00:00.000Z",
+  acceptedAt: null,
+  revokedAt: null,
+  status: "pending",
+};
+
+describe("admin operations: invitations", () => {
+  it("listInvites gets the invitation list with same-origin credentials and parses it", async () => {
+    const { operations, calls } = recording(() => jsonResponse({ invites: [INVITE] }));
+
+    await expect(operations.listInvites()).resolves.toEqual([INVITE]);
+    expect(calls[0]!.url).toBe("/api/admin/invites");
+    expect(calls[0]!.init).toMatchObject({ credentials: "same-origin" });
+    expect(calls[0]!.init?.method).toBeUndefined();
+  });
+
+  it("createInvite posts the email as JSON and parses the invite, its link and the emailed flag", async () => {
+    const created = { invite: INVITE, inviteUrl: "https://example.com/?page=invite#token=abc", emailed: true };
+    const { operations, calls } = recording(() => jsonResponse(created, 201));
+
+    await expect(operations.createInvite("a@example.com")).resolves.toEqual(created);
+    expect(calls[0]!.url).toBe("/api/admin/invites");
+    expect(calls[0]!.init).toMatchObject({ method: "POST", credentials: "same-origin" });
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ email: "a@example.com" });
+  });
+
+  it("revokeInvite posts to the encoded revoke route and parses the invite", async () => {
+    const { operations, calls } = recording(() => jsonResponse({ invite: { ...INVITE, status: "revoked" } }));
+
+    await expect(operations.revokeInvite("i 1")).resolves.toEqual({ ...INVITE, status: "revoked" });
+    expect(calls[0]!.url).toBe("/api/admin/invites/i%201/revoke");
+    expect(calls[0]!.init).toMatchObject({ method: "POST", credentials: "same-origin" });
+  });
+
+  it("createInvite rejects a 400 validation_failed as retryable with the code as its message", async () => {
+    const operations = failingWith(() => jsonResponse({ error: { code: "validation_failed" } }, 400));
+
+    await expect(operations.createInvite("taken@example.com")).rejects.toMatchObject({
+      kind: "retryable",
+      status: 400,
+      message: "validation_failed",
+    });
+  });
+
+  it("revokeInvite rejects a 409 invite_not_pending as retryable with the code as its message", async () => {
+    const operations = failingWith(() => jsonResponse({ error: { code: "invite_not_pending" } }, 409));
+
+    await expect(operations.revokeInvite("i1")).rejects.toMatchObject({
+      kind: "retryable",
+      status: 409,
+      message: "invite_not_pending",
+    });
+  });
+
+  it("rejects a malformed invitation list as retryable", async () => {
+    const operations = failingWith(() => jsonResponse({ invites: [{ id: 1 }] }));
+
+    await expect(operations.listInvites()).rejects.toMatchObject({
+      kind: "retryable",
+      message: "Unexpected response from /admin/invites",
+    });
+  });
+
+  it("rejects a malformed create response as retryable", async () => {
+    const operations = failingWith(() => jsonResponse({ invite: INVITE, inviteUrl: "x" }, 201));
+
+    await expect(operations.createInvite("a@example.com")).rejects.toMatchObject({
+      kind: "retryable",
+      message: "Unexpected response from /admin/invites",
+    });
+  });
+});

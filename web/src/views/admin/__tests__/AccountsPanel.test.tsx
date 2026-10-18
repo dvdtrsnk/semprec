@@ -24,6 +24,13 @@ function stubOperations(overrides: Partial<AdminOperations> = {}): AdminOperatio
     suspendAccount: vi.fn(async () => account({ status: "suspended" })),
     reactivateAccount: vi.fn(async () => account()),
     changeRole: vi.fn(async () => account({ role: "admin" })),
+    listInvites: vi.fn(async () => []),
+    createInvite: vi.fn(async () => {
+      throw new OperationError("retryable", "unused");
+    }),
+    revokeInvite: vi.fn(async () => {
+      throw new OperationError("retryable", "unused");
+    }),
     ...overrides,
   };
 }
