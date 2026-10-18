@@ -346,3 +346,132 @@ describe("account export routes (issue #1043)", () => {
     }
   });
 });
+
+describe("account deletion route (issue #1049)", () => {
+  let adminPool: Pool;
+  let pool: Pool;
+  let server: Server;
+  let baseUrl: string;
+
+  async function signUp(
+    tenantId: string,
+    role: "admin" | "member",
+  ): Promise<{ id: string; email: string; headers: { Authorization: string } }> {
+    const email = `${randomUUID()}@example.com`;
+    const user = await createUser(adminPool, { email, passwordHash: await hashPassword(PASSWORD), tenantId, role });
+    const { token } = await login(adminPool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+    return { id: user.id, email, headers: { Authorization: `Bearer ${token}` } };
+  }
+
+  function postDelete(headers: Record<string, string>, body: unknown): Promise<Response> {
+    return fetch(`${baseUrl}/api/account/delete`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function tenantStatus(tenantId: string): Promise<string> {
+    const { rows } = await adminPool.query<{ status: string }>("SELECT status FROM tenants WHERE id = $1", [tenantId]);
+    return rows[0]!.status;
+  }
+
+  beforeAll(async () => {
+    adminPool = getTestPool();
+    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+    await adminPool?.end();
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(adminPool);
+    const dispatch = await createDispatcher(pool, {
+      passwordResetMailer: noopMailer,
+      appBaseUrl: "https://app.example.test",
+      setupToken: "account-delete-setup-token",
+      moduleRegistry,
+      blobStorage: new LocalFsBlobStorageWriter(join(tmpdir(), `semprec-test-account-delete-${randomUUID()}`)),
+      maxFileSizeBytes: 10 * 1024 * 1024,
+    });
+    server = createServer(dispatch);
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    baseUrl = `http://127.0.0.1:${address.port}`;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it("answers 202 deleting for the correct password, then 401 for the old session; tenant A is untouched", async () => {
+    const tenantA = getTenantZeroId();
+    const tenantB = await createTestTenant(adminPool);
+    const a = await signUp(tenantA, "admin");
+    const b = await signUp(tenantB, "member");
+
+    const res = await postDelete(b.headers, { password: PASSWORD });
+
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ status: "deleting" });
+    expect(await tenantStatus(tenantB)).toBe("deleting");
+    expect((await fetch(`${baseUrl}/api/account/exports`, { headers: b.headers })).status).toBe(401);
+    expect(await tenantStatus(tenantA)).toBe("active");
+    expect((await fetch(`${baseUrl}/api/account/exports`, { headers: a.headers })).status).toBe(200);
+    const audit = await adminPool.query("SELECT 1 FROM admin_audit_log");
+    expect(audit.rowCount).toBe(0);
+  });
+
+  it("answers 403 reauthentication_failed for a wrong password and records the attempt from the socket address", async () => {
+    const b = await signUp(await createTestTenant(adminPool), "member");
+
+    const res = await postDelete(b.headers, { password: "wrong-password" });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error: { code: "reauthentication_failed" } });
+    const attempts = await adminPool.query<{ ip: string }>(
+      "SELECT host(ip) AS ip FROM login_attempts WHERE email = $1 AND succeeded = false",
+      [b.email],
+    );
+    expect(attempts.rows).toHaveLength(1);
+    expect(["127.0.0.1", "::1", "::ffff:127.0.0.1"]).toContain(attempts.rows[0]!.ip);
+    expect((await fetch(`${baseUrl}/api/account/exports`, { headers: b.headers })).status).toBe(200);
+  });
+
+  it("answers 409 last_admin for the only active admin", async () => {
+    const only = await signUp(await createTestTenant(adminPool), "admin");
+
+    const res = await postDelete(only.headers, { password: PASSWORD });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: { code: "last_admin" } });
+  });
+
+  it("answers 400 with field password for a missing, empty or non-string password and for a non-object body", async () => {
+    const b = await signUp(await createTestTenant(adminPool), "member");
+    for (const body of [{}, { password: "" }, { password: 42 }]) {
+      const res = await postDelete(b.headers, body);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: { code: "validation_failed", details: { field: "password" } } });
+    }
+    expect((await postDelete(b.headers, null)).status).toBe(400);
+    expect(
+      await tenantStatus(
+        (await adminPool.query<{ tenant_id: string }>("SELECT tenant_id FROM users WHERE id = $1", [b.id])).rows[0]!
+          .tenant_id,
+      ),
+    ).toBe("active");
+  });
+
+  it("answers 401 to an anonymous caller", async () => {
+    const res = await fetch(`${baseUrl}/api/account/delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: PASSWORD }),
+    });
+    expect(res.status).toBe(401);
+  });
+});

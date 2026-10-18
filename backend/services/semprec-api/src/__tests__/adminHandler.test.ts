@@ -867,6 +867,7 @@ describe("admin routes (issue #1037)", () => {
       const routes: { method: string; suffix: string; body?: unknown }[] = [
         { method: "POST", suffix: "suspend" },
         { method: "POST", suffix: "reactivate" },
+        { method: "POST", suffix: "delete" },
         { method: "PUT", suffix: "role", body: { role: "member" } },
       ];
       for (const route of routes) {
@@ -900,6 +901,75 @@ describe("admin routes (issue #1037)", () => {
         expect(anonymous.status, route.suffix).toBe(401);
       }
       expect(await auditActions()).toEqual([]);
+    });
+  });
+
+  describe("account deletion (issue #1049)", () => {
+    function authed(token: string, path: string): Promise<Response> {
+      return fetch(`${baseUrl}${path}`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+    }
+
+    async function tenantStatus(tenantId: string): Promise<string> {
+      const { rows } = await pool.query<{ status: string }>("SELECT status FROM tenants WHERE id = $1", [tenantId]);
+      return rows[0]!.status;
+    }
+
+    async function auditRows(): Promise<{ action: string; target_tenant_id: string }[]> {
+      const { rows } = await pool.query<{ action: string; target_tenant_id: string }>(
+        "SELECT action, target_tenant_id FROM admin_audit_log ORDER BY id",
+      );
+      return rows;
+    }
+
+    beforeEach(async () => {
+      await pool.query("DELETE FROM admin_audit_log");
+    });
+
+    it("deletes B's member: 202 with the summary, tenant deleting, token revoked, one audit row; tenant A untouched", async () => {
+      const tenantA = await createTestTenant(pool);
+      const tenantB = await createTestTenant(pool);
+      const admin = await signIn(`admin-${randomUUID()}@example.test`, tenantA, "admin");
+      const member = await signIn(`member-${randomUUID()}@example.test`, tenantB, "member");
+
+      const res = await authed(admin.token, `/api/admin/accounts/${member.id}/delete`);
+
+      expect(res.status).toBe(202);
+      expect(readRecord(await res.json(), "account")).toMatchObject({ userId: member.id, status: "deleting" });
+      expect(await tenantStatus(tenantB)).toBe("deleting");
+      expect((await authed(member.token, `/api/admin/accounts/${admin.id}/delete`)).status).toBe(401);
+      expect(await auditRows()).toEqual([{ action: "accountDeletionRequested", target_tenant_id: tenantB }]);
+      expect(await tenantStatus(tenantA)).toBe("active");
+      expect(
+        (await fetch(`${baseUrl}/api/admin/accounts`, { headers: { Authorization: `Bearer ${admin.token}` } })).status,
+      ).toBe(200);
+    });
+
+    it("answers 403 self_deletion_requires_reauthentication for the admin's own id and changes nothing", async () => {
+      const tenantA = await createTestTenant(pool);
+      const admin = await signIn(`admin-${randomUUID()}@example.test`, tenantA, "admin");
+      await signIn(`second-${randomUUID()}@example.test`, await createTestTenant(pool), "admin");
+
+      const res = await authed(admin.token, `/api/admin/accounts/${admin.id}/delete`);
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: { code: "self_deletion_requires_reauthentication" } });
+      expect(await tenantStatus(tenantA)).toBe("active");
+      expect(await auditRows()).toEqual([]);
+      expect(
+        (await fetch(`${baseUrl}/api/admin/accounts`, { headers: { Authorization: `Bearer ${admin.token}` } })).status,
+      ).toBe(200);
+    });
+
+    it("answers 409 invalid_account_status when the account is already deleting", async () => {
+      const admin = await signIn(`admin-${randomUUID()}@example.test`, await createTestTenant(pool), "admin");
+      const member = await signIn(`member-${randomUUID()}@example.test`, await createTestTenant(pool), "member");
+      expect((await authed(admin.token, `/api/admin/accounts/${member.id}/delete`)).status).toBe(202);
+
+      const again = await authed(admin.token, `/api/admin/accounts/${member.id}/delete`);
+
+      expect(again.status).toBe(409);
+      expect(await again.json()).toMatchObject({ error: { code: "invalid_account_status" } });
+      expect(await auditRows()).toHaveLength(1);
     });
   });
 });
