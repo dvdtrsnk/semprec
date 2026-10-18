@@ -23,6 +23,12 @@ import { createSchemaRequestListener } from "./schemaHandler.js";
 import { createFilesRequestListener } from "./filesHandler.js";
 import { createBlobsRequestListener } from "./blobsHandler.js";
 import { createGraphWebhookRequestListener } from "./graphWebhookHandler.js";
+import { sendJson } from "./adapter/http.js";
+import { isAllowedOrigin } from "./originCheck.js";
+import { logger } from "./logger.js";
+
+/** Methods a browser sends without a same-origin check: they cannot change state (issue #1044). */
+const SAFE_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS"]);
 
 export interface AppOptions {
   passwordResetMailer: PasswordResetMailer;
@@ -109,6 +115,14 @@ export async function createDispatcher(
   // `AsyncLocalStorage` context follows the promise chains those routes start from inside this
   // synchronous call).
   function dispatch(req: IncomingMessage, res: ServerResponse): void {
+    // Issue #1044: a browser page on another origin can send an unsafe request with the session
+    // cookie attached, so every such request is checked before routing. Safe methods are not.
+    if (!SAFE_METHODS.has(req.method ?? "") && !isAllowedOrigin(req)) {
+      const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+      logger.warn({ method: req.method, path: pathname }, "origin_not_allowed");
+      sendJson(res, 403, { error: { code: "origin_not_allowed" } });
+      return;
+    }
     withTraceContext({}, () => dispatchTraced(req, res));
   }
 
