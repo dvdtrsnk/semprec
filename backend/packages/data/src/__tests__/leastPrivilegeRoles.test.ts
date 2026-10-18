@@ -192,14 +192,15 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
 
     // Deliberately without UPDATE for both runtime roles (migration 0062): rewriting a key row would
     // orphan every credential sealed under it, so a key is only ever inserted or deleted (crypto-shred).
-    const NO_UPDATE_TABLES = new Set(["tenant_keys", "admin_audit_log"]);
+    const NO_UPDATE_TABLES = new Set(["tenant_keys", "admin_audit_log", "tenant_deletions"]);
 
     // Operator configuration written only by semprec-api (migration 0070): the gateway's semprec_side
     // may read it but never raise its own caps, and nobody deletes a row (it goes with its tenant).
     // admin_audit_log (migration 0074) is append-only: semprec_side reads it, semprec_data only inserts.
     // invites (migration 0077) is written by the admin routes only: semprec_side reads it, semprec_data runs DML.
-    const READ_ONLY_FOR_SIDE_TABLES = new Set(["tenant_ai_budgets", "admin_audit_log", "invites"]);
-    const NO_DELETE_TABLES = new Set(["tenant_ai_budgets", "admin_audit_log"]);
+    const READ_ONLY_FOR_SIDE_TABLES = new Set(["tenant_ai_budgets", "admin_audit_log", "invites", "tenant_deletions"]);
+    // tenant_deletions (migration 0079) is the purge tombstone: semprec_side reads, semprec_data only inserts.
+    const NO_DELETE_TABLES = new Set(["tenant_ai_budgets", "admin_audit_log", "tenant_deletions"]);
 
     async function listTables(): Promise<{ name: string; oid: string }[]> {
       const { rows } = await adminPool.query<{ name: string; oid: string }>(

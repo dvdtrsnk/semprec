@@ -98,6 +98,8 @@ export const CORE_TASK_NAMES = {
   // expired exports' rows and files.
   TENANT_EXPORT: "tenantExport",
   TENANT_EXPORT_EXPIRY_SWEEP: "tenantExportExpirySweep",
+  // Issue #1055: the per-minute sweep that erases every `deleting` tenant and records a tombstone.
+  TENANT_PURGE: "tenantPurge",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
@@ -136,6 +138,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: "api",
   [CORE_TASK_NAMES.TENANT_EXPORT]: "api",
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: "api",
+  [CORE_TASK_NAMES.TENANT_PURGE]: "api",
 };
 
 /**
@@ -185,6 +188,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: "system",
   [CORE_TASK_NAMES.TENANT_EXPORT]: "tenant",
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: "system",
+  [CORE_TASK_NAMES.TENANT_PURGE]: "system",
   [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: "tenant",
   [AGENT_TASK_NAMES.AGENT_RUN]: "tenant",
   [AGENT_TASK_NAMES.DELEGATED_AGENT_RUN]: "tenant",

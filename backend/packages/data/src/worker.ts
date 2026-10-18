@@ -49,6 +49,7 @@ import { handleMcpRunCredentialExpirySweepTask } from "./mcp/mcpRunCredentialExp
 import { handleAgentRunEventsRetentionTask } from "./agentRuns/agentRunEventsRetention.js";
 import { handleQueueFailedJobsPruneTask } from "./observability/queueFailedJobsPrune.js";
 import { handleTenantExportExpirySweepTask, handleTenantExportTask } from "./tenancy/tenantExportJob.js";
+import { handleTenantPurgeTask, type TenantPurgeDirs } from "./tenancy/tenantPurgeJob.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -92,6 +93,7 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 20 4 * * * ${CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE}
 10 * * * * ${CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP}
 40 4 * * * ${CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP}
+* * * * * ${CORE_TASK_NAMES.TENANT_PURGE}
 `;
 
 /**
@@ -115,6 +117,10 @@ export function createCoreTaskList(
   pushSenders?: PushSenders,
   genericOperationApprovalReplay?: GenericOperationApprovalReplay,
   filesBlobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR")),
+  tenantBlobStorageDirs: TenantPurgeDirs = {
+    files: resolveBlobStorageDir("FILES_STORAGE_DIR"),
+    mailAttachments: resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR"),
+  },
 ): TaskList {
   const handlers: TaskList = {
     [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {
@@ -233,6 +239,10 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: async () => {
       await handleTenantExportExpirySweepTask(pool, filesBlobStorage);
+    },
+    // Issue #1055: enumerates `deleting` tenants itself, so it is a system task.
+    [CORE_TASK_NAMES.TENANT_PURGE]: async (_payload, helpers) => {
+      await handleTenantPurgeTask(pool, tenantBlobStorageDirs, helpers);
     },
     // Issue #221 declared this name in the closed API affinity set ("handler and enqueue routing
     // are delivered later") but nothing enqueues it yet — no crontab line, no producer. A no-op
