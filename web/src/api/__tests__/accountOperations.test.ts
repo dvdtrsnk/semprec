@@ -76,6 +76,44 @@ describe("account operations: exports", () => {
   });
 });
 
+describe("account operations: error bodies", () => {
+  it("falls back to the status message when the error body is over the cap, even if it carries a code", async () => {
+    const oversized = { error: { code: "rate_limited" }, padding: "x".repeat(9 * 1024) };
+    const operations = failingWith(() => jsonResponse(oversized, 500));
+
+    await expect(operations.listExports()).rejects.toMatchObject({
+      kind: "retryable",
+      status: 500,
+      message: "Request to /account/exports failed with 500",
+    });
+  });
+
+  it("falls back to the status message when the error body is not JSON", async () => {
+    const operations = failingWith(() => new Response("<html>Bad gateway</html>", { status: 502 }));
+
+    await expect(operations.listExports()).rejects.toMatchObject({
+      kind: "retryable",
+      status: 502,
+      message: "Request to /account/exports failed with 502",
+    });
+  });
+
+  it("falls back to the status message when reading the error body fails", async () => {
+    const failingBody = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error("connection reset"));
+      },
+    });
+    const operations = failingWith(() => new Response(failingBody, { status: 500 }));
+
+    await expect(operations.listExports()).rejects.toMatchObject({
+      kind: "retryable",
+      status: 500,
+      message: "Request to /account/exports failed with 500",
+    });
+  });
+});
+
 describe("account operations: deletion", () => {
   it("deleteAccount posts the password and resolves on 202", async () => {
     const { operations, calls } = recording(() => jsonResponse({ status: "deleting" }, 202));
