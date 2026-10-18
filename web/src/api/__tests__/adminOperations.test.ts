@@ -240,3 +240,80 @@ describe("admin operations: invitations", () => {
     });
   });
 });
+
+const BUDGET_ACCOUNT = {
+  userId: "user-2",
+  email: "member@example.com",
+  hasBudget: true,
+  dailyCapUsd: 2,
+  monthlyCapUsd: null,
+  spentTodayUsd: 0.5,
+  spentMonthUsd: 3.25,
+};
+
+describe("admin operations: AI budgets", () => {
+  it("listAiBudgets gets the budget list with same-origin credentials and parses it", async () => {
+    const { operations, calls } = recording(() => jsonResponse({ spendWindow: "utc", accounts: [BUDGET_ACCOUNT] }));
+
+    await expect(operations.listAiBudgets()).resolves.toEqual([BUDGET_ACCOUNT]);
+    expect(calls[0]!.url).toBe("/api/admin/ai-budgets");
+    expect(calls[0]!.init).toMatchObject({ credentials: "same-origin" });
+    expect(calls[0]!.init?.method).toBeUndefined();
+  });
+
+  it("setAiBudget puts both caps as JSON to the encoded budget route", async () => {
+    const { operations, calls } = recording(() =>
+      jsonResponse({
+        budget: { userId: "u 1", dailyCapUsd: 2, monthlyCapUsd: null, updatedAt: "2026-10-18T09:00:00.000Z" },
+      }),
+    );
+
+    await expect(operations.setAiBudget("u 1", { dailyCapUsd: 2, monthlyCapUsd: null })).resolves.toBeUndefined();
+    expect(calls[0]!.url).toBe("/api/admin/accounts/u%201/ai-budget");
+    expect(calls[0]!.init).toMatchObject({ method: "PUT", credentials: "same-origin" });
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ dailyCapUsd: 2, monthlyCapUsd: null });
+  });
+
+  it("setAiBudget rejects a 400 validation_failed as retryable with the code as its message", async () => {
+    const operations = failingWith(() => jsonResponse({ error: { code: "validation_failed" } }, 400));
+
+    await expect(operations.setAiBudget("user-2", { dailyCapUsd: -1, monthlyCapUsd: null })).rejects.toMatchObject({
+      kind: "retryable",
+      status: 400,
+      message: "validation_failed",
+    });
+  });
+
+  it("setAiBudget rejects a 403 as unavailable", async () => {
+    const operations = failingWith(() => jsonResponse({ error: { code: "admin_required" } }, 403));
+
+    await expect(operations.setAiBudget("user-2", { dailyCapUsd: 1, monthlyCapUsd: 2 })).rejects.toMatchObject({
+      kind: "unavailable",
+      status: 403,
+    });
+  });
+
+  it("setAiBudget rejects a malformed budget response as retryable", async () => {
+    const operations = failingWith(() => jsonResponse({ budget: { userId: "user-2" } }));
+
+    await expect(operations.setAiBudget("user-2", { dailyCapUsd: 1, monthlyCapUsd: null })).rejects.toMatchObject({
+      kind: "retryable",
+      message: "Unexpected response from /admin/accounts/user-2/ai-budget",
+    });
+  });
+
+  it("listAiBudgets rejects a 403 as unavailable", async () => {
+    const operations = failingWith(() => jsonResponse({ error: { code: "admin_required" } }, 403));
+
+    await expect(operations.listAiBudgets()).rejects.toMatchObject({ kind: "unavailable", status: 403 });
+  });
+
+  it("rejects a malformed budget list as retryable", async () => {
+    const operations = failingWith(() => jsonResponse({ spendWindow: "local", accounts: [] }));
+
+    await expect(operations.listAiBudgets()).rejects.toMatchObject({
+      kind: "retryable",
+      message: "Unexpected response from /admin/ai-budgets",
+    });
+  });
+});

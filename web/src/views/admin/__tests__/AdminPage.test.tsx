@@ -23,6 +23,8 @@ function stubOperations(): AdminOperations {
     revokeInvite: vi.fn(async () => {
       throw new Error("unused");
     }),
+    listAiBudgets: vi.fn(async () => []),
+    setAiBudget: vi.fn(async () => undefined),
   };
 }
 
@@ -43,5 +45,17 @@ describe("AdminPage", () => {
     const invitations = await screen.findByRole("heading", { name: "Invitations" });
     expect(accounts.compareDocumentPosition(invitations) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByRole("button", { name: "Create invitation" })).toBeInTheDocument();
+  });
+
+  it("renders the AI budgets panel after the invitations panel", async () => {
+    render(
+      <I18nProvider locale="en">
+        <AdminPage operations={stubOperations()} />
+      </I18nProvider>,
+    );
+
+    const invitations = await screen.findByRole("heading", { name: "Invitations" });
+    const budgets = await screen.findByRole("heading", { name: "AI budgets" });
+    expect(invitations.compareDocumentPosition(budgets) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

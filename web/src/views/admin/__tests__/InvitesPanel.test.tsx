@@ -42,6 +42,8 @@ function stubOperations(overrides: Partial<AdminOperations> = {}): AdminOperatio
     listInvites: vi.fn(async (): Promise<InviteSummary[]> => [invite()]),
     createInvite: vi.fn(async () => created()),
     revokeInvite: vi.fn(async () => invite({ status: "revoked", revokedAt: "2026-10-02T09:00:00.000Z" })),
+    listAiBudgets: vi.fn(async () => []),
+    setAiBudget: vi.fn(async () => undefined),
     ...overrides,
   };
 }
