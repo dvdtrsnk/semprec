@@ -9,6 +9,7 @@ import {
   NodemailerInviteMailer,
   NodemailerPasswordResetMailer,
   noopPasswordResetMailer,
+  assertRuntimeRole,
   resolveDocHistoryRetentionDays,
   startProcessHeartbeat,
   startTenantDeactivationListener,
@@ -106,6 +107,7 @@ const blobStorage = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_ST
 const trustProxy = process.env.TRUST_PROXY === "1";
 
 const pool = createPool(connectionString);
+await assertRuntimeRole(pool);
 wireRealtimeHooks(pool);
 
 // Issue #168: this process's own `process_heartbeats` row, re-UPSERTed every 15 seconds for as

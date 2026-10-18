@@ -1,5 +1,6 @@
 import { repairInterruptedRuns } from "@semprec/agent-runtime";
 import {
+  assertRuntimeRole,
   createPool,
   loadFullModuleRegistry,
   startProcessHeartbeat,
@@ -28,6 +29,7 @@ const connectionString = process.env.SEMPREC_API_DATABASE_URL ?? process.env.DAT
 if (!connectionString) throw new Error("SEMPREC_API_DATABASE_URL (or DATABASE_URL) is not set");
 
 const pool = createPool(connectionString);
+await assertRuntimeRole(pool);
 
 // Issue #168: this process's own `process_heartbeats` row, re-UPSERTed every 15 seconds for as
 // long as this process is up.
