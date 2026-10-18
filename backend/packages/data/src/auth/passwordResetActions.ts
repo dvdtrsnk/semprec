@@ -16,6 +16,7 @@ import {
 } from "./passwordResetStore.js";
 import { normalizeEmail } from "./emailNormalization.js";
 import type { PasswordResetMailer } from "./passwordResetMail.js";
+import { logger } from "./logger.js";
 
 /** Issue #142's "30-minute default expiry" for a reset token. */
 export const PASSWORD_RESET_TOKEN_TTL_SECONDS = 30 * 60;
@@ -102,7 +103,7 @@ export async function requestPasswordReset(
       void mailer
         .sendPasswordResetEmail({ to: user.email, resetUrl: buildPasswordResetUrl(input.appBaseUrl, token) })
         .catch((err: unknown) => {
-          console.error("requestPasswordReset: failed to send the password-reset email", err);
+          logger.error({ err }, "requestPasswordReset: failed to send the password-reset email");
         });
     });
   });

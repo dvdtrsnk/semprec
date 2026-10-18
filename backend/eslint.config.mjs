@@ -84,6 +84,25 @@ export default tseslint.config(
     },
   },
   {
+    // Production backend code logs through `createLogger` (@semprec/shared), which redacts secret
+    // fields and error text and binds the trace context and tenantId. A `console.*` call gets none
+    // of that. Exempt: test code; `*Cli.ts` files, whose stdout and stderr are their interface;
+    // `packages/release`, a developer tool; and `packages/realtime-client`, a client library whose
+    // consumer owns logging.
+    files: ["packages/*/src/**/*.ts", "services/*/src/**/*.ts"],
+    ignores: [
+      "**/__tests__/**",
+      "**/*.test.ts",
+      "**/testSupport/**",
+      "**/*Cli.ts",
+      "packages/release/**",
+      "packages/realtime-client/**",
+    ],
+    rules: {
+      "no-console": "error",
+    },
+  },
+  {
     // Config and tooling files live outside every package's tsconfig `include`, so the
     // type-aware rules have no program to consult and error out on them.
     files: ["**/*.cjs", "**/*.mjs", "*.config.ts", "**/scripts/**"],

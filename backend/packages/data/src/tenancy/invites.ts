@@ -6,6 +6,7 @@ import { runAfterCommit, type Queryable } from "../db/pool.js";
 import { ChokePointError, NotFoundError, ValidationError } from "../errors.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import type { InviteMailer } from "./inviteMail.js";
+import { logger } from "./logger.js";
 
 /**
  * Admin-issued account invitations (issue #1040). Only the token's hash is stored, as for
@@ -147,10 +148,10 @@ export async function createInvite(client: PoolClient, input: CreateInviteInput)
       void mailer
         .sendInviteEmail({ to: invite.email, inviteUrl, expiresAt: invite.expiresAt })
         .catch((err: unknown) => {
-          console.error("createInvite: failed to send the invitation email", {
-            inviteId: invite.id,
-            ...describeMailFailure(err),
-          });
+          logger.error(
+            { inviteId: invite.id, ...describeMailFailure(err) },
+            "createInvite: failed to send the invitation email",
+          );
         });
     });
   }

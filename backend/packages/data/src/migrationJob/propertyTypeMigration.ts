@@ -13,6 +13,7 @@ import { lockItemBatch } from "./itemBatch.js";
 import { findDependenciesBySource } from "../rollup/dependencies.js";
 import { enqueueRollupBackfill } from "../rollup/recompute.js";
 import type { PropertyType } from "../types.js";
+import { logger } from "./logger.js";
 
 type Converter = (value: unknown) => { ok: true; value: unknown } | { ok: false };
 
@@ -247,7 +248,10 @@ export async function handlePropertyTypeMigrationTask(
       } catch (settleErr) {
         // The original failure (`err`) is what must reach the caller/graphile-worker — a
         // failure here settling the terminal status must not replace it, only be visible.
-        console.error("handlePropertyTypeMigrationTask: failed to settle terminal status", settleErr);
+        logger.error(
+          { err: settleErr, propertyId: payload.propertyId },
+          "handlePropertyTypeMigrationTask: failed to settle terminal status",
+        );
       }
     }
     throw err;

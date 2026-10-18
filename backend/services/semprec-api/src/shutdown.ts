@@ -1,6 +1,7 @@
 import type { Server } from "node:http";
 import type { Pool } from "pg";
 import type { Logger } from "@semprec/shared";
+import { logger } from "./logger.js";
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 60_000;
 export const DRAIN_POLL_INTERVAL_MS = 50;
@@ -197,7 +198,7 @@ export function registerShutdownSignals(shutdown: (signal: string) => Promise<vo
           process.exit(0);
         })
         .catch((err: unknown) => {
-          console.error("shutdown() rejected unexpectedly during", signal, err);
+          logger.fatal({ err, signal }, "shutdown() rejected unexpectedly");
           process.exit(1);
         });
     });

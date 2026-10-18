@@ -22,6 +22,7 @@ import { transitionTenantStatus } from "../tenancy/tenantsStore.js";
 import { createTestTenant } from "../testSupport/tenantFixtures.js";
 import { suspendAccount } from "../tenancy/accountsAdminStore.js";
 import { PasswordResetTokenError, ValidationError } from "../errors.js";
+import { logger } from "../auth/logger.js";
 
 let pool: Pool;
 
@@ -204,7 +205,7 @@ describe("password reset actions (issue #142)", () => {
           return Promise.reject(sendError);
         },
       };
-      const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const loggerError = vi.spyOn(logger, "error").mockImplementation(() => undefined);
 
       try {
         await expect(
@@ -212,14 +213,14 @@ describe("password reset actions (issue #142)", () => {
         ).resolves.toBeUndefined();
 
         await vi.waitFor(() => {
-          expect(consoleError).toHaveBeenCalledWith(
+          expect(loggerError).toHaveBeenCalledWith(
+            { err: sendError },
             "requestPasswordReset: failed to send the password-reset email",
-            sendError,
           );
         });
         expect(await countRecentPasswordResetTokens(pool, user.id, PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS)).toBe(1);
       } finally {
-        consoleError.mockRestore();
+        loggerError.mockRestore();
       }
     });
   });

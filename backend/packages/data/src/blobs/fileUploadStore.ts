@@ -8,6 +8,7 @@ import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { findFileItemByBlobId } from "../chokePoint/itemsStore.js";
 import { findOrCreateBlob, tenantBlobStorageKey } from "./blobsStore.js";
 import type { BlobRow, ItemRow } from "../types.js";
+import { logger } from "./logger.js";
 
 export interface IngestUploadedFileInput {
   /** The seeded system Files database's id (`getDatabaseByModuleId(client, FILES_MODULE_ID)`). */
@@ -96,7 +97,10 @@ export async function ingestUploadedFile(
       if (blob.storageKey !== storageKey) {
         runAfterCommit(client, () => {
           void input.storage.delete(storageKey).catch((err) => {
-            console.error(`Failed to delete duplicate upload bytes ${storageKey}`, err);
+            logger.error(
+              { errCode: err instanceof Error && "code" in err ? String(err.code) : undefined, blobId: blob.id },
+              "Failed to delete duplicate upload bytes",
+            );
           });
         });
       }
@@ -116,7 +120,10 @@ export async function ingestUploadedFile(
     try {
       await input.storage.delete(storageKey);
     } catch (deleteErr) {
-      console.error(`Failed to delete upload bytes ${storageKey} after a failed transaction`, deleteErr);
+      logger.error(
+        { errCode: deleteErr instanceof Error && "code" in deleteErr ? String(deleteErr.code) : undefined },
+        "Failed to delete upload bytes after a failed transaction",
+      );
     }
     throw err;
   }

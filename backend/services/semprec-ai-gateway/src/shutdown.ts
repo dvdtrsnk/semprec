@@ -2,6 +2,7 @@ import type { Server } from "node:http";
 import type { Pool } from "pg";
 import type { ProcessHeartbeatHandle } from "@semprec/data";
 import type { Logger } from "@semprec/shared";
+import { logger } from "./logger.js";
 
 /** Mirrors `REQUEST_TIMEOUT_MS` in `backend/packages/ai-gateway-client/src/httpAiGatewayClient.ts`, the caller of `POST /internal/complete`. */
 export const COMPLETE_ROUTE_TIMEOUT_MS = 60_000;
@@ -140,7 +141,7 @@ export function registerShutdownSignals(shutdown: (signal: string) => Promise<vo
           // `shutdown` is caller-injected and typed only as `Promise<void>`; this repository's
           // own `createGracefulShutdown` never rejects, but this function makes no such
           // guarantee about its argument, so a rejection here must not become unhandled.
-          console.error("shutdown() rejected unexpectedly during", signal, err);
+          logger.fatal({ err, signal }, "shutdown() rejected unexpectedly");
           process.exit(1);
         });
     });

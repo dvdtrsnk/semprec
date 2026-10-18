@@ -276,7 +276,7 @@ export async function withTransaction<T>(
           try {
             callback();
           } catch (err) {
-            console.error("withTransaction: an afterCommit callback threw", err);
+            logger.error({ err }, "withTransaction: an afterCommit callback threw");
           }
         }
       }
@@ -287,7 +287,7 @@ export async function withTransaction<T>(
         await client.query("ROLLBACK");
       } catch (rollbackErr) {
         releaseError = rollbackErr instanceof Error ? rollbackErr : new Error(String(rollbackErr));
-        console.error("withTransaction: ROLLBACK failed; discarding the connection", rollbackErr);
+        logger.error({ err: rollbackErr }, "withTransaction: ROLLBACK failed; discarding the connection");
       }
       throw err;
     }

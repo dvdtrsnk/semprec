@@ -8,6 +8,7 @@ import { createUser } from "../auth/usersStore.js";
 import { hashToken } from "../auth/token.js";
 import { createInvite, INVITE_TTL_SECONDS, listInvites, revokeInvite, type CreatedInvite } from "../tenancy/invites.js";
 import type { InviteMailer, SendInviteEmailInput } from "../tenancy/inviteMail.js";
+import { logger } from "../tenancy/logger.js";
 
 const APP_BASE_URL = "https://app.example.test";
 
@@ -190,7 +191,7 @@ describe("invites (issue #1040)", () => {
   });
 
   it("does not hold a mail send back when the mailer rejects, and logs neither the token, the URL nor the address", async () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
     const refusal = Object.assign(new Error("550 5.1.1 <new@example.com>: Recipient address rejected"), {
       code: "EENVELOPE",
       responseCode: 550,
@@ -207,7 +208,7 @@ describe("invites (issue #1040)", () => {
     expect(logged).not.toContain(tokenFromUrl(created.inviteUrl));
     expect(logged).not.toContain(created.inviteUrl);
     expect(logged).not.toContain("new@example.com");
-    expect(errorSpy.mock.calls[0]?.[1]).toEqual({
+    expect(errorSpy.mock.calls[0]?.[0]).toEqual({
       inviteId: created.invite.id,
       errorName: "Error",
       errorCode: "EENVELOPE",
@@ -216,7 +217,7 @@ describe("invites (issue #1040)", () => {
   });
 
   it("logs only the value's type when the mailer rejects with a non-Error value", async () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
     const mailer: InviteMailer = {
       // A non-Error rejection is the branch under test.
       // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
@@ -226,7 +227,7 @@ describe("invites (issue #1040)", () => {
     const created = await invite("new@example.com", mailer);
 
     await vi.waitFor(() => expect(errorSpy).toHaveBeenCalled());
-    expect(errorSpy.mock.calls[0]?.[1]).toEqual({ inviteId: created.invite.id, errorName: "string" });
+    expect(errorSpy.mock.calls[0]?.[0]).toEqual({ inviteId: created.invite.id, errorName: "string" });
     expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("new@example.com");
   });
 

@@ -3,7 +3,7 @@ import type { Duplex } from "node:stream";
 import type { Pool, PoolClient } from "pg";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { getNotificationById } from "@semprec/data";
-import { createLogger, runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   AGENT_STREAM_CHANNEL,
   REALTIME_CHANNEL,
@@ -12,6 +12,7 @@ import {
   type AgentStreamMessage,
   type RealtimeMessage,
 } from "./pgNotifyPublisher.js";
+import { logger } from "./logger.js";
 import { createAgentRunWatchRegistry } from "./agentRunWatch.js";
 import { createDocSyncRegistry } from "./docSync.js";
 import { decodeDocId, parseBinaryFrame, parseInboundFrame, type OutboundFrame } from "./protocolV1.js";
@@ -55,8 +56,6 @@ export interface SyncServer {
   closeTenant(tenantId: string): void;
   close(): Promise<void>;
 }
-
-const logger = createLogger("realtime");
 
 /** Every message `type` either channel's catalog defines; the only `type` values a drop warning names. */
 const KNOWN_MESSAGE_TYPES: ReadonlySet<string> = new Set<RealtimeMessage["type"] | AgentStreamMessage["type"]>([
@@ -172,7 +171,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     // with no `'error'` listener throws it as an uncaught exception, which would crash this
     // whole process over one client's malformed frame. Logging here is purely to observe it.
     ws.on("error", (err: unknown) => {
-      console.error("Sync server client socket error", err);
+      logger.error({ err }, "Sync server client socket error");
     });
 
     // Protocol-v1 frame validation: anything outside the closed catalog is dropped, never
@@ -185,7 +184,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
         const docId = decodeDocId(frame.docId);
         if (!docId) return;
         docSync.handleBinaryFrame(ws, identity.tenantId, docId, frame.payload).catch((err: unknown) => {
-          console.error("Sync server failed to handle a doc binary frame", err);
+          logger.error({ err }, "Sync server failed to handle a doc binary frame");
         });
         return;
       }
@@ -194,7 +193,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
       switch (frame.type) {
         case "doc:open":
           docSync.handleOpen(ws, identity.tenantId, frame.docId).catch((err: unknown) => {
-            console.error("Sync server failed to handle doc:open", err);
+            logger.error({ err }, "Sync server failed to handle doc:open");
           });
           return;
         case "doc:close":
@@ -204,7 +203,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
           agentRunWatch
             .watch(ws, identity.tenantId, identity.userId, frame.runId, frame.afterEventId)
             .catch((err: unknown) => {
-              console.error("Sync server failed to watch an agent run", err);
+              logger.error({ err }, "Sync server failed to watch an agent run");
             });
           return;
         case "agent:unwatch":
@@ -240,7 +239,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
           if (!active && ws.readyState === ws.OPEN) ws.close(SESSION_REVOKED_CLOSE_CODE, "session revoked");
         })
         .catch((err: unknown) => {
-          console.error("Sync heartbeat session revalidation failed", err);
+          logger.error({ err }, "Sync heartbeat session revalidation failed");
         });
     }, heartbeatIntervalMs);
 
@@ -318,7 +317,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
       .catch((err: unknown) => {
         // Keep this run's delivery queue usable after a failed row fetch, without delaying a
         // different run's events or pretending the original infrastructure fault was forwarded.
-        console.error("Sync server failed to forward an agent run event", err);
+        logger.error({ err }, "Sync server failed to forward an agent run event");
       })
       .then(() => {
         if (agentEventDeliveryTails.get(runId) === entry) agentEventDeliveryTails.delete(runId);
@@ -409,14 +408,14 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
         }
         case "notification_created": {
           forwardNotification(tenantId, parsed.userId, parsed.notificationId).catch((err: unknown) => {
-            console.error("Sync server failed to forward a created notification", err);
+            logger.error({ err }, "Sync server failed to forward a created notification");
           });
           return;
         }
         case "notification_read_state": {
           for (const notificationId of parsed.notificationIds) {
             forwardNotification(tenantId, parsed.userId, notificationId).catch((err: unknown) => {
-              console.error("Sync server failed to forward a notification read-state update", err);
+              logger.error({ err }, "Sync server failed to forward a notification read-state update");
             });
           }
           return;
@@ -427,7 +426,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
         }
         case "doc_update": {
           docSync.fanOutDocUpdate(tenantId, parsed.docId, parsed.updateId).catch((err: unknown) => {
-            console.error("Sync server failed to fan out a doc update", err);
+            logger.error({ err }, "Sync server failed to fan out a doc update");
           });
           return;
         }
@@ -468,7 +467,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
         closeAll(SERVICE_RESTART_CLOSE_CODE, "listen connection restored");
         return;
       } catch (err) {
-        console.error("Sync server failed to reconnect its LISTEN connection", err);
+        logger.error({ err }, "Sync server failed to reconnect its LISTEN connection");
         await new Promise((resolve) => setTimeout(resolve, delay));
         delay = Math.min(delay * 2, LISTEN_RECONNECT_MAX_DELAY_MS);
       }
@@ -482,12 +481,12 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   // rather than leaving them attached to a process that can no longer fan anything out to them.
   // An unhandled 'error' here would otherwise crash the whole process on a dropped connection.
   const onError = (err: unknown) => {
-    console.error("Sync server LISTEN connection error", err);
+    logger.error({ err }, "Sync server LISTEN connection error");
     detachListenClient();
     closeAll(SERVICE_RESTART_CLOSE_CODE, "listen connection lost");
     if (!closed) {
       reconnectListen().catch((reconnectErr: unknown) => {
-        console.error("Sync server LISTEN reconnect loop failed unexpectedly", reconnectErr);
+        logger.error({ err: reconnectErr }, "Sync server LISTEN reconnect loop failed unexpectedly");
       });
     }
   };
@@ -519,7 +518,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
           });
         })
         .catch((err: unknown) => {
-          console.error("Sync upgrade authentication failed", err);
+          logger.error({ err }, "Sync upgrade authentication failed");
           rejectUpgrade(socket);
         });
     },

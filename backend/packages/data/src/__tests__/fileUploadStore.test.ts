@@ -9,6 +9,7 @@ import { withTransaction } from "../db/pool.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { ingestUploadedFile } from "../blobs/fileUploadStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
+import { logger } from "../blobs/logger.js";
 
 /**
  * In-memory stand-in for `LocalFsBlobStorageWriter`: records every `writeStream`/`delete` call
@@ -129,7 +130,7 @@ describe("ingestUploadedFile (issue #670)", () => {
   });
 
   it("a failed after-commit delete of the duplicate does not fail the upload (delete happens after commit, not inside)", async () => {
-    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const loggerErrorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
     const filesId = await filesDatabaseId();
     const storage = new FakeBlobStorageWriter();
 
@@ -148,10 +149,14 @@ describe("ingestUploadedFile (issue #670)", () => {
 
     // The delete runs from an `afterCommit` callback, whose rejection is handled asynchronously.
     await new Promise((resolve) => setImmediate(resolve));
-    expect(consoleErrorSpy).toHaveBeenCalledWith(
-      expect.stringContaining(`Failed to delete duplicate upload bytes ${secondKey}`),
-      expect.anything(),
+    expect(loggerErrorSpy).toHaveBeenCalledWith(
+      { errCode: undefined, blobId: expect.any(String) },
+      "Failed to delete duplicate upload bytes",
     );
+    // The log names neither the storage key nor the fake's error text, which embeds the key.
+    const logged = JSON.stringify(loggerErrorSpy.mock.calls);
+    expect(logged).not.toContain(secondKey);
+    expect(logged).not.toContain("simulated delete failure");
   });
 
   it("keeps the bytes and the blobs row referencing them when the upload creates a new blob", async () => {

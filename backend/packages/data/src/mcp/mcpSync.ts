@@ -9,6 +9,7 @@ import { connectMcpServer, type McpClientHandle } from "./mcpConnectionFactory.j
 import { McpConnectionError } from "./mcpConnectionError.js";
 import { deactivateMcpToolRegistrationsNotIn, upsertMcpToolRegistration } from "./mcpToolRegistrationsStore.js";
 import { assertAcceptableMcpToolSchema } from "./mcpToolSchemaPolicy.js";
+import { logger } from "./logger.js";
 
 /**
  * The human-only "Synchronize tools" action (issue #125): opens a connection through the
@@ -195,14 +196,17 @@ export async function syncMcpServerTools(
     } catch (recordingErr) {
       // The original sync failure (`err`, thrown below) is what the caller needs to see — a
       // secondary failure while merely trying to *record* it must never replace or hide it.
-      console.error("syncMcpServerTools: failed to record syncStatus:'error' after a sync failure", recordingErr);
+      logger.error(
+        { err: recordingErr },
+        "syncMcpServerTools: failed to record syncStatus:'error' after a sync failure",
+      );
     }
     try {
       await handle?.close();
     } catch (closeErr) {
       // Same discipline as the recordingErr handling above: `err` is what the caller needs to
       // see, so a secondary failure while merely closing the connection must never replace it.
-      console.error("syncMcpServerTools: failed to close the MCP client handle", closeErr);
+      logger.error({ err: closeErr }, "syncMcpServerTools: failed to close the MCP client handle");
     }
     throw err;
   }

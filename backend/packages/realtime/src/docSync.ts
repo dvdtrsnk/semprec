@@ -8,6 +8,7 @@ import { runInTenant } from "@semprec/shared";
 import { getDocById, getDocUpdateById, loadYDoc, mutateYDoc, type CreatedBy } from "@semprec/data";
 import { buildBinaryFrame } from "./protocolV1.js";
 import { sendWithBackpressure } from "./backpressure.js";
+import { logger } from "./logger.js";
 
 /**
  * Every update accepted over `WS /api/sync`'s binary channel is attributed to this fixed
@@ -87,7 +88,7 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
     }
     state.count += 1;
     if (state.count === MAX_UPDATES_PER_WINDOW + 1) {
-      console.warn("Sync server dropped a doc update: socket exceeded the per-second rate limit");
+      logger.warn("Sync server dropped a doc update: socket exceeded the per-second rate limit");
     }
     return state.count > MAX_UPDATES_PER_WINDOW;
   }
@@ -148,7 +149,7 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
       // distinct docs can't all read the same stale count and land at 33 (see
       // `reserveOpenSlot`'s doc comment).
       if (!reserveOpenSlot(ws, docId)) {
-        console.warn("Sync server rejected doc:open: socket exceeded the per-connection subscription limit");
+        logger.warn("Sync server rejected doc:open: socket exceeded the per-connection subscription limit");
         return;
       }
 
