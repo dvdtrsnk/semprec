@@ -48,7 +48,21 @@ export interface RouteMatrixEntry {
   publicReason?: string;
   /** `true` for a route only an `admin` may call: a member gets 403 `admin_required`. */
   admin?: boolean;
+  /**
+   * Whose data the route reaches (issue #1053); `__tests__/tenantIsolationRoutes.test.ts` runs
+   * each `surface: "api"` entry through its class's two-tenant case:
+   * - `anonymous` — reachable without a session (`public: true`).
+   * - `admin` — an entry with `admin: true` (#1037).
+   * - `account` — reads or writes only the caller's own rows in global identity tables (logout,
+   *   current session, revoke session, register/revoke push subscription).
+   * - `tenant` — everything else, including `/mcp`, `/api/sync` and the account export/deletion
+   *   routes.
+   */
+  tenancy: RouteTenancy;
 }
+
+export const ROUTE_TENANCIES = ["tenant", "account", "admin", "anonymous"] as const;
+export type RouteTenancy = (typeof ROUTE_TENANCIES)[number];
 
 const EXAMPLE_ID = "00000000-0000-0000-0000-000000000000";
 
@@ -59,6 +73,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/healthz",
     surface: "api",
     public: true,
+    tenancy: "anonymous",
     publicReason:
       "Issue #168: a deployment/orchestrator probe run with no session — its only content is a status word, never account or deployment detail.",
   },
@@ -68,6 +83,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/auth/login",
     surface: "api",
     public: true,
+    tenancy: "anonymous",
     publicReason: "Issue #140: logging in is necessarily unauthenticated — it's how a session is obtained.",
   },
   {
@@ -76,6 +92,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/auth/password-reset/request",
     surface: "api",
     public: true,
+    tenancy: "anonymous",
     publicReason:
       "Issue #142: a forgotten password means there's no session yet; the response never reveals whether the email exists.",
   },
@@ -85,6 +102,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/auth/password-reset/consume",
     surface: "api",
     public: true,
+    tenancy: "anonymous",
     publicReason: "Issue #142: the single-use reset token itself is the credential presented here, not a session.",
   },
   {
@@ -93,6 +111,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/setup",
     surface: "api",
     public: true,
+    tenancy: "anonymous",
     publicReason:
       "Issue #233: there is no user yet to authenticate as. Gated instead by SETUP_TOKEN and a hard 404 once any user exists.",
   },
@@ -102,24 +121,34 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/?page=setup&token=<setupToken>",
     surface: "view",
     public: true,
+    tenancy: "anonymous",
     publicReason:
       "Issue #234: the wizard that calls the setup API above must itself be reachable before any account exists, for the same reason the API is public.",
   },
-  { name: "logout", method: "POST", path: "/api/auth/logout", surface: "api", public: false },
+  { name: "logout", method: "POST", path: "/api/auth/logout", surface: "api", public: false, tenancy: "account" },
   {
     name: "revoke session",
     method: "POST",
     path: `/api/auth/sessions/${EXAMPLE_ID}/revoke`,
     surface: "api",
     public: false,
+    tenancy: "account",
   },
-  { name: "current session", method: "GET", path: "/api/auth/session", surface: "api", public: false },
+  {
+    name: "current session",
+    method: "GET",
+    path: "/api/auth/session",
+    surface: "api",
+    public: false,
+    tenancy: "account",
+  },
   {
     name: "register push subscription",
     method: "POST",
     path: "/api/push-subscriptions",
     surface: "api",
     public: false,
+    tenancy: "account",
   },
   {
     name: "revoke push subscription",
@@ -127,6 +156,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/push-subscriptions/${EXAMPLE_ID}/revoke`,
     surface: "api",
     public: false,
+    tenancy: "account",
   },
   {
     name: "unread notifications",
@@ -134,6 +164,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/notifications/unread",
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "visit notification",
@@ -141,6 +172,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/notifications/${EXAMPLE_ID}/visit`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "mark all notifications read",
@@ -148,6 +180,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/notifications/mark-all-read",
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "schema projection",
@@ -155,6 +188,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/schema",
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "ai usage report",
@@ -162,6 +196,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/ai-usage?from=2026-01-01&to=2026-01-02",
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "system health report",
@@ -169,6 +204,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/system-health",
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "confirm proposal",
@@ -176,14 +212,23 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/proposals/${EXAMPLE_ID}/confirm`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
-  { name: "create transcription", method: "POST", path: "/api/transcriptions", surface: "api", public: false },
+  {
+    name: "create transcription",
+    method: "POST",
+    path: "/api/transcriptions",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
   {
     name: "transcription rerun",
     method: "POST",
     path: `/api/transcriptions/${EXAMPLE_ID}/rerun`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "transcript speakers",
@@ -191,6 +236,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/transcripts/${EXAMPLE_ID}/speakers`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "inbox types",
@@ -198,23 +244,40 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/inbox-types",
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
-  { name: "approval queue", method: "GET", path: "/api/approval-requests", surface: "api", public: false },
+  {
+    name: "approval queue",
+    method: "GET",
+    path: "/api/approval-requests",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
   {
     name: "approval decision",
     method: "PATCH",
     path: `/api/approval-requests/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
-  { name: "mcp json-rpc endpoint", method: "POST", path: "/mcp", surface: "api", public: false },
-  { name: "agent run detail", method: "GET", path: `/api/agent-runs/${EXAMPLE_ID}`, surface: "api", public: false },
+  { name: "mcp json-rpc endpoint", method: "POST", path: "/mcp", surface: "api", public: false, tenancy: "tenant" },
+  {
+    name: "agent run detail",
+    method: "GET",
+    path: `/api/agent-runs/${EXAMPLE_ID}`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
   {
     name: "mint mcp run credential",
     method: "POST",
     path: "/api/agent-runs/mcp-credentials",
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "project mcp grants",
@@ -222,6 +285,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/projects/${EXAMPLE_ID}/mcp-grants`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "project mcp grant toggle",
@@ -229,6 +293,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/projects/${EXAMPLE_ID}/mcp-grants/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "mcp tool registration reclassify",
@@ -236,15 +301,17 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/mcp-tool-registrations/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
-  { name: "list databases", method: "GET", path: "/api/databases", surface: "api", public: false },
-  { name: "create database", method: "POST", path: "/api/databases", surface: "api", public: false },
+  { name: "list databases", method: "GET", path: "/api/databases", surface: "api", public: false, tenancy: "tenant" },
+  { name: "create database", method: "POST", path: "/api/databases", surface: "api", public: false, tenancy: "tenant" },
   {
     name: "database detail",
     method: "GET",
     path: `/api/databases/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "rename database",
@@ -252,6 +319,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/databases/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "archive database",
@@ -259,6 +327,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/databases/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "restore database",
@@ -266,6 +335,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/databases/${EXAMPLE_ID}/restore`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "property catalog",
@@ -273,6 +343,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/databases/${EXAMPLE_ID}/properties`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "create property",
@@ -280,6 +351,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/databases/${EXAMPLE_ID}/properties`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "property list",
@@ -287,6 +359,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/properties?databaseId=${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "property detail",
@@ -294,6 +367,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/properties/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "update property",
@@ -301,6 +375,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/properties/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "delete property",
@@ -308,6 +383,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/properties/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "list views",
@@ -315,6 +391,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/views",
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "view detail",
@@ -322,6 +399,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/views/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "create view",
@@ -329,6 +407,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/databases/${EXAMPLE_ID}/views`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "patch view",
@@ -336,6 +415,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/views/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "delete view",
@@ -343,6 +423,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/views/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "add/reposition curated view item",
@@ -350,6 +431,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/views/${EXAMPLE_ID}/items/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "reorder curated view item",
@@ -357,6 +439,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/views/${EXAMPLE_ID}/items/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "remove curated view item",
@@ -364,6 +447,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/views/${EXAMPLE_ID}/items/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "create item",
@@ -371,6 +455,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/databases/${EXAMPLE_ID}/items`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "item detail",
@@ -378,6 +463,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/items/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "patch item",
@@ -385,6 +471,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/items/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "delete item",
@@ -392,6 +479,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/items/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "restore item",
@@ -399,6 +487,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/items/${EXAMPLE_ID}/restore`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "query database",
@@ -406,6 +495,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/databases/${EXAMPLE_ID}/query`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "query view",
@@ -413,6 +503,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/views/${EXAMPLE_ID}/query`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "create/replace relation",
@@ -420,6 +511,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/items/${EXAMPLE_ID}/relations/exampleKey/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "delete relation",
@@ -427,6 +519,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/items/${EXAMPLE_ID}/relations/exampleKey/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "upload file",
@@ -434,6 +527,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/files",
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "download blob",
@@ -441,6 +535,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/blobs/${EXAMPLE_ID}`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "request account export",
@@ -448,6 +543,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/account/exports",
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "list account exports",
@@ -455,6 +551,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/account/exports",
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "download account export",
@@ -462,6 +559,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: `/api/account/exports/${EXAMPLE_ID}/download`,
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "delete own account",
@@ -469,6 +567,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/account/delete",
     surface: "api",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "admin account list",
@@ -476,6 +575,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/admin/accounts",
     surface: "api",
     public: false,
+    tenancy: "admin",
     admin: true,
   },
   {
@@ -484,6 +584,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/admin/health",
     surface: "api",
     public: false,
+    tenancy: "admin",
     admin: true,
   },
   {
@@ -492,6 +593,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/admin/ai-budgets",
     surface: "api",
     public: false,
+    tenancy: "admin",
     admin: true,
   },
   {
@@ -500,6 +602,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/admin/accounts/00000000-0000-0000-0000-000000000000/ai-budget",
     surface: "api",
     public: false,
+    tenancy: "admin",
     admin: true,
   },
   {
@@ -508,6 +611,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/admin/accounts/00000000-0000-0000-0000-000000000000/suspend",
     surface: "api",
     public: false,
+    tenancy: "admin",
     admin: true,
   },
   {
@@ -516,6 +620,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/admin/accounts/00000000-0000-0000-0000-000000000000/reactivate",
     surface: "api",
     public: false,
+    tenancy: "admin",
     admin: true,
   },
   {
@@ -524,6 +629,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/admin/accounts/00000000-0000-0000-0000-000000000000/delete",
     surface: "api",
     public: false,
+    tenancy: "admin",
     admin: true,
   },
   {
@@ -532,6 +638,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/admin/accounts/00000000-0000-0000-0000-000000000000/role",
     surface: "api",
     public: false,
+    tenancy: "admin",
     admin: true,
   },
   {
@@ -540,6 +647,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/admin/invites",
     surface: "api",
     public: false,
+    tenancy: "admin",
     admin: true,
   },
   {
@@ -548,6 +656,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/admin/invites",
     surface: "api",
     public: false,
+    tenancy: "admin",
     admin: true,
   },
   {
@@ -556,6 +665,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/admin/invites/00000000-0000-0000-0000-000000000000/revoke",
     surface: "api",
     public: false,
+    tenancy: "admin",
     admin: true,
   },
   {
@@ -564,6 +674,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/sync",
     surface: "ws",
     public: false,
+    tenancy: "tenant",
   },
   {
     name: "Microsoft Graph mail webhook",
@@ -571,6 +682,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     path: "/api/mail/graph/webhook",
     surface: "api",
     public: true,
+    tenancy: "anonymous",
     publicReason:
       "Issue #198: Microsoft Graph itself calls this with no session to deliver subscription validation and change notifications; each notification's clientState (checked in constant time) is the receiver's own authenticity check, not a session.",
   },
