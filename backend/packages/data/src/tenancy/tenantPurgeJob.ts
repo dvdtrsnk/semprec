@@ -260,11 +260,27 @@ async function finalise(ctx: PurgeContext): Promise<void> {
       [ctx.tenantId],
     );
     for (const user of users) {
-      await client.query("DELETE FROM push_subscriptions WHERE user_id = $1", [user.id]);
-      await client.query("DELETE FROM sessions WHERE user_id = $1", [user.id]);
-      await client.query("DELETE FROM password_reset_tokens WHERE user_id = $1", [user.id]);
-      await client.query("DELETE FROM login_attempts WHERE email = $1", [normalizeEmail(user.email)]);
-      await client.query("DELETE FROM invites WHERE email = $1", [normalizeEmail(user.email)]);
+      const email = normalizeEmail(user.email);
+      // Zero rows is valid for each of these: a user may have no sessions, tokens, attempts or invites.
+      const pushSubscriptions = await client.query("DELETE FROM push_subscriptions WHERE user_id = $1", [user.id]);
+      const sessions = await client.query("DELETE FROM sessions WHERE user_id = $1", [user.id]);
+      const resetTokens = await client.query("DELETE FROM password_reset_tokens WHERE user_id = $1", [user.id]);
+      const loginAttempts = await client.query("DELETE FROM login_attempts WHERE email = $1", [email]);
+      const invites = await client.query("DELETE FROM invites WHERE email = $1", [email]);
+      logger.info(
+        {
+          tenantId: ctx.tenantId,
+          step: "identity",
+          counts: {
+            pushSubscriptions: pushSubscriptions.rowCount ?? 0,
+            sessions: sessions.rowCount ?? 0,
+            resetTokens: resetTokens.rowCount ?? 0,
+            loginAttempts: loginAttempts.rowCount ?? 0,
+            invites: invites.rowCount ?? 0,
+          },
+        },
+        "tenant_purge_step",
+      );
       requireAffectedRows(await client.query("DELETE FROM users WHERE id = $1", [user.id]), "users delete");
     }
     requireAffectedRows(
