@@ -33,7 +33,7 @@ const EXPORT_FORMAT_VERSION = 1;
 /** Rows fetched per `FETCH` from a table's cursor. */
 const CURSOR_BATCH_ROWS = 500;
 
-/** Where blob bytes live: a blob referenced by `mail_attachments` under the mail root, every other blob under the files root. */
+/** The two blob roots searched by the export; cross-root content-hash deduplication can leave bytes in either. */
 export interface TenantExportStorages {
   files: BlobStorageWriter;
   mailAttachments: BlobStorageWriter;
@@ -77,6 +77,7 @@ class ArchiveWriter {
   private readonly zip = new yazl.ZipFile();
   private readonly output: Readable;
   private readonly written: Promise<{ byteSize: number }>;
+  private readonly outputFinished: Promise<void>;
   private readonly writeFailed: Promise<never>;
   private currentSource: Readable | undefined;
 
@@ -84,12 +85,17 @@ class ArchiveWriter {
     const output = this.zip.outputStream;
     if (!(output instanceof Readable)) throw new Error("yazl's output stream is not a Readable");
     this.output = output;
+    // Observe errors before writeStream can await storage initialization or a checkpoint can abort.
+    this.outputFinished = finished(output);
     this.zip.on("error", (err: unknown) => {
       this.output.destroy(err instanceof Error ? err : new Error(String(err)));
     });
     this.written = storage.writeStream(storageKey, output);
-    // Never resolves; rejects with the storage write's error. `addEntry` races it against each entry.
-    this.writeFailed = this.written.then(() => new Promise<never>(() => {}));
+    // Never resolves; rejects if storage or output fails. Each entry races against it.
+    this.writeFailed = Promise.race([
+      this.written.then(() => new Promise<never>(() => {})),
+      this.outputFinished.then(() => new Promise<never>(() => {})),
+    ]);
     // Marks the rejection handled until `addEntry`/`finish`/`abort` observe it; it is not dropped.
     this.writeFailed.catch(() => undefined);
   }
@@ -106,19 +112,17 @@ class ArchiveWriter {
   async finish(): Promise<number> {
     this.zip.end();
     const { byteSize } = await this.written;
+    await this.outputFinished;
     return byteSize;
   }
 
-  /** Stops the archive after a failure and waits for the storage write to settle, so it has removed its partial file. */
+  /** Stops the archive and settles output events and the storage write before the caller deletes the partial key. */
   async abort(cause: unknown): Promise<void> {
     this.currentSource?.destroy();
     this.output.destroy(cause instanceof Error ? cause : new Error(String(cause)));
-    // The write's own rejection is a consequence of `cause` (or the same error); the caller
-    // rethrows `cause`, so only the settling is awaited here.
-    await this.written.then(
-      () => undefined,
-      () => undefined,
-    );
+    // The output and write rejections follow the failure already caught by the caller, which
+    // rethrows that cause. Settle both, including output errors emitted before a pipeline attaches.
+    await Promise.allSettled([this.written, this.outputFinished]);
   }
 }
 
@@ -239,7 +243,10 @@ async function writeArchive(
       for (const blob of rows) {
         checkpoint();
         const storage = blob.in_mail ? storages.mailAttachments : storages.files;
-        const bytes = await openBlob(storage, blob.storage_key);
+        const alternate = blob.in_mail ? storages.files : storages.mailAttachments;
+        // A reference selects the first root, but shared content-hash deduplication can retain
+        // bytes in the other one; see ADR 2026-10-18-tenant-export-cross-root-blob-lookup.
+        const bytes = (await openBlob(storage, blob.storage_key)) ?? (await openBlob(alternate, blob.storage_key));
         if (!bytes) {
           missingBlobIds.push(blob.id);
           continue;

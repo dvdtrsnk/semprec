@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { inflateRawSync } from "node:zlib";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { escapeIdentifier, type Pool } from "pg";
+import { escapeIdentifier, type Pool, type PoolClient, type QueryResult } from "pg";
 import { z } from "zod";
 import { runInTenant } from "@semprec/shared";
 import { CORE_TASK_NAMES } from "@semprec/queue";
@@ -29,7 +29,7 @@ import {
   handleTenantExportTask,
   type TenantExportStorages,
 } from "../tenancy/tenantExportJob.js";
-import { requestTenantExport } from "../tenancy/tenantExportsStore.js";
+import { markTenantExportFailed, markTenantExportRunning, requestTenantExport } from "../tenancy/tenantExportsStore.js";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -122,14 +122,14 @@ async function databaseIdIn(tenantId: string, moduleId: string): Promise<string>
 }
 
 /** Writes items, relations, a doc, mail, blobs in both roots, a credential and a tenant key into `tenantId`. */
-async function seedTenant(tenantId: string): Promise<SeededTenant> {
+async function seedTenant(tenantId: string, duplicateAttachment = false): Promise<SeededTenant> {
   const email = `${randomUUID()}@example.com`;
   await createUser(adminPool, { email, passwordHash: `hash-${randomUUID()}`, tenantId });
   const filesDatabaseId = await databaseIdIn(tenantId, "files");
   const emailsDatabaseId = await databaseIdIn(tenantId, "emails");
   const foldersDatabaseId = await databaseIdIn(tenantId, "folders");
   const fileContent = `files-root-bytes-${randomUUID()}`;
-  const mailContent = `mail-root-bytes-${randomUUID()}`;
+  const mailContent = duplicateAttachment ? fileContent : `mail-root-bytes-${randomUUID()}`;
 
   return runInTenant(tenantId, async () => {
     const { blob: fileBlob, item: fileItem } = await ingestUploadedFile(pool, {
@@ -246,8 +246,7 @@ describe("tenant data export (issue #1043)", () => {
   beforeEach(async () => {
     await resetDatabase(adminPool);
     tenantA = getTenantZeroId();
-    // Seeded while tenant zero is the only tenant; tenant B is provisioned the production way.
-    await seedSystem(adminPool);
+    await runInTenant(tenantA, () => seedSystem(adminPool));
     tenantB = await createTestTenant(adminPool, { status: "provisioning" });
     await provisionTenant(pool, tenantB);
 
@@ -261,6 +260,119 @@ describe("tenant data export (issue #1043)", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  describe("export request conflicts", () => {
+    async function userInA(): Promise<string> {
+      const user = await createUser(adminPool, {
+        email: `${randomUUID()}@example.com`,
+        passwordHash: "unused",
+        tenantId: tenantA,
+      });
+      return user.id;
+    }
+
+    async function requestAfterFinishingConflicts(userId: string, blockerIds: string[], conflictCount: number) {
+      // Only this dedicated pool's client is instrumented; it is closed before returning.
+      const dedicated = await createRuntimeRolePool(adminPool, "semprec_data");
+      try {
+        return await runInTenant(tenantA, () =>
+          withTransaction(dedicated, async (client) => {
+            const original = client.query.bind(client);
+            // Select the promise overload used by requestTenantExport; database rows stay unknown.
+            const query = client.query.bind(client) as (
+              text: string,
+              values?: unknown[],
+            ) => Promise<QueryResult<Record<string, unknown>>>;
+            client.query = (async (text: string, values?: unknown[]) => {
+              if (!text.startsWith("INSERT INTO tenant_exports") || blockerIds.length >= conflictCount) {
+                return query(text, values);
+              }
+              const blocker = await withTransaction(pool, (other) => requestTenantExport(other, userId));
+              expect(blocker.created).toBe(true);
+              blockerIds.push(blocker.export.id);
+              const result = await query(text, values);
+              expect(result.rows).toEqual([]);
+              // A separate transaction completes the active export after the ignored insert,
+              // before requestTenantExport's next READ COMMITTED read-back snapshot.
+              await withTransaction(pool, async (other) => {
+                await markTenantExportRunning(other, blocker.export.id);
+                await markTenantExportFailed(other, blocker.export.id);
+              });
+              return result;
+            }) as PoolClient["query"];
+            try {
+              return await requestTenantExport(client, userId);
+            } finally {
+              client.query = original;
+            }
+          }),
+        );
+      } finally {
+        await dedicated.end();
+      }
+    }
+
+    it("returns the same active export to concurrent requests and queues exactly one job", async () => {
+      const userId = await userInA();
+      const results = await runInTenant(tenantA, () =>
+        Promise.all([
+          withTransaction(pool, (client) => requestTenantExport(client, userId)),
+          withTransaction(pool, (client) => requestTenantExport(client, userId)),
+        ]),
+      );
+
+      expect(results.map((result) => result.created).sort()).toEqual([false, true]);
+      const id = results[0].export.id;
+      expect(results[1].export.id).toBe(id);
+      const rows = await runInTenant(tenantA, () => pool.query<{ id: string }>("SELECT id FROM tenant_exports"));
+      expect(rows.rows).toEqual([{ id }]);
+      expect(await readJobPayloadsByIdentifier(adminPool, CORE_TASK_NAMES.TENANT_EXPORT)).toEqual([
+        expect.objectContaining({ tenantId: tenantA, payload: { exportId: id } }),
+      ]);
+    });
+
+    it("retries the insert when the conflicting export finishes before the active read-back", async () => {
+      const userId = await userInA();
+      const blockerIds: string[] = [];
+
+      const result = await requestAfterFinishingConflicts(userId, blockerIds, 1);
+
+      expect(blockerIds).toHaveLength(1);
+      expect(result.created).toBe(true);
+      expect(result.export.status).toBe("pending");
+      expect(result.export.id).not.toBe(blockerIds[0]);
+      expect((await exportRow(blockerIds[0]!))?.status).toBe("failed");
+      expect(await readJobPayloadsByIdentifier(adminPool, CORE_TASK_NAMES.TENANT_EXPORT)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ tenantId: tenantA, payload: { exportId: blockerIds[0] } }),
+          expect.objectContaining({ tenantId: tenantA, payload: { exportId: result.export.id } }),
+        ]),
+      );
+      expect(await readJobPayloadsByIdentifier(adminPool, CORE_TASK_NAMES.TENANT_EXPORT)).toHaveLength(2);
+    });
+
+    it("throws after three disappearing conflicts without adding its own row or job", async () => {
+      const userId = await userInA();
+      const blockerIds: string[] = [];
+
+      await expect(requestAfterFinishingConflicts(userId, blockerIds, 3)).rejects.toThrow(
+        "no export was inserted or found active after 3 attempts",
+      );
+
+      expect(blockerIds).toHaveLength(3);
+      const { rows } = await runInTenant(tenantA, () =>
+        pool.query<{ id: string; status: string }>("SELECT id, status FROM tenant_exports ORDER BY id"),
+      );
+      expect(rows).toEqual([...blockerIds].sort().map((id) => ({ id, status: "failed" })));
+      const payloads = await readJobPayloadsByIdentifier(adminPool, CORE_TASK_NAMES.TENANT_EXPORT);
+      expect(payloads).toHaveLength(3);
+      expect(payloads).toEqual(
+        expect.arrayContaining(
+          blockerIds.map((exportId) => expect.objectContaining({ tenantId: tenantA, payload: { exportId } })),
+        ),
+      );
+    });
   });
 
   it("archives exactly tenant A's data, with every table counted and every blob byte-identical", async () => {
@@ -361,6 +473,46 @@ describe("tenant data export (issue #1043)", () => {
     ).toBe(false);
   });
 
+  it("exports a Files upload reused by an identical mail attachment from the files root", async () => {
+    const seeded = await seedTenant(tenantA, true);
+    expect(seeded.mailBlobId).toBe(seeded.blobIds[0]);
+    const { rows } = await runInTenant(tenantA, () =>
+      pool.query<{ storage_key: string }>("SELECT storage_key FROM blobs WHERE id = $1", [seeded.mailBlobId]),
+    );
+    const key = rows[0]!.storage_key;
+    expect(readFileSync(join(filesDir, key)).toString()).toBe(seeded.blobContents[0]);
+    expect(existsSync(join(mailDir, key))).toBe(false);
+    const exportId = await requestExportIn(tenantA);
+
+    await runExport(tenantA, exportId);
+
+    expect((await exportRow(exportId))?.status).toBe("ready");
+    const entries = readZip(readFileSync(archivePath(tenantA, exportId)));
+    expect(entries.get(`blobs/${seeded.mailBlobId}`)?.toString()).toBe(seeded.blobContents[0]);
+    const manifest = manifestSchema.parse(JSON.parse(entries.get("manifest.json")!.toString("utf8")));
+    expect(manifest.blobCount).toBe(1);
+    expect(manifest.missingBlobIds).toEqual([]);
+  });
+
+  it("finds a blob in the mail root when it has no attachment reference", async () => {
+    await seedTenant(tenantA);
+    const content = `mail-only-${randomUUID()}`;
+    const key = `${tenantA}/mail/${randomUUID()}`;
+    await mailStorage.writeStream(key, Readable.from([content]));
+    const blob = await runInTenant(tenantA, () =>
+      createBlob(pool, { mimeType: "text/plain", byteSize: Buffer.byteLength(content), storageKey: key }),
+    );
+    const exportId = await requestExportIn(tenantA);
+
+    await runExport(tenantA, exportId);
+
+    expect((await exportRow(exportId))?.status).toBe("ready");
+    const entries = readZip(readFileSync(archivePath(tenantA, exportId)));
+    expect(entries.get(`blobs/${blob.id}`)?.toString()).toBe(content);
+    const manifest = manifestSchema.parse(JSON.parse(entries.get("manifest.json")!.toString("utf8")));
+    expect(manifest.missingBlobIds).toEqual([]);
+  });
+
   it("completes and lists a blob whose file is missing in missingBlobIds", async () => {
     await seedTenant(tenantA);
     const missing = await runInTenant(tenantA, () =>
@@ -395,6 +547,50 @@ describe("tenant data export (issue #1043)", () => {
     expect(existsSync(archivePath(tenantA, exportId))).toBe(false);
   });
 
+  it("marks the export failed and settles output errors when storage initialization fails before pipeline attaches", async () => {
+    await seedTenant(tenantA);
+    const exportId = await requestExportIn(tenantA);
+    const invalidRoot = join(filesDir, "not-a-directory");
+    writeFileSync(invalidRoot, "file");
+    const invalidStorage = new LocalFsBlobStorageWriter(invalidRoot);
+    const write = vi.spyOn(invalidStorage, "writeStream");
+    const logError = vi.spyOn(logger, "error").mockImplementation(() => {});
+
+    await expect(
+      runExport(tenantA, exportId, {}, { files: invalidStorage, mailAttachments: mailStorage }),
+    ).rejects.toMatchObject({ code: "ENOTDIR" });
+
+    expect((await exportRow(exportId))?.status).toBe("failed");
+    expect(existsSync(archivePath(tenantA, exportId))).toBe(false);
+    expect(write.mock.calls[0]![1].destroyed).toBe(true);
+    expect(logError).toHaveBeenCalledWith(
+      { errorName: "Error", exportId },
+      "Deleting a partial tenant export archive failed",
+    );
+  });
+
+  it("settles output errors and requeues when shutdown is already requested before the first entry", async () => {
+    await seedTenant(tenantA);
+    const exportId = await requestExportIn(tenantA);
+    await adminPool.query("SELECT graphile_worker.remove_job($1)", [`tenantExport:${exportId}`]);
+    const controller = new AbortController();
+    controller.abort();
+    const write = vi.spyOn(filesStorage, "writeStream");
+
+    await expect(runExport(tenantA, exportId, { abortSignal: controller.signal })).resolves.toBeUndefined();
+
+    expect((await exportRow(exportId))?.status).toBe("pending");
+    expect(existsSync(archivePath(tenantA, exportId))).toBe(false);
+    expect(write.mock.calls[0]![1].destroyed).toBe(true);
+    const payloads = await readJobPayloadsByIdentifier(adminPool, CORE_TASK_NAMES.TENANT_EXPORT);
+    expect(payloads).toEqual([expect.objectContaining({ tenantId: tenantA, payload: { exportId } })]);
+    const { rows } = await adminPool.query<{ key: string | null }>(
+      "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1",
+      [CORE_TASK_NAMES.TENANT_EXPORT],
+    );
+    expect(rows).toEqual([{ key: `tenantExport:${exportId}` }]);
+  });
+
   it("removes the partial file, puts the export back to pending and queues it again when the worker shuts down", async () => {
     await seedTenant(tenantA);
     const exportId = await requestExportIn(tenantA);
@@ -422,10 +618,35 @@ describe("tenant data export (issue #1043)", () => {
   });
 
   it("fails the export when a blob file exists but cannot be read", async () => {
-    await seedTenant(tenantA);
+    const seeded = await seedTenant(tenantA);
+    const { rows: mailRows } = await runInTenant(tenantA, () =>
+      pool.query<{ storage_key: string }>("SELECT storage_key FROM blobs WHERE id = $1", [seeded.mailBlobId]),
+    );
     const exportId = await requestExportIn(tenantA);
     const unreadable = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    const alternateRead = vi.spyOn(filesStorage, "readStream");
     vi.spyOn(mailStorage, "readStream").mockImplementation(() => {
+      const stream = new Readable({ read() {} });
+      process.nextTick(() => stream.destroy(unreadable));
+      return stream;
+    });
+
+    await expect(runExport(tenantA, exportId)).rejects.toBe(unreadable);
+    expect(alternateRead).not.toHaveBeenCalledWith(mailRows[0]!.storage_key);
+
+    expect((await exportRow(exportId))?.status).toBe("failed");
+    expect(existsSync(archivePath(tenantA, exportId))).toBe(false);
+  });
+
+  it("propagates a read failure from the alternate root instead of reporting the blob missing", async () => {
+    await seedTenant(tenantA);
+    const key = `${tenantA}/files/missing-${randomUUID()}`;
+    await runInTenant(tenantA, () => createBlob(pool, { mimeType: "text/plain", byteSize: 4, storageKey: key }));
+    const exportId = await requestExportIn(tenantA);
+    const unreadable = Object.assign(new Error("alternate root permission denied"), { code: "EACCES" });
+    const readMail = mailStorage.readStream.bind(mailStorage);
+    vi.spyOn(mailStorage, "readStream").mockImplementation((storageKey, range) => {
+      if (storageKey !== key) return readMail(storageKey, range);
       const stream = new Readable({ read() {} });
       process.nextTick(() => stream.destroy(unreadable));
       return stream;
