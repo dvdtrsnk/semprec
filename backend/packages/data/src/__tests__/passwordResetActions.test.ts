@@ -220,7 +220,7 @@ describe("password reset actions (issue #142)", () => {
 
         await vi.waitFor(() => {
           expect(loggerError).toHaveBeenCalledWith(
-            { userId: user.id, errorName: "Error", errorCode: "EENVELOPE", responseCode: 550 },
+            { userId: user.id, err: { errorName: "Error", errorCode: "EENVELOPE", responseCode: 550 } },
             "requestPasswordReset: failed to send the password-reset email",
           );
         });

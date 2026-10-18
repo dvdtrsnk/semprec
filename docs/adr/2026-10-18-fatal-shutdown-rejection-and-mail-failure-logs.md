@@ -41,9 +41,9 @@ instructions needed a decision that no ADR recorded:
 2. A log line for a failed outbound mail send never passes the error object. It logs the
    error's class name and its SMTP code (`errorName`, `errorCode`, and `responseCode` where
    the call site has one), plus the identifiers in scope. The reason is that the error can
-   carry the recipient's address, and logs are not tenant-scoped. This is the issue's own
-   rule that no call logs an email address, and it takes precedence over the `{ err }` field
-   list the issue gave for `passwordResetActions.ts`.
+   carry the recipient's address, and logs are not tenant-scoped. Password reset puts this
+   safe projection under the specified `err` key, satisfying the per-site field list without
+   passing the recipient-bearing original error to the serializer.
 
 ## Consequences
 
@@ -54,7 +54,8 @@ instructions needed a decision that no ADR recorded:
 - Every mail-send failure log builds its error fields with `describeMailFailure`
   (`backend/packages/data/src/mail/describeMailFailure.ts`) and adds its own identifiers:
   `inviteId` in `tenancy/invites.ts`, `userId` in `passwordResetActions.ts`. A new call site
-  does the same. A test for it uses a refusal that names the recipient and asserts that the
+  does the same. Password reset nests the safe error fields under `err`; invitations keep
+  them flat. A test for it uses a refusal that names the recipient and asserts that the
   address is absent from every logged argument.
 - An operator who needs a mail failure's full SMTP text has to reproduce it. The log line
   does not contain it.

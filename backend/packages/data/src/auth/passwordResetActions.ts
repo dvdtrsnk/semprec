@@ -106,7 +106,7 @@ export async function requestPasswordReset(
         .catch((err: unknown) => {
           // An SMTP refusal can echo the recipient address, so the error object is never logged.
           logger.error(
-            { userId: user.id, ...describeMailFailure(err) },
+            { userId: user.id, err: describeMailFailure(err) },
             "requestPasswordReset: failed to send the password-reset email",
           );
         });
