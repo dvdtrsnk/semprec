@@ -92,6 +92,49 @@ describe("auth operations", () => {
     await expect(auth.getSession()).rejects.toMatchObject({ kind: "retryable" });
   });
 
+  it("login retries a failed session read once and then signs in", async () => {
+    let sessionReads = 0;
+    const auth = createAuthOperations({
+      baseUrl: "/api",
+      fetchImpl: async (input) => {
+        if (String(input).endsWith("/auth/login")) return jsonResponse({ user: USER });
+        sessionReads += 1;
+        return sessionReads === 1 ? jsonResponse({ error: "boom" }, 500) : jsonResponse({ user: USER });
+      },
+    });
+
+    await expect(auth.login({ email: "operator@example.com", password: "x" })).resolves.toEqual(USER);
+    expect(sessionReads).toBe(2);
+  });
+
+  it("login says sign-in succeeded when the session read still fails after the retry", async () => {
+    const auth = createAuthOperations({
+      baseUrl: "/api",
+      fetchImpl: async (input) =>
+        String(input).endsWith("/auth/login") ? jsonResponse({ user: USER }) : jsonResponse({ error: "boom" }, 500),
+    });
+
+    await expect(auth.login({ email: "operator@example.com", password: "x" })).rejects.toMatchObject({
+      kind: "retryable",
+      message: "Signed in, but the session could not be read: boom",
+    });
+  });
+
+  it("login says sign-in succeeded when the session read finds no session after a successful login", async () => {
+    const auth = createAuthOperations({
+      baseUrl: "/api",
+      fetchImpl: async (input) =>
+        String(input).endsWith("/auth/login")
+          ? jsonResponse({ user: USER })
+          : jsonResponse({ error: "Invalid or missing credentials" }, 401),
+    });
+
+    await expect(auth.login({ email: "operator@example.com", password: "x" })).rejects.toMatchObject({
+      kind: "retryable",
+      message: "Signed in, but the session could not be read: no session",
+    });
+  });
+
   it("login maps a 401 to an OperationError carrying status 401 and the server's message", async () => {
     const auth = authWith(() => jsonResponse({ error: "Invalid or missing credentials", code: "unauthorized" }, 401));
 

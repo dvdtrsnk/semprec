@@ -30,6 +30,9 @@ const accountResponseSchema = z.object({ account: adminAccountSummarySchema });
 
 const errorCodeSchema = z.object({ error: z.object({ code: z.string() }) });
 
+/** Enough for any error envelope the admin routes answer; a longer failure body is not read further. */
+const ERROR_BODY_LIMIT_BYTES = 8 * 1024;
+
 /** Statuses that answer "this resource or plane is not here for you", so a retry only repeats the answer. */
 const UNAVAILABLE_STATUSES = new Set([401, 403, 404, 501]);
 
@@ -63,34 +66,37 @@ export function createAdminOperations(options: AdminOperationsOptions): AdminOpe
 
     try {
       return await response.json();
-    } catch (error) {
-      throw new OperationError("retryable", error instanceof Error ? error.message : String(error));
+    } catch {
+      throw unexpectedResponse(path);
     }
   }
 
   return {
     async listAccounts() {
       const body = await request("/admin/accounts");
-      return parseBody(accountsResponseSchema, body).accounts;
+      return parseBody(accountsResponseSchema, body, "/admin/accounts").accounts;
     },
 
     async suspendAccount(userId) {
-      const body = await request(`/admin/accounts/${encodeURIComponent(userId)}/suspend`, { method: "POST" });
-      return parseBody(accountResponseSchema, body).account;
+      const path = `/admin/accounts/${encodeURIComponent(userId)}/suspend`;
+      const body = await request(path, { method: "POST" });
+      return parseBody(accountResponseSchema, body, path).account;
     },
 
     async reactivateAccount(userId) {
-      const body = await request(`/admin/accounts/${encodeURIComponent(userId)}/reactivate`, { method: "POST" });
-      return parseBody(accountResponseSchema, body).account;
+      const path = `/admin/accounts/${encodeURIComponent(userId)}/reactivate`;
+      const body = await request(path, { method: "POST" });
+      return parseBody(accountResponseSchema, body, path).account;
     },
 
     async changeRole(userId, role) {
-      const body = await request(`/admin/accounts/${encodeURIComponent(userId)}/role`, {
+      const path = `/admin/accounts/${encodeURIComponent(userId)}/role`;
+      const body = await request(path, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ role }),
       });
-      return parseBody(accountResponseSchema, body).account;
+      return parseBody(accountResponseSchema, body, path).account;
     },
   };
 }
@@ -110,19 +116,52 @@ async function failure(path: string, response: Response): Promise<OperationError
 }
 
 /** A success body that does not match the documented shape is a retryable failure, not a crash of the panel. */
-function parseBody<T extends z.ZodType>(schema: T, body: unknown): z.infer<T> {
+function parseBody<T extends z.ZodType>(schema: T, body: unknown, path: string): z.infer<T> {
   const parsed = schema.safeParse(body);
-  if (!parsed.success) throw new OperationError("retryable", parsed.error.message);
+  if (!parsed.success) throw unexpectedResponse(path);
   return parsed.data;
 }
 
+function unexpectedResponse(path: string): OperationError {
+  return new OperationError("retryable", `Unexpected response from ${path}`);
+}
+
 async function readErrorCode(response: Response): Promise<string | null> {
+  const text = await readBoundedText(response, ERROR_BODY_LIMIT_BYTES);
+  if (text === null) return null;
   let body: unknown;
   try {
-    body = await response.json();
+    body = JSON.parse(text);
   } catch {
     return null;
   }
   const parsed = errorCodeSchema.safeParse(body);
   return parsed.success ? parsed.data.error.code : null;
+}
+
+/**
+ * Reads at most `limit` bytes of a body as text, cancelling the stream past the limit. Resolves
+ * `null` when the body is longer than the limit or cannot be read, so the caller falls back to the
+ * status-based message instead of buffering an arbitrarily large failure body.
+ */
+async function readBoundedText(response: Response, limit: number): Promise<string | null> {
+  if (response.body === null) return null;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let received = 0;
+  let text = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return text + decoder.decode();
+      received += value.byteLength;
+      if (received > limit) {
+        await reader.cancel();
+        return null;
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+  } catch {
+    return null;
+  }
 }

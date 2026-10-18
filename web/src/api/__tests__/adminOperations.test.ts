@@ -71,7 +71,7 @@ describe("admin operations: calls", () => {
 });
 
 describe("admin operations: rejections", () => {
-  it.each([403, 404])("rejects a %i as unavailable", async (status) => {
+  it.each([401, 403, 404, 501])("rejects a %i as unavailable", async (status) => {
     const operations = failingWith(() => jsonResponse({ error: { code: "admin_required" } }, status));
 
     const failure = await operations.listAccounts().catch((error: unknown) => error);
@@ -99,10 +99,44 @@ describe("admin operations: rejections", () => {
     });
   });
 
-  it("rejects a malformed success body as retryable", async () => {
+  it("rejects a malformed success body as retryable, with a fixed message that names the path", async () => {
     const operations = failingWith(() => jsonResponse({ accounts: [{ userId: 1 }] }));
 
-    await expect(operations.listAccounts()).rejects.toMatchObject({ kind: "retryable" });
+    await expect(operations.listAccounts()).rejects.toMatchObject({
+      kind: "retryable",
+      message: "Unexpected response from /admin/accounts",
+    });
+  });
+
+  it("rejects a success body that is not JSON with the same fixed message", async () => {
+    const operations = failingWith(() => new Response("<html>", { status: 200 }));
+
+    await expect(operations.listAccounts()).rejects.toMatchObject({
+      kind: "retryable",
+      message: "Unexpected response from /admin/accounts",
+    });
+  });
+
+  it("does not read a failure body past the size cap, and falls back to the status message", async () => {
+    let pulls = 0;
+    const chunk = new TextEncoder().encode("x".repeat(64 * 1024));
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        controller.enqueue(chunk);
+      },
+    });
+    const operations = createAdminOperations({
+      baseUrl: "/api",
+      fetchImpl: async () => new Response(body, { status: 500 }),
+    });
+
+    await expect(operations.listAccounts()).rejects.toMatchObject({
+      kind: "retryable",
+      status: 500,
+      message: "Request to /admin/accounts failed with 500",
+    });
+    expect(pulls).toBeLessThanOrEqual(2);
   });
 
   it("rejects a transport failure as retryable", async () => {
