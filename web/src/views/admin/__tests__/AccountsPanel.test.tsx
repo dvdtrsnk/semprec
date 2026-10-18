@@ -271,6 +271,19 @@ describe("AccountsPanel delete", () => {
     expect(within(rowFor("member@example.com")).getByRole("button", { name: "Delete" })).toBeInTheDocument();
   });
 
+  it.each(["active", "suspended"] as const)("never offers Delete on the current user's %s row", async (status) => {
+    const operations = stubOperations({
+      listAccounts: vi.fn(async () => [account({ userId: CURRENT_USER_ID, role: "admin", status })]),
+    });
+    renderPanel(operations);
+
+    const row = await screen.findByRole("row", { name: /member@example.com/ });
+    expect(within(row).queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: status === "active" ? "Suspend" : "Reactivate" })).toBeEnabled();
+    expect(within(row).getByRole("button", { name: "Make member" })).toBeEnabled();
+    expect(operations.deleteAccount).not.toHaveBeenCalled();
+  });
+
   it("holds one confirmation at a time: opening another row's confirmation closes the first", async () => {
     const operations = stubOperations({
       listAccounts: vi.fn(async () => [
@@ -291,21 +304,38 @@ describe("AccountsPanel delete", () => {
     expect(operations.deleteAccount).not.toHaveBeenCalled();
   });
 
-  it("confirming calls deleteAccount once with the userId and reloads the list", async () => {
-    const operations = stubOperations();
-    renderPanel(operations);
+  it.each(["active", "suspended"] as const)(
+    "deletes an %s account and reloads it as deleting with no actions",
+    async (status) => {
+      const operations = stubOperations({
+        listAccounts: vi
+          .fn<AdminOperations["listAccounts"]>()
+          .mockResolvedValueOnce([account({ status })])
+          .mockResolvedValueOnce([account({ status: "deleting" })]),
+      });
+      renderPanel(operations);
 
-    await userEvent.click(await screen.findByRole("button", { name: "Delete" }));
-    await userEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Delete" }));
+      await userEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
 
-    expect(operations.deleteAccount).toHaveBeenCalledTimes(1);
-    expect(operations.deleteAccount).toHaveBeenCalledWith("user-2");
-    await vi.waitFor(() => expect(operations.listAccounts).toHaveBeenCalledTimes(2));
-  });
+      expect(operations.deleteAccount).toHaveBeenCalledTimes(1);
+      expect(operations.deleteAccount).toHaveBeenCalledWith("user-2");
+      expect(await screen.findByText("Deleting")).toBeInTheDocument();
+      expect(operations.listAccounts).toHaveBeenCalledTimes(2);
+      const row = rowFor("member@example.com");
+      expect(within(row).queryByText(status === "active" ? "Active" : "Suspended")).not.toBeInTheDocument();
+      expect(within(row).queryByRole("button")).not.toBeInTheDocument();
+      expect(screen.queryByText(/Permanently delete/)).not.toBeInTheDocument();
+    },
+  );
 
   it("disables the confirmation while the delete is pending", async () => {
     let finish: (value: AdminAccountSummary) => void = () => undefined;
     const operations = stubOperations({
+      listAccounts: vi
+        .fn<AdminOperations["listAccounts"]>()
+        .mockResolvedValueOnce([account()])
+        .mockResolvedValueOnce([account({ status: "deleting" })]),
       deleteAccount: vi.fn(
         () =>
           new Promise<AdminAccountSummary>((resolve) => {
@@ -322,7 +352,9 @@ describe("AccountsPanel delete", () => {
     expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
     finish(account({ status: "deleting" }));
 
-    await vi.waitFor(() => expect(operations.listAccounts).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("Deleting")).toBeInTheDocument();
+    expect(operations.listAccounts).toHaveBeenCalledTimes(2);
+    expect(within(rowFor("member@example.com")).queryByRole("button")).not.toBeInTheDocument();
     expect(screen.queryByText(/Permanently delete/)).not.toBeInTheDocument();
   });
 
