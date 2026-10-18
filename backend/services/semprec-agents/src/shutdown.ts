@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import type { Logger } from "@semprec/shared";
 
 export const POOL_END_TIMEOUT_MS = 5_000;
+export const LISTENER_CLOSE_TIMEOUT_MS = 5_000;
 
 export interface QueueRuntimeHandle {
   stop(): Promise<void>;
@@ -51,9 +52,46 @@ function endPool(pool: Pool, logger: Logger, signal: string): Promise<void> {
   });
 }
 
+/** Bounds listener teardown so a stalled database reconnect cannot prevent queue and pool shutdown. */
+async function closeListener(
+  listener: TenantDeactivationListenerHandle,
+  logger: Logger,
+  signal: string,
+): Promise<void> {
+  let timedOut = false;
+  let boundTimer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    boundTimer = setTimeout(() => {
+      timedOut = true;
+      logger.error({ signal }, "tenantDeactivationListener.close() did not settle within LISTENER_CLOSE_TIMEOUT_MS");
+      resolve();
+    }, LISTENER_CLOSE_TIMEOUT_MS);
+  });
+
+  try {
+    await Promise.race([
+      Promise.resolve()
+        .then(() => listener.close())
+        .catch((err: unknown) => {
+          // Keep observing close after the deadline: a late rejection must still be reported.
+          logger.error(
+            { errorName: err instanceof Error ? err.name : typeof err, signal },
+            timedOut
+              ? "tenantDeactivationListener.close() rejected after LISTENER_CLOSE_TIMEOUT_MS had already elapsed"
+              : "tenantDeactivationListener.close() failed",
+          );
+        }),
+      timeout,
+    ]);
+  } finally {
+    clearTimeout(boundTimer);
+  }
+}
+
 /**
  * Builds `semprec-agents`' shutdown sequence: this process has no HTTP intake to drain (it is a
- * pure queue consumer), so it closes the tenant deactivation listener, stops the queue runtime
+ * pure queue consumer), so it closes the tenant deactivation listener (waiting at most
+ * `LISTENER_CLOSE_TIMEOUT_MS`), stops the queue runtime
  * issue #91 hosts (`queueRuntime.stop()` awaits its `Runner.stop()`) and then ends the pool. Per
  * `docs/adr/2026-09-17-shutdown-ordering-with-late-heartbeat-stop.md`'s rejected-alternative
  * note, this ordering is specific to this service — it names no heartbeat step.
@@ -66,14 +104,7 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
   async function runShutdown(signal: string): Promise<void> {
     logger.info({ signal }, "semprec-agents shutting down");
 
-    try {
-      await tenantDeactivationListener.close();
-    } catch (err) {
-      logger.error(
-        { errorName: err instanceof Error ? err.name : typeof err, signal },
-        "tenantDeactivationListener.close() failed",
-      );
-    }
+    await closeListener(tenantDeactivationListener, logger, signal);
 
     try {
       await queueRuntime.stop();
