@@ -21,8 +21,10 @@ import {
   resetDatabase,
 } from "@semprec/data/testSupport";
 import {
+  createActionRegistry,
   createAgentRun,
   createChokePoint,
+  createCoreTaskList,
   createHeartbeat,
   createItemWithClient,
   createPendingApprovalRequest,
@@ -40,6 +42,7 @@ import {
   writeNotification,
   type PasswordResetMailer,
 } from "@semprec/data";
+import { CORE_TASK_NAMES, runOnce, type TaskList } from "@semprec/queue";
 import { createDispatcher } from "../app.js";
 import { SESSION_COOKIE_NAME } from "../authHandler.js";
 import { ROUTE_MATRIX, ROUTE_TENANCIES, type RouteMatrixEntry } from "../routeMatrix.js";
@@ -48,13 +51,15 @@ import { ROUTE_MATRIX, ROUTE_TENANCIES, type RouteMatrixEntry } from "../routeMa
  * Issue #1053: every `surface: "api"` entry of `ROUTE_MATRIX` and every MCP generic operation is
  * driven as tenant B against tenant A's real rows, on a runtime-role pool with
  * `SEMPREC_TENANT_SCOPE=strict`. A foreign id must be answered exactly like a random one (same
- * status, same body once each requested id is masked), a mutation must leave A's rows as A reads
- * them, and no list, query or count may contain any of A's ids.
+ * status, body and headers once each requested id is masked; `IGNORED_HEADERS` lists the
+ * per-connection exceptions), a mutation must leave A's rows as A reads them, and a list, query or
+ * count must succeed, contain B's own rows and contain none of A's ids.
  */
 
 const SETUP_TOKEN = "tenant-isolation-setup-token";
 const EXAMPLE_ID = "00000000-0000-0000-0000-000000000000";
 const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-isolation-${randomUUID()}`);
+const filesStorage = new LocalFsBlobStorageWriter(join(tmpBlobDir, "files"));
 const noopMailer: PasswordResetMailer = { async sendPasswordResetEmail() {} };
 const moduleRegistry = await loadFullModuleRegistry();
 
@@ -71,7 +76,16 @@ interface Caller {
 interface Answer {
   status: number;
   text: string;
+  /** Every response header except the per-connection ones in `IGNORED_HEADERS`. */
+  headers: Record<string, string>;
 }
+
+/**
+ * Headers that differ per request or connection whatever the row, so they carry nothing about it.
+ * `content-length` is left out because it is a function of the body, which is compared itself;
+ * masking a requested value of a different length would otherwise change it.
+ */
+const IGNORED_HEADERS: ReadonlySet<string> = new Set(["date", "connection", "keep-alive", "content-length"]);
 
 interface Request {
   method: string;
@@ -111,6 +125,8 @@ interface TenantFixture {
   /** The uploaded file's bytes, unique to this tenant. */
   fileContent: string;
   blobId: string;
+  /** The blob's content hash, the value its ETag is derived from. */
+  blobContentHash: string;
   projectItemId: string;
   heartbeatId: string;
   notificationId: string;
@@ -180,7 +196,11 @@ async function send(caller: Caller | null, request: Request): Promise<Answer> {
     body = typeof request.body === "string" ? request.body : JSON.stringify(request.body);
   }
   const res = await fetch(`${baseUrl}${request.path}`, { method: request.method, headers, body });
-  return { status: res.status, text: await res.text() };
+  const responseHeaders: Record<string, string> = {};
+  res.headers.forEach((value, name) => {
+    if (!IGNORED_HEADERS.has(name)) responseHeaders[name] = value;
+  });
+  return { status: res.status, text: await res.text(), headers: responseHeaders };
 }
 
 /** Expects a 2xx and returns the body text — for fixture writes made through the real routes. */
@@ -192,11 +212,14 @@ async function sendOk(caller: Caller, request: Request): Promise<string> {
   return answer.text;
 }
 
-/** The comparison rule: every occurrence of a requested value is replaced with `<id>`. */
+/** The comparison rule: every occurrence of a requested value, in the body and the headers, is replaced with `<id>`. */
 function masked(answer: Answer, values: readonly string[]): Answer {
-  let text = answer.text;
-  for (const value of values) text = text.split(value).join("<id>");
-  return { status: answer.status, text };
+  const mask = (text: string): string => values.reduce((acc, value) => acc.split(value).join("<id>"), text);
+  return {
+    status: answer.status,
+    text: mask(answer.text),
+    headers: Object.fromEntries(Object.entries(answer.headers).map(([name, value]) => [name, mask(value)])),
+  };
 }
 
 /**
@@ -221,22 +244,32 @@ function expectNoneOf(text: string, ids: readonly string[], what: string): void 
   expect(leaked, `${what} contains ids it must not`).toEqual([]);
 }
 
-async function expectExcludesA(caller: Caller, request: Request): Promise<Answer> {
+/**
+ * Expects a successful answer that contains none of A's ids and, so that an empty answer cannot
+ * pass for the wrong reason, every one of `ownIds` (B's own rows the request must return).
+ */
+async function expectExcludesA(caller: Caller, request: Request, ownIds: readonly string[] = []): Promise<Answer> {
   const answer = await send(caller, request);
-  expectNoneOf(answer.text, a.ids, `${request.method} ${request.path}`);
+  const what = `${request.method} ${request.path}`;
+  expect(answer.status, `${what}: ${answer.text}`).toBeLessThan(300);
+  expectNoneOf(answer.text, a.ids, what);
+  expect(
+    ownIds.filter((id) => !answer.text.includes(id)),
+    `${what} is missing B's own rows`,
+  ).toEqual([]);
   return answer;
 }
 
 /** The reads A uses to observe its own rows; compared before and after every mutating case. */
 function aStateReads(): Request[] {
   return [
-    { method: "GET", path: "/api/databases?limit=100" },
+    { method: "GET", path: "/api/databases?limit=200" },
     { method: "GET", path: `/api/databases/${a.databaseId}` },
     { method: "GET", path: `/api/databases/${a.targetDatabaseId}` },
     { method: "GET", path: `/api/databases/${a.archivedDatabaseId}` },
     { method: "GET", path: `/api/databases/${a.databaseId}/properties` },
     { method: "GET", path: `/api/databases/${a.targetDatabaseId}/properties` },
-    { method: "GET", path: `/api/views?limit=100` },
+    { method: "GET", path: `/api/views?limit=200` },
     { method: "GET", path: `/api/views/${a.viewId}` },
     { method: "GET", path: `/api/views/${a.curatedViewId}` },
     { method: "POST", path: `/api/views/${a.curatedViewId}/query`, body: {} },
@@ -456,11 +489,17 @@ async function seedTenant(): Promise<TenantFixture> {
     }),
     "id",
   );
-  const blobId = await inTenantTransaction(tenantId, async (client) => {
-    const { rows } = await client.query<{ id: string }>("SELECT id FROM blobs");
-    if (rows.length !== 1) throw new Error(`expected exactly one blob in tenant ${tenantId}`);
-    return rows[0]!.id;
+  const blob = await inTenantTransaction(tenantId, async (client) => {
+    const { rows } = await client.query<{ id: string; content_hash: string | null }>(
+      "SELECT id, content_hash FROM blobs",
+    );
+    const row = rows[0];
+    if (rows.length !== 1 || !row?.content_hash) {
+      throw new Error(`expected exactly one hashed blob in tenant ${tenantId}`);
+    }
+    return { id: row.id, contentHash: row.content_hash };
   });
+  const blobId = blob.id;
   await sendOk(member, { method: "POST", path: "/api/transcriptions", body: { fileItemId } });
   const transcriptItemId = await runInTenant(tenantId, () => createTestModuleItem(pool, "transcripts"));
   const proposalItemId = await runInTenant(tenantId, () => createTestModuleItem(pool, "processingProposals"));
@@ -558,7 +597,7 @@ async function seedTenant(): Promise<TenantFixture> {
   );
 
   const listedDatabaseIds = readIdArray(
-    await sendOk(member, { method: "GET", path: "/api/databases?limit=100" }),
+    await sendOk(member, { method: "GET", path: "/api/databases?limit=200" }),
     "databases",
   );
 
@@ -610,6 +649,7 @@ async function seedTenant(): Promise<TenantFixture> {
     fileItemId,
     fileContent,
     blobId,
+    blobContentHash: blob.contentHash,
     projectItemId,
     ...scoped,
     transcriptItemId,
@@ -633,6 +673,26 @@ async function seedTenant(): Promise<TenantFixture> {
   };
 }
 
+/** Runs every queued `tenantExport` job through the production task list, so both exports are `ready`. */
+async function runExportJobs(): Promise<void> {
+  const coreTasks = createCoreTaskList(
+    pool,
+    createActionRegistry(),
+    undefined,
+    undefined,
+    new LocalFsBlobStorageWriter(join(tmpBlobDir, "mail")),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    filesStorage,
+  );
+  const exportTask = coreTasks[CORE_TASK_NAMES.TENANT_EXPORT];
+  if (!exportTask) throw new Error("createCoreTaskList has no tenantExport task");
+  const taskList: TaskList = { [CORE_TASK_NAMES.TENANT_EXPORT]: exportTask };
+  await runOnce({ pgPool: pool, taskList });
+}
+
 // ---------------------------------------------------------------------------------------------
 // REST cases, one per `surface: "api"` entry, keyed by `RouteMatrixEntry.name`
 // ---------------------------------------------------------------------------------------------
@@ -654,7 +714,10 @@ function adminCase(name: string, method: string, request: () => Promise<Request>
       path: entryPath(name, id!),
       body: method === "GET" ? undefined : {},
     }));
-    expect(refused).toEqual({ status: 403, text: JSON.stringify({ error: { code: "admin_required" } }) });
+    expect({ status: refused.status, text: refused.text }).toEqual({
+      status: 403,
+      text: JSON.stringify({ error: { code: "admin_required" } }),
+    });
 
     const answer = await send(admin, await request());
     expect(answer.status, answer.text).toBeLessThan(300);
@@ -779,6 +842,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       const subscriptions = await runInTenant(a.tenantId, () => listPushSubscriptionsForUser(pool, a.member.userId));
       if (subscriptions.find((subscription) => subscription.id === a.pushSubscriptionId)?.revokedAt !== null) {
         a.pushSubscriptionId = readString(await sendOk(a.member, register(a.pushDeviceToken)), "subscription", "id");
+        a.ids.push(a.pushSubscriptionId);
       }
     }
   },
@@ -793,7 +857,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
 
   // --- tenant: notifications, reports, inbox, transcription --------------------------------
   "unread notifications": async () => {
-    await expectExcludesA(b.member, { method: "GET", path: "/api/notifications/unread" });
+    await expectExcludesA(b.member, { method: "GET", path: "/api/notifications/unread" }, [b.notificationId]);
   },
   "visit notification": () =>
     leavesAUnchanged(async () => {
@@ -805,13 +869,15 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }),
   "mark all notifications read": () =>
     leavesAUnchanged(async () => {
-      await expectExcludesA(b.member, { method: "POST", path: "/api/notifications/mark-all-read", body: {} });
+      await expectExcludesA(b.member, { method: "POST", path: "/api/notifications/mark-all-read", body: {} }, [
+        b.notificationId,
+      ]);
     }),
   "schema projection": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/schema" });
   },
   "ai usage report": async () => {
-    await expectExcludesA(b.member, { method: "GET", path: "/api/ai-usage?from=2026-01-01&to=2030-01-01" });
+    await expectExcludesA(b.member, { method: "GET", path: "/api/ai-usage?from=2026-01-01&to=2026-12-31" });
   },
   "system health report": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/system-health" });
@@ -852,7 +918,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
 
   // --- tenant: approvals, agent runs, MCP ----------------------------------------------------
   "approval queue": async () => {
-    await expectExcludesA(b.member, { method: "GET", path: "/api/approval-requests" });
+    await expectExcludesA(b.member, { method: "GET", path: "/api/approval-requests" }, [b.approvalRequestId]);
   },
   "approval decision": () =>
     leavesAUnchanged(async () => {
@@ -923,10 +989,13 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: { granted: true },
       });
       const randomProject = randomUUID();
-      const withoutTimestamps = (answer: Answer, project: string): Answer => ({
-        status: answer.status,
-        text: masked(answer, [project]).text.replace(/"(createdAt|updatedAt)":"[^"]*"/g, '"$1":"<at>"'),
-      });
+      const withoutTimestamps = (answer: Answer, project: string): Answer => {
+        const projectMasked = masked(answer, [project]);
+        return {
+          ...projectMasked,
+          text: projectMasked.text.replace(/"(createdAt|updatedAt)":"[^"]*"/g, '"$1":"<at>"'),
+        };
+      };
       expect(withoutTimestamps(await send(b.member, grant(a.projectItemId)), a.projectItemId)).toEqual(
         withoutTimestamps(await send(b.member, grant(randomProject)), randomProject),
       );
@@ -942,7 +1011,10 @@ const ROUTE_CASES: Record<string, RouteCase> = {
 
   // --- tenant: databases ---------------------------------------------------------------------
   "list databases": async () => {
-    await expectExcludesA(b.member, { method: "GET", path: "/api/databases?limit=100" });
+    await expectExcludesA(b.member, { method: "GET", path: "/api/databases?limit=200" }, [
+      b.databaseId,
+      b.targetDatabaseId,
+    ]);
   },
   "create database": () =>
     leavesAUnchanged(async () => {
@@ -1038,7 +1110,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
 
   // --- tenant: views -------------------------------------------------------------------------
   "list views": async () => {
-    await expectExcludesA(b.member, { method: "GET", path: "/api/views?limit=100" });
+    // The view list holds curated views only; database-linked ones are listed per database.
+    await expectExcludesA(b.member, { method: "GET", path: "/api/views?limit=200" }, [b.curatedViewId]);
   },
   "view detail": async () => {
     await expectForeignLikeRandom(b.member, [a.viewId], ([id]) => ({ method: "GET", path: `/api/views/${id}` }));
@@ -1118,14 +1191,18 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       path: `/api/databases/${id}/query`,
       body: {},
     }));
-    for (const databaseId of [b.databaseId, b.targetDatabaseId]) {
-      for (const inTrash of [false, true]) {
-        await expectExcludesA(b.member, {
-          method: "POST",
-          path: `/api/databases/${databaseId}/query`,
-          body: { inTrash },
-        });
-      }
+    const ownQueries: Array<{ databaseId: string; inTrash: boolean; ownIds: string[] }> = [
+      { databaseId: b.databaseId, inTrash: false, ownIds: [b.itemId] },
+      { databaseId: b.databaseId, inTrash: true, ownIds: [b.trashedItemId] },
+      { databaseId: b.targetDatabaseId, inTrash: false, ownIds: [b.targetItemId] },
+      { databaseId: b.targetDatabaseId, inTrash: true, ownIds: [] },
+    ];
+    for (const { databaseId, inTrash, ownIds } of ownQueries) {
+      await expectExcludesA(
+        b.member,
+        { method: "POST", path: `/api/databases/${databaseId}/query`, body: { inTrash } },
+        ownIds,
+      );
     }
   },
   "query view": async () => {
@@ -1137,7 +1214,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       }));
     }
     for (const viewId of [b.viewId, b.curatedViewId]) {
-      await expectExcludesA(b.member, { method: "POST", path: `/api/views/${viewId}/query`, body: {} });
+      await expectExcludesA(b.member, { method: "POST", path: `/api/views/${viewId}/query`, body: {} }, [b.itemId]);
     }
   },
   "create/replace relation": () =>
@@ -1160,21 +1237,33 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: content,
         headers: { "Content-Type": "audio/mpeg", "X-Filename": "b.mp3" },
       });
-      const foreign = await expectExcludesA(b.member, upload(a.fileContent));
+      const foreign = await send(b.member, upload(a.fileContent));
+      expectNoneOf(foreign.text, a.ids, "upload of A's bytes");
       const random = await expectExcludesA(b.member, upload(`audio of ${randomUUID()}`));
       expect(random.status).toBe(201);
       expect(foreign.status, foreign.text).toBe(random.status);
     }),
   "download blob": async () => {
     await expectForeignLikeRandom(b.member, [a.blobId], ([id]) => ({ method: "GET", path: `/api/blobs/${id}` }));
+    // The conditional branches answer 304 with A's ETag and 416 with A's size to A itself, so
+    // B naming A's content hash or an unsatisfiable range must still get the plain not-found.
+    await expectForeignLikeRandom(b.member, [a.blobId], ([id]) => ({
+      method: "GET",
+      path: `/api/blobs/${id}`,
+      headers: { "If-None-Match": `"${a.blobContentHash}"` },
+    }));
+    await expectForeignLikeRandom(b.member, [a.blobId], ([id]) => ({
+      method: "GET",
+      path: `/api/blobs/${id}`,
+      headers: { Range: "bytes=999999999-" },
+    }));
   },
   "request account export": () =>
     leavesAUnchanged(async () => {
-      const answer = await expectExcludesA(b.member, { method: "POST", path: "/api/account/exports", body: {} });
-      expect(answer.status).toBeLessThan(300);
+      await expectExcludesA(b.member, { method: "POST", path: "/api/account/exports", body: {} });
     }),
   "list account exports": async () => {
-    await expectExcludesA(b.member, { method: "GET", path: "/api/account/exports" });
+    await expectExcludesA(b.member, { method: "GET", path: "/api/account/exports" }, [b.exportId]);
   },
   "download account export": async () => {
     await expectForeignLikeRandom(b.member, [a.exportId], ([id]) => ({
@@ -1275,6 +1364,231 @@ async function relationCases(method: string, body: unknown): Promise<void> {
   }));
 }
 
+interface OwnerProbe {
+  label: string;
+  ids: string[];
+  build: (values: readonly string[]) => Request;
+  /** The status A's own request must get, where the route has a single success answer. */
+  status?: number;
+  /** Values A's own answer must contain. */
+  contains?: string[];
+  /** Puts A's row back after a probe that changed it. */
+  undo?: () => Promise<void>;
+}
+
+/** One probe per id the `tenant` cases name, sent as A. */
+function ownerProbes(): OwnerProbe[] {
+  const get = (path: (values: readonly string[]) => string) => (values: readonly string[]) => ({
+    method: "GET",
+    path: path(values),
+  });
+  const call = (method: string, path: (values: readonly string[]) => string, body: unknown = {}) => {
+    return (values: readonly string[]): Request => ({ method, path: path(values), body });
+  };
+  return [
+    { label: "database detail", ids: [a.databaseId], build: get(([id]) => `/api/databases/${id}`), status: 200 },
+    {
+      label: "archived database detail",
+      ids: [a.archivedDatabaseId],
+      build: get(([id]) => `/api/databases/${id}`),
+      status: 200,
+    },
+    {
+      label: "property catalog",
+      ids: [a.databaseId],
+      build: get(([id]) => `/api/databases/${id}/properties`),
+      status: 200,
+      contains: [a.propertyId, a.relationPropertyId],
+    },
+    {
+      label: "property list",
+      ids: [a.databaseId],
+      build: get(([id]) => `/api/properties?databaseId=${id}`),
+      status: 200,
+      contains: [a.propertyId],
+    },
+    { label: "property detail", ids: [a.propertyId], build: get(([id]) => `/api/properties/${id}`), status: 200 },
+    { label: "view detail", ids: [a.viewId], build: get(([id]) => `/api/views/${id}`), status: 200 },
+    { label: "curated view detail", ids: [a.curatedViewId], build: get(([id]) => `/api/views/${id}`), status: 200 },
+    { label: "item detail", ids: [a.itemId], build: get(([id]) => `/api/items/${id}?include=path`), status: 200 },
+    {
+      label: "query database",
+      ids: [a.databaseId],
+      build: call("POST", ([id]) => `/api/databases/${id}/query`),
+      status: 200,
+      contains: [a.itemId],
+    },
+    {
+      label: "query database trash",
+      ids: [a.databaseId],
+      build: call("POST", ([id]) => `/api/databases/${id}/query`, { inTrash: true }),
+      status: 200,
+      contains: [a.trashedItemId],
+    },
+    {
+      label: "query view",
+      ids: [a.viewId],
+      build: call("POST", ([id]) => `/api/views/${id}/query`),
+      status: 200,
+      contains: [a.itemId],
+    },
+    {
+      label: "query curated view",
+      ids: [a.curatedViewId],
+      build: call("POST", ([id]) => `/api/views/${id}/query`),
+      status: 200,
+      contains: [a.itemId],
+    },
+    { label: "download blob", ids: [a.blobId], build: get(([id]) => `/api/blobs/${id}`), status: 200 },
+    {
+      label: "download blob, matching If-None-Match",
+      ids: [a.blobId],
+      build: ([id]) => ({
+        method: "GET",
+        path: `/api/blobs/${id}`,
+        headers: { "If-None-Match": `"${a.blobContentHash}"` },
+      }),
+      status: 304,
+    },
+    {
+      label: "download blob, unsatisfiable range",
+      ids: [a.blobId],
+      build: ([id]) => ({ method: "GET", path: `/api/blobs/${id}`, headers: { Range: "bytes=999999999-" } }),
+      status: 416,
+    },
+    {
+      label: "download account export",
+      ids: [a.exportId],
+      build: get(([id]) => `/api/account/exports/${id}/download`),
+      status: 200,
+    },
+    { label: "agent run detail", ids: [a.agentRunId], build: get(([id]) => `/api/agent-runs/${id}`), status: 200 },
+    {
+      label: "project mcp grants",
+      ids: [a.projectItemId],
+      build: get(([id]) => `/api/projects/${id}/mcp-grants`),
+      status: 200,
+      contains: [a.mcpToolRegistrationId, '"granted":true'],
+    },
+    {
+      label: "transcript speakers",
+      ids: [a.transcriptItemId],
+      build: get(([id]) => `/api/transcripts/${id}/speakers`),
+    },
+    {
+      label: "create transcription",
+      ids: [a.fileItemId],
+      build: ([fileItemId]) => ({ method: "POST", path: "/api/transcriptions", body: { fileItemId } }),
+    },
+    {
+      label: "transcription rerun",
+      ids: [a.transcriptItemId],
+      build: call("POST", ([id]) => `/api/transcriptions/${id}/rerun`),
+    },
+    {
+      label: "confirm proposal",
+      ids: [a.proposalItemId],
+      build: call("POST", ([id]) => `/api/proposals/${id}/confirm`),
+    },
+    {
+      label: "visit notification",
+      ids: [a.notificationId],
+      build: call("POST", ([id]) => `/api/notifications/${id}/visit`),
+      status: 200,
+    },
+    {
+      label: "mint mcp run credential",
+      ids: [a.projectItemId],
+      build: ([projectItemId]) => ({
+        method: "POST",
+        path: "/api/agent-runs/mcp-credentials",
+        body: { projectItemId, capabilities: ["core.item.read"] },
+      }),
+      status: 201,
+    },
+    {
+      label: "project mcp grant toggle",
+      ids: [a.projectItemId, a.mcpToolRegistrationId],
+      build: call("PATCH", ([project, tool]) => `/api/projects/${project}/mcp-grants/${tool}`, { granted: true }),
+      status: 200,
+    },
+    {
+      label: "mcp tool registration reclassify",
+      ids: [a.mcpToolRegistrationId],
+      build: call("PATCH", ([id]) => `/api/mcp-tool-registrations/${id}`, {
+        requiresApproval: false,
+        riskClass: "read",
+      }),
+      status: 200,
+    },
+    {
+      label: "rename database",
+      ids: [a.databaseId],
+      build: call("PATCH", ([id]) => `/api/databases/${id}`, { name: "Isolation probe" }),
+      status: 200,
+    },
+    {
+      label: "archive database",
+      ids: [a.archivedDatabaseId],
+      build: call("DELETE", ([id]) => `/api/databases/${id}`),
+    },
+    {
+      label: "restore database",
+      ids: [a.archivedDatabaseId],
+      build: call("POST", ([id]) => `/api/databases/${id}/restore`),
+      status: 200,
+      undo: async () => {
+        await sendOk(a.member, { method: "DELETE", path: `/api/databases/${a.archivedDatabaseId}` });
+      },
+    },
+    {
+      label: "update property",
+      ids: [a.propertyId],
+      build: call("PATCH", ([id]) => `/api/properties/${id}`, { name: "Note" }),
+      status: 200,
+    },
+    {
+      label: "patch view",
+      ids: [a.viewId],
+      build: call("PATCH", ([id]) => `/api/views/${id}`, { name: "All rows" }),
+      status: 200,
+    },
+    {
+      label: "add curated view item",
+      ids: [a.curatedViewId, a.itemId],
+      build: call("PUT", ([view, item]) => `/api/views/${view}/items/${item}`, { position: 0 }),
+      status: 200,
+    },
+    {
+      label: "reorder curated view item",
+      ids: [a.curatedViewId, a.itemId],
+      build: call("PATCH", ([view, item]) => `/api/views/${view}/items/${item}`, { position: 0 }),
+      status: 200,
+    },
+    {
+      label: "patch item",
+      ids: [a.itemId],
+      build: call("PATCH", ([id]) => `/api/items/${id}`, { properties: {}, ifVersion: a.itemVersion }),
+      status: 200,
+    },
+    {
+      label: "restore item",
+      ids: [a.trashedItemId],
+      build: call("POST", ([id]) => `/api/items/${id}/restore`),
+      status: 200,
+      undo: async () => {
+        await sendOk(a.member, { method: "DELETE", path: `/api/items/${a.trashedItemId}` });
+      },
+    },
+    {
+      label: "create/replace relation",
+      ids: [a.itemId, a.targetItemId],
+      build: call("PUT", ([item, target]) => `/api/items/${item}/relations/${a.relationPropertyKey}/${target}`),
+      status: 200,
+    },
+  ];
+}
+
 // ---------------------------------------------------------------------------------------------
 // MCP cases, one per generic operation
 // ---------------------------------------------------------------------------------------------
@@ -1285,14 +1599,14 @@ interface McpProbe {
     foreign: readonly string[],
     args: (values: readonly string[]) => Record<string, unknown>,
   ): Promise<void>;
-  /** `tools/call` returns none of A's ids. */
-  excludesA(args: Record<string, unknown>): Promise<void>;
+  /** `tools/call` succeeds, returns none of A's ids and returns every one of `ownIds`. */
+  excludesA(args: Record<string, unknown>, ownIds: readonly string[]): Promise<void>;
 }
 
 type McpCase = (probe: McpProbe) => Promise<void>;
 
 const MCP_CASES = {
-  "database.list": (p) => p.excludesA({}),
+  "database.list": (p) => p.excludesA({ limit: 200 }, [b.databaseId, b.targetDatabaseId]),
   "database.get": (p) => p.foreignLikeRandom([a.databaseId], ([databaseId]) => ({ databaseId })),
   "database.create": (p) =>
     p.foreignLikeRandom([a.itemId], ([parentItemId]) => ({ name: "Child of a foreign item", parentItemId })),
@@ -1302,7 +1616,7 @@ const MCP_CASES = {
   "database.restore": (p) => p.foreignLikeRandom([a.archivedDatabaseId], ([databaseId]) => ({ databaseId })),
   "property.list": async (p) => {
     await p.foreignLikeRandom([a.databaseId], ([databaseId]) => ({ databaseId }));
-    await p.excludesA({ databaseId: b.databaseId });
+    await p.excludesA({ databaseId: b.databaseId }, [b.propertyId, b.relationPropertyId]);
   },
   "property.get": (p) => p.foreignLikeRandom([a.propertyId], ([propertyId]) => ({ propertyId })),
   "property.getByKey": (p) =>
@@ -1327,7 +1641,8 @@ const MCP_CASES = {
   "property.patch": (p) =>
     p.foreignLikeRandom([a.propertyId], ([propertyId]) => ({ propertyId, patch: { name: "Renamed by B" } })),
   "property.delete": (p) => p.foreignLikeRandom([a.propertyId], ([propertyId]) => ({ propertyId })),
-  "view.list": (p) => p.excludesA({}),
+  // Curated views only, as for `GET /api/views`.
+  "view.list": (p) => p.excludesA({ limit: 200 }, [b.curatedViewId]),
   "view.get": (p) => p.foreignLikeRandom([a.viewId], ([viewId]) => ({ viewId })),
   "view.create": (p) =>
     p.foreignLikeRandom([a.databaseId], ([databaseId]) => ({ databaseId, type: "table", name: "Probe" })),
@@ -1336,8 +1651,8 @@ const MCP_CASES = {
   "view.query": async (p) => {
     await p.foreignLikeRandom([a.viewId], ([viewId]) => ({ viewId }));
     await p.foreignLikeRandom([a.curatedViewId], ([viewId]) => ({ viewId }));
-    await p.excludesA({ viewId: b.viewId });
-    await p.excludesA({ viewId: b.curatedViewId });
+    await p.excludesA({ viewId: b.viewId }, [b.itemId]);
+    await p.excludesA({ viewId: b.curatedViewId }, [b.itemId]);
   },
   "viewItem.add": async (p) => {
     await p.foreignLikeRandom([a.curatedViewId, a.itemId], ([viewId, itemId]) => ({ viewId, itemId }));
@@ -1363,8 +1678,8 @@ const MCP_CASES = {
   "item.restore": (p) => p.foreignLikeRandom([a.trashedItemId], ([itemId]) => ({ itemId })),
   "database.query": async (p) => {
     await p.foreignLikeRandom([a.databaseId], ([databaseId]) => ({ databaseId }));
-    await p.excludesA({ databaseId: b.databaseId });
-    await p.excludesA({ databaseId: b.databaseId, inTrash: true });
+    await p.excludesA({ databaseId: b.databaseId }, [b.itemId]);
+    await p.excludesA({ databaseId: b.databaseId, inTrash: true }, [b.trashedItemId]);
   },
   "relation.put": async (p) => {
     await p.foreignLikeRandom(
@@ -1404,8 +1719,8 @@ function mcpProbe(caller: Caller, operation: GenericOperationName): McpProbe {
       const answer = await expectForeignLikeRandom(caller, foreign, (values) => mcpCall(operation, args(values)));
       expect(answer.status).toBe(200);
     },
-    async excludesA(args) {
-      const answer = await expectExcludesA(caller, mcpCall(operation, args));
+    async excludesA(args, ownIds) {
+      const answer = await expectExcludesA(caller, mcpCall(operation, args), ownIds);
       expect(answer.status).toBe(200);
       // A list or query that errors would contain no ids trivially.
       expect(answer.text).not.toContain('"error"');
@@ -1432,7 +1747,7 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
       appBaseUrl: "https://app.example.test",
       setupToken: SETUP_TOKEN,
       moduleRegistry,
-      blobStorage: new LocalFsBlobStorageWriter(tmpBlobDir),
+      blobStorage: filesStorage,
       maxFileSizeBytes: 10 * 1024 * 1024,
     });
     server = createServer(dispatch);
@@ -1443,6 +1758,7 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
 
     a = await seedTenant();
     b = await seedTenant();
+    await runExportJobs();
     admin = await signUp(getTenantZeroId(), "admin");
     adminTarget = await signUp(await createTestTenant(adminPool), "member");
 
@@ -1484,27 +1800,36 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     expect(adminMismatch).toEqual([]);
   });
 
-  it("sees its own fixture rows as A, so a foreign answer is a real refusal", async () => {
-    // Positive control: each id the cases probe is visible to A, and differs from a random id.
-    const reads: Array<(id: string) => Request> = [
-      (id) => ({ method: "GET", path: `/api/databases/${id}` }),
-      (id) => ({ method: "GET", path: `/api/items/${id}` }),
-      (id) => ({ method: "GET", path: `/api/agent-runs/${id}` }),
-      (id) => ({ method: "GET", path: `/api/blobs/${id}` }),
-      (id) => ({ method: "GET", path: `/api/views/${id}` }),
-      (id) => ({ method: "GET", path: `/api/properties/${id}` }),
-    ];
-    const ids = [a.databaseId, a.itemId, a.agentRunId, a.blobId, a.viewId, a.propertyId];
-    for (const [index, read] of reads.entries()) {
-      const own = await send(a.member, read(ids[index]!));
-      expect(own.status, own.text).toBe(200);
-      expect((await send(b.member, read(ids[index]!))).status).not.toBe(200);
-    }
+  it("lists A's own approval request and unread notification for A", async () => {
     expect(readIdArray(await sendOk(a.member, { method: "GET", path: "/api/approval-requests" }), "rows")).toEqual([
       a.approvalRequestId,
     ]);
     const notifications = await sendOk(a.member, { method: "GET", path: "/api/notifications/unread" });
     expect(readIdArray(notifications, "notifications")).toEqual([a.notificationId]);
+  });
+
+  it("answers A's own ids differently from random ids on every probed route, so a foreign answer is a real refusal", async () => {
+    // Positive control for the tenant cases: for each id they probe, A naming its own row must
+    // take another branch than A naming a random id. Mutating probes are idempotent for A's rows
+    // or are undone right after; the destructive routes share their ids with a read probed here.
+    for (const probe of ownerProbes()) {
+      const random = probe.ids.map(() => randomUUID());
+      const own = await send(a.member, probe.build(probe.ids));
+      const unknown = await send(a.member, probe.build(random));
+      const label = `${probe.label}: ${own.status} ${own.text.slice(0, 200)}`;
+      expect.soft(masked(own, probe.ids), label).not.toEqual(masked(unknown, random));
+      if (probe.status !== undefined) expect.soft(own.status, label).toBe(probe.status);
+      if (probe.contains !== undefined) {
+        expect
+          .soft(
+            probe.contains.filter((value) => !own.text.includes(value)),
+            label,
+          )
+          .toEqual([]);
+      }
+      await probe.undo?.();
+    }
+    a.itemVersion = readString(await sendOk(a.member, { method: "GET", path: `/api/items/${a.itemId}` }), "updatedAt");
   });
 
   for (const entry of API_ENTRIES) {
