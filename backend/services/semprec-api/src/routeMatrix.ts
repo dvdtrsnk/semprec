@@ -464,6 +464,13 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     public: false,
   },
   {
+    name: "delete own account",
+    method: "POST",
+    path: "/api/account/delete",
+    surface: "api",
+    public: false,
+  },
+  {
     name: "admin account list",
     method: "GET",
     path: "/api/admin/accounts",
@@ -507,6 +514,14 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
     name: "admin reactivate account",
     method: "POST",
     path: "/api/admin/accounts/00000000-0000-0000-0000-000000000000/reactivate",
+    surface: "api",
+    public: false,
+    admin: true,
+  },
+  {
+    name: "admin delete account",
+    method: "POST",
+    path: "/api/admin/accounts/00000000-0000-0000-0000-000000000000/delete",
     surface: "api",
     public: false,
     admin: true,

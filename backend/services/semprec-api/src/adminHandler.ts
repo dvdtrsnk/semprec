@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import {
   createInvite,
+  deleteAccountAsAdmin,
   getOperatorHealthReport,
   changeAccountRole,
   listAccounts,
@@ -134,6 +135,16 @@ export function createAdminRoutes(pool: Pool, options: AppOptions): RouteDefinit
           reactivateAccount(client, { actorUserId, targetUserId }),
         );
         return { status: 200, body: { account } };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/admin/accounts/:userId/delete",
+      admin: true,
+      handler: async (ctx) => {
+        const targetUserId = requireUuidParam(ctx.params, "userId");
+        const account = await deleteAccountAsAdmin(pool, { actorUserId: ctx.identity.user.id, targetUserId });
+        return { status: 202, body: { account } };
       },
     },
     {

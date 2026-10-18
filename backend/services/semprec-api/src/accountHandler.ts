@@ -3,10 +3,12 @@ import { pipeline } from "node:stream";
 import type { Pool } from "pg";
 import {
   ChokePointError,
+  deleteOwnAccount,
   getDownloadableTenantExport,
   listTenantExports,
   NotFoundError,
   requestTenantExport,
+  ValidationError,
   withTransaction,
   type BlobStorageWriter,
 } from "@semprec/data";
@@ -14,7 +16,8 @@ import { runInTenant } from "@semprec/shared";
 import { authenticateRequest } from "./authHandler.js";
 import { statusForError, toErrorResponseBody } from "./adapter/errorContract.js";
 import { NO_STORE, sendJson } from "./adapter/http.js";
-import { assertUuid } from "./adapter/requestValidation.js";
+import { assertUuid, requireJsonObjectBody } from "./adapter/requestValidation.js";
+import { clientIpFromRequest } from "./clientIp.js";
 import type { RouteDefinition } from "./adapter/routeTable.js";
 import type { AppOptions } from "./app.js";
 import { logger } from "./logger.js";
@@ -22,9 +25,9 @@ import { logger } from "./logger.js";
 /**
  * The account route family (issue #1043): the caller's own account, in the caller's own tenant.
  * Every route is an adapter route, so it is authenticated and runs inside the session's tenant
- * scope. `options` is the dispatcher's own options object; the export routes read nothing from it.
+ * scope. `options` is the dispatcher's own options object; account deletion reads its `trustProxy`.
  */
-export function createAccountRoutes(pool: Pool, _options: AppOptions): RouteDefinition[] {
+export function createAccountRoutes(pool: Pool, options: AppOptions): RouteDefinition[] {
   return [
     {
       method: "POST",
@@ -38,6 +41,24 @@ export function createAccountRoutes(pool: Pool, _options: AppOptions): RouteDefi
       method: "GET",
       path: "/api/account/exports",
       handler: async () => ({ status: 200, body: { exports: await listTenantExports(pool) } }),
+    },
+    {
+      method: "POST",
+      path: "/api/account/delete",
+      handler: async (ctx) => {
+        const body = requireJsonObjectBody(ctx.body);
+        const password = body.password;
+        if (typeof password !== "string" || password.length === 0) {
+          throw new ValidationError("'password' must be a non-empty string", { field: "password" });
+        }
+        await deleteOwnAccount(pool, {
+          userId: ctx.identity.user.id,
+          tenantId: ctx.identity.tenantId,
+          password,
+          ip: clientIpFromRequest(ctx.req, { trustProxy: options.trustProxy ?? false }),
+        });
+        return { status: 202, body: { status: "deleting" } };
+      },
     },
   ];
 }
