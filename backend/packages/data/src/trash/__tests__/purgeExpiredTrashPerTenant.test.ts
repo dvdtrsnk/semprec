@@ -10,7 +10,7 @@ import {
 } from "../../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { createBlob } from "../../blobs/blobsStore.js";
-import { logger } from "../../tenancy/logger.js";
+import { logger } from "../logger.js";
 import type { BlobStorageWriter } from "../../mail/blobStorage.js";
 import { handleItemTrashPurgeSweepTask } from "../purgeExpiredTrash.js";
 
@@ -102,7 +102,6 @@ describe("purgeExpiredTrash runs per tenant (issue #986)", () => {
     tenantZero = getTenantZeroId();
     tenantB = await createTestTenant(adminPool);
     vi.spyOn(logger, "error").mockImplementation(() => {});
-    vi.spyOn(console, "error").mockImplementation(() => {});
   });
 
   it("purges each tenant's expired item and keeps its recently trashed one", async () => {
@@ -185,7 +184,10 @@ describe("purgeExpiredTrash runs per tenant (issue #986)", () => {
 
     await runAsSystem("test", () => handleItemTrashPurgeSweepTask(pool, fakeStorage().storage));
 
-    expect(console.error).toHaveBeenCalledWith(`Failed to purge trashed item ${archivedItemId}`, expect.anything());
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ itemId: archivedItemId }),
+      "Failed to purge trashed item",
+    );
     expect(await itemExists(archivedItemId)).toBe(true);
     expect(await itemExists(writableItemId)).toBe(false);
     expect(await itemExists(zero.expiredId)).toBe(false);
