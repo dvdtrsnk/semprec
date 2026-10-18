@@ -321,6 +321,66 @@ describe("AccountsPanel delete", () => {
     expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
     finish(account({ status: "deleting" }));
+
+    await vi.waitFor(() => expect(operations.listAccounts).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(/Permanently delete/)).not.toBeInTheDocument();
+  });
+
+  it("keeps another row's confirmation when a pending delete succeeds", async () => {
+    let finish: (value: AdminAccountSummary) => void = () => undefined;
+    const operations = stubOperations({
+      listAccounts: vi.fn(async () => [
+        account({ userId: "user-2", email: "first@example.com" }),
+        account({ userId: "user-3", email: "second@example.com" }),
+      ]),
+      deleteAccount: vi.fn(
+        () =>
+          new Promise<AdminAccountSummary>((resolve) => {
+            finish = resolve;
+          }),
+      ),
+    });
+    renderPanel(operations);
+
+    await userEvent.click((await screen.findAllByRole("button", { name: "Delete" }))[0]!);
+    await userEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
+    await userEvent.click(within(rowFor("second@example.com")).getByRole("button", { name: "Delete" }));
+
+    finish(account({ userId: "user-2", email: "first@example.com", status: "deleting" }));
+
+    await vi.waitFor(() => expect(operations.listAccounts).toHaveBeenCalledTimes(2));
+    expect(
+      screen.getByText("Permanently delete second@example.com and all of its data? This cannot be undone."),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps another row's confirmation when a pending delete is refused", async () => {
+    let refuse: (error: Error) => void = () => undefined;
+    const operations = stubOperations({
+      listAccounts: vi.fn(async () => [
+        account({ userId: "user-2", email: "first@example.com" }),
+        account({ userId: "user-3", email: "second@example.com" }),
+      ]),
+      deleteAccount: vi.fn(
+        () =>
+          new Promise<AdminAccountSummary>((_resolve, reject) => {
+            refuse = reject;
+          }),
+      ),
+    });
+    renderPanel(operations);
+
+    await userEvent.click((await screen.findAllByRole("button", { name: "Delete" }))[0]!);
+    await userEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
+    await userEvent.click(within(rowFor("second@example.com")).getByRole("button", { name: "Delete" }));
+
+    refuse(new OperationError("retryable", "boom", 500));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("The change failed: boom");
+    expect(
+      screen.getByText("Permanently delete second@example.com and all of its data? This cannot be undone."),
+    ).toBeInTheDocument();
+    expect(operations.listAccounts).toHaveBeenCalledTimes(1);
   });
 
   it("shows the last-admin message on refusal, closes the confirmation and keeps the row's status", async () => {

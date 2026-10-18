@@ -73,7 +73,8 @@ export function AccountsPanel({ operations, currentUserId }: { operations: Admin
         const shown =
           message === LAST_ADMIN_CODE ? t("admin.accounts.lastAdmin") : t("admin.accounts.actionFailed", { message });
         setRows((prev) => ({ ...prev, [account.userId]: { pendingAction: null, error: shown } }));
-        setConfirmingUserId(null);
+        // Another row may hold the confirmation by now; only this row's own confirmation closes here.
+        setConfirmingUserId((current) => (current === account.userId ? null : current));
         return;
       }
       setRows((prev) => {
@@ -81,7 +82,7 @@ export function AccountsPanel({ operations, currentUserId }: { operations: Admin
         delete next[account.userId];
         return next;
       });
-      setConfirmingUserId(null);
+      setConfirmingUserId((current) => (current === account.userId ? null : current));
       reload();
     },
     [operations, reload, t],
