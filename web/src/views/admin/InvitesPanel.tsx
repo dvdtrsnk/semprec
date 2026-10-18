@@ -16,7 +16,10 @@ const INVITE_STATUS_KEYS: Record<InviteStatus, MessageKey> = {
 /**
  * The invitations panel on the admin page (issue #1080). Creating an invitation shows its link once:
  * the link lives only in this component's state, so it is never logged or written to storage, the
- * next creation replaces it, and unmounting drops it. Revoke is offered for pending rows only.
+ * next creation replaces it, revoking that invitation clears it, and unmounting drops it. The email
+ * field is disabled while a creation is pending, so the success path's clearing cannot discard an
+ * address typed after submission. Revoke is offered for pending rows only, and every Revoke button
+ * is disabled while one revocation is pending.
  */
 export function InvitesPanel({ operations }: { operations: AdminOperations }) {
   const t = useTranslate();
@@ -49,6 +52,8 @@ export function InvitesPanel({ operations }: { operations: AdminOperations }) {
     setActionError(null);
     try {
       await operations.revokeInvite(invite.id);
+      // A revoked invitation's link no longer works, so stop offering it; a newer creation stays shown.
+      setCreated((current) => (current?.invite.id === invite.id ? null : current));
       reload();
     } catch (error) {
       setActionError(t("admin.invites.actionFailed", { message: toOperationError(error).message }));
@@ -64,7 +69,13 @@ export function InvitesPanel({ operations }: { operations: AdminOperations }) {
       <form onSubmit={handleCreate}>
         <label>
           {t("admin.invites.email")}
-          <input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} />
+          <input
+            type="email"
+            required
+            disabled={creating}
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+          />
         </label>
         <button type="submit" disabled={creating}>
           {creating ? t("admin.invites.creating") : t("admin.invites.create")}

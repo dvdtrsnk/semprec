@@ -222,6 +222,15 @@ describe("admin operations: invitations", () => {
     });
   });
 
+  it("rejects a malformed revoke response as retryable", async () => {
+    const operations = failingWith(() => jsonResponse({ invite: { ...INVITE, status: "gone" } }));
+
+    await expect(operations.revokeInvite("i 1")).rejects.toMatchObject({
+      kind: "retryable",
+      message: "Unexpected response from /admin/invites/i%201/revoke",
+    });
+  });
+
   it("rejects a malformed create response as retryable", async () => {
     const operations = failingWith(() => jsonResponse({ invite: INVITE, inviteUrl: "x" }, 201));
 
