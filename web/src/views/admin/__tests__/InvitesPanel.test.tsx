@@ -54,6 +54,16 @@ function renderPanel(operations: AdminOperations) {
   );
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}
+
 async function submitEmail(address: string) {
   const user = userEvent.setup();
   await user.type(screen.getByLabelText("Email"), address);
@@ -161,6 +171,138 @@ describe("InvitesPanel", () => {
 
     expect(operations.revokeInvite).toHaveBeenCalledWith("i1");
     await vi.waitFor(() => expect(operations.listInvites).toHaveBeenCalledTimes(2));
+  });
+
+  it("while a creation is pending, the field and submit are disabled and labelled, and success restores them", async () => {
+    const pending = deferred<CreatedInvite>();
+    const createInvite = vi.fn<AdminOperations["createInvite"]>(() => pending.promise);
+    renderPanel(stubOperations({ createInvite }));
+    await screen.findByRole("row", { name: /pending@example.com/ });
+    const user = userEvent.setup();
+
+    await submitEmail("first@example.com");
+
+    const field = screen.getByLabelText("Email");
+    const submit = screen.getByRole("button", { name: "Creating…" });
+    expect(field).toBeDisabled();
+    expect(submit).toBeDisabled();
+    await user.type(field, "second@example.com");
+    await user.click(submit);
+    expect(field).toHaveValue("first@example.com");
+    expect(createInvite).toHaveBeenCalledTimes(1);
+
+    pending.resolve(created());
+
+    expect(await screen.findByDisplayValue(URL_ONE)).toBeInTheDocument();
+    expect(screen.getByLabelText("Email")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Create invitation" })).toBeEnabled();
+  });
+
+  it("a rejected pending creation restores the field and submit with the typed email", async () => {
+    const pending = deferred<CreatedInvite>();
+    renderPanel(stubOperations({ createInvite: vi.fn(() => pending.promise) }));
+    await screen.findByRole("row", { name: /pending@example.com/ });
+
+    await submitEmail("taken@example.com");
+    expect(screen.getByRole("button", { name: "Creating…" })).toBeDisabled();
+
+    pending.reject(new OperationError("retryable", "validation_failed", 400));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("The action failed: validation_failed");
+    expect(screen.getByLabelText("Email")).toBeEnabled();
+    expect(screen.getByLabelText("Email")).toHaveValue("taken@example.com");
+    expect(screen.getByRole("button", { name: "Create invitation" })).toBeEnabled();
+  });
+
+  it("while a revocation is pending, every Revoke button is disabled and the clicked one is labelled", async () => {
+    const pending = deferred<InviteSummary>();
+    const revokeInvite = vi.fn<AdminOperations["revokeInvite"]>(() => pending.promise);
+    const operations = stubOperations({
+      listInvites: vi.fn(async () => [
+        invite({ id: "p1", email: "one@example.com" }),
+        invite({ id: "p2", email: "two@example.com" }),
+      ]),
+      revokeInvite,
+    });
+    renderPanel(operations);
+    const user = userEvent.setup();
+
+    const firstRow = await screen.findByRole("row", { name: /one@example.com/ });
+    await user.click(within(firstRow).getByRole("button", { name: "Revoke" }));
+
+    const revoking = within(firstRow).getByRole("button", { name: "Revoking…" });
+    const other = within(screen.getByRole("row", { name: /two@example.com/ })).getByRole("button", { name: "Revoke" });
+    expect(revoking).toBeDisabled();
+    expect(other).toBeDisabled();
+    await user.click(other);
+    expect(revokeInvite).toHaveBeenCalledTimes(1);
+
+    pending.resolve(invite({ id: "p1", status: "revoked", revokedAt: "2026-10-02T09:00:00.000Z" }));
+
+    await vi.waitFor(() => expect(operations.listInvites).toHaveBeenCalledTimes(2));
+    for (const button of await screen.findAllByRole("button", { name: "Revoke" })) expect(button).toBeEnabled();
+  });
+
+  it("a rejected pending revocation re-enables every Revoke button", async () => {
+    const pending = deferred<InviteSummary>();
+    renderPanel(
+      stubOperations({
+        listInvites: vi.fn(async () => [
+          invite({ id: "p1", email: "one@example.com" }),
+          invite({ id: "p2", email: "two@example.com" }),
+        ]),
+        revokeInvite: vi.fn(() => pending.promise),
+      }),
+    );
+    const user = userEvent.setup();
+
+    const firstRow = await screen.findByRole("row", { name: /one@example.com/ });
+    await user.click(within(firstRow).getByRole("button", { name: "Revoke" }));
+    expect(within(firstRow).getByRole("button", { name: "Revoking…" })).toBeDisabled();
+
+    pending.reject(new OperationError("retryable", "invite_not_pending", 409));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("The action failed: invite_not_pending");
+    const buttons = screen.getAllByRole("button", { name: "Revoke" });
+    expect(buttons).toHaveLength(2);
+    for (const button of buttons) expect(button).toBeEnabled();
+  });
+
+  it("revoking the invitation whose link is shown clears the link", async () => {
+    const listInvites = vi
+      .fn<AdminOperations["listInvites"]>()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([invite({ id: "i-new", email: "new@example.com" })])
+      .mockResolvedValue([invite({ id: "i-new", email: "new@example.com", status: "revoked" })]);
+    renderPanel(stubOperations({ listInvites, createInvite: vi.fn(async () => created({ emailed: false })) }));
+    await screen.findByText("No invitations yet");
+    const user = userEvent.setup();
+
+    await submitEmail("new@example.com");
+    expect(await screen.findByDisplayValue(URL_ONE)).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Revoke" }));
+
+    await vi.waitFor(() => expect(screen.queryByLabelText("Invitation link")).not.toBeInTheDocument());
+    expect(
+      screen.queryByText("The invitation was not emailed. Copy the link and pass it on yourself."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("revoking a different invitation keeps the shown link", async () => {
+    const operations = stubOperations();
+    renderPanel(operations);
+    await screen.findByRole("row", { name: /pending@example.com/ });
+    const user = userEvent.setup();
+
+    await submitEmail("new@example.com");
+    expect(await screen.findByDisplayValue(URL_ONE)).toBeInTheDocument();
+    await user.click(
+      within(screen.getByRole("row", { name: /pending@example.com/ })).getByRole("button", { name: "Revoke" }),
+    );
+
+    expect(operations.revokeInvite).toHaveBeenCalledWith("i1");
+    await vi.waitFor(() => expect(operations.listInvites).toHaveBeenCalledTimes(3));
+    expect(screen.getByDisplayValue(URL_ONE)).toBeInTheDocument();
   });
 
   it("a rejected create shows its message in an alert and keeps the typed email", async () => {
