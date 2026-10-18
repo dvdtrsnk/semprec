@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -13,10 +14,17 @@ import {
   createUser,
   hashPassword,
   insertAndNotifyAgentRunEvent,
+  loadYDoc,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
   provisionTenant,
+  setAgentRunEventHook,
+  setDocUpdateHook,
+  setInvalidationHook,
+  setNotificationCreatedHook,
+  setNotificationReadStateHook,
+  setSessionRevokedHook,
   visitNotification,
   withTransaction,
   writeNotification,
@@ -50,8 +58,14 @@ import { createSyncUpgradeHandler } from "../syncHandler.js";
  *
  * Absence is proven without sleeping: after the event under test reached the socket that should
  * receive it, a sentinel event is published in the checked socket's own tenant. NOTIFYs are
- * delivered over the server's single LISTEN connection in commit order, so everything the checked
- * socket was going to receive before the sentinel is received before it.
+ * delivered over the server's single LISTEN connection in commit order, so everything a NOTIFY
+ * made the checked socket receive arrives before the sentinel.
+ *
+ * Frames a socket sends are not ordered against that connection. For those, the foreign frame is
+ * sent before a request of B1's own whose reply is awaited, and the handlers do the same work in
+ * the same order, so a leaked reply has been produced before the own reply is. A binary frame is
+ * additionally decided synchronously at dispatch: `docSync.handleBinaryFrame` checks the socket's
+ * subscription before its first `await`, and a frame it admits writes a row that fans out to A1.
  */
 
 const PASSWORD = "s3cret-password";
@@ -256,6 +270,7 @@ let wsUrl: string;
 let tenantA: TenantFixture;
 let tenantB: TenantFixture;
 let previousScope: string | undefined;
+let blobDir: string | undefined;
 
 let a1: TestSocket;
 let a2: TestSocket;
@@ -579,7 +594,7 @@ const streamCases = {
   },
 } satisfies Record<AgentStreamMessage["type"], Case>;
 
-/** Summarizes what B1 saw for `inboundFrame` followed by B1's own doc open: it must equal the random-id summary. */
+/** Sends `frame` as B1, then opens B1's own doc, and summarizes what B1 received; naming A's id must summarize like a random id. */
 async function b1AfterForeignDocFrame(frame: InboundFrame): Promise<string[]> {
   b1.sendJson(frame);
   return observeB1AfterOpeningOwnDoc();
@@ -656,26 +671,36 @@ const inboundCases = {
   },
 } satisfies Record<InboundFrame["type"], Case>;
 
+/** The text `docId` currently holds in its `body` Yjs text, read inside `fixture`'s tenant. */
+async function docBodyText(fixture: TenantFixture, docId: string): Promise<string> {
+  const ydoc = await runInTenant(fixture.tenantId, () => loadYDoc(pool, docId));
+  return ydoc.getText("body").toJSON();
+}
+
 /**
- * Sends a Yjs update prefixed with A's doc id from B1, then B1's own update for its own doc, and
- * resolves once the own update is stored: the foreign frame was sent first on the same socket, so
- * by then its handling has also finished. A's doc must not have gained a row.
+ * With A1 subscribed to A's doc, B1 sends a Yjs update prefixed with A's doc id and A1 then sends
+ * a control update for the same doc. The foreign frame is refused or admitted when it is
+ * dispatched, before any await in `handleBinaryFrame`, and was sent before the control through the
+ * same handler, so an admitted frame is queued ahead of the control's write on the same doc. Once
+ * the control's text is stored, A's doc must hold the control's row and none from the foreign frame.
  */
 async function foreignBinaryFrameWritesNothing(): Promise<void> {
+  await openDoc(a1, tenantA.docId);
   const before = await countDocUpdates(tenantA, tenantA.docId);
-  const ownBefore = await countDocUpdates(tenantB, tenantB.docId);
 
   b1.sendBinary(buildBinaryFrame(tenantA.docId, yjsUpdateMessage("foreign")));
-  await openDoc(b1, tenantB.docId);
-  b1.sendBinary(buildBinaryFrame(tenantB.docId, yjsUpdateMessage("own")));
-  await waitForDocUpdateCount(tenantB, tenantB.docId, ownBefore + 1);
+  a1.sendBinary(buildBinaryFrame(tenantA.docId, yjsUpdateMessage("control")));
+  const deadline = Date.now() + FRAME_TIMEOUT_MS;
+  while (!(await docBodyText(tenantA, tenantA.docId)).includes("control")) {
+    if (Date.now() > deadline) throw new Error("the control update was never stored");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 
-  expect(await countDocUpdates(tenantA, tenantA.docId)).toBe(before);
-  const sentinelA = await publishSentinel(tenantA.tenantId);
-  expect(await a1.drainUntil(isSentinel(sentinelA))).toEqual([]);
+  expect(await docBodyText(tenantA, tenantA.docId)).not.toContain("foreign");
+  expect(await countDocUpdates(tenantA, tenantA.docId)).toBe(before + 1);
   const sentinelB = await publishSentinel(tenantB.tenantId);
-  const received = await b1.drainUntil(isSentinel(sentinelB));
-  expect(received.filter(isDocFrame(tenantA.docId))).toEqual([]);
+  const receivedByB1 = await b1.drainUntil(isSentinel(sentinelB));
+  expect(receivedByB1.filter(isDocFrame(tenantA.docId))).toEqual([]);
 }
 
 const binaryCase = {
@@ -732,6 +757,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     chokePoint = createChokePoint(pool);
     docStore = createDocStore(pool);
     wireRealtimeHooks(pool);
+    blobDir = await mkdtemp(join(tmpdir(), "semprec-test-blobs-"));
 
     tenantA = await buildTenantFixture(await createTestTenant(adminPool));
     tenantB = await buildTenantFixture(await createTestTenant(adminPool));
@@ -742,7 +768,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
       appBaseUrl: "http://localhost",
       setupToken: "unused-setup-token",
       moduleRegistry,
-      blobStorage: new LocalFsBlobStorageWriter(join(tmpdir(), `semprec-test-blobs-${randomUUID()}`)),
+      blobStorage: new LocalFsBlobStorageWriter(blobDir),
       maxFileSizeBytes: 10 * 1024 * 1024,
     });
     syncServer = await createSyncUpgradeHandler(pool);
@@ -767,6 +793,14 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
     await pool?.end();
     await adminPool?.end();
+    // The hooks are module-global; leave none bound to the pool that was just ended.
+    setInvalidationHook(() => {});
+    setDocUpdateHook(() => {});
+    setAgentRunEventHook(() => {});
+    setNotificationCreatedHook(() => {});
+    setNotificationReadStateHook(() => {});
+    setSessionRevokedHook(() => {});
+    if (blobDir !== undefined) await rm(blobDir, { recursive: true, force: true });
     if (previousScope === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
     else process.env.SEMPREC_TENANT_SCOPE = previousScope;
   });
@@ -807,6 +841,25 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
   describe("NOTIFY messages on semprec_agent_stream", () => {
     it.each(scenariosOf(streamTable))("%s: %s", async (_caseName, _scenarioName, run) => {
       await run();
+    });
+
+    it.each([
+      ["an envelope without a tenantId", (delta: AgentStreamMessage) => ({ message: delta })],
+      ["an envelope with a null tenantId", (delta: AgentStreamMessage) => ({ tenantId: null, message: delta })],
+      ["a bare message without an envelope", (delta: AgentStreamMessage) => delta],
+    ])("a raw pg_notify with %s reaches no watcher of A's run", async (_name, build) => {
+      await watchRun(a1, tenantA);
+      const delta: AgentStreamMessage = {
+        type: "agent_run_delta",
+        agentRunId: tenantA.runId,
+        delta: { text: "tenantless" },
+      };
+      await adminPool.query("SELECT pg_notify('semprec_agent_stream', $1)", [JSON.stringify(build(delta))]);
+
+      const sentinelA = await publishSentinel(tenantA.tenantId);
+      const sentinelB = await publishSentinel(tenantB.tenantId);
+      expect(await a1.drainUntil(isSentinel(sentinelA))).toEqual([]);
+      expect(await b1.drainUntil(isSentinel(sentinelB))).toEqual([]);
     });
   });
 
