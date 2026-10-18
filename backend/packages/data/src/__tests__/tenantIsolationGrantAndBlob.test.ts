@@ -70,22 +70,26 @@ describe("tenant isolation for blob deduplication and MCP grants", () => {
           toolSchema: {},
         }),
       );
-      const write = (tenant: string, registrationId: string, value: boolean) =>
+      const write = (tenant: string, registrationId: string, value: boolean, project = projectItemId) =>
         runInTenant(tenant, () =>
           setProjectMcpGrant(pool, {
-            projectItemId,
+            projectItemId: project,
             mcpToolRegistrationId: registrationId,
             granted: value,
           }),
         );
       const original = await write(tenantA, registration.id, true);
       expect(original).toMatchObject({ projectItemId, mcpToolRegistrationId: registration.id, granted: true });
-      for (const id of [registration.id, randomUUID()]) {
-        await expect(write(tenantB, id, granted)).rejects.toEqual(
-          new NotFoundError(`No mcp_tool_registrations row with id '${id}'`),
-        );
-        expect(await runInTenant(tenantB, () => listProjectMcpGrants(pool, projectItemId))).toEqual([]);
-        expect(await runInTenant(tenantA, () => listProjectMcpGrants(pool, projectItemId))).toEqual([original]);
+      // Exercise both the existing grant's conflict key and a new key that would otherwise
+      // insert a cross-tenant reference: FK checks themselves do not enforce RLS.
+      for (const project of [projectItemId, randomUUID()]) {
+        for (const id of [registration.id, randomUUID()]) {
+          await expect(write(tenantB, id, granted, project)).rejects.toEqual(
+            new NotFoundError(`No mcp_tool_registrations row with id '${id}'`),
+          );
+          expect(await runInTenant(tenantB, () => listProjectMcpGrants(pool, project))).toEqual([]);
+          expect(await runInTenant(tenantA, () => listProjectMcpGrants(pool, projectItemId))).toEqual([original]);
+        }
       }
       expect(await write(tenantA, registration.id, false)).toMatchObject({
         projectItemId,
