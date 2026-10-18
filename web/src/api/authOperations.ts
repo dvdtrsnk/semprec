@@ -95,6 +95,26 @@ export function createAuthOperations(options: AuthOperationsOptions): AuthOperat
     return parseUser(response);
   }
 
+  /**
+   * The credentials were accepted and the session cookie is already set, so a failed read is retried
+   * once. When it still fails, the error says sign-in succeeded, so the user does not resubmit credentials.
+   */
+  async function readSessionAfterLogin(): Promise<SessionUser> {
+    let outcome: SessionUser | null;
+    try {
+      outcome = await readSession();
+    } catch {
+      outcome = await readSession().catch((error: unknown) => {
+        const reason = error instanceof OperationError ? error.message : String(error);
+        throw new OperationError("retryable", `Signed in, but the session could not be read: ${reason}`);
+      });
+    }
+    if (outcome === null) {
+      throw new OperationError("retryable", "Signed in, but the session could not be read: no session");
+    }
+    return outcome;
+  }
+
   async function failure(path: string, response: Response): Promise<OperationError> {
     const message = await readErrorMessage(response);
     return new OperationError(
@@ -118,11 +138,7 @@ export function createAuthOperations(options: AuthOperationsOptions): AuthOperat
       }
       if (!response.ok) throw await failure(path, response);
       // The login body carries no role, so the user comes from the session that the login just set up.
-      const user = await readSession();
-      if (user === null) {
-        throw new OperationError("retryable", "The session was not available right after signing in");
-      }
-      return user;
+      return readSessionAfterLogin();
     },
 
     getSession: readSession,

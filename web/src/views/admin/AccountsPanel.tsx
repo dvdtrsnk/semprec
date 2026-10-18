@@ -53,7 +53,11 @@ export function AccountsPanel({ operations }: { operations: AdminOperations }) {
       try {
         if (action === "suspend") await operations.suspendAccount(account.userId);
         else if (action === "reactivate") await operations.reactivateAccount(account.userId);
-        else await operations.changeRole(account.userId, account.role === "admin" ? "member" : "admin");
+        else {
+          // The target is the opposite of the role shown on this row. If another admin changed the role since
+          // the last load, the server treats an unchanged role as a no-op, and the reload shows the current state.
+          await operations.changeRole(account.userId, account.role === "admin" ? "member" : "admin");
+        }
       } catch (error) {
         const { message } = toOperationError(error);
         const shown =

@@ -115,6 +115,28 @@ describe("AccountsPanel", () => {
     await vi.waitFor(() => expect(operations.listAccounts).toHaveBeenCalledTimes(2));
   });
 
+  it("applies a reactivate to a suspended account and reloads the list on success", async () => {
+    const operations = stubOperations({
+      listAccounts: vi.fn(async () => [account({ status: "suspended" })]),
+    });
+    renderPanel(operations);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Reactivate" }));
+
+    expect(operations.reactivateAccount).toHaveBeenCalledWith("user-2");
+    await vi.waitFor(() => expect(operations.listAccounts).toHaveBeenCalledTimes(2));
+  });
+
+  it("applies a role change on success and reloads the list", async () => {
+    const operations = stubOperations();
+    renderPanel(operations);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Make admin" }));
+
+    expect(operations.changeRole).toHaveBeenCalledWith("user-2", "admin");
+    await vi.waitFor(() => expect(operations.listAccounts).toHaveBeenCalledTimes(2));
+  });
+
   it("shows the last-admin message and leaves the row as it was", async () => {
     const operations = stubOperations({
       listAccounts: vi.fn(async () => [account({ role: "admin", email: "last@example.com" })]),
