@@ -13,6 +13,9 @@ export default defineConfig({
     include: ["packages/*/src/**/*.e2e.test.ts", "services/*/src/**/*.e2e.test.ts"],
     globalSetup: ["./packages/data/src/testSupport/globalSetup.ts"],
     environment: "node",
+    // Issue #1199: warn-level output, chiefly tenant_scope_missing, can exceed
+    // Relay's output limit and hide real failures. Preserve developer overrides.
+    env: { LOG_LEVEL: process.env.LOG_LEVEL ?? "error" },
     testTimeout: 30_000,
     hookTimeout: 60_000,
     fileParallelism: false,
