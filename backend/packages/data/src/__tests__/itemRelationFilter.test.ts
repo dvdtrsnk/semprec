@@ -110,6 +110,8 @@ describe("itemRelationFilter partition pruning (issue #262)", () => {
     const foldersPartition = `items_p_${foldersId.replace(/-/g, "")}`;
     expect(partitionRows.map((r) => r.tablename)).toContain(foldersPartition);
 
+    // Collect statistics here so the planner's choice does not depend on when autovacuum last ran.
+    await pool.query("ANALYZE items");
     const { rows: explainRows } = await pool.query<{ "QUERY PLAN": Array<{ Plan: Record<string, unknown> }> }>(
       `EXPLAIN (ANALYZE, FORMAT JSON) ${ITEM_RELATION_FILTER_QUERY}`,
       [folderProperty.id, "specialPurpose", emailItemId],
