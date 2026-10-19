@@ -693,10 +693,12 @@ async function foreignBinaryFrameWritesNothing(): Promise<void> {
   await openDoc(a1, tenantA.docId);
   const before = await countDocUpdates(tenantA, tenantA.docId);
 
+  // The document survives between scenarios; wait for this control, not an earlier one.
+  const control = `control-${randomUUID()}`;
   b1.sendBinary(buildBinaryFrame(tenantA.docId, yjsUpdateMessage("foreign")));
-  a1.sendBinary(buildBinaryFrame(tenantA.docId, yjsUpdateMessage("control")));
+  a1.sendBinary(buildBinaryFrame(tenantA.docId, yjsUpdateMessage(control)));
   const deadline = Date.now() + FRAME_TIMEOUT_MS;
-  while (!(await docBodyText(tenantA, tenantA.docId)).includes("control")) {
+  while (!(await docBodyText(tenantA, tenantA.docId)).includes(control)) {
     if (Date.now() > deadline) throw new Error("the control update was never stored");
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
