@@ -205,20 +205,27 @@ describe("SempConversation", () => {
       ttlMs,
     );
 
-    await sendInTenantZero(conversation, "hi");
-    expect(calls).toEqual([[SEMPREC_PROJECT_ITEM_ID]]);
-    expect(tasks).toEqual(["hi"]);
-    expect(initialStates).toEqual([undefined]);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      expect(await sendInTenantZero(conversation, "hi")).toEqual({ ok: true, message: "first wake" });
+      expect(calls).toEqual([[SEMPREC_PROJECT_ITEM_ID]]);
+      expect(tasks).toEqual(["hi"]);
+      expect(initialStates).toEqual([undefined]);
 
-    await new Promise((resolve) => setTimeout(resolve, ttlMs + 150));
+      // Direct pause does not consume the scheduled TTL callback; cancel it before pausing.
+      vi.clearAllTimers();
+      await runInTenant(tenantZero, () => conversation["pause"](tenantZero));
 
-    await sendInTenantZero(conversation, "hi again");
+      expect(await sendInTenantZero(conversation, "hi again")).toEqual({ ok: true, message: "second wake" });
 
-    expect(calls).toEqual([[SEMPREC_PROJECT_ITEM_ID], [SEMPREC_PROJECT_ITEM_ID]]);
-    expect(tasks).toEqual(["hi", "hi again"]);
-    expect(initialStates).toEqual([undefined, { messages: [priorEntry] }]);
-
-    conversation.clear();
+      expect(calls).toEqual([[SEMPREC_PROJECT_ITEM_ID], [SEMPREC_PROJECT_ITEM_ID]]);
+      expect(tasks).toEqual(["hi", "hi again"]);
+      expect(initialStates).toEqual([undefined, { messages: [priorEntry] }]);
+    } finally {
+      conversation.clear();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it("persists a compacted reconstruction as a 'compaction' event on the run it seeds", async () => {
