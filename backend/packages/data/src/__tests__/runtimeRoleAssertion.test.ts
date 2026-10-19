@@ -179,6 +179,7 @@ describe("assertRuntimeRole", () => {
       if (originalMode === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
       else process.env.SEMPREC_TENANT_SCOPE = originalMode;
       vi.restoreAllMocks();
+      vi.unstubAllEnvs();
     });
 
     it("resolves under strict scope with no surrounding scope", async () => {
@@ -190,7 +191,13 @@ describe("assertRuntimeRole", () => {
     });
 
     it("logs no tenant_scope_missing under warn scope", async () => {
-      const pool = await createRuntimeRolePool(adminPool, "semprec_data");
+      // This stdout-observing fixture needs warn output despite the tier's error default (#1199).
+      // Reload both consumers so they share a fresh tenant-scope logger that reads this override.
+      vi.stubEnv("LOG_LEVEL", "warn");
+      vi.resetModules();
+      const freshTestDb = await import("../testSupport/testDb.js");
+      const freshAssertion = await import("../db/runtimeRoleAssertion.js");
+      const pool = await freshTestDb.createRuntimeRolePool(adminPool, "semprec_data");
       openedPools.push(pool);
       process.env.SEMPREC_TENANT_SCOPE = "warn";
       // pino writes records to fd 1 with the asynchronous fs.write, so that call is the capture point.
@@ -211,7 +218,7 @@ describe("assertRuntimeRole", () => {
       expect(writes.join("")).toContain("tenant_scope_missing");
       writes.length = 0;
 
-      await assertRuntimeRole(pool);
+      await freshAssertion.assertRuntimeRole(pool);
       await flush();
       expect(writes.join("")).not.toContain("tenant_scope_missing");
     });
