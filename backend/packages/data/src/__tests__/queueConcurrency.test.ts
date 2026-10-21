@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { enqueueJob, registerTask, runWorker, type Runner, type TaskList } from "@semprec/queue";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 
 let pool: Pool;
 let runner: Runner | undefined;
@@ -88,10 +88,10 @@ describe("production concurrency: semprec-tick serializes, unaffinitized jobs ru
 
     runner = await runWorker({ pgPool: pool, taskList, noHandleSignals: true });
 
-    await enqueueJob(pool, "probe", { queue: "semprec-tick" }, { queueName: "semprec-tick" });
-    await enqueueJob(pool, "probe", { queue: "semprec-tick" }, { queueName: "semprec-tick" });
-    await enqueueJob(pool, "probe", { queue: "none" });
-    await enqueueJob(pool, "probe", { queue: "none" });
+    await inTenantZero(() => enqueueJob(pool, "probe", { queue: "semprec-tick" }, { queueName: "semprec-tick" }));
+    await inTenantZero(() => enqueueJob(pool, "probe", { queue: "semprec-tick" }, { queueName: "semprec-tick" }));
+    await inTenantZero(() => enqueueJob(pool, "probe", { queue: "none" }));
+    await inTenantZero(() => enqueueJob(pool, "probe", { queue: "none" }));
 
     await vi.waitFor(
       () => {

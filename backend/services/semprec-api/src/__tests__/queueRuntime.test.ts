@@ -3,7 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, ensureQueueSchema, enqueueJob } from "@semprec/queue";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupport";
 import { DRIFT_CHECK_ACTION_ID, seedSystem, createHeartbeat, withTransaction } from "@semprec/data";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { createApiQueueRuntime, type ApiQueueRuntime } from "../queueRuntime.js";
@@ -104,8 +104,8 @@ describe("createApiQueueRuntime (issue #91)", () => {
     await waitFor(async () => (await knownCrontabIdentifiers(pool)).length > 0);
     expect(await knownCrontabIdentifiers(pool)).toEqual(EXPECTED_CRONTAB_IDENTIFIERS);
 
-    await enqueueJob(pool, "apiFixture.doThing", { hello: "world" });
-    await enqueueJob(pool, CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM, {});
+    await inTenantZero(() => enqueueJob(pool, "apiFixture.doThing", { hello: "world" }));
+    await inTenantZero(() => enqueueJob(pool, CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM, {}));
 
     await waitFor(async () => apiFixtureModule.calls.length > 0);
     expect(apiFixtureModule.calls).toEqual([{ hello: "world" }]);
@@ -120,7 +120,7 @@ describe("createApiQueueRuntime (issue #91)", () => {
     const registry = await buildRegistryWith("apiFixtureModule.js", "fixture-api-queue-runtime");
     runtime = await createApiQueueRuntime(pool, registry);
 
-    await enqueueJob(pool, AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT, {});
+    await inTenantZero(() => enqueueJob(pool, AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT, {}));
 
     // This runtime's taskList has no `heartbeatFireAgent` handler, so graphile-worker's own job
     // fetcher (which only claims jobs for task identifiers the connected worker supports) never
@@ -140,10 +140,12 @@ describe("createApiQueueRuntime (issue #91)", () => {
     const registry = await buildRegistryWith("apiFixtureModule.js", "fixture-api-queue-runtime");
     runtime = await createApiQueueRuntime(pool, registry);
 
-    await enqueueJob(pool, CORE_TASK_NAMES.HEARTBEAT_SWEEP, {});
-    await enqueueJob(pool, CORE_TASK_NAMES.TRASH_PURGE, {});
-    await enqueueJob(pool, CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE, { approvalRequestId: randomUUID() });
-    await enqueueJob(pool, CORE_TASK_NAMES.NOTIFICATION_FANOUT, { notificationId: randomUUID() });
+    await inTenantZero(() => enqueueJob(pool, CORE_TASK_NAMES.HEARTBEAT_SWEEP, {}));
+    await inTenantZero(() => enqueueJob(pool, CORE_TASK_NAMES.TRASH_PURGE, {}));
+    await inTenantZero(() =>
+      enqueueJob(pool, CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE, { approvalRequestId: randomUUID() }),
+    );
+    await inTenantZero(() => enqueueJob(pool, CORE_TASK_NAMES.NOTIFICATION_FANOUT, { notificationId: randomUUID() }));
 
     // None of these four handlers throw on an unresolvable id (each is a graceful `if (!row)
     // return`), so successful completion means the job row disappears — a positive proof that
@@ -199,11 +201,13 @@ describe("createApiQueueRuntime (issue #91)", () => {
         actionId: "noop",
       }),
     );
-    await enqueueJob(
-      pool,
-      "heartbeatFire",
-      { heartbeatId: heartbeat.id, occurrenceId: "legacy-occurrence", generation: 0 },
-      { jobKey: "legacy-key-issue-91", maxAttempts: 3, queueName: "legacy-queue" },
+    await inTenantZero(() =>
+      enqueueJob(
+        pool,
+        "heartbeatFire",
+        { heartbeatId: heartbeat.id, occurrenceId: "legacy-occurrence", generation: 0 },
+        { jobKey: "legacy-key-issue-91", maxAttempts: 3, queueName: "legacy-queue" },
+      ),
     );
 
     const registry = await buildRegistryWith("apiFixtureModule.js", "fixture-api-queue-runtime");
@@ -241,7 +245,9 @@ describe("createApiQueueRuntime (issue #91)", () => {
     const registry = await buildRegistryWith("apiFixtureModule.js", "fixture-api-queue-runtime");
     runtime = await createApiQueueRuntime(pool, registry);
     // A manual fire: `core.driftCheck` ignores `triggeredByRunId`, which only discriminates the payload.
-    await enqueueJob(pool, CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE, { heartbeatId, triggeredByRunId: randomUUID() });
+    await inTenantZero(() =>
+      enqueueJob(pool, CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE, { heartbeatId, triggeredByRunId: randomUUID() }),
+    );
 
     // A failed attempt keeps the job row (with `last_error`) for a retry; only success removes it.
     await waitFor(async () => (await jobCountFor(pool, CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE)) === 0);
