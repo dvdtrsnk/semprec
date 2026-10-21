@@ -40,7 +40,7 @@ async function databaseIdFor(moduleId: string): Promise<string> {
  * an `EXPLAIN ANALYZE` plan tree, keyed by `Relation Name`. Partitions the planner statically
  * lists as candidates but the executor skips at runtime (partition pruning) report `Actual
  * Loops: 0` and are excluded — this is why the test needs ANALYZE rather than a plain EXPLAIN:
- * the `related.database_id = op.database_id` join value isn't known until execution, so the
+ * the `item.database_id = op.database_id` lookup value isn't known until execution, so the
  * planner can only prune at runtime, not at plan time.
  */
 function collectExecutedRelationNames(plan: Record<string, unknown>, acc: Set<string>): void {

@@ -33,25 +33,36 @@ export function parseItemRelationFilterConfig(raw: unknown): ItemRelationFilterC
 }
 
 /**
- * `items` is PARTITION BY LIST (database_id) (see 0001_core_schema.sql), so the join to
+ * `items` is PARTITION BY LIST (database_id) (see 0001_core_schema.sql), so the lookup of
  * `related` must pin database_id — resolved here off the *other* side's property, via the
  * small unpartitioned `properties` table — or Postgres has to scan every partition instead
- * of pruning to the one the related item actually lives in. `related.deleted_at IS NULL`
- * guards against a soft-deleted folder (e.g. a since-deleted Junk folder) still counting
- * toward `include`/`exclude`. Exported (rather than inlined below) so tests can EXPLAIN the
- * exact query plan `passesItemRelationFilter` runs.
+ * of pruning to the one the related item actually lives in. Pinning it in a plain join
+ * condition is not enough (#1198): with fresh statistics on small partitions the planner
+ * prefers hashing every partition and applying `database_id` as a join filter afterwards.
+ * The lookup therefore sits in a LATERAL subquery that references `op.database_id`; `OFFSET 0`
+ * stops Postgres from pulling it up into the outer join, so it can only run as the inner side
+ * of a parameterized nested loop, where `database_id` is an executor parameter and the
+ * Append prunes every other partition at run time whatever plan costs the statistics yield.
+ * The primary key (database_id, id) admits at most one row per relation, as the former join
+ * did. `deleted_at IS NULL` guards against a soft-deleted folder (e.g. a since-deleted Junk
+ * folder) still counting toward `include`/`exclude`. Exported (rather than inlined below) so
+ * tests can EXPLAIN the exact query plan `passesItemRelationFilter` runs.
  */
 export const ITEM_RELATION_FILTER_QUERY = `
   SELECT related.properties ->> $2 AS value
   FROM relation_definitions rd
   JOIN properties op ON op.id = CASE WHEN rd.property_id_a = $1 THEN rd.property_id_b ELSE rd.property_id_a END
   JOIN item_relations r ON r.relation_definition_id = rd.id
-  JOIN items related
-    ON related.database_id = op.database_id
-   AND related.id = CASE WHEN r.item_a = $3 THEN r.item_b ELSE r.item_a END
+  CROSS JOIN LATERAL (
+    SELECT item.properties
+    FROM items item
+    WHERE item.database_id = op.database_id
+      AND item.id = CASE WHEN r.item_a = $3 THEN r.item_b ELSE r.item_a END
+      AND item.deleted_at IS NULL
+    OFFSET 0
+  ) related
   WHERE (rd.property_id_a = $1 OR rd.property_id_b = $1)
     AND (r.item_a = $3 OR r.item_b = $3)
-    AND related.deleted_at IS NULL
 `;
 
 /**
