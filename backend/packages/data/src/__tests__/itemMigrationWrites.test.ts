@@ -26,20 +26,20 @@ async function readItem(databaseId: string, itemId: string): Promise<ItemRow> {
  * Reads `updated_at` at full microsecond precision. `ItemRow.updatedAt` is truncated to milliseconds,
  * so two writes within one millisecond would compare equal there even though the column advanced.
  */
-async function readUpdatedAt(itemId: string): Promise<string> {
+async function readUpdatedAt(databaseId: string, itemId: string): Promise<string> {
   const { rows } = await pool.query<{ updated_at: string }>(
-    "SELECT updated_at::text AS updated_at FROM items WHERE id = $1",
-    [itemId],
+    "SELECT updated_at::text AS updated_at FROM items WHERE database_id = $1 AND id = $2",
+    [databaseId, itemId],
   );
   const row = rows[0];
   if (!row) throw new Error(`item ${itemId} not found`);
   return row.updated_at;
 }
 
-async function expectUpdatedAtAdvanced(itemId: string, before: string): Promise<void> {
+async function expectUpdatedAtAdvanced(databaseId: string, itemId: string, before: string): Promise<void> {
   const { rows } = await pool.query<{ advanced: boolean }>(
-    "SELECT updated_at > $2::timestamptz AS advanced FROM items WHERE id = $1",
-    [itemId, before],
+    "SELECT updated_at > $3::timestamptz AS advanced FROM items WHERE database_id = $1 AND id = $2",
+    [databaseId, itemId, before],
   );
   expect(rows[0]?.advanced).toBe(true);
 }
@@ -64,7 +64,7 @@ describe("migrateItemPropertyWithClient", () => {
       databaseId: db.id,
       itemId: item.id,
       before: await readItem(db.id, item.id),
-      updatedAtBefore: await readUpdatedAt(item.id),
+      updatedAtBefore: await readUpdatedAt(db.id, item.id),
     };
   }
 
@@ -75,7 +75,7 @@ describe("migrateItemPropertyWithClient", () => {
 
     const after = await readItem(databaseId, itemId);
     expect(after.properties).toEqual({ score: 7, title: "Dune" });
-    await expectUpdatedAtAdvanced(itemId, updatedAtBefore);
+    await expectUpdatedAtAdvanced(databaseId, itemId, updatedAtBefore);
   });
 
   it("remove deletes only the key and advances updated_at", async () => {
@@ -85,14 +85,14 @@ describe("migrateItemPropertyWithClient", () => {
 
     const after = await readItem(databaseId, itemId);
     expect(after.properties).toEqual({ title: "Dune" });
-    await expectUpdatedAtAdvanced(itemId, updatedAtBefore);
+    await expectUpdatedAtAdvanced(databaseId, itemId, updatedAtBefore);
   });
 
   it("set writes a soft-deleted item", async () => {
     const { databaseId, itemId } = await makeItem();
     await chokePoint.softDeleteItem(databaseId, itemId);
     const before = await readItem(databaseId, itemId);
-    const updatedAtBefore = await readUpdatedAt(itemId);
+    const updatedAtBefore = await readUpdatedAt(databaseId, itemId);
     expect(before.deletedAt).not.toBeNull();
 
     await migrate({ databaseId, itemId, key: "score", change: { kind: "set", value: 7 } });
@@ -100,14 +100,14 @@ describe("migrateItemPropertyWithClient", () => {
     const after = await readItem(databaseId, itemId);
     expect(after.properties).toEqual({ score: 7, title: "Dune" });
     expect(after.deletedAt).toBe(before.deletedAt);
-    await expectUpdatedAtAdvanced(itemId, updatedAtBefore);
+    await expectUpdatedAtAdvanced(databaseId, itemId, updatedAtBefore);
   });
 
   it("remove writes a soft-deleted item", async () => {
     const { databaseId, itemId } = await makeItem();
     await chokePoint.softDeleteItem(databaseId, itemId);
     const before = await readItem(databaseId, itemId);
-    const updatedAtBefore = await readUpdatedAt(itemId);
+    const updatedAtBefore = await readUpdatedAt(databaseId, itemId);
     expect(before.deletedAt).not.toBeNull();
 
     await migrate({ databaseId, itemId, key: "score", change: { kind: "remove" } });
@@ -115,7 +115,7 @@ describe("migrateItemPropertyWithClient", () => {
     const after = await readItem(databaseId, itemId);
     expect(after.properties).toEqual({ title: "Dune" });
     expect(after.deletedAt).toBe(before.deletedAt);
-    await expectUpdatedAtAdvanced(itemId, updatedAtBefore);
+    await expectUpdatedAtAdvanced(databaseId, itemId, updatedAtBefore);
   });
 
   it("set throws with the conversion label when no row matches and writes nothing", async () => {
