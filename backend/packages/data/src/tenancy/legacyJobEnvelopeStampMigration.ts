@@ -109,9 +109,10 @@ export async function runLegacyJobEnvelopeStampMigration(pool: Pool): Promise<{ 
         }
         const payload = businessPayload.data;
 
-        const { rows: completed } = await client.query(`SELECT * FROM graphile_worker.complete_jobs(ARRAY[$1::bigint])`, [
-          job.id,
-        ]);
+        const { rows: completed } = await client.query(
+          `SELECT * FROM graphile_worker.complete_jobs(ARRAY[$1::bigint])`,
+          [job.id],
+        );
         if (completed.length !== 1) {
           throw new Error(`${STEP}: removing job ${describeJob(job)} returned ${completed.length} rows instead of one`);
         }

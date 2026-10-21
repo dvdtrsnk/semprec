@@ -150,7 +150,9 @@ describe("mergeModuleTaskList", () => {
     ]);
 
     const merged = await mergeModuleTaskList(coreTaskList, registry);
-    await expect(merged["fixtureModule.processThing"]!(tenantEnvelope({}), fakeHelpers)).rejects.toThrow("invalid payload");
+    await expect(merged["fixtureModule.processThing"]!(tenantEnvelope({}), fakeHelpers)).rejects.toThrow(
+      "invalid payload",
+    );
     expect(ran).toBe(false);
   });
 
