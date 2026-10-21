@@ -16,7 +16,10 @@ export interface MigrateItemPropertyInput {
 /**
  * Sets `key` in the item's `properties` to `change.value` (`set`) or deletes `key` (`remove`),
  * leaving every other key as-is, and advances `updated_at`. Runs on the caller's client, so it
- * joins the caller's transaction. Throws when `(databaseId, itemId)` matches no row.
+ * joins the caller's transaction. Throws when `(databaseId, itemId)` matches no row, and throws
+ * before writing when `change.value` has no JSON form (`undefined`, a function, a symbol):
+ * `JSON.stringify` returns `undefined` for those, pg binds it as SQL NULL, and `jsonb_set` with a
+ * NULL value would replace the item's whole `properties` with NULL.
  */
 export async function migrateItemPropertyWithClient(
   client: PoolClient,
@@ -24,10 +27,14 @@ export async function migrateItemPropertyWithClient(
 ): Promise<void> {
   const { databaseId, itemId, key, change } = input;
   if (change.kind === "set") {
+    const serialized: string | undefined = JSON.stringify(change.value);
+    if (serialized === undefined) {
+      throw new TypeError(`property type migration value for "${key}" has no JSON representation`);
+    }
     requireAffectedRows(
       await client.query(
         `UPDATE items SET properties = jsonb_set(properties, ARRAY[$3]::text[], $4::jsonb), updated_at = now() WHERE database_id = $1 AND id = $2`,
-        [databaseId, itemId, key, JSON.stringify(change.value)],
+        [databaseId, itemId, key, serialized],
       ),
       "property type migration value conversion update",
     );

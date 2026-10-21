@@ -128,6 +128,16 @@ describe("migrateItemPropertyWithClient", () => {
     expect(await readItem(databaseId, itemId)).toEqual(before);
   });
 
+  it("set refuses a value with no JSON representation and writes nothing", async () => {
+    const { databaseId, itemId, before } = await makeItem();
+
+    await expect(
+      migrate({ databaseId, itemId, key: "score", change: { kind: "set", value: undefined } }),
+    ).rejects.toThrow(/property type migration value for "score" has no JSON representation/);
+
+    expect(await readItem(databaseId, itemId)).toEqual(before);
+  });
+
   it("remove throws with the dropped-value label when no row matches and writes nothing", async () => {
     const { databaseId, itemId, before } = await makeItem();
 
