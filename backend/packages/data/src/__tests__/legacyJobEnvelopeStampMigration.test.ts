@@ -153,6 +153,34 @@ describe("runLegacyJobEnvelopeStampMigration", () => {
     expect(await allJobs()).toEqual(before);
   });
 
+  it.each([
+    ["a non-string traceId", { traceId: 5, payload: { a: 1 } }, /has a payload that is not a valid queue envelope/],
+    [
+      "an array business payload",
+      { traceId: randomUUID(), payload: [1] },
+      /has an envelope whose payload is not an object/,
+    ],
+    [
+      "a string business payload",
+      { traceId: randomUUID(), payload: "x" },
+      /has an envelope whose payload is not an object/,
+    ],
+  ])(
+    "throws naming a legacy job with %s and rolls back every job already re-enqueued",
+    async (_label, bad, message) => {
+      // The valid job has the lower id, so it is removed and re-enqueued before the malformed one throws.
+      await addRawJob(TENANT_TASK, { traceId: randomUUID(), payload: { a: 0 } }, { key: "valid-before-bad" });
+      const badId = await addRawJob(TENANT_TASK, bad);
+      const before = await allJobs();
+
+      const run = runLegacyJobEnvelopeStampMigration(pool);
+      await expect(run).rejects.toThrow(message);
+      await expect(run).rejects.toThrow(new RegExp(`job ${badId} \\(${TENANT_TASK}\\)`));
+
+      expect(await allJobs()).toEqual(before);
+    },
+  );
+
   it("throws naming a locked legacy job's id and changes no job", async () => {
     await addRawJob(TENANT_TASK, { traceId: randomUUID(), payload: { a: 1 } });
     const lockedId = await addRawJob(TENANT_TASK, { traceId: randomUUID(), payload: { a: 2 } });
