@@ -80,8 +80,8 @@ export interface InsertItemResult {
  * A reservation is per tenant: row-level security confines every read and write of
  * `idempotency_keys` to the caller's tenant, so the same key in another tenant is a
  * different reservation. The reservation insert names no conflict target, so every
- * unique index on `idempotency_keys` is an arbiter — the legacy `key` primary key and the
- * tenant-leading `(tenant_id, key)` index today, only the latter once the legacy key is dropped.
+ * unique index on `idempotency_keys` is an arbiter. The only one is the tenant-leading primary
+ * key `idempotency_keys_pkey (tenant_id, key)`, which migration 0082 (#1065) promoted.
  */
 export async function insertItemWithReplay(client: Queryable, input: InsertItemInput): Promise<InsertItemResult> {
   const generatedId = randomUUID();
