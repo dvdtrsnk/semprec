@@ -66,7 +66,6 @@ const TENANT_TABLES = [
   "ai_gateway_calls",
   "module_migrations",
   "module_migration_progress",
-  "resource_grants",
   "tenant_keys",
   "tenant_observability_checks",
   "tenant_exports",
@@ -174,19 +173,6 @@ const PERMANENT_EXCEPTIONS: { table: string; columns: string[]; reason: string }
   },
 ];
 
-/** Remaining legacy global keys await #1065; migration 0080 already removed the blob content-hash key. */
-const LEGACY_GLOBAL_UNIQUES: { table: string; columns: string[] }[] = [
-  { table: "idempotency_keys", columns: ["key"] },
-  { table: "person_email_index", columns: ["email"] },
-  { table: "mail_message_meta", columns: ["provider_message_id"] },
-  { table: "notifications", columns: ["source_table", "source_id", "kind", "transition_instance"] },
-  { table: "manifest_drift_findings", columns: ["kind", "dedupe_key"] },
-  { table: "module_migrations", columns: ["module_id", "database_key", "from_version", "to_version"] },
-  { table: "module_migration_progress", columns: ["module_id", "database_key", "from_version", "to_version"] },
-  { table: "docs", columns: ["item_id"] },
-  { table: "resource_grants", columns: ["resource_type", "resource_id", "grantee_user_id"] },
-];
-
 const NEW_UNIQUE_INDEXES: { name: string; table: string; columns: string[]; predicate: string | null }[] = [
   { name: "databases_key_unique", table: "databases", columns: ["tenant_id", "key"], predicate: null },
   {
@@ -195,9 +181,9 @@ const NEW_UNIQUE_INDEXES: { name: string; table: string; columns: string[]; pred
     columns: ["tenant_id", "owner_module_id"],
     predicate: "system",
   },
-  { name: "idempotency_keys_tenant_key_uq", table: "idempotency_keys", columns: ["tenant_id", "key"], predicate: null },
+  { name: "idempotency_keys_pkey", table: "idempotency_keys", columns: ["tenant_id", "key"], predicate: null },
   {
-    name: "person_email_index_tenant_email_uq",
+    name: "person_email_index_pkey",
     table: "person_email_index",
     columns: ["tenant_id", "email"],
     predicate: null,
@@ -227,24 +213,18 @@ const NEW_UNIQUE_INDEXES: { name: string; table: string; columns: string[]; pred
     predicate: "resolved_at IS NULL AND dedupe_key IS NOT NULL",
   },
   {
-    name: "module_migrations_tenant_uq",
+    name: "module_migrations_pkey",
     table: "module_migrations",
     columns: ["tenant_id", "module_id", "database_key", "from_version", "to_version"],
     predicate: null,
   },
   {
-    name: "module_migration_progress_tenant_uq",
+    name: "module_migration_progress_pkey",
     table: "module_migration_progress",
     columns: ["tenant_id", "module_id", "database_key", "from_version", "to_version"],
     predicate: null,
   },
   { name: "docs_tenant_item_id_uq", table: "docs", columns: ["tenant_id", "item_id"], predicate: null },
-  {
-    name: "resource_grants_tenant_uq",
-    table: "resource_grants",
-    columns: ["tenant_id", "resource_type", "resource_id", "grantee_user_id"],
-    predicate: null,
-  },
   ...[
     "databases",
     "properties",
@@ -305,8 +285,7 @@ async function listUniquenessViolations(db: Queryable): Promise<string[]> {
         row.default_expr !== null &&
         (row.default_expr.startsWith("gen_random_uuid()") || row.default_expr.startsWith("nextval("));
       if (surrogate) return false;
-      if (PERMANENT_EXCEPTIONS.some((entry) => sameKey(row, entry))) return false;
-      return !LEGACY_GLOBAL_UNIQUES.some((entry) => sameKey(row, entry));
+      return !PERMANENT_EXCEPTIONS.some((entry) => sameKey(row, entry));
     })
     .map((row) => `${row.index_name} on ${row.table_name} (${row.columns.join(", ")})`);
 }
@@ -541,18 +520,50 @@ describe("tenancy classification catalog", () => {
       // pg_get_expr parenthesizes a compound predicate but not a bare column, so compare without parentheses.
       expect(row?.predicate?.replaceAll(/[()]/g, "") ?? null, `${expected.name} predicate`).toBe(expected.predicate);
     }
-    expect(NEW_UNIQUE_INDEXES).toHaveLength(23);
+    expect(NEW_UNIQUE_INDEXES).toHaveLength(22);
   });
 
-  it("keeps the remaining legacy global keys and removes the obsolete blob content-hash index", async () => {
-    const rows = await listUniqueIndexes(pool);
-    expect(rows.some((row) => row.index_name === "blobs_content_hash_uq")).toBe(false);
-    for (const legacy of LEGACY_GLOBAL_UNIQUES) {
-      expect(
-        rows.some((row) => sameKey(row, legacy)),
-        `${legacy.table} (${legacy.columns.join(", ")})`,
-      ).toBe(true);
-    }
+  /** Issue #1065: the contract step dropped every legacy global key and the dormant resource_grants table. */
+  it("drops the legacy global unique keys and resource_grants", async () => {
+    const legacy = await pool.query<{ name: string }>(
+      `SELECT c.relname::text AS name FROM pg_class c
+        WHERE c.relnamespace = 'public'::regnamespace AND c.relname = ANY($1::text[])`,
+      [
+        [
+          "blobs_content_hash_uq",
+          "mail_message_meta_provider_msg_uq",
+          "notifications_dedupe_idx",
+          "manifest_drift_findings_active_idx",
+          "docs_item_id_idx",
+          "resource_grants",
+        ],
+      ],
+    );
+    expect(legacy.rows.map((row) => row.name)).toEqual([]);
+  });
+
+  it("leads the primary key of every formerly globally keyed table with tenant_id", async () => {
+    const { rows } = await pool.query<{ table_name: string; constraint_name: string; first_column: string }>(
+      `SELECT c.relname::text AS table_name, con.conname::text AS constraint_name, a.attname::text AS first_column
+         FROM pg_constraint con
+         JOIN pg_class c ON c.oid = con.conrelid
+         JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = con.conkey[1]
+        WHERE con.contype = 'p'
+          AND c.relnamespace = 'public'::regnamespace
+          AND c.relname = ANY($1::text[])
+        ORDER BY c.relname`,
+      [["idempotency_keys", "person_email_index", "module_migrations", "module_migration_progress"]],
+    );
+    expect(rows).toEqual([
+      { table_name: "idempotency_keys", constraint_name: "idempotency_keys_pkey", first_column: "tenant_id" },
+      {
+        table_name: "module_migration_progress",
+        constraint_name: "module_migration_progress_pkey",
+        first_column: "tenant_id",
+      },
+      { table_name: "module_migrations", constraint_name: "module_migrations_pkey", first_column: "tenant_id" },
+      { table_name: "person_email_index", constraint_name: "person_email_index_pkey", first_column: "tenant_id" },
+    ]);
   });
 
   it("rejects a second system database for one module in a tenant but accepts a second non-system one", async () => {

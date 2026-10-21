@@ -60,11 +60,6 @@ export interface WriteNotificationInput {
  * silent no-op, never a second row, and returns that recipient's own notification id. Two
  * recipients of the same source transition each get their own row.
  *
- * Transitional: the legacy `notifications_dedupe_idx` (migration 0030, no recipient or tenant in
- * its key) still exists until it is dropped. A write that collides only with it — the same source
- * transition for a different recipient — raises `unique_violation` (23505), which propagates
- * unchanged and rolls back the caller's transaction; it is never mapped onto another recipient's id.
- *
  * On an actual (non-replay) insert, also enqueues issue #151's `notificationFanout` job in the
  * same transaction — "this notification exists" and "delivery will be attempted" land together,
  * the same commit-coupling pattern as `decideAndEnqueueApprovalRequest`. A replay enqueues

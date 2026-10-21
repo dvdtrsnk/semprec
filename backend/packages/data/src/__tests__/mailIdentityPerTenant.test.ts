@@ -37,12 +37,11 @@ async function scopeTo(client: PoolClient, tenantId: string): Promise<void> {
 }
 
 /** Adds a second tenant beside the existing one and switches to the runtime role. */
-async function twoTenantsAsRuntimeRole(client: PoolClient, options: { dropLegacyIndex: boolean }): Promise<Tenants> {
+async function twoTenantsAsRuntimeRole(client: PoolClient): Promise<Tenants> {
   const { rows: existing } = await client.query<{ id: string }>("SELECT id FROM tenants");
   const a = existing[0]?.id;
   if (!a) throw new Error("no existing tenant");
   await client.query("DROP INDEX IF EXISTS tenants_single_tenant_guard");
-  if (options.dropLegacyIndex) await client.query("DROP INDEX mail_message_meta_provider_msg_uq");
   const { rows } = await client.query<{ id: string }>("INSERT INTO tenants (status) VALUES ('active') RETURNING id");
   const b = rows[0]?.id;
   if (!b) throw new Error("second tenant was not inserted");
@@ -90,9 +89,8 @@ describe("mail identities stay within a tenant", () => {
   });
 
   describe("isProviderMessageIdConflict", () => {
-    it("recognizes a same-tenant provider-id conflict once the legacy index is dropped", async () => {
+    it("recognizes a same-tenant provider-id conflict on the tenant-leading index", async () => {
       await inRolledBackTransaction(async (client) => {
-        await client.query("DROP INDEX mail_message_meta_provider_msg_uq");
         await insertMessage(client, "<p1@x>", { providerMessageId: "prov-1" });
         const error = await insertMessage(client, "<p2@x>", { providerMessageId: "prov-1" }).then(
           () => null,
@@ -104,20 +102,8 @@ describe("mail identities stay within a tenant", () => {
       });
     });
 
-    it("recognizes the legacy index while it still exists", async () => {
-      await inRolledBackTransaction(async (client) => {
-        await insertMessage(client, "<l1@x>", { providerMessageId: "prov-legacy" });
-        const error = await insertMessage(client, "<l2@x>", { providerMessageId: "prov-legacy" }).then(
-          () => null,
-          (err: unknown) => err,
-        );
-        expect(isProviderMessageIdConflict(error)).toBe(true);
-      });
-    });
-
     it("does not recognize a violation of another unique index", async () => {
       await inRolledBackTransaction(async (client) => {
-        await client.query("DROP INDEX mail_message_meta_provider_msg_uq");
         const row = await insertMessage(client, "<u1@x>");
         const error = await client
           .query(
@@ -137,7 +123,7 @@ describe("mail identities stay within a tenant", () => {
 
   it("stores the same provider message id in two tenants and looks each up in its own scope", async () => {
     await inRolledBackTransaction(async (client) => {
-      const { a, b } = await twoTenantsAsRuntimeRole(client, { dropLegacyIndex: true });
+      const { a, b } = await twoTenantsAsRuntimeRole(client);
       await scopeTo(client, a);
       const rowA = await insertMessage(client, "<pa@x>", { providerMessageId: "shared-prov" });
       await scopeTo(client, b);
@@ -151,7 +137,7 @@ describe("mail identities stay within a tenant", () => {
 
   it("does not join another tenant's thread through an ancestor Message-ID", async () => {
     await inRolledBackTransaction(async (client) => {
-      const { a, b } = await twoTenantsAsRuntimeRole(client, { dropLegacyIndex: false });
+      const { a, b } = await twoTenantsAsRuntimeRole(client);
       await scopeTo(client, a);
       const threadA = await resolveThreadId(client, { messageId: "<m1@x>" });
       const rowA = await insertMessage(client, "<m1@x>", { threadId: threadA });
@@ -167,7 +153,7 @@ describe("mail identities stay within a tenant", () => {
 
   it("does not merge another tenant's thread through a descendant reference", async () => {
     await inRolledBackTransaction(async (client) => {
-      const { a, b } = await twoTenantsAsRuntimeRole(client, { dropLegacyIndex: false });
+      const { a, b } = await twoTenantsAsRuntimeRole(client);
       await scopeTo(client, a);
       const threadA = await resolveThreadId(client, { messageId: "<child@x>", references: ["<m2@x>"] });
       const rowA = await insertMessage(client, "<child@x>", { threadId: threadA, references: ["<m2@x>"] });
@@ -184,7 +170,7 @@ describe("mail identities stay within a tenant", () => {
 
   it("still merges two threads of one tenant bridged by a message and deletes the emptied thread", async () => {
     await inRolledBackTransaction(async (client) => {
-      const { b } = await twoTenantsAsRuntimeRole(client, { dropLegacyIndex: false });
+      const { b } = await twoTenantsAsRuntimeRole(client);
       await scopeTo(client, b);
       const thread1 = await resolveThreadId(client, { messageId: "<x1@x>" });
       const row1 = await insertMessage(client, "<x1@x>", { threadId: thread1 });
