@@ -9,7 +9,10 @@ import { SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 const MIGRATION_SQL = await readFile(
-  path.join(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations/0081_remove_settings_budget_properties.sql"),
+  path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../db/migrations/0081_remove_settings_budget_properties.sql",
+  ),
   "utf8",
 );
 

@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { DEFAULT_TIMEZONE,getSystemSettingsDatabaseId, getSystemTimezone } from "../systemSettings.js";
+import { DEFAULT_TIMEZONE, getSystemSettingsDatabaseId, getSystemTimezone } from "../systemSettings.js";
 
 let pool: Pool;
 
@@ -36,7 +36,6 @@ describe("settings properties read-side validation", () => {
 
     await expect(getSystemTimezone(pool)).rejects.toThrow("Malformed system settings properties in database row");
   });
-
 
   it("resolves the default timezone when the key is absent", async () => {
     const databaseId = await getSystemSettingsDatabaseId(pool);
