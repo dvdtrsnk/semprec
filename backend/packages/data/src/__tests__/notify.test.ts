@@ -24,9 +24,15 @@ describe("writeNotification", () => {
     await pool?.end();
   });
 
+  /** Tenant zero's user: a tenant-zero notification may only name its own tenant's user (issue #1066). */
   async function createTestUser(locale = "en"): Promise<string> {
     const passwordHash = await hashPassword("s3cret-password");
-    const user = await createUser(pool, { email: `${locale}-${Math.random()}@example.test`, passwordHash, locale });
+    const user = await createUser(pool, {
+      email: `${locale}-${Math.random()}@example.test`,
+      passwordHash,
+      locale,
+      tenantId: getTenantZeroId(),
+    });
     return user.id;
   }
 
