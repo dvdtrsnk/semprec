@@ -1114,7 +1114,7 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     // A dedicated single-connection pool: if the tick still held its transaction's one
     // connection open across `computeProposal`, this query — issued from inside the fake
     // while it runs — would have no connection to acquire and would never resolve.
-    const tickPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 1 });
+    const tickPool = getTestPool({ max: 1 });
     try {
       const handler = createSemprecTickAction(tickPool, async (input) => {
         await Promise.race([

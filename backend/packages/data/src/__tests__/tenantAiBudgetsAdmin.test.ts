@@ -37,7 +37,7 @@ async function utcWindows(): Promise<{ now: Date; dayStart: Date; monthStart: Da
   return { now: row.now, dayStart: row.day_start, monthStart: row.month_start };
 }
 
-async function newAccount(tenantId: string | undefined): Promise<string> {
+async function newAccount(tenantId: string): Promise<string> {
   const user = await createUser(pool, {
     email: `budget-${randomUUID()}@example.test`,
     passwordHash: await hashPassword("s3cret-password"),
@@ -119,8 +119,6 @@ describe("tenant AI budgets: admin writer and overview (issue #1039)", () => {
     await insertCall(tenantA, 2, beforeToday);
     await insertCall(tenantA, 100, new Date(monthStart.getTime() - oneSecond));
     await insertCall(tenantB, 3, now);
-    // An account bound to no tenant is not listed: there is no tenant to hold its caps or spend.
-    const unboundAccount = await newAccount(undefined);
 
     const overview = await listTenantAiBudgetOverview(dataPool);
     const byId = new Map(overview.map((account) => [account.userId, account]));
@@ -140,7 +138,6 @@ describe("tenant AI budgets: admin writer and overview (issue #1039)", () => {
       spentMonthUsd: 3,
     });
     expect(byId.get(accountC)).toMatchObject({ hasBudget: false, spentTodayUsd: 0, spentMonthUsd: 0 });
-    expect(byId.has(unboundAccount)).toBe(false);
   });
 
   it("keeps ai_tenant_spend() callable by semprec_data only, as a SECURITY DEFINER function owned by semprec_router", async () => {

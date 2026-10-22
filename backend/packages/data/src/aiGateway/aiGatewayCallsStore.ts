@@ -156,8 +156,8 @@ export async function assertGatewayTenantActive(client: Pool | PoolClient): Prom
  * Inserts a `reserved` row at the estimate, with every usage column NULL until it is settled.
  *
  * The insert is one conditional statement, so the check and the write cannot be separated by a
- * concurrent change: it only produces a row when the ambient tenant (`app_tenant_default()`, so a
- * header-less legacy call still falls to the sole tenant) is `active`, and any `agentRunId` /
+ * concurrent change: it only produces a row when the ambient tenant (`app_tenant_default()`, the
+ * scope's tenant) is `active`, and any `agentRunId` /
  * `projectItemId` is visible in that tenant (RLS makes both probes tenant-local). Otherwise it
  * throws `ForbiddenError` `attribution_refused` with no details, so a foreign id and an unknown id
  * answer identically; no row is written and the caller never reaches the provider.

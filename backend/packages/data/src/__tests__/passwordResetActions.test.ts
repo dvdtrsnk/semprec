@@ -656,29 +656,4 @@ describe("password reset actions (issue #142)", () => {
       expect(after!.passwordHash).toBe(before!.passwordHash);
     });
   });
-
-  describe("a user with no tenant binding (issue #1041)", () => {
-    it("treats a reset request like an unknown email and refuses a token issued while still bound", async () => {
-      const user = await makeUser();
-      const mailer = fakeMailer();
-      await requestPasswordReset(pool, mailer, { email: user.email, appBaseUrl: APP_BASE_URL });
-      const token = tokenFromUrl(mailer.sent[0]!.resetUrl);
-      await createTestTenant(pool);
-
-      await requestPasswordReset(pool, mailer, { email: user.email, appBaseUrl: APP_BASE_URL });
-      expect(mailer.sent).toHaveLength(1);
-
-      const failure = await resetPasswordInTransaction(pool, { token, newPassword: "a-brand-new-password" }).then(
-        () => null,
-        (err: unknown) => err,
-      );
-      expect(failure).toBeInstanceOf(PasswordResetTokenError);
-      expect((failure as PasswordResetTokenError).reason).toBe("invalid");
-      const { rows } = await pool.query<{ consumed_at: Date | null }>(
-        "SELECT consumed_at FROM password_reset_tokens WHERE token_hash = $1",
-        [hashToken(token)],
-      );
-      expect(rows[0]!.consumed_at).toBeNull();
-    });
-  });
 });

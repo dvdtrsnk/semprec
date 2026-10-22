@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   createUser,
   createViewTypeRegistry,
@@ -28,13 +28,12 @@ const noopMailer: PasswordResetMailer = {
 let pool: Pool;
 const moduleRegistry = await loadFullModuleRegistry();
 
+/** Tenant zero's one user, created in `beforeEach`: every upload of a test must land in the same tenant. */
+const OWNER_EMAIL = "files-owner@example.com";
+
+/** A fresh session of tenant zero's user. */
 async function authHeader(): Promise<{ Authorization: string }> {
-  const user = await createUser(pool, {
-    tenantId: await tenantForNextTestUser(pool),
-    email: `${randomUUID()}@example.com`,
-    passwordHash: await hashPassword(PASSWORD),
-  });
-  const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+  const { token } = await login(pool, { email: OWNER_EMAIL, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
   return { Authorization: `Bearer ${token}` };
 }
 
@@ -57,6 +56,11 @@ describe("files and blobs routes (issue #158)", () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
     await seedSystem(pool, createViewTypeRegistry());
+    await createUser(pool, {
+      email: OWNER_EMAIL,
+      passwordHash: await hashPassword(PASSWORD),
+      tenantId: getTenantZeroId(),
+    });
 
     tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
     const dispatch = await createDispatcher(pool, {

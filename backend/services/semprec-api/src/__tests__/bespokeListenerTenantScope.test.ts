@@ -7,6 +7,7 @@ import pg, { type Pool } from "pg";
 import {
   createTestProjectItem,
   getTenantZeroId,
+  inTenantZero,
   resetDatabase,
   tenantForNextTestUser,
 } from "@semprec/data/testSupport";
@@ -105,7 +106,7 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
     if (!url) throw new Error("TEST_DATABASE_URL is not set");
     pool ??= createPool(url);
     await resetDatabase(pool);
-    await seedSystem(pool);
+    await inTenantZero(() => seedSystem(pool));
     await startDispatcher();
 
     recorded = [];
@@ -274,9 +275,11 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
         passwordHash: await hashPassword(PASSWORD),
         tenantId: getTenantZeroId(),
       });
-      const projectItemId = await createTestProjectItem(pool);
-      const minted = await withTransaction(pool, (client) =>
-        mintMcpRunCredential(client, { projectItemId, capabilities: ["core.database.read"], userId: user.id }),
+      const projectItemId = await inTenantZero(() => createTestProjectItem(pool));
+      const minted = await inTenantZero(() =>
+        withTransaction(pool, (client) =>
+          mintMcpRunCredential(client, { projectItemId, capabilities: ["core.database.read"], userId: user.id }),
+        ),
       );
       const call = (): Promise<{ status: number; body: unknown }> =>
         fetch(`${baseUrl}/mcp`, {

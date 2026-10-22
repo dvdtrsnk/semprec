@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getOrCreateTenantDataKey, getTenantDataKey } from "../credentials/tenantKeysStore.js";
+import { withTransaction } from "../db/pool.js";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -99,9 +100,13 @@ describe("tenant data key store", () => {
 
   it("refuses to create a key with two tenants and no scope", async () => {
     await createTestTenant(pool);
-    await expect(getOrCreateTenantDataKey(pool)).rejects.toThrow(
-      "No tenant scope: refusing to create a tenant data key",
-    );
+    await expect(
+      withTransaction(pool, async (client) => {
+        // `getTestPool` connections start in tenant zero (#1067); this case is the scope-less one.
+        await client.query("SELECT set_config('app.tenant_id', '', true)");
+        return getOrCreateTenantDataKey(client);
+      }),
+    ).rejects.toThrow("No tenant scope: refusing to create a tenant data key");
     expect(await countKeys()).toBe(0);
   });
 

@@ -73,7 +73,7 @@ async function relfilenodes(pool: Pool, tables: string[]): Promise<Record<string
 }
 
 /** A notification may only name its own tenant's user (`notifications_user_id_tenant_fkey`, #1066), hence `tenantId`. */
-async function insertUser(db: Pick<Pool | PoolClient, "query">, tenantId: string | null = null): Promise<string> {
+async function insertUser(db: Pick<Pool | PoolClient, "query">, tenantId: string | null): Promise<string> {
   const { rows } = await db.query<{ id: string }>(
     `INSERT INTO users (email, password_hash, tenant_id) VALUES ($1, 'unused', $2) RETURNING id`,
     [`tenant-id-${randomUUID()}@example.com`, tenantId],
@@ -118,7 +118,7 @@ describe("tenant_id on every tenant-owned table", () => {
           await runMigrations(pool, dir);
           const db = await createChokePoint(pool).createDatabase({ name: "Upgrade" });
           await createChokePoint(pool).createItem({ databaseId: db.id });
-          await pool.query(...notificationInsert(await insertUser(pool)));
+          await pool.query(...notificationInsert(await insertUser(pool, null)));
 
           const partition = `items_p_${db.id.replaceAll("-", "")}`;
           const tables = ["databases", partition, "notifications"];
@@ -189,7 +189,8 @@ describe("tenant_id on every tenant-owned table", () => {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
-        const userId = await insertUser(client);
+        const { rows: tenant } = await client.query<{ id: string }>("INSERT INTO tenants DEFAULT VALUES RETURNING id");
+        const userId = await insertUser(client, tenant[0]?.id ?? null);
         const code = await sqlState(
           client,
           `INSERT INTO notifications (tenant_id, user_id, kind, title, source_table, source_id, transition_instance)
@@ -213,6 +214,8 @@ describe("tenant_id on every tenant-owned table", () => {
         const secondId = second[0]?.id;
         if (!secondId) throw new Error("second tenant insert returned no row");
         const userId = await insertUser(client, secondId);
+        // `getTestPool` connections start in tenant zero (#1067); this case is the scope-less one.
+        await client.query("SELECT set_config('app.tenant_id', '', true)");
 
         const [text, values] = notificationInsert(userId);
         expect(await sqlState(client, text, values)).toBe("23502");

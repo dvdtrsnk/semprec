@@ -26,12 +26,12 @@ export { createTestModuleItem, createTestProjectItem } from "./projectFixtures.j
  * (`withTenantTransaction`) still overrides it, and pools built from `TEST_DATABASE_URL` itself
  * (`createPool`, `createRuntimeRolePool`) carry no such setting.
  */
-export function getTestPool(): Pool {
+export function getTestPool(config: { max?: number } = {}): Pool {
   const connectionString = process.env.TEST_DATABASE_URL;
   if (!connectionString) {
     throw new Error("TEST_DATABASE_URL is not set — is vitest.config.ts's globalSetup wired up?");
   }
-  return new Pool({ connectionString, options: `-c app.tenant_id=${getTenantZeroId()}` });
+  return new Pool({ connectionString, ...config, options: `-c app.tenant_id=${getTenantZeroId()}` });
 }
 
 /**
