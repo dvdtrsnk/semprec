@@ -1,7 +1,7 @@
-import { encryptSecret, decryptSecret, openSecret, resolveMasterKeyFromEnv } from "@semprec/credentials";
+import { decryptSecret, openSecret, resolveMasterKeyFromEnv, sealSecret } from "@semprec/credentials";
 import type { Queryable } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
-import { getTenantDataKey } from "./tenantKeysStore.js";
+import { getOrCreateTenantDataKey, getTenantDataKey } from "./tenantKeysStore.js";
 
 /**
  * Generic reversible-secret storage (issue #26): `item_id` references any `items` row that
@@ -44,20 +44,28 @@ export interface StoreCredentialInput {
   itemId: string;
   credentialType: CredentialType;
   plaintext: string;
-  /** Defaults to the current key (1) — only a key-rotation migration should ever pass a different version. */
-  keyVersion?: number;
 }
 
-/** Encrypts under the master key, marks the row `master` and stores/replaces the one credential this item holds (`item_id` is the table's PK — one credential per item, see the migration's header note). */
+/**
+ * Seals under the current tenant's data key (created on first use), bound to `tenant_id‖item_id`,
+ * marks the row `tenant` and stores/replaces the one credential this item holds (`item_id` is the
+ * table's PK — one credential per item, see the migration's header note). Replacing a `master` row
+ * turns it into a `tenant` row. Inside a transaction a newly created tenant key rolls back with the
+ * caller. `key_version` is written as 1 and is not meaningful on a `tenant` row: the version of the
+ * master key wrapping the tenant's data key lives in `tenant_keys.master_key_version`.
+ */
 export async function storeCredential(client: Queryable, input: StoreCredentialInput): Promise<void> {
-  const keyVersion = input.keyVersion ?? 1;
-  const key = resolveMasterKeyFromEnv(keyVersion);
-  const { ciphertext, nonce } = await encryptSecret(input.plaintext, key);
+  const key = await getOrCreateTenantDataKey(client);
+  const { ciphertext, nonce } = await sealSecret(
+    input.plaintext,
+    key.dataKey,
+    credentialAssociatedData(key.tenantId, input.itemId),
+  );
   await client.query(
-    `INSERT INTO external_credentials (item_id, credential_type, ciphertext, nonce, key_version, scheme)
-     VALUES ($1, $2, $3, $4, $5, 'master')
-     ON CONFLICT (item_id) DO UPDATE SET credential_type = EXCLUDED.credential_type, ciphertext = EXCLUDED.ciphertext, nonce = EXCLUDED.nonce, key_version = EXCLUDED.key_version, scheme = 'master'`,
-    [input.itemId, input.credentialType, ciphertext, nonce, keyVersion],
+    `INSERT INTO external_credentials (tenant_id, item_id, credential_type, ciphertext, nonce, key_version, scheme)
+     VALUES ($1, $2, $3, $4, $5, 1, 'tenant')
+     ON CONFLICT (item_id) DO UPDATE SET credential_type = EXCLUDED.credential_type, ciphertext = EXCLUDED.ciphertext, nonce = EXCLUDED.nonce, key_version = EXCLUDED.key_version, scheme = EXCLUDED.scheme`,
+    [key.tenantId, input.itemId, input.credentialType, ciphertext, nonce],
   );
 }
 
@@ -83,11 +91,10 @@ export interface DecryptCredentialInput {
 
 /**
  * The narrow decryption accessor — the only function in this codebase that decrypts a credential,
- * under either scheme. The `tenant` branch reads rows that no code writes yet: sealing under the
- * tenant key arrives in a later release, and this reader ships first so that a rollback from that
- * release can still open them. It is not dead code. Logs every decryption *attempt* to `credential_access_log` — the log
- * insert runs before `decryptSecret` itself (see mailSyncJob.ts's caller-side note: this is
- * intentional, so a decrypt failure downstream of a real key/ciphertext still leaves the
+ * under either scheme: `tenant` rows are what `storeCredential` writes, `master` rows are those
+ * written before it sealed under the tenant key and not yet re-encrypted. Logs every decryption
+ * *attempt* to `credential_access_log` — the log insert runs before the decryption itself (see
+ * mailSyncJob.ts's caller-side note: this is intentional, so a decrypt failure downstream of a real key/ciphertext still leaves the
  * access attempt on record) — and returns `null` (no log entry) only when there is nothing to
  * decrypt at all, since "no credential stored" is not itself a credential access. Callers: the
  * mail sync worker (every sync cycle) and the MCP connection manager (once per opened
