@@ -102,8 +102,8 @@ export async function listAdminRecipients(
 
 /**
  * Locale of the tenant's user — the recipient rule of `getTenantUserId`: the user of the scope's
- * tenant. Returns `null` when the tenant has no bound user, and in a system scope once more
- * than one tenant exists.
+ * tenant. Returns `null` when the tenant has no bound user, and outside a tenant scope — the same
+ * visibility tenant rows have.
  */
 export async function getTenantUserLocale(client: Pool | PoolClient): Promise<string | null> {
   const { rows } = await client.query<{ locale: string }>(

@@ -1,5 +1,5 @@
 import { Pool } from "pg";
-import { getTenantZeroId } from "./tenantFixtures.js";
+import { getTenantZeroId, tenantZeroSessionOptions } from "./tenantFixtures.js";
 
 // Test-only: lets a composition-root test outside this package make a Mailbox syncable (a stored
 // credential plus its sync-state row) without adding either writer to the production entry point.
@@ -14,6 +14,7 @@ export {
   inTenantZero,
   setTenantAiBudget,
   tenantForNextTestUser,
+  tenantZeroSessionOptions,
   withTenantTransaction,
 } from "./tenantFixtures.js";
 export { createTestModuleItem, createTestProjectItem } from "./projectFixtures.js";
@@ -31,7 +32,7 @@ export function getTestPool(config: { max?: number } = {}): Pool {
   if (!connectionString) {
     throw new Error("TEST_DATABASE_URL is not set — is vitest.config.ts's globalSetup wired up?");
   }
-  return new Pool({ connectionString, ...config, options: `-c app.tenant_id=${getTenantZeroId()}` });
+  return new Pool({ connectionString, ...config, options: tenantZeroSessionOptions() });
 }
 
 /**

@@ -36,6 +36,21 @@ export function getTenantZeroId(): string {
   return id;
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * The libpq `options` string that starts every connection of a pool in tenant zero
+ * (`-c app.tenant_id=<id>`). The id is interpolated, so it is checked against the UUID shape first:
+ * a value with a space or a backslash could otherwise smuggle another `-c` option into the string.
+ */
+export function tenantZeroSessionOptions(): string {
+  const id = getTenantZeroId();
+  if (!UUID_PATTERN.test(id)) {
+    throw new Error(`TEST_TENANT_ZERO_ID is not a lowercase UUID: ${JSON.stringify(id)}`);
+  }
+  return `-c app.tenant_id=${id}`;
+}
+
 /**
  * Runs `fn` inside tenant zero, for a test that calls a job producer without a scope of its own:
  * `registerTask` refuses a tenant task whose job envelope carries no tenant, so the jobs `fn`
@@ -134,9 +149,9 @@ export async function tenantForNextTestUser(pool: Pool): Promise<string> {
 }
 
 /**
- * Creates a test account through `createUser` bound to `tenantForNextTestUser`: the first account
- * is tenant zero's user — the recipient of tenant zero's events and the actor of its root runs —
- * and every later one is bound to a fresh tenant of its own.
+ * Creates a test account bound to `tenantForNextTestUser`, so only the first call creates tenant
+ * zero's user (the recipient of tenant zero's events and the actor of its root runs); every later
+ * call creates a fresh tenant (`createTestTenant`) and binds the account to it.
  */
 export async function createTenantZeroUser(pool: Pool, email = `${randomUUID()}@example.com`): Promise<UserRow> {
   return createUser(pool, { email, passwordHash: "unused", tenantId: await tenantForNextTestUser(pool) });
