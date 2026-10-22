@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
-import { createTenantZeroUser, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createTenantZeroUser,
+  getTenantZeroId,
+  getTestPool,
+  inTenantZero,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 import {
   startStdioContractServer,
   type ContractServerTool,
@@ -10,7 +16,7 @@ import {
 } from "../testSupport/mcpContractServers.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { requireSingleRow, withTransaction } from "../db/pool.js";
+import { withTransaction } from "../db/pool.js";
 import { createUser as createAuthUser } from "../auth/usersStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
@@ -48,9 +54,7 @@ async function createUser(): Promise<string> {
 }
 
 async function createSoleTenantAdmin(): Promise<string> {
-  const { rows } = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
-  const tenantId = requireSingleRow(rows, "sole tenant").id;
-  if (!tenantId) throw new Error("Expected a sole tenant");
+  const tenantId = getTenantZeroId();
   const user = await createAuthUser(pool, {
     email: "admin@example.test",
     passwordHash: "unused",

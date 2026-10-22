@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createTenantZeroUser, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { requireSingleRow, withTransaction } from "../db/pool.js";
+import { withTransaction } from "../db/pool.js";
 import { createUser } from "../auth/usersStore.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { clearHooksForTests, registerItemCreateHook } from "../chokePoint/hooks.js";
@@ -84,9 +84,7 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
   });
 
   async function createAdmin(): Promise<string> {
-    const { rows } = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
-    const tenantId = requireSingleRow(rows, "sole tenant").id;
-    if (!tenantId) throw new Error("Expected a sole tenant");
+    const tenantId = getTenantZeroId();
     const user = await createUser(pool, {
       email: "admin@example.test",
       passwordHash: "unused",

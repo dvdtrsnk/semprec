@@ -7,6 +7,7 @@ import {
   createRuntimeRolePool,
   createTenantZeroUser,
   createTestTenant,
+  getTenantZeroId,
   getTestPool,
   resetDatabase,
 } from "../testSupport/testDb.js";
@@ -136,9 +137,7 @@ describe("MCP connection factory (issue #231)", () => {
   // A `stdio` spawn needs an admin of the sole tenant (issue #1033). Each test that expects a
   // spawn creates that admin explicitly; the member test below leaves its user a member.
   async function makeSoleTenantAdmin(): Promise<void> {
-    const { rows } = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
-    const tenantId = requireSingleRow(rows, "sole tenant").id;
-    if (!tenantId) throw new Error("Expected a sole tenant");
+    const tenantId = getTenantZeroId();
     await createUser(pool, {
       email: "admin@example.test",
       passwordHash: "unused",
@@ -235,10 +234,15 @@ describe("MCP connection factory (issue #231)", () => {
               });
               return stored;
             });
-            const { rows: tenants } = await runtimePool.query<{ sole: string | null; current: string }>(
-              "SELECT app_sole_tenant() AS sole, app_current_tenant() AS current",
+            // Two tenants exist, so no sole-tenant fallback can stand in for the active tenant.
+            const { rows: tenantCount } = await pool.query<{ count: number }>(
+              "SELECT count(*)::int AS count FROM tenants",
             );
-            expect(tenants).toEqual([{ sole: null, current: tenantId }]);
+            expect(tenantCount).toEqual([{ count: 2 }]);
+            const { rows: current } = await runtimePool.query<{ current: string }>(
+              "SELECT app_current_tenant() AS current",
+            );
+            expect(current).toEqual([{ current: tenantId }]);
 
             if (role === "member") {
               await expect(connectMcpServer(runtimePool, item)).rejects.toMatchObject({

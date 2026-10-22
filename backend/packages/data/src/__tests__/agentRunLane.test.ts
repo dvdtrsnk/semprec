@@ -56,13 +56,6 @@ async function fireJobs(): Promise<FireJobRow[]> {
   return rows;
 }
 
-async function soleTenant(): Promise<string> {
-  const { rows } = await pool.query<{ app_sole_tenant: string | null }>("SELECT app_sole_tenant()");
-  const tenantId = rows[0]?.app_sole_tenant;
-  if (!tenantId) throw new Error("app_sole_tenant() returned no tenant");
-  return tenantId;
-}
-
 async function createIntervalHeartbeat(actionId: string): Promise<string> {
   const heartbeat = await withTransaction(pool, (client) =>
     createHeartbeat(client, {
@@ -117,7 +110,7 @@ describe("agent heartbeat fires enqueue onto the tenant's agent-run lane (issue 
     await resetDatabase(pool);
     await seedSystem(pool);
     await createTenantZeroUser(pool);
-    tenant = await soleTenant();
+    tenant = getTenantZeroId();
   });
 
   it("sweep: a core.agentRun fire gets agent-run:<T>, a non-agent fire keeps a NULL queue name", async () => {

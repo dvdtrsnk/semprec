@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import {
   allowLoopbackOutboundForTests,
   startHttpContractServer,
@@ -180,9 +180,7 @@ async function createMcpServerItem(connectionConfig: McpConnectionConfig, creden
 
 /** A `stdio` spawn needs an admin of the sole tenant (issue #1033). */
 async function makeSoleTenantAdmin(): Promise<void> {
-  const { rows } = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
-  const tenantId = requireSingleRow(rows, "sole tenant").id;
-  if (!tenantId) throw new Error("Expected a sole tenant");
+  const tenantId = getTenantZeroId();
   await createUser(pool, { email: "admin@example.test", passwordHash: "unused", tenantId, role: "admin" });
 }
 

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import {
   DEFAULT_CONTRACT_TOOLS,
   allowLoopbackOutboundForTests,
@@ -12,7 +12,7 @@ import {
 } from "../testSupport/mcpContractServers.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { requireSingleRow, withTransaction } from "../db/pool.js";
+import { withTransaction } from "../db/pool.js";
 import { createUser } from "../auth/usersStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
@@ -96,9 +96,7 @@ describe("MCP tool sync (issue #125)", () => {
     await seedSystem(pool, viewTypeRegistry);
     mcpServersId = await databaseIdFor("mcpServers");
     // A `stdio` spawn needs an admin of the sole tenant (issue #1033).
-    const { rows } = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
-    const tenantId = requireSingleRow(rows, "sole tenant").id;
-    if (!tenantId) throw new Error("Expected a sole tenant");
+    const tenantId = getTenantZeroId();
     await createUser(pool, {
       email: "admin@example.test",
       passwordHash: "unused",
