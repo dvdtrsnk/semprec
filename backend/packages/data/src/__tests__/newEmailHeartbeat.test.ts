@@ -2,7 +2,13 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createHash, randomUUID } from "node:crypto";
 import { runOnce } from "@semprec/queue";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  bindToTenantZero,
+  createTenantZeroUser,
+  getTestPool,
+  inTenantZero,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
@@ -69,7 +75,7 @@ async function drainQueue(registry: ReturnType<typeof createActionRegistry>) {
 describe("newEmail heartbeat (issue #99)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
-    chokePoint ??= createChokePoint(pool);
+    chokePoint ??= bindToTenantZero(createChokePoint(pool));
     await resetDatabase(pool);
     await seedSystem(pool);
     await createUser();
@@ -100,32 +106,34 @@ describe("newEmail heartbeat (issue #99)", () => {
       return created;
     });
 
-    const result = await withTransaction(pool, async (client) => {
-      const ingestResult = await ingestEmailMessage(client, {
-        emailsDatabaseId: emailsId,
-        filesDatabaseId: filesId,
-        folderRelationPropertyId: folderProperty.id,
-        attachmentsRelationPropertyId: attachmentsProperty.id,
-        folderItemId: folders[0]!.id,
-        mailboxItemId: randomUUID(),
-        messageId,
-        subject: "Hello",
-        envelope: { from: { address: "alice@example.com", name: "Alice" }, to: [{ address: "bob@example.com" }] },
-        bodyText: "hi",
-        attachments: [],
-        storage: noopStorage,
-        storageKeyPrefix: "test",
-      });
-      // A message with multiple folder memberships (e.g. Gmail labels) — link the rest too.
-      for (const folder of folders.slice(1)) {
-        await createRelationWithClient(
-          client,
-          { relationPropertyId: folderProperty.id, callerItemId: ingestResult.itemId, targetItemId: folder.id },
-          EMAILS_RELATION_CONTEXT,
-        );
-      }
-      return ingestResult;
-    });
+    const result = await inTenantZero(() =>
+      withTransaction(pool, async (client) => {
+        const ingestResult = await ingestEmailMessage(client, {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          folderRelationPropertyId: folderProperty.id,
+          attachmentsRelationPropertyId: attachmentsProperty.id,
+          folderItemId: folders[0]!.id,
+          mailboxItemId: randomUUID(),
+          messageId,
+          subject: "Hello",
+          envelope: { from: { address: "alice@example.com", name: "Alice" }, to: [{ address: "bob@example.com" }] },
+          bodyText: "hi",
+          attachments: [],
+          storage: noopStorage,
+          storageKeyPrefix: "test",
+        });
+        // A message with multiple folder memberships (e.g. Gmail labels) — link the rest too.
+        for (const folder of folders.slice(1)) {
+          await createRelationWithClient(
+            client,
+            { relationPropertyId: folderProperty.id, callerItemId: ingestResult.itemId, targetItemId: folder.id },
+            EMAILS_RELATION_CONTEXT,
+          );
+        }
+        return ingestResult;
+      }),
+    );
 
     return result;
   }
@@ -230,10 +238,10 @@ describe("newEmail heartbeat (issue #99)", () => {
       storageKeyPrefix: "test",
     };
 
-    await withTransaction(pool, (client) => ingestEmailMessage(client, input));
+    await inTenantZero(() => withTransaction(pool, (client) => ingestEmailMessage(client, input)));
     // A second sync pass re-observing the same Message-ID (reconciliation) — converges onto
     // the same item, must not re-fire the newEmail event.
-    await withTransaction(pool, (client) => ingestEmailMessage(client, input));
+    await inTenantZero(() => withTransaction(pool, (client) => ingestEmailMessage(client, input)));
     await drainQueue(registry);
 
     const runs = await listAgentRunsByHeartbeat(pool, heartbeatId);

@@ -2,7 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupport";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
 import * as agentsFixtureModule from "./fixtures/agentsFixtureModule.js";
@@ -54,9 +54,9 @@ describe("createAgentsQueueRuntime (issue #91)", () => {
     const { rows: crontabRows } = await pool.query("SELECT identifier FROM graphile_worker._private_known_crontabs");
     expect(crontabRows).toEqual([]);
 
-    await enqueueJob(pool, "agentsFixture.doThing", { hello: "agents" });
-    await enqueueJob(pool, AGENT_TASK_NAMES.AGENT_RUN, {});
-    await enqueueJob(pool, AGENT_TASK_NAMES.DELEGATED_AGENT_RUN, {});
+    await inTenantZero(() => enqueueJob(pool, "agentsFixture.doThing", { hello: "agents" }));
+    await inTenantZero(() => enqueueJob(pool, AGENT_TASK_NAMES.AGENT_RUN, {}));
+    await inTenantZero(() => enqueueJob(pool, AGENT_TASK_NAMES.DELEGATED_AGENT_RUN, {}));
 
     await waitFor(async () => agentsFixtureModule.calls.length > 0);
     expect(agentsFixtureModule.calls).toEqual([{ hello: "agents" }]);
@@ -83,7 +83,7 @@ describe("createAgentsQueueRuntime (issue #91)", () => {
       CORE_TASK_NAMES.NOTIFICATION_FANOUT,
     ];
     for (const identifier of apiOnlyIdentifiers) {
-      await enqueueJob(pool, identifier, {});
+      await inTenantZero(() => enqueueJob(pool, identifier, {}));
     }
 
     // This runtime's taskList has no handler for any of these api-affinity identifiers, so
@@ -106,7 +106,7 @@ describe("createAgentsQueueRuntime (issue #91)", () => {
     const registry = await buildRegistryWith("agentsFixtureModule.js", "fixture-agents-queue-runtime");
     runtime = await createAgentsQueueRuntime(pool, registry);
 
-    await enqueueJob(pool, AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT, {});
+    await inTenantZero(() => enqueueJob(pool, AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT, {}));
 
     // An empty payload fails this handler's own field validation, so it never completes — but
     // graphile-worker still has to claim and invoke it to discover that. `attempts >= 1` is

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
+import { runInTenant } from "@semprec/shared";
 import { createUser } from "../auth/usersStore.js";
 import type { UserRow } from "../auth/types.js";
 import { createPool, withTransaction } from "../db/pool.js";
@@ -32,6 +33,33 @@ export function getTenantZeroId(): string {
     throw new Error("TEST_TENANT_ZERO_ID is not set — is vitest's globalSetup wired up?");
   }
   return id;
+}
+
+/**
+ * Runs `fn` inside tenant zero, for a test that calls a job producer without a scope of its own:
+ * `registerTask` refuses a tenant task whose job envelope carries no tenant, so the jobs `fn`
+ * enqueues must carry one.
+ */
+export function inTenantZero<T>(fn: () => Promise<T>): Promise<T> {
+  return runInTenant(getTenantZeroId(), fn);
+}
+
+/**
+ * Returns `target` with every method run inside tenant zero (`runInTenant`), for a test that drives
+ * a job producer (the choke point, a store's write functions) without a scope of its own:
+ * `registerTask` refuses a tenant task whose job envelope carries no tenant, so the jobs those
+ * writes enqueue must carry one. A bound method called from inside another tenant's scope throws
+ * `TenantScopeConflictError`, as `runInTenant` does.
+ */
+export function bindToTenantZero<T extends object>(target: T): T {
+  return new Proxy(target, {
+    get(object, key, receiver) {
+      const value: unknown = Reflect.get(object, key, receiver);
+      if (typeof value !== "function") return value;
+      return (...args: unknown[]): unknown =>
+        runInTenant(getTenantZeroId(), (): unknown => Reflect.apply(value, object, args));
+    },
+  });
 }
 
 /** Inserts a `tenants` row (status `active` unless given) and returns its id. */
