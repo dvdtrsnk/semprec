@@ -12,6 +12,7 @@ import { createProperty } from "../chokePoint/propertiesStore.js";
 import { createView, deleteView } from "../chokePoint/viewsStore.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { withTransaction } from "../db/pool.js";
+import { mutateDocWithClient } from "../docs/docPersistence.js";
 import { deleteDocByItemId, getOrCreateDoc } from "../docs/docsStore.js";
 import { createMailThread } from "../mail/mailMessageMetaStore.js";
 import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
@@ -290,11 +291,14 @@ const REFERENCES: Reference[] = [
   },
 ];
 
-async function countReferencing(table: string, column: string, parentId: string): Promise<number> {
-  // Identifiers come from the closed REFERENCES list above, never from input.
+/** Rows of `table` whose `column` is `parentId`, limited to `tenantId` when it is given. */
+async function countReferencing(table: string, column: string, parentId: string, tenantId?: string): Promise<number> {
+  // `table` and `column` are always literals of this file or come from the closed REFERENCES list
+  // above, never from input; the values are bound parameters.
+  const tenantFilter = tenantId === undefined ? "" : " AND tenant_id = $2";
   const { rows } = await adminPool.query<{ n: number }>(
-    `SELECT count(*)::int AS n FROM ${table} WHERE ${column} = $1`,
-    [parentId],
+    `SELECT count(*)::int AS n FROM ${table} WHERE ${column} = $1${tenantFilter}`,
+    tenantId === undefined ? [parentId] : [parentId, tenantId],
   );
   return rows[0]?.n ?? 0;
 }
@@ -328,7 +332,7 @@ describe("tenant-consistent composite foreign keys (issue #1066)", () => {
       await expect(
         inTenant(tenantB, (client) => reference.insert(client, randomUUID(), parentsB)),
       ).rejects.toMatchObject({ code: reference.unknownParentCode ?? "23503" });
-      expect(await countReferencingInTenant(tenantB, reference, foreignId)).toBe(0);
+      expect(await countReferencing(reference.table, reference.column, foreignId, tenantB)).toBe(0);
     });
 
     it("accepts tenant B's own parent", async () => {
@@ -379,14 +383,20 @@ describe("tenant-consistent composite foreign keys (issue #1066)", () => {
     expect(await countReferencing("view_items", "view_id", parentsA.viewId)).toBe(0);
   });
 
-  it("still cascades the delete of a doc to its snapshots and updates", async () => {
-    expect(await countReferencing("doc_snapshots", "doc_id", parentsA.docId)).toBeGreaterThan(0);
+  it("still cascades the delete of a doc to its snapshots, updates and history", async () => {
+    // getOrCreateDoc wrote the doc_snapshots row and the doc_snapshot_history baseline; one edit
+    // through the production writer appends a doc_updates row and its doc_history_updates mirror,
+    // so every child table holds a row before the delete.
     await inTenant(tenantA, (client) =>
-      client.query("INSERT INTO doc_updates (doc_id, update) VALUES ($1, '\\x00')", [parentsA.docId]),
+      mutateDocWithClient(client, parentsA.docId, "user", (doc) => doc.getText("body").insert(0, "probe")),
     );
+    const docChildren = ["doc_snapshots", "doc_updates", "doc_snapshot_history", "doc_history_updates"];
+    for (const table of docChildren) {
+      expect(await countReferencing(table, "doc_id", parentsA.docId), table).toBeGreaterThan(0);
+    }
     await inTenant(tenantA, (client) => deleteDocByItemId(client, parentsA.itemId));
     expect(await countReferencing("docs", "id", parentsA.docId)).toBe(0);
-    for (const table of ["doc_snapshots", "doc_updates", "doc_snapshot_history", "doc_history_updates"]) {
+    for (const table of docChildren) {
       expect(await countReferencing(table, "doc_id", parentsA.docId), table).toBe(0);
     }
     expect(await countReferencing("docs", "id", parentsB.docId)).toBe(1);
@@ -407,12 +417,3 @@ describe("tenant-consistent composite foreign keys (issue #1066)", () => {
     expect(rows.filter((row) => !row.validated)).toEqual([]);
   });
 });
-
-/** Rows of `tenantId` that reference `parentId` through the reference's column. */
-async function countReferencingInTenant(tenantId: string, reference: Reference, parentId: string): Promise<number> {
-  const { rows } = await adminPool.query<{ n: number }>(
-    `SELECT count(*)::int AS n FROM ${reference.table} WHERE ${reference.column} = $1 AND tenant_id = $2`,
-    [parentId, tenantId],
-  );
-  return rows[0]?.n ?? 0;
-}
