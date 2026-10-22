@@ -67,13 +67,10 @@ async function readSettingsState(tenantId: string): Promise<SettingsState> {
 }
 
 /**
- * Rolls a provisioned settings database back to the shape seedSystem and 0019 produced before
- * #1059. Raw SQL on the admin pool because no production writer creates these properties any more.
+ * Adds the dailyBudgetUsd/monthlyBudgetUsd property rows seedSystem and 0019 created before #1059.
+ * Raw SQL on the admin pool because no production writer creates these properties any more.
  */
-async function applyLegacyBudgetShape(
-  tenantId: string,
-  values: { timezone: string; dailyBudgetUsd: number | null; monthlyBudgetUsd: number | null },
-): Promise<void> {
+async function insertLegacyBudgetProperties(tenantId: string): Promise<void> {
   const databaseId = await settingsDatabaseId(tenantId);
   await adminPool.query(`UPDATE databases SET schema_locked = false WHERE id = $1`, [databaseId]);
   await adminPool.query(
@@ -82,13 +79,33 @@ async function applyLegacyBudgetShape(
             ($1, $2, 'monthlyBudgetUsd', 'Monthly AI budget (USD)', 'number', true, 'user')`,
     [tenantId, databaseId],
   );
+  await adminPool.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [databaseId]);
+}
+
+/**
+ * Writes the budget keys onto the settings item the way seedSystem and 0019 did before #1059.
+ * Raw SQL on the admin pool because no production writer sets these keys any more.
+ */
+async function setLegacyBudgetItemKeys(
+  tenantId: string,
+  values: { timezone: string; dailyBudgetUsd: number | null; monthlyBudgetUsd: number | null },
+): Promise<void> {
+  const databaseId = await settingsDatabaseId(tenantId);
   await adminPool.query(
     `UPDATE items SET properties = properties || jsonb_build_object(
        'timezone', $2::text, 'dailyBudgetUsd', $3::numeric, 'monthlyBudgetUsd', $4::numeric)
       WHERE database_id = $1`,
     [databaseId, values.timezone, values.dailyBudgetUsd, values.monthlyBudgetUsd],
   );
-  await adminPool.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [databaseId]);
+}
+
+/** Rolls a provisioned settings database back to the full shape it had before #1059. */
+async function applyLegacyBudgetShape(
+  tenantId: string,
+  values: { timezone: string; dailyBudgetUsd: number | null; monthlyBudgetUsd: number | null },
+): Promise<void> {
+  await insertLegacyBudgetProperties(tenantId);
+  await setLegacyBudgetItemKeys(tenantId, values);
 }
 
 describe("0081_remove_settings_budget_properties migration", () => {
@@ -144,6 +161,54 @@ describe("0081_remove_settings_budget_properties migration", () => {
       expect(after.itemProperties).toMatchObject({ name: "Semp", timezone });
       expect(after.schemaLocked).toBe(true);
     }
+  });
+
+  it("strips the budget item keys from a settings database that has no budget properties", async () => {
+    const tenant = await createTestTenant(adminPool);
+    const untouched = await createTestTenant(adminPool);
+    await provisionTenant(dataPool, tenant);
+    await provisionTenant(dataPool, untouched);
+    await setLegacyBudgetItemKeys(tenant, { timezone: "Europe/Prague", dailyBudgetUsd: 7, monthlyBudgetUsd: 90 });
+    const legacy = await readSettingsState(tenant);
+    const untouchedBefore = await readSettingsState(untouched);
+    // Only the item-keys EXISTS branch can select this database.
+    expect(legacy.propertyKeys).toEqual(["name", "timezone"]);
+    expect(legacy.itemProperties).toMatchObject({ dailyBudgetUsd: 7, monthlyBudgetUsd: 90 });
+
+    await adminPool.query(MIGRATION_SQL);
+
+    const after = await readSettingsState(tenant);
+    expect(after.propertyKeys).toEqual(["name", "timezone"]);
+    const { dailyBudgetUsd: _daily, monthlyBudgetUsd: _monthly, ...rest } = legacy.itemProperties;
+    expect(after.itemProperties).toEqual(rest);
+    expect(after.itemProperties).toMatchObject({ name: "Semp", timezone: "Europe/Prague" });
+    expect(after.schemaLocked).toBe(true);
+    expect(after.databaseXmin).not.toBe(legacy.databaseXmin);
+    expect(await readSettingsState(untouched)).toEqual(untouchedBefore);
+  });
+
+  it("removes the budget properties from a settings database whose item has no budget keys", async () => {
+    const tenant = await createTestTenant(adminPool);
+    const untouched = await createTestTenant(adminPool);
+    await provisionTenant(dataPool, tenant);
+    await provisionTenant(dataPool, untouched);
+    await insertLegacyBudgetProperties(tenant);
+    const legacy = await readSettingsState(tenant);
+    const untouchedBefore = await readSettingsState(untouched);
+    // Only the property-rows EXISTS branch can select this database.
+    expect(legacy.propertyKeys).toEqual(["dailyBudgetUsd", "monthlyBudgetUsd", "name", "timezone"]);
+    expect(legacy.itemProperties).not.toHaveProperty("dailyBudgetUsd");
+    expect(legacy.itemProperties).not.toHaveProperty("monthlyBudgetUsd");
+
+    await adminPool.query(MIGRATION_SQL);
+
+    const after = await readSettingsState(tenant);
+    expect(after.propertyKeys).toEqual(["name", "timezone"]);
+    expect(after.itemProperties).toEqual(legacy.itemProperties);
+    expect(after.itemXmin).toBe(legacy.itemXmin);
+    expect(after.schemaLocked).toBe(true);
+    expect(after.databaseXmin).not.toBe(legacy.databaseXmin);
+    expect(await readSettingsState(untouched)).toEqual(untouchedBefore);
   });
 
   it("changes nothing when run a second time", async () => {
