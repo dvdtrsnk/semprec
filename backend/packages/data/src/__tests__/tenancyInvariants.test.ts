@@ -8,8 +8,9 @@ import { findTenancyViolations, verifyTenancy, type TenancyViolation } from "../
 /**
  * Issue #1085: the deploy-time tenancy verification. Each break runs inside a transaction that is
  * rolled back, so the catalog is unchanged for the next test. Every SQL identifier interpolated
- * below is a fixed name or a random hex probe name generated here, never input; DDL takes no bind
- * parameters.
+ * below is a fixed name, a random hex probe name generated here, or `partitionName`, which is
+ * `items_p_` followed by the server-generated UUID of a database created here with its hyphens
+ * removed (hex only); none is input. DDL takes no bind parameters.
  */
 let pool: Pool;
 let partitionName: string;
@@ -45,6 +46,7 @@ describe("findTenancyViolations", () => {
     pool = getTestPool();
     await resetDatabase(pool);
     const db = await createChokePoint(pool).createDatabase({ name: "Tenancy invariants partition" });
+    // Hex only: a server-generated UUID with its hyphens removed, safe to interpolate into DDL.
     partitionName = `items_p_${db.id.replaceAll("-", "")}`;
   });
 
@@ -230,6 +232,19 @@ describe("findTenancyViolations", () => {
           },
         ],
       );
+    });
+
+    it("runtimeRole: membership in a superuser role that lacks BYPASSRLS", async () => {
+      const role = probeName("tenancy_invariants_super");
+      expect(
+        await violationsAfter([`CREATE ROLE ${role} NOLOGIN SUPERUSER NOBYPASSRLS`, `GRANT ${role} TO semprec_data`]),
+      ).toEqual([
+        {
+          invariant: "runtimeRole",
+          object: "semprec_data",
+          detail: `is a member of superuser or BYPASSRLS role(s) ${role}`,
+        },
+      ]);
     });
 
     it("runtimeRole: membership in the owner of a relation in public, and owning one directly", async () => {

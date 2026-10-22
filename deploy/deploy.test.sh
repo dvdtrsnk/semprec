@@ -134,6 +134,29 @@ assert_current() {
   test "$(readlink "$TEST_SEMPREC_ROOT/current")" == "$TEST_SEMPREC_ROOT/releases/$1"
 }
 
+# A successful deploy runs migrate, seed and verify once each, in that order, before any restart.
+# The seed and the tenancy verification use the migrate URL; the verification also uses the same
+# unit properties as the migrations. Reads the commands of exactly one deploy.
+assert_pre_activation_order() {
+  grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runMigrationsCli.js' "$TEST_STATE/commands" \
+    | cut -d: -f1 > "$TEST_STATE/migrate.line"
+  grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runSeedCli.js' "$TEST_STATE/commands" \
+    | cut -d: -f1 > "$TEST_STATE/seed.line"
+  grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/verifyTenancyCli.js' "$TEST_STATE/commands" \
+    | cut -d: -f1 > "$TEST_STATE/verify.line"
+  test "$(wc -l < "$TEST_STATE/migrate.line")" -eq 1
+  test "$(wc -l < "$TEST_STATE/seed.line")" -eq 1
+  test "$(wc -l < "$TEST_STATE/verify.line")" -eq 1
+  test "$(grep -c 'verifyTenancyCli.js' "$TEST_STATE/commands")" -eq 1
+  test "$(cat "$TEST_STATE/migrate.line")" -lt "$(cat "$TEST_STATE/seed.line")"
+  test "$(cat "$TEST_STATE/seed.line")" -lt "$(cat "$TEST_STATE/verify.line")"
+  test "$(grep 'runMigrationsCli.js' "$TEST_STATE/commands" | sed 's/runMigrationsCli/CLI/')" \
+    == "$(grep 'verifyTenancyCli.js' "$TEST_STATE/commands" | sed 's/verifyTenancyCli/CLI/')"
+  grep -n '^systemctl restart ' "$TEST_STATE/commands" | head -n 1 | cut -d: -f1 > "$TEST_STATE/first-restart.line"
+  test -s "$TEST_STATE/first-restart.line"
+  test "$(cat "$TEST_STATE/verify.line")" -lt "$(cat "$TEST_STATE/first-restart.line")"
+}
+
 # ---- A malformed tag is refused before anything happens. ----
 
 for bad_tag in 1.0.0 v1.0 v01.0.0 v1.0.0-rc.1 main; do
@@ -157,24 +180,7 @@ grep -q 'pnpm install --frozen-lockfile' "$TEST_STATE/commands"
 test "$(grep -c '^systemd-run ' "$TEST_STATE/commands")" -eq 3
 test "$(grep -c "EnvironmentFile=$TEST_SEMPREC_ROOT/shared/env/migrate.env " "$TEST_STATE/commands")" -eq 3
 test "$(grep -c 'EnvironmentFile=' "$TEST_STATE/commands")" -eq 3
-# The seed runs after the migrations, under the same migrate URL.
-grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runMigrationsCli.js' "$TEST_STATE/commands" \
-  | cut -d: -f1 > "$TEST_STATE/migrate.line"
-grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runSeedCli.js' "$TEST_STATE/commands" \
-  | cut -d: -f1 > "$TEST_STATE/seed.line"
-test "$(wc -l < "$TEST_STATE/migrate.line")" -eq 1
-test "$(wc -l < "$TEST_STATE/seed.line")" -eq 1
-test "$(cat "$TEST_STATE/migrate.line")" -lt "$(cat "$TEST_STATE/seed.line")"
-# The tenancy verification runs once, after the seed and before any restart, with the same unit
-# properties and migrate URL as the migrations.
-grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/verifyTenancyCli.js' "$TEST_STATE/commands" \
-  | cut -d: -f1 > "$TEST_STATE/verify.line"
-test "$(wc -l < "$TEST_STATE/verify.line")" -eq 1
-test "$(cat "$TEST_STATE/seed.line")" -lt "$(cat "$TEST_STATE/verify.line")"
-test "$(grep 'runMigrationsCli.js' "$TEST_STATE/commands" | sed 's/runMigrationsCli/CLI/')" \
-  == "$(grep 'verifyTenancyCli.js' "$TEST_STATE/commands" | sed 's/verifyTenancyCli/CLI/')"
-grep -n '^systemctl restart ' "$TEST_STATE/commands" | head -n 1 | cut -d: -f1 > "$TEST_STATE/first-restart.line"
-test "$(cat "$TEST_STATE/verify.line")" -lt "$(cat "$TEST_STATE/first-restart.line")"
+assert_pre_activation_order
 test -f "$TEST_SEMPREC_ROOT/releases/v1.0.0/web/dist/index.html"
 grep -qx 'pnpm run build' "$TEST_STATE/commands"
 if grep -q 'migrate-secret-value' "$TEST_STATE/deploy.out"; then
@@ -223,8 +229,10 @@ assert_no_partial_releases
 
 # ---- A second deploy swaps current and leaves the previous release intact. ----
 
+rm "$TEST_STATE/commands"
 run_deploy v1.1.0 > "$TEST_STATE/deploy.out"
 assert_current v1.1.0
+assert_pre_activation_order
 grep -qx two "$TEST_SEMPREC_ROOT/releases/v1.1.0/backend/marker"
 grep -qx one "$TEST_SEMPREC_ROOT/releases/v1.0.0/backend/marker"
 for unit in semprec-ai-gateway semprec-api semprec-agents semprec-transcribe; do
@@ -234,8 +242,10 @@ assert_no_partial_releases
 
 # ---- Rollback (issue #191): only to the release before the newest, with no build or migration. ----
 
+rm "$TEST_STATE/commands"
 run_deploy v1.3.0 > "$TEST_STATE/deploy.out"
 assert_current v1.3.0
+assert_pre_activation_order
 rm "$TEST_STATE/commands"
 # A staging directory left by an interrupted deploy is not a release and must not count as the newest.
 mkdir "$TEST_SEMPREC_ROOT/releases/.v1.4.0.partial.test"
