@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import * as credentials from "@semprec/credentials";
 import {
   generateDataKey,
   openSecret,
@@ -92,5 +93,13 @@ describe("wrapDataKey / unwrapDataKey", () => {
     const tenantId = randomUUID();
     const wrapped = await wrapDataKey(Buffer.alloc(16), masterKey, tenantId);
     await expect(unwrapDataKey(wrapped, masterKey, tenantId)).rejects.toThrow("must be 32 bytes");
+  });
+});
+
+describe("@semprec/credentials exports (issue #1069)", () => {
+  it("no longer exports the retired secretbox encryptSecret/decryptSecret", () => {
+    expect(Object.keys(credentials)).not.toContain("encryptSecret");
+    expect(Object.keys(credentials)).not.toContain("decryptSecret");
+    expect(Object.keys(credentials)).toEqual(expect.arrayContaining(["sealSecret", "openSecret", "unwrapDataKey"]));
   });
 });

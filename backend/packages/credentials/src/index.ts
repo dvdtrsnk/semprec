@@ -8,14 +8,12 @@ import sodium from "libsodium-wrappers";
  * used by `packages/data/src/credentials/externalCredentialsStore.ts` for any `items` row
  * that needs a secret (Mailboxes here; MCP servers in issue #31).
  *
- * Two schemes live here:
- * - `encryptSecret`/`decryptSecret` use `crypto_secretbox_easy` (XSalsa20-Poly1305) directly
- *   under the deployment master key. They carry no associated data, so a ciphertext copied onto
- *   another row decrypts there. They remain only until the sealed scheme has replaced them.
- * - `sealSecret`/`openSecret` use XChaCha20-Poly1305 (IETF AEAD) with caller-supplied associated
- *   data that binds a ciphertext to its owner. New data uses this scheme, under a per-tenant data
- *   key that `wrapDataKey`/`unwrapDataKey` protect with the master key
- *   (docs/adr/2026-10-05-per-tenant-envelope-encryption.md).
+ * `sealSecret`/`openSecret` use XChaCha20-Poly1305 (IETF AEAD) with caller-supplied associated data
+ * that binds a ciphertext to its owner. A credential is sealed under its tenant's data key; the
+ * deployment master key (`CREDENTIALS_MASTER_KEY`) only wraps and unwraps those per-tenant data keys
+ * through `wrapDataKey`/`unwrapDataKey`, and never seals a credential itself
+ * (docs/adr/2026-10-05-per-tenant-envelope-encryption.md). The master-key-only secretbox scheme was
+ * retired in issue #1069.
  */
 
 let readyPromise: Promise<typeof sodium> | null = null;
@@ -30,36 +28,14 @@ export interface EncryptedSecret {
   nonce: Buffer;
 }
 
-/** Encrypts `plaintext` under `key` (must be exactly `crypto_secretbox_KEYBYTES` = 32 bytes). */
-export async function encryptSecret(plaintext: string, key: Buffer): Promise<EncryptedSecret> {
-  const s = await ready();
-  if (key.length !== s.crypto_secretbox_KEYBYTES) {
-    throw new Error(`Master key must be ${s.crypto_secretbox_KEYBYTES} bytes, got ${key.length}`);
-  }
-  const nonce = s.randombytes_buf(s.crypto_secretbox_NONCEBYTES);
-  const ciphertext = s.crypto_secretbox_easy(s.from_string(plaintext), nonce, key);
-  return { ciphertext: Buffer.from(ciphertext), nonce: Buffer.from(nonce) };
-}
-
-/** Inverse of `encryptSecret`. Throws if `key`/`nonce` don't match — never returns a partial/corrupted result. */
-export async function decryptSecret(encrypted: EncryptedSecret, key: Buffer): Promise<string> {
-  const s = await ready();
-  let plaintext: Uint8Array;
-  try {
-    plaintext = s.crypto_secretbox_open_easy(encrypted.ciphertext, encrypted.nonce, key);
-  } catch {
-    throw new Error("Failed to decrypt secret: wrong key or corrupted ciphertext");
-  }
-  return s.to_string(plaintext);
-}
-
 export const MASTER_KEY_BYTES = 32;
 
 /**
  * Resolves a versioned master key from the process environment — `CREDENTIALS_MASTER_KEY`
- * for version 1, `CREDENTIALS_MASTER_KEY_V<n>` for a later rotated version (`key_version`
- * on `external_credentials`). A single self-hosted, single-tenant deployment's key lives in
- * root-owned `shared/.env` (issue #40), outside git and outside the data backup — never in
+ * for version 1, `CREDENTIALS_MASTER_KEY_V<n>` for a later rotated version
+ * (`tenant_keys.master_key_version`). It wraps and unwraps per-tenant data keys only. A single
+ * self-hosted deployment's key lives in root-owned `shared/.env` (issue #40), outside git and
+ * outside the data backup — never in
  * application config or a database row, and never logged (see `resolveMasterKeyFromEnv`'s
  * callers, which only ever pass the decoded `Buffer` onward, never the raw env string).
  */

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { encryptSecret, openSecret, resolveMasterKeyFromEnv } from "@semprec/credentials";
+import { openSecret } from "@semprec/credentials";
 import { getDecryptedCredential, storeCredential } from "../credentials/externalCredentialsStore.js";
 import { getTenantDataKey } from "../credentials/tenantKeysStore.js";
 import {
@@ -65,7 +65,7 @@ async function expectNoCode(promise: Promise<unknown>): Promise<void> {
   expect(err).not.toHaveProperty("code");
 }
 
-describe("external credentials store, both schemes", () => {
+describe("external credentials store, tenant scheme only", () => {
   beforeAll(async () => {
     pool = getTestPool();
     dataPool = await createRuntimeRolePool(pool, "semprec_data");
@@ -103,25 +103,6 @@ describe("external credentials store, both schemes", () => {
 
       expect(await getDecryptedCredential(pool, { itemId, ...READ })).toBe("s3cret");
       expect(await logCount(itemId)).toBe(1);
-    });
-
-    it("storeCredential over a master row turns it into a tenant row with the new plaintext", async () => {
-      const itemId = randomUUID();
-      const sealed = await encryptSecret("old", resolveMasterKeyFromEnv(1));
-      // Raw SQL: `storeCredential` no longer writes `master` rows, but rows written before it remain.
-      await pool.query(
-        `INSERT INTO external_credentials (item_id, credential_type, ciphertext, nonce, key_version, scheme)
-         VALUES ($1, 'api_key', $2, $3, 1, 'master')`,
-        [itemId, sealed.ciphertext, sealed.nonce],
-      );
-      expect(await getDecryptedCredential(pool, { itemId, ...READ })).toBe("old");
-
-      await storeCredential(pool, { itemId, credentialType: "bearer_token", plaintext: "new" });
-
-      expect((await storedRows(itemId)).map((r) => ({ scheme: r.scheme, type: r.credential_type }))).toEqual([
-        { scheme: "tenant", type: "bearer_token" },
-      ]);
-      expect(await getDecryptedCredential(pool, { itemId, ...READ })).toBe("new");
     });
 
     it("storeCredential over a tenant row replaces its ciphertext", async () => {
@@ -166,21 +147,45 @@ describe("external credentials store, both schemes", () => {
     });
   });
 
-  describe("master rows", () => {
-    it("a row inserted without scheme reads back as master and decrypts, one log row per attempt", async () => {
+  describe("scheme", () => {
+    it("throws a plain error for a row whose scheme is not tenant, after logging the attempt", async () => {
       const itemId = randomUUID();
-      const sealed = await encryptSecret("legacy", resolveMasterKeyFromEnv(1));
-      // Raw SQL: the previous release's insert omits `scheme`; no current writer produces this row.
-      await pool.query(
-        `INSERT INTO external_credentials (item_id, credential_type, ciphertext, nonce, key_version)
-         VALUES ($1, 'api_key', $2, $3, 1)`,
-        [itemId, sealed.ciphertext, sealed.nonce],
-      );
-      expect((await storedRows(itemId)).map((r) => r.scheme)).toEqual(["master"]);
-      expect(await getDecryptedCredential(pool, { itemId, ...READ })).toBe("legacy");
-      expect(await logCount(itemId)).toBe(1);
-      expect(await getDecryptedCredential(pool, { itemId, ...READ })).toBe("legacy");
-      expect(await logCount(itemId)).toBe(2);
+      await storeCredential(pool, { itemId, credentialType: "api_key", plaintext: "x" });
+      const client = await pool.connect();
+      let failure: { error: unknown } | undefined;
+      try {
+        await client.query("BEGIN");
+        // Owner DDL and raw SQL, rolled back below: migration 0086 forbids any other scheme, so only a
+        // test that drops its constraint can produce the row this guard refuses.
+        await client.query("ALTER TABLE external_credentials DROP CONSTRAINT external_credentials_scheme_tenant_only");
+        await client.query("UPDATE external_credentials SET scheme = 'master' WHERE item_id = $1", [itemId]);
+
+        const error: unknown = await getDecryptedCredential(client, { itemId, ...READ }).then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toBe("Unknown credential scheme in database row: 'master'");
+        expect(error).not.toHaveProperty("code");
+        const { rows } = await client.query<{ n: string }>(
+          "SELECT count(*) AS n FROM credential_access_log WHERE item_id = $1",
+          [itemId],
+        );
+        expect(Number(rows[0]?.n)).toBe(1);
+      } catch (error) {
+        failure = { error };
+      }
+      let rollbackError: Error | undefined;
+      try {
+        await client.query("ROLLBACK");
+      } catch (error) {
+        rollbackError = error instanceof Error ? error : new Error(String(error));
+      }
+      client.release(rollbackError !== undefined);
+      if (failure) throw failure.error;
+      if (rollbackError !== undefined) throw rollbackError;
+
+      expect(await getDecryptedCredential(pool, { itemId, ...READ })).toBe("x");
     });
   });
 
@@ -227,9 +232,23 @@ describe("external credentials store, both schemes", () => {
       expect(
         await withTenantTransaction(dataPool, tenantA, (c) => getDecryptedCredential(c, { itemId: itemA, ...READ })),
       ).toBe("a-secret");
-      await expectNoCode(
-        withTenantTransaction(dataPool, tenantB, (c) => getDecryptedCredential(c, { itemId: itemB, ...READ })),
+      // Caught inside the transaction so it commits the attempt's log row; a throwing callback would roll it back.
+      await withTenantTransaction(dataPool, tenantB, async (c) => {
+        await expectNoCode(getDecryptedCredential(c, { itemId: itemB, ...READ }));
+      });
+      expect(await logCount(itemB)).toBe(2);
+    });
+
+    it("refuses a corrupted ciphertext and still logs the attempt", async () => {
+      const itemId = randomUUID();
+      await storeCredential(pool, { itemId, credentialType: "api_key", plaintext: "intact" });
+      // Raw SQL: flipping one ciphertext byte is the corruption this case simulates.
+      await pool.query(
+        "UPDATE external_credentials SET ciphertext = set_byte(ciphertext, 0, get_byte(ciphertext, 0) # 1) WHERE item_id = $1",
+        [itemId],
       );
+      await expectNoCode(getDecryptedCredential(pool, { itemId, ...READ }));
+      expect(await logCount(itemId)).toBe(1);
     });
 
     it("throws once the tenant's key row is deleted", async () => {
