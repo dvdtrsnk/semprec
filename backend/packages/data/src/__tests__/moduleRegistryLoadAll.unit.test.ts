@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { manifestPath } from "../testSupport/moduleManifestPath.js";
 import { TEN_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
@@ -46,7 +46,12 @@ async function loadAll(getActiveModuleIds: () => ReadonlySet<string>): Promise<M
 const alwaysActive: () => ReadonlySet<string> = () => new Set(ALL_MODULE_IDS);
 
 describe("all module manifests loaded together (module-contract issue #115)", () => {
-  // Pays this file's cold import of all 7 manifest graphs: ~0.8 s idle, up to 10.7 s measured at load ~25 (#1237); 30 s is ~3x margin.
+  // Warms all 7 manifests' cold module-graph imports once, so no test's cost depends on order or `-t` filtering
+  // (#1237): ~0.8 s idle, up to 10.7 s measured at load ~25; 30 s is ~3x margin.
+  beforeAll(async () => {
+    await Promise.all(MANIFEST_PATHS.map((path) => import(path)));
+  }, 30_000);
+
   it("loads every manifest from #226/#227 into one registry with no cross-manifest collisions", async () => {
     const registry = await loadAll(alwaysActive);
 
@@ -76,7 +81,7 @@ describe("all module manifests loaded together (module-contract issue #115)", ()
         JOURNAL_INBOX_VIEW_TYPE,
       ].sort(),
     );
-  }, 30_000);
+  });
 
   it("excludes an inactive module from every projection while other modules stay unaffected", async () => {
     const activeExceptLibrary = new Set(ALL_MODULE_IDS.filter((id) => id !== "library"));

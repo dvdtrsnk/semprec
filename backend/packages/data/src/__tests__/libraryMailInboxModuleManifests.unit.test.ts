@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { LIBRARY_GRID_VIEW_TYPE } from "../views/libraryGridViewType.js";
 import { MAILBOX_CLIENT_VIEW_TYPE } from "../views/mailboxClientViewType.js";
@@ -35,6 +35,12 @@ const INBOX_PATH = manifestPath("inbox/inboxModuleManifest.js");
 const alwaysActive: () => ReadonlySet<string> = () => new Set(["library", "mailSync", "inboxPipeline"]);
 
 describe("library/mail/inbox module manifests (module-contract issue #227)", () => {
+  // Warms the three manifests' cold module-graph imports once, so no test's cost depends on order or `-t` filtering
+  // (#1237): ~1 s idle; a subset of the 7 graphs measured at up to 10.7 s at load ~25 together, so 30 s is ~3x margin.
+  beforeAll(async () => {
+    await Promise.all([LIBRARY_PATH, MAIL_PATH, INBOX_PATH].map((path) => import(path)));
+  }, 30_000);
+
   it("loads the library manifest with Books/Movies and the library-grid view type", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     const moduleId = await registry.loadModule(LIBRARY_PATH);
@@ -48,7 +54,6 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
     expect(await registry.getMigrations()).toEqual([{ moduleId: "library", migration: "0005_library_module.sql" }]);
   });
 
-  // Pays the mail manifest's cold module-graph import: ~0.6 s idle, up to 8.2 s measured at load ~25 (#1237); 30 s is ~3x margin.
   it("loads the mail sync manifest with Mailboxes/Folders/Emails, its own heartbeat actions, and the per-mailbox worker", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     const moduleId = await registry.loadModule(MAIL_PATH);
@@ -72,7 +77,7 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
       { moduleId: "mailSync", migration: "0006_mail_sync.sql" },
       { moduleId: "mailSync", migration: "0007_mail_delivered_to_and_dsn.sql" },
     ]);
-  }, 30_000);
+  });
 
   it("loads the Inbox pipeline manifest with Inbox/Inbox item types/Processing proposals, semprec.tick, and journal-inbox", async () => {
     const registry = new ModuleRegistry(alwaysActive);
