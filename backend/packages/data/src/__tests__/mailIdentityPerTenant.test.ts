@@ -42,7 +42,7 @@ async function twoTenantsAsRuntimeRole(client: PoolClient, options: { dropLegacy
   const a = existing[0]?.id;
   if (!a) throw new Error("no existing tenant");
   await client.query("DROP INDEX IF EXISTS tenants_single_tenant_guard");
-  if (options.dropLegacyIndex) await client.query("DROP INDEX mail_message_meta_provider_msg_uq");
+  if (options.dropLegacyIndex) await client.query("DROP INDEX IF EXISTS mail_message_meta_provider_msg_uq");
   const { rows } = await client.query<{ id: string }>("INSERT INTO tenants (status) VALUES ('active') RETURNING id");
   const b = rows[0]?.id;
   if (!b) throw new Error("second tenant was not inserted");
@@ -70,6 +70,19 @@ function insertMessage(
   });
 }
 
+/**
+ * The legacy index states each setup that drops `mail_message_meta_provider_msg_uq` must tolerate:
+ * still present, and already removed (as it will be once #1065 drops it).
+ */
+const legacyIndexStates = [
+  { state: "present", preRemove: false },
+  { state: "already absent", preRemove: true },
+] as const;
+
+async function preRemoveLegacyIndex(client: PoolClient, preRemove: boolean): Promise<void> {
+  if (preRemove) await client.query("DROP INDEX IF EXISTS mail_message_meta_provider_msg_uq");
+}
+
 async function threadIdOf(client: PoolClient, itemId: string): Promise<string | null> {
   return (await getMailMessageMetaByItemId(client, itemId))?.threadId ?? null;
 }
@@ -90,19 +103,23 @@ describe("mail identities stay within a tenant", () => {
   });
 
   describe("isProviderMessageIdConflict", () => {
-    it("recognizes a same-tenant provider-id conflict once the legacy index is dropped", async () => {
-      await inRolledBackTransaction(async (client) => {
-        await client.query("DROP INDEX mail_message_meta_provider_msg_uq");
-        await insertMessage(client, "<p1@x>", { providerMessageId: "prov-1" });
-        const error = await insertMessage(client, "<p2@x>", { providerMessageId: "prov-1" }).then(
-          () => null,
-          (err: unknown) => err,
-        );
-        expect(error).not.toBeNull();
-        expect(isProviderMessageIdConflict(error)).toBe(true);
-        expect((error as { constraint?: string }).constraint).toBe("mail_message_meta_tenant_provider_msg_uq");
-      });
-    });
+    it.each(legacyIndexStates)(
+      "recognizes a same-tenant provider-id conflict once the legacy index is dropped (legacy index $state)",
+      async ({ preRemove }) => {
+        await inRolledBackTransaction(async (client) => {
+          await preRemoveLegacyIndex(client, preRemove);
+          await client.query("DROP INDEX IF EXISTS mail_message_meta_provider_msg_uq");
+          await insertMessage(client, "<p1@x>", { providerMessageId: "prov-1" });
+          const error = await insertMessage(client, "<p2@x>", { providerMessageId: "prov-1" }).then(
+            () => null,
+            (err: unknown) => err,
+          );
+          expect(error).not.toBeNull();
+          expect(isProviderMessageIdConflict(error)).toBe(true);
+          expect((error as { constraint?: string }).constraint).toBe("mail_message_meta_tenant_provider_msg_uq");
+        });
+      },
+    );
 
     it("recognizes the legacy index while it still exists", async () => {
       await inRolledBackTransaction(async (client) => {
@@ -115,39 +132,47 @@ describe("mail identities stay within a tenant", () => {
       });
     });
 
-    it("does not recognize a violation of another unique index", async () => {
-      await inRolledBackTransaction(async (client) => {
-        await client.query("DROP INDEX mail_message_meta_provider_msg_uq");
-        const row = await insertMessage(client, "<u1@x>");
-        const error = await client
-          .query(
-            `INSERT INTO mail_message_meta (item_id, message_id, envelope, mailbox_item_id)
+    it.each(legacyIndexStates)(
+      "does not recognize a violation of another unique index (legacy index $state)",
+      async ({ preRemove }) => {
+        await inRolledBackTransaction(async (client) => {
+          await preRemoveLegacyIndex(client, preRemove);
+          await client.query("DROP INDEX IF EXISTS mail_message_meta_provider_msg_uq");
+          const row = await insertMessage(client, "<u1@x>");
+          const error = await client
+            .query(
+              `INSERT INTO mail_message_meta (item_id, message_id, envelope, mailbox_item_id)
              VALUES ($1, $2, '{}'::jsonb, $3)`,
-            [randomUUID(), "<u1@x>", row.mailboxItemId],
-          )
-          .then(
-            () => null,
-            (err: unknown) => err,
-          );
-        expect(error).toMatchObject({ code: "23505", constraint: "mail_message_meta_mailbox_message_uq" });
-        expect(isProviderMessageIdConflict(error)).toBe(false);
+              [randomUUID(), "<u1@x>", row.mailboxItemId],
+            )
+            .then(
+              () => null,
+              (err: unknown) => err,
+            );
+          expect(error).toMatchObject({ code: "23505", constraint: "mail_message_meta_mailbox_message_uq" });
+          expect(isProviderMessageIdConflict(error)).toBe(false);
+        });
+      },
+    );
+  });
+
+  it.each(legacyIndexStates)(
+    "stores the same provider message id in two tenants and looks each up in its own scope (legacy index $state)",
+    async ({ preRemove }) => {
+      await inRolledBackTransaction(async (client) => {
+        await preRemoveLegacyIndex(client, preRemove);
+        const { a, b } = await twoTenantsAsRuntimeRole(client, { dropLegacyIndex: true });
+        await scopeTo(client, a);
+        const rowA = await insertMessage(client, "<pa@x>", { providerMessageId: "shared-prov" });
+        await scopeTo(client, b);
+        const rowB = await insertMessage(client, "<pb@x>", { providerMessageId: "shared-prov" });
+
+        expect((await getMailMessageMetaByProviderMessageId(client, "shared-prov"))?.itemId).toBe(rowB.itemId);
+        await scopeTo(client, a);
+        expect((await getMailMessageMetaByProviderMessageId(client, "shared-prov"))?.itemId).toBe(rowA.itemId);
       });
-    });
-  });
-
-  it("stores the same provider message id in two tenants and looks each up in its own scope", async () => {
-    await inRolledBackTransaction(async (client) => {
-      const { a, b } = await twoTenantsAsRuntimeRole(client, { dropLegacyIndex: true });
-      await scopeTo(client, a);
-      const rowA = await insertMessage(client, "<pa@x>", { providerMessageId: "shared-prov" });
-      await scopeTo(client, b);
-      const rowB = await insertMessage(client, "<pb@x>", { providerMessageId: "shared-prov" });
-
-      expect((await getMailMessageMetaByProviderMessageId(client, "shared-prov"))?.itemId).toBe(rowB.itemId);
-      await scopeTo(client, a);
-      expect((await getMailMessageMetaByProviderMessageId(client, "shared-prov"))?.itemId).toBe(rowA.itemId);
-    });
-  });
+    },
+  );
 
   it("does not join another tenant's thread through an ancestor Message-ID", async () => {
     await inRolledBackTransaction(async (client) => {
