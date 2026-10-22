@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { runOnce } from "@semprec/queue";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { bindToTenantZero, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
@@ -26,7 +26,7 @@ async function drainQueue() {
 describe("rollup engine", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
-    chokePoint ??= createChokePoint(pool);
+    chokePoint ??= bindToTenantZero(createChokePoint(pool));
     await resetDatabase(pool);
   });
 

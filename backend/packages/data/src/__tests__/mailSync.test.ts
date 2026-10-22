@@ -6,6 +6,7 @@ import {
   createRuntimeRolePool,
   createTestTenant,
   getTenantZeroId,
+  inTenantZero,
   getTestPool,
   resetDatabase,
 } from "../testSupport/testDb.js";
@@ -295,10 +296,12 @@ describe("person <-> email address linking (issue #26)", () => {
     const filesId = await databaseIdFor("files");
     const mailboxesId = await databaseIdFor("mailboxes");
 
-    const alice = await chokePoint.createItem({
-      databaseId: peopleId,
-      properties: { name: "Alice", emails: "alice@example.com" },
-    });
+    const alice = await inTenantZero(() =>
+      chokePoint.createItem({
+        databaseId: peopleId,
+        properties: { name: "Alice", emails: "alice@example.com" },
+      }),
+    );
     await drainQueue(); // onItemEvent 'create' on People -> reindex action
 
     const folderProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "folder")!;
@@ -322,22 +325,24 @@ describe("person <-> email address linking (issue #26)", () => {
       return folder;
     });
 
-    const ingestResult = await withTransaction(pool, (client) =>
-      ingestEmailMessage(client, {
-        emailsDatabaseId: emailsId,
-        filesDatabaseId: filesId,
-        folderRelationPropertyId: folderProperty.id,
-        attachmentsRelationPropertyId: attachmentsProperty.id,
-        folderItemId: inbox.id,
-        mailboxItemId: mailbox.id,
-        messageId: "<msg1@example.com>",
-        subject: "Hello",
-        envelope: { from: { address: "alice@example.com", name: "Alice" }, to: [{ address: "bob@example.com" }] },
-        bodyText: "hi",
-        attachments: [],
-        storage: noopStorage,
-        storageKeyPrefix: "test",
-      }),
+    const ingestResult = await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: emailsId,
+          filesDatabaseId: filesId,
+          folderRelationPropertyId: folderProperty.id,
+          attachmentsRelationPropertyId: attachmentsProperty.id,
+          folderItemId: inbox.id,
+          mailboxItemId: mailbox.id,
+          messageId: "<msg1@example.com>",
+          subject: "Hello",
+          envelope: { from: { address: "alice@example.com", name: "Alice" }, to: [{ address: "bob@example.com" }] },
+          bodyText: "hi",
+          attachments: [],
+          storage: noopStorage,
+          storageKeyPrefix: "test",
+        }),
+      ),
     );
 
     await drainQueue(); // onItemEvent 'create' on Emails -> link action
@@ -3223,7 +3228,7 @@ describe("legacy Emails migration (issue #93)", () => {
       recipients: "",
     });
 
-    await withTransaction(pool, (client) => enqueueMailLegacyEmailMigration(client, emailsId));
+    await inTenantZero(() => withTransaction(pool, (client) => enqueueMailLegacyEmailMigration(client, emailsId)));
     const { rows: jobRows } = await pool.query(`SELECT key FROM graphile_worker._private_jobs WHERE key = $1`, [
       mailLegacyEmailMigrationJobKey(emailsId),
     ]);

@@ -6,6 +6,7 @@ import {
   createTenantZeroUser,
   createTestTenant,
   getTenantZeroId,
+  inTenantZero,
   getTestPool,
   resetDatabase,
 } from "@semprec/data/testSupport";
@@ -73,8 +74,10 @@ async function approveDestructive(
     requestId = (err as ApprovalRequiredError).details.approvalRequestId;
   }
   const decidedByUserId = actor.userId;
-  await withTransaction(pool, (client) =>
-    decideAndEnqueueApprovalRequest(client, { approvalRequestId: requestId, decision: "approved", decidedByUserId }),
+  await inTenantZero(() =>
+    withTransaction(pool, (client) =>
+      decideAndEnqueueApprovalRequest(client, { approvalRequestId: requestId, decision: "approved", decidedByUserId }),
+    ),
   );
   return requestId;
 }
@@ -275,12 +278,14 @@ describe("createGenericOperationGateway (issue #220)", () => {
       // `queued` (issue #89's locked-execution protocol), so these direct-call tests must
       // decide the request first, same as the worker-path tests below — just without also
       // running the queue job, since they call the executor themselves.
-      await withTransaction(pool, (client) =>
-        decideAndEnqueueApprovalRequest(client, {
-          approvalRequestId: requestId,
-          decision: "approved",
-          decidedByUserId: run.actorUserId,
-        }),
+      await inTenantZero(() =>
+        withTransaction(pool, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: requestId,
+            decision: "approved",
+            decidedByUserId: run.actorUserId,
+          }),
+        ),
       );
 
       return { requestId, run, item };
@@ -666,12 +671,14 @@ describe("createGenericOperationGateway (issue #220)", () => {
         requestId = (err as ApprovalRequiredError).details.approvalRequestId;
       }
 
-      const decided = await withTransaction(pool, (client) =>
-        decideAndEnqueueApprovalRequest(client, {
-          approvalRequestId: requestId,
-          decision: "approved",
-          decidedByUserId: run.actorUserId,
-        }),
+      const decided = await inTenantZero(() =>
+        withTransaction(pool, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: requestId,
+            decision: "approved",
+            decidedByUserId: run.actorUserId,
+          }),
+        ),
       );
       expect(decided!.request.status).toBe("approved");
 
