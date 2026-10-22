@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase, tenantForNextTestUser } from "../testSupport/testDb.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { createUser } from "../auth/usersStore.js";
 import { getActiveSessionByTokenHash, isSessionActive, listSessionsForUser } from "../auth/sessionsStore.js";
@@ -17,7 +17,11 @@ import { NotFoundError, UnauthorizedError, ValidationError } from "../errors.js"
 let pool: Pool;
 
 async function makeUser(email = "person@example.com", password = "s3cret-password") {
-  return createUser(pool, { email, passwordHash: await hashPassword(password) });
+  return createUser(pool, {
+    tenantId: await tenantForNextTestUser(pool),
+    email,
+    passwordHash: await hashPassword(password),
+  });
 }
 
 describe("auth actions (issue #140)", () => {

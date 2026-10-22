@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
 import {
   createChokePoint,
   createUser,
@@ -58,6 +58,7 @@ describe("same-origin check on unsafe requests (issue #1044)", () => {
     baseUrl = `http://127.0.0.1:${address.port}`;
 
     const user = await createUser(pool, {
+      tenantId: await tenantForNextTestUser(pool),
       email: `${randomUUID()}@example.com`,
       passwordHash: await hashPassword(PASSWORD),
     });

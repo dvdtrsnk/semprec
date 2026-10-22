@@ -13,16 +13,25 @@ export {
   getTenantZeroId,
   inTenantZero,
   setTenantAiBudget,
+  tenantForNextTestUser,
   withTenantTransaction,
 } from "./tenantFixtures.js";
 export { createTestModuleItem, createTestProjectItem } from "./projectFixtures.js";
 
+/**
+ * The superuser pool existing suites seed and assert through. Superusers bypass row-level security,
+ * so only the `tenant_id` defaults read `app.tenant_id` here; since the strict switch (#1067) they
+ * no longer fall back to the sole tenant, so every connection of this pool starts with the
+ * session-level setting `app.tenant_id` = tenant zero. A test's transaction-local `set_config`
+ * (`withTenantTransaction`) still overrides it, and pools built from `TEST_DATABASE_URL` itself
+ * (`createPool`, `createRuntimeRolePool`) carry no such setting.
+ */
 export function getTestPool(): Pool {
   const connectionString = process.env.TEST_DATABASE_URL;
   if (!connectionString) {
     throw new Error("TEST_DATABASE_URL is not set — is vitest.config.ts's globalSetup wired up?");
   }
-  return new Pool({ connectionString });
+  return new Pool({ connectionString, options: `-c app.tenant_id=${getTenantZeroId()}` });
 }
 
 /**

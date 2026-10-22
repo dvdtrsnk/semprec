@@ -120,20 +120,23 @@ export async function withTenantTransaction<T>(
 }
 
 /**
- * Creates a test account through `createUser` with `tenantId: getTenantZeroId()`, which makes it
- * tenant zero's user — the recipient of tenant zero's events and the actor of its root runs.
- * `users.tenant_id` is unique, so once tenant zero has its user every later account is created
- * unbound.
+ * The tenant the next test account binds to: tenant zero while it has no user, otherwise a fresh
+ * tenant (`createTestTenant`). `users.tenant_id` is unique and NOT NULL (#1067), so every test
+ * account needs a tenant of its own; the first one becomes tenant zero's user.
  */
-export async function createTenantZeroUser(pool: Pool, email = `${randomUUID()}@example.com`): Promise<UserRow> {
+export async function tenantForNextTestUser(pool: Pool): Promise<string> {
   const { rows } = await pool.query<{ bound: boolean }>(
     "SELECT EXISTS (SELECT 1 FROM users WHERE tenant_id = $1) AS bound",
     [getTenantZeroId()],
   );
-  const bound = rows[0]?.bound ?? false;
-  return createUser(pool, {
-    email,
-    passwordHash: "unused",
-    ...(bound ? {} : { tenantId: getTenantZeroId() }),
-  });
+  return (rows[0]?.bound ?? false) ? createTestTenant(pool) : getTenantZeroId();
+}
+
+/**
+ * Creates a test account through `createUser` bound to `tenantForNextTestUser`: the first account
+ * is tenant zero's user — the recipient of tenant zero's events and the actor of its root runs —
+ * and every later one is bound to a fresh tenant of its own.
+ */
+export async function createTenantZeroUser(pool: Pool, email = `${randomUUID()}@example.com`): Promise<UserRow> {
+  return createUser(pool, { email, passwordHash: "unused", tenantId: await tenantForNextTestUser(pool) });
 }

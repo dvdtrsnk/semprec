@@ -35,7 +35,7 @@ let tenantUserEmail: string;
 let tenantUserSignedIn: boolean;
 
 /**
- * Signs in tenant zero's user on the first call of a test and a fresh, unbound account after it. A
+ * Signs in tenant zero's user on the first call of a test and a fresh account in a fresh tenant after it. A
  * run's actor must be its own tenant's user (`agent_runs_actor_user_id_tenant_fkey`, issue #1066),
  * so only the first session can own a request; a later one is the non-owner.
  */
@@ -43,7 +43,11 @@ async function authSession(): Promise<{ headers: { Authorization: string }; user
   let email = tenantUserEmail;
   if (tenantUserSignedIn) {
     email = `${randomUUID()}@example.com`;
-    await pool.query(`INSERT INTO users (email, password_hash) VALUES ($1, $2)`, [email, await hashPassword(PASSWORD)]);
+    await createUser(pool, {
+      email,
+      passwordHash: await hashPassword(PASSWORD),
+      tenantId: await createTestTenant(pool),
+    });
   }
   tenantUserSignedIn = true;
   const { token, user } = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });

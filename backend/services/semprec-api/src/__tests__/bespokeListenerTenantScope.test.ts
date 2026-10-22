@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import pg, { type Pool } from "pg";
-import { createTestProjectItem, getTenantZeroId, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createTestProjectItem,
+  getTenantZeroId,
+  resetDatabase,
+  tenantForNextTestUser,
+} from "@semprec/data/testSupport";
 import {
   createPool,
   createUser,
@@ -128,6 +133,7 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
 
   async function sessionToken(): Promise<string> {
     const user = await createUser(pool, {
+      tenantId: await tenantForNextTestUser(pool),
       email: `${randomUUID()}@example.com`,
       passwordHash: await hashPassword(PASSWORD),
     });

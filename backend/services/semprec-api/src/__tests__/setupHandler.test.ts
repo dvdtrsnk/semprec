@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTestPool, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
 import { createUser, hashPassword } from "@semprec/data";
 import { createSetupRequestListener } from "../setupHandler.js";
 
@@ -64,7 +64,11 @@ describe("createSetupRequestListener", () => {
     });
 
     it("returns 404 once a user already exists, even with the correct token", async () => {
-      await createUser(pool, { email: "existing@example.com", passwordHash: await hashPassword("whatever-password") });
+      await createUser(pool, {
+        tenantId: await tenantForNextTestUser(pool),
+        email: "existing@example.com",
+        passwordHash: await hashPassword("whatever-password"),
+      });
 
       const res = await fetch(`${baseUrl}/api/setup`, {
         method: "POST",

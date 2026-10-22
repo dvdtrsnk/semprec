@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase, tenantForNextTestUser } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
 import { hashPassword, verifyPassword } from "../auth/passwordHash.js";
 import { createUser, getUserByEmail } from "../auth/usersStore.js";
@@ -30,7 +30,11 @@ const OLD_PASSWORD = "s3cret-password";
 const APP_BASE_URL = "https://app.example.test";
 
 async function makeUser(email = "person@example.com") {
-  return createUser(pool, { email, passwordHash: await hashPassword(OLD_PASSWORD) });
+  return createUser(pool, {
+    tenantId: await tenantForNextTestUser(pool),
+    email,
+    passwordHash: await hashPassword(OLD_PASSWORD),
+  });
 }
 
 function fakeMailer(): PasswordResetMailer & { sent: SendPasswordResetEmailInput[] } {

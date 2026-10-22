@@ -26,6 +26,7 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
+  tenantForNextTestUser,
 } from "@semprec/data/testSupport";
 import { randomUUID } from "node:crypto";
 import { runInTenant } from "@semprec/shared";
@@ -905,7 +906,12 @@ describe("createSyncServer doc sync (issue #162)", () => {
 
   async function createTestUser(): Promise<string> {
     const passwordHash = await hashPassword("s3cret-password");
-    const user = await createUser(pool, { email: `docsync-${Math.random()}@example.test`, passwordHash, locale: "en" });
+    const user = await createUser(pool, {
+      tenantId: await tenantForNextTestUser(pool),
+      email: `docsync-${Math.random()}@example.test`,
+      passwordHash,
+      locale: "en",
+    });
     return user.id;
   }
 
@@ -1944,7 +1950,12 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
 
   async function createTestUser(): Promise<string> {
     const passwordHash = await hashPassword("s3cret-password");
-    const user = await createUser(pool, { email: `limits-${Math.random()}@example.test`, passwordHash, locale: "en" });
+    const user = await createUser(pool, {
+      tenantId: await tenantForNextTestUser(pool),
+      email: `limits-${Math.random()}@example.test`,
+      passwordHash,
+      locale: "en",
+    });
     return user.id;
   }
 
