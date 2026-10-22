@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { createTenantZeroUser, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
@@ -7,15 +7,29 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { requireSingleRow, withTransaction } from "../db/pool.js";
 import { createUser } from "../auth/usersStore.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
-import { clearHooksForTests, registerItemCreateHook } from "../chokePoint/hooks.js";
+import {
+  clearHooksForTests,
+  registerItemCreateHook,
+  registerItemUpdateHook,
+  registerRelationEdgeWriteHook,
+  runItemCreateHooks,
+  runItemUpdateHooks,
+  runRelationEdgeWriteHooks,
+  type ItemCreateHookContext,
+  type ItemUpdateHookContext,
+  type RelationEdgeWriteHookContext,
+} from "../chokePoint/hooks.js";
+import { loadRelationEdgeContext } from "../chokePoint/relationEdgeContext.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createSemprecTickAction } from "../inbox/inboxTickAction.js";
 import { confirmProposalWithClient, reviseProposalWithClient } from "../inbox/proposalActions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import { mcpServerItemCreateHook, mcpServerItemUpdateHook } from "../mcp/mcpServerWriteHook.js";
-import { registerItemUpdateHook } from "../chokePoint/hooks.js";
+import * as mcpServerWriteHook from "../mcp/mcpServerWriteHook.js";
+import * as mailMessageFlagSyncStore from "../mail/mailMessageFlagSyncStore.js";
+import * as taskRecurrenceItemUpdateHook from "../tasks/taskRecurrenceItemUpdateHook.js";
+import * as transcriptionSpeakerEdges from "../transcription/transcriptionSpeakerEdges.js";
 
 let pool: Pool;
 let mcpServersId: string;
@@ -46,19 +60,79 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
   });
 
   afterEach(() => {
-    // Restore the production registrations other tests in this file rely on.
+    // Restore every production registration `domainWriteHooks.ts` makes. Re-importing that
+    // module would not re-run its registrations: it is cached after its first import.
     clearHooksForTests();
-    registerItemCreateHookDefaults();
+    registerProductionWriteHookDefaults();
   });
 
   afterAll(async () => {
     await pool?.end();
   });
 
-  function registerItemCreateHookDefaults(): void {
-    registerItemCreateHook(mcpServerItemCreateHook);
-    registerItemUpdateHook(mcpServerItemUpdateHook);
+  /** Mirrors the five registrations of `../domainWriteHooks.ts`. Reads each hook through its module namespace, so a test's scoped spy is what gets registered while it is installed. */
+  function registerProductionWriteHookDefaults(): void {
+    registerItemCreateHook(mcpServerWriteHook.mcpServerItemCreateHook);
+    registerItemUpdateHook(mcpServerWriteHook.mcpServerItemUpdateHook);
+    registerItemUpdateHook(mailMessageFlagSyncStore.mailMessageFlagsItemUpdateHook);
+    registerItemUpdateHook(taskRecurrenceItemUpdateHook.taskRecurrenceItemUpdateHook);
+    registerRelationEdgeWriteHook(transcriptionSpeakerEdges.transcriptSpeakerEdgeWriteHook);
   }
+
+  it("restores all five production write hooks after a registry reset, each dispatched once when restored twice (issue #1261)", async () => {
+    const createSpy = vi.spyOn(mcpServerWriteHook, "mcpServerItemCreateHook").mockResolvedValue();
+    const mcpUpdateSpy = vi.spyOn(mcpServerWriteHook, "mcpServerItemUpdateHook").mockResolvedValue();
+    const mailUpdateSpy = vi.spyOn(mailMessageFlagSyncStore, "mailMessageFlagsItemUpdateHook").mockResolvedValue();
+    const recurrenceUpdateSpy = vi
+      .spyOn(taskRecurrenceItemUpdateHook, "taskRecurrenceItemUpdateHook")
+      .mockResolvedValue();
+    const speakerEdgeSpy = vi.spyOn(transcriptionSpeakerEdges, "transcriptSpeakerEdgeWriteHook").mockResolvedValue();
+    const spies = [createSpy, mcpUpdateSpy, mailUpdateSpy, recurrenceUpdateSpy, speakerEdgeSpy];
+    try {
+      clearHooksForTests();
+      registerProductionWriteHookDefaults();
+      registerProductionWriteHookDefaults();
+
+      await withTransaction(pool, async (client) => {
+        const database = await databasesStore.getDatabase(client, mcpServersId);
+        if (!database) throw new Error("mcpServers database was not seeded");
+        const item = await itemsStore.insertItem(client, { databaseId: mcpServersId, properties: { name: "S" } });
+        const transcriptsId = await databaseIdFor("transcripts");
+        const speakersProperty = await propertiesStore.getPropertyByKey(
+          client,
+          transcriptsId,
+          transcriptionSpeakerEdges.TRANSCRIPT_SPEAKERS_PROPERTY_KEY,
+        );
+        if (!speakersProperty) throw new Error("Transcripts speakers property was not seeded");
+
+        const createContext: ItemCreateHookContext = { client, database, item, properties: { name: "S" } };
+        const updateContext: ItemUpdateHookContext = { client, database, item, propertiesPatch: { name: "T" } };
+        const edgeContext: RelationEdgeWriteHookContext = {
+          client,
+          edgeContext: await loadRelationEdgeContext(client, speakersProperty.id),
+          callerItemId: randomUUID(),
+          targetItemId: randomUUID(),
+        };
+
+        await runItemCreateHooks(createContext);
+        expect(createSpy).toHaveBeenCalledTimes(1);
+        expect(createSpy).toHaveBeenCalledWith(createContext);
+
+        await runItemUpdateHooks(updateContext);
+        for (const updateSpy of [mcpUpdateSpy, mailUpdateSpy, recurrenceUpdateSpy]) {
+          expect(updateSpy).toHaveBeenCalledTimes(1);
+          expect(updateSpy).toHaveBeenCalledWith(updateContext);
+        }
+
+        await runRelationEdgeWriteHooks(edgeContext);
+        expect(speakerEdgeSpy).toHaveBeenCalledTimes(1);
+        expect(speakerEdgeSpy).toHaveBeenCalledWith(edgeContext);
+        expect(createSpy).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+  });
 
   it("refuses a non-baseline remote url on create and leaves no row", async () => {
     await expect(
