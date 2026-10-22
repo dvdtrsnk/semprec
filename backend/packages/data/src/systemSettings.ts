@@ -6,7 +6,6 @@ import type { Queryable } from "./db/pool.js";
 /** Stable identifier for the singleton "System settings" database — see seed/seedSystem.ts. */
 export const SYSTEM_SETTINGS_MODULE_ID = "systemSettings";
 export const DEFAULT_TIMEZONE = "Europe/Prague";
-export const DEFAULT_DAILY_BUDGET_USD = 50;
 
 export async function getSystemSettingsDatabaseId(client: Queryable): Promise<string> {
   const { rows } = await client.query<{ id: string }>(
@@ -41,61 +40,14 @@ export async function getSystemTimezone(client: Queryable): Promise<string> {
   return toSettingsProperties(rows[0].properties).timezone ?? DEFAULT_TIMEZONE;
 }
 
-export interface AiBudgets {
-  /** Null means uncapped, distinct from an unseeded property (which falls back to the default). */
-  dailyBudgetUsd: number | null;
-  monthlyBudgetUsd: number | null;
-}
-
-type SettingsProperties = { dailyBudgetUsd?: number | null; monthlyBudgetUsd?: number | null; timezone?: string };
-
-function isAbsentNullOrFiniteNumber(value: unknown): value is number | null | undefined {
-  return value === undefined || value === null || (typeof value === "number" && Number.isFinite(value));
-}
+type SettingsProperties = { timezone?: string };
 
 /**
  * Validates the settings row's JSONB `properties` at the read boundary instead of trusting the row
- * type: each field is narrowed to its expected type, and a value that did not survive the narrowing
- * unchanged (a non-string `timezone`, a non-finite or non-numeric budget) throws.
+ * type: `timezone` is narrowed to a string, and a present value that is not a string throws.
  */
 function toSettingsProperties(raw: Record<string, unknown>): SettingsProperties {
   const timezone = typeof raw.timezone === "string" ? raw.timezone : undefined;
-  const dailyBudgetUsd = isAbsentNullOrFiniteNumber(raw.dailyBudgetUsd) ? raw.dailyBudgetUsd : undefined;
-  const monthlyBudgetUsd = isAbsentNullOrFiniteNumber(raw.monthlyBudgetUsd) ? raw.monthlyBudgetUsd : undefined;
-  assertShape(
-    timezone === raw.timezone && dailyBudgetUsd === raw.dailyBudgetUsd && monthlyBudgetUsd === raw.monthlyBudgetUsd,
-    "system settings properties",
-  );
-  return { timezone, dailyBudgetUsd, monthlyBudgetUsd };
-}
-
-function toAiBudgets(properties: SettingsProperties): AiBudgets {
-  return {
-    dailyBudgetUsd: properties.dailyBudgetUsd === undefined ? DEFAULT_DAILY_BUDGET_USD : properties.dailyBudgetUsd,
-    monthlyBudgetUsd: properties.monthlyBudgetUsd === undefined ? null : properties.monthlyBudgetUsd,
-  };
-}
-
-/** The settings row's properties, or `null` before the system is seeded (e.g. a bare test pool). */
-async function readSettingsProperties(client: Queryable): Promise<SettingsProperties | null> {
-  const databaseId = await getSystemSettingsDatabaseId(client).catch((err) => {
-    if (err instanceof NotFoundError) return null;
-    throw err;
-  });
-  if (databaseId === null) return null;
-
-  const { rows } = await client.query<{ properties: Record<string, unknown> }>(
-    `SELECT properties FROM items WHERE database_id = $1 LIMIT 1`,
-    [databaseId],
-  );
-  return rows[0] ? toSettingsProperties(rows[0].properties) : {};
-}
-
-/**
- * The gateway's dual budget caps (#120). A property that is explicitly `null` means "uncapped"
- * and must be respected as such; only a genuinely missing key (an install caught between
- * upgrading and 0019_settings_ai_budgets.sql running) falls back to the hardcoded default.
- */
-export async function getAiBudgets(client: Queryable): Promise<AiBudgets> {
-  return toAiBudgets((await readSettingsProperties(client)) ?? {});
+  assertShape(timezone === raw.timezone, "system settings properties");
+  return { timezone };
 }
