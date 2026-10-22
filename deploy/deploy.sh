@@ -151,6 +151,19 @@ run_seed() {
     || fail "seed failed"
 }
 
+# Reads the catalog of the migrated database and refuses the release while any tenancy invariant
+# (backend/packages/data/src/db/tenancyInvariants.ts) is broken, such as a runtime role given
+# BYPASSRLS, a dropped policy or a grant on an items partition. Same unit properties and migrate URL
+# as run_migrations; runs before activation, so a violation leaves `current` and the services untouched.
+verify_tenancy() {
+  systemd-run --quiet --wait --pipe --collect \
+    --uid=semprec --gid=semprec \
+    --property=EnvironmentFile="$MIGRATE_ENV" \
+    --working-directory="$staging_dir/backend" \
+    /bin/sh -c 'DATABASE_URL="$SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/verifyTenancyCli.js' \
+    || fail "tenancy verification failed"
+}
+
 promote_release() {
   local tag="$1"
   mv -T -- "$staging_dir" "$RELEASES_DIR/$tag"
@@ -274,6 +287,7 @@ deploy() {
   write_release_env "$tag"
   run_migrations
   run_seed
+  verify_tenancy
   promote_release "$tag"
   activate_release "$tag"
   echo "Deployed $tag ($commit)"

@@ -90,7 +90,8 @@ test -f "$working_directory/built"
 grep -qx "APP_VERSION=v[0-9.]*" "$(dirname "$working_directory")/release.env"
 echo "systemd-run $*" >> "$TEST_STATE/commands"
 if [[ -f "$TEST_STATE/fail-migrate" ]]; then exit 1; fi
-if [[ -f "$TEST_STATE/fail-seed" && "$*" == *runSeedCli.js* ]]; then exit 1; fi'
+if [[ -f "$TEST_STATE/fail-seed" && "$*" == *runSeedCli.js* ]]; then exit 1; fi
+if [[ -f "$TEST_STATE/fail-verify" && "$*" == *verifyTenancyCli.js* ]]; then exit 1; fi'
 # `restart` simulates systemd: the new process gets a service group file (never migrate.env) plus current/release.env.
 write_mock systemctl '
 case "$1" in
@@ -153,9 +154,9 @@ for unit in semprec-ai-gateway semprec-api semprec-agents semprec-transcribe; do
 done
 test "$(grep -c '^systemctl restart ' "$TEST_STATE/commands")" -eq 4
 grep -q 'pnpm install --frozen-lockfile' "$TEST_STATE/commands"
-test "$(grep -c '^systemd-run ' "$TEST_STATE/commands")" -eq 2
-test "$(grep -c "EnvironmentFile=$TEST_SEMPREC_ROOT/shared/env/migrate.env " "$TEST_STATE/commands")" -eq 2
-test "$(grep -c 'EnvironmentFile=' "$TEST_STATE/commands")" -eq 2
+test "$(grep -c '^systemd-run ' "$TEST_STATE/commands")" -eq 3
+test "$(grep -c "EnvironmentFile=$TEST_SEMPREC_ROOT/shared/env/migrate.env " "$TEST_STATE/commands")" -eq 3
+test "$(grep -c 'EnvironmentFile=' "$TEST_STATE/commands")" -eq 3
 # The seed runs after the migrations, under the same migrate URL.
 grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runMigrationsCli.js' "$TEST_STATE/commands" \
   | cut -d: -f1 > "$TEST_STATE/migrate.line"
@@ -164,6 +165,16 @@ grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runSeedCl
 test "$(wc -l < "$TEST_STATE/migrate.line")" -eq 1
 test "$(wc -l < "$TEST_STATE/seed.line")" -eq 1
 test "$(cat "$TEST_STATE/migrate.line")" -lt "$(cat "$TEST_STATE/seed.line")"
+# The tenancy verification runs once, after the seed and before any restart, with the same unit
+# properties and migrate URL as the migrations.
+grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/verifyTenancyCli.js' "$TEST_STATE/commands" \
+  | cut -d: -f1 > "$TEST_STATE/verify.line"
+test "$(wc -l < "$TEST_STATE/verify.line")" -eq 1
+test "$(cat "$TEST_STATE/seed.line")" -lt "$(cat "$TEST_STATE/verify.line")"
+test "$(grep 'runMigrationsCli.js' "$TEST_STATE/commands" | sed 's/runMigrationsCli/CLI/')" \
+  == "$(grep 'verifyTenancyCli.js' "$TEST_STATE/commands" | sed 's/verifyTenancyCli/CLI/')"
+grep -n '^systemctl restart ' "$TEST_STATE/commands" | head -n 1 | cut -d: -f1 > "$TEST_STATE/first-restart.line"
+test "$(cat "$TEST_STATE/verify.line")" -lt "$(cat "$TEST_STATE/first-restart.line")"
 test -f "$TEST_SEMPREC_ROOT/releases/v1.0.0/web/dist/index.html"
 grep -qx 'pnpm run build' "$TEST_STATE/commands"
 if grep -q 'migrate-secret-value' "$TEST_STATE/deploy.out"; then
@@ -189,6 +200,10 @@ touch "$TEST_STATE/fail-seed"
 expect_refused 'seed failed' v1.1.0
 grep -q 'runSeedCli.js' "$TEST_STATE/commands"
 rm "$TEST_STATE/fail-seed"
+touch "$TEST_STATE/fail-verify"
+expect_refused 'tenancy verification failed' v1.1.0
+grep -q 'verifyTenancyCli.js' "$TEST_STATE/commands"
+rm "$TEST_STATE/fail-verify"
 assert_current v1.0.0
 test ! -e "$TEST_SEMPREC_ROOT/releases/v1.1.0"
 assert_no_partial_releases
