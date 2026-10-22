@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { escapeIdentifier, type Pool } from "pg";
 import { replayApprovedGenericOperation } from "@semprec/application";
-import { encryptSecret, openSecret, resolveMasterKeyFromEnv, unwrapDataKey } from "@semprec/credentials";
 import {
   CORE_TASK_NAMES,
   TASK_TENANCY,
@@ -997,62 +996,6 @@ const cases: Record<string, TaskCase> = {
         );
         expect(tombstones).toEqual([{ tenant_id: tenant.tenantId }]);
       });
-    },
-  },
-  [CORE_TASK_NAMES.CREDENTIAL_REENCRYPT_SWEEP]: {
-    tenancy: "system",
-    touchesTenantTables: true,
-    async seed(tenant) {
-      const seeded = [randomUUID(), randomUUID()].map((itemId) => ({ itemId, plaintext: `secret-${randomUUID()}` }));
-      await inTenant(tenant, async () => {
-        for (const { itemId, plaintext } of seeded) {
-          const sealed = await encryptSecret(plaintext, resolveMasterKeyFromEnv(1));
-          // Raw SQL: since #1060 no writer produces a `master` row; the previous release's insert omits `scheme`.
-          await pool.query(
-            "INSERT INTO external_credentials (item_id, credential_type, ciphertext, nonce, key_version) VALUES ($1, 'api_key', $2, $3, 1)",
-            [itemId, sealed.ciphertext, sealed.nonce],
-          );
-        }
-      });
-      return marked(
-        seeded.map((s) => s.itemId),
-        async () => {
-          const keys = await rows<{
-            tenant_id: string;
-            wrapped_key: Buffer;
-            wrap_nonce: Buffer;
-            master_key_version: number;
-          }>(tenant, "SELECT tenant_id, wrapped_key, wrap_nonce, master_key_version FROM tenant_keys");
-          const key = keys[0];
-          if (!key || keys.length !== 1) throw new Error("expected exactly one tenant key");
-          expect(key.tenant_id).toBe(tenant.tenantId);
-          const dataKey = await unwrapDataKey(
-            { ciphertext: key.wrapped_key, nonce: key.wrap_nonce },
-            resolveMasterKeyFromEnv(key.master_key_version),
-            tenant.tenantId,
-          );
-          for (const { itemId, plaintext } of seeded) {
-            const found = await rows<{ tenant_id: string; scheme: string; ciphertext: Buffer; nonce: Buffer }>(
-              tenant,
-              "SELECT tenant_id, scheme, ciphertext, nonce FROM external_credentials WHERE item_id = $1",
-              [itemId],
-            );
-            const row = found[0];
-            if (!row || found.length !== 1) throw new Error(`expected credential ${itemId} in its tenant`);
-            expect({ tenantId: row.tenant_id, scheme: row.scheme }).toEqual({
-              tenantId: tenant.tenantId,
-              scheme: "tenant",
-            });
-            // Sealed under this tenant's own key and bound to `tenant_id‖item_id`, the documented associated data.
-            const opened = await openSecret(
-              { ciphertext: row.ciphertext, nonce: row.nonce },
-              dataKey,
-              Buffer.from(`semprec:external-credential:v1:${tenant.tenantId}:${itemId}`, "utf8"),
-            );
-            expect(opened.toString("utf8")).toBe(plaintext);
-          }
-        },
-      );
     },
   },
   [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: {

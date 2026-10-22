@@ -41,10 +41,10 @@ describe("CORE_TASK_AFFINITY", () => {
     expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]).toBe("api");
   });
 
-  it("declares credentialReencryptSweep in the exhaustive API set as a system task", () => {
-    expect(CORE_TASK_NAMES.CREDENTIAL_REENCRYPT_SWEEP).toBe("credentialReencryptSweep");
-    expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.CREDENTIAL_REENCRYPT_SWEEP]).toBe("api");
-    expect(TASK_TENANCY[CORE_TASK_NAMES.CREDENTIAL_REENCRYPT_SWEEP]).toBe("system");
+  it("no longer declares the retired credentialReencryptSweep (issue #1069)", () => {
+    expect(Object.values(CORE_TASK_NAMES)).not.toContain("credentialReencryptSweep");
+    expect(Object.keys(CORE_TASK_AFFINITY)).not.toContain("credentialReencryptSweep");
+    expect(Object.keys(TASK_TENANCY)).not.toContain("credentialReencryptSweep");
   });
 });
 

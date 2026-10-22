@@ -50,7 +50,6 @@ import { handleAgentRunEventsRetentionTask } from "./agentRuns/agentRunEventsRet
 import { handleQueueFailedJobsPruneTask } from "./observability/queueFailedJobsPrune.js";
 import { handleTenantExportExpirySweepTask, handleTenantExportTask } from "./tenancy/tenantExportJob.js";
 import { handleTenantPurgeTask, type TenantPurgeDirs } from "./tenancy/tenantPurgeJob.js";
-import { handleCredentialReencryptSweepTask } from "./credentials/reencryptCredentialsJob.js";
 
 function requireString(payload: unknown, field: string): string {
   const value = (payload as Record<string, unknown> | null)?.[field];
@@ -95,7 +94,6 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 10 * * * * ${CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP}
 40 4 * * * ${CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP}
 * * * * * ${CORE_TASK_NAMES.TENANT_PURGE}
-50 * * * * ${CORE_TASK_NAMES.CREDENTIAL_REENCRYPT_SWEEP}
 `;
 
 /**
@@ -245,9 +243,6 @@ export function createCoreTaskList(
     // Issue #1055: enumerates `deleting` tenants itself, so it is a system task.
     [CORE_TASK_NAMES.TENANT_PURGE]: async (_payload, helpers) => {
       await handleTenantPurgeTask(pool, tenantBlobStorageDirs, helpers);
-    },
-    [CORE_TASK_NAMES.CREDENTIAL_REENCRYPT_SWEEP]: async () => {
-      await handleCredentialReencryptSweepTask(pool);
     },
     // Issue #221 declared this name in the closed API affinity set ("handler and enqueue routing
     // are delivered later") but nothing enqueues it yet — no crontab line, no producer. A no-op
