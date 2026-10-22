@@ -2,7 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, enqueueJob } from "@semprec/queue";
-import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupport";
 import { CORE_AGENT_RUN_ACTION_ID, createAgentRun, createUser, seedSystem } from "@semprec/data";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentsActionRegistry, unwiredRunAgent } from "../actionRegistryComposition.js";
@@ -60,10 +60,12 @@ describe("createAgentsActionRegistry (issue #641)", () => {
     });
 
     runtime = await createAgentsQueueRuntime(pool, new ModuleRegistry(() => new Set()));
-    await enqueueJob(pool, AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT, {
-      heartbeatId: heartbeat.id,
-      triggeredByRunId: parentRun.id,
-    });
+    await inTenantZero(() =>
+      enqueueJob(pool, AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT, {
+        heartbeatId: heartbeat.id,
+        triggeredByRunId: parentRun.id,
+      }),
+    );
 
     // The run is closed before the handler rethrows, so a recorded `last_error` on the job means
     // both the run and this attempt are settled.

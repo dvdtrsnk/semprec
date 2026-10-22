@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Pool } from "pg";
 import { ModuleRegistry } from "@semprec/module-registry";
-import { runOnce, type TaskList } from "@semprec/queue";
+import { enqueueJob, runOnce, type TaskList } from "@semprec/queue";
 import {
   createChokePoint,
   createModuleRegistryDriftCheckAction,
@@ -13,7 +13,7 @@ import {
   runMigrations,
   type ChokePoint,
 } from "@semprec/data";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupport";
 
 const FIXTURES_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.join(FIXTURES_DIR, "fixtures/migrations");
@@ -88,10 +88,9 @@ describe("e2e: cross-module scenario (module-contract issue #114)", () => {
     await chokePoint.createProperty({ databaseId: betaDb.id, key: "sourceItemId", name: "Source item", type: "text" });
 
     const taskList: TaskList = await mergeModuleTaskList({}, registry);
-    await pool.query(`SELECT graphile_worker.add_job($1, $2::json)`, [
-      "e2eAlpha.ingest",
-      JSON.stringify({ alphaDatabaseId: alphaDb.id, betaDatabaseId: betaDb.id, value: "hello" }),
-    ]);
+    await inTenantZero(() =>
+      enqueueJob(pool, "e2eAlpha.ingest", { alphaDatabaseId: alphaDb.id, betaDatabaseId: betaDb.id, value: "hello" }),
+    );
 
     await runOnce({ pgPool: pool, taskList });
 

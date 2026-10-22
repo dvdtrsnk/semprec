@@ -1,6 +1,7 @@
 import type { ModuleManifest } from "@semprec/module-registry";
 import type { JobHelpers } from "graphile-worker";
 import { createItemWithClient } from "@semprec/data";
+import { enqueueJob } from "@semprec/queue";
 
 /**
  * One half of the e2e cross-module scenario (module-contract issue #114): declares its own
@@ -62,7 +63,10 @@ export async function handleIngest(payload: IngestPayload, helpers: JobHelpers):
     createItemWithClient(client, { databaseId: payload.alphaDatabaseId, properties: { value: payload.value } }),
   );
 
-  await helpers.addJob("e2eBeta.relay", { betaDatabaseId: payload.betaDatabaseId, sourceItemId: item.id });
+  // Through `enqueueJob`, so the relay job carries this task's tenant: a tenant task without one is refused.
+  await helpers.withPgClient((client) =>
+    enqueueJob(client, "e2eBeta.relay", { betaDatabaseId: payload.betaDatabaseId, sourceItemId: item.id }),
+  );
 }
 
 export const alphaTickRuleSchema = {
