@@ -19,6 +19,7 @@ describe("isBaselineOutboundUrl", () => {
     "https://localhost/",
     "https://localhost./",
     "https://app.localhost/",
+    "https://api.localhost./x",
     "https://127.0.0.1/",
     "https://2130706433/",
     "https://127.1/",
