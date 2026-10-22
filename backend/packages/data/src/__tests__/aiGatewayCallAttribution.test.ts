@@ -10,7 +10,8 @@ import { insertItem } from "../chokePoint/itemsStore.js";
 import { ForbiddenError } from "../errors.js";
 import { assertGatewayTenantActive, reserveGatewayCall } from "../aiGateway/aiGatewayCallsStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { PROJECTS_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { createTestModuleItem } from "../testSupport/projectFixtures.js";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -125,6 +126,25 @@ describe("reserveGatewayCall attribution guard", () => {
     await expectRefused(
       runInTenant(tenantZero, () => reserveGatewayCall(pool, { ...RESERVATION, projectItemId: randomUUID() })),
     );
+    expect(await rowCount()).toBe(0);
+  });
+
+  it("refuses a same-tenant item outside the Projects database exactly like an unknown id, writing no row", async () => {
+    const taskItemId = await runInTenant(tenantZero, () => createTestModuleItem(pool, TASKS_MODULE_ID));
+    const { rows: taskRows } = await adminPool.query<{ tenant_id: string; owner_module_id: string; system: boolean }>(
+      "SELECT i.tenant_id, d.owner_module_id, d.system FROM items i JOIN databases d ON d.id = i.database_id WHERE i.id = $1",
+      [taskItemId],
+    );
+    expect(taskRows).toEqual([{ tenant_id: tenantZero, owner_module_id: TASKS_MODULE_ID, system: true }]);
+
+    const unknownItem = await expectRefused(
+      runInTenant(tenantZero, () => reserveGatewayCall(pool, { ...RESERVATION, projectItemId: randomUUID() })),
+    );
+    const taskItem = await expectRefused(
+      runInTenant(tenantZero, () => reserveGatewayCall(pool, { ...RESERVATION, projectItemId: taskItemId })),
+    );
+
+    expect(taskItem.message).toBe(unknownItem.message);
     expect(await rowCount()).toBe(0);
   });
 

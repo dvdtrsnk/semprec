@@ -287,7 +287,13 @@ describe("DelegationRegistry", () => {
 
     await registry.delegate({ createAgentSession: firstSession, supervisorRunId, targetProjectItemId, task: "one" });
 
-    await new Promise((resolve) => setTimeout(resolve, ttlMs + 150));
+    await waitFor(async () => {
+      const { rows } = await pool.query<{ status: string }>(
+        `SELECT status FROM agent_runs WHERE project_item_id = $1`,
+        [targetProjectItemId],
+      );
+      return rows[0]?.status === "done";
+    }, "the TTL never closed the run as done");
 
     const { rows: afterTtl } = await pool.query<{ status: string; finished_at: Date | null }>(
       `SELECT status, finished_at FROM agent_runs WHERE project_item_id = $1`,
@@ -336,7 +342,13 @@ describe("DelegationRegistry", () => {
     const runId = runs[0]!.id;
     expect(await finishAgentRun(pool, runId, "error", "closed elsewhere")).toBe(true);
 
-    await new Promise((resolve) => setTimeout(resolve, ttlMs + 150));
+    await waitFor(async () => {
+      const { rows } = await pool.query<{ status: string }>(
+        `SELECT payload->>'status' AS status FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'run_status'`,
+        [runId],
+      );
+      return rows.length >= 2;
+    }, "the TTL never recorded the closed run's final run_status");
 
     const { rows: afterTtl } = await pool.query<{ status: string }>(`SELECT status FROM agent_runs WHERE id = $1`, [
       runId,
@@ -516,7 +528,13 @@ describe("DelegationRegistry", () => {
 
     await registry.delegate({ createAgentSession: firstSession, supervisorRunId, targetProjectItemId, task: "one" });
 
-    await new Promise((resolve) => setTimeout(resolve, ttlMs + 150));
+    await waitFor(async () => {
+      const { rows } = await pool.query<{ status: string }>(
+        `SELECT status FROM agent_runs WHERE project_item_id = $1`,
+        [targetProjectItemId],
+      );
+      return rows[0]?.status === "done";
+    }, "the TTL never closed the run as done");
 
     const { rows: afterTtl } = await pool.query<{ status: string }>(
       `SELECT status FROM agent_runs WHERE project_item_id = $1`,
