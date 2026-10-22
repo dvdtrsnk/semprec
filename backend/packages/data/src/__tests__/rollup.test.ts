@@ -11,17 +11,77 @@ import { recomputeRollupCell } from "../rollup/recompute.js";
 let pool: Pool;
 let chokePoint: ChokePoint;
 
+const DRAIN_PASS_LIMIT = 10;
+
+interface DrainSteps {
+  runPass: () => Promise<void>;
+  countRemainingJobs: () => Promise<string | undefined>;
+}
+
+const realDrainSteps: DrainSteps = {
+  runPass: () => runOnce({ pgPool: pool, taskList: createCoreTaskList(pool, createActionRegistry()) }),
+  countRemainingJobs: async () => {
+    const { rows } = await pool.query<{ n: string }>("SELECT count(*) AS n FROM graphile_worker._private_jobs");
+    return rows[0]?.n;
+  },
+};
+
 /**
  * Jobs on one per-tenant lane run one at a time, and a single `runOnce` pass stops when the only
- * jobs left are behind a lane that was busy, so pass until the queue is empty.
+ * jobs left are behind a lane that was busy, so pass until the queue is empty. Throws when the
+ * queue is still non-empty after the last pass, so a caller never asserts against a partial drain.
+ * `steps` is replaced only by the drainQueue boundary checks below.
  */
-async function drainQueue() {
-  for (let pass = 0; pass < 10; pass++) {
-    await runOnce({ pgPool: pool, taskList: createCoreTaskList(pool, createActionRegistry()) });
-    const { rows } = await pool.query<{ n: string }>("SELECT count(*) AS n FROM graphile_worker._private_jobs");
-    if (rows[0]?.n === "0") return;
+async function drainQueue(steps: DrainSteps = realDrainSteps) {
+  let remaining: string | undefined;
+  for (let pass = 0; pass < DRAIN_PASS_LIMIT; pass++) {
+    await steps.runPass();
+    remaining = await steps.countRemainingJobs();
+    if (remaining === "0") return;
   }
+  throw new Error(
+    `drainQueue: incomplete drain, ${remaining ?? "unknown"} job(s) still remaining after the ${DRAIN_PASS_LIMIT}-pass limit`,
+  );
 }
+
+describe("drainQueue", () => {
+  function scriptedSteps(counts: string[]) {
+    let observed = 0;
+    const steps = {
+      runPass: vi.fn(async () => {}),
+      countRemainingJobs: vi.fn(async () => {
+        const n = counts[observed];
+        observed++;
+        if (n === undefined) throw new Error(`unexpected count query #${observed}`);
+        return n;
+      }),
+    };
+    return steps;
+  }
+
+  it("rejects after ten non-empty passes, naming the limit and the last remaining count, without an eleventh pass", async () => {
+    const steps = scriptedSteps(["5", "5", "4", "4", "3", "3", "3", "2", "2", "1"]);
+    await expect(drainQueue(steps)).rejects.toThrow(
+      "drainQueue: incomplete drain, 1 job(s) still remaining after the 10-pass limit",
+    );
+    expect(steps.runPass).toHaveBeenCalledTimes(10);
+    expect(steps.countRemainingJobs).toHaveBeenCalledTimes(10);
+  });
+
+  it("returns after the first pass when the queue is empty", async () => {
+    const steps = scriptedSteps(["0"]);
+    await expect(drainQueue(steps)).resolves.toBeUndefined();
+    expect(steps.runPass).toHaveBeenCalledTimes(1);
+    expect(steps.countRemainingJobs).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns when the queue becomes empty on the tenth pass", async () => {
+    const steps = scriptedSteps(["9", "8", "7", "6", "5", "4", "3", "2", "1", "0"]);
+    await expect(drainQueue(steps)).resolves.toBeUndefined();
+    expect(steps.runPass).toHaveBeenCalledTimes(10);
+    expect(steps.countRemainingJobs).toHaveBeenCalledTimes(10);
+  });
+});
 
 describe("rollup engine", () => {
   beforeEach(async () => {

@@ -2,7 +2,8 @@ import type { Pool, PoolClient } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { tenantLane } from "../tenancy/tenantLane.js";
 import type { Queryable } from "../db/pool.js";
-import { requireAffectedRows, withTransaction } from "../db/pool.js";
+import { withTransaction } from "../db/pool.js";
+import { migrateItemPropertyWithClient } from "../chokePoint/itemMigrationWrites.js";
 import {
   getProperty,
   markPropertyMigrationDroppedValues,
@@ -179,26 +180,23 @@ export async function runPropertyTypeMigrationJob(
           if (converted.ok) {
             // updated_at DOES advance here, unlike a `computed` write — this changes the
             // value a client sees under `properties`, so a stale ifVersion must conflict.
-            requireAffectedRows(
-              await client.query(
-                `UPDATE items SET properties = jsonb_set(properties, ARRAY[$3]::text[], $4::jsonb), updated_at = now()
-               WHERE database_id = $1 AND id = $2`,
-                [property.databaseId, row.id, property.key, JSON.stringify(converted.value)],
-              ),
-              "property type migration value conversion update",
-            );
+            await migrateItemPropertyWithClient(client, {
+              databaseId: property.databaseId,
+              itemId: row.id,
+              key: property.key,
+              change: { kind: "set", value: converted.value },
+            });
           } else {
             // Marked before the value is discarded, not after: once the key is gone from
             // `properties` every later pass skips the row, so a crash between the two
             // statements must leave the migration looking failed rather than clean.
             await markPropertyMigrationDroppedValues(client, propertyId);
-            requireAffectedRows(
-              await client.query(
-                `UPDATE items SET properties = properties - $3, updated_at = now() WHERE database_id = $1 AND id = $2`,
-                [property.databaseId, row.id, property.key],
-              ),
-              "property type migration dropped value update",
-            );
+            await migrateItemPropertyWithClient(client, {
+              databaseId: property.databaseId,
+              itemId: row.id,
+              key: property.key,
+              change: { kind: "remove" },
+            });
           }
         }
 
