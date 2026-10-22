@@ -88,11 +88,25 @@ describe("wrapDataKey / unwrapDataKey", () => {
     await expectOpenFailure(unwrapDataKey(wrapped, masterKey, randomUUID()));
   });
 
+  it.each([0, 16, 31, 33])("refuses to wrap a %i-byte data key", async (length) => {
+    const masterKey = await generateDataKey();
+    const error = await wrapDataKey(Buffer.alloc(length), masterKey, randomUUID()).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(`Data key to wrap must be 32 bytes, got ${length}`);
+    expect("code" in (error as Error)).toBe(false);
+  });
+
   it("refuses an unwrapped value that is not a 32-byte key", async () => {
     const masterKey = await generateDataKey();
     const tenantId = randomUUID();
-    const wrapped = await wrapDataKey(Buffer.alloc(16), masterKey, tenantId);
-    await expect(unwrapDataKey(wrapped, masterKey, tenantId)).rejects.toThrow("must be 32 bytes");
+    // Sealed directly because wrapDataKey now refuses a short key; same associated data as wrapDataKey.
+    const wrapped = await sealSecret(Buffer.alloc(16), masterKey, ad(`semprec:tenant-key:v1:${tenantId}`));
+    await expect(unwrapDataKey(wrapped, masterKey, tenantId)).rejects.toThrow(
+      "Unwrapped data key must be 32 bytes, got 16",
+    );
   });
 });
 
