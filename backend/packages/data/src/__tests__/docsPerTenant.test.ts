@@ -190,13 +190,13 @@ describe("docs are per tenant", () => {
     expect(counts.rows[0]).toEqual({ docs: 1, snapshots: 1, history: 1 });
   });
 
-  describe("first-write race cleanup after a failure before the winner commits", () => {
+  describe("first-write race cleanup after a scenario failure", () => {
     type LoserOutcome = "resolves" | "rejects";
 
     /**
-     * Fake clients that log every step. The loser stays pending until the winner's ROLLBACK, as a
-     * real writer blocked on the winner's row lock would; a cleanup that awaited the loser before
-     * rolling back would never see it settle.
+     * Fake clients that log every step. The loser stays pending until the winner's ROLLBACK or
+     * COMMIT, as a real writer blocked on the winner's row lock would; a cleanup that awaited the
+     * loser before rolling back would never see it settle.
      */
     function fakeRace(outcome: LoserOutcome, rollbackFails: boolean) {
       const events: string[] = [];
@@ -216,6 +216,7 @@ describe("docs are per tenant", () => {
       const winner: RaceClient = {
         query: async (sql) => {
           events.push(`winner ${sql}`);
+          if (sql === "COMMIT") settleLoser();
           if (sql === "ROLLBACK") {
             settleLoser();
             if (rollbackFails) throw new Error("rollback failed");
@@ -231,16 +232,17 @@ describe("docs are per tenant", () => {
       return { events, winner, loser, loserResult };
     }
 
-    async function failBeforeCommit(outcome: LoserOutcome, rollbackFails: boolean) {
+    async function failScenario(outcome: LoserOutcome, rollbackFails: boolean, afterCommit = false) {
       const { events, winner, loser, loserResult } = fakeRace(outcome, rollbackFails);
-      const forced = new Error("forced pre-commit failure");
+      const forced = new Error(afterCommit ? "forced post-commit failure" : "forced pre-commit failure");
       const unhandled: unknown[] = [];
       const onUnhandled = (reason: unknown) => unhandled.push(reason);
       process.on("unhandledRejection", onUnhandled);
       try {
-        const run = runFirstWriteRace(winner, loser, async ({ startLoser }) => {
+        const run = runFirstWriteRace(winner, loser, async ({ startLoser, commitWinner }) => {
           // startLoser attaches the settlement observer itself; the scenario deliberately never awaits it.
           void startLoser(() => loserResult);
+          if (afterCommit) await commitWinner();
           throw forced;
         });
         await expect(run).rejects.toBe(forced);
@@ -255,7 +257,7 @@ describe("docs are per tenant", () => {
 
     for (const outcome of ["resolves", "rejects"] as const) {
       it(`rolls the winner back, then waits for a loser that ${outcome}, then releases both clients`, async () => {
-        const events = await failBeforeCommit(outcome, false);
+        const events = await failScenario(outcome, false);
         expect(events).toEqual([
           "winner BEGIN",
           "winner ROLLBACK",
@@ -268,7 +270,7 @@ describe("docs are per tenant", () => {
       it(`keeps the forced failure when the winner ROLLBACK also fails and the loser ${outcome}`, async () => {
         const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
         try {
-          const events = await failBeforeCommit(outcome, true);
+          const events = await failScenario(outcome, true);
           expect(events).toEqual([
             "winner BEGIN",
             "winner ROLLBACK",
@@ -280,6 +282,17 @@ describe("docs are per tenant", () => {
         } finally {
           warn.mockRestore();
         }
+      });
+
+      it(`skips the ROLLBACK after the winner committed, then waits for a loser that ${outcome}`, async () => {
+        const events = await failScenario(outcome, false, true);
+        expect(events).toEqual([
+          "winner BEGIN",
+          "winner COMMIT",
+          `loser ${outcome}`,
+          "winner released",
+          "loser released",
+        ]);
       });
     }
   });
