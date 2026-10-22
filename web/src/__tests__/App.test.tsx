@@ -6,6 +6,7 @@ import type { AuthOperations, SessionUser } from "../api/authOperations.js";
 import type { SetupOperations } from "../api/setupOperations.js";
 import type { AdminOperations } from "../api/adminOperations.js";
 import type { AccountOperations } from "../api/accountOperations.js";
+import type { InvitationOperations } from "../api/invitationOperations.js";
 import { createFakeOperations } from "../test/fakeOperations.js";
 import { App } from "../App.js";
 
@@ -45,6 +46,7 @@ function renderApp({
   sessionEvents = new EventTarget(),
   setup,
   passwordReset,
+  invite,
   admin,
   account,
   login,
@@ -55,6 +57,7 @@ function renderApp({
   sessionEvents?: EventTarget;
   setup?: { token: string; operations: SetupOperations };
   passwordReset?: { token: string | null };
+  invite?: { token: string | null; operations: InvitationOperations };
   admin?: { operations: AdminOperations };
   account?: { operations: AccountOperations };
   login?: true;
@@ -68,6 +71,7 @@ function renderApp({
       sessionEvents={sessionEvents}
       setup={setup}
       passwordReset={passwordReset}
+      invite={invite}
       admin={admin}
       account={account}
       login={login}
@@ -235,6 +239,19 @@ describe("App session lifecycle", () => {
     expect(screen.queryByRole("banner")).not.toBeInTheDocument();
     expect(screen.queryByText(CONTENT_MARKER)).not.toBeInTheDocument();
     expect(auth.getSession).not.toHaveBeenCalled();
+  });
+
+  it("renders the invitation acceptance page without the header and never reads the session", async () => {
+    const auth = stubAuth();
+    const acceptInvitation = vi.fn(async () => ({ email: "invitee@example.com" }));
+    renderApp({ auth, invite: { token: "invite-token", operations: { acceptInvitation } } });
+
+    expect(await screen.findByRole("heading", { name: "Accept your invitation" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toBeInTheDocument();
+    expect(screen.queryByRole("banner")).not.toBeInTheDocument();
+    expect(screen.queryByText(CONTENT_MARKER)).not.toBeInTheDocument();
+    expect(auth.getSession).not.toHaveBeenCalled();
+    expect(acceptInvitation).not.toHaveBeenCalled();
   });
 });
 

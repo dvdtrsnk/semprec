@@ -16,12 +16,14 @@ import { ApprovalQueue } from "./views/approvalQueue/ApprovalQueue.js";
 import { AgentRunDetail } from "./views/agentRun/AgentRunDetail.js";
 import { SetupWizard } from "./views/setup/SetupWizard.js";
 import { PasswordResetPage } from "./views/passwordReset/PasswordResetPage.js";
+import { InvitationAcceptPage } from "./views/invite/InvitationAcceptPage.js";
 import { LoginPage } from "./views/login/LoginPage.js";
 import { EmptyState, ErrorState, LoadingState } from "./components/StateViews.js";
 import type { AdminOperations } from "./api/adminOperations.js";
 import { AdminPage } from "./views/admin/AdminPage.js";
 import type { SetupOperations } from "./api/setupOperations.js";
 import type { AccountOperations } from "./api/accountOperations.js";
+import type { InvitationOperations } from "./api/invitationOperations.js";
 import { AccountPage } from "./views/account/AccountPage.js";
 import "./styles/tokens.css";
 import "./styles/app.css";
@@ -63,6 +65,12 @@ export interface PasswordResetRoute {
   token: string | null;
 }
 
+/** `token` is `null` when the invitation link carried no `#token=` fragment, which opens the invalid-link state. */
+export interface InviteRoute {
+  token: string | null;
+  operations: InvitationOperations;
+}
+
 type SessionState =
   | { status: "loading" }
   | { status: "anonymous" }
@@ -80,6 +88,7 @@ export function App({
   agentRun,
   setup,
   passwordReset,
+  invite,
   admin,
   account,
   auth,
@@ -103,6 +112,8 @@ export function App({
   setup?: SetupRoute;
   /** Present only when the composition root routed to the password-reset page (issue #1076) rather than an item/view id. */
   passwordReset?: PasswordResetRoute;
+  /** Present only when the composition root routed to the invitation acceptance page (issue #1088) rather than an item/view id. */
+  invite?: InviteRoute;
   /** Present only when the composition root routed to the admin page (issue #1079) rather than an item/view id. */
   admin?: AdminRoute;
   /** Present only when the composition root routed to the caller's account page (issue #1083). */
@@ -117,7 +128,7 @@ export function App({
   const { session, setSession, retry } = useSession(
     auth,
     sessionEvents,
-    setup !== undefined || passwordReset !== undefined,
+    setup !== undefined || passwordReset !== undefined || invite !== undefined,
   );
   const locale: Locale =
     session.status === "authenticated" ? resolveLocale([session.user.locale]) : resolveLocale(languages);
@@ -128,6 +139,8 @@ export function App({
         <SetupWizard token={setup.token} operations={setup.operations} />
       ) : passwordReset ? (
         <PasswordResetPage token={passwordReset.token} auth={auth} />
+      ) : invite ? (
+        <InvitationAcceptPage token={invite.token} operations={invite.operations} />
       ) : (
         <SessionGate auth={auth} session={session} setSession={setSession} retry={retry} login={login}>
           <RoutedContent
@@ -154,7 +167,8 @@ export function App({
  * mid-session, the session moves to `ending` and a full reload to `/` discards the whole
  * in-memory app and URL instead of clearing state piece by piece. Lifted out of `SessionGate` so `App` can read the session
  * user's locale before the `I18nProvider` that `SessionGate` renders under. Skipped entirely
- * during the setup wizard, which runs before any user exists.
+ * on the public pages that run without a session: the setup wizard, the password-reset page and the
+ * invitation acceptance page.
  */
 function useSession(
   auth: AuthOperations,

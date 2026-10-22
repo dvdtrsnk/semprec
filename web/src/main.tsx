@@ -12,6 +12,7 @@ import { createAuthOperations } from "./api/authOperations.js";
 import { createSessionFetch } from "./api/sessionFetch.js";
 import { createAdminOperations } from "./api/adminOperations.js";
 import { createAccountOperations } from "./api/accountOperations.js";
+import { createInvitationOperations } from "./api/invitationOperations.js";
 
 /**
  * Composition root: which backend to talk to and which view to open come from the
@@ -33,6 +34,9 @@ import { createAccountOperations } from "./api/accountOperations.js";
  * session, and a member sees a notice instead.
  * `?page=account` routes to the caller's own account page (issue #1083): the data export and
  * self-deletion. Every authenticated session may open it.
+ * `?page=invite#token=<invitationToken>` routes to the invitation acceptance page (issue #1088); like
+ * the password-reset token, the invitation token travels in the fragment and the page clears it from
+ * the address bar on mount. Without a token the page shows its invalid-link state.
  */
 const params = new URLSearchParams(window.location.search);
 const viewId = params.get("view") ?? "";
@@ -40,8 +44,8 @@ const page = params.get("page");
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const sessionEvents = new EventTarget();
 // Every session-bound adapter shares this fetch, so a 401 anywhere drops the app back to login.
-// Auth and setup keep the plain `fetch`: a failed login's 401 must not bounce the app, and setup
-// runs before any session exists.
+// Auth, setup and invitation acceptance keep the plain `fetch`: a failed login's 401 must not bounce
+// the app, and setup and invitation acceptance run before any session exists.
 const fetchImpl = createSessionFetch(() => sessionEvents.dispatchEvent(new Event("unauthorized")));
 const auth = createAuthOperations({ baseUrl: apiBaseUrl });
 const operations = createHttpGenericOperations({ baseUrl: apiBaseUrl, fetchImpl });
@@ -83,6 +87,15 @@ const passwordReset =
     ? { token: new URLSearchParams(window.location.hash.slice(1)).get("token") || null }
     : undefined;
 
+// The same fragment read as `passwordReset`: an empty `#token=` is no token at all.
+const invite =
+  page === "invite"
+    ? {
+        token: new URLSearchParams(window.location.hash.slice(1)).get("token") || null,
+        operations: createInvitationOperations({ baseUrl: apiBaseUrl }),
+      }
+    : undefined;
+
 const container = document.getElementById("root");
 if (!container) throw new Error("Missing #root container");
 
@@ -98,6 +111,7 @@ createRoot(container).render(
       agentRun={agentRun}
       setup={setup}
       passwordReset={passwordReset}
+      invite={invite}
       admin={admin}
       account={account}
       auth={auth}

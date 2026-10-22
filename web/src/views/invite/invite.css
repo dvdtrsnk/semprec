@@ -1,0 +1,21 @@
+.invite {
+  max-width: 24rem;
+  margin: 0 auto;
+  padding: var(--space-3);
+}
+
+.invite__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.invite__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.invite__error {
+  color: var(--color-danger);
+}
