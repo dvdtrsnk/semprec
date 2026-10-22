@@ -377,9 +377,19 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
   let port: number;
   let identityByToken: Map<string, SyncIdentity>;
 
+  /**
+   * Only the first account is bound to tenant zero (`users.tenant_id` is unique): it is the tenant's
+   * user, and the only one a tenant-zero notification may name (`notifications_user_id_tenant_fkey`).
+   */
   async function createTestUser(): Promise<string> {
     const passwordHash = await hashPassword("s3cret-password");
-    const user = await createUser(pool, { email: `sync-${Math.random()}@example.test`, passwordHash, locale: "en" });
+    const { rowCount } = await pool.query("SELECT 1 FROM users WHERE tenant_id = $1", [getTenantZeroId()]);
+    const user = await createUser(pool, {
+      email: `sync-${Math.random()}@example.test`,
+      passwordHash,
+      locale: "en",
+      tenantId: rowCount === 0 ? getTenantZeroId() : undefined,
+    });
     return user.id;
   }
 
@@ -1799,16 +1809,15 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
     client.close();
   });
 
-  it("authorizes agent:watch against the run's actor_user_id rather than the tenant's user", async () => {
-    const earliestUser = await createTestUser();
+  // Issue #1066: agent_runs_actor_user_id_tenant_fkey confines actor_user_id to the run's own tenant,
+  // whose only user is the tenant's user, so an actor distinct from the tenant's user cannot exist.
+  it("authorizes agent:watch against the run's explicit actor_user_id and refuses another account", async () => {
     const actorUser = await createTestUser();
-    identityByToken.set("earliest", {
-      tenantId: getTenantZeroId(),
-      userId: earliestUser,
-      sessionId: "earliest-session",
-    });
+    const otherUser = await createTestUser();
+    identityByToken.set("other", { tenantId: getTenantZeroId(), userId: otherUser, sessionId: "other-session" });
     identityByToken.set("actor", { tenantId: getTenantZeroId(), userId: actorUser, sessionId: "actor-session" });
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "actor-owned run", userId: actorUser });
+    expect(run.actorUserId).toBe(actorUser);
     await insertAgentRunEvent(pool, run.id, "turn_start", { kind: "turn_start" });
 
     const actorClient = await connect("actor");
@@ -1816,13 +1825,13 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
     expect((await nextFrame(actorClient)).type).toBe("agent:event");
     actorClient.close();
 
-    const earliestClient = await connect("earliest");
-    let earliestReceived = false;
-    earliestClient.once("message", () => (earliestReceived = true));
-    earliestClient.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
+    const otherClient = await connect("other");
+    let otherReceived = false;
+    otherClient.once("message", () => (otherReceived = true));
+    otherClient.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(earliestReceived).toBe(false);
-    earliestClient.close();
+    expect(otherReceived).toBe(false);
+    otherClient.close();
   });
 
   it("authorizes agent:watch on a heartbeat-triggered run against the tenant's user it falls back to", async () => {

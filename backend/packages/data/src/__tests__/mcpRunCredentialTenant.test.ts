@@ -19,7 +19,22 @@ let adminPool: Pool;
 let pool: Pool;
 let tenantZero: string;
 let tenantB: string;
-let userId: string;
+/**
+ * Each tenant's own user, created on first use. A run's actor must be its own tenant's user
+ * (`agent_runs_actor_user_id_tenant_fkey`, issue #1066), so one account cannot act in two tenants.
+ */
+const usersByTenant = new Map<string, string>();
+async function userOf(tenantId: string): Promise<string> {
+  const existing = usersByTenant.get(tenantId);
+  if (existing) return existing;
+  const { rows } = await adminPool.query<{ id: string }>(
+    "INSERT INTO users (email, password_hash, tenant_id) VALUES ($1, 'unused', $2) RETURNING id",
+    [`${randomUUID()}@example.com`, tenantId],
+  );
+  const id = rows[0]!.id;
+  usersByTenant.set(tenantId, id);
+  return id;
+}
 
 describe("MCP run credentials resolve to their tenant (issue #994)", () => {
   beforeAll(async () => {
@@ -36,15 +51,12 @@ describe("MCP run credentials resolve to their tenant (issue #994)", () => {
     await resetDatabase(adminPool);
     tenantZero = getTenantZeroId();
     tenantB = await createTestTenant(adminPool);
-    const { rows } = await adminPool.query<{ id: string }>(
-      "INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id",
-      [`${randomUUID()}@example.com`],
-    );
-    userId = rows[0]!.id;
+    usersByTenant.clear();
   });
 
   /** Mints a credential inside `tenantId` for a Projects item created in that same tenant. */
   async function mintIn(tenantId: string) {
+    const userId = await userOf(tenantId);
     return runInTenant(tenantId, async () => {
       const projectItemId = await createTestProjectItem(pool);
       return withTransaction(pool, (client) =>
@@ -100,6 +112,7 @@ describe("MCP run credentials resolve to their tenant (issue #994)", () => {
     const foreignItemId = await runInTenant(tenantZero, () => createTestProjectItem(pool));
     await runInTenant(tenantB, () => createTestProjectItem(pool));
 
+    const userId = await userOf(tenantB);
     await expect(
       runInTenant(tenantB, () =>
         withTransaction(pool, (client) =>

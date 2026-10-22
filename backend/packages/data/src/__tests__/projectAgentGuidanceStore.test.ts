@@ -61,7 +61,7 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
 
   it("upserts, then updates in place on a second call", async () => {
     const projectItemId = await createProjectItem();
-    const ownerUserId = await createTestUser();
+    const ownerUserId = (await createTenantZeroUser(pool)).id;
 
     const created = await withTransaction(pool, (client) =>
       projectAgentGuidanceStore.upsert(client, {
@@ -87,7 +87,7 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
 
   it("does not change the owner on a second upsert with a different ownerUserId", async () => {
     const projectItemId = await createProjectItem();
-    const ownerUserId = await createTestUser();
+    const ownerUserId = (await createTenantZeroUser(pool)).id;
     const otherUserId = await createTestUser();
 
     await withTransaction(pool, (client) =>
@@ -110,11 +110,12 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
     expect(updated.markdown).toBe("# Guidance v2");
   });
 
-  it("transfers ownership to a new owner", async () => {
+  // Issue #1066: project_agent_guidance_owner_user_id_tenant_fkey confines the owner to the guidance's
+  // own tenant, and a tenant has exactly one user, so the only valid transfer target is that user.
+  it("transfers ownership within the tenant and refuses an owner from outside it", async () => {
     const projectItemId = await createProjectItem();
-    const ownerUserId = await createTestUser();
-    const newOwnerUserId = await createTestUser();
-
+    const ownerUserId = (await createTenantZeroUser(pool)).id;
+    const unboundUserId = await createTestUser();
     await withTransaction(pool, (client) =>
       projectAgentGuidanceStore.upsert(client, {
         projectItemId,
@@ -122,11 +123,25 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
         markdown: "# Guidance",
       }),
     );
+    // Created after the upsert: a second tenant ends the sole-tenant default the upsert relies on.
+    const otherTenantUser = await createUser(pool, {
+      email: `${randomUUID()}@example.com`,
+      passwordHash: "hash",
+      tenantId: await createTestTenant(pool),
+    });
+
+    for (const newOwnerUserId of [unboundUserId, otherTenantUser.id]) {
+      await expect(
+        withTransaction(pool, (client) => projectAgentGuidanceStore.transfer(client, projectItemId, newOwnerUserId)),
+      ).rejects.toMatchObject({ code: "23503", constraint: "project_agent_guidance_owner_user_id_tenant_fkey" });
+    }
+    const unchanged = await withTransaction(pool, (client) => projectAgentGuidanceStore.load(client, projectItemId));
+    expect(unchanged?.ownerUserId).toBe(ownerUserId);
 
     const transferred = await withTransaction(pool, (client) =>
-      projectAgentGuidanceStore.transfer(client, projectItemId, newOwnerUserId),
+      projectAgentGuidanceStore.transfer(client, projectItemId, ownerUserId),
     );
-    expect(transferred.ownerUserId).toBe(newOwnerUserId);
+    expect(transferred.ownerUserId).toBe(ownerUserId);
   });
 
   it("rejects transferring guidance that doesn't exist", async () => {
@@ -267,7 +282,7 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
     it("rolls back on a thrown error", async () => {
       const runner = createPoolClientTransactionRunner(pool);
       const projectItemId = await createProjectItem();
-      const ownerUserId = await createTestUser();
+      const ownerUserId = (await createTenantZeroUser(pool)).id;
 
       await expect(
         runner.withTransaction({ isolation: "serializable" }, async (client) => {

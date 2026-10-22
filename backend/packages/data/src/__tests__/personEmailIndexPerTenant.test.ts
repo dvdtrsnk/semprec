@@ -21,11 +21,6 @@ async function inRolledBackTransaction(fn: (client: PoolClient) => Promise<void>
   }
 }
 
-/** Reproduces the post-#1065 schema: the legacy global primary key is gone. */
-async function dropLegacyKey(client: PoolClient): Promise<void> {
-  await client.query("ALTER TABLE person_email_index DROP CONSTRAINT person_email_index_pkey");
-}
-
 async function addSecondTenant(client: PoolClient): Promise<string> {
   await client.query("DROP INDEX IF EXISTS tenants_single_tenant_guard");
   const { rows } = await client.query<{ id: string }>("INSERT INTO tenants (status) VALUES ('active') RETURNING id");
@@ -55,10 +50,9 @@ describe("person_email_index is keyed per tenant", () => {
     await pool?.end();
   });
 
-  it("reports a conflict for the second Person in one tenant without the legacy key", async () => {
+  it("reports a conflict for the second Person in one tenant on the tenant-leading key", async () => {
     await resetDatabase(pool);
     await inRolledBackTransaction(async (client) => {
-      await dropLegacyKey(client);
       const p1 = randomUUID();
       const p2 = randomUUID();
       expect(await reindexPersonEmails(client, p1, ["a@example.com"])).toEqual({ conflicts: [] });
@@ -70,7 +64,6 @@ describe("person_email_index is keyed per tenant", () => {
   it("lets two tenants claim the same address and resolves each in its own scope", async () => {
     await resetDatabase(pool);
     await inRolledBackTransaction(async (client) => {
-      await dropLegacyKey(client);
       const tenantA = await currentTenant(client);
       const tenantB = await addSecondTenant(client);
       await client.query("SET LOCAL ROLE semprec_data");
@@ -92,7 +85,6 @@ describe("person_email_index is keyed per tenant", () => {
   it("releasing an address in one tenant leaves the other tenant's row in place", async () => {
     await resetDatabase(pool);
     await inRolledBackTransaction(async (client) => {
-      await dropLegacyKey(client);
       const tenantA = await currentTenant(client);
       const tenantB = await addSecondTenant(client);
       await client.query("SET LOCAL ROLE semprec_data");

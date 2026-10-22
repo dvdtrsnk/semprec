@@ -35,17 +35,12 @@ async function inRolledBackTransaction(fn: (client: PoolClient) => Promise<void>
   if (rollbackFailed) throw rollbackError;
 }
 
-async function dropLegacyKey(client: PoolClient): Promise<void> {
-  await client.query("ALTER TABLE idempotency_keys DROP CONSTRAINT idempotency_keys_pkey");
-}
-
 async function scopeTo(client: PoolClient, tenantId: string): Promise<void> {
   await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
 }
 
-/** Drops the legacy key, adds a second tenant with one database each, and runs as `semprec_data`. */
+/** Adds a second tenant with one database each, and runs as `semprec_data`. */
 async function twoTenants(client: PoolClient) {
-  await dropLegacyKey(client);
   await client.query("DROP INDEX IF EXISTS tenants_single_tenant_guard");
   const { rows } = await client.query<{ id: string }>("SELECT id FROM tenants");
   const tenantA = rows[0]?.id;
@@ -92,11 +87,10 @@ describe("idempotency reservations are per tenant", () => {
     expect(conflict.message).not.toContain(dbB.id);
   });
 
-  it("replays without the legacy primary key", async () => {
+  it("replays on the tenant-leading primary key", async () => {
     await resetDatabase(pool);
     const db = await createChokePoint(pool).createDatabase({ name: "A" });
     await inRolledBackTransaction(async (client) => {
-      await dropLegacyKey(client);
       const first = await insertItemWithReplay(client, { databaseId: db.id, properties: {}, idempotencyKey: "k" });
       const second = await insertItemWithReplay(client, { databaseId: db.id, properties: {}, idempotencyKey: "k" });
       expect(first.created).toBe(true);

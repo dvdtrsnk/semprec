@@ -39,9 +39,9 @@ describe("runApprovalRequestExecutionStatusCutoverMigration (issue #89)", () => 
   });
 
   it("terminalizes every pre-existing row as legacy_terminal, rejects still-pending rows, and removes queued approvalExecute jobs", async () => {
-    await createUser();
-    const run = await createAgentRun(pool, { triggeredBy: "user", task: "legacy" });
+    // Tenant zero's user decides: a request may only name its own tenant's user (issue #1066).
     const decidedByUserId = await createUser();
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "legacy" });
 
     const { rows: pendingRows } = await pool.query<{ id: string }>(
       `INSERT INTO approval_requests (agent_run_id, tool_name, risk_class, payload)

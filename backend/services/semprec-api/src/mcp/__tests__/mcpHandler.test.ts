@@ -2,7 +2,13 @@ import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { createTestProjectItem, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createTenantZeroUser,
+  createTestProjectItem,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "@semprec/data/testSupport";
 import {
   createChokePoint,
   createUser,
@@ -32,6 +38,15 @@ async function authHeader(): Promise<{ Authorization: string }> {
   const user = await createUser(pool, { email, passwordHash: await hashPassword(PASSWORD) });
   const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
   return { Authorization: `Bearer ${token}` };
+}
+
+/**
+ * Tenant zero's user, created on first use. A minted credential's run names its actor, and a run's
+ * actor must be its own tenant's user (`agent_runs_actor_user_id_tenant_fkey`, issue #1066).
+ */
+async function tenantZeroUserId(): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>("SELECT id FROM users WHERE tenant_id = $1", [getTenantZeroId()]);
+  return rows[0]?.id ?? (await createTenantZeroUser(pool)).id;
 }
 
 async function startServer(
@@ -247,13 +262,10 @@ describe("createMcpRequestListener (issue #220)", () => {
 
   describe("restricted MCP run-credentials (issue #220, AC34/44/47)", () => {
     async function credentialHeader(capabilities: CapabilityId[]): Promise<{ Authorization: string }> {
-      const user = await createUser(pool, {
-        email: `${randomUUID()}@example.com`,
-        passwordHash: await hashPassword(PASSWORD),
-      });
+      const userId = await tenantZeroUserId();
       const projectItemId = await createTestProjectItem(pool);
       const minted = await withTransaction(pool, (client) =>
-        mintMcpRunCredential(client, { projectItemId, capabilities, userId: user.id }),
+        mintMcpRunCredential(client, { projectItemId, capabilities, userId }),
       );
       return { Authorization: `Bearer ${minted.token}` };
     }
@@ -330,15 +342,12 @@ describe("createMcpRequestListener (issue #220)", () => {
     });
 
     describe("tenant resolution", () => {
-      /** Mints a credential for a fresh user and returns the token plus its run id. */
+      /** Mints a credential for tenant zero's user and returns the token plus its run id. */
       async function mintCredential(): Promise<{ token: string; runId: string }> {
-        const user = await createUser(pool, {
-          email: `${randomUUID()}@example.com`,
-          passwordHash: await hashPassword(PASSWORD),
-        });
+        const userId = await tenantZeroUserId();
         const projectItemId = await createTestProjectItem(pool);
         const minted = await withTransaction(pool, (client) =>
-          mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.read"], userId: user.id }),
+          mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.read"], userId }),
         );
         return { token: minted.token, runId: minted.run.id };
       }
