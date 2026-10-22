@@ -77,18 +77,19 @@ describe("row-level security as the runtime roles", () => {
     const db = await choke.createDatabase({ name: "RLS seed" });
     await choke.createProperty({ databaseId: db.id, key: "title", name: "Title", type: "text" });
     await choke.createItem({ databaseId: db.id });
+    const { rows: tenants } = await pool.query<{ id: string }>("SELECT id FROM tenants");
+    expect(tenants).toHaveLength(1);
+    tenantZero = tenants[0]?.id ?? "";
+    // Tenant zero's user: a notification may only name its own tenant's user (issue #1066).
     const { rows: users } = await pool.query<{ id: string }>(
-      `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
-      [`rls-${randomUUID()}@example.com`],
+      `INSERT INTO users (email, password_hash, tenant_id) VALUES ($1, 'unused', $2) RETURNING id`,
+      [`rls-${randomUUID()}@example.com`, tenantZero],
     );
     await pool.query(
       `INSERT INTO notifications (user_id, kind, title, source_table, source_id, transition_instance)
        VALUES ($1, 'approval_pending', 'seed', 'seed', $2, 'seed')`,
       [users[0]?.id, randomUUID()],
     );
-    const { rows: tenants } = await pool.query<{ id: string }>("SELECT id FROM tenants");
-    expect(tenants).toHaveLength(1);
-    tenantZero = tenants[0]?.id ?? "";
     const { rows: tables } = await pool.query<{ relname: string }>(
       `SELECT relname FROM pg_class
         WHERE relnamespace = 'public'::regnamespace AND obj_description(oid, 'pg_class') = 'semprec:tenancy=tenant'

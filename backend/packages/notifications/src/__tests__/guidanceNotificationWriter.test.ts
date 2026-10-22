@@ -12,7 +12,7 @@ import {
   seedSystem,
   withTransaction,
 } from "@semprec/data";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import type { GuidanceDriftContradiction } from "@semprec/shared";
 import { createGuidanceNotificationWriter } from "../guidanceNotificationWriter.js";
 
@@ -28,7 +28,12 @@ async function createProjectItem(): Promise<string> {
 }
 
 async function createTestUser(): Promise<string> {
-  const user = await createUser(pool, { email: `${randomUUID()}@example.com`, passwordHash: "hash" });
+  // Tenant zero's user: guidance may only be owned by its own tenant's user (issue #1066).
+  const user = await createUser(pool, {
+    email: `${randomUUID()}@example.com`,
+    passwordHash: "hash",
+    tenantId: getTenantZeroId(),
+  });
   return user.id;
 }
 

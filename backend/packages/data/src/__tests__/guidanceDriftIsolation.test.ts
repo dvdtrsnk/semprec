@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { withTransaction } from "../db/pool.js";
@@ -22,7 +22,12 @@ async function createProjectItem(): Promise<string> {
 }
 
 async function createTestUser(): Promise<string> {
-  const user = await createUser(pool, { email: `${randomUUID()}@example.com`, passwordHash: "hash" });
+  // Tenant zero's user: guidance may only be owned by its own tenant's user (issue #1066).
+  const user = await createUser(pool, {
+    email: `${randomUUID()}@example.com`,
+    passwordHash: "hash",
+    tenantId: getTenantZeroId(),
+  });
   return user.id;
 }
 
