@@ -72,6 +72,71 @@ async function insertItemWithId(client: PoolClient, databaseId: string, id: stri
   await client.query(`INSERT INTO items (id, database_id, properties) VALUES ($1, $2, '{}')`, [id, databaseId]);
 }
 
+/** The part of a pooled client the race cleanup drives; a fake implements it in the failure regression. */
+interface RaceClient {
+  query(sql: string): Promise<unknown>;
+  release(): void;
+}
+
+interface FirstWriteRace<C> {
+  /** Starts the loser on its own client; its settlement is observed immediately, never left unhandled. */
+  startLoser: <T>(start: (client: C) => Promise<T>) => Promise<T>;
+  commitWinner: () => Promise<void>;
+}
+
+/**
+ * Owns both clients of the concurrent-first-write race. `scenario` runs inside the winner's open
+ * transaction. On any failure the winner is rolled back unless it already committed - that releases
+ * the lock the loser waits on - then the loser's settlement is awaited, and only then are the winner
+ * and the loser released, in that order. The scenario's own error is the one rethrown.
+ */
+async function runFirstWriteRace<C extends RaceClient>(
+  winner: C,
+  loser: C,
+  scenario: (race: FirstWriteRace<C>) => Promise<void>,
+): Promise<void> {
+  let loserSettled: Promise<void> = Promise.resolve();
+  let committed = false;
+  try {
+    await winner.query("BEGIN");
+    await scenario({
+      startLoser: (start) => {
+        const pending = start(loser);
+        // Both outcomes are observed here, so a loser rejection is never unhandled and
+        // cleanup can wait for it without the scenario having awaited it.
+        loserSettled = pending.then(
+          () => undefined,
+          () => undefined,
+        );
+        return pending;
+      },
+      commitWinner: async () => {
+        await winner.query("COMMIT");
+        committed = true;
+      },
+    });
+  } catch (err) {
+    if (!committed) {
+      try {
+        await winner.query("ROLLBACK");
+      } catch (rollbackErr) {
+        // The scenario failure stays the reported one; the rollback failure is logged, not dropped.
+        console.warn("first-write race: winner ROLLBACK failed during cleanup", {
+          name: rollbackErr instanceof Error ? rollbackErr.name : typeof rollbackErr,
+        });
+      }
+    }
+    await loserSettled;
+    throw err;
+  } finally {
+    try {
+      winner.release();
+    } finally {
+      loser.release();
+    }
+  }
+}
+
 describe("docs are per tenant", () => {
   beforeAll(async () => {
     pool = getTestPool();
@@ -94,13 +159,12 @@ describe("docs are per tenant", () => {
 
     const first = await pool.connect();
     const second = await pool.connect();
-    try {
-      await first.query("BEGIN");
+    await runFirstWriteRace(first, second, async ({ startLoser, commitWinner }) => {
       const created = await getOrCreateDoc(first, item.id, "page");
       const { rows: pidRows } = await first.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
       const firstPid = pidRows[0]!.pid;
 
-      const racing = getOrCreateDoc(second, item.id, "page");
+      const racing = startLoser((client) => getOrCreateDoc(client, item.id, "page"));
       await vi.waitFor(
         async () => {
           const { rows } = await pool.query<{ count: string }>(
@@ -111,17 +175,11 @@ describe("docs are per tenant", () => {
         },
         { timeout: 10_000, interval: 20 },
       );
-      await first.query("COMMIT");
+      await commitWinner();
 
       const resolved = await racing;
       expect(resolved.id).toBe(created.id);
-    } catch (err) {
-      await first.query("ROLLBACK").catch(() => undefined);
-      throw err;
-    } finally {
-      first.release();
-      second.release();
-    }
+    });
 
     const counts = await pool.query<{ docs: number; snapshots: number; history: number }>(
       `SELECT (SELECT count(*)::int FROM docs WHERE item_id = $1) AS docs,
@@ -130,6 +188,100 @@ describe("docs are per tenant", () => {
       [item.id],
     );
     expect(counts.rows[0]).toEqual({ docs: 1, snapshots: 1, history: 1 });
+  });
+
+  describe("first-write race cleanup after a failure before the winner commits", () => {
+    type LoserOutcome = "resolves" | "rejects";
+
+    /**
+     * Fake clients that log every step. The loser stays pending until the winner's ROLLBACK, as a
+     * real writer blocked on the winner's row lock would; a cleanup that awaited the loser before
+     * rolling back would never see it settle.
+     */
+    function fakeRace(outcome: LoserOutcome, rollbackFails: boolean) {
+      const events: string[] = [];
+      let settleLoser: () => void = () => undefined;
+      const loserResult = new Promise<string>((resolve, reject) => {
+        // Settles on a later macrotask, as a writer that wakes after the lock is gone would, so a
+        // cleanup that released the clients without awaiting the loser logs the releases first.
+        // No handler is attached here: only runFirstWriteRace's observer keeps a rejection handled.
+        settleLoser = () => {
+          setTimeout(() => {
+            events.push(`loser ${outcome}`);
+            if (outcome === "resolves") resolve("loser doc");
+            else reject(new Error("loser failed"));
+          }, 5);
+        };
+      });
+      const winner: RaceClient = {
+        query: async (sql) => {
+          events.push(`winner ${sql}`);
+          if (sql === "ROLLBACK") {
+            settleLoser();
+            if (rollbackFails) throw new Error("rollback failed");
+          }
+          return undefined;
+        },
+        release: () => events.push("winner released"),
+      };
+      const loser: RaceClient = {
+        query: async () => undefined,
+        release: () => events.push("loser released"),
+      };
+      return { events, winner, loser, loserResult };
+    }
+
+    async function failBeforeCommit(outcome: LoserOutcome, rollbackFails: boolean) {
+      const { events, winner, loser, loserResult } = fakeRace(outcome, rollbackFails);
+      const forced = new Error("forced pre-commit failure");
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      try {
+        const run = runFirstWriteRace(winner, loser, async ({ startLoser }) => {
+          // startLoser attaches the settlement observer itself; the scenario deliberately never awaits it.
+          void startLoser(() => loserResult);
+          throw forced;
+        });
+        await expect(run).rejects.toBe(forced);
+        // Let a rejection without a handler reach the process-level hook before checking it.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+      }
+      expect(unhandled).toEqual([]);
+      return events;
+    }
+
+    for (const outcome of ["resolves", "rejects"] as const) {
+      it(`rolls the winner back, then waits for a loser that ${outcome}, then releases both clients`, async () => {
+        const events = await failBeforeCommit(outcome, false);
+        expect(events).toEqual([
+          "winner BEGIN",
+          "winner ROLLBACK",
+          `loser ${outcome}`,
+          "winner released",
+          "loser released",
+        ]);
+      });
+
+      it(`keeps the forced failure when the winner ROLLBACK also fails and the loser ${outcome}`, async () => {
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        try {
+          const events = await failBeforeCommit(outcome, true);
+          expect(events).toEqual([
+            "winner BEGIN",
+            "winner ROLLBACK",
+            `loser ${outcome}`,
+            "winner released",
+            "loser released",
+          ]);
+          expect(warn).toHaveBeenCalledTimes(1);
+        } finally {
+          warn.mockRestore();
+        }
+      });
+    }
   });
 
   it("works without the legacy index: repeat write is idempotent, a different kind conflicts", async () => {
