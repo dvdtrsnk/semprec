@@ -60,11 +60,10 @@ describe("manifest drift findings per tenant", () => {
     });
   });
 
-  it("gives tenant B its own active row for a key tenant zero has active once the legacy index is gone", async () => {
+  it("gives tenant B its own active row for a key tenant zero has active", async () => {
     await inTwoTenants(async (client, tenantB) => {
       await scopeTo(client, tenantZero);
       await publishFinding(client, { kind: KIND, dedupeKey: "shared", payload: { by: "zero" } });
-      await client.query("DROP INDEX manifest_drift_findings_active_idx");
       await scopeTo(client, tenantB);
       await publishFinding(client, { kind: KIND, dedupeKey: "shared", payload: { by: "b" } });
 
@@ -72,20 +71,6 @@ describe("manifest drift findings per tenant", () => {
       expect(rows).toHaveLength(2);
       expect(rows.find((r) => r.tenant_id === tenantZero)?.payload).toEqual({ by: "zero" });
       expect(rows.find((r) => r.tenant_id === tenantB)?.payload).toEqual({ by: "b" });
-    });
-  });
-
-  it("rejects tenant B's publish with 23505 while the legacy index still exists", async () => {
-    await inTwoTenants(async (client, tenantB) => {
-      await scopeTo(client, tenantZero);
-      await publishFinding(client, { kind: KIND, dedupeKey: "shared", payload: { by: "zero" } });
-      await scopeTo(client, tenantB);
-      await client.query("SAVEPOINT collision");
-      await expect(
-        publishFinding(client, { kind: KIND, dedupeKey: "shared", payload: { by: "b" } }),
-      ).rejects.toMatchObject({ code: "23505" });
-      await client.query("ROLLBACK TO SAVEPOINT collision");
-      expect(await activeFindings(client, "shared")).toEqual([{ tenant_id: tenantZero, payload: { by: "zero" } }]);
     });
   });
 

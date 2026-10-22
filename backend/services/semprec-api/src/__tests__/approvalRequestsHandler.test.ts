@@ -2,13 +2,20 @@ import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createTenantZeroUser,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+  withTenantTransaction,
+} from "@semprec/data/testSupport";
 import {
   createViewTypeRegistry,
   seedSystem,
   createAgentRun,
   createPendingApprovalRequest,
   createChokePoint,
+  createUser,
   hashPassword,
   login,
   type ChokePoint,
@@ -19,13 +26,30 @@ const PASSWORD = "s3cret-password";
 
 let pool: Pool;
 
-async function createUser(): Promise<string> {
+async function createTestUser(): Promise<string> {
   return (await createTenantZeroUser(pool)).id;
 }
 
+/** Tenant zero's user, which `beforeEach` creates; the first `authSession` of a test signs it in. */
+let tenantUserEmail: string;
+let tenantUserSignedIn: boolean;
+
+/**
+ * Signs in tenant zero's user on the first call of a test and a fresh account in a fresh tenant after it. A
+ * run's actor must be its own tenant's user (`agent_runs_actor_user_id_tenant_fkey`, issue #1066),
+ * so only the first session can own a request; a later one is the non-owner.
+ */
 async function authSession(): Promise<{ headers: { Authorization: string }; userId: string }> {
-  const email = `${randomUUID()}@example.com`;
-  await pool.query(`INSERT INTO users (email, password_hash) VALUES ($1, $2)`, [email, await hashPassword(PASSWORD)]);
+  let email = tenantUserEmail;
+  if (tenantUserSignedIn) {
+    email = `${randomUUID()}@example.com`;
+    await createUser(pool, {
+      email,
+      passwordHash: await hashPassword(PASSWORD),
+      tenantId: await createTestTenant(pool),
+    });
+  }
+  tenantUserSignedIn = true;
   const { token, user } = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
   return { headers: { Authorization: `Bearer ${token}` }, userId: user.id };
 }
@@ -68,7 +92,13 @@ describe("createApprovalRequestsRequestListener", () => {
     chokePoint ??= createChokePoint(pool);
     const viewTypeRegistry = createViewTypeRegistry();
     await resetDatabase(pool);
-    await createUser();
+    tenantUserEmail = `${randomUUID()}@example.com`;
+    tenantUserSignedIn = false;
+    await createTenantZeroUser(pool, tenantUserEmail);
+    await pool.query("UPDATE users SET password_hash = $2 WHERE email = $1", [
+      tenantUserEmail,
+      await hashPassword(PASSWORD),
+    ]);
     await seedSystem(pool, viewTypeRegistry);
 
     server = createServer(createApprovalRequestsRequestListener(pool));
@@ -261,7 +291,7 @@ describe("createApprovalRequestsRequestListener", () => {
   });
 
   it("returns 404 for an unknown approval request id", async () => {
-    const userId = await createUser();
+    const userId = await createTestUser();
 
     const res = await fetch(`${baseUrl}/api/approval-requests/${randomUUID()}`, {
       method: "PATCH",
@@ -373,9 +403,24 @@ describe("createApprovalRequestsRequestListener", () => {
 
     it("lists only the caller's own pending requests (issue #1028)", async () => {
       const owner = await authSession();
-      const other = await authSession();
       const ownId = await createPendingRequest(owner.userId);
-      await createPendingRequest(other.userId);
+      // The other account's request lives in its own tenant, the only place its run can be recorded.
+      const otherTenant = await createTestTenant(pool);
+      const other = await createUser(pool, {
+        email: `${randomUUID()}@example.com`,
+        passwordHash: "unused",
+        tenantId: otherTenant,
+      });
+      await withTenantTransaction(pool, otherTenant, async (client) => {
+        const run = await createAgentRun(client, { triggeredBy: "user", task: "test", userId: other.id });
+        await createPendingApprovalRequest(client, {
+          agentRunId: run.id,
+          toolName: "search_web",
+          riskClass: "unclassified",
+          payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+          resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+        });
+      });
 
       const res = await fetch(`${baseUrl}/api/approval-requests`, { headers: owner.headers });
       expect(res.status).toBe(200);

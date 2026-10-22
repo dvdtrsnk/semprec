@@ -17,7 +17,22 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 let adminPool: Pool;
 let pool: Pool;
-let userId: string;
+/**
+ * Each tenant's own user, created on first use. A run's actor must be its own tenant's user
+ * (`agent_runs_actor_user_id_tenant_fkey`, issue #1066), so one account cannot act in two tenants.
+ */
+const usersByTenant = new Map<string, string>();
+async function userOf(tenantId: string): Promise<string> {
+  const existing = usersByTenant.get(tenantId);
+  if (existing) return existing;
+  const { rows } = await adminPool.query<{ id: string }>(
+    "INSERT INTO users (email, password_hash, tenant_id) VALUES ($1, 'unused', $2) RETURNING id",
+    [`${randomUUID()}@example.com`, tenantId],
+  );
+  const id = rows[0]!.id;
+  usersByTenant.set(tenantId, id);
+  return id;
+}
 
 type Conversation = { runId: string; pre: string[]; checkpoint: string; post: string[] };
 
@@ -70,19 +85,17 @@ describe("handleAgentRunEventsRetentionTask runs per tenant (issue #987)", () =>
     await resetDatabase(adminPool);
     tenantZero = getTenantZeroId();
     tenantB = await createTestTenant(adminPool);
-    const { rows } = await adminPool.query<{ id: string }>(
-      "INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id",
-      [`${randomUUID()}@example.com`],
-    );
-    userId = rows[0]!.id;
+    usersByTenant.clear();
   });
 
   async function seedPair(status: "done" | "running"): Promise<{ zero: Conversation; b: Conversation }> {
+    const userZero = await userOf(tenantZero);
     const runZero = await runInTenant(tenantZero, () =>
-      createAgentRun(pool, { userId, triggeredBy: "user", unit: "session", task: "chat" }),
+      createAgentRun(pool, { userId: userZero, triggeredBy: "user", unit: "session", task: "chat" }),
     );
+    const userB = await userOf(tenantB);
     const runB = await runInTenant(tenantB, () =>
-      createAgentRun(pool, { userId, triggeredBy: "user", unit: "session", task: "chat" }),
+      createAgentRun(pool, { userId: userB, triggeredBy: "user", unit: "session", task: "chat" }),
     );
     // Interleave so B's checkpoint id is lower than tenant zero's, and B has events between them.
     const bPre = [await addEvent(tenantB, runB.id, "message"), await addEvent(tenantB, runB.id, "message")];
@@ -132,8 +145,9 @@ describe("handleAgentRunEventsRetentionTask runs per tenant (issue #987)", () =>
 
   it("leaves a suspended tenant's old events alone", async () => {
     const suspended = await createTestTenant(adminPool, { status: "suspended" });
+    const userSuspended = await userOf(suspended);
     const run = await runInTenant(suspended, () =>
-      createAgentRun(pool, { userId, triggeredBy: "user", unit: "session", task: "chat" }),
+      createAgentRun(pool, { userId: userSuspended, triggeredBy: "user", unit: "session", task: "chat" }),
     );
     const pre = await addEvent(suspended, run.id, "message");
     const checkpoint = await addEvent(suspended, run.id, "compaction");

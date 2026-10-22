@@ -106,6 +106,10 @@ export default async function setup(): Promise<() => Promise<void>> {
 
     const connectionString = `postgresql://postgres:postgres@localhost:${port}/semprec_test`;
     process.env.TEST_DATABASE_URL = connectionString;
+    // Existing suites call data-layer functions without a tenant scope, and an unset mode is strict
+    // since issue #1067. The isolation suites of #1053, #1054 and #1056 set `strict` for themselves
+    // (the mode is read on every call).
+    process.env.SEMPREC_TENANT_SCOPE ??= "warn";
     // Deterministic 32-byte test key for @semprec/credentials (issue #26) — never used outside tests.
     process.env.CREDENTIALS_MASTER_KEY ??= Buffer.alloc(32, 7).toString("base64");
 

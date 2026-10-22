@@ -273,13 +273,15 @@ describe("caller tenant on the gateway routes", () => {
       expect(rows).toEqual([{ tenant_id: tenantZero, status: "failed", agent_run_id: null }]);
     });
 
-    it("still processes a request without the header, attributing it to the sole tenant", async () => {
+    // In warn mode the scopeless reservation reaches Postgres; strict `app_tenant_default()` (#1067)
+    // no longer falls back to the sole tenant, so it is refused like an unknown tenant.
+    it("refuses a request without the header, with no row and no provider call", async () => {
       const res = await send(route);
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(403);
       await res.text();
 
-      const rows = await settledRows();
-      expect(rows).toEqual([{ tenant_id: tenantZero, status: "settled", agent_run_id: null }]);
+      expect(await callRows()).toEqual([]);
+      expect(providerCalls).toBe(0);
     });
 
     it.each([["not-a-uuid"], [`${randomUUID()}, ${randomUUID()}`], [""]])(

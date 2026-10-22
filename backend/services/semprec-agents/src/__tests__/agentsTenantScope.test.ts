@@ -118,8 +118,8 @@ describe("agents process runs each job inside its tenant under strict enforcemen
     pool ??= createPool(process.env.TEST_DATABASE_URL!);
     registry ??= await loadFullModuleRegistry();
 
-    // Fixtures are written under the default (warn) mode first; strict is switched on once they exist.
-    delete process.env.SEMPREC_TENANT_SCOPE;
+    // Fixtures are written under warn mode first; strict is switched on once they exist.
+    process.env.SEMPREC_TENANT_SCOPE = "warn";
     await resetDatabase(resetPool);
     const { rows } = await resetPool.query<{ id: string }>(`SELECT app_sole_tenant() AS id`);
     tenantZero = rows[0]!.id;

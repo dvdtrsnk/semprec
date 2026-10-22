@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase, tenantForNextTestUser } from "../testSupport/testDb.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { createUser } from "../auth/usersStore.js";
 import { getActiveSessionByTokenHash, isSessionActive, listSessionsForUser } from "../auth/sessionsStore.js";
@@ -17,7 +17,11 @@ import { NotFoundError, UnauthorizedError, ValidationError } from "../errors.js"
 let pool: Pool;
 
 async function makeUser(email = "person@example.com", password = "s3cret-password") {
-  return createUser(pool, { email, passwordHash: await hashPassword(password) });
+  return createUser(pool, {
+    tenantId: await tenantForNextTestUser(pool),
+    email,
+    passwordHash: await hashPassword(password),
+  });
 }
 
 describe("auth actions (issue #140)", () => {
@@ -264,37 +268,6 @@ describe("auth actions (issue #140)", () => {
       expect(identity.role).toBe("admin");
     });
 
-    it("resolves a user with no tenant to the sole tenant", async () => {
-      const user = await makeUser();
-      const { token } = await loginAs(user);
-
-      const identity = await verifySessionToken(pool, token);
-      expect(identity.tenantId).toBe(getTenantZeroId());
-      expect(identity.role).toBe("member");
-    });
-
-    it("rejects an unbound user with a 401 once a second tenant exists, while a bound user still authenticates", async () => {
-      const unbound = await makeUser();
-      const bound = await createUser(pool, {
-        email: "bound@example.com",
-        passwordHash: await hashPassword("s3cret-password"),
-        tenantId: getTenantZeroId(),
-      });
-      const unboundLogin = await loginAs(unbound);
-      const boundLogin = await loginAs(bound);
-      const { rows } = await pool.query<{ id: string }>("INSERT INTO tenants DEFAULT VALUES RETURNING id");
-      const secondId = rows[0]?.id;
-      if (!secondId) throw new Error("second tenant insert returned no row");
-      try {
-        await expect(verifySessionToken(pool, unboundLogin.token)).rejects.toThrow(UnauthorizedError);
-
-        const identity = await verifySessionToken(pool, boundLogin.token);
-        expect(identity.tenantId).toBe(getTenantZeroId());
-      } finally {
-        await pool.query("DELETE FROM tenants WHERE id = $1", [secondId]);
-      }
-    });
-
     it.each(["suspended", "provisioning", "deleting"])(
       "rejects a user in a %s tenant without bumping last_seen_at",
       async (status) => {
@@ -351,18 +324,6 @@ describe("auth actions (issue #140)", () => {
       });
 
       expect(result.user.id).toBe(user.id);
-    });
-
-    it("refuses a correct password from a user with no tenant binding like a wrong one", async () => {
-      const unbound = await makeUser("unbound@example.com");
-      await createTestTenant(pool);
-
-      await expect(
-        login(pool, { email: unbound.email, password: "s3cret-password", platform: "web", ip: "1.2.3.4" }),
-      ).rejects.toThrow(UnauthorizedError);
-
-      expect(await listSessionsForUser(pool, unbound.id)).toHaveLength(0);
-      expect(await countRecentFailedAttempts(pool, unbound.email, "1.2.3.4", 3600)).toBe(1);
     });
 
     it("issues the same number of queries on the pool for an unknown email, a wrong password and a suspended tenant", async () => {

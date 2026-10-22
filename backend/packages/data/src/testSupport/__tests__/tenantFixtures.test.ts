@@ -7,6 +7,7 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
+  tenantZeroSessionOptions,
   withTenantTransaction,
 } from "../testDb.js";
 
@@ -42,6 +43,17 @@ describe("two-tenant runtime-role harness", () => {
     expect(zero.rows).toEqual([{ id: getTenantZeroId() }]);
     const second = await createTestTenant(adminPool);
     expect(second).not.toBe(getTenantZeroId());
+  });
+
+  it("builds the tenant zero session options only from a UUID-shaped id", () => {
+    expect(tenantZeroSessionOptions()).toBe(`-c app.tenant_id=${getTenantZeroId()}`);
+    const original = process.env.TEST_TENANT_ZERO_ID;
+    try {
+      process.env.TEST_TENANT_ZERO_ID = `${getTenantZeroId()} -c row_security=off`;
+      expect(() => tenantZeroSessionOptions()).toThrow("TEST_TENANT_ZERO_ID is not a lowercase UUID");
+    } finally {
+      process.env.TEST_TENANT_ZERO_ID = original;
+    }
   });
 
   it("stores the requested tenant status and defaults to active", async () => {

@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { createTestProjectItem, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createTestProjectItem,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+  tenantZeroSessionOptions,
+} from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { createUser } from "../auth/usersStore.js";
@@ -42,8 +48,11 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
     adminPool = getTestPool();
     await adminPool.query(`ALTER ROLE semprec_data WITH PASSWORD '${TEST_ROLE_PASSWORD}'`);
     await adminPool.query(`ALTER ROLE semprec_side WITH PASSWORD '${TEST_ROLE_PASSWORD}'`);
-    dataPool = new Pool({ connectionString: roleConnectionString("semprec_data") });
-    sidePool = new Pool({ connectionString: roleConnectionString("semprec_side") });
+    // This suite checks grants, not isolation: like `getTestPool`'s, every connection starts in
+    // tenant zero, which strict `app_tenant_default()` (#1067) no longer falls back to.
+    const inTenantZeroOptions = tenantZeroSessionOptions();
+    dataPool = new Pool({ connectionString: roleConnectionString("semprec_data"), options: inTenantZeroOptions });
+    sidePool = new Pool({ connectionString: roleConnectionString("semprec_side"), options: inTenantZeroOptions });
     chokePoint = createChokePoint(adminPool);
   });
 
@@ -261,10 +270,12 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
   describe("late side tables (agent_run_mcp_credentials, mail_message_flag_sync_state)", () => {
     it("mints and resolves an MCP run credential as semprec_data", async () => {
       const passwordHash = await hashPassword("s3cret-password");
+      // The run's actor must be the run's own tenant's user (agent_runs_actor_user_id_tenant_fkey).
       const user = await createUser(adminPool, {
         email: `owner-${randomUUID()}@example.test`,
         passwordHash,
         locale: "en",
+        tenantId: getTenantZeroId(),
       });
 
       const projectItemId = await createTestProjectItem(adminPool);
@@ -290,10 +301,12 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
 
     it("lets semprec_side UPDATE and DELETE rows of both tables", async () => {
       const passwordHash = await hashPassword("s3cret-password");
+      // The run's actor must be the run's own tenant's user (agent_runs_actor_user_id_tenant_fkey).
       const user = await createUser(adminPool, {
         email: `owner-${randomUUID()}@example.test`,
         passwordHash,
         locale: "en",
+        tenantId: getTenantZeroId(),
       });
       const projectItemId = await createTestProjectItem(adminPool);
       const minted = await withTransaction(adminPool, (client) =>

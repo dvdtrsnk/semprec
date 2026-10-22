@@ -1,18 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Pool, PoolClient } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 /**
  * Issue #973: the restrictive `tenant_isolation` policy, exercised as each runtime role. The test
  * pool is a superuser and bypasses RLS, so every case switches role inside one transaction that is
- * rolled back at the end. Tenant zero's rows are seeded first, through the choke point.
+ * rolled back at the end. Tenant zero's rows are seeded first, through the choke point. The cases
+ * run on a plain pool, not `getTestPool`'s (whose connections start in tenant zero), so "no scope"
+ * means no `app.tenant_id` at all; since the strict switch (#1067) that sees no tenant row.
  */
 const ROLES = ["semprec_data", "semprec_side"] as const;
 type Role = (typeof ROLES)[number];
 
 let pool: Pool;
+/** Superuser connections with no session-level `app.tenant_id`. */
+let rolePool: Pool;
 let tenantZero: string;
 let tenantTables: string[];
 
@@ -43,10 +47,12 @@ interface Options {
   secondTenant?: boolean;
   /** Set `app.tenant_id` (transaction-local) to the second tenant after switching role. */
   scopeToSecondTenant?: boolean;
+  /** Set `app.tenant_id` (transaction-local) to tenant zero after switching role. */
+  scopeToTenantZero?: boolean;
 }
 
 async function asRole(role: Role, options: Options, fn: (client: PoolClient, secondTenant: string) => Promise<void>) {
-  const client = await pool.connect();
+  const client = await rolePool.connect();
   try {
     await client.query("BEGIN");
     let secondTenant = "";
@@ -59,6 +65,7 @@ async function asRole(role: Role, options: Options, fn: (client: PoolClient, sec
     }
     await client.query(`SET LOCAL ROLE ${role}`);
     if (options.scopeToSecondTenant) await client.query("SELECT set_config('app.tenant_id', $1, true)", [secondTenant]);
+    if (options.scopeToTenantZero) await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantZero]);
     await fn(client, secondTenant);
   } finally {
     try {
@@ -72,49 +79,60 @@ async function asRole(role: Role, options: Options, fn: (client: PoolClient, sec
 describe("row-level security as the runtime roles", () => {
   beforeAll(async () => {
     pool = getTestPool();
+    rolePool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
     await resetDatabase(pool);
     const choke = createChokePoint(pool);
     const db = await choke.createDatabase({ name: "RLS seed" });
     await choke.createProperty({ databaseId: db.id, key: "title", name: "Title", type: "text" });
     await choke.createItem({ databaseId: db.id });
+    const { rows: tenants } = await pool.query<{ id: string }>("SELECT id FROM tenants");
+    expect(tenants).toHaveLength(1);
+    tenantZero = tenants[0]?.id ?? "";
+    // Tenant zero's user: a notification may only name its own tenant's user (issue #1066).
     const { rows: users } = await pool.query<{ id: string }>(
-      `INSERT INTO users (email, password_hash) VALUES ($1, 'unused') RETURNING id`,
-      [`rls-${randomUUID()}@example.com`],
+      `INSERT INTO users (email, password_hash, tenant_id) VALUES ($1, 'unused', $2) RETURNING id`,
+      [`rls-${randomUUID()}@example.com`, tenantZero],
     );
     await pool.query(
       `INSERT INTO notifications (user_id, kind, title, source_table, source_id, transition_instance)
        VALUES ($1, 'approval_pending', 'seed', 'seed', $2, 'seed')`,
       [users[0]?.id, randomUUID()],
     );
-    const { rows: tenants } = await pool.query<{ id: string }>("SELECT id FROM tenants");
-    expect(tenants).toHaveLength(1);
-    tenantZero = tenants[0]?.id ?? "";
     const { rows: tables } = await pool.query<{ relname: string }>(
       `SELECT relname FROM pg_class
         WHERE relnamespace = 'public'::regnamespace AND obj_description(oid, 'pg_class') = 'semprec:tenancy=tenant'
         ORDER BY relname`,
     );
     tenantTables = tables.map((row) => row.relname);
-    expect(tenantTables).toHaveLength(46);
+    expect(tenantTables).toHaveLength(45);
   });
 
   afterAll(async () => {
+    await rolePool?.end();
     await pool?.end();
   });
 
   describe.each(ROLES)("%s", (role) => {
-    it("sees every seeded row with one tenant and no scope", async () => {
-      await asRole(role, {}, async (client) => {
+    it("sees every seeded row inside tenant zero's scope", async () => {
+      await asRole(role, { scopeToTenantZero: true }, async (client) => {
         for (const table of ["databases", "properties", "items", "notifications"]) {
           expect(await count(client, table), table).toBeGreaterThan(0);
         }
       });
       for (const table of tenantTables) {
         const expected = await count(pool, table);
-        await asRole(role, {}, async (client) => {
+        await asRole(role, { scopeToTenantZero: true }, async (client) => {
           expect(await count(client, table), table).toBe(expected);
         });
       }
+    });
+
+    it("sees no row with only tenant zero and no scope, and cannot insert scope-less (strict, issue #1067)", async () => {
+      await asRole(role, {}, async (client) => {
+        for (const table of tenantTables) expect(await count(client, table), table).toBe(0);
+        const code = await sqlState(client, "INSERT INTO databases (name) VALUES ('scope-less')");
+        expect(["42501", "23502"]).toContain(code);
+      });
     });
 
     it("sees no tenant-zero row once app.tenant_id names a second tenant", async () => {
@@ -139,7 +157,7 @@ describe("row-level security as the runtime roles", () => {
         const del = await client.query("DELETE FROM notifications");
         expect(del.rowCount).toBe(0);
       });
-      await asRole(role, {}, async (client) => {
+      await asRole(role, { scopeToTenantZero: true }, async (client) => {
         expect(await count(client, "notifications")).toBe(1);
       });
     });
@@ -156,8 +174,8 @@ describe("row-level security as the runtime roles", () => {
     });
   });
 
-  it("lets semprec_data insert, update and delete choke-point rows as tenant zero without a scope", async () => {
-    await asRole("semprec_data", {}, async (client) => {
+  it("lets semprec_data insert, update and delete choke-point rows inside tenant zero's scope", async () => {
+    await asRole("semprec_data", { scopeToTenantZero: true }, async (client) => {
       const { rows } = await client.query<{ id: string; tenant_id: string }>(
         "INSERT INTO databases (name) VALUES ('as runtime role') RETURNING id, tenant_id",
       );
@@ -180,8 +198,8 @@ describe("row-level security as the runtime roles", () => {
     });
   });
 
-  it("falls back to tenant zero after a committed transaction that set app.tenant_id locally", async () => {
-    const client = await pool.connect();
+  it("sees no row after a committed transaction that set app.tenant_id locally (strict, issue #1067)", async () => {
+    const client = await rolePool.connect();
     try {
       await client.query("SET ROLE semprec_data");
       await client.query("BEGIN");
@@ -192,7 +210,7 @@ describe("row-level security as the runtime roles", () => {
         "SELECT current_setting('app.tenant_id', true) AS setting",
       );
       expect(rows[0]?.setting).toBe("");
-      expect(await count(client, "databases")).toBeGreaterThan(0);
+      expect(await count(client, "databases")).toBe(0);
     } finally {
       try {
         await client.query("RESET ROLE");

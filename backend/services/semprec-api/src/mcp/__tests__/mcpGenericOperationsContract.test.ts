@@ -2,7 +2,13 @@ import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createTenantZeroUser,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+  tenantForNextTestUser,
+} from "@semprec/data/testSupport";
 import {
   createChokePoint,
   createUser,
@@ -39,9 +45,22 @@ let gateway: GenericOperationGateway;
 
 async function authHeader(): Promise<{ Authorization: string }> {
   const email = `${randomUUID()}@example.com`;
-  const user = await createUser(pool, { email, passwordHash: await hashPassword(PASSWORD) });
+  const user = await createUser(pool, {
+    tenantId: await tenantForNextTestUser(pool),
+    email,
+    passwordHash: await hashPassword(PASSWORD),
+  });
   const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
   return { Authorization: `Bearer ${token}` };
+}
+
+/**
+ * Tenant zero's user, created on first use. A minted credential's run names its actor, and a run's
+ * actor must be its own tenant's user (`agent_runs_actor_user_id_tenant_fkey`, issue #1066).
+ */
+async function tenantZeroUserId(): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>("SELECT id FROM users WHERE tenant_id = $1", [getTenantZeroId()]);
+  return rows[0]?.id ?? (await createTenantZeroUser(pool)).id;
 }
 
 /** Mirrors `mcpHandler.test.ts`'s own `credentialHeader` — a restricted, single-run credential narrowed to exactly `capabilities`. */
@@ -49,12 +68,9 @@ async function credentialHeader(
   projectItemId: string,
   capabilities: CapabilityId[],
 ): Promise<{ Authorization: string }> {
-  const user = await createUser(pool, {
-    email: `${randomUUID()}@example.com`,
-    passwordHash: await hashPassword(PASSWORD),
-  });
+  const userId = await tenantZeroUserId();
   const minted = await withTransaction(pool, (client) =>
-    mintMcpRunCredential(client, { projectItemId, capabilities, userId: user.id }),
+    mintMcpRunCredential(client, { projectItemId, capabilities, userId }),
   );
   return { Authorization: `Bearer ${minted.token}` };
 }

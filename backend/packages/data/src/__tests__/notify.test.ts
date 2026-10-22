@@ -24,9 +24,15 @@ describe("writeNotification", () => {
     await pool?.end();
   });
 
+  /** Tenant zero's user: a tenant-zero notification may only name its own tenant's user (issue #1066). */
   async function createTestUser(locale = "en"): Promise<string> {
     const passwordHash = await hashPassword("s3cret-password");
-    const user = await createUser(pool, { email: `${locale}-${Math.random()}@example.test`, passwordHash, locale });
+    const user = await createUser(pool, {
+      email: `${locale}-${Math.random()}@example.test`,
+      passwordHash,
+      locale,
+      tenantId: getTenantZeroId(),
+    });
     return user.id;
   }
 
@@ -251,8 +257,6 @@ describe("writeNotification", () => {
 
     it("gives each recipient of the same transition its own row and replays to its own id", async () => {
       await inTwoTenants(async (client, { userZero, userB, tenantB }) => {
-        await client.query("DROP INDEX notifications_dedupe_idx");
-
         await scope(client, getTenantZeroId());
         const idZero = await write(client, userZero);
         await scope(client, tenantB);
@@ -272,21 +276,10 @@ describe("writeNotification", () => {
         expect(await write(client, userZero)).toBe(idZero);
       });
     });
-
-    it("rejects a collision with the legacy index instead of returning another recipient's id", async () => {
-      await inTwoTenants(async (client, { userZero, userB, tenantB }) => {
-        await scope(client, getTenantZeroId());
-        await write(client, userZero);
-        await scope(client, tenantB);
-        await expect(write(client, userB)).rejects.toMatchObject({
-          code: "23505",
-          constraint: "notifications_dedupe_idx",
-        });
-      });
-    });
   });
 
-  it("stamps tenant zero on a write made without a tenant scope", async () => {
+  // `getTestPool` connections start in tenant zero (session-level `app.tenant_id`, #1067).
+  it("stamps the connection's tenant zero on a write made without a process scope", async () => {
     const userId = await createTestUser();
     const id = await withTransaction(pool, (client) =>
       writeNotification(client, {

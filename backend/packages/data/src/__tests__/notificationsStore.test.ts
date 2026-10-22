@@ -1,6 +1,12 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+  withTenantTransaction,
+} from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
@@ -18,6 +24,7 @@ describe("notificationsStore (issue #152)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
+    tenantOfUser.clear();
   });
 
   afterEach(() => {
@@ -28,14 +35,22 @@ describe("notificationsStore (issue #152)", () => {
     await pool?.end();
   });
 
+  /** The tenant each test user is bound to: a notification may only name its own tenant's user (issue #1066). */
+  const tenantOfUser = new Map<string, string>();
+
+  /** The first user is tenant zero's; each later one gets a tenant of its own, as a tenant has one user. */
   async function createTestUser(): Promise<string> {
     const passwordHash = await hashPassword("s3cret-password");
-    const user = await createUser(pool, { email: `${Math.random()}@example.test`, passwordHash });
+    const tenantId = tenantOfUser.size === 0 ? getTenantZeroId() : await createTestTenant(pool);
+    const user = await createUser(pool, { email: `${Math.random()}@example.test`, passwordHash, tenantId });
+    tenantOfUser.set(user.id, tenantId);
     return user.id;
   }
 
   async function writeTestNotification(userId: string, sourceId: string, linkHref: string | null = null) {
-    await withTransaction(pool, (client) =>
+    const tenantId = tenantOfUser.get(userId);
+    if (!tenantId) throw new Error(`writeTestNotification: ${userId} was not created by createTestUser`);
+    await withTenantTransaction(pool, tenantId, (client) =>
       writeNotification(client, {
         userId,
         kind: "heartbeat_error",

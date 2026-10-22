@@ -4,7 +4,13 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import pg, { type Pool } from "pg";
-import { createTestProjectItem, getTenantZeroId, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createTestProjectItem,
+  getTenantZeroId,
+  inTenantZero,
+  resetDatabase,
+  tenantForNextTestUser,
+} from "@semprec/data/testSupport";
 import {
   createPool,
   createUser,
@@ -100,7 +106,7 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
     if (!url) throw new Error("TEST_DATABASE_URL is not set");
     pool ??= createPool(url);
     await resetDatabase(pool);
-    await seedSystem(pool);
+    await inTenantZero(() => seedSystem(pool));
     await startDispatcher();
 
     recorded = [];
@@ -128,6 +134,7 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
 
   async function sessionToken(): Promise<string> {
     const user = await createUser(pool, {
+      tenantId: await tenantForNextTestUser(pool),
       email: `${randomUUID()}@example.com`,
       passwordHash: await hashPassword(PASSWORD),
     });
@@ -262,13 +269,17 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
 
   describe("POST /mcp with a restricted run credential", () => {
     it("answers as before, looking the credential up in a system scope and serving in its owner's tenant", async () => {
+      // The run's actor must be its own tenant's user (agent_runs_actor_user_id_tenant_fkey, issue #1066).
       const user = await createUser(pool, {
         email: `${randomUUID()}@example.com`,
         passwordHash: await hashPassword(PASSWORD),
+        tenantId: getTenantZeroId(),
       });
-      const projectItemId = await createTestProjectItem(pool);
-      const minted = await withTransaction(pool, (client) =>
-        mintMcpRunCredential(client, { projectItemId, capabilities: ["core.database.read"], userId: user.id }),
+      const projectItemId = await inTenantZero(() => createTestProjectItem(pool));
+      const minted = await inTenantZero(() =>
+        withTransaction(pool, (client) =>
+          mintMcpRunCredential(client, { projectItemId, capabilities: ["core.database.read"], userId: user.id }),
+        ),
       );
       const call = (): Promise<{ status: number; body: unknown }> =>
         fetch(`${baseUrl}/mcp`, {

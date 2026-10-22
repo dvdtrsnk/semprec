@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTestPool, resetDatabase, tenantForNextTestUser } from "../testSupport/testDb.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { generateOpaqueToken } from "../auth/token.js";
 import { createUser, getUserByEmail, getUserById } from "../auth/usersStore.js";
@@ -15,7 +15,11 @@ import { countRecentFailedAttempts, recordLoginAttempt } from "../auth/loginAtte
 let pool: Pool;
 
 async function makeUser(pool: Pool, email = "person@example.com") {
-  return createUser(pool, { email, passwordHash: await hashPassword("s3cret-password") });
+  return createUser(pool, {
+    tenantId: await tenantForNextTestUser(pool),
+    email,
+    passwordHash: await hashPassword("s3cret-password"),
+  });
 }
 
 describe("auth schema (issue #139)", () => {
@@ -29,7 +33,11 @@ describe("auth schema (issue #139)", () => {
   });
 
   it("creates a user with locale defaulting to 'cs', and never persists the raw password", async () => {
-    const user = await createUser(pool, { email: "a@example.com", passwordHash: await hashPassword("hunter2") });
+    const user = await createUser(pool, {
+      tenantId: await tenantForNextTestUser(pool),
+      email: "a@example.com",
+      passwordHash: await hashPassword("hunter2"),
+    });
 
     expect(user.locale).toBe("cs");
     expect(user.passwordHash).toMatch(/^\$argon2id\$/);
@@ -45,9 +53,17 @@ describe("auth schema (issue #139)", () => {
   });
 
   it("rejects a duplicate email", async () => {
-    await createUser(pool, { email: "dup@example.com", passwordHash: await hashPassword("first") });
+    await createUser(pool, {
+      tenantId: await tenantForNextTestUser(pool),
+      email: "dup@example.com",
+      passwordHash: await hashPassword("first"),
+    });
     await expect(
-      createUser(pool, { email: "dup@example.com", passwordHash: await hashPassword("second") }),
+      createUser(pool, {
+        tenantId: await tenantForNextTestUser(pool),
+        email: "dup@example.com",
+        passwordHash: await hashPassword("second"),
+      }),
     ).rejects.toThrow(/duplicate key|unique/i);
   });
 

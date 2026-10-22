@@ -228,7 +228,8 @@ describe("id-only item lookups are pruned to the tenant's partitions", () => {
     });
   });
 
-  it("behaves as before for a single tenant without a scope", async () => {
+  // `getTestPool` connections start in tenant zero (session-level `app.tenant_id`, #1067).
+  it("behaves as before for a single tenant without a process scope", async () => {
     await resetDatabase(pool);
     const client = await pool.connect();
     try {

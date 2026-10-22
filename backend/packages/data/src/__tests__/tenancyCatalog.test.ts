@@ -66,7 +66,6 @@ const TENANT_TABLES = [
   "ai_gateway_calls",
   "module_migrations",
   "module_migration_progress",
-  "resource_grants",
   "tenant_keys",
   "tenant_observability_checks",
   "tenant_exports",
@@ -174,19 +173,6 @@ const PERMANENT_EXCEPTIONS: { table: string; columns: string[]; reason: string }
   },
 ];
 
-/** Remaining legacy global keys await #1065; migration 0080 already removed the blob content-hash key. */
-const LEGACY_GLOBAL_UNIQUES: { table: string; columns: string[] }[] = [
-  { table: "idempotency_keys", columns: ["key"] },
-  { table: "person_email_index", columns: ["email"] },
-  { table: "mail_message_meta", columns: ["provider_message_id"] },
-  { table: "notifications", columns: ["source_table", "source_id", "kind", "transition_instance"] },
-  { table: "manifest_drift_findings", columns: ["kind", "dedupe_key"] },
-  { table: "module_migrations", columns: ["module_id", "database_key", "from_version", "to_version"] },
-  { table: "module_migration_progress", columns: ["module_id", "database_key", "from_version", "to_version"] },
-  { table: "docs", columns: ["item_id"] },
-  { table: "resource_grants", columns: ["resource_type", "resource_id", "grantee_user_id"] },
-];
-
 const NEW_UNIQUE_INDEXES: { name: string; table: string; columns: string[]; predicate: string | null }[] = [
   { name: "databases_key_unique", table: "databases", columns: ["tenant_id", "key"], predicate: null },
   {
@@ -195,9 +181,9 @@ const NEW_UNIQUE_INDEXES: { name: string; table: string; columns: string[]; pred
     columns: ["tenant_id", "owner_module_id"],
     predicate: "system",
   },
-  { name: "idempotency_keys_tenant_key_uq", table: "idempotency_keys", columns: ["tenant_id", "key"], predicate: null },
+  { name: "idempotency_keys_pkey", table: "idempotency_keys", columns: ["tenant_id", "key"], predicate: null },
   {
-    name: "person_email_index_tenant_email_uq",
+    name: "person_email_index_pkey",
     table: "person_email_index",
     columns: ["tenant_id", "email"],
     predicate: null,
@@ -227,24 +213,18 @@ const NEW_UNIQUE_INDEXES: { name: string; table: string; columns: string[]; pred
     predicate: "resolved_at IS NULL AND dedupe_key IS NOT NULL",
   },
   {
-    name: "module_migrations_tenant_uq",
+    name: "module_migrations_pkey",
     table: "module_migrations",
     columns: ["tenant_id", "module_id", "database_key", "from_version", "to_version"],
     predicate: null,
   },
   {
-    name: "module_migration_progress_tenant_uq",
+    name: "module_migration_progress_pkey",
     table: "module_migration_progress",
     columns: ["tenant_id", "module_id", "database_key", "from_version", "to_version"],
     predicate: null,
   },
   { name: "docs_tenant_item_id_uq", table: "docs", columns: ["tenant_id", "item_id"], predicate: null },
-  {
-    name: "resource_grants_tenant_uq",
-    table: "resource_grants",
-    columns: ["tenant_id", "resource_type", "resource_id", "grantee_user_id"],
-    predicate: null,
-  },
   ...[
     "databases",
     "properties",
@@ -290,7 +270,10 @@ async function listUniqueIndexes(db: Queryable): Promise<UniqueIndexRow[]> {
   return rows;
 }
 
-function sameKey(row: UniqueIndexRow, entry: { table: string; columns: string[] }): boolean {
+function sameKey(
+  row: Pick<UniqueIndexRow, "table_name" | "columns">,
+  entry: { table: string; columns: string[] },
+): boolean {
   return row.table_name === entry.table && row.columns.join(",") === entry.columns.join(",");
 }
 
@@ -305,10 +288,74 @@ async function listUniquenessViolations(db: Queryable): Promise<string[]> {
         row.default_expr !== null &&
         (row.default_expr.startsWith("gen_random_uuid()") || row.default_expr.startsWith("nextval("));
       if (surrogate) return false;
-      if (PERMANENT_EXCEPTIONS.some((entry) => sameKey(row, entry))) return false;
-      return !LEGACY_GLOBAL_UNIQUES.some((entry) => sameKey(row, entry));
+      return !PERMANENT_EXCEPTIONS.some((entry) => sameKey(row, entry));
     })
     .map((row) => `${row.index_name} on ${row.table_name} (${row.columns.join(", ")})`);
+}
+
+/**
+ * Issue #1066: foreign keys whose own tenant_id mapping is exempt from the composite-FK rule, by
+ * table and columns. tenant_ai_budgets.updated_by names the admin who changed a tenant's budget,
+ * and an admin of any tenant writes it (#1039).
+ */
+const COMPOSITE_FK_EXCEPTIONS: { table: string; columns: string[]; reason: string }[] = [
+  { table: "tenant_ai_budgets", columns: ["updated_by"], reason: "written by an admin of any tenant (#1039)" },
+];
+
+interface ForeignKeyRow {
+  table_name: string;
+  parent_oid: number;
+  columns: string[];
+  parent_columns: string[];
+  validated: boolean;
+}
+
+/**
+ * Names, as `<table>.<columns>`, every foreign key from a tenant table (or a table carrying
+ * tenant_id) to a tenant table or users that neither maps tenant_id to tenant_id itself nor has a
+ * validated twin on the same table and parent over (tenant_id, <same columns>). Foreign-key checks
+ * ignore row-level security, so a key without the twin is satisfied by another tenant's parent.
+ */
+async function listCompositeForeignKeyViolations(db: Queryable): Promise<string[]> {
+  const { rows } = await db.query<ForeignKeyRow>(
+    `SELECT c.relname::text AS table_name, k.confrelid::int AS parent_oid,
+            ARRAY(SELECT a.attname::text FROM unnest(k.conkey) WITH ORDINALITY u(attnum, ord)
+                    JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = u.attnum
+                   ORDER BY u.ord) AS columns,
+            ARRAY(SELECT a.attname::text FROM unnest(k.confkey) WITH ORDINALITY u(attnum, ord)
+                    JOIN pg_attribute a ON a.attrelid = k.confrelid AND a.attnum = u.attnum
+                   ORDER BY u.ord) AS parent_columns,
+            k.convalidated AS validated
+       FROM pg_constraint k
+       JOIN pg_class c ON c.oid = k.conrelid
+       JOIN pg_class p ON p.oid = k.confrelid
+      WHERE k.contype = 'f'
+        AND c.relnamespace = 'public'::regnamespace
+        AND NOT c.relispartition
+        AND (obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'
+             OR EXISTS (SELECT 1 FROM pg_attribute ta
+                         WHERE ta.attrelid = c.oid AND ta.attname = 'tenant_id' AND NOT ta.attisdropped))
+        AND p.relnamespace = 'public'::regnamespace
+        AND (obj_description(p.oid, 'pg_class') = 'semprec:tenancy=tenant' OR p.relname = 'users')
+      ORDER BY c.relname, k.conname`,
+  );
+  const mapsTenantId = (row: ForeignKeyRow): boolean =>
+    row.columns.some((column, index) => column === "tenant_id" && row.parent_columns[index] === "tenant_id");
+  return rows
+    .filter((row) => {
+      if (mapsTenantId(row)) return false;
+      if (COMPOSITE_FK_EXCEPTIONS.some((entry) => sameKey({ table_name: row.table_name, columns: row.columns }, entry)))
+        return false;
+      return !rows.some(
+        (twin) =>
+          twin.validated &&
+          twin.table_name === row.table_name &&
+          twin.parent_oid === row.parent_oid &&
+          twin.columns.join(",") === ["tenant_id", ...row.columns].join(",") &&
+          twin.parent_columns.join(",") === ["tenant_id", ...row.parent_columns].join(","),
+      );
+    })
+    .map((row) => `${row.table_name}.${row.columns.join(",")}`);
 }
 
 let pool: Pool;
@@ -541,17 +588,109 @@ describe("tenancy classification catalog", () => {
       // pg_get_expr parenthesizes a compound predicate but not a bare column, so compare without parentheses.
       expect(row?.predicate?.replaceAll(/[()]/g, "") ?? null, `${expected.name} predicate`).toBe(expected.predicate);
     }
-    expect(NEW_UNIQUE_INDEXES).toHaveLength(23);
+    expect(NEW_UNIQUE_INDEXES).toHaveLength(22);
   });
 
-  it("keeps the remaining legacy global keys and removes the obsolete blob content-hash index", async () => {
-    const rows = await listUniqueIndexes(pool);
-    expect(rows.some((row) => row.index_name === "blobs_content_hash_uq")).toBe(false);
-    for (const legacy of LEGACY_GLOBAL_UNIQUES) {
-      expect(
-        rows.some((row) => sameKey(row, legacy)),
-        `${legacy.table} (${legacy.columns.join(", ")})`,
-      ).toBe(true);
+  /** Issue #1065: the contract step dropped every legacy global key and the dormant resource_grants table. */
+  it("drops the legacy global unique keys and resource_grants", async () => {
+    const legacy = await pool.query<{ name: string }>(
+      `SELECT c.relname::text AS name FROM pg_class c
+        WHERE c.relnamespace = 'public'::regnamespace AND c.relname = ANY($1::text[])`,
+      [
+        [
+          "blobs_content_hash_uq",
+          "mail_message_meta_provider_msg_uq",
+          "notifications_dedupe_idx",
+          "manifest_drift_findings_active_idx",
+          "docs_item_id_idx",
+          "resource_grants",
+        ],
+      ],
+    );
+    expect(legacy.rows.map((row) => row.name)).toEqual([]);
+  });
+
+  it("leads the primary key of every formerly globally keyed table with tenant_id", async () => {
+    const { rows } = await pool.query<{ table_name: string; constraint_name: string; first_column: string }>(
+      `SELECT c.relname::text AS table_name, con.conname::text AS constraint_name, a.attname::text AS first_column
+         FROM pg_constraint con
+         JOIN pg_class c ON c.oid = con.conrelid
+         JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = con.conkey[1]
+        WHERE con.contype = 'p'
+          AND c.relnamespace = 'public'::regnamespace
+          AND c.relname = ANY($1::text[])
+        ORDER BY c.relname`,
+      [["idempotency_keys", "person_email_index", "module_migrations", "module_migration_progress"]],
+    );
+    expect(rows).toEqual([
+      { table_name: "idempotency_keys", constraint_name: "idempotency_keys_pkey", first_column: "tenant_id" },
+      {
+        table_name: "module_migration_progress",
+        constraint_name: "module_migration_progress_pkey",
+        first_column: "tenant_id",
+      },
+      { table_name: "module_migrations", constraint_name: "module_migrations_pkey", first_column: "tenant_id" },
+      { table_name: "person_email_index", constraint_name: "person_email_index_pkey", first_column: "tenant_id" },
+    ]);
+  });
+
+  /** Issue #1066: foreign-key checks ignore RLS, so every reference between tenant rows has a tenant-consistent twin. */
+  it("gives every foreign key between tenant rows a validated (tenant_id, ...) twin", async () => {
+    const offenders = await listCompositeForeignKeyViolations(pool);
+    expect(
+      offenders,
+      `Foreign keys between tenant rows without a validated tenant_id twin: ${offenders.join("; ")}. ` +
+        `Fix: add (tenant_id, <column>) REFERENCES <parent>(tenant_id, id) beside it and validate it.`,
+    ).toEqual([]);
+  });
+
+  it("names the table and column of every foreign key whose twin is removed", async () => {
+    const { rows: twins } = await pool.query<{ table_name: string; constraint_name: string; column_name: string }>(
+      `SELECT c.relname::text AS table_name, k.conname::text AS constraint_name, a.attname::text AS column_name
+         FROM pg_constraint k
+         JOIN pg_class c ON c.oid = k.conrelid
+         JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = k.conkey[2]
+        WHERE k.contype = 'f' AND k.conname LIKE '%\\_tenant\\_fkey'
+          AND c.relnamespace = 'public'::regnamespace AND NOT c.relispartition
+        ORDER BY k.conname`,
+    );
+    expect(twins).toHaveLength(31);
+    for (const twin of twins) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        try {
+          // Identifiers come from pg_constraint, never from input; ALTER TABLE accepts no bind parameters.
+          await client.query(`ALTER TABLE ${twin.table_name} DROP CONSTRAINT ${twin.constraint_name}`);
+          expect(await listCompositeForeignKeyViolations(client), twin.constraint_name).toEqual([
+            `${twin.table_name}.${twin.column_name}`,
+          ]);
+        } finally {
+          await client.query("ROLLBACK");
+        }
+      } finally {
+        client.release();
+      }
+    }
+    expect(await listCompositeForeignKeyViolations(pool)).toEqual([]);
+  });
+
+  it("does not accept an unvalidated twin", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      try {
+        await client.query("ALTER TABLE views DROP CONSTRAINT views_database_id_tenant_fkey");
+        await client.query(
+          `ALTER TABLE views ADD CONSTRAINT views_database_id_tenant_fkey FOREIGN KEY (tenant_id, database_id)
+             REFERENCES databases (tenant_id, id) ON DELETE CASCADE NOT VALID`,
+        );
+        expect(await listCompositeForeignKeyViolations(client)).toEqual(["views.database_id"]);
+      } finally {
+        await client.query("ROLLBACK");
+      }
+    } finally {
+      client.release();
     }
   });
 
@@ -564,5 +703,23 @@ describe("tenancy classification catalog", () => {
     await expect(
       chokePoint.createDatabase({ name: "System two", ownerModuleId: "tenancyProbe", system: true }),
     ).rejects.toMatchObject({ code: "23505", constraint: "databases_tenant_system_module_uq" });
+  });
+
+  /** Issue #1067: the strict switch. */
+  it("defines app_tenant_default() through app_current_tenant() alone", async () => {
+    const { rows } = await pool.query<{ definition: string }>(
+      "SELECT pg_get_functiondef('public.app_tenant_default()'::regprocedure) AS definition",
+    );
+    const definition = rows[0]?.definition ?? "";
+    expect(definition).toContain("app_current_tenant");
+    expect(definition).not.toContain("app_sole_tenant");
+  });
+
+  it("makes users.tenant_id NOT NULL", async () => {
+    const { rows } = await pool.query<{ attnotnull: boolean }>(
+      `SELECT attnotnull FROM pg_attribute
+        WHERE attrelid = 'public.users'::regclass AND attname = 'tenant_id' AND NOT attisdropped`,
+    );
+    expect(rows).toEqual([{ attnotnull: true }]);
   });
 });

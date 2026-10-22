@@ -436,7 +436,11 @@ describe("createGracefulShutdown against the ai-gateway dispatcher with a real p
   function postComplete(baseUrl: string): Promise<Response> {
     return fetch(`${baseUrl}/internal/complete`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: "Bearer test-internal-token" },
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer test-internal-token",
+        "x-semprec-tenant-id": getTenantZeroId(),
+      },
       body: JSON.stringify(VALID_BODY),
     });
   }

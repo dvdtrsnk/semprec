@@ -263,6 +263,30 @@ describe("module data migration per tenant (issue #1006)", () => {
     expect(await readMarkers(tenantB)).toHaveLength(1);
   });
 
+  it("rejects a run with no tenant scope while only tenant zero exists, before taking any lock", async () => {
+    // Strict `app_tenant_default()` (#1067): no scope resolves to no tenant even with a sole tenant.
+    const tenantZero = getTenantZeroId();
+    const zeroFixture = await seedTenantFixture(tenantZero, 2);
+    const converter = vi.fn(markConverted);
+
+    await expect(
+      runModuleDataMigration(dataPool!, {
+        moduleId: MODULE_ID,
+        databaseKey: DATABASE_KEY,
+        fromVersion: FROM_VERSION,
+        toVersion: TO_VERSION,
+        converter,
+      }),
+    ).rejects.toThrow("must run inside a tenant scope");
+
+    expect(converter).not.toHaveBeenCalled();
+    for (const item of await readItems(tenantZero, zeroFixture)) {
+      expect(item.properties).not.toHaveProperty("converted");
+    }
+    expect(await countAdvisoryLocks(tenantLockKey(tenantZero))).toBe(0);
+    expect(await readMarkers(tenantZero)).toEqual([]);
+  });
+
   it("rejects a run with no tenant scope while several tenants exist, before taking any lock", async () => {
     const tenantZero = getTenantZeroId();
     const tenantB = await createTestTenant(pool);
