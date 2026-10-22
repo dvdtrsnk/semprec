@@ -250,16 +250,16 @@ export class SempConversation {
     const tenantId = scope.tenantId;
 
     const state = this.conversations.get(tenantId);
-    const entry = state?.entry ?? null;
 
     // Busy check and reservation happen synchronously, before any `await` below, so a
     // concurrent call in the same tenant always observes one of these and is rejected rather
     // than racing to dispatch against, or wake alongside, the in-flight one.
-    if (entry?.busy || state?.waking || state?.dropped) {
+    if (state?.entry?.busy || state?.waking || state?.dropped) {
       return { ok: false, error: SEMP_BUSY_ERROR_MESSAGE };
     }
 
-    if (state && entry) {
+    if (state?.entry) {
+      const entry = state.entry;
       entry.busy = true;
       try {
         return await withTraceContext({ agentRunId: entry.agentRunId }, async () => {
@@ -294,7 +294,7 @@ export class SempConversation {
       }
     }
 
-    const wakeState: TenantConversation = state ?? { entry: null, waking: false };
+    const wakeState: TenantConversation = { entry: null, waking: false };
     wakeState.waking = true;
     this.conversations.set(tenantId, wakeState);
     try {

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
@@ -64,7 +65,9 @@ function runRow(id: string): Promise<{ status: string; result: string | null }> 
       `SELECT status, result FROM agent_runs WHERE id = $1`,
       [id],
     );
-    return rows[0]!;
+    const row = rows[0];
+    if (row === undefined) throw new Error(`agent run ${id} not found in agent_runs`);
+    return row;
   });
 }
 
@@ -150,6 +153,11 @@ describe("agents process runs each job inside its tenant under strict enforcemen
 
   afterAll(async () => {
     await Promise.all([pool?.end(), resetPool?.end()]);
+  });
+
+  it("runRow rejects an absent agent-run id with an error naming it", async () => {
+    const absentId = randomUUID();
+    await expect(runRow(absentId)).rejects.toThrow(absentId);
   });
 
   it("starts and stops the runtime with no ambient scope", async () => {
