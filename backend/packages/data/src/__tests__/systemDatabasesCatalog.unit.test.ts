@@ -13,9 +13,8 @@ function manifestPath(fileName: string): string {
 const SYSTEM_DATABASES_PATH = manifestPath("seed/systemDatabasesModuleManifest.js");
 
 describe("systemDatabases reference i18n catalog (issue #236)", () => {
-  // Warms the manifest's cold module-graph import once, so neither test pays it (#1240):
-  // 1.1-1.6 s measured idle, the same cost #1237 measured at up to ~10 s under load; 30 s is ~3x margin.
   beforeAll(async () => {
+    // Warm the cold manifest import once (#1240): 1.1-1.6 s idle, up to ~10 s under load (#1237); 30 s is ~3x margin.
     await import(SYSTEM_DATABASES_PATH);
   }, 30_000);
 
