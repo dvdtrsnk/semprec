@@ -1,9 +1,18 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { createAgentRun, setAgentRunEventHook, type AgentRunRow } from "@semprec/data";
+import {
+  createAgentRun,
+  setAgentRunEventHook,
+  setDocUpdateHook,
+  setInvalidationHook,
+  setNotificationCreatedHook,
+  setNotificationReadStateHook,
+  setSessionRevokedHook,
+  type AgentRunRow,
+} from "@semprec/data";
 import { createTenantZeroUser, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { getTraceContext } from "@semprec/shared";
-import { publishRealtimeMessage } from "@semprec/realtime";
+import { publishRealtimeMessage, wireRealtimeHooks } from "@semprec/realtime";
 import {
   AgentRunCancelledError,
   pushRunStatus,
@@ -27,6 +36,18 @@ function fakeSession(messages: AgentMessage[]): CreateAgentSession {
   });
 }
 
+// wireRealtimeHooks(pool) installs every hook, not just the agent-run one. Reset all of them after
+// each test, so a test that wires them and then fails before its own cleanup (a rejected
+// pool.connect(), say) cannot leave them publishing on the shared pool for later tests.
+function resetHooks(): void {
+  setInvalidationHook(() => {});
+  setDocUpdateHook(() => {});
+  setNotificationCreatedHook(() => {});
+  setNotificationReadStateHook(() => {});
+  setSessionRevokedHook(() => {});
+  setAgentRunEventHook(() => {});
+}
+
 afterAll(async () => {
   await pool?.end();
 });
@@ -44,7 +65,7 @@ describe("runAgentSession", () => {
   });
 
   afterEach(() => {
-    setAgentRunEventHook(() => {});
+    resetHooks();
   });
 
   it("reconstructs a completed run's transcript from agent_run_events in monotonic order", async () => {
@@ -144,71 +165,77 @@ describe("runAgentSession", () => {
   });
 
   it("announces durable events as thin references and sends message_update only on the ephemeral stream", async () => {
+    // The ordered eventId assertion holds only for the production hook, which publishes one run's
+    // references one after another; the hand-rolled hook in beforeEach fires each NOTIFY on its own
+    // pooled connection, so their commits, and with them delivery, can reorder (issue #1236).
+    wireRealtimeHooks(pool);
     const listenClient = await pool.connect();
-    await listenClient.query("LISTEN semprec_events");
-    await listenClient.query("LISTEN semprec_agent_stream");
-    const notifications: Array<{ channel: string; payload?: string }> = [];
-    listenClient.on("notification", (msg) => notifications.push(msg));
+    try {
+      await listenClient.query("LISTEN semprec_events");
+      await listenClient.query("LISTEN semprec_agent_stream");
+      const notifications: Array<{ channel: string; payload?: string }> = [];
+      listenClient.on("notification", (msg) => notifications.push(msg));
 
-    const messages: AgentMessage[] = [
-      { kind: "turn_start" },
-      { kind: "message_update", text: "partial" },
-      { kind: "message", text: "done" },
-      { kind: "turn_end" },
-    ];
+      const messages: AgentMessage[] = [
+        { kind: "turn_start" },
+        { kind: "message_update", text: "partial" },
+        { kind: "message", text: "done" },
+        { kind: "turn_end" },
+      ];
 
-    const run = await runAgentSession(pool, {
-      createAgentSession: fakeSession(messages),
-      task: "push live",
-      triggeredBy: "user",
-    });
+      const run = await runAgentSession(pool, {
+        createAgentSession: fakeSession(messages),
+        task: "push live",
+        triggeredBy: "user",
+      });
 
-    const durableForRun = () =>
-      notifications
-        .filter((n) => n.channel === "semprec_events")
-        .map((n) => JSON.parse(n.payload ?? "{}") as { tenantId: string; message: { agentRunId?: string } })
-        .filter((envelope) => envelope.message.agentRunId === run.id);
-    const deltasForRun = () =>
-      notifications
-        .filter((n) => n.channel === "semprec_agent_stream")
-        .map((n) => JSON.parse(n.payload ?? "{}") as { tenantId: string; message: { agentRunId?: string } })
-        .filter((envelope) => envelope.message.agentRunId === run.id);
+      const durableForRun = () =>
+        notifications
+          .filter((n) => n.channel === "semprec_events")
+          .map((n) => JSON.parse(n.payload ?? "{}") as { tenantId: string; message: { agentRunId?: string } })
+          .filter((envelope) => envelope.message.agentRunId === run.id);
+      const deltasForRun = () =>
+        notifications
+          .filter((n) => n.channel === "semprec_agent_stream")
+          .map((n) => JSON.parse(n.payload ?? "{}") as { tenantId: string; message: { agentRunId?: string } })
+          .filter((envelope) => envelope.message.agentRunId === run.id);
 
-    // NOTIFY delivery to a LISTEN-ing client is asynchronous relative to the query that
-    // triggered it; poll instead of a fixed sleep so this isn't flaky under load.
-    const expectedCount = 5; // run_status(running), turn_start, message, turn_end, run_status(done)
-    const deadline = Date.now() + 5000;
-    while ((durableForRun().length < expectedCount || deltasForRun().length < 1) && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+      // NOTIFY delivery to a LISTEN-ing client is asynchronous relative to the query that
+      // triggered it; poll instead of a fixed sleep so this isn't flaky under load.
+      const expectedCount = 5; // run_status(running), turn_start, message, turn_end, run_status(done)
+      const deadline = Date.now() + 5000;
+      while ((durableForRun().length < expectedCount || deltasForRun().length < 1) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
 
-    const durable = durableForRun().map((envelope) => envelope.message as Record<string, unknown>);
-    expect(durableForRun().every((envelope) => envelope.tenantId === getTenantZeroId())).toBe(true);
-    expect(deltasForRun().every((envelope) => envelope.tenantId === getTenantZeroId())).toBe(true);
-    const { rows } = await pool.query<{ id: string; kind: string }>(
-      "SELECT id, kind FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id ASC",
-      [run.id],
-    );
-    expect(durable.every((m) => m.type === "agent_run_event")).toBe(true);
-    expect(durable.map((m) => m.eventId)).toEqual(rows.map((row) => row.id));
-    expect(durable.every((m) => !("payload" in m) && !("kind" in m))).toBe(true);
-    expect(deltasForRun().map((envelope) => envelope.message)).toEqual([
-      {
-        type: "agent_run_delta",
-        agentRunId: run.id,
-        delta: {
-          kind: "message_update",
-          text: "partial",
+      const durable = durableForRun().map((envelope) => envelope.message as Record<string, unknown>);
+      expect(durableForRun().every((envelope) => envelope.tenantId === getTenantZeroId())).toBe(true);
+      expect(deltasForRun().every((envelope) => envelope.tenantId === getTenantZeroId())).toBe(true);
+      const { rows } = await pool.query<{ id: string; kind: string }>(
+        "SELECT id, kind FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id ASC",
+        [run.id],
+      );
+      expect(durable.every((m) => m.type === "agent_run_event")).toBe(true);
+      expect(durable.map((m) => m.eventId)).toEqual(rows.map((row) => row.id));
+      expect(durable.every((m) => !("payload" in m) && !("kind" in m))).toBe(true);
+      expect(deltasForRun().map((envelope) => envelope.message)).toEqual([
+        {
+          type: "agent_run_delta",
+          agentRunId: run.id,
+          delta: {
+            kind: "message_update",
+            text: "partial",
+          },
         },
-      },
-    ]);
-    expect(rows.some((row) => row.kind === "message_update")).toBe(false);
-    expect((deltasForRun()[0]?.message as { delta?: unknown } | undefined)?.delta).toEqual({
-      kind: "message_update",
-      text: "partial",
-    });
-
-    listenClient.release(true);
+      ]);
+      expect(rows.some((row) => row.kind === "message_update")).toBe(false);
+      expect((deltasForRun()[0]?.message as { delta?: unknown } | undefined)?.delta).toEqual({
+        kind: "message_update",
+        text: "partial",
+      });
+    } finally {
+      listenClient.release(true);
+    }
   });
 });
 

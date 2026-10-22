@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@semprec/shared";
 import type { Pool } from "pg";
 import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
@@ -283,6 +283,25 @@ async function jobEnvelopeTenants(mailboxItemId: string): Promise<Array<string |
   return rows.map((row) => row.tenant_id);
 }
 
+/**
+ * Runs `body` with `enqueueMailAccountSync` rejecting for `failingMailboxItemId` and delegating to the
+ * actual implementation for every other id. The actual implementation is reinstalled in `finally`, so a
+ * rejected assertion or await inside `body` cannot leak the override into later tests; the hooks'
+ * `mockClear` only resets recorded calls and would leave the override installed.
+ */
+async function withFailingEnqueueTarget(failingMailboxItemId: string, body: () => Promise<void>): Promise<void> {
+  const actual = await vi.importActual<typeof import("../mail/mailSyncJob.js")>("../mail/mailSyncJob.js");
+  vi.mocked(enqueueMailAccountSync).mockImplementation(async (client, id) => {
+    if (id === failingMailboxItemId) throw new Error("simulated enqueue failure");
+    await actual.enqueueMailAccountSync(client, id);
+  });
+  try {
+    await body();
+  } finally {
+    vi.mocked(enqueueMailAccountSync).mockImplementation(actual.enqueueMailAccountSync);
+  }
+}
+
 describe("Gmail Pub/Sub dispatcher (issue #998)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -335,26 +354,44 @@ describe("Gmail Pub/Sub dispatcher (issue #998)", () => {
   it("leaves a message unacknowledged when one target's enqueue rejects, while the other target still runs", async () => {
     const failing = await watchedMailbox("P1", "user@example.com");
     const healthy = await watchedMailbox("P2", "user@example.com");
-    const actual = await vi.importActual<typeof import("../mail/mailSyncJob.js")>("../mail/mailSyncJob.js");
-    vi.mocked(enqueueMailAccountSync).mockImplementation(async (client, id) => {
-      if (id === failing) throw new Error("simulated enqueue failure");
-      await actual.enqueueMailAccountSync(client, id);
-    });
-    const errors: Array<{ target: unknown; phase: string }> = [];
-    const { transport, ackCalls, pullCallCount } = createFakeTransport({ pullQueue: [[notification("ack-p")]] });
-    const dispatcher = createGmailPubSubDispatcher(pool, transport, {
-      pullEmptyBackoffMs: 1,
-      onError: (target, phase) => errors.push({ target, phase }),
-    });
-    await dispatcher.start();
-    await vi.waitFor(() => expect(pullCallCount.value).toBeGreaterThan(1));
-    await dispatcher.stop();
+    await withFailingEnqueueTarget(failing, async () => {
+      const errors: Array<{ target: unknown; phase: string }> = [];
+      const { transport, ackCalls, pullCallCount } = createFakeTransport({ pullQueue: [[notification("ack-p")]] });
+      const dispatcher = createGmailPubSubDispatcher(pool, transport, {
+        pullEmptyBackoffMs: 1,
+        onError: (target, phase) => errors.push({ target, phase }),
+      });
+      await dispatcher.start();
+      await vi.waitFor(() => expect(pullCallCount.value).toBeGreaterThan(1));
+      await dispatcher.stop();
 
-    expect(await pendingMailSyncJobCount(healthy)).toBe(1);
+      expect(await pendingMailSyncJobCount(healthy)).toBe(1);
+      expect(await pendingMailSyncJobCount(failing)).toBe(0);
+      expect(ackCalls).toEqual([]);
+      expect(errors).toEqual([{ target: { tenantId: getTenantZeroId(), mailboxItemId: failing }, phase: "enqueue" }]);
+    });
+  });
+
+  it("restores the actual enqueue implementation when the failing-target override's body rejects", async () => {
+    const failing = await watchedMailbox("R1", "user@example.com");
+    const tenantZero = getTenantZeroId();
+    const sentinel = new Error("sentinel body rejection");
+
+    await expect(
+      withFailingEnqueueTarget(failing, async () => {
+        await expect(runInTenant(tenantZero, () => enqueueMailAccountSync(pool, failing))).rejects.toThrow(
+          "simulated enqueue failure",
+        );
+        throw sentinel;
+      }),
+    ).rejects.toBe(sentinel);
     expect(await pendingMailSyncJobCount(failing)).toBe(0);
-    expect(ackCalls).toEqual([]);
-    expect(errors).toEqual([{ target: { tenantId: getTenantZeroId(), mailboxItemId: failing }, phase: "enqueue" }]);
-    vi.mocked(enqueueMailAccountSync).mockImplementation(actual.enqueueMailAccountSync);
+
+    vi.mocked(enqueueMailAccountSync).mockClear();
+    await runInTenant(tenantZero, () => enqueueMailAccountSync(pool, failing));
+    expect(enqueueMailAccountSync).toHaveBeenCalledTimes(1);
+    expect(await pendingMailSyncJobCount(failing)).toBe(1);
+    expect(await jobEnvelopeTenants(failing)).toEqual([tenantZero]);
   });
 
   it("acknowledges a notification no mailbox watches, creating no job", async () => {
