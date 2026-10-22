@@ -6,6 +6,7 @@ import {
   createRuntimeRolePool,
   createTestTenant,
   getTenantZeroId,
+  inTenantZero,
   getTestPool,
   resetDatabase,
 } from "../testSupport/testDb.js";
@@ -146,10 +147,12 @@ describe("library module (issue #25)", () => {
   it("rejects writing owner:'system' library fields through the generic create/update path", async () => {
     const booksId = await getDatabaseIdByModule("books");
     await expect(
-      chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune", cover: { blobId: "x" } } }),
+      inTenantZero(() =>
+        chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune", cover: { blobId: "x" } } }),
+      ),
     ).rejects.toBeInstanceOf(ForbiddenError);
 
-    const item = await chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } });
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
     await expect(
       chokePoint.updateItem({ databaseId: booksId, itemId: item.id, propertiesPatch: { cover: { blobId: "x" } } }),
     ).rejects.toBeInstanceOf(ForbiddenError);
@@ -158,10 +161,12 @@ describe("library module (issue #25)", () => {
   it("creating a library item drives processLibraryMetadata end to end, storing a real blob as the cover", async () => {
     const booksId = await getDatabaseIdByModule("books");
     const registry = libraryRegistry();
-    const item = await chokePoint.createItem({
-      databaseId: booksId,
-      properties: { name: "Dune", author: "Frank Herbert" },
-    });
+    const item = await inTenantZero(() =>
+      chokePoint.createItem({
+        databaseId: booksId,
+        properties: { name: "Dune", author: "Frank Herbert" },
+      }),
+    );
 
     // `runOnce` drains cascading enqueues within one call: the choke-point's onItemEvent
     // trigger -> heartbeatFireCore -> our trigger action (seeds item_automation, enqueues the
@@ -182,7 +187,9 @@ describe("library module (issue #25)", () => {
   it("a failed fetch records the error and increments attempts, leaving the row in 'error'", async () => {
     const moviesId = await getDatabaseIdByModule("movies");
     const registry = libraryRegistry();
-    const item = await chokePoint.createItem({ databaseId: moviesId, properties: { name: "Sicario", year: 2015 } });
+    const item = await inTenantZero(() =>
+      chokePoint.createItem({ databaseId: moviesId, properties: { name: "Sicario", year: 2015 } }),
+    );
 
     const failingFetcher: LibraryMetadataFetcher = async () => {
       throw new Error("source unavailable");
@@ -197,7 +204,9 @@ describe("library module (issue #25)", () => {
 
   it("writes an automation_error notification on failure, deduped by job id but not across distinct failing jobs (issue #149)", async () => {
     const moviesId = await getDatabaseIdByModule("movies");
-    const item = await chokePoint.createItem({ databaseId: moviesId, properties: { name: "Sicario", year: 2015 } });
+    const item = await inTenantZero(() =>
+      chokePoint.createItem({ databaseId: moviesId, properties: { name: "Sicario", year: 2015 } }),
+    );
     const passwordHash = await hashPassword("s3cret-password");
     const user = await createUser(pool, {
       email: "owner@example.test",
@@ -249,7 +258,9 @@ describe("library module (issue #25)", () => {
 
   it("skips the automation_error notification (but still records the failure) before any user account exists (issue #149)", async () => {
     const moviesId = await getDatabaseIdByModule("movies");
-    const item = await chokePoint.createItem({ databaseId: moviesId, properties: { name: "Sicario", year: 2015 } });
+    const item = await inTenantZero(() =>
+      chokePoint.createItem({ databaseId: moviesId, properties: { name: "Sicario", year: 2015 } }),
+    );
     await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
 
     const failingFetcher: LibraryMetadataFetcher = async () => {
@@ -270,7 +281,7 @@ describe("library module (issue #25)", () => {
   it("a locked item_automation row is never touched by the heartbeat", async () => {
     const booksId = await getDatabaseIdByModule("books");
     const registry = libraryRegistry();
-    const item = await chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } });
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
 
     // Pre-seed and lock the row before anything drains — `runOnce` cascades the trigger
     // and the processing job through in one call, so locking "mid-flight" between them
@@ -296,7 +307,7 @@ describe("library module (issue #25)", () => {
   it("the daily retry sweep re-enqueues rows left in 'error' for that database", async () => {
     const booksId = await getDatabaseIdByModule("books");
     const registry = libraryRegistry();
-    const item = await chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } });
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
 
     await drainQueue(registry, async () => {
       throw new Error("boom");
@@ -311,7 +322,7 @@ describe("library module (issue #25)", () => {
     await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
       rows[0]!.id,
     ]);
-    await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
 
     await drainQueue(registry); // heartbeatFireCore -> retry sweep action -> re-enqueues processLibraryMetadata
     await drainQueue(registry, async () => ({})); // the re-enqueued job itself, now succeeding
@@ -325,8 +336,12 @@ describe("library module (issue #25)", () => {
     const moviesId = await getDatabaseIdByModule("movies");
     const peopleId = await getDatabaseIdByModule("people");
 
-    const movie = await chokePoint.createItem({ databaseId: moviesId, properties: { name: "Arrival", year: 2016 } });
-    const person = await chokePoint.createItem({ databaseId: peopleId, properties: { name: "Alex" } });
+    const movie = await inTenantZero(() =>
+      chokePoint.createItem({ databaseId: moviesId, properties: { name: "Arrival", year: 2016 } }),
+    );
+    const person = await inTenantZero(() =>
+      chokePoint.createItem({ databaseId: peopleId, properties: { name: "Alex" } }),
+    );
 
     const watchedWith = (await chokePoint.listProperties(moviesId)).find((p) => p.key === "watchedWith")!;
     await chokePoint.createRelation({
@@ -350,7 +365,7 @@ describe("library module (issue #25)", () => {
   it("excludes a soft-deleted item's errored row from the daily retry sweep's re-enqueue", async () => {
     const booksId = await getDatabaseIdByModule("books");
     const registry = libraryRegistry();
-    const item = await chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } });
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
 
     await drainQueue(registry, async () => {
       throw new Error("boom");
@@ -366,7 +381,7 @@ describe("library module (issue #25)", () => {
     await pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
       rows[0]!.id,
     ]);
-    await withTransaction(pool, (client) => sweepDueHeartbeats(client));
+    await inTenantZero(() => withTransaction(pool, (client) => sweepDueHeartbeats(client)));
 
     let called = false;
     await drainQueue(registry, async () => {
@@ -382,18 +397,20 @@ describe("library module (issue #25)", () => {
   it("settles item_automation to 'done' for a job that runs against an already-deleted item", async () => {
     const booksId = await getDatabaseIdByModule("books");
     const registry = libraryRegistry();
-    const item = await chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } });
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
     await chokePoint.softDeleteItem(booksId, item.id);
 
     // A job enqueued directly (e.g. one already in flight when the delete happened),
     // bypassing the retry sweep's exclusion filter entirely.
     let called = false;
-    await withTransaction(pool, (client) =>
-      enqueueLibraryMetadataProcessing(client, {
-        itemId: item.id,
-        databaseId: booksId,
-        config: { source: "none", coverKey: "cover" },
-      }),
+    await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        enqueueLibraryMetadataProcessing(client, {
+          itemId: item.id,
+          databaseId: booksId,
+          config: { source: "none", coverKey: "cover" },
+        }),
+      ),
     );
     await drainQueue(registry, async () => {
       called = true;
@@ -407,7 +424,7 @@ describe("library module (issue #25)", () => {
 
   it("startItemAutomationAttempt reopens a row as pending and counts the attempt, keeping the earlier error (issue #248)", async () => {
     const booksId = await getDatabaseIdByModule("books");
-    const item = await chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } });
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
     await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
     await withTransaction(pool, (client) => recordItemAutomationFailure(client, item.id, "earlier failure", "error"));
 
@@ -421,7 +438,7 @@ describe("library module (issue #25)", () => {
 
   it("startItemAutomationAttempt returns null and changes nothing on a locked or absent row (issue #248)", async () => {
     const booksId = await getDatabaseIdByModule("books");
-    const item = await chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } });
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
     await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
     await withTransaction(pool, (client) => setItemAutomationLocked(client, item.id, true));
 
@@ -435,7 +452,7 @@ describe("library module (issue #25)", () => {
 
   it("recordItemAutomationFailure writes the error and status without counting an attempt, and never touches a locked row (issue #248)", async () => {
     const booksId = await getDatabaseIdByModule("books");
-    const item = await chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } });
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
     await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
 
     expect(
@@ -468,7 +485,7 @@ describe("library module (issue #25)", () => {
 
   it("unlocking a row only transitions it if it was actually locked, never clobbering 'done'/'error'", async () => {
     const booksId = await getDatabaseIdByModule("books");
-    const item = await chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } });
+    const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
 
     await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
     await withTransaction(pool, (client) => markItemAutomationDone(client, item.id));

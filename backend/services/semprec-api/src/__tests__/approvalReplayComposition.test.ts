@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { countJobsByIdentifier } from "@semprec/queue/testSupport";
-import { createTenantZeroUser, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createTenantZeroUser, getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupport";
 import {
   ApprovalRequiredError,
   createAgentRun,
@@ -46,7 +46,7 @@ async function createPendingDeleteAndApprove(pool: Pool): Promise<{ requestId: s
   const chokePoint = createChokePoint(pool);
   const gateway = createGenericOperationGateway(pool);
   const database = await chokePoint.createDatabase({ name: "Approval replay composition DB" });
-  const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+  const item = await inTenantZero(() => chokePoint.createItem({ databaseId: database.id, properties: {} }));
   const projectItemId = randomUUID();
   const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete it" });
   const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
@@ -60,12 +60,14 @@ async function createPendingDeleteAndApprove(pool: Pool): Promise<{ requestId: s
     requestId = (err as ApprovalRequiredError).details.approvalRequestId;
   }
 
-  const decided = await withTransaction(pool, (client) =>
-    decideAndEnqueueApprovalRequest(client, {
-      approvalRequestId: requestId,
-      decision: "approved",
-      decidedByUserId: run.actorUserId,
-    }),
+  const decided = await inTenantZero(() =>
+    withTransaction(pool, (client) =>
+      decideAndEnqueueApprovalRequest(client, {
+        approvalRequestId: requestId,
+        decision: "approved",
+        decidedByUserId: run.actorUserId,
+      }),
+    ),
   );
   expect(decided!.request.status).toBe("approved");
   return { requestId, itemId: item.id };
@@ -117,7 +119,9 @@ describe("createApiQueueRuntime generic-operation approval replay (issue #646)",
     expect(await createChokePoint(pool).findItem(itemId)).toBeNull();
 
     // Redelivery: a second `approvalExecute` for the same request completes without touching the row.
-    await enqueueJob(pool, CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE, { approvalRequestId: requestId });
+    await inTenantZero(() =>
+      enqueueJob(pool, CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE, { approvalRequestId: requestId }),
+    );
     await waitFor(async () => (await countJobsByIdentifier(pool, CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE)) === 0);
     expect(await getApprovalRequest(pool, requestId)).toEqual(finished);
   });

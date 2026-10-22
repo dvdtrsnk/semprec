@@ -5,7 +5,7 @@ import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxProvider, type FauxProviderHandle } from "@earendil-works/pi-ai";
 import { AGENT_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { runInTenant } from "@semprec/shared";
-import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupport";
 import {
   CORE_AGENT_RUN_ACTION_ID,
   createAgentRun,
@@ -149,7 +149,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     faux.setResponses([fauxAssistantMessage("Hello from the agent.")]);
 
     await startRuntime();
-    await enqueueJob(pool, AGENT_TASK_NAMES.AGENT_RUN, { agentRunId: run.id });
+    await inTenantZero(() => enqueueJob(pool, AGENT_TASK_NAMES.AGENT_RUN, { agentRunId: run.id }));
 
     await waitFor(async () => (await runRow(run.id)).status !== "running");
     expect(await runRow(run.id)).toEqual({ status: "done", result: "Hello from the agent." });
@@ -173,7 +173,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     faux.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "gateway refused: budget" })]);
 
     await startRuntime();
-    await enqueueJob(pool, AGENT_TASK_NAMES.AGENT_RUN, { agentRunId: run.id });
+    await inTenantZero(() => enqueueJob(pool, AGENT_TASK_NAMES.AGENT_RUN, { agentRunId: run.id }));
 
     await waitFor(async () => (await runRow(run.id)).status !== "running");
     expect(await runRow(run.id)).toEqual({ status: "error", result: "gateway refused: budget" });
@@ -189,7 +189,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     faux.setResponses([fauxAssistantMessage("must not run")]);
 
     await startRuntime();
-    await enqueueJob(pool, AGENT_TASK_NAMES.DELEGATED_AGENT_RUN, { agentRunId: run.id });
+    await inTenantZero(() => enqueueJob(pool, AGENT_TASK_NAMES.DELEGATED_AGENT_RUN, { agentRunId: run.id }));
 
     await waitFor(async () => (await jobCount(AGENT_TASK_NAMES.DELEGATED_AGENT_RUN)) === 0);
     expect(await runRow(run.id)).toEqual({ status: "done", result: "earlier result" });
@@ -263,10 +263,12 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     faux.setResponses([fauxAssistantMessage("Triaged the new email.")]);
 
     await startRuntime();
-    await enqueueJob(pool, AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT, {
-      heartbeatId: heartbeat.id,
-      triggeredByRunId: parentRun.id,
-    });
+    await inTenantZero(() =>
+      enqueueJob(pool, AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT, {
+        heartbeatId: heartbeat.id,
+        triggeredByRunId: parentRun.id,
+      }),
+    );
 
     await waitFor(async () => (await jobCount(AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT)) === 0);
     const { rows: runs } = await pool.query<{ id: string; status: string; result: string | null }>(
@@ -308,11 +310,13 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     });
 
     await startRuntime();
-    await enqueueJob(
-      pool,
-      AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT,
-      { heartbeatId: heartbeat.id, triggeredByRunId: parentRun.id },
-      { maxAttempts: 1 },
+    await inTenantZero(() =>
+      enqueueJob(
+        pool,
+        AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT,
+        { heartbeatId: heartbeat.id, triggeredByRunId: parentRun.id },
+        { maxAttempts: 1 },
+      ),
     );
 
     const lastError = async (): Promise<string | null> => {
