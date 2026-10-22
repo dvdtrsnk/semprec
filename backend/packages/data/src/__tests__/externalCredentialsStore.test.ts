@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { openSecret } from "@semprec/credentials";
+import { openSecret, sealSecret } from "@semprec/credentials";
 import { getDecryptedCredential, storeCredential } from "../credentials/externalCredentialsStore.js";
-import { getTenantDataKey } from "../credentials/tenantKeysStore.js";
+import { getOrCreateTenantDataKey, getTenantDataKey } from "../credentials/tenantKeysStore.js";
+import type { Queryable } from "../db/pool.js";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -18,9 +19,24 @@ let dataPool: Pool;
 
 const READ = { actorType: "sync_worker", purpose: "test" } as const;
 
-/** The associated-data bytes the tenant scheme is documented to use. */
+/** The associated-data bytes the tenant scheme is documented to use: both ids as lowercase canonical UUID text. */
 function associatedData(tenantId: string, itemId: string): Buffer {
-  return Buffer.from(`semprec:external-credential:v1:${tenantId}:${itemId}`, "utf8");
+  return Buffer.from(`semprec:external-credential:v1:${tenantId.toLowerCase()}:${itemId.toLowerCase()}`, "utf8");
+}
+
+/**
+ * Seals a `tenant` row directly under the scope's tenant key with this file's associated data and inserts
+ * it with raw SQL: the fixture's bytes are what is under test, which a row written by `storeCredential`
+ * cannot show.
+ */
+async function insertTenantRow(client: Queryable, tenantId: string, itemId: string, plaintext: string): Promise<void> {
+  const { dataKey } = await getOrCreateTenantDataKey(client);
+  const sealed = await sealSecret(plaintext, dataKey, associatedData(tenantId, itemId));
+  await client.query(
+    `INSERT INTO external_credentials (tenant_id, item_id, credential_type, ciphertext, nonce, key_version, scheme)
+     VALUES ($1, $2, 'api_key', $3, $4, 1, 'tenant')`,
+    [tenantId, itemId, sealed.ciphertext, sealed.nonce],
+  );
 }
 
 interface StoredRow {
@@ -144,6 +160,27 @@ describe("external credentials store, tenant scheme only", () => {
 
       expect(await storedRows(itemId)).toEqual([]);
       expect(await tenantKeyCount(tenantB)).toBe(0);
+    });
+  });
+
+  describe("fixture associated data", () => {
+    it("a row sealed from uppercase tenant and item UUID text decrypts under the canonical ids", async () => {
+      const tenantB = await createTestTenant(pool);
+      const itemId = "0a1b2c3d-4e5f-4a6b-8c7d-9e0fa1b2c3d4";
+      const upperTenant = tenantB.toUpperCase();
+      const upperItem = itemId.toUpperCase();
+      // The case's premise: both ids contain letters, so their uppercase text differs from the canonical one.
+      expect(upperTenant).not.toBe(tenantB);
+      expect(upperItem).not.toBe(itemId);
+      expect(associatedData(upperTenant, upperItem).equals(associatedData(tenantB, itemId))).toBe(true);
+
+      await withTenantTransaction(dataPool, tenantB, (c) => insertTenantRow(c, upperTenant, upperItem, "upper-secret"));
+
+      expect((await storedRows(itemId)).map((r) => r.tenant_id)).toEqual([tenantB]);
+      expect(
+        await withTenantTransaction(dataPool, tenantB, (c) => getDecryptedCredential(c, { itemId, ...READ })),
+      ).toBe("upper-secret");
+      expect(await logCount(itemId)).toBe(1);
     });
   });
 
