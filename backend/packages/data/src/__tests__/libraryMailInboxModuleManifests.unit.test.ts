@@ -48,6 +48,7 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
     expect(await registry.getMigrations()).toEqual([{ moduleId: "library", migration: "0005_library_module.sql" }]);
   });
 
+  // Pays the mail manifest's cold module-graph import: ~0.6 s idle, up to 8.2 s measured at load ~25 (#1237); 30 s is ~3x margin.
   it("loads the mail sync manifest with Mailboxes/Folders/Emails, its own heartbeat actions, and the per-mailbox worker", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     const moduleId = await registry.loadModule(MAIL_PATH);
@@ -71,7 +72,7 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
       { moduleId: "mailSync", migration: "0006_mail_sync.sql" },
       { moduleId: "mailSync", migration: "0007_mail_delivered_to_and_dsn.sql" },
     ]);
-  });
+  }, 30_000);
 
   it("loads the Inbox pipeline manifest with Inbox/Inbox item types/Processing proposals, semprec.tick, and journal-inbox", async () => {
     const registry = new ModuleRegistry(alwaysActive);

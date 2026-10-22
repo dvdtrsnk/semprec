@@ -46,6 +46,7 @@ async function loadAll(getActiveModuleIds: () => ReadonlySet<string>): Promise<M
 const alwaysActive: () => ReadonlySet<string> = () => new Set(ALL_MODULE_IDS);
 
 describe("all module manifests loaded together (module-contract issue #115)", () => {
+  // Pays this file's cold import of all 7 manifest graphs: ~0.8 s idle, up to 10.7 s measured at load ~25 (#1237); 30 s is ~3x margin.
   it("loads every manifest from #226/#227 into one registry with no cross-manifest collisions", async () => {
     const registry = await loadAll(alwaysActive);
 
@@ -75,7 +76,7 @@ describe("all module manifests loaded together (module-contract issue #115)", ()
         JOURNAL_INBOX_VIEW_TYPE,
       ].sort(),
     );
-  });
+  }, 30_000);
 
   it("excludes an inactive module from every projection while other modules stay unaffected", async () => {
     const activeExceptLibrary = new Set(ALL_MODULE_IDS.filter((id) => id !== "library"));
