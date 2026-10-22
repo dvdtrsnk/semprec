@@ -2,6 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
 import { ForbiddenError } from "../errors.js";
 import { assertKnownValue } from "../dbRowValidation.js";
+import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 
 /**
  * #620: a row is `reserved` at the caller's estimate before the provider call, then either
@@ -157,10 +158,12 @@ export async function assertGatewayTenantActive(client: Pool | PoolClient): Prom
  *
  * The insert is one conditional statement, so the check and the write cannot be separated by a
  * concurrent change: it only produces a row when the ambient tenant (`app_tenant_default()`, so a
- * header-less legacy call still falls to the sole tenant) is `active`, and any `agentRunId` /
- * `projectItemId` is visible in that tenant (RLS makes both probes tenant-local). Otherwise it
- * throws `ForbiddenError` `attribution_refused` with no details, so a foreign id and an unknown id
- * answer identically; no row is written and the caller never reaches the provider.
+ * header-less legacy call still falls to the sole tenant) is `active`, any `agentRunId` is visible
+ * in that tenant, and any `projectItemId` is a visible item of that tenant's system Projects
+ * database (`owner_module_id` = `PROJECTS_MODULE_ID`); RLS makes every probe tenant-local.
+ * Otherwise it throws `ForbiddenError` `attribution_refused` with no details, so a foreign id, an
+ * unknown id and an item outside the Projects database answer identically; no row is written and
+ * the caller never reaches the provider.
  */
 export async function reserveGatewayCall(
   client: Pool | PoolClient,
@@ -171,7 +174,10 @@ export async function reserveGatewayCall(
      SELECT $1, $2, NULL, NULL, NULL, $3, $4::uuid, $5::uuid, $6, 'reserved'
      WHERE EXISTS (SELECT 1 FROM tenants WHERE id = app_tenant_default() AND status = 'active')
        AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM agent_runs WHERE id = $4::uuid))
-       AND ($5::uuid IS NULL OR EXISTS (SELECT 1 FROM items WHERE id = $5::uuid))
+       AND ($5::uuid IS NULL OR EXISTS (
+         SELECT 1 FROM items i JOIN databases d ON d.id = i.database_id
+         WHERE i.id = $5::uuid AND d.system AND d.owner_module_id = $7
+       ))
      RETURNING id, at, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, agent_run_id, project_item_id, operation, status`,
     [
       input.provider,
@@ -180,6 +186,7 @@ export async function reserveGatewayCall(
       input.agentRunId ?? null,
       input.projectItemId ?? null,
       input.operation ?? null,
+      PROJECTS_MODULE_ID,
     ],
   );
   const row = rows[0];

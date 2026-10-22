@@ -341,6 +341,13 @@ describe("observability.checkSystem (issue #169)", () => {
   });
 
   describe("per-mailbox process liveness (issue #1000)", () => {
+    /** `beatAt` is null when the mailbox has never beaten, an ISO timestamp once it has. */
+    type LivenessNotificationRow = {
+      kind: string;
+      source_table: string;
+      payload: { mailboxItemId: string; beatAt: string | null };
+    };
+
     beforeEach(async () => {
       await seedSystem(pool);
     });
@@ -372,7 +379,7 @@ describe("observability.checkSystem (issue #169)", () => {
       const row = await getTenantCheck(`process:mailsync:${mailboxId}`);
       expect(row?.status).toBe("alerting");
       expect(row?.tenant_id).toBe(getTenantZeroId());
-      const detail = await pool.query<{ detail: { process: string; present: boolean; beatAt: string } }>(
+      const detail = await pool.query<{ detail: { process: string; present: boolean; beatAt: string | null } }>(
         `SELECT detail FROM tenant_observability_checks WHERE id = $1`,
         [row!.id],
       );
@@ -381,11 +388,10 @@ describe("observability.checkSystem (issue #169)", () => {
         present: true,
         beatAt: expect.any(String),
       });
-      const notifications = await pool.query<{
-        kind: string;
-        source_table: string;
-        payload: { mailboxItemId: string; beatAt: string };
-      }>(`SELECT kind, source_table, payload FROM notifications WHERE source_id = $1`, [row!.id]);
+      const notifications = await pool.query<LivenessNotificationRow>(
+        `SELECT kind, source_table, payload FROM notifications WHERE source_id = $1`,
+        [row!.id],
+      );
       expect(notifications.rows).toEqual([
         {
           kind: "mail_sync_stalled",
@@ -404,12 +410,22 @@ describe("observability.checkSystem (issue #169)", () => {
       await runCheck();
       const alerting = await getTenantCheck(checkKey);
       expect(alerting?.status).toBe("alerting");
-      const missing = await pool.query<{ detail: { present: boolean } }>(
+      const missing = await pool.query<{ detail: { present: boolean; beatAt: string | null } }>(
         `SELECT detail FROM tenant_observability_checks WHERE id = $1`,
         [alerting!.id],
       );
-      expect(missing.rows[0]?.detail.present).toBe(false);
-      expect(await notificationsFor(alerting!.id)).toHaveLength(1);
+      expect(missing.rows[0]?.detail).toMatchObject({ present: false, beatAt: null });
+      const firstAlert = await pool.query<LivenessNotificationRow>(
+        `SELECT kind, source_table, payload FROM notifications WHERE source_id = $1`,
+        [alerting!.id],
+      );
+      expect(firstAlert.rows).toEqual([
+        {
+          kind: "mail_sync_stalled",
+          source_table: "tenant_observability_checks",
+          payload: { mailboxItemId: mailboxId, beatAt: null },
+        },
+      ]);
 
       await beatMailbox(mailboxId, 0);
       await runCheck();

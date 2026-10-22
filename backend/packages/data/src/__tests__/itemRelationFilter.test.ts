@@ -40,7 +40,7 @@ async function databaseIdFor(moduleId: string): Promise<string> {
  * an `EXPLAIN ANALYZE` plan tree, keyed by `Relation Name`. Partitions the planner statically
  * lists as candidates but the executor skips at runtime (partition pruning) report `Actual
  * Loops: 0` and are excluded — this is why the test needs ANALYZE rather than a plain EXPLAIN:
- * the `related.database_id = op.database_id` join value isn't known until execution, so the
+ * the `item.database_id = op.database_id` lookup value isn't known until execution, so the
  * planner can only prune at runtime, not at plan time.
  */
 function collectExecutedRelationNames(plan: Record<string, unknown>, acc: Set<string>): void {
@@ -110,6 +110,8 @@ describe("itemRelationFilter partition pruning (issue #262)", () => {
     const foldersPartition = `items_p_${foldersId.replace(/-/g, "")}`;
     expect(partitionRows.map((r) => r.tablename)).toContain(foldersPartition);
 
+    // Collect statistics here so the planner's choice does not depend on when autovacuum last ran.
+    await pool.query("ANALYZE items");
     const { rows: explainRows } = await pool.query<{ "QUERY PLAN": Array<{ Plan: Record<string, unknown> }> }>(
       `EXPLAIN (ANALYZE, FORMAT JSON) ${ITEM_RELATION_FILTER_QUERY}`,
       [folderProperty.id, "specialPurpose", emailItemId],

@@ -112,6 +112,18 @@ describe("no leak between checkouts", () => {
 
   it("rejects a scoped pool.query syntax error with the Postgres error and leaves a clean connection", async () => {
     const single = newPool(1);
+    // Read the backend's state from a separate connection: the backend reports its state before it
+    // answers ReadyForQuery, so the row is current once the observed query has resolved.
+    const observe = async (backendPid: number): Promise<{ state: string | null; xactStartIsNull: boolean }> => {
+      const { rows } = await pool.query<{ state: string | null; xact_start_is_null: boolean }>(
+        "SELECT state, xact_start IS NULL AS xact_start_is_null FROM pg_stat_activity WHERE pid = $1",
+        [backendPid],
+      );
+      expect(rows).toHaveLength(1);
+      return { state: rows[0]!.state, xactStartIsNull: rows[0]!.xact_start_is_null };
+    };
+    const before = Number((await single.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid);
+
     const failure = await runInTenant(T, () =>
       single.query("SELEKT 1").then(
         () => undefined,
@@ -120,11 +132,39 @@ describe("no leak between checkouts", () => {
     );
     expect(failure).toMatchObject({ code: "42601" });
 
-    const { rows } = await single.query<Reading & { status: string }>(
-      `${SETTING_SQL}, txid_current_if_assigned() IS NULL AS status`,
-    );
+    const { rows } = await single.query<Reading & { pid: number }>(`${SETTING_SQL}, pg_backend_pid() AS pid`);
+    expect(Number(rows[0]!.pid)).toBe(before);
     expect(rows[0]!.setting).not.toBe(T);
     expect(rows[0]!.tenant).toBeNull();
+    expect(await observe(before)).toEqual({ state: "idle", xactStartIsNull: true });
+
+    // Control: the same observer must see an open read-only transaction on that backend, even though
+    // the transaction has no assigned ID, so the idle check above cannot pass by accident.
+    const client = await single.connect();
+    const toError = (err: unknown): Error => (err instanceof Error ? err : new Error(String(err)));
+    let controlError: Error | undefined;
+    try {
+      await client.query("BEGIN READ ONLY");
+      const open = await client.query<{ pid: number; unassigned: boolean }>(
+        "SELECT pg_backend_pid() AS pid, txid_current_if_assigned() IS NULL AS unassigned",
+      );
+      expect(Number(open.rows[0]!.pid)).toBe(before);
+      expect(open.rows[0]!.unassigned).toBe(true);
+      expect(await observe(before)).toEqual({ state: "idle in transaction", xactStartIsNull: false });
+    } catch (err) {
+      controlError = toError(err);
+    }
+    let rollbackError: Error | undefined;
+    try {
+      await client.query("ROLLBACK");
+    } catch (err) {
+      rollbackError = toError(err);
+    }
+    // Releasing with the ROLLBACK error destroys the connection instead of pooling it; the control's
+    // own failure, if any, stays the reported one.
+    client.release(rollbackError);
+    const thrown = controlError ?? rollbackError;
+    if (thrown !== undefined) throw thrown;
   });
 
   it("discards a killed scoped connection without throwing on release", async () => {

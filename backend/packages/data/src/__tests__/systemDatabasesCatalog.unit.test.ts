@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { ModuleRegistry, resolveCatalogLabel } from "@semprec/module-registry";
 
 /**
@@ -13,6 +13,11 @@ function manifestPath(fileName: string): string {
 const SYSTEM_DATABASES_PATH = manifestPath("seed/systemDatabasesModuleManifest.js");
 
 describe("systemDatabases reference i18n catalog (issue #236)", () => {
+  beforeAll(async () => {
+    // Warm the cold manifest import once (#1240): 1.1-1.6 s idle, up to ~10 s under load (#1237); 30 s is ~3x margin.
+    await import(SYSTEM_DATABASES_PATH);
+  }, 30_000);
+
   it("loads the Tasks database's cs/en catalog entries", async () => {
     const registry = new ModuleRegistry(() => new Set(["systemDatabases"]));
     await registry.loadModule(SYSTEM_DATABASES_PATH);
