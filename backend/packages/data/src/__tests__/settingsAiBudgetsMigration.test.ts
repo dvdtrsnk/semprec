@@ -5,7 +5,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { getAiBudgets, getSystemSettingsDatabaseId } from "../systemSettings.js";
+import { getSystemSettingsDatabaseId } from "../systemSettings.js";
 
 const MIGRATION_SQL = await readFile(
   path.join(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations/0019_settings_ai_budgets.sql"),
@@ -13,6 +13,14 @@ const MIGRATION_SQL = await readFile(
 );
 
 let pool: Pool;
+
+async function readSettingsItemProperties(databaseId: string): Promise<Record<string, unknown> | undefined> {
+  const { rows } = await pool.query<{ properties: Record<string, unknown> }>(
+    `SELECT properties FROM items WHERE database_id = $1`,
+    [databaseId],
+  );
+  return rows[0]?.properties;
+}
 
 describe("0019_settings_ai_budgets migration", () => {
   beforeEach(async () => {
@@ -25,60 +33,39 @@ describe("0019_settings_ai_budgets migration", () => {
   });
 
   it("backfills dailyBudgetUsd/monthlyBudgetUsd onto a settings row provisioned before this migration existed", async () => {
-    // seedSystem.ts already creates the two properties for a fresh install; roll a settings
-    // row back to the pre-#120 shape (as an already-provisioned install would have) so the
-    // migration's own backfill path — not seedSystem's — is what's under test.
+    // seedSystem.ts no longer creates the two properties (#1059), so a freshly seeded settings
+    // database already has the pre-#120 shape an install provisioned before 0019 would have.
     await seedSystem(pool);
-    const client = await pool.connect();
-    try {
-      const databaseId = await getSystemSettingsDatabaseId(client);
-      await client.query(`UPDATE databases SET schema_locked = false WHERE id = $1`, [databaseId]);
-      await client.query(
-        `DELETE FROM properties WHERE database_id = $1 AND key IN ('dailyBudgetUsd', 'monthlyBudgetUsd')`,
-        [databaseId],
-      );
-      await client.query(
-        `UPDATE items SET properties = properties - 'dailyBudgetUsd' - 'monthlyBudgetUsd' WHERE database_id = $1`,
-        [databaseId],
-      );
-      await client.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [databaseId]);
-    } finally {
-      client.release();
-    }
+    const databaseId = await getSystemSettingsDatabaseId(pool);
 
     await pool.query(MIGRATION_SQL);
 
-    const client2 = await pool.connect();
-    try {
-      const budgets = await getAiBudgets(client2);
-      expect(budgets).toEqual({ dailyBudgetUsd: 50, monthlyBudgetUsd: null });
+    const settings = await readSettingsItemProperties(databaseId);
+    expect(settings).toMatchObject({ dailyBudgetUsd: 50, monthlyBudgetUsd: null });
 
-      const { rows } = await client2.query<{ type: string; locked: boolean; owner: string }>(
-        `SELECT type, locked, owner FROM properties WHERE database_id = $1 AND key = 'dailyBudgetUsd'`,
-        [await getSystemSettingsDatabaseId(client2)],
-      );
-      expect(rows[0]).toEqual({ type: "number", locked: true, owner: "user" });
+    const { rows } = await pool.query<{ key: string; type: string; locked: boolean; owner: string }>(
+      `SELECT key, type, locked, owner FROM properties
+        WHERE database_id = $1 AND key IN ('dailyBudgetUsd', 'monthlyBudgetUsd') ORDER BY key`,
+      [databaseId],
+    );
+    expect(rows).toEqual([
+      { key: "dailyBudgetUsd", type: "number", locked: true, owner: "user" },
+      { key: "monthlyBudgetUsd", type: "number", locked: true, owner: "user" },
+    ]);
 
-      const { rows: dbRows } = await client2.query<{ schema_locked: boolean }>(
-        `SELECT schema_locked FROM databases WHERE id = $1`,
-        [await getSystemSettingsDatabaseId(client2)],
-      );
-      expect(dbRows[0]!.schema_locked).toBe(true);
-    } finally {
-      client2.release();
-    }
+    const { rows: dbRows } = await pool.query<{ schema_locked: boolean }>(
+      `SELECT schema_locked FROM databases WHERE id = $1`,
+      [databaseId],
+    );
+    expect(dbRows[0]!.schema_locked).toBe(true);
 
     // Idempotent: re-running must not error or disturb a value the user already changed.
     await pool.query(
-      `UPDATE items SET properties = jsonb_set(properties, '{dailyBudgetUsd}', '10') WHERE database_id = (SELECT id FROM databases WHERE owner_module_id = 'systemSettings')`,
+      `UPDATE items SET properties = jsonb_set(properties, '{dailyBudgetUsd}', '10') WHERE database_id = $1`,
+      [databaseId],
     );
     await pool.query(MIGRATION_SQL);
-    const client3 = await pool.connect();
-    try {
-      expect((await getAiBudgets(client3)).dailyBudgetUsd).toBe(10);
-    } finally {
-      client3.release();
-    }
+    expect((await readSettingsItemProperties(databaseId))?.dailyBudgetUsd).toBe(10);
   });
 
   it("is a no-op when the system settings database has not been seeded yet", async () => {
