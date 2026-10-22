@@ -36,6 +36,18 @@ function fakeSession(messages: AgentMessage[]): CreateAgentSession {
   });
 }
 
+// wireRealtimeHooks(pool) installs every hook, not just the agent-run one. Reset all of them after
+// each test, so a test that wires them and then fails before its own cleanup (a rejected
+// pool.connect(), say) cannot leave them publishing on the shared pool for later tests.
+function resetHooks(): void {
+  setInvalidationHook(() => {});
+  setDocUpdateHook(() => {});
+  setNotificationCreatedHook(() => {});
+  setNotificationReadStateHook(() => {});
+  setSessionRevokedHook(() => {});
+  setAgentRunEventHook(() => {});
+}
+
 afterAll(async () => {
   await pool?.end();
 });
@@ -53,7 +65,7 @@ describe("runAgentSession", () => {
   });
 
   afterEach(() => {
-    setAgentRunEventHook(() => {});
+    resetHooks();
   });
 
   it("reconstructs a completed run's transcript from agent_run_events in monotonic order", async () => {
@@ -223,12 +235,6 @@ describe("runAgentSession", () => {
       });
     } finally {
       listenClient.release(true);
-      // wireRealtimeHooks installs every hook; afterEach resets only the agent-run one.
-      setInvalidationHook(() => {});
-      setDocUpdateHook(() => {});
-      setNotificationCreatedHook(() => {});
-      setNotificationReadStateHook(() => {});
-      setSessionRevokedHook(() => {});
     }
   });
 });
