@@ -800,6 +800,18 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     });
     expect(masked(known, [a.member.email])).toEqual(masked(unknown, [unknownEmail]));
   },
+  "accept invitation": async () => {
+    // A's session token is a credential of A's, but not an invitation token: it is answered exactly
+    // like a random token, and A's rows stay as they were.
+    await leavesAUnchanged(async () => {
+      const answer = await expectForeignLikeRandom(null, [a.member.token], ([token]) => ({
+        method: "POST",
+        path: "/api/invitations/accept",
+        body: { token, password: `pw-${randomUUID()}` },
+      }));
+      expect(answer.status).toBe(404);
+    });
+  },
   "Microsoft Graph mail webhook": async () => {
     await expectForeignLikeRandom(null, [a.graphSubscriptionId], ([subscriptionId]) => ({
       method: "POST",

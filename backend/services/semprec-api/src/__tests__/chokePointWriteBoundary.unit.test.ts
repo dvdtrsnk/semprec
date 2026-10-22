@@ -22,6 +22,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "revoke session": "services/semprec-api/src/authHandler.ts",
   "current session": "services/semprec-api/src/authHandler.ts",
   "first-account setup (API)": "services/semprec-api/src/setupHandler.ts",
+  "accept invitation": "services/semprec-api/src/invitationHandler.ts",
   "schema projection": "services/semprec-api/src/schemaHandler.ts",
   "approval queue": "services/semprec-api/src/approvalRequestsHandler.ts",
   "approval decision": "services/semprec-api/src/approvalRequestsHandler.ts",

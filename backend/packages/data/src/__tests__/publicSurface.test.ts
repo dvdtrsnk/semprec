@@ -146,6 +146,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "UNKNOWN_HEARTBEAT_ACTION_FINDING_KIND",
   "UnauthorizedError",
   "ValidationError",
+  "acceptInvitation",
   "advanceTaskRecurrence",
   "agentGuidanceDriftFindingsStore",
   "anyUserExists",

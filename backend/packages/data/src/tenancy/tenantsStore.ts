@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import type { UserRole, UserRow } from "../auth/types.js";
+import { requireSingleRow } from "../db/pool.js";
 import { ChokePointError, NotFoundError } from "../errors.js";
 
 export type TenantStatus = "provisioning" | "active" | "suspended" | "deleting";
@@ -24,6 +25,17 @@ export async function getSoleTenantId(client: Pool | PoolClient): Promise<string
   const id = rows[0]?.id;
   if (!id) throw new Error("Expected exactly one tenant, found none or several");
   return id;
+}
+
+/**
+ * Inserts a tenant with `status` and returns its server-generated id. Runs on the caller's client,
+ * so the tenant commits or rolls back with the caller's transaction.
+ */
+export async function createTenant(client: PoolClient, status: TenantStatus): Promise<string> {
+  const { rows } = await client.query<{ id: string }>("INSERT INTO tenants (status) VALUES ($1) RETURNING id", [
+    status,
+  ]);
+  return requireSingleRow(rows, "tenants row").id;
 }
 
 /**

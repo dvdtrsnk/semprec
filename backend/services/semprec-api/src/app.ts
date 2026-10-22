@@ -18,6 +18,7 @@ import { createAgentRunRequestListener } from "./agentRunHandler.js";
 import { createAuthRequestListener } from "./authHandler.js";
 import { createNotificationsRequestListener } from "./notificationsHandler.js";
 import { createSetupRequestListener } from "./setupHandler.js";
+import { createInvitationRequestListener } from "./invitationHandler.js";
 import { createHealthzRequestListener } from "./healthzHandler.js";
 import { createSchemaRequestListener } from "./schemaHandler.js";
 import { createFilesRequestListener } from "./filesHandler.js";
@@ -100,6 +101,7 @@ export async function createDispatcher(
   });
   const notificationsListener = createNotificationsRequestListener(pool);
   const setupListener = createSetupRequestListener(pool, { setupToken: options.setupToken });
+  const invitationListener = createInvitationRequestListener(pool, { trustProxy: options.trustProxy ?? false });
   const healthzListener = createHealthzRequestListener(pool);
   const schemaListener = createSchemaRequestListener(pool, options.moduleRegistry);
   const filesListener = createFilesRequestListener(pool, {
@@ -161,6 +163,10 @@ export async function createDispatcher(
     }
     if (pathname === "/api/setup") {
       void setupListener(req, res);
+      return;
+    }
+    if (pathname === "/api/invitations/accept") {
+      void invitationListener(req, res);
       return;
     }
     if (pathname === "/api/files" && req.method === "POST") {
