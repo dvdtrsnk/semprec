@@ -50,7 +50,7 @@ export async function publishRealtimeMessage(pool: Pool | PoolClient, message: R
     await pool.query(
       `SELECT pg_notify($1, json_build_object(
          'tenantId',
-         (SELECT COALESCE(u.tenant_id, app_sole_tenant()) FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = $3::uuid),
+         (SELECT u.tenant_id FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = $3::uuid),
          'message', $2::json)::text)`,
       [REALTIME_CHANNEL, JSON.stringify(message), message.sessionId],
     );

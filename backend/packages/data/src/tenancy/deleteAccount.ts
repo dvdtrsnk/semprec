@@ -64,10 +64,9 @@ export async function beginTenantDeletion(client: PoolClient, tenantId: string):
     throw new Error("beginTenantDeletion must run inside runInTenant for the tenant being deleted");
   }
   await transitionTenantStatus(client, tenantId, ["active", "suspended"], "deleting");
-  const { rows } = await client.query<{ id: string }>(
-    "SELECT id FROM users WHERE COALESCE(tenant_id, app_sole_tenant()) = $1 ORDER BY id",
-    [tenantId],
-  );
+  const { rows } = await client.query<{ id: string }>("SELECT id FROM users WHERE tenant_id = $1 ORDER BY id", [
+    tenantId,
+  ]);
   for (const user of rows) {
     await revokeAllSessionsForUser(client, user.id);
     await revokeAllPushSubscriptionsForUser(client, user.id);
@@ -91,7 +90,7 @@ async function lockUserAndGuardLastAdmin(
   const { rows } = await client.query<{ tenant_id: string; role: string; status: string; password_hash: string }>(
     `SELECT t.id AS tenant_id, u.role, t.status, u.password_hash
        FROM users u
-       JOIN tenants t ON t.id = COALESCE(u.tenant_id, app_sole_tenant())
+       JOIN tenants t ON t.id = u.tenant_id
       WHERE u.id = $1
         FOR UPDATE OF u`,
     [userId],
@@ -167,12 +166,12 @@ export interface DeleteAccountAsAdminInput {
  */
 export async function deleteAccountAsAdmin(pool: Pool, input: DeleteAccountAsAdminInput): Promise<AdminAccountSummary> {
   if (input.targetUserId === input.actorUserId) throw new SelfDeletionRequiresReauthenticationError();
-  const { rows } = await pool.query<{ tenant_id: string }>(
-    "SELECT COALESCE(tenant_id, app_sole_tenant()) AS tenant_id FROM users WHERE id = $1",
-    [input.targetUserId],
-  );
-  const targetTenantId = rows[0]?.tenant_id;
-  if (!targetTenantId) throw new NotFoundError("Account not found", { userId: input.targetUserId });
+  const { rows } = await pool.query<{ tenant_id: string }>("SELECT tenant_id FROM users WHERE id = $1", [
+    input.targetUserId,
+  ]);
+  const target = rows[0];
+  if (!target) throw new NotFoundError("Account not found", { userId: input.targetUserId });
+  const targetTenantId = target.tenant_id;
 
   await runInTenant(targetTenantId, () =>
     withTransaction(pool, async (client) => {

@@ -27,10 +27,10 @@ Tenancy: Semprec is multi-tenant. Each user has one tenant, which holds all of t
 user's data and agents, and nothing is shared between tenants. Isolation is enforced
 twice: by Postgres row-level security on every table classified
 `semprec:tenancy=tenant`, and by an explicit tenant scope (`app.tenant_id`) on every
-code path. A missing scope fails closed: nothing visible, writes refused. Until
-go-live, `tenants_single_tenant_guard` keeps a deployment at one tenant, and the
-transitional `app_tenant_default()` falls back to that sole tenant (`app_sole_tenant()`),
-so the previous release keeps working. Code written before tenant scoping is moved onto
+code path. A missing scope fails closed: nothing visible, writes refused.
+`app_tenant_default()` is strict: it returns the tenant of the current scope and never
+falls back to a sole tenant, and `users.tenant_id` is NOT NULL, so a user's tenant is
+always that column. Code written before tenant scoping is moved onto
 the scope by dedicated issues: do not report a pre-existing scope-less query that the
 pull request neither adds nor changes. Earlier ADRs that rest on a single human account
 (`docs/adr/2026-09-12-per-process-agent-run-watch-registry.md`,

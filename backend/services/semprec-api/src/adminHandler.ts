@@ -74,18 +74,13 @@ export function createAdminRoutes(pool: Pool, options: AppOptions): RouteDefinit
         const monthlyCapUsd = requireCapField(body, "monthlyCapUsd");
         const actorUserId = ctx.identity.user.id;
         const budget = await withTransaction(pool, async (client) => {
-          // Strictly the user's own binding: no sole-tenant fallback, so the write cannot land on a
-          // tenant the account does not belong to once a deployment has more than one.
-          const { rows } = await client.query<{ tenant_id: string | null }>(
-            "SELECT tenant_id FROM users WHERE id = $1",
-            [userId],
-          );
+          // The user's own binding, so the write cannot land on a tenant the account does not belong to.
+          const { rows } = await client.query<{ tenant_id: string }>("SELECT tenant_id FROM users WHERE id = $1", [
+            userId,
+          ]);
           const row = rows[0];
           if (!row) throw new NotFoundError("Account not found", { userId });
           const tenantId = row.tenant_id;
-          if (tenantId === null) {
-            throw new ValidationError("Account has no tenant to hold an AI budget", { field: "userId" });
-          }
           const saved = await setTenantAiBudget(client, {
             tenantId,
             dailyCapUsd,
