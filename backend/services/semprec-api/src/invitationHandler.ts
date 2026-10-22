@@ -33,9 +33,10 @@ function describeError(err: unknown): { errorName: string; code?: string } {
  * after the first one. Public by design: the invitee has no session yet, and the single-use token
  * in the body is the credential. Every unusable token answers the same 404 (`acceptInvitation`).
  *
- * Throttled per client address under `invitationAccept` (#1073): an address over the limit gets 429
- * before its body is read, and only a rejected token (a `NotFoundError`) counts toward the limit, so
- * a malformed request or a successful acceptance never does. Nothing that is logged carries the
+ * Throttled per client address under `invitationAccept` (#1073): the attempt is counted before its
+ * body is read, so an address over the limit gets 429 and a concurrent burst gets at most the limit
+ * through; the count is released again unless the token was rejected (a `NotFoundError`), so a
+ * malformed request, a successful acceptance or an infrastructure error never counts. Nothing that is logged carries the
  * token, the email or the password.
  */
 export function createInvitationRequestListener(pool: Pool, options: InvitationRequestListenerOptions) {
@@ -47,34 +48,37 @@ export function createInvitationRequestListener(pool: Pool, options: InvitationR
     try {
       if (req.method === "POST" && url.pathname === "/api/invitations/accept") {
         const ip = clientIpFromRequest(req, { trustProxy: options.trustProxy });
-        const retryAfter = clientIpThrottle.retryAfterSeconds("invitationAccept", ip);
-        if (retryAfter !== null) {
+        // Checks the limit and counts this attempt in one synchronous step, before the body is read,
+        // so a concurrent burst from one address gets at most the limit through (`tryAcquire`).
+        const acquisition = clientIpThrottle.tryAcquire("invitationAccept", ip);
+        if (!acquisition.granted) {
           sendJson(
             res,
             429,
             { error: "Too many attempts; try again later", code: "rate_limited" },
-            { "Retry-After": String(retryAfter) },
+            { "Retry-After": String(acquisition.retryAfterSeconds) },
           );
           return;
         }
 
-        const body = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
-        if (!isRecord(body)) throw new ValidationError("Request body must be a JSON object");
-        const { token, password } = body;
-        if (typeof token !== "string" || token.length === 0) {
-          throw new ValidationError("'token' must be a non-empty string");
-        }
-        if (typeof password !== "string" || password.length === 0) {
-          throw new ValidationError("'password' must be a non-empty string");
-        }
-
         let user: Awaited<ReturnType<typeof acceptInvitation>>;
         try {
+          const body = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
+          if (!isRecord(body)) throw new ValidationError("Request body must be a JSON object");
+          const { token, password } = body;
+          if (typeof token !== "string" || token.length === 0) {
+            throw new ValidationError("'token' must be a non-empty string");
+          }
+          if (typeof password !== "string" || password.length === 0) {
+            throw new ValidationError("'password' must be a non-empty string");
+          }
           user = await acceptInvitation(pool, { token, password });
         } catch (err) {
-          if (err instanceof NotFoundError) clientIpThrottle.record("invitationAccept", ip);
+          // Only a rejected token counts; a body or validation error and an infrastructure error do not.
+          if (!(err instanceof NotFoundError)) acquisition.reservation.release();
           throw err;
         }
+        acquisition.reservation.release();
         sendJson(res, 200, { user });
         return;
       }

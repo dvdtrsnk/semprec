@@ -1,4 +1,4 @@
-import { createServer, type Server } from "node:http";
+import { createServer, request as httpRequest, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
@@ -175,8 +175,11 @@ describe("createInvitationRequestListener (issue #1087)", () => {
 
   it("answers 429 past the per-address limit, counting only unusable-token 404s, while another address is served", async () => {
     const ip = "203.0.113.50";
-    // Neither 400s nor a successful acceptance count toward the limit.
+    // Neither 400s, 413s nor a successful acceptance count toward the limit.
     for (let i = 0; i < LIMIT + 1; i++) expect((await post({ token: "t" }, { ip })).status).toBe(400);
+    for (let i = 0; i < LIMIT + 1; i++) {
+      expect((await post({ token: "x".repeat(65 * 1024), password: PASSWORD }, { ip })).status).toBe(413);
+    }
     const pending = await invite();
     expect((await post({ token: pending.token, password: PASSWORD }, { ip })).status).toBe(200);
     for (let i = 0; i < LIMIT; i++) {
@@ -193,6 +196,63 @@ describe("createInvitationRequestListener (issue #1087)", () => {
 
     const other = await post({ token: another.token, password: PASSWORD }, { ip: "203.0.113.51" });
     expect(other.status).toBe(200);
+  });
+
+  it("lets at most the limit of a concurrent burst of unusable tokens from one address reach acceptance", async () => {
+    let arrived = 0;
+    let allArrived!: () => void;
+    const allArrivedPromise = new Promise<void>((resolve) => (allArrived = resolve));
+    const burstSize = LIMIT * 2;
+    const listener = createInvitationRequestListener(dataPool, {
+      trustProxy: true,
+      clientIpThrottle: createClientIpThrottle({
+        limits: { invitationAccept: { maxEvents: LIMIT, windowSeconds: 3600 } },
+      }),
+    });
+    const burstServer = createServer((req, res) => {
+      if (++arrived === burstSize) allArrived();
+      listener(req, res);
+    });
+    await new Promise<void>((resolve) => burstServer.listen(0, resolve));
+    const address = burstServer.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+
+    const requests = Array.from({ length: burstSize }, () => {
+      const payload = JSON.stringify({ token: randomUUID(), password: PASSWORD });
+      const req = httpRequest(`http://127.0.0.1:${address.port}${PATH}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": String(Buffer.byteLength(payload)),
+          "X-Forwarded-For": "203.0.113.77",
+        },
+      });
+      const status = new Promise<number>((resolve, reject) => {
+        req.on("response", (res) => {
+          res.resume();
+          res.on("end", () => resolve(res.statusCode ?? 0));
+          res.on("error", reject);
+        });
+        req.on("error", reject);
+        req.setTimeout(5000, () => req.destroy(new Error("burst request timed out")));
+      });
+      return { req, payload, status };
+    });
+    const statuses = Promise.all(requests.map(({ status }) => status));
+    try {
+      for (const { req } of requests) req.flushHeaders();
+      // Every request passes the throttle check before any body is sent, so a check that counts only
+      // after the token lookup would let the whole burst through.
+      await Promise.race([allArrivedPromise, statuses]);
+      for (const { req, payload } of requests) req.end(payload);
+      const answered = await statuses;
+      expect(answered.filter((status) => status === 404)).toHaveLength(LIMIT);
+      expect(answered.filter((status) => status === 429)).toHaveLength(burstSize - LIMIT);
+    } finally {
+      for (const { req } of requests) req.destroy();
+      await Promise.allSettled(requests.map(({ status }) => status));
+      await stopServer(burstServer);
+    }
   });
 
   it.each([

@@ -103,8 +103,10 @@ describe("acceptInvitation (issue #1087)", () => {
     ).id;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.restoreAllMocks();
+    await adminPool.query("DROP TRIGGER IF EXISTS test_reject_invited_user ON users");
+    await adminPool.query("DROP FUNCTION IF EXISTS test_reject_invited_user()");
   });
 
   afterAll(async () => {
@@ -203,6 +205,38 @@ describe("acceptInvitation (issue #1087)", () => {
       });
       await expectRejectedWithoutWrites(pending.token);
     });
+  });
+
+  it.each([
+    [
+      "a unique violation on another constraint",
+      "USING ERRCODE = 'unique_violation', CONSTRAINT = 'users_other_key'",
+      "23505",
+    ],
+    ["any other database error", "USING ERRCODE = 'check_violation'", "23514"],
+  ])("rethrows %s from createUser unchanged and rolls the tenant back", async (_label, raiseOptions, code) => {
+    const pending = await invite("blocked@example.test");
+    // Fails only the invitee's insert, after the tenant row of the same transaction was written.
+    await adminPool.query(`
+      CREATE FUNCTION test_reject_invited_user() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.email = 'blocked@example.test' THEN
+          RAISE EXCEPTION 'simulated user insert failure' ${raiseOptions};
+        END IF;
+        RETURN NEW;
+      END $$`);
+    await adminPool.query(
+      "CREATE TRIGGER test_reject_invited_user BEFORE INSERT ON users FOR EACH ROW EXECUTE FUNCTION test_reject_invited_user()",
+    );
+    const before = await snapshot();
+
+    const error = await acceptInvitation(dataPool, { token: pending.token, password: PASSWORD }).catch(
+      (err: unknown) => err,
+    );
+
+    expect(error).not.toBeInstanceOf(NotFoundError);
+    expect(error).toMatchObject({ code, message: "simulated user insert failure" });
+    expect(await snapshot()).toEqual(before);
   });
 
   it("lets exactly one of two concurrent acceptances of one token create the account", async () => {
