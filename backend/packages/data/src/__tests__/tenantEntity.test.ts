@@ -1,4 +1,4 @@
-import { copyFile, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -61,7 +61,6 @@ async function migrateAcrossThisMigration(pool: Pool, beforeThis?: (pool: Pool) 
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-tenant-entity-"));
   try {
     const files = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith(".sql") && f < THIS_MIGRATION).sort();
-    await mkdir(dir, { recursive: true });
     for (const file of files) await copyFile(path.join(MIGRATIONS_DIR, file), path.join(dir, file));
     await runMigrations(pool, dir);
     await beforeThis?.(pool);
