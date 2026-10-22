@@ -10,6 +10,7 @@ import {
 } from "../credentials/externalCredentialsStore.js";
 import { logger } from "../credentials/logger.js";
 import { handleCredentialReencryptSweepTask } from "../credentials/reencryptCredentialsJob.js";
+import * as tenantKeysStore from "../credentials/tenantKeysStore.js";
 import { logger as tenancyLogger } from "../tenancy/logger.js";
 import {
   createRuntimeRolePool,
@@ -19,6 +20,11 @@ import {
   resetDatabase,
   withTenantTransaction,
 } from "../testSupport/testDb.js";
+
+vi.mock("../credentials/tenantKeysStore.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../credentials/tenantKeysStore.js")>();
+  return { ...actual, getOrCreateTenantDataKey: vi.fn(actual.getOrCreateTenantDataKey) };
+});
 
 let adminPool: Pool;
 let pool: Pool;
@@ -71,8 +77,8 @@ async function accessLogCount(): Promise<number> {
   return rows[0]?.n ?? -1;
 }
 
-function sweep(): Promise<void> {
-  return runAsSystem("test", () => handleCredentialReencryptSweepTask(pool));
+function sweep(limits?: Parameters<typeof handleCredentialReencryptSweepTask>[1]): Promise<void> {
+  return runAsSystem("test", () => handleCredentialReencryptSweepTask(pool, limits));
 }
 
 /** The text of every logged argument, an error's name, message and stack included. */
@@ -153,6 +159,21 @@ describe("credential re-encryption under the tenant key (issue #1062)", () => {
       expect(rows.filter((row) => row.scheme !== "tenant")).toEqual([]);
     });
 
+    it("stops after the page cap with the remaining rows master, and the next run continues from there", async () => {
+      for (let n = 0; n < 5; n += 1) await insertMasterRow(tenantB, randomUUID(), `secret-${n}`);
+      const limits = { pageSize: 2, maxPagesPerRun: 2 };
+
+      await sweep(limits);
+
+      const afterFirst = await allRows();
+      expect(afterFirst.map((row) => row.scheme)).toEqual(["tenant", "tenant", "tenant", "tenant", "master"]);
+
+      await sweep(limits);
+
+      expect((await allRows()).map((row) => row.scheme)).toEqual(["tenant", "tenant", "tenant", "tenant", "tenant"]);
+      expect((await allRows()).slice(0, 4)).toEqual(afterFirst.slice(0, 4));
+    });
+
     it("leaves a corrupted row master, re-seals the others, rejects, and logs the item id without the secret", async () => {
       const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
       vi.spyOn(tenancyLogger, "error").mockImplementation(() => {});
@@ -224,6 +245,32 @@ describe("credential re-encryption under the tenant key (issue #1062)", () => {
       expect(await rowOf(itemB)).toEqual(before);
       expect(before?.scheme).toBe("master");
       expect(await tenantKeyTenants()).toEqual([]);
+    });
+
+    it("throws and leaves the row master and untouched when the tenant key belongs to another tenant", async () => {
+      const itemId = randomUUID();
+      await insertMasterRow(tenantZero, itemId, "zero-secret");
+      const before = await rowOf(itemId);
+      vi.mocked(tenantKeysStore.getOrCreateTenantDataKey).mockClear();
+      const realGetKey = vi.mocked(tenantKeysStore.getOrCreateTenantDataKey).getMockImplementation();
+      vi.mocked(tenantKeysStore.getOrCreateTenantDataKey).mockImplementationOnce(async (client) => {
+        const key = await realGetKey!(client);
+        return { ...key, tenantId: tenantB };
+      });
+
+      await expect(
+        withTenantTransaction(pool, tenantZero, (client) => reencryptCredentialUnderTenantKey(client, itemId)),
+      ).rejects.toThrow("Tenant data key does not belong to the credential's tenant");
+
+      expect(vi.mocked(tenantKeysStore.getOrCreateTenantDataKey)).toHaveBeenCalledTimes(1);
+      const after = await rowOf(itemId);
+      expect(after?.scheme).toBe("master");
+      expect(after?.ciphertext).toEqual(before?.ciphertext);
+      expect(after?.nonce).toEqual(before?.nonce);
+      expect(await tenantKeyTenants()).toEqual([]);
+      expect(
+        await withTenantTransaction(pool, tenantZero, (client) => getDecryptedCredential(client, { itemId, ...READ })),
+      ).toBe("zero-secret");
     });
 
     it("on a superuser pool re-seals a row of the scoped tenant itself", async () => {

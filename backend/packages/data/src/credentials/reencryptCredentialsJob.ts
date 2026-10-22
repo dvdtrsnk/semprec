@@ -4,8 +4,13 @@ import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { reencryptCredentialUnderTenantKey } from "./externalCredentialsStore.js";
 import { logger } from "./logger.js";
 
-const PAGE_SIZE = 100;
-const MAX_PAGES_PER_RUN = 50;
+/** Page size and per-run page cap of the sweep; the defaults are the issue's 100 and 50. */
+export interface CredentialReencryptSweepLimits {
+  pageSize: number;
+  maxPagesPerRun: number;
+}
+
+const DEFAULT_LIMITS: CredentialReencryptSweepLimits = { pageSize: 100, maxPagesPerRun: 50 };
 
 /**
  * The hourly `credentialReencryptSweep` (issue #1062), wired into `createCoreTaskList` (`worker.ts`)
@@ -18,19 +23,26 @@ const MAX_PAGES_PER_RUN = 50;
  * A failed row is logged with its item id and the error, and the sweep continues; the error comes
  * from decryption, key resolution or the database and carries no ciphertext or plaintext. After a
  * tenant's pages, a tenant with failed rows throws, so `forEachActiveTenant` aggregates the failure
- * and the job is retried. Once no `master` row remains the sweep is a no-op.
+ * and the job is retried. Once no `master` row remains the sweep is a no-op. Rows past the page cap
+ * are left `master` for the next run, which continues from the first of them.
+ *
+ * `limits` exists for tests only, so the page cap can be reached with a handful of rows; the worker
+ * always runs with the defaults.
  */
-export async function handleCredentialReencryptSweepTask(pool: Pool): Promise<void> {
+export async function handleCredentialReencryptSweepTask(
+  pool: Pool,
+  limits: CredentialReencryptSweepLimits = DEFAULT_LIMITS,
+): Promise<void> {
   await forEachActiveTenant(pool, async (tenantId) => {
     let reencrypted = 0;
     let failed = 0;
     let after: string | null = null;
-    for (let page = 0; page < MAX_PAGES_PER_RUN; page += 1) {
+    for (let page = 0; page < limits.maxPagesPerRun; page += 1) {
       const { rows }: QueryResult<{ item_id: string }> = await pool.query<{ item_id: string }>(
         `SELECT item_id FROM external_credentials
           WHERE scheme = 'master' AND tenant_id = app_tenant_default() AND ($1::uuid IS NULL OR item_id > $1)
           ORDER BY item_id LIMIT $2`,
-        [after, PAGE_SIZE],
+        [after, limits.pageSize],
       );
       for (const { item_id: itemId } of rows) {
         try {
@@ -43,7 +55,7 @@ export async function handleCredentialReencryptSweepTask(pool: Pool): Promise<vo
         }
       }
       const last: string | undefined = rows.at(-1)?.item_id;
-      if (last === undefined || rows.length < PAGE_SIZE) break;
+      if (last === undefined || rows.length < limits.pageSize) break;
       after = last;
     }
     logger.info({ tenantId, reencrypted }, "Credential re-encryption sweep finished for tenant");
